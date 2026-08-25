@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 
 from . import __version__
-from .commands.admin import check, mode, policies, test
+from .commands.admin import check, mode, policies
 from .commands.agent import agent_app
 from .commands.bootstrap import bootstrap
 from .commands.cert import cert_app
@@ -80,7 +80,6 @@ app.command()(demo)
 app.command()(check)
 app.command()(mode)
 app.command()(policies)
-app.command()(test)
 app.command(name="test-context")(test_context)
 app.command()(traffic)
 

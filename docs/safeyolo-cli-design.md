@@ -162,9 +162,14 @@ Add credential pattern to allowlist.
 ### Testing & Debugging
 
 ```bash
-safeyolo test <url>
+safeyolo agent shell <name>
+# then, inside the sandbox:
+curl -v <url>
 ```
-Make a test request through the proxy and show what would happen.
+Issue a request from a real agent identity. The per-agent UDS is the only
+egress path, so this exercises the same enforcement chain the agent
+would hit — including credential injection, host allowlist, and PDP
+routing.
 
 ```bash
 safeyolo check

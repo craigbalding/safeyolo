@@ -1121,6 +1121,14 @@ def add(  # DOC: README.md, docs/AGENTS.md
         console.print("[red]No SafeYolo configuration found.[/red]\nRun [bold]safeyolo init[/bold] first.")
         raise typer.Exit(1)
 
+    # Refuse to add against an empty/malformed policy (#336): find_config_dir()
+    # only checks that ~/.safeyolo/ exists, not that a usable policy lives in
+    # it. An empty compiled permissions list means every request the new agent
+    # makes 403s at network_guard's fail-closed path with no diagnostic.
+    from .policy import assert_policy_has_permissions
+
+    assert_policy_has_permissions(config_dir)
+
     # Validate folder early
     folder_path = Path(folder).expanduser().resolve()
     if not folder_path.is_dir():

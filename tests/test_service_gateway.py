@@ -2270,3 +2270,153 @@ capabilities:
             body = json.loads(flow.response.content)
             pytest.fail(f"Expected pass but got {flow.response.status_code}: {body}")
         assert flow.metadata.get("gateway_service") == "hygienesvc"
+
+
+# --- allow_http opt-in tests (#346) ---
+
+
+class TestAllowHttpOptIn:
+    """`auth.allow_http` bypasses the HTTP→HTTPS redirect for services on
+    operator-vouched trusted transports (tailnet / WireGuard / private VLAN).
+
+    Default is False — existing services keep the redirect. Opt-in is per
+    service YAML and emits a MEDIUM `gateway.http_injection_allowed` event
+    every time it fires so the operator sees the HTTP injection happen.
+    """
+
+    def test_yaml_round_trips_through_authconfig(self):
+        from safeyolo.core.service_loader import AuthConfig
+
+        cfg = AuthConfig.from_dict(
+            {"type": "api_key", "header": "X-Auth-Token", "allow_http": True}
+        )
+        assert cfg.allow_http is True
+
+        default_cfg = AuthConfig.from_dict({"type": "api_key", "header": "X-Auth-Token"})
+        assert default_cfg.allow_http is False
+
+    @pytest.fixture
+    def _trusted_transport_env(self, tmp_path):
+        """Two v1 services identical except for auth.allow_http."""
+        svc_dir = tmp_path / "allow_http_services"
+        svc_dir.mkdir()
+        (svc_dir / "denysvc.yaml").write_text("""
+schema_version: 1
+name: denysvc
+default_host: api.denysvc.internal
+auth:
+  type: api_key
+  header: X-Auth-Token
+  allow_http: false
+capabilities:
+  reader:
+    description: "Read"
+    routes:
+      - methods: [GET]
+        path: "/v1/**"
+""")
+        (svc_dir / "allowsvc.yaml").write_text("""
+schema_version: 1
+name: allowsvc
+default_host: api.allowsvc.internal
+auth:
+  type: api_key
+  header: X-Auth-Token
+  allow_http: true
+capabilities:
+  reader:
+    description: "Read"
+    routes:
+      - methods: [GET]
+        path: "/v1/**"
+""")
+        registry = init_service_registry(svc_dir)
+
+        vault_path = tmp_path / "trusted_vault.yaml.enc"
+        v = Vault(vault_path)
+        v.unlock("test-pass")
+        v.store(VaultCredential(name="deny-cred", type="api_key", value="real-deny-key"))
+        v.store(VaultCredential(name="allow-cred", type="api_key", value="real-allow-key"))
+
+        gw = ServiceGateway()
+        gw._host_map = {
+            "api.denysvc.internal": "denysvc",
+            "api.allowsvc.internal": "allowsvc",
+        }
+        env = gw.mint_tokens(
+            {
+                "test-agent": {
+                    "denysvc": {"capability": "reader", "token": "deny-cred"},
+                    "allowsvc": {"capability": "reader", "token": "allow-cred"},
+                },
+            }
+        )
+        return gw, env, registry, v
+
+    def test_http_still_redirects_when_flag_false(self, make_flow, _trusted_transport_env):
+        gw, env, registry, vault_obj = _trusted_transport_env
+        token = env["test-agent"]["denysvc"]
+
+        flow = make_flow(url="http://api.denysvc.internal/v1/things", headers={"X-Auth-Token": token})
+        flow.metadata["agent"] = "test-agent"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault_obj):
+                    gw.request(flow)
+
+        assert flow.response is not None
+        assert flow.response.status_code == 301
+        assert flow.response.headers["Location"] == "https://api.denysvc.internal/v1/things"
+        assert flow.response.headers["X-SafeYolo-Reason"] == "credential-injection-requires-https"
+        assert "real-deny-key" not in str(flow.request.headers)
+
+    def test_http_injects_when_flag_true(self, make_flow, _trusted_transport_env):
+        gw, env, registry, vault_obj = _trusted_transport_env
+        token = env["test-agent"]["allowsvc"]
+
+        flow = make_flow(url="http://api.allowsvc.internal/v1/things", headers={"X-Auth-Token": token})
+        flow.metadata["agent"] = "test-agent"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault_obj):
+                    gw.request(flow)
+
+        assert flow.response is None, "expected credential swap to proceed, not a redirect"
+        assert flow.request.headers["X-Auth-Token"] == "real-allow-key"
+        assert flow.request.url == "http://api.allowsvc.internal/v1/things"
+
+    def test_gateway_http_injection_allowed_event_fires(self, make_flow, _trusted_transport_env):
+        gw, env, registry, vault_obj = _trusted_transport_env
+        token = env["test-agent"]["allowsvc"]
+
+        flow = make_flow(url="http://api.allowsvc.internal/v1/things", headers={"X-Auth-Token": token})
+        flow.metadata["agent"] = "test-agent"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault_obj):
+                    with patch("service_gateway.write_event") as mock_write:
+                        gw.request(flow)
+
+        events = [c[0][0] for c in mock_write.call_args_list]
+        assert "gateway.http_injection_allowed" in events
+        assert "gateway.https_redirect" not in events
+
+    def test_no_http_injection_event_when_flag_false(self, make_flow, _trusted_transport_env):
+        gw, env, registry, vault_obj = _trusted_transport_env
+        token = env["test-agent"]["denysvc"]
+
+        flow = make_flow(url="http://api.denysvc.internal/v1/things", headers={"X-Auth-Token": token})
+        flow.metadata["agent"] = "test-agent"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault_obj):
+                    with patch("service_gateway.write_event") as mock_write:
+                        gw.request(flow)
+
+        events = [c[0][0] for c in mock_write.call_args_list]
+        assert "gateway.https_redirect" in events
+        assert "gateway.http_injection_allowed" not in events

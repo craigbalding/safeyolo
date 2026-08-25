@@ -129,6 +129,16 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
         _bootstrap_config(config_dir)
         console.print(f"  Created {config_dir}")
 
+    # Refuse to start against an empty/malformed policy (#336). Symmetric with
+    # the guard in `agent add`; catches the case where a previous init only
+    # wrote [agents.X] blocks without host rules, leaving the compiled
+    # permissions list empty. The first-run path above just seeded from the
+    # template so we don't need to check it there.
+    if not first_run:
+        from .policy import assert_policy_has_permissions
+
+        assert_policy_has_permissions(config_dir)
+
     # Check if already running
     if is_proxy_running():
         console.print("[yellow]SafeYolo proxy is already running.[/yellow]")

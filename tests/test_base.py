@@ -299,6 +299,59 @@ class TestSecurityAddonBlocking:
         assert flow.metadata["blocked_by"] == "test-addon"
         assert addon.stats.blocked == 1
 
+    def test_block_records_reason_when_present(self):
+        """block() promotes body["reason"] to flow.metadata["block_reason"] so
+        downstream readers (request_logger, traffic view) can surface the
+        deny reason without correlating a separate security event by
+        request_id (#337)."""
+        from safeyolo.core.base import SecurityAddon
+
+        class TestAddon(SecurityAddon):
+            name = "network-guard"
+
+        addon = TestAddon()
+        flow = Mock()
+        flow.metadata = {}
+        flow.response = None
+
+        addon.block(flow, 403, {"error": "Blocked", "reason": "host not in allow list"})
+
+        assert flow.metadata["block_reason"] == "host not in allow list"
+
+    def test_block_omits_reason_when_body_has_none(self):
+        """block() does not synthesise a block_reason when the addon didn't
+        provide one — no key beats a fake key."""
+        from safeyolo.core.base import SecurityAddon
+
+        class TestAddon(SecurityAddon):
+            name = "test-addon"
+
+        addon = TestAddon()
+        flow = Mock()
+        flow.metadata = {}
+        flow.response = None
+
+        addon.block(flow, 403, {"error": "Blocked"})
+
+        assert "block_reason" not in flow.metadata
+
+    def test_block_reason_ignored_when_body_not_dict(self):
+        """Defence-in-depth: an addon that mis-typed body as bytes/str should
+        still block cleanly without crashing on `body.get`."""
+        from safeyolo.core.base import SecurityAddon
+
+        class TestAddon(SecurityAddon):
+            name = "test-addon"
+
+        addon = TestAddon()
+        flow = Mock()
+        flow.metadata = {}
+        flow.response = None
+
+        addon.block(flow, 403, {"error": "x", "reason": None})
+
+        assert "block_reason" not in flow.metadata
+
     def test_block_with_extra_headers(self):
         """Test block() includes extra headers."""
         from safeyolo.core.base import SecurityAddon

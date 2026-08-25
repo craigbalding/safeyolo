@@ -94,6 +94,13 @@ nodes:
     label: "Compare the URL I'm calling to the service's configured routes -- capability + route must both be authorized"
     source: authored
 
+  - id: ev.gateway_check_injection_event
+    kind: evidence
+    label: "GET /explain?request_id=req-... -- confirm a credential-injection / gateway swap event fired for the failing request"
+    detail: |
+      If /gateway/services shows the capability as authorized with an sgw_ token BUT the request still fails at the upstream with an 'invalid_token'-shaped body, the definitive check is whether the swap actually ran. /explain returns the security-event trail for one request_id; a successful swap emits a credential-injection or gateway.swap event. If only traffic.request/traffic.response appear, the swap did not fire even though the binding exists on disk.
+    source: authored
+
   # ---- Classifications -------------------------------------------------
   - id: cls.gateway_service_not_registered
     kind: classification
@@ -123,6 +130,12 @@ nodes:
   - id: cls.gateway_token_in_wrong_place
     kind: classification
     label: "sgw_ token was sent in the wrong header, over http:// instead of https://, or leaked into body/URL"
+    source: authored
+
+  - id: cls.gateway_swap_not_running
+    kind: classification
+    label: "Swap logic did not fire despite /gateway/services showing an authorized capability with an sgw_ token"
+    detail: "Typically the service_gateway addon's in-memory service registry was populated at proxy startup and hasn't picked up a service YAML added since. /gateway/services reads fresh (from disk) so it looks correct, but the request-path swap uses the stale registry."
     source: authored
 
   # ---- Conclusions -----------------------------------------------------
@@ -167,6 +180,11 @@ nodes:
     label: "Ask operator to run `safeyolo watch` and grant the specific capability I requested"
     source: authored
 
+  - id: ask.gateway_restart_after_yaml_change
+    kind: operator_ask
+    label: "Ask operator to restart SafeYolo (`safeyolo stop && safeyolo start`) so the service_gateway addon re-reads the on-disk service registry after a new service YAML or credential binding was added post-startup"
+    source: authored
+
 
 edges:
   # Discovery entry -> list services
@@ -204,6 +222,11 @@ edges:
   - {from: ev.gateway_check_auth_header_name, to: cls.gateway_token_in_wrong_place, kind: implies, when: "token in wrong header, or http:// used, or token appears in body/URL"}
   - {from: cls.gateway_token_in_wrong_place,  to: con.gateway_use_configured_header, kind: implies}
   - {from: cls.gateway_token_in_wrong_place,  to: con.gateway_never_share_token,     kind: implies}
+
+  # sgw_ token IS positioned correctly BUT upstream still rejects it
+  - {from: ev.gateway_check_auth_header_name, to: ev.gateway_check_injection_event, kind: next_check, when: "token IS in the configured auth header, over HTTPS, not in body/URL"}
+  - {from: ev.gateway_check_injection_event,  to: cls.gateway_swap_not_running,     kind: implies,     when: "only traffic.request / traffic.response events on the request_id; no credential-injection or gateway.swap event fired"}
+  - {from: cls.gateway_swap_not_running,      to: ask.gateway_restart_after_yaml_change, kind: escalates_to}
 
   # Wrong route within an authorized capability
   - {from: ev.gateway_check_route, to: cls.gateway_wrong_route, kind: implies, when: "URL path or method is not covered by the granted capability"}
