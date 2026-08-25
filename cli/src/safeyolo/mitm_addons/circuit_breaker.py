@@ -30,6 +30,7 @@ from mitmproxy import ctx, http
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.base import SecurityAddon
+from safeyolo.core.probe import PROBE_HOST
 from safeyolo.core.trace import REASON_ADDON_DISABLED, trace_addon_hook
 from safeyolo.core.utils import BackgroundWorker, atomic_write_json, make_block_response, sanitize_for_log, write_event
 
@@ -184,11 +185,22 @@ class CircuitBreaker(SecurityAddon):
         # Policy reload tracking
         self._last_policy_hash: str = ""
 
-        # Domains excluded from circuit breaking (local infrastructure)
+        # Domains excluded from circuit breaking (local infrastructure).
+        # PROBE_HOST is intentionally excluded (issue #213 eighth-pass
+        # review): the reserved doctor pipeline-probe destination is
+        # synthetic diagnostic infrastructure, not a real upstream.
+        # transport_guard's request-hook failsafe synthesises a 502 for
+        # the missing-sink case; without this exclusion, circuit_breaker
+        # would treat repeated diagnostic failures as real upstream
+        # unhealthiness and open a persistent circuit on _safeyolo.probe.
+        # internal, defeating V4 recovery until timeout. Circuit-breaker
+        # still evaluates the host (trace records
+        # `evaluated/excluded_domain`), just doesn't mutate state.
         self._excluded_domains: set[str] = {
             "localhost",
             "127.0.0.1",
             "host.docker.internal",
+            PROBE_HOST,
         }
 
         # Circuit-specific stats (different from base AddonStats)

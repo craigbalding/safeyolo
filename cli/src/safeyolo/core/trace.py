@@ -120,6 +120,14 @@ STATE_NOT_LOADED = "not_loaded"  # synthesised at read time, never recorded
 REASON_PRIOR_RESPONSE = "prior_response"      # an earlier addon already responded
 REASON_POLICY_DISABLED = "policy_disabled"    # PDP said the addon is off for scope
 REASON_ADDON_DISABLED = "addon_disabled"      # mitmproxy option disables the addon globally
+# Reserved-probe error reasons (issue #213 PR B). Distinguished so operator
+# and doctor triage know whether the sink failed BEFORE transport was
+# attempted (probe_sink_failed — caught in the request-hook failsafe) or
+# whether the flow actually reached the upstream-connect stage
+# (probe_reached_upstream — caught by transport_guard's server_connect
+# structural backstop). Both surface as `state=error` and fail doctor.
+REASON_PROBE_SINK_FAILED = "probe_sink_failed"          # request-hook failsafe caught missing sink
+REASON_PROBE_REACHED_UPSTREAM = "probe_reached_upstream"  # server_connect backstop fired
 
 
 @dataclass

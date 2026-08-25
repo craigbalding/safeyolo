@@ -201,6 +201,43 @@ class TestCircuitBreakerBlocking:
         assert flow.response is None
         assert "blocked_by" not in flow.metadata
 
+    def test_probe_host_is_excluded_domain_by_default(self, circuit_breaker):
+        """Reserved doctor pipeline-probe destination is built-in-excluded
+        (issue #213 eighth-pass review). Without this, transport_guard's
+        `probe_sink_failed` 502 would look like a real upstream failure
+        to circuit_breaker.response, and repeated doctor probes could
+        open a persistent circuit on _safeyolo.probe.internal that then
+        prevents V4 recovery until timeout.
+
+        The addon still evaluates the host — trace records
+        `evaluated/excluded_domain` — it just doesn't mutate circuit
+        state or block based on it.
+        """
+        from safeyolo.core.probe import PROBE_HOST
+        assert PROBE_HOST in circuit_breaker._excluded_domains
+
+    def test_probe_host_response_never_calls_record_failure(
+        self, circuit_breaker, make_flow, make_response,
+    ):
+        """End-to-end: response hook must not call record_failure for
+        the reserved probe host, even on a 5xx status. This is what
+        keeps repeated doctor probes from opening a diagnostic-host
+        circuit.
+        """
+        from unittest.mock import patch as _patch
+
+        from safeyolo.core.probe import PROBE_HOST
+
+        flow = make_flow(url=f"http://{PROBE_HOST}/__pipeline_probe")
+        flow.response = make_response(status_code=502, content=b'{"error":"sink_failed"}')
+
+        with _patch.object(circuit_breaker, "record_failure") as record_failure, \
+             _patch.object(circuit_breaker, "record_success") as record_success:
+            circuit_breaker.response(flow)
+
+        record_failure.assert_not_called()
+        record_success.assert_not_called()
+
     def test_request_when_disabled_does_nothing(self, circuit_breaker, make_flow):
         """Test that request hook is a no-op when addon is disabled."""
         circuit_breaker.force_open("test.com")

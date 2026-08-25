@@ -127,6 +127,56 @@ class TestScopeGate:
             disabled.response(flow)
             assert disabled._stats["skipped"] == 1
 
+    def test_probe_flow_suppressed_even_with_ccapt_context(self, recorder):
+        """Doctor sends a valid X-Test-Context (issue #213 B4) so
+        test-context runs its normal parse/apply path — which would set
+        ccapt_context and pull every doctor run into FlowStore as
+        evidence. The safeyolo_probe marker (set early by probe_sink)
+        short-circuits before ccapt_context matters. Verifies the
+        successful-sink case: probe reached the sink normally and its
+        flow must not be recorded.
+        """
+        flow = _make_test_flow()
+        flow.metadata["safeyolo_probe"] = True
+        recorder.response(flow)
+        assert recorder._stats["skipped"] == 1
+        assert recorder._stats["recorded"] == 0
+
+    def test_probe_flow_suppressed_when_pre_sink_block(self, recorder):
+        """The pre-sink block case: some pathological addon set
+        flow.response before the sink ran, so `blocked_by` is set. The
+        probe marker is still there (early-marked before the block) and
+        FlowStore suppression must still apply.
+        """
+        flow = _make_test_flow(response_status=403)
+        flow.metadata["safeyolo_probe"] = True
+        flow.metadata["blocked_by"] = "some-earlier-addon"
+        recorder.response(flow)
+        assert recorder._stats["skipped"] == 1
+        assert recorder._stats["recorded"] == 0
+
+    def test_probe_suppression_requires_boolean_true_not_truthy(self, recorder):
+        """Contract-tightening test (issue #213 B9): the marker must be
+        literal boolean True, not any truthy value. A stray string or
+        non-empty container in metadata must not accidentally suppress
+        a real flow from FlowStore.
+        """
+        # Truthy but NOT the boolean True — a real bug would make these
+        # suppress the flow. Strict `is True` check rejects each.
+        for accidental in ("yes", 1, [1], {"nested": True}):
+            flow = _make_test_flow()
+            flow.metadata["safeyolo_probe"] = accidental
+            before_recorded = recorder._stats["recorded"]
+            before_skipped = recorder._stats["skipped"]
+            recorder.response(flow)
+            # Flow must be recorded (not suppressed) — the accidental
+            # truthy value did not qualify as the probe marker.
+            assert recorder._stats["recorded"] == before_recorded + 1, (
+                f"truthy value {accidental!r} incorrectly triggered probe "
+                "suppression — expected strict `is True` check"
+            )
+            assert recorder._stats["skipped"] == before_skipped
+
     def test_no_store_skips(self, recorder):
         """If store is None (init failed), flows are skipped."""
         recorder.store = None

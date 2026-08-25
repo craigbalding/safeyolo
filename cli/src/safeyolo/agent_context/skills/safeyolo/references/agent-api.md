@@ -85,12 +85,165 @@ requests, change addon modes, or reach the admin API.
 | `GET` | `/budgets` | Domain budget and rate usage |
 | `GET` | `/config` | Current credential rules and scan configuration |
 | `GET` | `/explain?request_id=req-...` | Recent audit events for one request ID |
+| `GET` | `/trace?request_id=req-...` | Opt-in per-addon pipeline trace for one request ID |
 | `GET` | `/memory` | Proxy memory, connection, and WebSocket statistics |
 | `GET` | `/agents` | Discovered agents and last-seen data |
 | `GET` | `/circuits` | Circuit-breaker state by domain |
 
 Use `/lookup` before asking the operator to add a host. Use `/budgets` for 429
 responses and `/circuits` for circuit-breaker 503 responses.
+
+`/explain` and `/trace` answer different questions.
+
+- `/explain` — retrospective. Returns audit events keyed on `request_id`
+  from the JSONL log (current file + rotated backups). Answers *"what
+  decisions/events were recorded for this request?"* Backed by audit
+  retention, agent-scoped, honest about incompleteness (see status
+  taxonomy under "/explain response shape" below).
+- `/trace` — pipeline-execution evidence. Requires the request to have
+  carried `X-SafeYolo-Trace: 1` so the trace substrate recorded per-addon
+  steps. Answers *"which parts of the pipeline actually ran, in what
+  order, with what outcome, and how long?"* Bounded short-lived store.
+
+`/trace` is what the skill's DAG branches on when `/explain` is empty or
+ambiguous — the two are complementary, not redundant. See
+[`triage-request-failing.yaml`](graph/triage-request-failing.yaml) and
+[`triage-credential-guard.yaml`](graph/triage-credential-guard.yaml).
+
+## Trace wire vocabulary
+
+`/trace` returns literal string values for `state`, `reason`, and
+per-addon `outcome`. The skill DAGs branch on these literals. Every
+value below is a **stable contract** — the drift test at
+`tests/test_trace_wire_vocabulary.py` fails if this doc goes out of
+step with the source constants in `safeyolo.core.trace` and each addon's
+`OUTCOME_*`.
+
+### Trace states (`safeyolo.core.trace.STATE_*`)
+
+| Literal | Meaning |
+|---|---|
+| `evaluated` | Addon's hook ran and reported an outcome. |
+| `bypassed` | Addon's hook was reached but short-circuited without evaluating (see `reason`). |
+| `error` | Addon's hook raised. `reason` is the exception type name. |
+| `not_loaded` | Addon expected but never ran for this request. Synthesised at read time from `EXPECTED_ADDONS` diff. |
+
+### Bypass / error reasons (`safeyolo.core.trace.REASON_*`)
+
+| Literal | Meaning |
+|---|---|
+| `prior_response` | An earlier addon already set `flow.response`; this addon deferred. |
+| `policy_disabled` | `PolicyClient.is_addon_enabled()` returned False for this scope. |
+| `addon_disabled` | mitmproxy option turned the addon off globally. |
+| `probe_sink_failed` | Reserved-probe request-hook failsafe caught a missing/inert sink BEFORE transport was attempted. Client received a correlated 5xx with `X-SafeYolo-Request-Id`. |
+| `probe_reached_upstream` | Reserved-probe `server_connect` structural backstop fired — transport was attempted and refused. Audit-only diagnostic; client saw mitmproxy's generic protocol error (no correlated response — the request-hook failsafe was also absent). |
+
+### Per-addon outcomes
+
+Each addon publishes its own `OUTCOME_*` constants at the top of its
+module. Only trace-participating addons appear here (defined by
+`safeyolo.core.trace.EXPECTED_ADDONS` plus `probe-sink`).
+
+**credential-guard** (`OUTCOME_*` in `mitm_addons/credential_guard.py`):
+| Literal | Meaning |
+|---|---|
+| `no_detection` | Scanned headers; no credentials matched. |
+| `detected` | One or more credentials matched; `details.detection_count` gives the count. |
+
+**pattern-scanner** (`OUTCOME_*` in `mitm_addons/pattern_scanner.py`):
+| Literal | Meaning |
+|---|---|
+| `no_rules` | No scan rules configured. |
+| `no_match` | Rules present; no match against request/response content. |
+| `match_logged` | Rule matched in warn-only mode; logged not blocked. |
+| `match_blocked` | Rule matched and produced a block. |
+
+**network-guard** (`OUTCOME_*` in `mitm_addons/network_guard.py`):
+| Literal | Meaning |
+|---|---|
+| `allowed` | PDP returned ALLOW for this destination. |
+
+**circuit-breaker** (`OUTCOME_*` in `mitm_addons/circuit_breaker.py`):
+| Literal | Meaning |
+|---|---|
+| `allowed` | Circuit closed; request passed the pre-request check. |
+| `excluded_domain` | Destination in the addon's exclusion list. |
+| `success_recorded` | Response hook recorded a 2xx (or <4xx) success against the circuit. |
+| `failure_recorded` | Response hook recorded a 5xx or 429 failure against the circuit. |
+| `status_no_action` | Response hook saw a 4xx (non-429); circuit state unchanged. |
+| `prior_block` | Response hook saw a `blocked_by` flow (an earlier SafeYolo response). |
+
+**test-context** (`OUTCOME_*` in `mitm_addons/test_context.py`):
+| Literal | Meaning |
+|---|---|
+| `allowed` | Valid context header present and applied. |
+| `not_target_host` | Host not in `test_context.target_hosts` and no context header — nothing to enforce. |
+| `response_recorded` | Response hook captured a completed context flow's response event. |
+| `not_applicable` | Response hook ran but no `ccapt_context` was set for this flow. |
+
+**service-gateway** (`OUTCOME_*` in `mitm_addons/service_gateway.py`):
+| Literal | Meaning |
+|---|---|
+| `not_a_gateway_request` | Request had no `sgw_` token — passed through. |
+| `injected` | Gateway credential injection succeeded. |
+| `not_a_gateway_response` | Response hook saw a flow without `gateway_grant_id`. |
+| `grant_consumed` | Once-grant fired on a 2xx response. |
+| `grant_retained` | Gateway flow but grant not consumed (non-2xx or scope != once). |
+
+**probe-sink** (`OUTCOME_*` in `mitm_addons/probe_sink.py`):
+| Literal | Meaning |
+|---|---|
+| `probe_terminated` | Sink synthesised the local 200 for the doctor pipeline-probe host. |
+| `probe_preempted` | Earlier addon responded first for a probe flow; sink recorded but did not overwrite. |
+
+### `/trace` response shape
+
+```json
+{
+  "request_id": "req-<32hex>",
+  "agent_id": "<caller-agent>",
+  "created_at": <epoch-seconds>,
+  "truncated": false,
+  "steps": [
+    {"addon": "network-guard", "hook": "request", "state": "evaluated",
+     "outcome": "allowed", "duration_us": 340},
+    ...
+  ],
+  "not_loaded": [
+    {"addon": "credential-guard", "state": "not_loaded"}
+  ]
+}
+```
+
+`truncated=true` means the per-record step cap was hit — an unusual
+condition on a well-behaved request (the doctor probe should never
+truncate). Treat as `fail` for automated diagnostics.
+
+Agent scope: `/trace` is filtered to the caller's own trace records.
+A foreign or unknown `request_id` returns `404` with the same body as
+"no such trace" — the shape cannot be used as an existence oracle for
+another agent's traces.
+
+### `/explain` response shape
+
+```json
+{
+  "request_id": "req-<32hex>",
+  "status": "complete" | "pending" | "incomplete_search" | "error",
+  "events": [ /* audit event objects */ ],
+  "searched_lines_per_file": 10000   // only present when status=incomplete_search
+}
+```
+
+Status precedence:
+
+| Literal | Meaning | Retry? |
+|---|---|---|
+| `complete` | Retained set fully scanned. `events` is authoritative. | No |
+| `pending` | Writer still has queued/mid-flush events after the bounded drain. | Yes, briefly |
+| `incomplete_search` | Retention bound was hit while scanning. Events outside the window may exist. | Only if you can bound the time window differently |
+| `error` | File read or parse failure. Result is unreliable. | Investigate via `safeyolo logs` |
+
 
 ## Flow inspection
 

@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "addons"))
 # Canonical sanitize_for_log lives in audit_schema.
 from safeyolo.core.audit_schema import sanitize_for_log as _sanitize_for_log
 from safeyolo.core.identifiers import validate_task_id
+from safeyolo.core.probe import PROBE_ALLOW_REASON_CODE, is_probe_host
 from safeyolo.policy.engine import PolicyDecision as LegacyDecision
 from safeyolo.policy.engine import PolicyEngine, UnifiedPolicy
 
@@ -174,6 +175,27 @@ class PDPCore:
         safe_path = _sanitize_for_log(event.http.path)
         cred_flag = "+cred" if event.credential.detected else ""
         log.debug(f"Evaluate {safe_method} {safe_host}{safe_path}{cred_flag}")
+
+        # Intrinsic system reservation (issue #213 PR B): the pipeline-probe
+        # destination is always allowed by the PDP, below any user policy.
+        # This runs before user rules, budgets, approvals, credential/gateway
+        # checks — so `deny "*"`, an exhausted budget, or a hostile task
+        # policy cannot defeat doctor. network_guard still constructed the
+        # HttpEvent and called this method, so its trace step records
+        # `evaluated/allowed` naturally (no addon-level special-casing).
+        if is_probe_host(event.http.host):
+            return PolicyDecision(
+                version=1,
+                event=DecisionEventBlock(
+                    event_id=event_id,
+                    policy_hash=policy_hash,
+                    engine_version=ENGINE_VERSION,
+                ),
+                effect=Effect.ALLOW,
+                reason="Internal pipeline probe (system-reserved)",
+                reason_codes=[PROBE_ALLOW_REASON_CODE],
+                checks=ChecksBlock(required=[]),
+            )
 
         # Load task policy if specified
         if event.context and event.context.task_id:

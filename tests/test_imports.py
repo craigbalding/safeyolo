@@ -33,6 +33,7 @@ ADDON_MODULES = [
     "pattern_scanner",
     "pid_writer",
     "policy_engine",
+    "probe_sink",
     "request_id",
     "request_logger",
     "service_discovery",
@@ -40,6 +41,7 @@ ADDON_MODULES = [
     "sse_streaming",
     "test_context",
     "traffic_scope",
+    "transport_guard",
 ]
 
 # Names that must be importable after the addon loads standalone.

@@ -90,6 +90,20 @@ class FlowRecorder:
             return False
         if self.store is None:
             return False
+        # Skip doctor pipeline-probe flows (issue #213 B4). Doctor sends a
+        # valid X-Test-Context so test_context runs its normal parse/apply
+        # path — that would satisfy the ccapt_context gate below and pull
+        # every doctor run into FlowStore as evidence. The early marker
+        # (set by probe_sink's requestheaders BEFORE test_context runs)
+        # short-circuits before ccapt_context is even considered, so
+        # suppression works whether the flow eventually reaches the sink
+        # or gets synthetically blocked by a pathological pre-sink addon.
+        # Strict `is True` (not truthiness) — the contract is a boolean
+        # marker set by probe_sink; an accidental truthy value in a
+        # collision-adjacent metadata key must not silently suppress
+        # non-probe flows (issue #213 review, second-pass cleanup).
+        if flow.metadata.get("safeyolo_probe") is True:
+            return False
         # Must have test context (set by test_context.py for valid headers)
         if "ccapt_context" not in flow.metadata:
             return False
