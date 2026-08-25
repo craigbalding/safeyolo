@@ -20,14 +20,18 @@ Design rules:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import platform as _platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import typer
 from rich.console import Console
@@ -83,12 +87,146 @@ LINUX_BUILD_APT_DEPS = (
     "skopeo", "umoci", "mmdebstrap", "debootstrap", "acl", "jq", "rsync", "tmux",
 )
 
+# umoci is intentionally NOT in dnf / apk / pacman: it doesn't ship in the
+# default Fedora / RHEL / Alpine main / Arch core repos. `_ensure_umoci()`
+# handles it explicitly (PATH → SafeYolo bin dir → pinned upstream download)
+# so operators on those distros aren't forced into COPR / testing repo /
+# AUR to make `safeyolo build` work.
 LINUX_BUILD_DEPS = {
     "apt":    LINUX_BUILD_APT_DEPS,
-    "dnf":    ("skopeo", "umoci", "debootstrap", "acl", "jq", "rsync", "tmux"),
-    "apk":    ("skopeo", "umoci", "debootstrap", "acl", "jq", "rsync", "tmux"),
-    "pacman": ("skopeo", "umoci", "debootstrap", "acl", "jq", "rsync", "tmux"),
+    "dnf":    ("skopeo", "debootstrap", "acl", "jq", "rsync", "tmux"),
+    "apk":    ("skopeo", "debootstrap", "acl", "jq", "rsync", "tmux"),
+    "pacman": ("skopeo", "debootstrap", "acl", "jq", "rsync", "tmux"),
 }
+
+# Pinned upstream umoci for hosts whose package manager doesn't have it.
+# Update by fetching the latest release + sha256sum file from
+# https://github.com/opencontainers/umoci/releases (both amd64 and arm64
+# rows). Never install without verifying the sha256.
+_UMOCI_VERSION = "v0.6.0"
+_UMOCI_SHA256 = {
+    "amd64": "b51c267ec394499e42c6fde47f240b7b7dba57ea49df0b5acd304378b82a3b71",
+    "arm64": "5cfd17f2e7a4bcf9ed67ea1b955ca893d200349b9ce6a3d3707dba415f458a1f",
+}
+# Package managers whose native repos ship a usable umoci. Anywhere else
+# falls through to the pinned-binary download.
+_UMOCI_NATIVE_PACKAGE_MANAGERS = frozenset({"apt"})
+
+
+def _safeyolo_bin_dir() -> Path:
+    """SafeYolo-managed bin dir: ~/.safeyolo/bin/ (init/lifecycle already
+    ensure it exists)."""
+    return get_config_dir() / "bin"
+
+
+def _prepend_safeyolo_bin_to_path() -> None:
+    """Make ``~/.safeyolo/bin/`` the first PATH entry for this process and
+    any child subprocesses (``safeyolo build``, rootfs scripts, …). Cheap
+    and idempotent — if the dir is already the first entry, no-op."""
+    sy_bin = str(_safeyolo_bin_dir())
+    current = os.environ.get("PATH", "")
+    parts = current.split(os.pathsep) if current else []
+    if parts and parts[0] == sy_bin:
+        return
+    parts = [sy_bin] + [p for p in parts if p != sy_bin]
+    os.environ["PATH"] = os.pathsep.join(parts)
+
+
+def _umoci_host_arch() -> str | None:
+    """Map the current `platform.machine()` to an umoci asset arch key, or
+    None if we don't ship a pinned binary for it."""
+    m = _platform.machine().lower()
+    if m in ("x86_64", "amd64"):
+        return "amd64"
+    if m in ("aarch64", "arm64"):
+        return "arm64"
+    return None
+
+
+def _ensure_umoci(pm: str | None) -> dict:
+    """Resolve umoci for `safeyolo build` per the algorithm:
+
+    1. If ``umoci`` is on PATH → use it (nothing to do).
+    2. Elif ``~/.safeyolo/bin/umoci`` exists+executable → use it (add the
+       dir to PATH for child processes; nothing to install).
+    3. Elif the distro's package manager ships a usable umoci
+       (``_UMOCI_NATIVE_PACKAGE_MANAGERS``) → return ``needs_native``;
+       ``_missing_deps()`` will surface it as a normal dep and the
+       operator installs via their package manager.
+    4. Else → download the pinned upstream binary, verify sha256, install
+       to ``~/.safeyolo/bin/umoci``.
+
+    Returns a small dict for the JSON payload:
+      ``{"state": "on_path"|"safeyolo_bin"|"needs_native"|"installed"|"unsupported_arch",
+         "path": "<resolved path or empty>",
+         "version": "<pinned or empty>",
+         "reason": "<optional detail>"}``
+
+    Never invoked on non-Linux hosts.
+    """
+    # (1) already on PATH — do nothing
+    on_path = shutil.which("umoci")
+    if on_path:
+        return {"state": "on_path", "path": on_path, "version": ""}
+
+    # (2) SafeYolo-managed bin dir
+    safeyolo_umoci = _safeyolo_bin_dir() / "umoci"
+    if safeyolo_umoci.exists() and os.access(safeyolo_umoci, os.X_OK):
+        return {"state": "safeyolo_bin", "path": str(safeyolo_umoci), "version": _UMOCI_VERSION}
+
+    # (3) apt ships a native umoci — let the operator install via package manager
+    if pm in _UMOCI_NATIVE_PACKAGE_MANAGERS:
+        return {"state": "needs_native", "path": "", "version": ""}
+
+    # (4) download pinned upstream binary
+    arch = _umoci_host_arch()
+    if arch is None:
+        return {
+            "state": "unsupported_arch",
+            "path": "",
+            "version": _UMOCI_VERSION,
+            "reason": f"no pinned umoci for {_platform.machine()!r}",
+        }
+
+    url = (
+        "https://github.com/opencontainers/umoci/releases/download/"
+        f"{_UMOCI_VERSION}/umoci.linux.{arch}"
+    )
+    expected_sha = _UMOCI_SHA256[arch]
+
+    dest_dir = _safeyolo_bin_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        # NOTE: not piping curl-to-shell — we download to a temp file, verify
+        # sha256, then os.replace() into place. That's the only safe pattern
+        # for pinned binaries.
+        with tempfile.NamedTemporaryFile(
+            "wb", dir=dest_dir, prefix=".umoci.", suffix=".partial", delete=False,
+        ) as tmp:
+            with urlopen(url) as resp:  # noqa: S310 (trusted-vendor URL, pinned checksum)
+                shutil.copyfileobj(resp, tmp)
+            tmp_path = Path(tmp.name)
+    except URLError as e:
+        return {
+            "state": "download_failed",
+            "path": "",
+            "version": _UMOCI_VERSION,
+            "reason": f"could not fetch {url}: {e}",
+        }
+
+    got_sha = hashlib.sha256(tmp_path.read_bytes()).hexdigest()
+    if got_sha != expected_sha:
+        tmp_path.unlink(missing_ok=True)
+        return {
+            "state": "sha_mismatch",
+            "path": "",
+            "version": _UMOCI_VERSION,
+            "reason": f"expected {expected_sha}, got {got_sha}",
+        }
+
+    tmp_path.chmod(0o755)
+    os.replace(tmp_path, safeyolo_umoci)
+    return {"state": "installed", "path": str(safeyolo_umoci), "version": _UMOCI_VERSION}
 
 
 def _detect_package_manager() -> str | None:
@@ -140,11 +278,13 @@ def _install_command(pm: str, missing: list[str]) -> str:
     if pm == "apk":
         return f"sudo apk add {pkgs}"
     if pm == "pacman":
-        # umoci + debootstrap are typically AUR on Arch; flag it so the
-        # operator knows why a plain `pacman -S` won't cover everything.
+        # debootstrap is in AUR on Arch; flag it so the operator knows
+        # why a plain `pacman -S` won't cover it. (umoci is not in this
+        # list at all — `_ensure_umoci()` handles it via the pinned
+        # upstream binary.)
         return (
             f"sudo pacman -S --needed {pkgs}"
-            "   # NOTE: umoci and debootstrap are AUR — install via your AUR helper"
+            "   # NOTE: debootstrap is AUR — install via your AUR helper"
         )
     return f"# unknown package manager; install: {pkgs}"
 
@@ -255,6 +395,33 @@ def bootstrap(  # DOC: README.md
     # populated only when the detected manager is apt, empty otherwise.
     missing_apt_deps = missing_deps if package_manager == "apt" else []
 
+    # umoci is resolved separately from the package-manager preflight
+    # because dnf / apk / pacman don't ship it in their default repos.
+    # `_ensure_umoci()` implements the operator-supplied algorithm:
+    # PATH → SafeYolo bin dir → native package if the manager has one →
+    # pinned upstream binary. On --check we probe without side effects
+    # (so no download happens during check); on the real run we invoke
+    # the resolver eagerly before build so umoci is on PATH when
+    # `safeyolo build` starts.
+    umoci_state: dict = {"state": "skipped", "path": "", "version": ""}
+    if _platform.system() == "Linux":
+        _prepend_safeyolo_bin_to_path()
+        if check:
+            # Non-side-effecting probe: report whether we'd need to
+            # download, but do NOT download.
+            on_path = shutil.which("umoci")
+            sy_bin = _safeyolo_bin_dir() / "umoci"
+            if on_path:
+                umoci_state = {"state": "on_path", "path": on_path, "version": ""}
+            elif sy_bin.exists() and os.access(sy_bin, os.X_OK):
+                umoci_state = {"state": "safeyolo_bin", "path": str(sy_bin), "version": _UMOCI_VERSION}
+            elif package_manager in _UMOCI_NATIVE_PACKAGE_MANAGERS:
+                umoci_state = {"state": "needs_native", "path": "", "version": ""}
+            else:
+                umoci_state = {"state": "would_download", "path": str(sy_bin), "version": _UMOCI_VERSION}
+        else:
+            umoci_state = _ensure_umoci(package_manager)
+
     if check:
         result = {
             "check": True,
@@ -266,6 +433,7 @@ def bootstrap(  # DOC: README.md
                 _install_command(package_manager, missing_deps)
                 if missing_deps and package_manager else None
             ),
+            "umoci": umoci_state,
             "missing_apt_deps": missing_apt_deps,
         }
         if json_out:
@@ -278,6 +446,13 @@ def bootstrap(  # DOC: README.md
                 console.print(
                     f"  [red]blocked on missing deps ({package_manager}):[/red] {missing_deps}"
                 )
+            if umoci_state["state"] == "would_download":
+                console.print(
+                    f"  [yellow]umoci:[/yellow] would download pinned "
+                    f"{umoci_state['version']} → {umoci_state['path']}"
+                )
+            elif umoci_state["state"] in ("on_path", "safeyolo_bin"):
+                console.print(f"  [green]umoci:[/green] {umoci_state['state']} ({umoci_state['path']})")
         needs_work = bool(result["would_run"]) or bool(missing_deps)
         raise typer.Exit(1 if needs_work else 0)
 
@@ -293,6 +468,7 @@ def bootstrap(  # DOC: README.md
                 "missing_deps": missing_deps,
                 "install_command": _install_command(package_manager or "unknown", missing_deps),
                 "missing_apt_deps": missing_apt_deps,
+                "umoci": umoci_state,
                 "steps_run": [],
                 "steps_skipped": [k for k, v in plan.items() if not v],
                 "duration_ms": int((time.monotonic() - t0) * 1000),
@@ -373,6 +549,7 @@ def bootstrap(  # DOC: README.md
         "package_manager": package_manager,
         "missing_deps": missing_deps,
         "missing_apt_deps": missing_apt_deps,
+        "umoci": umoci_state,
         "duration_ms": duration_ms,
     }
 
