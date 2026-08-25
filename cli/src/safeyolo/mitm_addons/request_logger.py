@@ -280,6 +280,9 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
 
         if blocked_by:
             resp_details["blocked_by"] = blocked_by
+            block_reason = flow.metadata.get("block_reason")
+            if block_reason:
+                resp_details["block_reason"] = block_reason
             fingerprint = flow.metadata.get("credential_fingerprint")
             if fingerprint:
                 resp_details["credential_fingerprint"] = fingerprint
