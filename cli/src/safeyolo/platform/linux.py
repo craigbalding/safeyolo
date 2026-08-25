@@ -271,6 +271,9 @@ def detect_runsc_platform() -> dict:
       kvm_exists: bool
       kvm_operator_access: bool
       kvm_subordinate_access: bool
+      kvm_group: str  (group name owning /dev/kvm, or "" / gid str if unresolved)
+      kvm_group_has_rw: bool  (group bits on /dev/kvm include rw)
+      operator_in_kvm_group: bool  (current process is in the owning group)
       reason: human-readable explanation
     """
     info: dict = {
@@ -278,11 +281,31 @@ def detect_runsc_platform() -> dict:
         "kvm_exists": os.path.exists("/dev/kvm"),
         "kvm_operator_access": False,
         "kvm_subordinate_access": False,
+        "kvm_group": "",
+        "kvm_group_has_rw": False,
+        "operator_in_kvm_group": False,
         "reason": "",
     }
     if not info["kvm_exists"]:
         info["reason"] = "/dev/kvm not found"
         return info
+
+    # Group/mode facts are useful for targeted remediation even when the
+    # operator does have rw access, so capture them unconditionally.
+    try:
+        st = os.stat("/dev/kvm")
+        info["kvm_group_has_rw"] = bool(
+            st.st_mode & stat.S_IRGRP and st.st_mode & stat.S_IWGRP
+        )
+        try:
+            import grp
+            info["kvm_group"] = grp.getgrgid(st.st_gid).gr_name
+        except KeyError:
+            info["kvm_group"] = str(st.st_gid)
+        info["operator_in_kvm_group"] = st.st_gid in os.getgroups() or st.st_gid == os.getgid()
+    except OSError:
+        pass
+
     info["kvm_operator_access"] = os.access("/dev/kvm", os.R_OK | os.W_OK)
     if not info["kvm_operator_access"]:
         info["reason"] = "/dev/kvm exists but operator lacks rw access"
