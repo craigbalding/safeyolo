@@ -31,7 +31,7 @@ Same blackbox tests: verify the security contract regardless of mechanism.
 - Used in production by Google Cloud Run, DigitalOcean, GKE Sandbox
 - Google's Kubernetes Agent Sandbox project chose gVisor specifically
   for AI agent isolation
-- Single binary (`runsc`), no Docker daemon required
+- Single binary (`runsc`), no daemon required
 - 7 CVEs since inception, none in the interception mechanism
 
 ## Architecture
@@ -401,9 +401,8 @@ unchanged. They test outcomes, not mechanisms.
   and hardware isolation is desired; systrap fallback needs no ACL)
 
 **Not required:**
-- Docker / containerd / podman
+- Any container runtime or daemon (safeyolo drives `runsc` directly)
 - KVM / nested virtualization (used when available; systrap otherwise)
-- Any daemon process
 - Sudo at agent-run time (setup is the only sudo step, and it's
   one-time per host)
 

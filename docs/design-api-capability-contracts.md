@@ -299,6 +299,6 @@ SafeYolo ships a pre-trained model for common email content classes. Operators c
 
 5. **Escape hatch.** What happens when a legitimate use case doesn't fit the capability model? The operator needs a way to say "I trust this agent with full access to this service" without SafeYolo fighting them.
 
-6. **Model distribution.** How are pre-trained classification models distributed with SafeYolo? Baked into the Docker image (adds ~40MB)? Downloaded on first use? Configurable?
+6. **Model distribution.** How are pre-trained classification models distributed with SafeYolo? Bundled with the CLI (adds ~40MB)? Downloaded on first use? Configurable?
 
 7. **Operator override for classifications.** If the classifier blocks a message the agent legitimately needs, can the operator override? What does that UX look like in watch?

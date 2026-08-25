@@ -52,9 +52,6 @@ known_bad = "lists/stevenblack-hosts.txt"
 # ── Package registries (expanded from $package_registries list) ──
 "$package_registries" = { rate = 1_200 }
 
-# ── Local ─────────────────────────────────────────────────────
-"host.docker.internal" = { rate = 12_000 }
-
 # ── Known bad hosts (StevenBlack/hosts — malware + adware) ───
 "$known_bad"          = { egress = "deny" }
 

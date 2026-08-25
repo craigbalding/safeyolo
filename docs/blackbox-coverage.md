@@ -87,9 +87,8 @@ agent API. If a proxy restart regenerates the token but the
 sandbox still holds the old value, the agent gets 401 on every
 diagnostic call — breaking `safeyolo explain`, credential
 approval UX, and any other observability feature the agent
-exposes to itself. In the Docker stack this worked via bind-mount;
-the microVM migration introduced a copy step that is the common
-regression point.
+exposes to itself. Token- and UDS-inode refresh across a proxy
+restart is the common regression point this test catches.
 
 - **`test_agent_api_survives_proxy_restart`** — Agent API stays reachable from the sandbox across proxy restart.
   - *Probe:* Verify agent API /health returns 200 from inside the
@@ -940,11 +939,12 @@ The trust store must be read-only to uid 1000.
 
 #### TestSyscallSeccompEquivalents — Dangerous syscalls (keyring, pivot_root, unshare, ptrace) are blocked or contained.
 
-**Threat:** Docker's default seccomp profile drops ~44 syscalls that
-are rarely legitimate and historically exploited — kernel
-keyring injection (CVE-2017-6074), pivot_root filesystem
-escape, user-namespace creation as escalation vehicle, ptrace
-process introspection. Blackbox checks confirm the same
+**Threat:** A conservative container seccomp baseline drops ~44
+syscalls that are rarely legitimate and historically exploited
+— kernel keyring injection (CVE-2017-6074), pivot_root
+filesystem escape, user-namespace creation as escalation
+vehicle, ptrace process introspection. Blackbox checks confirm
+the same
 exposures are closed on the current runtime (gVisor or VZ).
 
 - **`test_keyctl_blocked`** — keyctl(2) returns -1 with non-zero errno.
@@ -952,14 +952,14 @@ exposures are closed on the current runtime (gVisor or VZ).
 args; assert ret == -1 and errno != 0.
   - *Consequence if unasserted:* The kernel keyring is a shared store across processes.
 CVE-2017-6074 and several related issues exploited keyctl
-to escalate privileges. Blocked in Docker's default seccomp
-for exactly this reason.
+to escalate privileges — a standard target of conservative
+container seccomp profiles.
 - **`test_add_key_blocked`** — add_key(2) returns -1 with non-zero errno.
   - *Probe:* Call SYS_add_key with zero args; assert ret == -1 and
 errno != 0.
   - *Consequence if unasserted:* Companion to keyctl — adds keys to the kernel keyring.
-Same privilege-escalation exposure. Blocked in Docker's
-default seccomp.
+Same privilege-escalation exposure; a conservative container
+seccomp baseline drops both.
 - **`test_pivot_root_blocked`** — pivot_root(2) returns -1 with non-zero errno.
   - *Probe:* Call SYS_pivot_root with zero args; assert ret == -1
 and errno != 0.
@@ -982,5 +982,5 @@ escape, not the syscall.
 ret == -1 and errno != 0.
   - *Consequence if unasserted:* Attaching to init lets the agent read memory (keys,
 tokens) from the most privileged process in the sandbox
-and potentially inject code. Docker drops ptrace entirely
-in its default seccomp.
+and potentially inject code. Conservative container seccomp
+baselines drop ptrace entirely.

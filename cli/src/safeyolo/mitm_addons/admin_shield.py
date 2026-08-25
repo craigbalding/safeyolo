@@ -49,9 +49,10 @@ class AdminShield:  # DOC: SECURITY.md
 
         return ports
 
+    # Local/loopback hostnames the admin API might be reached through when
+    # the agent misroutes under the current gVisor+microVM architecture.
     _LOCAL_HOSTS = frozenset({
         "localhost", "127.0.0.1", "::1", "0.0.0.0",
-        "host.docker.internal", "safeyolo",
     })
 
     def _is_local(self, host: str) -> bool:

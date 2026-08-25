@@ -6,32 +6,23 @@ This guide is for developers who want to contribute to SafeYolo, build integrati
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     SafeYolo System                          │
-├─────────────────────────────────────────────────────────────┤
+│                     HOST (trusted)                            │
 │                                                              │
-│  Host Side                       Container Side              │
-│  ──────────                      ──────────────              │
-│                                                              │
-│  ┌──────────────┐               ┌──────────────────────┐    │
-│  │ safeyolo CLI │               │ mitmproxy + addons   │    │
-│  │  (Python)    │◄──────────────│                      │    │
-│  │              │  Admin API    │ credential_guard.py  │    │
-│  │  - init      │  :9090        │ policy_engine.py     │    │
-│  │  - start     │               │ admin_api.py         │    │
-│  │  - watch     │◄──────────────│ ...                  │    │
-│  │  - logs      │  JSONL logs   │                      │    │
-│  └──────────────┘               └──────────────────────┘    │
-│         │                                │                   │
-│         │                                │                   │
-│         ▼                                ▼                   │
-│  ┌───────────────┐              ┌──────────────────────┐    │
-│  │ ./safeyolo/   │              │ Proxy :8080          │    │
-│  │  config.yaml  │              │                      │    │
-│  │  policy.toml│              │ Intercepts HTTP      │    │
-│  │  policies/    │              │ from AI agents       │    │
-│  │  logs/        │              │                      │    │
-│  └───────────────┘              └──────────────────────┘    │
-│                                                              │
+│  ┌──────────────┐        ┌──────────────────────────────┐   │
+│  │ safeyolo CLI │───────▶│ mitmproxy (host process)     │   │
+│  │  (Typer)     │  admin │   + addons (credential-guard,│   │
+│  │  init/start/ │  :9090 │     policy_engine, agent_api,│   │
+│  │  watch/logs  │◀───────│     network_guard, ...)      │   │
+│  └──────┬───────┘  JSONL └──────────────┬───────────────┘   │
+│         │                               │ per-agent UDS      │
+│         ▼                               ▼                    │
+│  ┌───────────────┐          ┌───────────────────────────┐   │
+│  │ ~/.safeyolo/  │          │ Agent sandbox VMs         │   │
+│  │  config.yaml  │          │  macOS: Virtualization.fw │   │
+│  │  policy.toml  │          │  Linux: rootless gVisor   │   │
+│  │  addons.yaml  │          │  (no external network —   │   │
+│  │  logs/        │          │   UDS is the only egress) │   │
+│  └───────────────┘          └───────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -47,7 +38,7 @@ This guide is for developers who want to contribute to SafeYolo, build integrati
 
 ```
 safeyolo/
-├── addons/                   # mitmproxy addons (sensors, run in container)
+├── addons/                   # mitmproxy addons (sensors, run in host proxy)
 │   ├── detection/            # Pure detection logic (no mitmproxy deps)
 │   │   ├── patterns.py       # PatternRule, compile_rules, scan_text
 │   │   ├── credentials.py    # CredentialRule, analyze_headers, entropy
@@ -86,9 +77,10 @@ safeyolo/
 │   │   ├── cli.py            # Typer app entry point
 │   │   ├── config.py         # Configuration loading
 │   │   ├── api.py            # Admin API client
-│   │   ├── docker.py         # Container management
+│   │   ├── proxy.py          # Host mitmproxy lifecycle
+│   │   ├── vm.py             # Sandbox VM lifecycle (macOS / Linux)
 │   │   └── commands/         # CLI command modules
-│   │       ├── admin.py      # check, mode, policies, test
+│   │       ├── admin.py      # check, mode, policies
 │   │       ├── agent.py      # agent subcommands
 │   │       ├── cert.py       # certificate management
 │   │       ├── doctor.py     # 11-check diagnostic cascade
@@ -414,19 +406,11 @@ app.command()(mycommand)
 
 ## Testing
 
-**Run tests in container (recommended):**
-```bash
-# All tests (unit + integration)
-pytest tests/ -v
-
-# Integration tests only (requires running proxy)
-pytest tests/test_http_integration.py -v
-```
-
-**Run tests locally:**
+**Run tests:**
 ```bash
 uv sync --group dev
-uv run pytest tests/ -v  # Unit tests pass; integration tests need running proxy
+uv run pytest tests/ -v          # unit + integration; integration needs running proxy
+uv run pytest tests/test_http_integration.py -v   # integration only
 ```
 
 **Run CLI tests:**

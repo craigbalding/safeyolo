@@ -42,8 +42,9 @@ PROXY_HOST = os.environ.get("PROXY_HOST", "localhost")
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "8080"))
 ADMIN_HOST = os.environ.get("ADMIN_HOST", "localhost")
 ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "9090"))
-# When proxy runs in Docker, test server on host needs different hostname
-# Set TEST_SERVER_HOST=host.docker.internal when running against containerized proxy
+# When the tests run against a remote proxy over the network, this env
+# var tells the local upstream server which hostname to advertise so the
+# proxy can reach it. Default (empty) uses loopback.
 TEST_SERVER_HOST = os.environ.get("TEST_SERVER_HOST", "")
 
 # Load admin token from env or disk
@@ -193,7 +194,8 @@ class UpstreamServer:
     """Local HTTP server that runs in a background thread for integration tests."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 0):
-        # When TEST_SERVER_HOST is set, bind to 0.0.0.0 so Docker can reach us
+        # When TEST_SERVER_HOST is set (containerized/remote proxy), bind
+        # to 0.0.0.0 so the proxy can reach us across the network boundary.
         self.bind_host = "0.0.0.0" if TEST_SERVER_HOST else host
         # URL host is TEST_SERVER_HOST if set, otherwise the bind host
         self.url_host = TEST_SERVER_HOST or host

@@ -89,8 +89,8 @@ def _check_config_dir() -> DiagResult:
     )
 
 
-def _check_docker() -> DiagResult:
-    """Check if proxy is running (replaces Docker check)."""
+def _check_proxy_process() -> DiagResult:
+    """Check if the host mitmproxy process is running."""
     if not is_proxy_running():
         return DiagResult(
             name="Proxy running",
@@ -183,7 +183,7 @@ def _check_admin_api() -> DiagResult:
             name="Admin API",
             status="fail",
             message=f"Cannot connect to localhost:{admin_port}",
-            remediation="Check: docker logs safeyolo",
+            remediation="Check: safeyolo logs --tail 50",
         )
     # Try a health check
     from ..config import get_admin_token
@@ -1521,7 +1521,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
     checks_funcs.extend(
         [
             ("Guest images", _check_guest_images),
-            ("Proxy running", _check_docker),
+            ("Proxy running", _check_proxy_process),
             ("Admin API", _check_admin_api),
             ("Addon loading", _check_addon_loading),
             ("Pipeline probe", _check_pipeline_probe),
@@ -1636,22 +1636,6 @@ def _print_results(
 
 def _build_bundle(results: list[DiagResult]) -> dict:
     """Build JSON diagnostic bundle."""
-    # Get docker version
-    docker_version = "unknown"
-    try:
-        result = subprocess.run(
-            ["docker", "version", "--format", "{{.Server.Version}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            docker_version = result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        # Docker may not be installed or accessible; retain the initialized
-        # "unknown" value in the diagnostic bundle.
-        docker_version = "unknown"
-
     import platform
 
     counts = {"pass": 0, "fail": 0, "warn": 0, "skip": 0}
@@ -1669,7 +1653,6 @@ def _build_bundle(results: list[DiagResult]) -> dict:
         "summary": counts,
         "crash_traceback": crash_tb,
         "system": {
-            "docker_version": docker_version,
             "platform": platform.platform(),
         },
     }

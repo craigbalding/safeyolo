@@ -35,28 +35,16 @@ Unit and integration tests for native mitmproxy addons.
 
 ## Running Tests
 
-### Option 1: Docker (recommended)
-
-mitmproxy has complex native dependencies (aioquic, bpf-linker for eBPF).
-Easiest to run tests in the mitmproxy Docker image:
+Use `uv` (the same tool the CLI ships with):
 
 ```bash
-# From safeyolo/ directory
-docker run --rm -v $(pwd):/app -w /app \
-  mitmproxy/mitmproxy \
-  pip install pytest && pytest tests/ -v
+uv sync --group dev
+uv run pytest tests/ -v
 ```
 
-### Option 2: Local Install
-
-Requires:
-- C compiler (for aioquic crypto)
-- Rust + bpf-linker (for mitmproxy-linux eBPF)
-
-```bash
-pip install mitmproxy pytest
-pytest tests/ -v
-```
+Requires a C compiler (for aioquic crypto) and, on Linux, Rust +
+bpf-linker if you build mitmproxy's eBPF extras from source. `uv sync`
+handles the rest.
 
 ## Test Coverage
 

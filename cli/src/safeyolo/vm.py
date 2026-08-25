@@ -1,7 +1,8 @@
 """MicroVM lifecycle management for SafeYolo.
 
-Replaces Docker container management with Apple Virtualization.framework
-microVMs via the safeyolo-vm Swift helper binary.
+Drives agent sandboxes: Apple Virtualization.framework microVMs on
+macOS via the ``safeyolo-vm`` Swift helper binary, rootless gVisor
+(``runsc``) on Linux.
 """
 
 import json
@@ -984,10 +985,10 @@ def prepare_config_share(
         net_env += f"AGENT_IP={attribution_ip}\n"
     (share_dir / "network.env").write_text(net_env)
 
-    # Agent name → guest hostname. Read by guest-init-static which calls
-    # `hostname <name>` and writes /etc/hostname. Agents in the Docker
-    # era inherited container name as hostname automatically; the
-    # VM-based stack needs to set it explicitly.
+    # Agent name → guest hostname. Read by guest-init-static, which
+    # calls `hostname <name>` and writes /etc/hostname. Setting it here
+    # ensures /etc/hosts, sudo, prompt, and sshd all identify the guest
+    # correctly.
     (share_dir / "agent-name").write_text(name)
 
     # CA certificate

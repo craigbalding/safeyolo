@@ -1191,11 +1191,12 @@ class TestFilesystemBoundary:
 class TestSyscallSeccompEquivalents:
     """Dangerous syscalls (keyring, pivot_root, unshare, ptrace) are blocked or contained.
 
-    Why: Docker's default seccomp profile drops ~44 syscalls that
-    are rarely legitimate and historically exploited — kernel
-    keyring injection (CVE-2017-6074), pivot_root filesystem
-    escape, user-namespace creation as escalation vehicle, ptrace
-    process introspection. Blackbox checks confirm the same
+    Why: A conservative container seccomp baseline drops ~44
+    syscalls that are rarely legitimate and historically exploited
+    — kernel keyring injection (CVE-2017-6074), pivot_root
+    filesystem escape, user-namespace creation as escalation
+    vehicle, ptrace process introspection. Blackbox checks confirm
+    the same
     exposures are closed on the current runtime (gVisor or VZ).
     """
 
@@ -1228,8 +1229,8 @@ class TestSyscallSeccompEquivalents:
         args; assert ret == -1 and errno != 0.
         Why: The kernel keyring is a shared store across processes.
         CVE-2017-6074 and several related issues exploited keyctl
-        to escalate privileges. Blocked in Docker's default seccomp
-        for exactly this reason.
+        to escalate privileges — a standard target of conservative
+        container seccomp profiles.
         """
         # SYS_keyctl: x86_64=250, aarch64=217
         num = self._syscall_num({"x86_64": 250, "aarch64": 217})
@@ -1242,8 +1243,8 @@ class TestSyscallSeccompEquivalents:
         What: Call SYS_add_key with zero args; assert ret == -1 and
         errno != 0.
         Why: Companion to keyctl — adds keys to the kernel keyring.
-        Same privilege-escalation exposure. Blocked in Docker's
-        default seccomp.
+        Same privilege-escalation exposure; a conservative container
+        seccomp baseline drops both.
         """
         # SYS_add_key: x86_64=248, aarch64=217 (note: keyctl and add_key
         # share a range; keep them separate)
@@ -1329,8 +1330,8 @@ class TestSyscallSeccompEquivalents:
         ret == -1 and errno != 0.
         Why: Attaching to init lets the agent read memory (keys,
         tokens) from the most privileged process in the sandbox
-        and potentially inject code. Docker drops ptrace entirely
-        in its default seccomp.
+        and potentially inject code. Conservative container seccomp
+        baselines drop ptrace entirely.
         """
         # SYS_ptrace: x86_64=101, aarch64=117
         num = self._syscall_num({"x86_64": 101, "aarch64": 117})

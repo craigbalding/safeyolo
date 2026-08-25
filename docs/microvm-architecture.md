@@ -116,7 +116,7 @@ UNTRUSTED: Guest VM
 
   If the guest unsets HTTP_PROXY → no path out (no external interface)
   If the guest opens a raw socket → no interface to bind to
-  VM boundary is hardware virtualisation (stronger than Docker namespaces)
+  VM boundary is hardware virtualisation (stronger than kernel-shared containers)
 ```
 
 ## Guest Image
@@ -162,4 +162,4 @@ The `service_discovery` addon reads this file (mtime-cached) to resolve the attr
 1. **macOS only** (Apple Silicon) for the microVM path. Linux runs gVisor containers via `runsc`; see `docs/linux-port-design.md`.
 2. **Non-HTTP traffic has no path at all.** There is no external interface; raw TCP/UDP have no kernel route out of the guest.
 3. **No guest snapshots by default** (though `--snapshot` is a beta flag on `agent run`). Corrupted rootfs → re-create agent.
-4. **Guest image build requires Lima on macOS** (for cross-compilation). Runtime has no Docker or Lima dependency.
+4. **Guest image build requires Lima on macOS** (for cross-compilation). Runtime itself has no Lima dependency.

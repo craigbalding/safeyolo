@@ -112,9 +112,9 @@ clients:
       network_guard:
         enabled: false
 
-  # Unknown principals (source IP not resolved via Docker DNS)
+  # Unknown principals (source IP not mapped to a registered agent).
   # This happens when:
-  #   - A request came from an IP that Docker DNS can't reverse-resolve
+  #   - The client IP is not in the per-agent attribution range
   #   - An external IP somehow reached the proxy
   # Policy: Allow with logging - don't break things, but make it visible
   "unknown":

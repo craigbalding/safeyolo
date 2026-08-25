@@ -41,9 +41,6 @@ hosts:
   proxy.golang.org:    { rate_limit: 300 }
   sum.golang.org:      { rate_limit: 300 }
 
-  # ── Local ─────────────────────────────────────────────────────
-  host.docker.internal: { rate_limit: 12000 }
-
   # ── Domain overrides ──────────────────────────────────────────
   "*.internal":        { bypass: [pattern_scanner] }
 

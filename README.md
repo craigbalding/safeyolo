@@ -273,7 +273,7 @@ Run `safeyolo setup` to check and apply one-time prerequisites, then `safeyolo d
 
 ## Status
 
-SafeYolo is **pre-v1**. The current sandbox design — hardware-backed microVMs on macOS, rootless gVisor on Linux — replaces the earlier Docker-based implementation; the container-era code is preserved on the [`docker`](https://github.com/craigbalding/safeyolo/tree/docker) branch for reference.
+SafeYolo is **pre-v1**. Sandbox runtime is hardware-backed microVMs on macOS and rootless gVisor on Linux.
 
 ## Documentation
 

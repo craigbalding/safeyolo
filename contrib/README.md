@@ -17,7 +17,6 @@ Example integrations. Copy and adapt for your own use.
 | `alpine-minimal/build-alpine-rootfs.sh` | Minimal custom rootfs example -- Alpine Linux via skopeo+umoci+apk |
 | `kali-pentest/build-kali-rootfs.sh` | Kali Linux pentest toolkit rootfs (nuclei, httpx, ffuf, sqlmap, ...) |
 | `kali-pentest/pentest-tools.md` | Tool reference for the Kali rootfs -- usage, proxy integration notes |
-| `claude-code-chokepoint/` | Claude Code in enforced chokepoint mode |
 | `monitors/` | Log monitoring and visualization tools |
 | `notifiers/` | Push notifications via ntfy with optional approval buttons |
 

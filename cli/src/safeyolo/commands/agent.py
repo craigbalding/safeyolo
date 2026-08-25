@@ -87,10 +87,7 @@ def _check_project_ownership(project_path: Path, allow_unowned: bool) -> None:
 
 
 def _get_service_name(instance_name: str) -> str:
-    """Get service name for an instance.
-
-    Service name equals instance name (used in docker-compose).
-    """
+    """Return the service name for an instance (identity mapping)."""
     return instance_name
 
 
