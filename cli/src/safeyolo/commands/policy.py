@@ -120,6 +120,53 @@ def _fetch_compiled_policy(raw: dict, policy_path: Path) -> dict:
         return _compile_locally(raw, policy_path)
 
 
+def assert_policy_has_permissions(config_dir: Path) -> None:
+    """Refuse to proceed if the compiled policy has no permissions (#336).
+
+    Guards `safeyolo agent add` and `safeyolo start` against the failure mode
+    where init never completed (or wrote a policy without host rules): the
+    config dir exists so `find_config_dir()` returns truthy, `agent add`
+    succeeds, but every request from the new agent falls through
+    `network_guard`'s fail-closed 403 path.
+
+    Uses local compilation only. The proxy isn't necessarily running at this
+    point (agent add can precede proxy start on a fresh install), so we can't
+    ask the live PDP.
+
+    Prints a targeted diagnostic and raises typer.Exit(1) on empty
+    permissions or a compile failure. Returns silently on success.
+    """
+    policy_path = _find_policy_path(config_dir)
+    if not policy_path:
+        console.print(f"[red]Error:[/red] Policy file not found in {config_dir}")
+        console.print("Run [bold]safeyolo init[/bold] to create a policy.")
+        raise typer.Exit(1)
+
+    try:
+        raw, _ = _load_policy_file(config_dir)
+        merged = _merge_siblings(raw, policy_path)
+        compiled = _compile_locally(merged, policy_path)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error:[/red] Policy failed to compile: {e}")
+        console.print("Run [bold]safeyolo init --force[/bold] to reseed from the template.")
+        raise typer.Exit(1) from e
+
+    permissions = compiled.get("permissions", []) if isinstance(compiled, dict) else []
+    if not permissions:
+        console.print(
+            f"[red]Error:[/red] Policy at {policy_path} compiles to zero permissions."
+        )
+        console.print(
+            "Every request from a new agent would fall through the fail-closed 403 path "
+            "in [bold]network_guard[/bold]."
+        )
+        console.print("Reseed the policy from the shipped template:")
+        console.print("  [bold]safeyolo init --force[/bold]")
+        raise typer.Exit(1)
+
+
 def _compile_locally(raw: dict, policy_path: Path) -> dict:
     """Compile policy locally (fallback when proxy isn't running)."""
     import sys
