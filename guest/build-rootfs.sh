@@ -100,12 +100,25 @@ command_x skopeo || {
 }
 command_x umoci || {
     echo "Error: umoci not installed." >&2
-    echo "  Debian/Ubuntu: sudo apt-get install umoci" >&2
-    echo "  Fedora:        sudo dnf install umoci" >&2
-    echo "  Arch:          yay -S umoci (or pacman -S umoci if in repos)" >&2
-    echo "  Alpine:        apk add umoci" >&2
+    echo "  Debian/Ubuntu:                sudo apt-get install umoci" >&2
+    echo "  Fedora / Alpine / Arch:       run 'safeyolo bootstrap' — it installs" >&2
+    echo "                                a pinned upstream umoci to ~/.safeyolo/bin/" >&2
+    echo "                                (umoci is not in default dnf/apk/pacman repos)" >&2
     exit 1
 }
+# Resolve umoci to an absolute path once. sudo resets PATH to secure_path
+# (typically /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin), so
+# `sudo umoci` fails when umoci lives in ~/.safeyolo/bin/ or any other
+# non-secure_path location. Passing the absolute path to sudo bypasses
+# secure_path resolution.
+UMOCI=$(command -v umoci)
+if [ -z "$UMOCI" ]; then
+    # command_x found umoci under /usr/sbin or /sbin — probe those.
+    for dir in /usr/local/sbin /usr/sbin /sbin; do
+        [ -x "$dir/umoci" ] && { UMOCI="$dir/umoci"; break; }
+    done
+fi
+[ -n "$UMOCI" ] || { echo "Error: umoci passed command_x but not resolvable to an absolute path" >&2; exit 1; }
 command_x mkfs.ext4 || {
     echo "Error: mkfs.ext4 not installed (apt-get install e2fsprogs)." >&2
     exit 1
@@ -206,7 +219,7 @@ cleanup_workdir() {
 trap cleanup_workdir EXIT
 
 echo "=== Unpacking OCI image ==="
-sudo umoci unpack --image "$OCI_CACHE:$OCI_REF" "$WORK_DIR/bundle"
+sudo "$UMOCI" unpack --image "$OCI_CACHE:$OCI_REF" "$WORK_DIR/bundle"
 ROOTFS="$WORK_DIR/rootfs"
 sudo mv "$WORK_DIR/bundle/rootfs" "$ROOTFS"
 

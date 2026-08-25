@@ -611,34 +611,51 @@ class ServiceGateway:
                     )
                     return
 
-        # Refuse to inject credentials over plaintext HTTP — redirect to HTTPS
+        # Refuse to inject credentials over plaintext HTTP — redirect to HTTPS.
+        # Exception: service definition explicitly opted in via auth.allow_http
+        # (operator-vouched trusted transport, e.g. tailnet / WireGuard).
         if flow.request.scheme == "http":  # DOC: SECURITY.md
-            https_url = "https://" + flow.request.url[len("http://") :]
-            flow.response = http.Response.make(
-                301,
-                b"",
-                {
-                    "Location": https_url,
-                    "X-SafeYolo-Reason": "credential-injection-requires-https",
-                },
-            )
-            log.warning(
-                f"Blocked credential injection over HTTP, redirecting to HTTPS: "
-                f"{sanitize_for_log(flow.request.host)}{sanitize_for_log(path)}"
-            )
+            allow_http = bool(service.auth and service.auth.allow_http)
+            if not allow_http:
+                https_url = "https://" + flow.request.url[len("http://") :]
+                flow.response = http.Response.make(
+                    301,
+                    b"",
+                    {
+                        "Location": https_url,
+                        "X-SafeYolo-Reason": "credential-injection-requires-https",
+                    },
+                )
+                log.warning(
+                    f"Blocked credential injection over HTTP, redirecting to HTTPS: "
+                    f"{sanitize_for_log(flow.request.host)}{sanitize_for_log(path)}"
+                )
+                write_event(
+                    "gateway.https_redirect",
+                    kind=EventKind.GATEWAY,
+                    severity=Severity.HIGH,
+                    summary=f"Gateway redirected HTTP→HTTPS: {service.name}{path}",
+                    decision=Decision.DENY,
+                    host=flow.request.host,
+                    request_id=flow.metadata.get("request_id"),
+                    agent=binding.agent,
+                    addon=self.name,
+                    details={"service": service.name, "path": path, "redirect": https_url},
+                )
+                return
+            # allow_http path — log so operator sees the injection over HTTP happened
             write_event(
-                "gateway.https_redirect",
+                "gateway.http_injection_allowed",
                 kind=EventKind.GATEWAY,
-                severity=Severity.HIGH,
-                summary=f"Gateway redirected HTTP→HTTPS: {service.name}{path}",
-                decision=Decision.DENY,
+                severity=Severity.MEDIUM,
+                summary=f"Gateway injected over HTTP (allow_http): {service.name}{path}",
+                decision=Decision.ALLOW,
                 host=flow.request.host,
                 request_id=flow.metadata.get("request_id"),
                 agent=binding.agent,
                 addon=self.name,
-                details={"service": service.name, "path": path, "redirect": https_url},
+                details={"service": service.name, "path": path},
             )
-            return
 
         # Strip sgw_ token and inject real credential (same header)
         auth_header = service.auth.header if service.auth else "Authorization"  # DOC: SECURITY.md
