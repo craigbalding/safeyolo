@@ -22,7 +22,7 @@ Works with Claude Code, OpenAI Codex, or whatever agent you want to run.
 Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patterns informed by [Shuru](https://github.com/superhq-ai/shuru/).
 
 > [!NOTE]
-> **SafeYolo is pre-v1.** The install below is deliberately step-by-step so you can see exactly what gets built on your machine. A one-command installer lands with v1.
+> **SafeYolo is pre-v1.** Distribution via PyPI / brew is on the roadmap; today the install is a `git clone` + four short commands. See "Install from source" further down if you want to run the individual `init`/`build`/`setup` steps by hand.
 
 ## Quick Start
 
@@ -30,91 +30,46 @@ Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patt
 
 - macOS with Apple Silicon (M1+) **or** Linux (x86_64/arm64)
 - Python 3.12 or 3.13
-- [uv](https://docs.astral.sh/uv/) — the Python package/project manager SafeYolo uses for the editable install. Grab it with your distro's package manager, or follow the upstream install instructions; either works.
-- macOS only: [Lima](https://lima-vm.io/) for the guest image build. Any of `brew install lima`, `sudo port install lima`, or `mise use -g lima` is fine.
-- Linux only: [gVisor (`runsc`)](https://gvisor.dev/) as the VM runtime. On apt-based hosts, `safeyolo setup` installs it from gVisor's signed repository; other distributions must install it first using the upstream instructions.
+- [uv](https://docs.astral.sh/uv/) — the Python package/project manager SafeYolo uses. Grab it from your distro's package manager or the upstream installer.
+- macOS only: [Lima](https://lima-vm.io/) for the guest image build (`brew install lima`, `sudo port install lima`, or `mise use -g lima`).
+- Linux (apt-based): `safeyolo bootstrap` installs gVisor `runsc`, `uidmap`, `acl`, and other build prereqs via apt. On non-apt distros install gVisor first per its [upstream instructions](https://gvisor.dev/).
 
-### Build
+### Install
 
 ```bash
 git clone https://github.com/craigbalding/safeyolo.git
 cd safeyolo
-
-# Build the guest VM image. On Linux only the rootfs is produced (gVisor
-# supplies its own kernel); ~4-6 min. On macOS the driver auto-shells into a
-# Lima VM and additionally builds the kernel + initramfs for Apple
-# Virtualization.framework; ~10 min first time.
-#
-# See guest/README.md for platform-specific setup notes. On Linux you'll
-# also need `BUILD_KERNEL=1 ./build-all.sh` if you're producing artifacts for
-# a macOS consumer from a Linux box.
-#   Linux build prerequisite: sudo apt-get install skopeo umoci e2fsprogs curl
-cd guest && ./build-all.sh && cd ..
-mkdir -p ~/.safeyolo/share && sudo cp -a guest/out/* ~/.safeyolo/share/
-
-# Install SafeYolo onto your PATH (survives shell restarts). Requires `uv`.
-# ./install.sh wraps `uv tool install --editable .` and passes the security
-# pins mitmproxy hasn't cut a release for yet (see pyproject `[tool.uv]`).
 ./install.sh
+safeyolo bootstrap
 ```
 
-`./install.sh` puts `safeyolo` in `~/.local/bin/safeyolo`. Make sure that directory is on your `PATH` (uv will tell you if it isn't). To pick up upstream changes later, run `./install.sh reinstall`.
+`./install.sh` puts `safeyolo` on your `PATH` at `~/.local/bin/safeyolo`.
+`safeyolo bootstrap` runs first-time setup (config init, guest image build, host prereqs). Idempotent — safe to re-run.
 
-**Then, one platform-specific step:**
+If a Linux build prerequisite is missing, `bootstrap` prints the single `sudo apt-get install ...` line you need and exits so you decide when to sudo. Machine-parseable output via `safeyolo bootstrap --json` for CI / harness use.
 
-_macOS_ — build the Swift VM helper and its guest-side companion binaries:
+_macOS only_ — one additional step to build the Swift VM helper:
 
 ```bash
 cd vm && make install && cd ..
 ```
 
-_Linux (apt-based)_ — no separate step. `safeyolo setup` below installs gVisor (`runsc`), `uidmap`, and `acl` when they are missing. The `vm/` directory is macOS-only and is not used here.
-
-For a non-apt Linux distribution, install gVisor using its upstream instructions before running `safeyolo setup`. The equivalent apt commands are:
+### Run your first agent
 
 ```bash
-curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list
-sudo apt-get update && sudo apt-get install -y runsc
+safeyolo agent add work ~/code --host-script @claude
+safeyolo agent run work
 ```
 
-If the `uv tool install` above didn't end up with `mitmdump` available in SafeYolo's tool environment, fall back to pipx with the addon dependencies injected:
+`~/code` is your project directory, mounted read-write into the sandbox. `@claude` is a bundled host-script alias that stages Claude Code inside the guest. Other bundled aliases: `@codex` (OpenAI Codex CLI), `@mise-shell` (interactive shell with mise). Paths still work — pass any executable script if you have your own.
 
-```bash
-./scripts/install-mitmproxy-pipx.sh
-```
-
-This script pipx-installs `mitmproxy` and injects the exact set of addon deps SafeYolo needs into that environment.
-
-### Run
-
-```bash
-# One-time config bootstrap — writes ~/.safeyolo/policy.toml (the baseline
-# policy), addons.yaml, an admin token, and the certs/data/lists directories.
-safeyolo init
-
-# Check and apply any host-level prerequisites (Linux: gVisor, uidmap, acl,
-# AppArmor profile for user namespaces, /dev/kvm udev rule for hardware isolation).
-# Safe to re-run; idempotent. No effect on macOS.
-safeyolo setup
-
-# Start the proxy
-safeyolo start
-
-# Optional: persistently publish the authenticated WebMITM UI to your tailnet
-safeyolo proxy web share --tailnet
-
-# Run Claude Code in an isolated sandbox
-safeyolo agent add myproject ~/code --host-script contrib/claude-host-setup.sh
-```
-
-The last argument (`~/code`) is your project directory — mounted read-write into the sandbox (VirtioFS on macOS, bind mount on Linux). The agent runs in an isolated Linux sandbox where:
+Inside the sandbox:
 
 - **All traffic routes through SafeYolo proxy** — the sandbox has no external network interface; the only path out is through the proxy
 - **API keys are protected** — credentials only reach their intended hosts
 - **Everything is logged** — JSONL audit trail for review
 - **Dev-ready VMs** — agents install toolchains via mise, state persists across restarts
-- **Linux agents run rootless** — `safeyolo agent run` is zero-sudo; setup applies a one-time AppArmor profile and a KVM udev rule so ongoing operation needs no elevated privileges
+- **Linux agents run rootless** — `safeyolo agent run` is zero-sudo; `bootstrap` applies a one-time AppArmor profile and a KVM udev rule so ongoing operation needs no elevated privileges
 
 ### Verify isolation
 
@@ -132,10 +87,40 @@ curl --noproxy '*' https://ifconfig.co
 ### Health check
 
 ```bash
-safeyolo doctor
+safeyolo doctor              # rich console
+safeyolo doctor --raw        # no color / no wrap (grep-friendly)
+safeyolo doctor --json | jq  # machine-parseable single JSON object
 ```
 
-On Linux this reports the sandbox runtime (runsc version), isolation platform (KVM vs systrap and why), user-namespace prerequisites (newuidmap, subuid, AppArmor profile), the guest image, and any running agents. On macOS it confirms Apple Silicon + the safeyolo-vm helper.
+On Linux this reports the sandbox runtime (runsc version), isolation platform (KVM vs systrap and why), user-namespace prerequisites (newuidmap, subuid, AppArmor profile), the guest image, and any running agents. On macOS it confirms Apple Silicon + the safeyolo-vm helper. Exits non-zero on any failed check.
+
+### Install from source (advanced)
+
+`safeyolo bootstrap` above wraps three separate commands (`safeyolo init`, `safeyolo build`, `safeyolo setup`). If you want to run them individually — for example to peek at exactly what each does — the sequence is:
+
+```bash
+# Linux only: install build prereqs up front (bootstrap prints the list for you;
+# doing it manually here means bootstrap has nothing left to name).
+sudo apt-get install -y skopeo umoci mmdebstrap debootstrap acl jq curl
+
+./install.sh        # or: uv tool install --editable . --overrides <(printf '%s\n' \
+                    #      'flask>=3.1.3' 'pygments>=2.20.0' 'cryptography>=50.0.0' \
+                    #      'msgpack>=1.2.1' 'pyopenssl>=26.0.0' 'tornado>=6.5.5')
+
+safeyolo init       # writes ~/.safeyolo/{policy.toml, addons.yaml, tokens, ...}
+safeyolo build      # builds + installs the guest rootfs into ~/.safeyolo/share/
+safeyolo setup      # applies AppArmor profile + /dev/kvm ACL (Linux; sudo prompt)
+```
+
+End-state is identical to `./install.sh && safeyolo bootstrap`. Also useful when troubleshooting: any individual command can be re-run in isolation; each is idempotent.
+
+If `mitmdump` ends up missing from SafeYolo's tool environment (rare), fall back to pipx:
+
+```bash
+./scripts/install-mitmproxy-pipx.sh
+```
+
+That pipx-installs `mitmproxy` and injects the exact addon-deps SafeYolo needs.
 
 ## How It Works
 
