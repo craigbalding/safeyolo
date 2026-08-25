@@ -7,6 +7,7 @@ import socket
 import sqlite3
 import ssl
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1378,7 +1379,7 @@ def _check_guest_images() -> DiagResult:
 
     if not check_guest_images():
         missing = missing_guest_images()
-        remediation = "cd guest && ./build-all.sh"
+        remediation = "safeyolo bootstrap"
         if "rootfs-erofs" in missing:
             # Spell out the most common root cause so doctor users don't
             # rediscover it at agent-add time.
@@ -1568,9 +1569,35 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
     return results
 
 
-def _print_results(results: list[DiagResult], verbose: bool = False) -> None:
-    """Print diagnostic results to terminal using Rich."""
-    console.print("\n[bold]SafeYolo Doctor[/bold]\n")
+def _print_results(
+    results: list[DiagResult],
+    verbose: bool = False,
+    raw: bool = False,
+) -> None:
+    """Print diagnostic results to terminal using Rich.
+
+    `raw=True` disables color + soft-wrap and forces a wide virtual width so
+    that individual check lines don't get truncated / wrapped mid-token when
+    grep'd on narrow terminals or piped through non-tty consumers.
+    """
+    if raw:
+        # Fresh console with no color / no wrap; wide virtual width keeps
+        # long lines intact regardless of $COLUMNS. Bypasses the module-level
+        # `console` which was captured at import with the operator's terminal.
+        # `color_system=None` disables *all* ANSI including bold/dim — needed
+        # so FORCE_COLOR / CI environments don't reintroduce codes that break
+        # downstream greppers.
+        out = Console(
+            color_system=None,
+            force_terminal=False,
+            soft_wrap=False,
+            width=10_000,
+            highlight=False,
+        )
+    else:
+        out = console
+
+    out.print("\n[bold]SafeYolo Doctor[/bold]\n")
 
     status_icons = {
         "pass": "[green] PASS [/green]",
@@ -1581,19 +1608,19 @@ def _print_results(results: list[DiagResult], verbose: bool = False) -> None:
 
     for result in results:
         icon = status_icons.get(result.status, "[dim]  ?   [/dim]")
-        console.print(f"  {icon} {result.name}: {result.message}")
+        out.print(f"  {icon} {result.name}: {result.message}")
         if result.detail and (verbose or result.status in ("fail", "warn")):
             for line in result.detail.split("\n")[:5]:
-                console.print(f"           {line}")
+                out.print(f"           {line}")
         if result.remediation and result.status in ("fail", "warn"):
-            console.print(f"           Fix: [bold]{result.remediation}[/bold]")
+            out.print(f"           Fix: [bold]{result.remediation}[/bold]")
 
     # Summary
     counts = {"pass": 0, "fail": 0, "warn": 0, "skip": 0}
     for result in results:
         counts[result.status] = counts.get(result.status, 0) + 1
 
-    console.print()
+    out.print()
     parts = []
     if counts["pass"]:
         parts.append(f"[green]{counts['pass']} pass[/green]")
@@ -1603,8 +1630,8 @@ def _print_results(results: list[DiagResult], verbose: bool = False) -> None:
         parts.append(f"[yellow]{counts['warn']} warn[/yellow]")
     if counts["skip"]:
         parts.append(f"[dim]{counts['skip']} skip[/dim]")
-    console.print(f"  Summary: {', '.join(parts)}")
-    console.print()
+    out.print(f"  Summary: {', '.join(parts)}")
+    out.print()
 
 
 def _build_bundle(results: list[DiagResult]) -> dict:
@@ -1669,7 +1696,16 @@ def _attempt_fix(results: list[DiagResult]) -> list[str]:
 
 
 def doctor(
-    json_output: bool = typer.Option(False, "--json", help="Write JSON diagnostic bundle"),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit diagnostic bundle as a single JSON object on stdout (suppresses rich console).",
+    ),
+    raw: bool = typer.Option(
+        False,
+        "--raw",
+        help="Human output without color / soft-wrap. Wide virtual width so lines survive grep on narrow terminals.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed output"),
     fix: bool = typer.Option(False, "--fix", help="Attempt safe auto-remediation"),
 ) -> None:
@@ -1680,39 +1716,39 @@ def doctor(
 
     Examples:
 
-        safeyolo doctor              # Run diagnostics
-        safeyolo doctor --json       # Write JSON bundle for agents
+        safeyolo doctor              # Rich console output
+        safeyolo doctor --json       # Single JSON object on stdout for CI / agents
+        safeyolo doctor --raw        # Plain text, no color / wrap (grep-friendly)
         safeyolo doctor --fix        # Attempt auto-remediation
         safeyolo doctor -v           # Verbose output
     """
+    if json_output and fix:
+        # --fix is interactive-ish; mixing with --json would corrupt the JSON stream.
+        raise typer.BadParameter("--fix cannot be combined with --json")
+
     results = _run_checks(verbose=verbose)
 
-    _print_results(results, verbose=verbose)
-
-    if fix:
-        actions = _attempt_fix(results)
-        if actions:
-            console.print("[bold]Actions taken:[/bold]")
-            for action in actions:
-                console.print(f"  - {action}")
-            # Re-run checks after fix
-            console.print("\n[bold]Re-checking...[/bold]")
-            results = _run_checks(verbose=verbose)
-            _print_results(results, verbose=verbose)
-        else:
-            console.print("[dim]No auto-fixable issues found.[/dim]")
-
     if json_output:
+        # Pure JSON on stdout. No rich, no timestamped file dump.
         bundle = _build_bundle(results)
-        # Write to ~/.safeyolo/
-        data_dir = get_data_dir()
-        data_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        bundle_path = data_dir / f"doctor_{ts}.json"
-        with open(bundle_path, "w") as fh:
-            json.dump(bundle, fh, indent=2)
-        console.print(f"[dim]Bundle written to {bundle_path}[/dim]")
+        json.dump(bundle, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    else:
+        _print_results(results, verbose=verbose, raw=raw)
 
-    # Exit with error code if any checks failed
+        if fix:
+            actions = _attempt_fix(results)
+            if actions:
+                console.print("[bold]Actions taken:[/bold]")
+                for action in actions:
+                    console.print(f"  - {action}")
+                # Re-run checks after fix
+                console.print("\n[bold]Re-checking...[/bold]")
+                results = _run_checks(verbose=verbose)
+                _print_results(results, verbose=verbose, raw=raw)
+            else:
+                console.print("[dim]No auto-fixable issues found.[/dim]")
+
+    # Exit with error code if any checks failed. Same rule for both output modes.
     if any(r.status == "fail" for r in results):
         raise typer.Exit(1)

@@ -760,7 +760,12 @@ class TestDoctorCLI:
         assert "PASS" in result.output or "FAIL" in result.output
 
     def test_doctor_json(self, cli_runner, tmp_config_dir, monkeypatch):
-        """Test --json flag writes bundle file."""
+        """--json emits the diagnostic bundle as a single JSON object on stdout.
+
+        Previous semantics wrote a timestamped file under ~/.safeyolo/data/;
+        now it streams to stdout so `safeyolo doctor --json | jq ...` works.
+        Exit code preserved (1 on any fail).
+        """
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
         mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
         monkeypatch.setattr("subprocess.run", mock_run)
@@ -768,15 +773,44 @@ class TestDoctorCLI:
         from safeyolo.cli import app
 
         result = cli_runner.invoke(app, ["doctor", "--json"])
-        assert "Bundle written to" in result.output
 
-        # Verify the bundle file was created
-        data_dir = tmp_config_dir / "data"
-        json_files = list(data_dir.glob("doctor_*.json"))
-        assert len(json_files) == 1
-        bundle = json.loads(json_files[0].read_text())
+        # Stdout must be pure JSON (no rich prefix like "SafeYolo Doctor")
+        assert "SafeYolo Doctor" not in result.output
+        bundle = json.loads(result.output)
         assert "checks" in bundle
         assert "summary" in bundle
+        assert isinstance(bundle["checks"], list)
+        assert set(bundle["summary"].keys()) == {"pass", "fail", "warn", "skip"}
+
+        # Exit code = 1 whenever any check failed (this fixture forces failures).
+        if bundle["summary"]["fail"] > 0:
+            assert result.exit_code == 1
+
+    def test_doctor_raw(self, cli_runner, tmp_config_dir, monkeypatch):
+        """--raw emits human output with no color / no wrap; long tokens survive."""
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        from safeyolo.cli import app
+
+        result = cli_runner.invoke(app, ["doctor", "--raw"])
+        assert "SafeYolo Doctor" in result.output
+        # No ANSI escape sequences in --raw output.
+        assert "\x1b[" not in result.output
+
+    def test_doctor_json_fix_incompatible(self, cli_runner, tmp_config_dir, monkeypatch):
+        """--json + --fix is refused (fix output would corrupt the JSON stream)."""
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+
+        from safeyolo.cli import app
+
+        result = cli_runner.invoke(app, ["doctor", "--json", "--fix"])
+        assert result.exit_code != 0
+        # Assert on a distinctive phrase that survives rich's ANSI colouring
+        # (typer's BadParameter renderer wraps individual flag names in
+        # `\x1b[...m` sequences, so `"--fix" in result.output` breaks on CI).
+        assert "cannot be combined" in result.output
 
 
 class TestCheckEgressStructural:
