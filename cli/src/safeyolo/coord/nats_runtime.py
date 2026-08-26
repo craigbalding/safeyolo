@@ -27,6 +27,20 @@ Diagnostics:
 
 Not wired into `safeyolo start/stop` yet; the lifecycle module lives
 independently so its hardening can be reviewed on its own.
+
+Recorded runtime hardening deferred to future commits (per reviewer
+round 2 close-out — real, not dismissed):
+    - Log rotation: `nats/log/nats-server.log` is append-only. A busy
+      or misbehaving server will grow it unbounded. Add size cap +
+      rename (or logrotate friendliness) once the message-layer commit
+      generates real traffic patterns.
+    - Config TOCTOU: an attacker who can write to nats_root between
+      write_config() and Popen could swap the config. Window is
+      microseconds; mitigated by 0600/0700 modes; not blocking stage 1
+      because SafeYolo agents cannot write the host-side NATS dir.
+    - Credential-path symlink: 0700 dir + non-root operation cover the
+      normal case; O_NOFOLLOW on the write path would harden if
+      SafeYolo ever ran as root.
 """
 
 from __future__ import annotations
@@ -50,17 +64,30 @@ from pathlib import Path
 
 from .identity import coord_data_dir
 
-# Pinned. Bump requires updating _NATS_CHECKSUMS for every supported
-# platform tuple. Never trust an operator-installed nats-server or a
-# system package: SafeYolo owns the binary.
+# Pinned. Bump requires updating BOTH checksum maps below for every
+# supported platform tuple. Never trust an operator-installed nats-server
+# or a system package: SafeYolo owns the binary.
 NATS_VERSION = "2.14.5"
 
-# SHA256 of the EXTRACTED `nats-server` binary (not the .tar.gz archive).
-# Verified against the pinned value on every ensure_binary() call —
-# on-disk re-verification catches tampering with the binary between runs,
-# not just corruption at download time. Values obtained by downloading
-# and extracting each release tarball manually.
-_NATS_CHECKSUMS: dict[str, str] = {
+# SHA256 of the upstream release tarball
+# (nats-server-v<VERSION>-<PLATFORM>.tar.gz on the GitHub Releases page).
+# These are the digests that GitHub publishes; anyone can independently
+# verify SafeYolo's pin against upstream artefacts. Checked BEFORE the
+# tar parser touches the archive (defense against a malicious download
+# handed to tarfile.open with a modified SHA that we never verified).
+_NATS_ARCHIVE_SHA256: dict[str, str] = {
+    "linux-amd64":  "5e3b603d47c447bda1f77f9ac16dbf91c90aac4ff3681f8fbbc7201e4ed99355",
+    "linux-arm64":  "673a98d3faa79dde3f9ebf16d6dfac36a5f694e7ad2015e4954dd7939c85cd4c",
+    "darwin-amd64": "f95c98d6b6ed2b63c5681b46b092c9585c99767d547cf495730c329234625e96",
+    "darwin-arm64": "ddd907854d9a2de834af133fa396915fe6442fe6d8909ae31390d1ea7a0fea50",
+}
+
+# SHA256 of the EXTRACTED `nats-server` binary. Verified on every
+# ensure_binary() call — on-disk re-verification catches tampering
+# between runs (an attacker who wrote to nats/bin/<version>/nats-server
+# before SafeYolo's first start_server must not gain execution simply
+# because the file exists + is executable).
+_NATS_BINARY_SHA256: dict[str, str] = {
     "linux-amd64":  "e1a2f9ba25077f4cf753bee829483bd68fbf0a4eec9b6645a1e5785a6de0c0d1",
     "linux-arm64":  "ebccb25ba4f364dd8878630f1985d8b24d9e0a6e35aa4d8e1a7ecab38c881419",
     "darwin-amd64": "5df71e798cab833b99514f42d65123bcbd60ef64673b4c543bfd00e6482a22a7",
@@ -106,9 +133,12 @@ def _platform_key() -> str:
 
 
 def _secure_mkdir(path: Path) -> Path:
+    """Create a security-sensitive directory at mode 0700. Fails LOUDLY
+    if we cannot enforce the mode — silently continuing with whatever
+    permissions were previously in place would leave NATS data / config
+    world-readable on a mis-configured host."""
     path.mkdir(parents=True, exist_ok=True)
-    with contextlib.suppress(OSError):
-        path.chmod(_SECURE_DIR_MODE)
+    path.chmod(_SECURE_DIR_MODE)
     return path
 
 
@@ -163,13 +193,23 @@ def _download_url() -> str:
     )
 
 
-def _expected_checksum() -> str:
+def _expected_archive_sha256() -> str:
     key = _platform_key()
     try:
-        return _NATS_CHECKSUMS[key]
+        return _NATS_ARCHIVE_SHA256[key]
     except KeyError as e:
         raise RuntimeError(
-            f"no pinned checksum for platform {key!r} — nats-server v{NATS_VERSION}"
+            f"no pinned archive checksum for platform {key!r} — nats-server v{NATS_VERSION}"
+        ) from e
+
+
+def _expected_binary_sha256() -> str:
+    key = _platform_key()
+    try:
+        return _NATS_BINARY_SHA256[key]
+    except KeyError as e:
+        raise RuntimeError(
+            f"no pinned binary checksum for platform {key!r} — nats-server v{NATS_VERSION}"
         ) from e
 
 
@@ -186,27 +226,32 @@ def ensure_binary() -> Path:
     present at the version-scoped path. Returns the executable path.
     Idempotent.
 
-    ALWAYS re-verifies SHA256 against the pinned checksum, even if a
-    binary already exists at the versioned path. An attacker who wrote
-    to `nats/bin/<version>/nats-server` before SafeYolo's first
-    ensure_binary() call must not gain execution just because the file
-    exists and is executable (adversarial test class:
-    TestBinaryChecksumOnExisting).
+    Two-tier verification (reviewer round 2, point 3):
+      - `_NATS_ARCHIVE_SHA256` is verified BEFORE the tar parser touches
+        the download. This is the digest GitHub publishes for the release
+        tarball, so an operator can independently audit our pin against
+        upstream.
+      - `_NATS_BINARY_SHA256` is verified on every call — the extracted
+        binary's digest, checked whether we just downloaded it or found
+        an existing file at the versioned path. Catches on-disk tampering
+        (adversarial test class: TestBinaryChecksumOnExisting).
     """
     binary = nats_binary_path()
-    expected = _expected_checksum()
+    binary_expected = _expected_binary_sha256()
+
     if binary.exists() and os.access(binary, os.X_OK):
         actual = _sha256_of(binary)
-        if actual == expected:
+        if actual == binary_expected:
             return binary
         raise RuntimeError(
             f"nats-server binary at {binary} has SHA256 {actual}, "
-            f"expected {expected}. Refusing to run — delete the file "
+            f"expected {binary_expected}. Refusing to run — delete the file "
             f"to trigger a fresh verified download."
         )
 
     _secure_mkdir(nats_bin_dir())
     url = _download_url()
+    archive_expected = _expected_archive_sha256()
 
     with tempfile.NamedTemporaryFile(
         suffix=".tar.gz", dir=nats_bin_dir(), delete=False
@@ -215,6 +260,18 @@ def ensure_binary() -> Path:
     try:
         with urllib.request.urlopen(url) as resp:
             shutil.copyfileobj(resp, tmp_path.open("wb"))
+
+        # ARCHIVE verify BEFORE tar parsing — a modified download must
+        # not reach tarfile.open (which is the parser we'd rather not
+        # feed attacker-controlled data to).
+        archive_actual = _sha256_of(tmp_path)
+        if archive_actual != archive_expected:
+            raise RuntimeError(
+                f"nats-server archive checksum mismatch for {_platform_key()}: "
+                f"expected {archive_expected}, got {archive_actual}. "
+                f"Refusing to parse the archive."
+            )
+
         with tarfile.open(tmp_path, "r:gz") as tar:
             for member in tar.getmembers():
                 # Restrict to regular files (symlinks named `nats-server`
@@ -230,15 +287,16 @@ def ensure_binary() -> Path:
                 raise RuntimeError(
                     "nats-server archive did not contain expected 'nats-server' file"
                 )
-        # Verify the extracted binary against the pinned checksum. A
-        # tampered / corrupted tarball that manages to extract something
-        # is caught here; we never chmod +x a binary that doesn't match.
-        actual = _sha256_of(binary)
-        if actual != expected:
+        # BINARY verify AFTER extraction — a tampered tarball with a
+        # legitimate SHA (impossible without collision, but this is the
+        # belt to the archive verify's braces) would still fail here.
+        binary_actual = _sha256_of(binary)
+        if binary_actual != binary_expected:
             binary.unlink(missing_ok=True)
             raise RuntimeError(
                 f"nats-server binary checksum mismatch for {_platform_key()}: "
-                f"expected {expected}, got {actual}. Refusing to install."
+                f"expected {binary_expected}, got {binary_actual}. "
+                f"Refusing to install."
             )
         binary.chmod(0o755)
     finally:
@@ -343,7 +401,9 @@ accounts {{
 
 def _read_pidfile() -> dict | None:
     """Parse JSON pidfile. Returns None if absent, malformed, or missing
-    required fields."""
+    any of the required identity fields (pid + server_name + server_id).
+    An older pidfile that lacks server_id is treated as invalid — we
+    cannot verify ownership without both halves of the identity pair."""
     path = nats_pid_path()
     if not path.exists():
         return None
@@ -353,16 +413,30 @@ def _read_pidfile() -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
-    if not isinstance(data.get("pid"), int) or not isinstance(data.get("server_name"), str):
+    if (
+        not isinstance(data.get("pid"), int)
+        or not isinstance(data.get("server_name"), str)
+        or not isinstance(data.get("server_id"), str)
+    ):
         return None
     return data
 
 
-def _write_pidfile(pid: int, server_name: str, binary: str) -> None:
+def _write_pidfile(pid: int, server_name: str, server_id: str, binary: str) -> None:
+    """Atomically record ownership. Called ONLY after start_server has
+    proven (via /varz) that the child is our nats-server AND obtained
+    its `server_id`. Reviewer round 2, point 2: the pair
+    (server_name, server_id) is unforgeable by a stale PID reuse — a
+    restarted nats-server with the same configured server_name gets a
+    fresh server_id, and ownership fails cleanly.
+
+    Any exception here must reap the orphan child (see _start_server_locked).
+    """
     _secure_mkdir(nats_root())
     payload = {
         "pid": pid,
         "server_name": server_name,
+        "server_id": server_id,
         "binary": binary,
         "started_at": int(time.time()),
     }
@@ -379,12 +453,15 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _varz_server_name(timeout: float = 1.0) -> str | None:
-    """Ask the monitor endpoint for the running server's name. Returns
-    None on any error (connection refused, timeout, malformed JSON).
+def _varz(timeout: float = 1.0) -> dict | None:
+    """Ask the monitor endpoint for the running server's identity fields.
+    Returns a dict with at least server_name + server_id on success, or
+    None on any error (connection refused, timeout, malformed JSON,
+    missing fields).
 
-    This is the trusted ownership signal: no PID reuse can produce a
-    process that answers /varz with our per-start nonce."""
+    This is the trusted ownership signal: the (server_name, server_id)
+    pair is generated fresh on every nats-server start, so a stale PID
+    reuse cannot answer with both halves matching our record."""
     import http.client
 
     conn = None
@@ -395,8 +472,13 @@ def _varz_server_name(timeout: float = 1.0) -> str | None:
         if resp.status != 200:
             return None
         data = json.loads(resp.read())
+        if not isinstance(data, dict):
+            return None
         name = data.get("server_name")
-        return name if isinstance(name, str) else None
+        sid = data.get("server_id")
+        if not isinstance(name, str) or not isinstance(sid, str):
+            return None
+        return {"server_name": name, "server_id": sid}
     except (OSError, ValueError, __import__("http").client.HTTPException):
         return None
     finally:
@@ -407,16 +489,25 @@ def _varz_server_name(timeout: float = 1.0) -> str | None:
 
 def _verified_ownership() -> dict | None:
     """Return the pidfile dict iff (a) it parses, (b) the PID is alive,
-    and (c) the /varz server_name matches what we recorded. Otherwise
-    None — treat as stale, never signal.
+    AND (c) /varz reports BOTH server_name and server_id matching what
+    we recorded. Otherwise None — treat as stale, never signal.
+
+    Reviewer round 2 point 2: requiring server_id in addition to
+    server_name closes the stale-PID + restarted-NATS case — a manually
+    restarted nats-server using the same config gets a new server_id,
+    so ownership fails cleanly rather than blessing an unrelated live PID.
     """
     stored = _read_pidfile()
     if not stored:
         return None
     if not _pid_alive(stored["pid"]):
         return None
-    actual_name = _varz_server_name()
-    if actual_name is None or actual_name != stored["server_name"]:
+    live = _varz()
+    if (
+        live is None
+        or live["server_name"] != stored["server_name"]
+        or live["server_id"] != stored["server_id"]
+    ):
         return None
     return stored
 
@@ -432,11 +523,28 @@ def is_healthy() -> bool:
 
 # ---------- lifecycle ----------
 
-# Intra-process serialization. `fcntl.flock` on Linux is per-process,
-# not per-thread, so multiple threads racing start_server would all
-# pass the file lock. threading.Lock inside the process + fcntl.flock
-# across processes gives full protection.
-_START_LOCK = threading.Lock()
+# Shared start/stop serialization (reviewer round 2 final point).
+# Both start_server and stop_server acquire this pair — a concurrent
+# start+stop cannot mutate the pidfile / process out from under each
+# other. threading.Lock covers intra-process; fcntl.flock covers
+# inter-process (Linux flock is per-process, not per-thread, so both
+# are needed for full protection).
+_LIFECYCLE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _lifecycle_lock():
+    """Hold the intra-process lock + the cross-process file lock as a
+    matched pair for the duration of a start or stop operation."""
+    _secure_mkdir(nats_root())
+    lock_path = nats_root() / ".lifecycle.lock"
+    lock_path.touch()
+    with _LIFECYCLE_LOCK, open(lock_path) as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 def _tail_log(nbytes: int = 4096) -> str:
@@ -473,37 +581,29 @@ def _reap_child(proc: subprocess.Popen, term_timeout: float = 2.0, kill_timeout:
 def start_server(ready_timeout: float = 10.0) -> int:
     """Ensure binary + config, start nats-server, verify ownership + health.
 
-    Idempotent AND race-safe (adversarial test class:
-    TestConcurrentStart): serialized by an in-process threading.Lock plus
-    a cross-process fcntl.flock on a file under nats_root. Two callers
-    racing on either axis are guaranteed to end up sharing the same
-    single spawned nats-server, not two competing for port 4222.
+    Idempotent AND race-safe (test class TestConcurrentStart): shared
+    lifecycle lock with stop_server so concurrent start+stop cannot
+    mutate pidfile/process underneath each other. Two callers racing
+    on either axis share the single spawned nats-server, not two
+    competing for port 4222.
 
     Diagnostics: child stdout/stderr → nats/log/nats-server.log. If the
     child exits before becoming healthy (bad config, port collision, etc.)
-    this raises RuntimeError immediately with the log tail, rather than
+    this raises RuntimeError immediately with the log tail rather than
     waiting for the full timeout.
     """
-    _secure_mkdir(nats_root())
-    lock_path = nats_root() / ".start.lock"
-    lock_path.touch()
-    with _START_LOCK, open(lock_path) as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            return _start_server_locked(ready_timeout)
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+    with _lifecycle_lock():
+        return _start_server_locked(ready_timeout)
 
 
 def _start_server_locked(ready_timeout: float) -> int:
-    """Body of start_server, called under both threading + file locks."""
+    """Body of start_server, called under the lifecycle lock."""
     verified = _verified_ownership()
     if verified:
         return verified["pid"]
 
-    # If the pidfile exists but ownership doesn't verify, it's stale.
-    # Remove it before spawning so we don't leave the operator with
-    # confusing state.
+    # Stale pidfile — clear before spawning so we don't leave the
+    # operator with confusing state.
     nats_pid_path().unlink(missing_ok=True)
 
     binary = ensure_binary()
@@ -530,55 +630,71 @@ def _start_server_locked(ready_timeout: float) -> int:
     # an extra fd. The child keeps its own dup.
     log_fp.close()
 
-    _write_pidfile(proc.pid, server_name, str(binary))
-
-    deadline = time.monotonic() + ready_timeout
-    while time.monotonic() < deadline:
-        # Fail-fast: child died on startup (bad config, port collision).
-        rc = proc.poll()
-        if rc is not None:
-            nats_pid_path().unlink(missing_ok=True)
-            raise RuntimeError(
-                f"nats-server exited immediately (exit={rc}). Log tail:\n"
-                f"{_tail_log()}"
-            )
-        # Success: ownership verified via /varz.
-        if _verified_ownership() is not None:
-            return proc.pid
-        time.sleep(0.05)
-
-    # Timed out. Reap the child cleanly, then remove pidfile.
-    _reap_child(proc)
-    nats_pid_path().unlink(missing_ok=True)
-    raise TimeoutError(
-        f"nats-server did not verify healthy within {ready_timeout}s. Log tail:\n"
-        f"{_tail_log()}"
-    )
+    # Reviewer round 2 point 1 (P0): any exception between spawn and
+    # successful startup MUST reap the orphan child. Previously, a
+    # _write_pidfile failure (disk full, chmod denied) would leave a
+    # live NATS with no pidfile — stop_server would refuse to signal it.
+    try:
+        deadline = time.monotonic() + ready_timeout
+        while time.monotonic() < deadline:
+            rc = proc.poll()
+            if rc is not None:
+                raise RuntimeError(
+                    f"nats-server exited immediately (exit={rc}). Log tail:\n"
+                    f"{_tail_log()}"
+                )
+            # /varz gives us both server_name (to confirm the running
+            # server is the one we just spawned) and server_id (to seal
+            # ownership against stale-PID reuse — point 2).
+            live = _varz()
+            if live is not None and live["server_name"] == server_name:
+                # Write pidfile ONLY after ownership is confirmed. A
+                # failure inside _write_pidfile falls through to the
+                # outer except and reaps the orphan.
+                _write_pidfile(
+                    proc.pid, server_name, live["server_id"], str(binary),
+                )
+                return proc.pid
+            time.sleep(0.05)
+        raise TimeoutError(
+            f"nats-server did not verify healthy within {ready_timeout}s. Log tail:\n"
+            f"{_tail_log()}"
+        )
+    except BaseException:
+        # Any failure post-Popen: reap the child, clear any half-written
+        # pidfile, re-raise. Never leave an unmanaged nats-server behind.
+        _reap_child(proc)
+        nats_pid_path().unlink(missing_ok=True)
+        raise
 
 
 def stop_server() -> bool:
     """Stop the SafeYolo-managed nats-server. Returns True iff we
-    signalled a process WE OWN. Never signals a PID that fails ownership
-    verification — a stale pidfile pointing to an unrelated host process
-    (PID reuse) results in a no-op cleanup, not a kill.
+    signalled a process WE OWN. Never signals a PID that fails
+    ownership verification (stale pidfile / PID reuse).
+    Shares the lifecycle lock with start_server (reviewer round 2
+    final point) so concurrent start+stop cannot race on pidfile
+    or process state.
     """
+    with _lifecycle_lock():
+        return _stop_server_locked()
+
+
+def _stop_server_locked() -> bool:
     verified = _verified_ownership()
     if not verified:
-        # Nothing to signal — either absent, dead, or not ours. Clear
-        # the stale pidfile so subsequent state is clean.
         nats_pid_path().unlink(missing_ok=True)
         return False
     pid = verified["pid"]
     with contextlib.suppress(OSError):
-        os.kill(pid, 15)  # SIGTERM
+        os.kill(pid, 15)
     for _ in range(60):
         if not _pid_alive(pid):
             break
         time.sleep(0.05)
     else:
         with contextlib.suppress(OSError):
-            os.kill(pid, 9)  # SIGKILL
-        # Brief wait for the kernel to reap
+            os.kill(pid, 9)
         for _ in range(20):
             if not _pid_alive(pid):
                 break
@@ -601,6 +717,7 @@ def status() -> dict:
         "listen": f"{NATS_LISTEN_HOST}:{NATS_CLIENT_PORT}",
         "pid": verified["pid"] if verified else None,
         "server_name": verified["server_name"] if verified else None,
+        "server_id": verified["server_id"] if verified else None,
         "healthy": verified is not None,
     }
 

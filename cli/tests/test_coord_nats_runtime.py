@@ -128,12 +128,22 @@ class TestPidfile:
         nr.nats_pid_path().write_text(json.dumps({"pid": 1234}) + "\n")
         assert nr._read_pidfile() is None
 
+    def test_read_pidfile_without_server_id_returns_none(self, isolated_coord):
+        """Reviewer round 2: pidfile without server_id can't prove
+        ownership; older format must be treated as invalid."""
+        nr.nats_root().mkdir(parents=True, exist_ok=True)
+        nr.nats_pid_path().write_text(
+            json.dumps({"pid": 1234, "server_name": "safeyolo-x"}) + "\n"
+        )
+        assert nr._read_pidfile() is None
+
     def test_write_and_read_pidfile_roundtrip(self, isolated_coord):
-        nr._write_pidfile(12345, "safeyolo-abcd1234", "/bin/nats-server")
+        nr._write_pidfile(12345, "safeyolo-abcd1234", "NDABCDEF123456", "/bin/nats-server")
         data = nr._read_pidfile()
         assert data is not None
         assert data["pid"] == 12345
         assert data["server_name"] == "safeyolo-abcd1234"
+        assert data["server_id"] == "NDABCDEF123456"
         assert data["binary"] == "/bin/nats-server"
         assert isinstance(data["started_at"], int)
         assert nr.nats_pid_path().stat().st_mode & 0o777 == 0o600
@@ -152,7 +162,7 @@ class TestOwnershipSafety:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         try:
-            nr._write_pidfile(victim.pid, "safeyolo-not-real", "/opt/fake/nats-server")
+            nr._write_pidfile(victim.pid, "safeyolo-not-real", "NDFAKE", "/opt/fake/nats-server")
             # /varz won't answer at all (victim isn't NATS) → ownership fails
             assert nr._verified_ownership() is None
             # stop_server must be a no-op cleanup, NOT a signal
@@ -172,13 +182,34 @@ class TestOwnershipSafety:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         try:
-            nr._write_pidfile(victim.pid, "safeyolo-wrong", "/opt/fake")
+            nr._write_pidfile(victim.pid, "safeyolo-wrong", "NDFAKE", "/opt/fake")
             assert not nr.is_healthy()
             assert nr._verified_ownership() is None
         finally:
             victim.terminate()
             with contextlib.suppress(subprocess.TimeoutExpired):
                 victim.wait(timeout=5)
+
+    def test_ownership_check_requires_matching_server_id(self, nats_env):
+        """Reviewer round 2 point 2: even when server_name matches (config
+        replays it), server_id must also match. A restarted NATS with the
+        same config gets a fresh server_id, and ownership fails cleanly."""
+        from unittest.mock import patch
+        nr.start_server(ready_timeout=8.0)
+        try:
+            stored = nr._read_pidfile()
+            assert stored is not None
+            # Patch /varz to return a DIFFERENT server_id — simulates a
+            # nats-server restart under the same config, or a stale
+            # pidfile plus another instance of the same server_name.
+            with patch.object(nr, "_varz", return_value={
+                "server_name": stored["server_name"],
+                "server_id": "ND-DIFFERENT-ID",
+            }):
+                assert nr._verified_ownership() is None
+                assert not nr.is_healthy()
+        finally:
+            nr.stop_server()
 
 
 class TestReapChild:
@@ -250,14 +281,55 @@ class TestFailedStartupDiagnostics:
         assert not nr.nats_pid_path().exists()
 
     def test_startup_timeout_reaps_child_and_cleans_pidfile(self, nats_env):
-        """Reviewer #3: on timeout the child is reaped + pidfile removed."""
-        # Force never-healthy: /varz always reports a different name
-        with patch.object(nr, "_varz_server_name", return_value="not-our-name"):
+        """Reviewer round 1 #3: on timeout the child is reaped + pidfile
+        removed. /varz forced to return a mismatched name so startup
+        never succeeds."""
+        with patch.object(nr, "_varz", return_value={
+            "server_name": "not-our-name", "server_id": "ND-X",
+        }):
             with pytest.raises(TimeoutError):
                 nr.start_server(ready_timeout=1.5)
         assert not nr.nats_pid_path().exists()
-        # No lingering nats-server we own
         assert not nr.is_healthy()
+
+    def test_pidfile_write_failure_reaps_orphan_child(self, nats_env):
+        """Reviewer round 2 P0: if _write_pidfile raises after Popen,
+        the child MUST be reaped. Otherwise there's an unmanaged live
+        nats-server with no ownership record — stop_server would refuse
+        to signal it."""
+        # Save the real _write_pidfile so we can observe the effective pid
+        real_write = nr._write_pidfile
+        captured_pid = {}
+
+        def failing_write(pid, server_name, server_id, binary):
+            captured_pid["pid"] = pid
+            # Simulate disk full / chmod denied AFTER we know the PID
+            raise OSError("simulated disk full")
+
+        with patch.object(nr, "_write_pidfile", side_effect=failing_write):
+            with pytest.raises(OSError, match="simulated disk full"):
+                nr.start_server(ready_timeout=8.0)
+
+        # Orphan reaped
+        assert "pid" in captured_pid, "test setup issue: never reached _write_pidfile"
+        pid = captured_pid["pid"]
+        # Wait briefly for reap
+        for _ in range(60):
+            if not nr._pid_alive(pid):
+                break
+            time.sleep(0.05)
+        # Even accounting for zombie: /varz must be gone
+        for _ in range(60):
+            if nr._varz() is None:
+                break
+            time.sleep(0.05)
+        assert nr._varz() is None, "nats-server still running after _write_pidfile failure"
+        # No pidfile left behind
+        assert not nr.nats_pid_path().exists()
+        # Restore for teardown
+        # `real_write` and `_write_pidfile` restored by patch context exit;
+        # captured_pid usage above is what mattered.
+        _ = real_write
 
 
 class TestConcurrentStart:
@@ -339,7 +411,7 @@ class TestExternalKillHygiene:
         # meaningful signal is the ownership predicate, which requires a
         # live /varz answer.
         for _ in range(60):
-            if nr._varz_server_name() is None:
+            if nr._varz() is None:
                 break
             time.sleep(0.05)
         # Ownership check fails cleanly
@@ -355,6 +427,11 @@ class TestMaliciousTarball:
     leaf 'nats-server' + isfile() check that excludes symlinks."""
 
     def _fake_download(self, monkeypatch, tarball_bytes: bytes):
+        """Patch urllib to return `tarball_bytes` AND pin the archive
+        checksum to match — otherwise the archive-checksum guard rejects
+        our synthetic tarball before extraction and the test can't
+        exercise the tar-parser defenses."""
+        import hashlib
         import io
         class FakeResp:
             def __init__(self, data):
@@ -368,6 +445,10 @@ class TestMaliciousTarball:
         monkeypatch.setattr(
             "urllib.request.urlopen",
             lambda url: FakeResp(tarball_bytes),
+        )
+        monkeypatch.setattr(
+            nr, "_expected_archive_sha256",
+            lambda: hashlib.sha256(tarball_bytes).hexdigest(),
         )
 
     def test_symlink_named_nats_server_rejected(self, isolated_coord, monkeypatch):
