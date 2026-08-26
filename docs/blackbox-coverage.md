@@ -963,9 +963,8 @@ tested as an intended capability in test_root_containment.py.
 
 - **`test_workspace_symlink_traversal`** — Symlink to /etc/shadow inside /workspace doesn't reach host files.
   - *Probe:* Create /workspace/.../shadow-link → /etc/shadow; try
-to read it. If readable, assert the content does NOT look
-like the host's real shadow file (which would have many
-colon-separated fields and 'root:' entries).
+to read it. If readable, assert it resolves to the same guest
+inode and bytes as opening /etc/shadow directly.
   - *Consequence if unasserted:* virtiofs/lisafs gofer mounts are supposed to contain
 traversal within the sandbox rootfs. A bug that followed
 symlinks on the host side would let the agent read any host
