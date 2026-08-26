@@ -53,11 +53,19 @@ ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml
 
 
 def _start_coord_best_effort() -> None:
-    """Start the coord message plane (nats-server). NEVER blocks the
-    proxy path: a failure here marks coord degraded via a logged event
-    and a console warning, then returns. `safeyolo status`/`doctor`
-    will show the substrate as unhealthy so the operator knows why
-    their agents can't reach the coord API."""
+    """Start the coord message plane (nats-server) and bootstrap the
+    coord registry. NEVER blocks the proxy path: a failure here marks
+    coord degraded via a logged event and a console warning, then
+    returns. `safeyolo status`/`doctor` will show the substrate as
+    unhealthy so the operator knows why their agents can't reach the
+    coord API.
+
+    Bootstrap is invoked here (rather than lazily on the first coord
+    request) so `safeyolo_instance_id` exists after `safeyolo start`
+    completes — the #371 identity contract says the instance ID is a
+    property of a running SafeYolo, not something an agent's first
+    request happens to create.
+    """
     try:
         pid = coord_nats.start_server(ready_timeout=10.0)
         console.print(f"[dim]coord message plane started (nats-server PID {pid})[/dim]")
@@ -77,6 +85,26 @@ def _start_coord_best_effort() -> None:
         console.print(
             "[dim]The proxy itself is up and healthy. Check the coord "
             "runtime state with: safeyolo doctor[/dim]"
+        )
+        return
+
+    # Bootstrap the coord registry (schema + instance_id). Lazy on
+    # first coord request would still work, but the #371 contract
+    # says instance_id is minted at start; do it eagerly so
+    # `safeyolo status` can display it immediately.
+    try:
+        from ..coord import api as coord_api
+        instance_id = coord_api.bootstrap()
+        console.print(f"[dim]coord instance_id: {instance_id}[/dim]")
+    except Exception as err:  # noqa: BLE001
+        # Non-fatal: NATS is up, addon will bootstrap on first request.
+        write_event(
+            "ops.coord_bootstrap_failed",
+            kind=EventKind.OPS,
+            severity=Severity.LOW,
+            summary="coord bootstrap failed at start (will retry lazily on first request)",
+            addon="cli.lifecycle",
+            details={"error_type": type(err).__name__, "error": str(err)[:500]},
         )
 
 

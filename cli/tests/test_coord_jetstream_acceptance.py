@@ -109,6 +109,37 @@ def test_safeyolo_stop_start_lifecycle_preserves_messages(coord_env):
     assert page["messages"][0]["sequence"] == seq_before
 
 
+@pytest.mark.timeout(30)
+def test_instance_id_minted_at_safeyolo_start(nats_env):
+    """Reviewer round-6 point 4: #371 says safeyolo_instance_id is
+    generated on first `safeyolo start`, not lazily on first coord
+    API request. Verify _start_coord_best_effort mints the ID
+    itself so `safeyolo status` can display it immediately after
+    startup — without waiting for an agent to poke coord."""
+    from safeyolo.commands.lifecycle import (
+        _start_coord_best_effort,
+        _stop_coord_best_effort,
+    )
+    from safeyolo.coord.identity import instance_id_file
+
+    nats_client.reset_for_tests()
+
+    # Pre-start: no instance_id file exists (nats_env just wrote the
+    # binary + isolated coord dir).
+    assert not instance_id_file().exists()
+
+    try:
+        _start_coord_best_effort()
+        # Post-start: instance_id file exists and has a valid ID.
+        path = instance_id_file()
+        assert path.exists(), \
+            "safeyolo start must mint instance_id eagerly, not lazily"
+        content = path.read_text().strip()
+        assert content.startswith("sy-"), f"malformed instance_id: {content!r}"
+    finally:
+        _stop_coord_best_effort()
+
+
 # ---------- 2. Retention truncation is reported to the caller ----------
 
 
@@ -369,6 +400,14 @@ def test_missing_jetstream_stream_for_existing_room_raises_coord_data_error(coor
     # reporting a false empty page.
     with pytest.raises(nats_client.CoordDataError):
         _run(api.read_room("r", "agent", AGENT_A))
+
+    # A publish to the still-registered room must also surface the
+    # data loss (reviewer round-6 point 2). Otherwise the send would
+    # be broadly reported as NatsUnavailable → 503, which would look
+    # like an outage the operator should wait out rather than a
+    # storage integrity failure to investigate.
+    with pytest.raises(nats_client.CoordDataError):
+        _run(api.send("r", "agent", AGENT_A, "publish into a vanished stream"))
 
     # Idempotent delete stays a no-op returning False.
     async def redelete():

@@ -492,6 +492,25 @@ class TestCoordBodyCap:
             _run(api, flow)
         assert flow.response.status_code == 413
 
+    def test_body_at_max_bytes_survives_through_addon(self, api, isolated_state):
+        """Reviewer round-6 point 1: an ASCII body of exactly
+        COORD_MAX_BODY_BYTES must actually round-trip through the addon.
+        The old code shared one 256 KiB limit for both raw HTTP and
+        parsed body, so wrapping the body as {"body":"..."} pushed the
+        envelope over the raw cap and a legal max-sized body was
+        rejected at the adapter boundary before api.send saw it."""
+        from safeyolo.mitm_addons.agent_api import COORD_MAX_BODY_BYTES
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        big = "x" * COORD_MAX_BODY_BYTES
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/send", method="POST",
+                              body={"body": big})
+            _run(api, flow)
+        assert flow.response.status_code == 200
+        env = json.loads(flow.response.content)["envelope"]
+        assert env["body"] == big
+
 
 class TestCoordValidationErrors:
     """Reviewer point 7: 400s carry stable actionable strings, no raw

@@ -46,10 +46,18 @@ MAX_EXPLAIN_LINES = 10000
 # addon works on a fresh host without a preceding `safeyolo coord init`.
 _COORD_BOOTSTRAPPED = False
 
-# Generous per-message body cap. Prevents a single peer message from
-# ballooning an LLM context or the SQLite store; not intended as a rate limit
-# or a policy control.
+# Two limits, deliberately distinct:
+#   - COORD_MAX_BODY_BYTES caps the parsed message body itself. This is
+#     the user-facing contract mirrored in coord.api.MAX_BODY_BYTES so
+#     agents can size their sends against a single number.
+#   - COORD_MAX_REQUEST_BYTES caps the raw HTTP request. It sits above
+#     the body cap because the send payload is a JSON envelope
+#     ({"body":"...","declared_content_type":"..."}) that necessarily
+#     expands over the raw body — even a legal 256 KiB body wouldn't fit
+#     under a shared 256 KiB request cap. The stream/nats-server payload
+#     ceiling in nats_client + nats_runtime uses the same 2 MiB shape.
 COORD_MAX_BODY_BYTES = 256 * 1024
+COORD_MAX_REQUEST_BYTES = 2 * 1024 * 1024
 
 
 class _CoordValidationError(ValueError):
@@ -409,10 +417,14 @@ class AgentAPI:
                 result = coord_api.join_room(room, "agent", agent_id)
             elif op == "send" and method == "POST":
                 raw = flow.request.content or b""
-                if len(raw) > COORD_MAX_BODY_BYTES:
+                # The raw HTTP body carries the JSON envelope wrapping the
+                # user body, so it must be allowed to grow above the body
+                # cap. The body-in-envelope check below still enforces the
+                # user-facing 256 KiB contract.
+                if len(raw) > COORD_MAX_REQUEST_BYTES:
                     self._respond(flow, 413, {
                         "error": "request body too large",
-                        "max_bytes": COORD_MAX_BODY_BYTES,
+                        "max_bytes": COORD_MAX_REQUEST_BYTES,
                     })
                     return
                 try:

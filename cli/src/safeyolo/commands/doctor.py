@@ -1531,12 +1531,12 @@ def _check_coord_message_plane() -> DiagResult:
                 f"ownership unverified"
             ),
             detail=(
-                f"listen={info['listen']}  config={info.get('config') or 'absent'}  "
+                f"listen={info['listen']}  pidfile={info.get('pidfile') or 'absent'}  "
                 f"log={info.get('log_file') or 'absent'}"
             ),
             remediation=(
                 "Investigate the process manually. If it is not SafeYolo's "
-                f"nats-server, remove the pidfile ({info.get('config')}) "
+                f"nats-server, remove the pidfile ({info.get('pidfile')}) "
                 "and rerun `safeyolo start`."
             ),
         )

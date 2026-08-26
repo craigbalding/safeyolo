@@ -55,7 +55,7 @@ from nats.js.api import (
     RetentionPolicy,
     StorageType,
 )
-from nats.js.errors import NotFoundError
+from nats.js.errors import NoStreamResponseError, NotFoundError
 
 from . import nats_runtime
 
@@ -414,6 +414,17 @@ async def publish_envelope(room_id: str, envelope: dict) -> int:
             stream=stream_name_for_room(room_id),
             headers={"Nats-Msg-Id": envelope["msg_id"]},
         )
+    except NoStreamResponseError as e:
+        # Caller only reaches publish_envelope after SQLite has resolved
+        # the room. `no response from stream` means the JetStream stream
+        # is gone for a still-registered room — data-loss, not an outage.
+        # Must be checked BEFORE the broad NatsError branch below
+        # (NoStreamResponseError is a NatsError subclass). Reviewer
+        # round-6 point 2.
+        raise CoordDataError(
+            f"room {room_id!r} registered in SQLite but JetStream stream "
+            f"{stream_name_for_room(room_id)!r} did not respond — storage lost"
+        ) from e
     except (NatsTimeout, *_UNAVAILABLE_EXCEPTIONS) as e:
         raise NatsUnavailable(f"publish failed: {e!s}") from e
     return ack.seq

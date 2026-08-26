@@ -777,6 +777,10 @@ def status() -> dict:
         "data_dir": str(nats_data_path()),
         "log_file": str(nats_log_path()) if nats_log_path().exists() else None,
         "listen": f"{NATS_LISTEN_HOST}:{NATS_CLIENT_PORT}",
+        # Always the pidfile path so doctor/status remediation can
+        # reference it precisely — separate from `config`, which points
+        # at the generated nats-server config file.
+        "pidfile": str(nats_pid_path()),
         "pid": verified["pid"] if verified else (stored["pid"] if stored else None),
         "server_name": verified["server_name"] if verified else (
             stored["server_name"] if stored else None
