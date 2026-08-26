@@ -14,11 +14,10 @@ CREATE TABLE IF NOT EXISTS instance (
     id TEXT PRIMARY KEY
 );
 
-CREATE TABLE IF NOT EXISTS agents (
-    agent_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    created_at INTEGER NOT NULL
-);
+-- Agent identity lives in agents_store (policy.toml [agents.<name>].agent_id),
+-- NOT here. This substrate references agent_id strings but does not own them;
+-- the authoritative registry is the main SafeYolo agent registry per #371's
+-- unified-identity invariant.
 
 CREATE TABLE IF NOT EXISTS rooms (
     room_id TEXT PRIMARY KEY,

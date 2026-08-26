@@ -87,6 +87,7 @@ class AgentAPI:
             path.startswith("/api/flows")
             or path.startswith("/gateway/")
             or path.startswith("/plumb")
+            or path.startswith("/api/coord/")
             or path == "/api/test-context/current"
         ):
             self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET"]})
@@ -129,6 +130,12 @@ class AgentAPI:
         # (long-poll capable) before the sync handler table.
         if path.startswith("/plumb"):
             await self._handle_plumb(flow, path, method)
+            return
+
+        # Coord v0: multi-party rooms per #371. Async because
+        # wait_for_message long-polls; sync sub-ops route through it.
+        if path.startswith("/api/coord/"):
+            await self._handle_coord(flow, path, method)
             return
 
         # Route to handler
@@ -287,6 +294,96 @@ class AgentAPI:
         if not agent_name or agent_name in ("unknown", "default"):
             return None
         return agent_name
+
+    async def _handle_coord(self, flow: http.HTTPFlow, path: str, method: str):
+        """Coord v0 routes: room join/send/read plus long-poll wait.
+
+        Identity is resolved from per-agent transport attribution (never
+        supplied by the caller), then translated to durable `agent_id` via
+        the main agents_store. This is the enforcement point the coord
+        substrate is designed around — see #371 identity model.
+        """
+        from safeyolo.agents_store import get_or_mint_agent_id, load_all_agents
+        from safeyolo.coord import api as coord_api
+
+        agent_name = self._resolve_agent_id(flow)
+        if agent_name is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
+            return
+        if agent_name not in load_all_agents():
+            self._respond(flow, 403, {"error": f"Agent {agent_name!r} not registered"})
+            return
+        agent_id = get_or_mint_agent_id(agent_name)
+
+        m = re.match(r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait)$", path)
+        if not m:
+            self._respond(flow, 404, {
+                "error": "Not Found",
+                "hint": "/api/coord/rooms/{name}/{join|send|messages|wait}",
+            })
+            return
+        room = m.group(1)
+        op = m.group(2)
+
+        try:
+            if op == "join" and method == "POST":
+                result = coord_api.join_room(room, "agent", agent_id)
+            elif op == "send" and method == "POST":
+                try:
+                    data = json.loads(flow.request.content or b"{}")
+                except json.JSONDecodeError:
+                    self._respond(flow, 400, {"error": "Invalid JSON body"})
+                    return
+                body = data.get("body")
+                declared = data.get("declared_content_type", "text/markdown")
+                if not isinstance(body, str) or not body:
+                    self._respond(flow, 400, {"error": "body required (non-empty string)"})
+                    return
+                result = coord_api.send(
+                    room_name=room,
+                    sender_kind="agent",
+                    sender_agent_id=agent_id,
+                    body=body,
+                    declared_content_type=declared,
+                )
+            elif op == "messages" and method == "GET":
+                q = flow.request.query
+                since = int(q.get("since", "0") or "0")
+                limit = int(q.get("limit", "50") or "50")
+                result = coord_api.read_room(
+                    room_name=room,
+                    principal_kind="agent",
+                    principal_id=agent_id,
+                    since_sequence=since,
+                    limit=limit,
+                )
+            elif op == "wait" and method == "GET":
+                q = flow.request.query
+                since = int(q.get("since", "0") or "0")
+                timeout = float(q.get("timeout", "30") or "30")
+                # Cap timeout to keep pathological long-polls from stuck-forever
+                timeout = min(max(0.1, timeout), 300.0)
+                result = await coord_api.wait_for_message(
+                    room_name=room,
+                    principal_kind="agent",
+                    principal_id=agent_id,
+                    since_sequence=since,
+                    timeout_seconds=timeout,
+                )
+            else:
+                self._respond(flow, 405, {"error": "Method Not Allowed", "op": op})
+                return
+        except coord_api.NotFoundError as e:
+            self._respond(flow, 404, {"error": str(e)})
+            return
+        except coord_api.GrantError as e:
+            self._respond(flow, 403, {"error": str(e)})
+            return
+        except (ValueError, TypeError) as e:
+            self._respond(flow, 400, {"error": str(e)})
+            return
+
+        self._respond(flow, 200, result)
 
     def _handle_test_context_current(self, flow: http.HTTPFlow):
         """GET|POST|DELETE /api/test-context/current.

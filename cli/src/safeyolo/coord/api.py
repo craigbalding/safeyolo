@@ -15,7 +15,6 @@ from . import store
 from .envelope import Envelope, validate_content_type
 from .identity import (
     get_or_create_instance_id,
-    new_agent_id,
     new_msg_id,
     new_room_id,
 )
@@ -35,7 +34,7 @@ class ConflictError(ValueError):
     """Raised on unique-constraint violations (duplicate name, etc.)."""
 
 
-# ---------- bootstrap / registry ----------
+# ---------- bootstrap ----------
 
 
 def bootstrap() -> str:
@@ -47,40 +46,9 @@ def bootstrap() -> str:
     return instance_id
 
 
-def add_agent(name: str) -> str:
-    """Mint a new agent_id for `name`. Returns agent_id."""
-    if not name or not name.strip():
-        raise ValueError("agent name must be non-empty")
-    agent_id = new_agent_id()
-    now = store.now_ms()
-    with store.connect() as conn:
-        try:
-            conn.execute(
-                "INSERT INTO agents(agent_id, name, created_at) VALUES (?, ?, ?)",
-                (agent_id, name, now),
-            )
-        except sqlite3.IntegrityError as e:
-            raise ConflictError(f"agent name {name!r} already exists") from e
-    return agent_id
-
-
-def list_agents() -> list[dict[str, Any]]:
-    with store.connect() as conn:
-        rows = conn.execute(
-            "SELECT agent_id, name, created_at FROM agents ORDER BY created_at"
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def get_agent(agent_id: str) -> dict[str, Any]:
-    with store.connect() as conn:
-        row = conn.execute(
-            "SELECT agent_id, name, created_at FROM agents WHERE agent_id = ?",
-            (agent_id,),
-        ).fetchone()
-    if not row:
-        raise NotFoundError(f"agent_id {agent_id!r} not found")
-    return dict(row)
+# Agents are NOT managed here. The authoritative registry is
+# `safeyolo.agents_store`; coord references agent_id strings but never mints
+# or lists them. See #371 identity model.
 
 
 # ---------- rooms ----------

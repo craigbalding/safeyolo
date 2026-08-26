@@ -1,14 +1,13 @@
-"""Coord plane v0 CLI — bootstrap, agents, rooms, chat.
+"""Coord plane v0 CLI — bootstrap, rooms, chat.
 
 Disposable v0 substrate for #371 dogfood. `safeyolo coord ...` is a separate
-tree from the main SafeYolo CLI; nothing here touches proxy, policy, or the
-existing agent registry.
+tree from proxy / policy / vault. Agents themselves are managed by the
+existing `safeyolo agent add` command; this module never mints agent IDs.
 """
 
 from __future__ import annotations
 
 import json
-import shlex
 import sys
 import time
 from datetime import UTC, datetime
@@ -17,6 +16,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from ..agents_store import get_or_mint_agent_id, load_all_agents
 from ..coord import api
 
 coord_app = typer.Typer(
@@ -42,41 +42,19 @@ def _render_message(m: dict) -> None:
     console.print()
 
 
+def _resolve_agent_id(name: str) -> str:
+    """Look up the durable agent_id for `name`. Raises Exit(1) if unknown."""
+    if name not in load_all_agents():
+        console.print(f"[red]agent {name!r} not registered (run `safeyolo agent add {name} ...`)[/]")
+        raise typer.Exit(1)
+    return get_or_mint_agent_id(name)
+
+
 @coord_app.command()
 def init() -> None:
     """Initialize coord store; mint instance identity if absent. Idempotent."""
     instance_id = api.bootstrap()
     console.print(f"[green]coord initialized[/]  instance_id={instance_id}")
-
-
-agent_app = typer.Typer(name="agent", help="Agent identity commands.", no_args_is_help=True)
-coord_app.add_typer(agent_app, name="agent")
-
-
-@agent_app.command("add")
-def agent_add(name: str = typer.Argument(..., help="Human name for the agent")) -> None:
-    """Mint a new agent_id for `name` and print it."""
-    api.bootstrap()
-    try:
-        agent_id = api.add_agent(name)
-    except api.ConflictError as e:
-        console.print(f"[red]{e}[/]")
-        raise typer.Exit(1)
-    console.print(f"[green]agent added[/]  name={name}  agent_id={agent_id}")
-
-
-@agent_app.command("list")
-def agent_list() -> None:
-    """List all agents."""
-    api.bootstrap()
-    agents = api.list_agents()
-    if not agents:
-        console.print("[dim]no agents yet[/]")
-        return
-    table = Table("name", "agent_id", "created_at")
-    for a in agents:
-        table.add_row(a["name"], a["agent_id"], _fmt_ts(a["created_at"]))
-    console.print(table)
 
 
 room_app = typer.Typer(name="room", help="Room commands.", no_args_is_help=True)
@@ -88,7 +66,7 @@ def room_create(
     name: str = typer.Argument(..., help="Room name"),
     members: list[str] = typer.Option(
         [], "--member", "-m",
-        help="Agent name(s) to grant send+receive on the room. Repeatable.",
+        help="Registered agent name(s) to grant send+receive on the room. Repeatable.",
     ),
     with_operator: bool = typer.Option(
         True, "--with-operator/--no-operator",
@@ -105,11 +83,8 @@ def room_create(
 
     granted = []
     for member_name in members:
-        agents = [a for a in api.list_agents() if a["name"] == member_name]
-        if not agents:
-            console.print(f"[red]agent {member_name!r} not found; skipping[/]")
-            continue
-        api.grant(name, "agent", agents[0]["agent_id"])
+        agent_id = _resolve_agent_id(member_name)
+        api.grant(name, "agent", agent_id)
         granted.append(member_name)
 
     if with_operator:
@@ -139,19 +114,16 @@ def room_list() -> None:
 @coord_app.command()
 def grant(
     room: str = typer.Argument(..., help="Room name"),
-    agent_name: str = typer.Argument(..., help="Agent name"),
+    agent_name: str = typer.Argument(..., help="Registered agent name"),
     permissions: str = typer.Option(
         "send,receive", "--perm", help="Comma-separated permissions"
     ),
 ) -> None:
-    """Grant an agent send+receive permissions on a room."""
+    """Grant a registered agent permissions on a room."""
     api.bootstrap()
-    agents = [a for a in api.list_agents() if a["name"] == agent_name]
-    if not agents:
-        console.print(f"[red]agent {agent_name!r} not found[/]")
-        raise typer.Exit(1)
+    agent_id = _resolve_agent_id(agent_name)
     perms = [p.strip() for p in permissions.split(",") if p.strip()]
-    api.grant(room, "agent", agents[0]["agent_id"], permissions=perms)
+    api.grant(room, "agent", agent_id, permissions=perms)
     console.print(f"[green]granted[/]  {agent_name} on {room}: {perms}")
 
 
@@ -178,7 +150,6 @@ def chat(
     console.print("[dim]---[/]")
 
     cursor = since
-    # Print retained history first
     while True:
         page = api.read_room(room, "operator", "operator",
                              since_sequence=cursor, limit=api.READ_PAGE_MAX)
@@ -225,7 +196,6 @@ def _interactive_loop(room: str, cursor: int) -> None:
                 except api.GrantError as e:
                     console.print(f"[red]{e}[/]")
                     break
-            # Drain any new messages after send or empty poll
             while True:
                 page = api.read_room(room, "operator", "operator",
                                      since_sequence=cursor, limit=api.READ_PAGE_MAX)
@@ -240,26 +210,19 @@ def _interactive_loop(room: str, cursor: int) -> None:
 
 
 @coord_app.command("mcp-config")
-def mcp_config(
-    agent_name: str = typer.Argument(..., help="Agent name previously added via `coord agent add`"),
-) -> None:
-    """Print an MCP server config snippet for Claude Code, keyed to this agent."""
-    api.bootstrap()
-    agents = [a for a in api.list_agents() if a["name"] == agent_name]
-    if not agents:
-        console.print(f"[red]agent {agent_name!r} not found[/]", err=True)
-        raise typer.Exit(1)
-    agent_id = agents[0]["agent_id"]
+def mcp_config() -> None:
+    """Print the MCP server config for Claude Code sessions.
 
-    python = shlex.quote(sys.executable)
+    The same config works for every agent's sandbox: identity comes from the
+    per-agent proxy attribution (transport-derived per #371), not from any
+    env var. Drop this into each agent's `.mcp.json`.
+    """
+    python = sys.executable
     config = {
         "mcpServers": {
             "safeyolo-coord": {
                 "command": python,
                 "args": ["-m", "safeyolo.coord.mcp_server"],
-                "env": {
-                    "SAFEYOLO_COORD_AGENT_ID": agent_id,
-                },
             }
         }
     }

@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 import tempfile
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -132,6 +133,46 @@ def load_all_agents() -> dict[str, dict]:
 def load_agent(name: str) -> dict:
     """Read a single agent entry. Returns {} if not found."""
     return load_all_agents().get(name, {})
+
+
+def _new_agent_id() -> str:
+    return f"ag-{uuid.uuid4().hex}"
+
+
+def get_or_mint_agent_id(name: str) -> str:
+    """Return the durable `agent_id` for `name`, minting one if absent.
+
+    Idempotent. Raises KeyError if `name` is not a registered agent.
+    Backfills existing agents that pre-date the agent_id field.
+    """
+    def mutate(doc):
+        agents = _ensure_agents_table(doc)
+        if name not in agents:
+            raise KeyError(name)
+        agent_table = agents[name]
+        existing = agent_table.get("agent_id")
+        if existing:
+            return str(existing)
+        new_id = _new_agent_id()
+        agent_table["agent_id"] = new_id
+        return new_id
+
+    return _locked_mutate(mutate)
+
+
+def get_agent_id(name: str) -> str | None:
+    """Return the agent_id for `name` if set, else None (no mint)."""
+    meta = load_agent(name)
+    aid = meta.get("agent_id")
+    return str(aid) if aid else None
+
+
+def get_agent_by_id(agent_id: str) -> tuple[str, dict] | None:
+    """Reverse lookup by agent_id. Returns (name, metadata) or None."""
+    for name, meta in load_all_agents().items():
+        if meta.get("agent_id") == agent_id:
+            return (name, meta)
+    return None
 
 
 def save_agent(name: str, metadata: dict) -> None:

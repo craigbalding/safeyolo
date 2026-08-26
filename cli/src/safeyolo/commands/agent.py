@@ -1291,6 +1291,10 @@ def add(  # DOC: README.md, docs/AGENTS.md
         metadata["mounts"] = parsed_mounts
     if parsed_ports:
         metadata["ports"] = parsed_ports
+    # Durable random agent_id, distinct from `name`; consumer / grant identity
+    # in the coord plane (see #371). Removal + re-add produces a different ID.
+    from ..agents_store import _new_agent_id
+    metadata["agent_id"] = _new_agent_id()
     save_agent(name, metadata)
 
     panel_lines = [
