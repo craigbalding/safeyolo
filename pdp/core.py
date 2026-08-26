@@ -40,6 +40,7 @@ from safeyolo.policy.engine import PolicyEngine, UnifiedPolicy
 from .schemas import (
     BudgetBlock,
     ChecksBlock,
+    CredentialType,
     DecisionEventBlock,
     Effect,
     HttpEvent,
@@ -279,7 +280,12 @@ class PDPCore:
 
     def _evaluate_credential(self, event: HttpEvent) -> LegacyDecision:
         """Evaluate credential policy using existing engine."""
-        cred_type = event.credential.type.value if event.credential.type else "unknown"
+        credential_type = event.credential.type
+        cred_type = (
+            credential_type.value
+            if isinstance(credential_type, CredentialType)
+            else credential_type or "unknown"
+        )
         fingerprint = event.credential.fingerprint
 
         return self._engine.evaluate_credential(

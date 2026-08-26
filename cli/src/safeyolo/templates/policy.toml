@@ -40,14 +40,20 @@ known_bad = "lists/stevenblack-hosts.txt"
 # ── LLM APIs ──────────────────────────────────────────────────
 "api.openai.com"      = { allow = ["openai:*"],    rate = 3_000 }
 "api.anthropic.com"   = { allow = ["anthropic:*"],  rate = 3_000 }
-"openrouter.ai"       = { rate = 3_000 }
+"openrouter.ai"       = { allow = ["openrouter:*"], rate = 3_000 }
+"api.x.ai"            = { allow = ["xai:*"],        rate = 3_000 }
+"api.groq.com"        = { allow = ["groq:*"],       rate = 3_000 }
 
 # ── Code hosting ──────────────────────────────────────────────
 "api.github.com"      = { allow = ["github:*"],     rate = 300 }
 "github.com"          = { allow = ["github:*"] }
 
 # ── Google ────────────────────────────────────────────────────
-"*.googleapis.com"    = { rate = 120 }
+"*.googleapis.com"    = { allow = ["google:*"], rate = 120 }
+
+# ── Model/package hubs ────────────────────────────────────────
+"huggingface.co"      = { allow = ["huggingface:*"], rate = 600 }
+"*.huggingface.co"    = { allow = ["huggingface:*"], rate = 600 }
 
 # ── Package registries (expanded from $package_registries list) ──
 "$package_registries" = { rate = 1_200 }
@@ -65,19 +71,6 @@ known_bad = "lists/stevenblack-hosts.txt"
 # ── Defaults (wildcard) ───────────────────────────────────────
 "*"                   = { egress = "allow", unknown_creds = "prompt",  rate = 600 }
 
-# =============================================================================
-# CREDENTIAL DETECTION — how to recognize each credential type
-# =============================================================================
-# allowed_hosts auto-derived from hosts section above
-
-[credential.openai]
-match   = ['sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}', 'sk-proj-[a-zA-Z0-9_-]{80,}']
-headers = ["authorization", "x-api-key"]
-
-[credential.anthropic]
-match   = ['sk-ant-api[a-zA-Z0-9_-]{90,}']
-headers = ["authorization", "x-api-key"]
-
-[credential.github]
-match   = ['gh[ps]_[a-zA-Z0-9]{36}']
-headers = ["authorization"]
+# Built-in credential classifiers come from
+# detection/credential_catalog.py. Add [credential.<name>] tables only for
+# local or deployment-specific formats; those rules append to the catalogue.

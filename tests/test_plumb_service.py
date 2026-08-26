@@ -125,7 +125,7 @@ class TestMessaging:
         conv = _approved_conv(svc)
         res = asyncio.run(svc.post_message("web", conv, "key sk-" + "a" * 48))
         assert res["status"] == 403
-        assert "openai-api-key" in res["detected_classes"]
+        assert "ambiguous-sk-api-key" in res["detected_classes"]
 
     def test_oversized_rejected(self, svc):
         svc._max_message_bytes = 8

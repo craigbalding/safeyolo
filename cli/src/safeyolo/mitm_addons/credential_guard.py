@@ -260,7 +260,8 @@ class CredentialGuard(SecurityAddon):
             }),
             "detection_level": cg.get("detection_level", "standard"),
             "standard_auth_headers": cg.get("standard_auth_headers", [
-                "authorization", "x-api-key", "api-key", "x-auth-token", "apikey"
+                "authorization", "x-api-key", "api-key", "x-auth-token", "apikey",
+                "x-goog-api-key",
             ]),
         }
         self.safe_headers_config = cg.get("safe_headers", {})
@@ -269,7 +270,7 @@ class CredentialGuard(SecurityAddon):
         """Load credential rules.
 
         Rules are built by taking `safeyolo.detection.DEFAULT_RULES`
-        (openai, anthropic, github token families) and appending any
+        (derived from the shared credential-family catalogue) and appending any
         rules supplied by the policy under `credential_rules`, in the
         order they appear. A policy can therefore add classifiers for
         internal services or additional third-party credential types
@@ -414,7 +415,8 @@ class CredentialGuard(SecurityAddon):
         })
         detection_level = self.config.get("detection_level", "standard")
         standard_auth_headers = self.config.get("standard_auth_headers", [
-            "authorization", "x-api-key", "api-key", "x-auth-token", "apikey"
+            "authorization", "x-api-key", "api-key", "x-auth-token", "apikey",
+            "x-goog-api-key",
         ])
 
         detections = analyze_headers(

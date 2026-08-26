@@ -12,6 +12,8 @@ import logging
 import math
 from dataclasses import dataclass
 
+from .credential_catalog import build_default_rule_configs
+
 log = logging.getLogger("safeyolo.credentials")
 
 # =============================================================================
@@ -137,6 +139,8 @@ class CredentialRule:  # DOC: SECURITY.md
     def __post_init__(self):
         if self.header_names is None:
             self.header_names = ["authorization", "x-api-key"]
+        else:
+            self.header_names = [name.lower() for name in self.header_names]
         # Relative import so this module works whether it was loaded
         # as `safeyolo.detection.credentials` (installed package) or as
         # top-level `detection.credentials` (fuzz harness that puts
@@ -160,60 +164,7 @@ class CredentialRule:  # DOC: SECURITY.md
         return None
 
 
-DEFAULT_RULES = [
-    CredentialRule(
-        name="openai",
-        patterns=[r"sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}", r"sk-proj-[a-zA-Z0-9_-]{80,}"],
-        allowed_hosts=["api.openai.com"],
-    ),
-    CredentialRule(
-        name="anthropic",
-        patterns=[r"sk-ant-api[a-zA-Z0-9_-]{90,}"],
-        allowed_hosts=["api.anthropic.com"],
-    ),
-    # GitHub tokens are split across six prefix families. All classify to
-    # the `github` type so a policy `credential: ["github:*"]` allow
-    # condition covers every family. Keeping each family in its own
-    # entry makes it easy to add or tune one without touching the
-    # others, and mirrors the per-family entries in
-    # `detection.patterns.DEFAULT_PATTERNS` used by the DLP scanner.
-    CredentialRule(
-        # Classic personal access token.
-        name="github",
-        patterns=[r"ghp_[A-Za-z0-9]{36,251}"],
-        allowed_hosts=["api.github.com", "github.com"],
-    ),
-    CredentialRule(
-        # OAuth App user token issued by the browser / device flow.
-        name="github",
-        patterns=[r"gho_[A-Za-z0-9]{36,251}"],
-        allowed_hosts=["api.github.com", "github.com"],
-    ),
-    CredentialRule(
-        # GitHub App user-to-server token.
-        name="github",
-        patterns=[r"ghu_[A-Za-z0-9]{36,251}"],
-        allowed_hosts=["api.github.com", "github.com"],
-    ),
-    CredentialRule(
-        # GitHub App server-to-server (installation) token.
-        name="github",
-        patterns=[r"ghs_[A-Za-z0-9]{36,251}"],
-        allowed_hosts=["api.github.com", "github.com"],
-    ),
-    CredentialRule(
-        # Refresh token.
-        name="github",
-        patterns=[r"ghr_[A-Za-z0-9]{36,251}"],
-        allowed_hosts=["api.github.com", "github.com"],
-    ),
-    CredentialRule(
-        # Fine-grained personal access token.
-        name="github",
-        patterns=[r"github_pat_[A-Za-z0-9_]{60,255}"],
-        allowed_hosts=["api.github.com", "github.com"],
-    ),
-]
+DEFAULT_RULES = [CredentialRule(**config) for config in build_default_rule_configs()]
 
 
 def detect_credential_type(value: str, rules: list[CredentialRule] = None) -> str | None:
@@ -277,6 +228,8 @@ def analyze_headers(
 
         if header_lower in standard_auth_headers:
             for rule in rules:
+                if header_lower not in rule.header_names:
+                    continue
                 matched = rule.matches(value)
                 if matched:
                     detections.append({

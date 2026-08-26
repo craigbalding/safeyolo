@@ -23,8 +23,8 @@ def _generate_demo_key(prefix: str, min_suffix_len: int) -> str:
 
 
 def _get_demo_anthropic_key() -> str:
-    """Generate random Anthropic-pattern key (sk-ant-api + 90 chars)."""
-    return _generate_demo_key("sk-ant-api03-demo_", 90)
+    """Generate a synthetic key matching the Anthropic API-key classifier."""
+    return f"sk-ant-api03-{_generate_demo_key('', 93)}AA"
 
 
 def _get_demo_openai_key() -> str:

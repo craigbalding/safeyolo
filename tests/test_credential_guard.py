@@ -68,25 +68,121 @@ class TestCredentialRule:
         assert rule.matches("sk-abc123xyz456def789ghi") is None
 
 
+class TestAnthropicClassifierCoverage:
+    """Regression coverage for versioned Anthropic credential families."""
+
+    @staticmethod
+    def _token(family: str, version: str = "01") -> str:
+        # Include '_' so the test exercises the base64url character class.
+        return f"sk-ant-{family}{version}-{'A' * 46}_{'b' * 46}AA"
+
+    @staticmethod
+    def _classify(value: str) -> str | None:
+        from safeyolo.detection import DEFAULT_RULES, detect_credential_type
+
+        return detect_credential_type(value, DEFAULT_RULES)
+
+    def test_api_keys_classify_as_anthropic(self):
+        assert self._classify(self._token("api", "03")) == "anthropic"
+
+    def test_oauth_access_tokens_classify_as_anthropic(self):
+        assert self._classify(self._token("oat")) == "anthropic"
+
+    def test_admin_keys_keep_a_separate_policy_type(self):
+        assert self._classify(self._token("admin")) == "anthropic-admin"
+
+    def test_refresh_tokens_keep_a_separate_policy_type(self):
+        assert self._classify(self._token("ort")) == "anthropic-refresh"
+
+    def test_patterns_accept_future_two_digit_versions(self):
+        assert self._classify(self._token("oat", "42")) == "anthropic"
+        assert self._classify(self._token("ort", "99")) == "anthropic-refresh"
+
+    def test_high_privilege_types_have_narrow_destinations(self):
+        from safeyolo.detection import DEFAULT_RULES
+
+        rules = {rule.name: rule for rule in DEFAULT_RULES}
+        assert rules["anthropic-admin"].allowed_hosts == ["api.anthropic.com"]
+        assert rules["anthropic-refresh"].allowed_hosts == ["console.anthropic.com"]
+
+    def test_rejects_unsupported_family_and_invalid_shape(self):
+        assert self._classify(self._token("sid")) is None
+        assert self._classify("sk-ant-oat01-short") is None
+        assert self._classify("sk-ant-oat1-" + "A" * 93 + "AA") is None
+
+    def test_demo_key_matches_default_classifier(self):
+        from safeyolo.commands.demo import _get_demo_anthropic_key
+
+        assert self._classify(_get_demo_anthropic_key()) == "anthropic"
+
+
+class TestOpenAIClassifierCoverage:
+    """Provider-specific OpenAI shapes and the ambiguous ``sk-`` fallback."""
+
+    @staticmethod
+    def _classify(value: str) -> str | None:
+        from safeyolo.detection import DEFAULT_RULES, detect_credential_type
+
+        return detect_credential_type(value, DEFAULT_RULES)
+
+    def test_legacy_api_key_is_provider_ambiguous(self):
+        token = "sk-" + "A" * 20 + "T3BlbkFJ" + "b" * 20
+        assert self._classify(token) == "ambiguous-sk"
+
+    def test_matches_project_key_without_length_assumption(self):
+        assert self._classify("sk-proj-" + "A_b-" * 8) == "openai"
+
+    def test_matches_service_account_key(self):
+        assert self._classify("sk-svcacct-" + "A_b-" * 8) == "openai"
+
+    def test_future_opaque_subprefix_is_provider_ambiguous(self):
+        assert self._classify("sk-future-" + "A_b-" * 8) == "ambiguous-sk"
+
+    def test_openrouter_namespace_is_not_captured_by_openai(self):
+        assert self._classify("sk-or-v1-" + "a" * 64) == "openrouter"
+
+    def test_admin_key_keeps_a_separate_policy_type(self):
+        assert self._classify("sk-admin-" + "A_b-" * 8) == "openai-admin"
+
+    def test_openai_matcher_does_not_capture_anthropic_namespace(self):
+        token = TestAnthropicClassifierCoverage._token("api", "03")
+        assert self._classify(token) == "anthropic"
+
+    def test_provider_ambiguous_workload_jwt_is_not_classified(self):
+        token = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.signature"
+        assert self._classify(token) is None
+
+    def test_rejects_short_or_wrong_prefix(self):
+        assert self._classify("sk-short") is None
+        assert self._classify("pk-" + "A" * 40) is None
+
+    def test_admin_type_has_narrow_destination(self):
+        from safeyolo.detection import DEFAULT_RULES
+
+        admin_rule = next(rule for rule in DEFAULT_RULES if rule.name == "openai-admin")
+        assert admin_rule.allowed_hosts == ["api.openai.com"]
+
+    def test_ambiguous_sk_has_no_default_destination(self):
+        from safeyolo.detection import DEFAULT_RULES
+
+        ambiguous_rule = next(rule for rule in DEFAULT_RULES if rule.name == "ambiguous-sk")
+        assert ambiguous_rule.allowed_hosts == []
+
+
 class TestGithubClassifierCoverage:
     """Regression: the default `github` classifier must match every GitHub
-    token prefix family, not just ghp_/ghs_.
+    token prefix family and opaque token body formats.
 
-    Historically the DEFAULT_RULES pattern was `gh[ps]_[a-zA-Z0-9]{36}`,
-    which missed gh's OAuth device-flow tokens (`gho_`), GitHub App tokens
-    (`ghu_`, `ghs_`, `ghr_`), and fine-grained PATs (`github_pat_`).
-    Under that gap, api.github.com traffic bearing an unclassified token
-    hit credential-guard's entropy fallback and got fingerprinted as
-    `unknown_secret`, so any `credential: ["github:*"]` allow condition
-    in policy was dead-lettered and every mint of a fresh token required
-    a separate operator approval.
+    This covers GitHub's documented prefixes and the 2026 stateless `ghs_`
+    format without imposing maximum lengths on opaque token bodies. Refresh
+    tokens deliberately classify separately because they mint access tokens.
     """
 
     def _classify(self, value: str) -> str | None:
         """Classify against DEFAULT_RULES and return the rule name that matched.
 
-        Split entries all share `name="github"`; the return value is that
-        name if any of the github rules matched, else None.
+        Routine entries share `name="github"`; refresh tokens use the narrower
+        `github-refresh` policy type.
         """
         from safeyolo.detection import DEFAULT_RULES, detect_credential_type
         return detect_credential_type(value, DEFAULT_RULES)
@@ -102,14 +198,31 @@ class TestGithubClassifierCoverage:
     def test_matches_github_app_user_ghu(self):
         assert self._classify("ghu_" + "A" * 36) == "github"
 
-    def test_matches_github_app_server_ghs(self):
+    def test_matches_classic_github_app_server_ghs(self):
         assert self._classify("ghs_" + "A" * 36) == "github"
 
-    def test_matches_refresh_ghr(self):
-        assert self._classify("ghr_" + "A" * 36) == "github"
+    def test_matches_stateless_github_app_server_ghs(self):
+        token = "ghs_123456789_eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.signature"
+        assert self._classify(token) == "github"
+
+    def test_stateless_ghs_has_no_obsolete_maximum_length(self):
+        token = "ghs_123456789_" + "A" * 260 + "." + "b" * 260 + ".signature"
+        assert self._classify(token) == "github"
+
+    def test_refresh_ghr_keeps_a_separate_policy_type(self):
+        assert self._classify("ghr_" + "A" * 36) == "github-refresh"
 
     def test_matches_fine_grained_pat(self):
         assert self._classify("github_pat_" + "A" * 82) == "github"
+
+    def test_opaque_bodies_accept_documented_urlsafe_characters(self):
+        assert self._classify("gho_" + "A._-" * 9) == "github"
+
+    def test_refresh_type_has_narrow_destination(self):
+        from safeyolo.detection import DEFAULT_RULES
+
+        refresh_rule = next(rule for rule in DEFAULT_RULES if rule.name == "github-refresh")
+        assert refresh_rule.allowed_hosts == ["github.com"]
 
     def test_does_not_match_short_or_wrong_prefix(self):
         assert self._classify("ghp_short") is None
@@ -290,6 +403,64 @@ class TestAnalyzeHeaders:
         assert detections[0]["rule_name"] == "openai"
         assert detections[0]["tier"] == 1
         assert detections[0]["confidence"] == "high"
+
+    def test_detects_anthropic_oauth_token_in_authorization_header(self):
+        from credential_guard import analyze_headers
+
+        from safeyolo.detection import DEFAULT_RULES
+
+        token = TestAnthropicClassifierCoverage._token("oat")
+        detections = analyze_headers(
+            headers={"Authorization": f"Bearer {token}"},
+            rules=DEFAULT_RULES,
+            safe_headers_config={},
+            entropy_config={},
+            standard_auth_headers=["authorization"],
+            detection_level="standard",
+        )
+
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "anthropic"
+        assert detections[0]["tier"] == 1
+        assert detections[0]["confidence"] == "high"
+
+    def test_detects_google_key_in_documented_header(self):
+        from credential_guard import analyze_headers
+
+        from safeyolo.detection import DEFAULT_RULES
+
+        detections = analyze_headers(
+            headers={"X-Goog-Api-Key": "AIza" + "A" * 35},
+            rules=DEFAULT_RULES,
+            safe_headers_config={},
+            entropy_config={},
+            standard_auth_headers=["x-goog-api-key"],
+            detection_level="standard",
+        )
+
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "google"
+        assert detections[0]["tier"] == 1
+
+    def test_rule_header_names_are_enforced(self):
+        from credential_guard import CredentialRule, analyze_headers
+
+        rule = CredentialRule(
+            name="header-specific",
+            patterns=[r"special_[A-Za-z0-9]{20,}"],
+            allowed_hosts=["api.example.com"],
+            header_names=["x-special-key"],
+        )
+        detections = analyze_headers(
+            headers={"Authorization": "Bearer special_ABCDEFGHIJKLMNOPQRST"},
+            rules=[rule],
+            safe_headers_config={},
+            entropy_config={},
+            standard_auth_headers=["authorization"],
+            detection_level="patterns-only",
+        )
+
+        assert detections == []
 
     def test_detects_unknown_entropy_in_standard_mode(self):
         from credential_guard import analyze_headers
