@@ -333,15 +333,30 @@ def chat(
 
 def _observe_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
     console.print("[dim]--- observing (Ctrl-C to detach) ---[/]")
-    # An observer polls indefinitely, so a blip should not end the session --
-    # but a runtime that stays down must not scroll the same error forever.
+    # Long-poll rather than sleep-poll. read_room opens and deletes its own
+    # ephemeral pull consumer per call, so a 0.5s poll loop was ~2 consumer
+    # create/delete cycles a second for as long as the observer ran.
+    # wait_for_message holds one consumer for the whole call and blocks
+    # server-side, so an idle room costs one consumer per wake window
+    # instead of 120 a minute.
+    #
+    # exclude_self=False because "self" here is the operator: an observer
+    # that filtered operator messages would miss exactly the traffic the
+    # operator is watching for.
+    #
+    # A blip should not end the session, but a runtime that stays down must
+    # not scroll the same error forever.
     consecutive_failures = 0
     try:
         while True:
             try:
-                page = runtime.run(api.read_room(room, "operator", "operator",
-                                                 since_sequence=cursor,
-                                                 limit=api.READ_PAGE_MAX))
+                woke = runtime.run(api.wait_for_message(
+                    room, "operator", "operator",
+                    since_sequence=cursor,
+                    timeout_seconds=_OBSERVE_WAIT_SECONDS,
+                    limit=api.READ_PAGE_MAX,
+                    exclude_self=False,
+                ))
             except CoordDataError as e:
                 console.print(f"[red]{_explain_coord_failure(e)}[/]")
                 raise typer.Exit(1) from None
@@ -360,17 +375,30 @@ def _observe_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
             if consecutive_failures:
                 console.print("[green]coord runtime back; resuming[/]")
                 consecutive_failures = 0
-            for m in page["messages"]:
-                _render_message(m)
-            cursor = page["next_cursor"]
-            if not page["has_more"]:
-                time.sleep(0.5)
+            if not woke["messages"]:
+                continue                      # wake window expired, re-arm
+            # Wake is only an edge. Catch up canonically from the cursor we
+            # already hold -- wait's next_cursor can sit past messages this
+            # observer has not rendered yet.
+            while True:
+                page = runtime.run(api.read_room(
+                    room, "operator", "operator",
+                    since_sequence=cursor, limit=api.READ_PAGE_MAX))
+                for m in page["messages"]:
+                    _render_message(m)
+                cursor = page["next_cursor"]
+                if not page["has_more"]:
+                    break
     except KeyboardInterrupt:
         console.print("\n[dim]detached[/]")
 
 
 # Give up observing after this many consecutive unreachable polls.
 _OBSERVE_MAX_FAILURES = 10
+
+# How long each observer wake window blocks server-side. Long enough that
+# an idle room is cheap, short enough that Ctrl-C stays responsive.
+_OBSERVE_WAIT_SECONDS = 30.0
 
 # Short aliases matter at a chat prompt -- these get typed constantly.
 _PASTE_CMDS = (":paste", ":p")
