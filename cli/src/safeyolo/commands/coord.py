@@ -19,10 +19,12 @@ from rich.table import Table
 from ..agents_store import get_or_mint_agent_id, load_all_agents
 from ..coord import api
 
-# CLI is sync but coord.api's send/read_room/create_room/wait_for_message
-# are async (they go to JetStream). Wrap with asyncio.run per invocation.
-# Cheap enough for interactive/one-shot commands; the addon uses the
-# async versions directly on its own event loop.
+# One-shot CLI commands (room create, grant, revoke) each spin up a
+# fresh event loop with `asyncio.run` — cheap and no lifetime issues.
+# Long-running commands (chat / observe) hold a single event loop for
+# their duration via `_ChatRuntime` below so the NATS client survives
+# across polls rather than being torn down and rebuilt every iteration
+# (reviewer round-4 point 3).
 _run = asyncio.run
 
 coord_app = typer.Typer(
@@ -162,6 +164,33 @@ def revoke(
         console.print(f"[yellow]no active grant to revoke[/]  {agent_name} on {room}")
 
 
+class _ChatRuntime:
+    """One event loop + one NATS connection for the lifetime of a
+    single `safeyolo coord chat` invocation.
+
+    Without this, observe/interactive loops call `asyncio.run(...)` per
+    poll, which spins a fresh event loop each iteration. The NATS
+    client is loop-bound and deliberately abandons/recreates its
+    connection on loop change (a test workaround) — good for tests,
+    terrible as a production operator path because every poll pays a
+    NATS reconnect. Hold one loop for the command's lifetime instead.
+    """
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+
+    def run(self, coro):
+        return self._loop.run_until_complete(coro)
+
+    def close(self) -> None:
+        try:
+            from ..coord import nats_client
+            self._loop.run_until_complete(nats_client.close())
+        except Exception:  # noqa: BLE001
+            pass  # best-effort teardown
+        self._loop.close()
+
+
 @coord_app.command()
 def chat(
     room: str = typer.Argument(..., help="Room name"),
@@ -191,28 +220,32 @@ def chat(
     console.print(f"[bold]attached to room[/] {room}  (mode={'observe' if observe else 'interactive'})")
     console.print("[dim]---[/]")
 
-    cursor = since
-    while True:
-        page = _run(api.read_room(room, "operator", "operator",
-                                  since_sequence=cursor, limit=api.READ_PAGE_MAX))
-        for m in page["messages"]:
-            _render_message(m)
-        cursor = page["next_cursor"]
-        if not page["has_more"]:
-            break
+    runtime = _ChatRuntime()
+    try:
+        cursor = since
+        while True:
+            page = runtime.run(api.read_room(room, "operator", "operator",
+                                             since_sequence=cursor, limit=api.READ_PAGE_MAX))
+            for m in page["messages"]:
+                _render_message(m)
+            cursor = page["next_cursor"]
+            if not page["has_more"]:
+                break
 
-    if observe:
-        _observe_loop(room, cursor)
-    else:
-        _interactive_loop(room, cursor)
+        if observe:
+            _observe_loop(runtime, room, cursor)
+        else:
+            _interactive_loop(runtime, room, cursor)
+    finally:
+        runtime.close()
 
 
-def _observe_loop(room: str, cursor: int) -> None:
+def _observe_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
     console.print("[dim]--- observing (Ctrl-C to detach) ---[/]")
     try:
         while True:
-            page = _run(api.read_room(room, "operator", "operator",
-                                      since_sequence=cursor, limit=api.READ_PAGE_MAX))
+            page = runtime.run(api.read_room(room, "operator", "operator",
+                                             since_sequence=cursor, limit=api.READ_PAGE_MAX))
             for m in page["messages"]:
                 _render_message(m)
             cursor = page["next_cursor"]
@@ -222,7 +255,7 @@ def _observe_loop(room: str, cursor: int) -> None:
         console.print("\n[dim]detached[/]")
 
 
-def _interactive_loop(room: str, cursor: int) -> None:
+def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
     console.print("[dim]--- interactive (empty line polls; :q to quit) ---[/]")
     console.print(
         f"[dim]tip: for live scrolling, run `safeyolo coord chat {room} "
@@ -238,13 +271,13 @@ def _interactive_loop(room: str, cursor: int) -> None:
                 break
             if line.strip():
                 try:
-                    _run(api.send(room, "operator", None, line))
+                    runtime.run(api.send(room, "operator", None, line))
                 except api.GrantError as e:
                     console.print(f"[red]{e}[/]")
                     break
             while True:
-                page = _run(api.read_room(room, "operator", "operator",
-                                          since_sequence=cursor, limit=api.READ_PAGE_MAX))
+                page = runtime.run(api.read_room(room, "operator", "operator",
+                                                 since_sequence=cursor, limit=api.READ_PAGE_MAX))
                 for m in page["messages"]:
                     _render_message(m)
                 cursor = page["next_cursor"]

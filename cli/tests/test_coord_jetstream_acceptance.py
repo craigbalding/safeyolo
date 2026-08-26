@@ -76,6 +76,39 @@ def test_publish_then_restart_message_survives(coord_env):
     assert page["messages"][0]["sequence"] == seq_before
 
 
+@pytest.mark.timeout(30)
+def test_safeyolo_stop_start_lifecycle_preserves_messages(coord_env):
+    """Reviewer round-4 acceptance: exercise the coord lifecycle
+    exactly the way `safeyolo stop`/`safeyolo start` do (via the
+    _stop_coord_best_effort / _start_coord_best_effort helpers, not
+    raw nats_runtime calls). Confirms the issue's specific acceptance
+    signal — restarting SafeYolo does not lose accepted messages —
+    routes through the same code path the operator hits."""
+    from safeyolo.commands.lifecycle import (
+        _start_coord_best_effort,
+        _stop_coord_best_effort,
+    )
+
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    r = _run(api.send("r", "agent", AGENT_A, "safeyolo restart survivor"))
+    seq_before = r["sequence"]
+
+    # Simulate `safeyolo stop` / `safeyolo start` — same helpers the
+    # CLI invokes. The wrappers eat exceptions and log, so a real
+    # stop/start on a healthy install is a no-throw round-trip.
+    _stop_coord_best_effort()
+    nats_client.reset_for_tests()
+    _start_coord_best_effort()
+
+    page = _run(api.read_room("r", "agent", AGENT_B))
+    assert len(page["messages"]) == 1
+    assert page["messages"][0]["body"] == "safeyolo restart survivor"
+    assert page["messages"][0]["sequence"] == seq_before
+
+
 # ---------- 2. Retention truncation is reported to the caller ----------
 
 
@@ -353,7 +386,40 @@ def test_corrupt_persisted_envelope_raises_coord_data_error(coord_env):
         _run(api.read_room("r", "agent", AGENT_A))
 
 
-# ---------- 11. Stream config drift fails loud ----------
+# ---------- 12. read_room has the same TOCTOU protection as wait ----------
+
+
+@pytest.mark.timeout(15)
+def test_revoke_during_blocked_read_raises_no_membership(coord_env):
+    """Reviewer round-4 point 2: read_room checks receive, then does a
+    potentially blocking JetStream fetch, then returns messages. A
+    revoke that lands while the fetch is blocked must NOT ship a peer
+    message the caller has since lost permission to see. Semantically
+    matches #20: post-revoke, all reads are 404.
+    """
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    async def scenario():
+        async def revoke_then_send():
+            # Let read_room's fetch start (~50ms), then revoke + publish
+            # while the fetch is still waiting for a message.
+            await asyncio.sleep(0.05)
+            api.revoke_grant("r", "agent", AGENT_A)
+            await api.send("r", "agent", AGENT_B, "not for alice")
+
+        read_task = asyncio.create_task(
+            api.read_room("r", "agent", AGENT_A, since_sequence=0)
+        )
+        await revoke_then_send()
+        return await read_task
+
+    with pytest.raises(api.NoMembershipError):
+        asyncio.run(scenario())
+
+
+# ---------- 13. Stream config drift fails loud ----------
 
 
 @pytest.mark.timeout(30)

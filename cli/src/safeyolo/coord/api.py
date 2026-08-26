@@ -348,6 +348,18 @@ async def read_room(
     envelopes = await nats_client.fetch_since(
         room_id, since_sequence, limit, timeout=0.5,
     )
+
+    # Re-check grant AFTER the fetch: JetStream's fetch can block
+    # briefly, so a revoke that lands while we're waiting must not
+    # ship messages the caller has since lost permission to see. Same
+    # TOCTOU as wait_for_message; the empty response mirrors the
+    # NoMembership 404 the addon would have returned for a fresh call.
+    try:
+        with store.connect() as conn:
+            _check_grant(conn, room_id, principal_kind, principal_id, "receive")
+    except (NoMembershipError, GrantError):
+        raise
+
     # The stream sequence lives on the envelope as `_stream_seq`; API
     # callers see it as `sequence` (same shape as stage 0).
     messages = []
@@ -404,6 +416,13 @@ async def wait_for_message(
     - Revocation check inside the loop: if the caller loses their
       grant mid-flight (task #37), return empty rather than deliver a
       message that arrived after revocation.
+    - Truncation reporting is deliberately NOT surfaced here: wait is
+      an attention edge, `read_room` is the mandatory catch-up path
+      where truncation is disclosed. The response always sets
+      `history_truncated: false` / `oldest_available_at: null` — a
+      caller that wakes from wait and needs canonical history must
+      call `read_room` to see either the truncation flags or the
+      messages preceding the wake edge.
 
     Blocks the caller (an HTTP long-poll or an MCP tool call);
     the runtime returns when a peer message qualifies or timeout hits.

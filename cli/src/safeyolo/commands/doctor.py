@@ -1490,6 +1490,52 @@ def _check_addon_loading() -> DiagResult:
         )
 
 
+def _check_coord_message_plane() -> DiagResult:
+    """Coord message plane (nats-server) health.
+
+    Coord is best-effort infra on top of the proxy — a failure here
+    means the coord API will 503, but the proxy itself is fine. This
+    check surfaces the runtime state so an operator whose agents
+    can't reach `/api/coord/...` knows to look at NATS rather than
+    tracing through mitmproxy addons.
+    """
+    from ..coord import nats_runtime as coord_nats
+    try:
+        info = coord_nats.status()
+    except Exception as exc:  # noqa: BLE001
+        return DiagResult(
+            name="Coord message plane",
+            status="warn",
+            message=f"nats-server status query failed: {type(exc).__name__}",
+        )
+    if info["healthy"]:
+        return DiagResult(
+            name="Coord message plane",
+            status="pass",
+            message=(
+                f"nats-server running (pid {info['pid']}, "
+                f"listen {info['listen']}, "
+                f"version {info.get('actual_version') or info['requested_version']})"
+            ),
+        )
+    if info.get("binary") is None:
+        return DiagResult(
+            name="Coord message plane",
+            status="warn",
+            message="nats-server binary not installed",
+            remediation="safeyolo start — first run downloads the pinned binary",
+        )
+    return DiagResult(
+        name="Coord message plane",
+        status="warn",
+        message="nats-server not running; coord API will 503",
+        remediation="safeyolo stop && safeyolo start",
+        detail=(
+            f"listen={info['listen']}  config={info.get('config') or 'absent'}  "
+            f"log={info.get('log_file') or 'absent'}"
+        ),
+    )
+
 
 # Dependency map: check_name -> list of check_names it depends on
 _DEPENDS_ON = {
@@ -1530,6 +1576,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
             ("Upstream CA trust", _check_upstream_ca_cert),
             ("Baseline policy", _check_baseline),
             ("Egress enforcement", _check_firewall),
+            ("Coord message plane", _check_coord_message_plane),
             ("Tokens", _check_tokens),
             ("Service gateway vault", _check_vault),
             ("Crash detection", _check_crash_logs),

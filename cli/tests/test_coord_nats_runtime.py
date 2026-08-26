@@ -132,11 +132,18 @@ class TestOwnershipSafety:
             nr._write_pidfile(victim.pid, "safeyolo-not-real", "NDFAKE", "/opt/fake/nats-server")
             # /varz won't answer at all (victim isn't NATS) → ownership fails
             assert nr._verified_ownership() is None
-            # stop_server must be a no-op cleanup, NOT a signal
-            assert nr.stop_server() is False
+            # Reviewer round-4 wedge-guard: PID alive + ownership unverified
+            # means "either wedged owned NATS or impostor on our port" —
+            # both are dangerous to silently paper over. stop_server must
+            # raise rather than either signal the victim or wipe the
+            # pidfile we can't confirm is stale.
+            with pytest.raises(nr.WedgedNatsServer):
+                nr.stop_server()
             time.sleep(0.1)
             assert victim.poll() is None, "IMPOSTOR PROCESS WAS KILLED — pidfile trust bug"
-            assert not nr.nats_pid_path().exists()
+            # Pidfile preserved so the operator can see what state we found
+            # rather than us silently orphaning it.
+            assert nr.nats_pid_path().exists()
         finally:
             victim.terminate()
             with contextlib.suppress(subprocess.TimeoutExpired):
@@ -372,20 +379,50 @@ class TestExternalKillHygiene:
         pid = nr.start_server(ready_timeout=8.0)
         assert nr.is_healthy()
         os.kill(pid, 9)
-        # Wait until the server stops responding on /varz. We can't rely on
-        # _pid_alive because start_server's Popen isn't reaped in this test
-        # scope so the killed process shows up as a zombie for a bit; the
-        # meaningful signal is the ownership predicate, which requires a
-        # live /varz answer.
+        # Wait until the process actually exits (not just stops answering
+        # /varz — a zombie has a live PID but no listener). Reap via
+        # waitpid so /proc entry is gone before we call stop_server;
+        # otherwise the PID-alive wedge guard fires on the zombie.
         for _ in range(60):
-            if nr._varz() is None:
+            try:
+                gone_pid, _ = os.waitpid(pid, os.WNOHANG)
+                if gone_pid == pid:
+                    break
+            except ChildProcessError:
+                break
+            time.sleep(0.05)
+        for _ in range(60):
+            if not nr._pid_alive(pid) and nr._varz() is None:
                 break
             time.sleep(0.05)
         # Ownership check fails cleanly
         assert not nr.is_healthy()
-        # stop_server is a no-op (nothing ours to stop) AND cleans stale state
+        # Process is genuinely gone (not zombie), so stop_server clears
+        # the stale pidfile and returns False.
         assert nr.stop_server() is False
         assert not nr.nats_pid_path().exists()
+
+    def test_pid_alive_but_varz_wedged_refuses_to_orphan(self, nats_env):
+        """Reviewer round-4 unhealthy-stop edge: when the pidfile PID is
+        alive but /varz cannot confirm ownership (transient monitor
+        issue, impostor on our port, or genuine wedge), stop_server must
+        NOT delete the pidfile. Silently orphaning it would turn a
+        wedged owned NATS into an unmanaged host process."""
+        from unittest.mock import patch
+        nr.start_server(ready_timeout=8.0)
+        try:
+            stored = nr._read_pidfile()
+            assert stored is not None
+            # Simulate /varz down while our nats-server is still running.
+            with patch.object(nr, "_varz", return_value=None):
+                with pytest.raises(nr.WedgedNatsServer):
+                    nr.stop_server()
+                # Pidfile survives; the operator can inspect it.
+                assert nr.nats_pid_path().exists()
+        finally:
+            # Real stop with /varz restored so we don't leak nats-server
+            # into the next test.
+            nr.stop_server()
 
 
 class TestMaliciousTarball:

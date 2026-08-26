@@ -70,6 +70,12 @@ _ROOM_MAX_AGE_S = 7 * 24 * 60 * 60         # 7 days (nats-py takes seconds)
 # still fit through JetStream, so the stream ceiling is set to the
 # body cap plus headroom for envelope + Nats-Msg-Id header overhead.
 _ROOM_MAX_MSG_SIZE = 320 * 1024
+# Generous ceiling on the number of messages retained per room, per
+# #371 spec. Bytes/age still bound retention in most rooms; this
+# catches pathological write patterns where each message is tiny but
+# the flood is dense (a chatty tool loop, say) before the bytes cap
+# would trigger.
+_ROOM_MAX_MSGS = 100_000
 _DEDUP_WINDOW_S = 2 * 60                   # 2 minutes
 
 # Ephemeral fetch defaults; the API layer chooses timeouts explicitly.
@@ -243,6 +249,7 @@ def _expected_stream_fields() -> dict[str, Any]:
         "max_bytes": _ROOM_MAX_BYTES,
         "max_age": _ROOM_MAX_AGE_S,
         "max_msg_size": _ROOM_MAX_MSG_SIZE,
+        "max_msgs": _ROOM_MAX_MSGS,
         "duplicate_window": _DEDUP_WINDOW_S,
     }
 
@@ -302,6 +309,7 @@ async def ensure_room_stream(room_id: str) -> None:
             max_bytes=_ROOM_MAX_BYTES,
             max_age=_ROOM_MAX_AGE_S,
             max_msg_size=_ROOM_MAX_MSG_SIZE,
+            max_msgs=_ROOM_MAX_MSGS,
             duplicate_window=_DEDUP_WINDOW_S,
             num_replicas=1,
         )

@@ -25,8 +25,12 @@ Diagnostics:
     - `status()` reports the actual `nats-server -v` output, not the
       requested pin.
 
-Not wired into `safeyolo start/stop` yet; the lifecycle module lives
-independently so its hardening can be reviewed on its own.
+Wired into `safeyolo start/stop/status/doctor` via
+`commands.lifecycle` — start is best-effort (a NATS failure marks
+coord degraded but does not prevent the proxy from starting), stop
+tears NATS down before the proxy so the message plane never outlives
+the process that reads it, and doctor surfaces the runtime state
+alongside the other health checks.
 
 Recorded runtime hardening deferred to future commits (per reviewer
 round 2 close-out — real, not dismissed):
@@ -668,13 +672,24 @@ def _start_server_locked(ready_timeout: float) -> int:
         raise
 
 
+class WedgedNatsServer(RuntimeError):
+    """The pidfile points at a live PID we own on paper (the file was
+    written by us), but /varz can't confirm ownership. Someone or
+    something has left NATS in a state we cannot safely signal — either
+    the monitor endpoint is unreachable, or a different nats-server has
+    reused the PID. Never delete the pidfile in this state (reviewer
+    round-4 unhealthy-stop edge): that turns a wedged owned NATS into
+    an unmanaged host process."""
+
+
 def stop_server() -> bool:
     """Stop the SafeYolo-managed nats-server. Returns True iff we
     signalled a process WE OWN. Never signals a PID that fails
     ownership verification (stale pidfile / PID reuse).
-    Shares the lifecycle lock with start_server (reviewer round 2
-    final point) so concurrent start+stop cannot race on pidfile
-    or process state.
+    Shares the lifecycle lock with start_server so concurrent start+stop
+    cannot race on pidfile or process state. Raises WedgedNatsServer
+    when the pidfile PID is alive but ownership cannot be verified —
+    the operator has to intervene rather than us silently orphaning it.
     """
     with _lifecycle_lock():
         return _stop_server_locked()
@@ -682,7 +697,23 @@ def stop_server() -> bool:
 
 def _stop_server_locked() -> bool:
     verified = _verified_ownership()
-    if not verified:
+    if verified is None:
+        # Two shapes of "no verified ownership":
+        #   1. No pidfile / stale pidfile with dead PID  → safe to clear
+        #      the pidfile, nothing to stop, return False.
+        #   2. Pidfile PID is alive but /varz cannot confirm ownership
+        #      → wedged; DO NOT delete the pidfile (that would abandon
+        #      an owned-on-paper live process to become unmanaged).
+        stored = _read_pidfile()
+        if stored is not None and _pid_alive(stored["pid"]):
+            raise WedgedNatsServer(
+                f"pidfile PID {stored['pid']} is alive but /varz ownership "
+                f"cannot be verified (server_name={stored['server_name']}). "
+                "Refusing to delete the pidfile or signal an unverified "
+                "process. Investigate manually: check nats-server log "
+                f"({nats_log_path()}) and monitor endpoint "
+                f"({NATS_LISTEN_HOST}:{NATS_MONITOR_PORT})."
+            )
         nats_pid_path().unlink(missing_ok=True)
         return False
     pid = verified["pid"]
