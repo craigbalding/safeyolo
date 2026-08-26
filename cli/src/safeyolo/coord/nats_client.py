@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import nats
@@ -135,24 +136,29 @@ _UNAVAILABLE_EXCEPTIONS = (NoServersError, NatsError, OSError)
 # open a fresh loop per call, so we track the owning loop and reconnect
 # transparently if it changes. Without this the second asyncio.run()
 # call in a test hangs on a dead transport.
-_client: nats.aio.client.Client | None = None
-_js: Any | None = None
-_client_loop: asyncio.AbstractEventLoop | None = None
+@dataclass
+class _ConnectionState:
+    client: nats.aio.client.Client | None = None
+    js: Any | None = None
+    client_loop: asyncio.AbstractEventLoop | None = None
+    # asyncio.Lock is bound to its creating loop, so tests that use a fresh
+    # asyncio.run() per call need the lock and its owner replaced together.
+    connect_lock: asyncio.Lock | None = None
+    connect_lock_loop: asyncio.AbstractEventLoop | None = None
 
-# Lazily created lock. asyncio.Lock is bound to the loop it was made
-# on, so we recreate it whenever the owning loop changes (tests do
-# this by using asyncio.run per call; production has one stable loop).
-_connect_lock: asyncio.Lock | None = None
-_connect_lock_loop: asyncio.AbstractEventLoop | None = None
+
+_connection = _ConnectionState()
 
 
 def _lock_for_current_loop(current_loop: asyncio.AbstractEventLoop) -> asyncio.Lock:
     """Return a lock bound to `current_loop`. Recreate on loop change."""
-    global _connect_lock, _connect_lock_loop
-    if _connect_lock is None or _connect_lock_loop is not current_loop:
-        _connect_lock = asyncio.Lock()
-        _connect_lock_loop = current_loop
-    return _connect_lock
+    if (
+        _connection.connect_lock is None
+        or _connection.connect_lock_loop is not current_loop
+    ):
+        _connection.connect_lock = asyncio.Lock()
+        _connection.connect_lock_loop = current_loop
+    return _connection.connect_lock
 
 
 async def get_jetstream():
@@ -162,15 +168,14 @@ async def get_jetstream():
     should map this to a coord 503 rather than letting it escape as
     a generic 500.
     """
-    global _client, _js, _client_loop
     current_loop = asyncio.get_running_loop()
     # Fast path: already connected on this loop.
     if (
-        _client is not None
-        and _client_loop is current_loop
-        and _client.is_connected
+        _connection.client is not None
+        and _connection.client_loop is current_loop
+        and _connection.client.is_connected
     ):
-        return _js
+        return _connection.js
     # Serialize concurrent first-connects so we don't create two live
     # clients and leak the loser (reviewer round-3 point 6).
     lock = _lock_for_current_loop(current_loop)
@@ -178,16 +183,19 @@ async def get_jetstream():
         # Recheck under lock: another coro may have connected while we
         # were waiting.
         if (
-            _client is not None
-            and _client_loop is current_loop
-            and _client.is_connected
+            _connection.client is not None
+            and _connection.client_loop is current_loop
+            and _connection.client.is_connected
         ):
-            return _js
-        if _client is not None and _client_loop is not current_loop:
+            return _connection.js
+        if (
+            _connection.client is not None
+            and _connection.client_loop is not current_loop
+        ):
             # Loop changed — the transport is bound to a loop we can no
             # longer touch. Drop refs; GC cleans up.
-            _client = None
-            _js = None
+            _connection.client = None
+            _connection.js = None
         user, password = nats_runtime.client_user_credentials()
         try:
             # Bounded reconnect attempts: `-1` (unlimited) makes the
@@ -208,19 +216,18 @@ async def get_jetstream():
             )
         except _UNAVAILABLE_EXCEPTIONS as e:
             raise NatsUnavailable(f"cannot reach nats-server: {e!s}") from e
-        _client = client
-        _js = client.jetstream()
-        _client_loop = current_loop
-        return _js
+        _connection.client = client
+        _connection.js = client.jetstream()
+        _connection.client_loop = current_loop
+        return _connection.js
 
 
 async def close() -> None:
     """Best-effort teardown. Safe to call multiple times."""
-    global _client, _js, _client_loop
-    client = _client
-    _client = None
-    _js = None
-    _client_loop = None
+    client = _connection.client
+    _connection.client = None
+    _connection.js = None
+    _connection.client_loop = None
     if client is not None:
         try:
             await client.close()
@@ -233,12 +240,11 @@ def reset_for_tests() -> None:
     event loop per test — the async close() runs on the wrong loop and
     stale state leaks across tests. This just drops the references;
     the previous connection's transport will be garbage collected."""
-    global _client, _js, _client_loop, _connect_lock, _connect_lock_loop
-    _client = None
-    _js = None
-    _client_loop = None
-    _connect_lock = None
-    _connect_lock_loop = None
+    _connection.client = None
+    _connection.js = None
+    _connection.client_loop = None
+    _connection.connect_lock = None
+    _connection.connect_lock_loop = None
 
 
 # ---------- stream naming ----------

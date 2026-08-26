@@ -43,10 +43,6 @@ log = logging.getLogger("safeyolo.agent-api")
 AGENT_API_HOST = "_safeyolo.proxy.internal"
 MAX_EXPLAIN_LINES = 10000
 
-# Set on first coord request per process (see _handle_coord). Ensures the
-# addon works on a fresh host without a preceding `safeyolo coord init`.
-_COORD_BOOTSTRAPPED = False
-
 # Two limits, deliberately distinct:
 #   - COORD_MAX_BODY_BYTES caps the parsed message body itself. This is
 #     the user-facing contract mirrored in coord.api.MAX_BODY_BYTES so
@@ -100,6 +96,12 @@ class AgentAPI:
     """Authenticated agent self-service API, reached through the proxy via a virtual hostname."""
 
     name = "agent-api"
+
+    def __init__(self):
+        # Set on the first coord request handled by this addon. Bootstrap is
+        # idempotent, and keeping the flag on the addon avoids mutable module
+        # state shared by independently constructed test/proxy instances.
+        self._coord_bootstrapped = False
 
     def load(self, loader):
         loader.add_option(
@@ -377,10 +379,9 @@ class AgentAPI:
         # Lazy one-time bootstrap: idempotent, but only takes the SQLite
         # lock on the first call per process. Ensures the addon works on a
         # fresh host without a preceding `safeyolo coord init`.
-        global _COORD_BOOTSTRAPPED
-        if not _COORD_BOOTSTRAPPED:
+        if not self._coord_bootstrapped:
             await asyncio.to_thread(coord_api.bootstrap)
-            _COORD_BOOTSTRAPPED = True
+            self._coord_bootstrapped = True
 
         agent_name = self._resolve_agent_id(flow)
         if agent_name is None:

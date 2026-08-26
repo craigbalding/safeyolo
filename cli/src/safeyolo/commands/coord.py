@@ -274,7 +274,7 @@ class _ChatRuntime:
         try:
             from ..coord import nats_client
             self._loop.run_until_complete(nats_client.close())
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass  # best-effort teardown
         self._loop.close()
 
@@ -553,6 +553,7 @@ def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
                 if not page["has_more"]:
                     break
     except KeyboardInterrupt:
+        # Ctrl-C is the normal way to detach from the interactive chat loop.
         pass
     console.print("\n[dim]detached[/]")
 

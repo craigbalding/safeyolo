@@ -27,6 +27,7 @@ import json
 import os
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
@@ -54,6 +55,15 @@ class TestPathsAndCredentials:
         assert len(pw1) == 64
         assert nr.nats_creds_path().stat().st_mode & 0o777 == 0o600
 
+    def test_ensure_credentials_publishes_atomically_under_race(self, isolated_coord):
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            passwords = list(pool.map(lambda _: nr.ensure_credentials(), range(64)))
+
+        assert len(set(passwords)) == 1
+        assert nr.read_credentials() == passwords[0]
+        assert nr.nats_creds_path().stat().st_mode & 0o777 == 0o600
+        assert list(nr.nats_root().glob(".creds.*.tmp")) == []
+
     def test_secure_dir_modes(self, isolated_coord):
         """Reviewer small fix: data dirs 0700, not default umask."""
         nr.write_config("safeyolo-test")
@@ -75,10 +85,12 @@ class TestConfig:
         assert "no_auth_user" not in content
         assert path.stat().st_mode & 0o777 == 0o600
 
-    def test_config_embeds_credentials(self, isolated_coord):
+    def test_config_references_runtime_credential_environment(self, isolated_coord):
         pw = nr.ensure_credentials()
         path = nr.write_config("safeyolo-test")
-        assert pw in path.read_text()
+        content = path.read_text()
+        assert pw not in content
+        assert "password: $SAFEYOLO_NATS_PASSWORD" in content
 
 
 class TestPidfile:
@@ -176,7 +188,7 @@ class TestOwnershipSafety:
             # Patch /varz to return a DIFFERENT server_id — simulates a
             # nats-server restart under the same config, or a stale
             # pidfile plus another instance of the same server_name.
-            with patch.object(nr, "_varz", return_value={
+            with patch.object(nr, "_varz", autospec=True, return_value={
                 "server_name": stored["server_name"],
                 "server_id": "ND-DIFFERENT-ID",
             }):
@@ -258,7 +270,7 @@ class TestFailedStartupDiagnostics:
         """Reviewer round 1 #3: on timeout the child is reaped + pidfile
         removed. /varz forced to return a mismatched name so startup
         never succeeds."""
-        with patch.object(nr, "_varz", return_value={
+        with patch.object(nr, "_varz", autospec=True, return_value={
             "server_name": "not-our-name", "server_id": "ND-X",
         }):
             with pytest.raises(TimeoutError):
@@ -280,7 +292,9 @@ class TestFailedStartupDiagnostics:
             # Simulate disk full / chmod denied AFTER we know the PID
             raise OSError("simulated disk full")
 
-        with patch.object(nr, "_write_pidfile", side_effect=failing_write):
+        with patch.object(
+            nr, "_write_pidfile", autospec=True, side_effect=failing_write
+        ):
             with pytest.raises(OSError, match="simulated disk full"):
                 nr.start_server(ready_timeout=8.0)
 
@@ -414,7 +428,7 @@ class TestExternalKillHygiene:
             stored = nr._read_pidfile()
             assert stored is not None
             # Simulate /varz down while our nats-server is still running.
-            with patch.object(nr, "_varz", return_value=None):
+            with patch.object(nr, "_varz", autospec=True, return_value=None):
                 with pytest.raises(nr.WedgedNatsServer):
                     nr.stop_server()
                 # Pidfile survives; the operator can inspect it.

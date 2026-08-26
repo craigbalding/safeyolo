@@ -82,6 +82,7 @@ def get_or_create_instance_id() -> str:
                 try:
                     os.unlink(tmp_name)
                 except FileNotFoundError:
+                    # Another cleanup path already removed the failed stage.
                     pass
                 raise
             return iid

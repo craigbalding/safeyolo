@@ -20,7 +20,9 @@ _NON_IDENTITIES = frozenset({"", "unknown", "default"})
 class AgentLookup(Protocol):
     """The service-discovery surface needed by identity resolution."""
 
-    def get_client_for_ip(self, ip: str) -> str | None: ...
+    def get_client_for_ip(self, ip: str) -> str | None:
+        """Return the agent mapped to ``ip``, if one is known."""
+        raise NotImplementedError
 
 
 class IdentityStatus(StrEnum):

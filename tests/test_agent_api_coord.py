@@ -7,10 +7,10 @@ via the addon (not just via the underlying coord.api).
 """
 
 import asyncio
+import json
 import os
 from unittest.mock import patch
 
-import json
 import pytest
 from agent_api import AGENT_API_HOST, AgentAPI
 from mitmproxy.test import taddons, tflow
@@ -71,7 +71,9 @@ def _make_flow(path, method="GET", body=None):
 
 
 def _run(addon, flow):
-    with patch("pdp.tokens.read_active_token", return_value=AGENT_TOKEN):
+    with patch(
+        "pdp.tokens.read_active_token", autospec=True, return_value=AGENT_TOKEN
+    ):
         asyncio.run(addon.request(flow))
 
 
@@ -93,7 +95,9 @@ def _setup_room_with_grants(room, agents):
 
 def _as_agent(name):
     """Force `_resolve_agent_id` to attribute the request to `name`."""
-    return patch.object(AgentAPI, "_resolve_agent_id", return_value=name)
+    return patch.object(
+        AgentAPI, "_resolve_agent_id", autospec=True, return_value=name
+    )
 
 
 class TestCoordIdentity:
@@ -143,6 +147,7 @@ class TestCoordIdentity:
         primitive.
         """
         from types import SimpleNamespace
+
         from safeyolo.proxy_modes.unix_listener import UnixMode
 
         _register_agent("alice")
@@ -162,8 +167,14 @@ class TestCoordIdentity:
         # DIFFERENT agent. resolve_agent_identity should raise CONFLICT,
         # is_resolved=False, _resolve_agent_id returns None, coord 403s.
         stub_sd = SimpleNamespace(get_client_for_ip=lambda ip: "bob")
-        with patch.object(AgentAPI, "_find_addon",
-                          side_effect=lambda name: stub_sd if name == "service-discovery" else None):
+        with patch.object(
+            AgentAPI,
+            "_find_addon",
+            autospec=True,
+            side_effect=lambda _self, name: (
+                stub_sd if name == "service-discovery" else None
+            ),
+        ):
             _run(api, flow)
 
         assert flow.response.status_code == 403
@@ -310,7 +321,11 @@ class TestCoordBoundaryEscape:
         _register_agent("alice")
         _setup_room_with_grants("huddle", ["alice"])
         with _as_agent("alice"), \
-             patch("safeyolo.coord.api.join_room", side_effect=RuntimeError("boom-handler")):
+             patch(
+                 "safeyolo.coord.api.join_room",
+                 autospec=True,
+                 side_effect=RuntimeError("boom-handler"),
+             ):
             flow = _make_flow("/api/coord/rooms/huddle/join", method="POST")
             _run(api, flow)
         # Response set → mitmproxy will not forward upstream
@@ -323,8 +338,11 @@ class TestCoordBoundaryEscape:
         _register_agent("alice")
         _setup_room_with_grants("huddle", ["alice"])
         with _as_agent("alice"), \
-             patch("safeyolo.agents_store.get_agent_id",
-                   side_effect=RuntimeError("boom-identity")):
+             patch(
+                 "safeyolo.agents_store.get_agent_id",
+                 autospec=True,
+                 side_effect=RuntimeError("boom-identity"),
+             ):
             flow = _make_flow("/api/coord/rooms/huddle/join", method="POST")
             _run(api, flow)
         assert flow.response is not None
@@ -340,8 +358,13 @@ class TestCoordBoundaryEscape:
         _register_agent("alice")
         _setup_room_with_grants("huddle", ["alice"])
         with _as_agent("alice"), \
-             patch("safeyolo.coord.api.join_room",
-                   side_effect=TypeError("join_room() got an unexpected keyword argument 'foo'")):
+             patch(
+                 "safeyolo.coord.api.join_room",
+                 autospec=True,
+                 side_effect=TypeError(
+                     "join_room() got an unexpected keyword argument 'foo'"
+                 ),
+             ):
             flow = _make_flow("/api/coord/rooms/huddle/join", method="POST")
             _run(api, flow)
         assert flow.response is not None
@@ -839,5 +862,4 @@ class TestCoordCorruptEnvelopeIsolation:
         # Not a silent [] page — the addon boundary sees the coord data
         # error and surfaces it as a generic 500.
         assert flow.response.status_code == 500
-
 

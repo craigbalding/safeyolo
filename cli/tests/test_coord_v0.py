@@ -381,7 +381,11 @@ def test_grant_absorbs_same_ms_collision(coord_env):
     api.grant("r", "agent", AGENT_A)
     # Force same-millisecond by mocking now_ms to a constant
     from unittest.mock import patch
-    with patch("safeyolo.coord.store.now_ms", return_value=api.store.now_ms()):
+    with patch(
+        "safeyolo.coord.store.now_ms",
+        autospec=True,
+        return_value=api.store.now_ms(),
+    ):
         # Should NOT raise IntegrityError
         api.grant("r", "agent", AGENT_A)
         api.grant("r", "agent", AGENT_A)
