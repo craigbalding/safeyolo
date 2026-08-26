@@ -33,7 +33,7 @@ Agents need to be controlled to prevent accidents and limit the blast radius of 
 
 ### Minimize trust
 
-Grant the minimum access required. Agents run in isolated sandboxes with no external network interface. SafeYolo runs as a host mitmproxy process — no privileged runtime. Admin API binds to 127.0.0.1 only and requires bearer-token auth (`secrets.compare_digest`, timing-safe). All processes run as your host uid; on Linux `safeyolo agent run` is zero-sudo.
+Grant the minimum access required. Agents run in isolated sandboxes with no external network interface. SafeYolo runs as a host mitmproxy process — no privileged runtime. Admin API binds directly to 127.0.0.1 without hostname or reverse-DNS resolution, so the host-local boundary and proxy readiness do not depend on the host resolver; it also requires bearer-token auth (`secrets.compare_digest`, timing-safe). All processes run as your host uid; on Linux `safeyolo agent run` is zero-sudo.
 
 ### Fail closed
 
