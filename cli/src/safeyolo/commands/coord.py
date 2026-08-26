@@ -25,6 +25,7 @@ from rich.text import Text
 
 from ..agents_store import get_or_mint_agent_id, load_all_agents
 from ..coord import api
+from ..coord.nats_client import CoordDataError, NatsUnavailable
 
 # One-shot CLI commands (room create, grant, revoke) each spin up a
 # fresh event loop with `asyncio.run` — cheap and no lifetime issues.
@@ -100,6 +101,28 @@ def _render_body(body: str) -> None:
         segments = Text(line).wrap(console, width, overflow="fold") or [Text("")]
         for segment in segments:
             console.print(gutter + segment)
+
+
+def _explain_coord_failure(exc: Exception) -> str:
+    """Turn a coord runtime failure into something an operator can act on.
+
+    These reach the chat loop as bare exceptions and rich renders a full
+    traceback, which buries the one line that matters. NatsUnavailable in
+    particular often carries an empty message, so the exception text alone
+    tells the operator nothing.
+    """
+    if isinstance(exc, CoordDataError):
+        return (f"coord storage problem: {exc}\n"
+                "The room is registered but its message stream is missing or "
+                "corrupt. This is data loss, not a transient fault — do not "
+                "retry blindly; check `safeyolo coord doctor` and the "
+                "nats-server logs.")
+    detail = str(exc).strip()
+    if not detail or detail.endswith(":"):
+        detail = "no detail reported (often a timeout misreported as a fault)"
+    return (f"coord runtime unreachable: {detail}\n"
+            "The NATS runtime backing coord is not answering. Check it is up "
+            "(`safeyolo coord status`), then reattach.")
 
 
 def _render_message(m: dict) -> None:
@@ -301,16 +324,42 @@ def chat(
             _observe_loop(runtime, room, cursor)
         else:
             _interactive_loop(runtime, room, cursor)
+    except (NatsUnavailable, CoordDataError) as e:
+        console.print(f"[red]{_explain_coord_failure(e)}[/]")
+        raise typer.Exit(1) from None
     finally:
         runtime.close()
 
 
 def _observe_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
     console.print("[dim]--- observing (Ctrl-C to detach) ---[/]")
+    # An observer polls indefinitely, so a blip should not end the session --
+    # but a runtime that stays down must not scroll the same error forever.
+    consecutive_failures = 0
     try:
         while True:
-            page = runtime.run(api.read_room(room, "operator", "operator",
-                                             since_sequence=cursor, limit=api.READ_PAGE_MAX))
+            try:
+                page = runtime.run(api.read_room(room, "operator", "operator",
+                                                 since_sequence=cursor,
+                                                 limit=api.READ_PAGE_MAX))
+            except CoordDataError as e:
+                console.print(f"[red]{_explain_coord_failure(e)}[/]")
+                raise typer.Exit(1) from None
+            except NatsUnavailable as e:
+                consecutive_failures += 1
+                if consecutive_failures == 1:
+                    console.print(f"[yellow]{_explain_coord_failure(e)}[/]")
+                    console.print("[dim]retrying; Ctrl-C to detach[/]")
+                elif consecutive_failures >= _OBSERVE_MAX_FAILURES:
+                    console.print(
+                        f"[red]still unreachable after "
+                        f"{consecutive_failures} attempts; detaching[/]")
+                    raise typer.Exit(1) from None
+                time.sleep(1.0)
+                continue
+            if consecutive_failures:
+                console.print("[green]coord runtime back; resuming[/]")
+                consecutive_failures = 0
             for m in page["messages"]:
                 _render_message(m)
             cursor = page["next_cursor"]
@@ -319,6 +368,9 @@ def _observe_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
     except KeyboardInterrupt:
         console.print("\n[dim]detached[/]")
 
+
+# Give up observing after this many consecutive unreachable polls.
+_OBSERVE_MAX_FAILURES = 10
 
 # Short aliases matter at a chat prompt -- these get typed constantly.
 _PASTE_CMDS = (":paste", ":p")
@@ -445,9 +497,24 @@ def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
                 except api.GrantError as e:
                     console.print(f"[red]{e}[/]")
                     break
+                except (NatsUnavailable, CoordDataError) as e:
+                    # The message was not sent. Say so plainly rather than
+                    # leaving the operator to guess from a traceback whether
+                    # it landed.
+                    console.print(f"[red]{_explain_coord_failure(e)}[/]")
+                    console.print("[red]your message was NOT sent[/]")
+                    continue
             while True:
-                page = runtime.run(api.read_room(room, "operator", "operator",
-                                                 since_sequence=cursor, limit=api.READ_PAGE_MAX))
+                try:
+                    page = runtime.run(api.read_room(
+                        room, "operator", "operator",
+                        since_sequence=cursor, limit=api.READ_PAGE_MAX))
+                except (NatsUnavailable, CoordDataError) as e:
+                    # Keep the prompt alive: the operator can retry with an
+                    # empty line once the runtime is back, without losing the
+                    # session or their cursor.
+                    console.print(f"[red]{_explain_coord_failure(e)}[/]")
+                    break
                 for m in page["messages"]:
                     _render_message(m)
                 cursor = page["next_cursor"]

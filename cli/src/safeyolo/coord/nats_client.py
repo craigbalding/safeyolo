@@ -105,11 +105,20 @@ class StreamConfigDrift(RuntimeError):
     a stale ceiling (reviewer round-3 point 5)."""
 
 
+# A pull fetch that finds nothing is a timeout, not a fault. nats-py is
+# inconsistent about which timeout it raises: most paths raise
+# nats.errors.TimeoutError, but JetStreamContext._fetch_n raises a bare
+# asyncio.TimeoutError when its deadline has already passed. That is the
+# builtin TimeoutError, which subclasses OSError -- so catching only
+# NatsTimeout let an ordinary empty fetch fall through to the
+# "unreachable" branch below and surface to the operator as
+# `NatsUnavailable: fetch failed:` with an empty reason. Catch both.
+_TIMEOUT_EXCEPTIONS = (NatsTimeout, asyncio.TimeoutError)
+
 # NATS errors that mean "runtime is unreachable" and should surface as
-# NatsUnavailable to the caller. NatsTimeout is intentionally NOT
-# in this set at every callsite — an empty pull fetch times out
-# legitimately, so callers that treat timeout as "no messages" must
-# handle it themselves before calling the wrapper.
+# NatsUnavailable to the caller. Timeouts are NOT in this set — see
+# above — so callers that treat a timeout as "no messages" must handle
+# _TIMEOUT_EXCEPTIONS themselves before this one.
 _UNAVAILABLE_EXCEPTIONS = (NoServersError, NatsError, OSError)
 
 
@@ -493,7 +502,8 @@ async def _drain(psub, stream: str, limit: int, timeout: float) -> list[dict]:
     """Fetch and decode up to `limit` envelopes from an open consumer."""
     try:
         msgs = await psub.fetch(limit, timeout=timeout)
-    except NatsTimeout:
+    except _TIMEOUT_EXCEPTIONS:
+        # No messages in the window. Ordinary, not a fault.
         return []
     except _UNAVAILABLE_EXCEPTIONS as e:
         raise NatsUnavailable(f"fetch failed: {e!s}") from e

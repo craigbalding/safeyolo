@@ -699,3 +699,48 @@ def test_catch_up_reads_from_the_canonical_cursor_not_the_wake_edge(coord_env):
     assert [m["body"] for m in from_canonical["messages"]] == ["own 11", "peer 12"]
     # ...and the cursor to re-arm on is the highest sequence seen.
     assert from_canonical["next_cursor"] == 12
+
+
+# --- timeout must not masquerade as an outage --------------------------------
+
+
+def test_asyncio_timeout_from_fetch_is_an_empty_page_not_an_outage(coord_env):
+    """nats-py raises two different timeouts; only one was being caught.
+
+    JetStreamContext._fetch_n raises a bare asyncio.TimeoutError when its
+    deadline has already passed, rather than nats.errors.TimeoutError. The
+    bare one is the builtin TimeoutError, which subclasses OSError, so it fell
+    through to the "runtime unreachable" branch and surfaced to the operator
+    as `NatsUnavailable: fetch failed:` with an empty reason -- for an
+    ordinary empty poll.
+    """
+    room_id = _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+
+    class _Timeout:
+        async def fetch(self, *_a, **_k):
+            raise asyncio.TimeoutError          # exactly what _fetch_n raises
+
+    assert _run(nats_client._drain(_Timeout(), "stream", 10, 0.1)) == []
+
+    # And the nats-flavoured one still behaves the same way.
+    from nats.errors import TimeoutError as NatsTimeout
+
+    class _NatsTimeout:
+        async def fetch(self, *_a, **_k):
+            raise NatsTimeout
+
+    assert _run(nats_client._drain(_NatsTimeout(), "stream", 10, 0.1)) == []
+
+    # A real outage must still be reported as one.
+    class _Down:
+        async def fetch(self, *_a, **_k):
+            raise ConnectionRefusedError("connection refused")
+
+    with pytest.raises(nats_client.NatsUnavailable):
+        _run(nats_client._drain(_Down(), "stream", 10, 0.1))
+
+    # An empty room still reads as an empty page end to end.
+    page = _run(api.read_room("r", "agent", AGENT_A))
+    assert page["messages"] == []
+    assert room_id
