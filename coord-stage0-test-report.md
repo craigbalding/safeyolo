@@ -534,3 +534,135 @@ to reason about each other.
   the new `limit=1` default. Untestable with two agents, and now the most
   realistic path to a lost-message bug, since `has_more` handling is the only
   thing standing between a `limit=1` wake and a silently-skipped peer message.
+
+---
+
+# Patch round 4 — #20 / #22 verified, and the interleave test
+
+## Verified fixed
+
+### 20. Room-existence enumeration — FIXED
+
+All five ops return an identical body with no room-name echo:
+
+    POST secret/join      404 {"error": "room not found or not accessible"}
+    POST secret/send      404  (identical)
+    GET  secret/messages  404  (identical)
+    GET  secret/wait      404  (identical)
+    GET  secret-typo/join 404  (identical)
+
+**The new `/members` op did not re-open it** — `secret/members` and
+`secret-typo/members` both return the same 404. That was the obvious way to
+reintroduce the leak while fixing #22; it did not happen.
+
+### 22. Identity unrecognisable — FIXED
+
+`GET /rooms/{room}/members` returns `{principal_kind, agent_id, agent_name,
+origin_instance_id}` per member, and `sender_agent_name` is now on the
+envelope. Spoof-resistant — a POST body carrying
+`"sender_agent_name":"claude"` plus a forged `sender_agent_id` was ignored,
+envelope came back `{id: ag-280746d1…, name: "bob"}`. Same enforcement path as
+the original seq=2 spoof test.
+
+**The fix immediately paid for itself.** `/members` reports the third agent as
+**codey**, not `codex`. Every participant — including that agent — had been
+writing `codex` in message bodies for the entire session. The first thing the
+fix did was catch a name everyone had been repeating, which is exactly the
+folklore #22 described.
+
+### 23. `sender_agent_name` null is ambiguous — NEW, partially addressed
+
+    agent messages: 69   with name: 3   null name: 66
+
+Null means "sent before #22 shipped" or "agent_id no longer resolvable", with
+nothing distinguishing them. Operator messages also carry a null name, but that
+case is **not** ambiguous — `sender_kind="operator"` disambiguates it — so the
+problem is confined to agent rows, which narrows backfill scope accordingly.
+
+Backfill is cheap now that the mapping is exposed. Worth doing: a 96%-null
+history is more misleading than a fully unattributed one, since three named
+messages among 66 nulls invites reading the nulls as anonymous rather than
+legacy. After backfill, null on an agent row becomes fact-carrying — "no longer
+resolvable" — rather than ambiguous.
+
+Separately, `sender_agent_name` is denormalised into the message row at send
+time, so it is a snapshot while `/members` is current; they diverge on rename.
+Probably correct — history should record the name as it was — but it should be
+a documented decision rather than an artifact of where the column lives.
+
+## The interleave test
+
+Purpose: exercise the `limit=1` wake contract with a peer message sitting
+behind another peer message — the most realistic remaining path to a silently
+lost message, and a branch no earlier test had reached.
+
+**Premise correction:** originally scoped as needing three agents. Wrong — the
+failure needs two *peer messages*, not two distinct peers. One peer sending two
+back-to-back produces the condition. A third agent adds interleaving realism,
+not the mechanism.
+
+    WAKE elapsed=22.7s
+    wake (limit=1 default): n=1  seqs=[84]  body="interleave-claude-2"
+                            next_cursor=84  has_more=TRUE
+    catch-up from pre-arm 83:  seq=84 "interleave-claude-2"
+                               seq=85 "interleave-claude-1"
+    after next_cursor=84:      seq=85 still reachable
+
+### Cursor safety — PASS
+
+**First observation of `has_more=true` on a wake from a peer.** Every earlier
+wake returned a single message with `has_more=false`, so the branch the
+documented loop depends on had never actually been exercised.
+
+`next_cursor=84` points at the message returned, **not** past the unread one,
+so re-arming there cannot skip seq=85. Catch-up from the pre-arm cursor
+recovers both. An agent following wake -> catch-up read -> re-arm loses
+nothing. The dangerous failure mode is not present.
+
+### Ordering — #14 upgraded
+
+The two messages arrived **reversed**: `interleave-claude-2` took seq=84,
+`interleave-claude-1` took seq=85. The wake handed part 2 as the first thing
+the agent saw, with part 1 not yet in view.
+
+This is #14, but worse than originally filed. It was scoped as a 12-way
+concurrent burst getting shuffled — "right default for chat, wrong for typed
+protocol messages". It in fact hits **two sends of a semantically ordered
+message**, and the reordering is visible on the **primary attention path**, not
+just in a bulk read. An agent following wake-then-respond answers part 2 without
+having seen part 1, and the catch-up does not rescue it: rowid order *is* the
+reversed order.
+
+### Control — sequential sends preserve order
+
+Five strictly sequential sends, full round-trip awaited between each:
+
+    issued #1..#5 -> seq 87, 88, 89, 90, 91   read back in the same order
+
+5/5. Sequence assignment is consistent with commit order for non-overlapping
+commits — a server property, not a client one. This rules out the serious
+branch: rowid does not go backwards for sends that do not overlap. The 84/85
+reversal is overlapping calls racing for the SQLite writer, i.e. #14 as filed.
+
+### What the pair establishes
+
+- ordering is preserved **iff** calls do not overlap
+- overlap is easy to create accidentally — "send the parts as fast as you can"
+  is a natural way to emit a multi-part message and is precisely the trigger
+- nothing on the wire records intent, so a reader cannot detect that
+  reordering occurred
+
+The last point is what belongs in #371. The hazard is not that reordering
+happens — arrival-order is a defensible default for a chat substrate. It is
+that reordering is **silent and unrecoverable**. `client_seq` would not prevent
+it but would make it visible, which is the difference between a documented
+semantic and a trap.
+
+## Room features exercised and verified this round
+
+`/members` with agent_id + name; `sender_agent_name` on the envelope and
+spoof-resistant; 404 collapse across all five ops including `/members`;
+`text/plain` vs `text/markdown` round-trip with unicode (`é`, `日本語`, `🔍`)
+and trailing whitespace byte-identical; `limit=1` wake with `has_more=true`;
+`include_self` opt-in; catch-up pagination; cursor safety under a concurrent
+peer; sequential-order preservation.

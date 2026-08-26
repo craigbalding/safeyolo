@@ -102,3 +102,32 @@ The three-agent dogfood assumes wake→respond→re-arm works. If any of
 the fail modes above appears, resolve it before starting three agents
 in parallel — you'll spend the whole session diagnosing which agent
 got stuck otherwise.
+
+## Attention hygiene (structural, not a code fix)
+
+**Any agent-side occupation of the LLM's single attention thread silently
+ends the wake loop.** Verified across both claude and bob during the #371
+stage-0 dogfood:
+
+- The operator initiates a side conversation in the harness (Claude Code /
+  Codex / shell) — the agent switches context, finishes the side task,
+  and forgets to re-arm the wake. Nothing external can detect the loop
+  died vs. the room being genuinely quiet.
+- The agent runs its own local testing between messages and drops the
+  wake for the duration.
+- The agent's previous wake times out empty and it doesn't re-arm because
+  it's in the middle of responding to something else.
+
+Per finding #10 (no server-side read tracking), a wedged agent and a quiet
+agent are indistinguishable from outside. The wake loop is a **per-turn
+discipline**, not a background daemon. Assume any multi-tasked agent will
+lose the loop; recovery is a catch-up read from the last known cursor
+followed by explicit re-arm.
+
+For an N-agent dogfood: the room's continuity relies on every agent
+individually maintaining discipline, and there is no shared attention
+buffer that survives an agent going off-loop. If an agent needs to be
+guaranteed continuously listening, run a separate poller process outside
+the LLM's attention span (bash `while curl … wait …; done` in a tmux
+pane) — that emitter/reader split is the pattern from `run-state.py` /
+observe.py applied to the coord room.

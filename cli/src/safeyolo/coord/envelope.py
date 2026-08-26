@@ -21,7 +21,19 @@ class Envelope:
     sent_at: int  # milliseconds since epoch
     sender_kind: SenderKind
     sender_agent_id: str | None  # None when sender_kind == "operator"
-    sender_agent_name: str | None  # display metadata per #22; SafeYolo-generated
+    # `sender_agent_name`: display metadata per #22, SafeYolo-generated.
+    # Persisted at send time as a SNAPSHOT — if the agent is later
+    # removed or renamed, this field still shows what it was called
+    # WHEN THE MESSAGE WAS SENT. That's intentional: history should
+    # answer "who produced this message" at the time it was produced.
+    # `/api/coord/rooms/<name>/members` shows CURRENT names by contrast,
+    # so a rename intentionally produces divergence between old messages
+    # and the current roster.
+    # NULL on an agent row means "agent no longer resolvable to a name"
+    # (per bob's #23 backfill; legacy rows are filled on bootstrap).
+    # NULL on an operator row is definitional (operators have no
+    # registry name in v0; sender_kind='operator' disambiguates).
+    sender_agent_name: str | None
     origin_instance_id: str
     content_type: str
     body: str

@@ -86,6 +86,62 @@ def test_list_members_dedups_and_is_ordered(coord_env):
     assert len(members) == 3
 
 
+def test_backfill_fills_legacy_agent_rows(coord_env, monkeypatch, tmp_path):
+    """Bob's #23: legacy agent rows (pre-#22) with NULL sender_agent_name
+    get backfilled from the current agent_id -> name mapping on next
+    bootstrap. Operator rows stay NULL (definitional). Unknown agent_ids
+    stay NULL (now fact-carrying: 'agent no longer resolvable')."""
+    # Seed a legacy agent row (NULL name) directly via SQL
+    from safeyolo.agents_store import save_agent
+    from safeyolo.coord import store
+    # Register alice in agents_store, then hand-craft a legacy row for alice
+    save_agent("alice", {"agent_id": AGENT_A})
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    with store.connect() as conn:
+        conn.execute(
+            """INSERT INTO messages
+               (msg_id, room_id, sent_at, sender_kind, sender_agent_id,
+                sender_agent_name, origin_instance_id, content_type, body)
+               SELECT 'msg-legacy', room_id, 0, 'agent', ?, NULL,
+                      'sy-old', 'text/plain', 'legacy'
+                 FROM rooms WHERE name = 'r'""",
+            (AGENT_A,),
+        )
+        # Also seed a row for an unregistered agent (should stay NULL)
+        conn.execute(
+            """INSERT INTO messages
+               (msg_id, room_id, sent_at, sender_kind, sender_agent_id,
+                sender_agent_name, origin_instance_id, content_type, body)
+               SELECT 'msg-unknown', room_id, 0, 'agent', 'ag-unknown', NULL,
+                      'sy-old', 'text/plain', 'unknown sender'
+                 FROM rooms WHERE name = 'r'""",
+        )
+        # And an operator row (should stay NULL by design)
+        conn.execute(
+            """INSERT INTO messages
+               (msg_id, room_id, sent_at, sender_kind, sender_agent_id,
+                sender_agent_name, origin_instance_id, content_type, body)
+               SELECT 'msg-op', room_id, 0, 'operator', NULL, NULL,
+                      'sy-old', 'text/plain', 'operator msg'
+                 FROM rooms WHERE name = 'r'""",
+        )
+    # Re-bootstrap: runs _ensure_migrations -> _backfill_agent_names
+    api.bootstrap()
+    # Verify: alice's row got backfilled, unknown stays NULL, operator stays NULL
+    with store.connect() as conn:
+        rows = {
+            r["msg_id"]: r["sender_agent_name"]
+            for r in conn.execute(
+                "SELECT msg_id, sender_agent_name FROM messages "
+                "WHERE msg_id IN ('msg-legacy', 'msg-unknown', 'msg-op')"
+            )
+        }
+    assert rows["msg-legacy"] == "alice", "legacy alice row not backfilled"
+    assert rows["msg-unknown"] is None, "unknown agent_id incorrectly backfilled"
+    assert rows["msg-op"] is None, "operator row must not be backfilled"
+
+
 def test_list_members_excludes_revoked(coord_env):
     api.create_room("r")
     api.grant("r", "agent", AGENT_A)

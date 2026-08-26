@@ -62,6 +62,46 @@ def _ensure_migrations(conn) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
     if "sender_agent_name" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN sender_agent_name TEXT")
+    _backfill_agent_names(conn)
+
+
+def _backfill_agent_names(conn) -> None:
+    """Fill `sender_agent_name` for legacy agent rows using the current
+    `agent_id → name` mapping. Per bob's #23: after backfill, NULL on an
+    agent row means 'agent no longer resolvable' (fact-carrying) rather
+    than 'row pre-dates #22' (ambiguous with the removed-agent case).
+
+    Only agent rows are touched: operator rows carry NULL by design
+    (`sender_kind='operator'` disambiguates them from the agent-null case).
+
+    Fast-path early return when no gaps exist so this stays cheap on every
+    `init_schema()` call (which happens on many code paths).
+    """
+    has_gaps = conn.execute(
+        "SELECT 1 FROM messages "
+        "WHERE sender_kind = 'agent' AND sender_agent_name IS NULL "
+        "LIMIT 1"
+    ).fetchone()
+    if not has_gaps:
+        return
+    # Lazy import to avoid circular reference (store <-> agents_store).
+    from safeyolo.agents_store import load_all_agents
+    all_agents = load_all_agents()
+    id_to_name = {
+        meta.get("agent_id"): name
+        for name, meta in all_agents.items()
+        if meta.get("agent_id")
+    }
+    if not id_to_name:
+        return
+    for aid, name in id_to_name.items():
+        conn.execute(
+            """UPDATE messages SET sender_agent_name = ?
+               WHERE sender_kind = 'agent'
+                 AND sender_agent_id = ?
+                 AND sender_agent_name IS NULL""",
+            (name, aid),
+        )
 
 # rowid is SQLite's implicit monotonic per-table sequence. Used as the
 # `sequence` returned to clients for pagination and wait_for_message cursors.
