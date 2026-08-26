@@ -185,3 +185,27 @@ def test_cancelling_a_paste_sends_nothing(tmp_path, env):
 def test_typed_line_still_sends(env):
     out = _run_under_pty(_script(), b"an ordinary line\n:q\n", env)
     assert _sent(out) == ["an ordinary line"]
+
+
+def test_every_physical_line_is_guttered():
+    """Wrapped continuation lines must keep the gutter.
+
+    Console wrapping puts continuations at column 0, so a body containing one
+    long line had part of itself render as top-level text -- defeating the
+    gutter. Found by live test, not by the in-process suite.
+    """
+    import io
+    from rich.console import Console
+    from rich.text import Text
+
+    ns: dict = {"Text": Text, "console": None}
+    exec(compile(_extracted_source(), "x", "exec"), ns)  # noqa: S102
+    body = "short\n" + ("word " * 40).strip() + "\n" + "A" * 150 + "\n\ntail"
+    for width in (40, 60, 100):
+        buf = io.StringIO()
+        ns["console"] = Console(file=buf, force_terminal=False, width=width)
+        ns["_render_body"](body)
+        lines = [ln for ln in buf.getvalue().split("\n") if ln != ""]
+        assert lines, "nothing rendered"
+        ungutttered = [ln for ln in lines if not ln.startswith("│")]
+        assert not ungutttered, f"width={width}: unguttered lines {ungutttered!r}"

@@ -87,11 +87,19 @@ def _render_body(body: str) -> None:
     """Print a peer-authored body inside a visual namespace of its own.
 
     Text() is used rather than console markup so the body can never be
-    parsed as styling, and each line is gutter-prefixed so ordinary
-    plaintext cannot masquerade as a top-level provenance header.
+    parsed as styling, and every *physical* line is gutter-prefixed so
+    ordinary plaintext cannot masquerade as a top-level provenance header.
     """
+    gutter = Text("\u2502 ", style="dim")
+    width = max(20, console.width - 2)
     for line in _visible_controls(body).split("\n"):
-        console.print(Text("\u2502 ", style="dim") + Text(line))
+        # Wrap here rather than letting the console do it. Console wrapping
+        # puts continuation lines at column 0 with no gutter, so a body needed
+        # only one long line for part of itself to render as top-level text --
+        # which is exactly what the gutter exists to prevent.
+        segments = Text(line).wrap(console, width, overflow="fold") or [Text("")]
+        for segment in segments:
+            console.print(gutter + segment)
 
 
 def _render_message(m: dict) -> None:
