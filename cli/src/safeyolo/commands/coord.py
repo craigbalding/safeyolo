@@ -21,6 +21,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from ..agents_store import get_or_mint_agent_id, load_all_agents
 from ..coord import api
@@ -46,6 +47,53 @@ def _fmt_ts(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=UTC).isoformat(timespec="seconds")
 
 
+# Unicode bidi ordering controls (TR9 / core spec ch.23). Left active in a
+# terminal these visually reorder a body, so a message can display as text it
+# does not contain.
+_BIDI_CONTROLS = {
+    0x061C: "ALM", 0x200E: "LRM", 0x200F: "RLM",
+    0x202A: "LRE", 0x202B: "RLE", 0x202C: "PDF", 0x202D: "LRO", 0x202E: "RLO",
+    0x2066: "LRI", 0x2067: "RLI", 0x2068: "FSI", 0x2069: "PDI",
+}
+
+
+def _visible_controls(text: str) -> str:
+    """Render terminal- and bidi-active characters inert but visible.
+
+    Bodies are peer-authored. Raw ESC lets one drive the operator's terminal
+    -- move the cursor, erase what is already on screen, rewrite the
+    provenance header printed above it -- which defeats envelope trust
+    without ever touching the envelope. Disabling console markup is not
+    sufficient: markup=False still emits ESC unchanged.
+
+    Nothing is silently dropped. An operator should be able to see that a
+    body tried, so the characters are shown rather than deleted.
+    """
+    out = []
+    for ch in text:
+        cp = ord(ch)
+        if ch in ("\n", "\t"):
+            out.append(ch)
+        elif cp in _BIDI_CONTROLS:
+            out.append(f"\u27e6{_BIDI_CONTROLS[cp]} U+{cp:04X}\u27e7")
+        elif cp < 0x20 or cp == 0x7F or 0x80 <= cp <= 0x9F:
+            out.append(f"\\x{cp:02x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _render_body(body: str) -> None:
+    """Print a peer-authored body inside a visual namespace of its own.
+
+    Text() is used rather than console markup so the body can never be
+    parsed as styling, and each line is gutter-prefixed so ordinary
+    plaintext cannot masquerade as a top-level provenance header.
+    """
+    for line in _visible_controls(body).split("\n"):
+        console.print(Text("\u2502 ", style="dim") + Text(line))
+
+
 def _render_message(m: dict) -> None:
     kind = m["sender_kind"]
     # Prefer sender_agent_name (#22 display metadata) when present; fall
@@ -56,12 +104,11 @@ def _render_message(m: dict) -> None:
         who = m.get("sender_agent_name") or m.get("sender_agent_id") or "?"
     ts = _fmt_ts(m["sent_at"])
     style = "bold yellow" if kind == "operator" else "bold cyan"
-    console.print(f"[{style}]{escape(who)}[/] [dim]{ts} seq={m['sequence']}[/]")
-    # Bodies are peer-authored data, never console markup. Rendering them as
-    # markup lets a body emit bytes identical to the header above it and forge
-    # a message from any sender -- "operator" included, which is the one kind
-    # agents are told to trust as their own operator.
-    console.print(m["body"], markup=False, highlight=False)
+    console.print(
+        f"[{style}]{escape(_visible_controls(who))}[/] "
+        f"[dim]{ts} seq={m['sequence']}[/]"
+    )
+    _render_body(m["body"])
     console.print()
 
 
@@ -333,7 +380,10 @@ def _confirm_send(body: str) -> bool:
         return False
     lines = body.splitlines()
     head = lines[0][:70] if lines else ""
-    console.print(f"[dim]{len(lines)} lines, {n_bytes} bytes -- {head}...[/]")
+    console.print(
+        Text(f"{len(lines)} lines, {n_bytes} bytes -- ", style="dim")
+        + Text(_visible_controls(head) + "...", style="dim")
+    )
     try:
         return input("send? [Y/n] ").strip().lower() in ("", "y", "yes")
     except EOFError:
