@@ -37,6 +37,29 @@ jobs:
       - name: Set up Python
         run: uv python install 3.13
 
+      # SafeYolo's rootless mapping deliberately fixes sandbox uid 0 at host
+      # uid 100000 so rootfs ownership, KVM ACLs, and identity evidence agree.
+      # Hosted images may allocate runner's default subordinate range elsewhere;
+      # add the required range explicitly on this ephemeral single-job VM.
+      - name: Provision SafeYolo subordinate IDs
+        run: |
+          has_range() {
+            awk -F: -v user="$USER" '
+              $1 == user && $2 <= 100000 && ($2 + $3) >= 165536 { found = 1 }
+              END { exit !found }
+            ' "$1"
+          }
+
+          if ! has_range /etc/subuid; then
+            sudo usermod --add-subuids 100000-165535 "$USER"
+          fi
+          if ! has_range /etc/subgid; then
+            sudo usermod --add-subgids 100000-165535 "$USER"
+          fi
+
+          grep -F "$USER:" /etc/subuid
+          grep -F "$USER:" /etc/subgid
+
       - name: Install, bootstrap, and run full systrap BB
         run: ./tests/blackbox/run-lane.sh systrap --verbose
 

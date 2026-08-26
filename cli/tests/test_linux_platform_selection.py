@@ -4,7 +4,36 @@ import pytest
 
 from safeyolo.commands import doctor
 from safeyolo.platform import linux
-from safeyolo.platform.linux import _apply_runsc_platform_override
+from safeyolo.platform.linux import (
+    _apply_runsc_platform_override,
+    _subid_ranges_cover_required,
+)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "runner:100000:65536\n",
+        "runner:100000:1000\nrunner:101001:64534\n",
+        "other:200000:65536\nrunner:99999:65537\n",
+    ],
+)
+def test_required_subid_ranges_are_accepted(content: str) -> None:
+    assert _subid_ranges_cover_required(content, "runner") is True
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "runner:165536:65536\n",
+        "runner:100000:1000\n",
+        "other:100000:65536\n",
+        "runner:not-a-number:65536\n",
+        "runner:100000:0\n",
+    ],
+)
+def test_wrong_or_incomplete_subid_ranges_are_rejected(content: str) -> None:
+    assert _subid_ranges_cover_required(content, "runner") is False
 
 
 def _detected_kvm() -> dict:

@@ -58,6 +58,12 @@ EXPERIMENT_RUNSC_DCACHE_ENV = "SAFEYOLO_EXPERIMENT_RUNSC_DCACHE"
 EXPERIMENT_RUNSC_DIRECTFS_ENV = "SAFEYOLO_EXPERIMENT_RUNSC_DIRECTFS"
 RUNSC_PLATFORM_ENV = "SAFEYOLO_RUNSC_PLATFORM"
 
+# _start_userns maps these host subordinate-ID spans into every sandbox.
+# Keep this contract aligned with its newuidmap/newgidmap arguments. The host
+# may express the authorization as one conventional 100000:65536 allocation
+# or as multiple entries that cover both spans.
+REQUIRED_SUBID_RANGES = ((100000, 1000), (101001, 64534))
+
 
 class _SocketReader:
     """Minimal binary reader over one native runsc port-forward socket."""
@@ -458,14 +464,36 @@ def needs_apparmor() -> bool:
         return False
 
 
+def _subid_ranges_cover_required(content: str, username: str) -> bool:
+    """Return whether ``username`` is authorized for every runtime span."""
+    authorized: list[tuple[int, int]] = []
+    for line in content.splitlines():
+        fields = line.strip().split(":")
+        if len(fields) != 3 or fields[0] != username:
+            continue
+        try:
+            start = int(fields[1])
+            count = int(fields[2])
+        except ValueError:
+            continue
+        if start >= 0 and count > 0:
+            authorized.append((start, start + count))
+
+    return all(
+        any(start <= required_start and end >= required_start + required_count
+            for start, end in authorized)
+        for required_start, required_count in REQUIRED_SUBID_RANGES
+    )
+
+
 def check_userns_prerequisites() -> dict:
     """Check user namespace prerequisites for rootless gVisor.
 
     Returns a dict with keys:
       newuidmap: bool -- newuidmap binary available
       newgidmap: bool -- newgidmap binary available
-      subuid: bool -- /etc/subuid has entry for current user
-      subgid: bool -- /etc/subgid has entry for current user
+      subuid: bool -- /etc/subuid authorizes SafeYolo's required ranges
+      subgid: bool -- /etc/subgid authorizes SafeYolo's required ranges
       setfacl: bool -- setfacl available (grants runsc state dir to uid 100000)
       apparmor_restricts: bool -- kernel restricts unprivileged userns
       apparmor_profile_loaded: bool -- safeyolo-runsc profile loaded
@@ -486,9 +514,7 @@ def check_userns_prerequisites() -> dict:
     for fname, key in [("/etc/subuid", "subuid"), ("/etc/subgid", "subgid")]:
         try:
             content = Path(fname).read_text()
-            info[key] = any(
-                line.startswith(f"{username}:") for line in content.splitlines()
-            )
+            info[key] = _subid_ranges_cover_required(content, username)
         except (FileNotFoundError, PermissionError):
             # subuid/subgid not provisioned or unreadable -- leave
             # info[key] False so doctor reports "not configured".

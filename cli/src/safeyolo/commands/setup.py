@@ -446,10 +446,22 @@ def setup() -> None:  # DOC: README.md
             console.print("  [red]MISSING[/red]  newgidmap (install the `uidmap` package)")
             all_ok = False
         if not userns["subuid"]:
-            console.print("  [red]MISSING[/red]  /etc/subuid entry for the current user")
+            console.print(
+                "  [red]MISSING[/red]  /etc/subuid does not authorize "
+                "SafeYolo's required range for the current user"
+            )
+            console.print(
+                "    [bold]sudo usermod --add-subuids 100000-165535 $USER[/bold]"
+            )
             all_ok = False
         if not userns["subgid"]:
-            console.print("  [red]MISSING[/red]  /etc/subgid entry for the current user")
+            console.print(
+                "  [red]MISSING[/red]  /etc/subgid does not authorize "
+                "SafeYolo's required range for the current user"
+            )
+            console.print(
+                "    [bold]sudo usermod --add-subgids 100000-165535 $USER[/bold]"
+            )
             all_ok = False
         if not userns["setfacl"]:
             console.print("  [red]MISSING[/red]  setfacl (required for rootless rootfs ACL)")
