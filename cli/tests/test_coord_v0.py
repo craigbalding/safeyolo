@@ -225,7 +225,7 @@ def test_wait_for_message_times_out_gracefully(coord_env):
     async def scenario():
         return await api.wait_for_message(
             "r", "agent", AGENT_A, since_sequence=0,
-            timeout_seconds=0.5, poll_interval_seconds=0.1,
+            timeout_seconds=0.5, fetch_window_seconds=0.1,
         )
 
     page = asyncio.run(scenario())
@@ -242,7 +242,7 @@ def test_wait_excludes_self_by_default(coord_env):
     async def scenario():
         return await api.wait_for_message(
             "r", "agent", AGENT_A, since_sequence=0,
-            timeout_seconds=0.5, poll_interval_seconds=0.1,
+            timeout_seconds=0.5, fetch_window_seconds=0.1,
         )
 
     page = asyncio.run(scenario())
@@ -258,7 +258,7 @@ def test_wait_includes_self_when_asked(coord_env):
     async def scenario():
         return await api.wait_for_message(
             "r", "agent", AGENT_A, since_sequence=0,
-            timeout_seconds=1, poll_interval_seconds=0.1,
+            timeout_seconds=1, fetch_window_seconds=0.1,
             exclude_self=False,
         )
 
@@ -290,7 +290,7 @@ def test_wait_default_limit_is_one(coord_env):
     async def scenario():
         return await api.wait_for_message(
             "r", "agent", AGENT_A, since_sequence=0,
-            timeout_seconds=1, poll_interval_seconds=0.05,
+            timeout_seconds=1, fetch_window_seconds=0.05,
         )
 
     page = asyncio.run(scenario())
@@ -399,7 +399,7 @@ def test_wait_advances_cursor_past_partial_own_batch(coord_env):
     async def scenario():
         return await api.wait_for_message(
             "r", "agent", AGENT_A, since_sequence=0,
-            timeout_seconds=0.5, poll_interval_seconds=0.1,
+            timeout_seconds=0.5, fetch_window_seconds=0.1,
         )
 
     page = asyncio.run(scenario())
@@ -496,7 +496,7 @@ def test_wait_does_not_starve_on_own_message_burst(coord_env):
     async def scenario():
         return await api.wait_for_message(
             "r", "agent", AGENT_A, since_sequence=0,
-            timeout_seconds=5, poll_interval_seconds=0.05,
+            timeout_seconds=5, fetch_window_seconds=0.05,
         )
 
     page = asyncio.run(scenario())
@@ -624,7 +624,7 @@ def test_wait_holds_one_consumer_for_the_whole_call(coord_env):
 
         waiter = asyncio.create_task(api.wait_for_message(
             "r", "agent", AGENT_A, since_sequence=0,
-            timeout_seconds=1.2, poll_interval_seconds=0.1,
+            timeout_seconds=1.2, fetch_window_seconds=0.1,
         ))
         sampler = asyncio.create_task(sample())
         result = await waiter
@@ -653,7 +653,7 @@ def test_wait_does_not_report_a_backlog_field(coord_env):
 
     page = _run(api.wait_for_message(
         "r", "agent", AGENT_A, since_sequence=0,
-        timeout_seconds=1, poll_interval_seconds=0.05, limit=2,
+        timeout_seconds=1, fetch_window_seconds=0.05, limit=2,
     ))
     assert len(page["messages"]) == 2
     assert "has_more" not in page
@@ -683,7 +683,7 @@ def test_catch_up_reads_from_the_canonical_cursor_not_the_wake_edge(coord_env):
 
     page = _run(api.wait_for_message(
         "r", "agent", AGENT_A, since_sequence=canonical,
-        timeout_seconds=2, poll_interval_seconds=0.05,
+        timeout_seconds=2, fetch_window_seconds=0.05,
     ))
     assert [m["body"] for m in page["messages"]] == ["peer 12"]
     assert page["next_cursor"] == 12
@@ -744,3 +744,75 @@ def test_asyncio_timeout_from_fetch_is_an_empty_page_not_an_outage(coord_env):
     page = _run(api.read_room("r", "agent", AGENT_A))
     assert page["messages"] == []
     assert room_id
+
+
+# --- wait is event-driven, not timed (review round 3) ------------------------
+
+
+def test_wait_returns_the_instant_a_message_is_stored(coord_env):
+    """A wake must not be paced by a timer.
+
+    The fetch window is deliberately far longer than the delay before the
+    message is sent. If waking were driven by the request timing out, this
+    would take the whole window. It must instead return as soon as the server
+    stores the message.
+
+    Note this does NOT pin batch size: measured against nats-py 2.15,
+    fetch(200) returns a partial batch as fast as fetch(1). What it pins is
+    that the wait blocks on an outstanding request rather than sleeping
+    between short ones.
+    """
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        waiter = asyncio.create_task(api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=25, fetch_window_seconds=20,
+        ))
+        await asyncio.sleep(0.3)
+        started = loop.time()
+        await api.send("r", "agent", AGENT_B, "wake up")
+        page = await waiter
+        return page, loop.time() - started
+
+    page, elapsed = asyncio.run(scenario())
+    assert [m["body"] for m in page["messages"]] == ["wake up"]
+    assert elapsed < 5.0, (
+        f"took {elapsed:.1f}s to surface a stored message with a 20s fetch "
+        "window -- the wake is being paced by the request timeout, not by "
+        "the message arriving"
+    )
+
+
+def test_a_burst_of_own_messages_does_not_cost_a_request_each(coord_env):
+    """The starvation guard must skip a burst cheaply.
+
+    Asking for one message at a time makes the idle case event-driven, but
+    would make a burst of the caller's own sends cost one round trip per
+    message. The post-wake drain collects what is already stored instead.
+    """
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    for i in range(60):
+        _run(api.send("r", "agent", AGENT_A, f"own {i}"))
+    _run(api.send("r", "agent", AGENT_B, "the one that matters"))
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        page = await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=20, fetch_window_seconds=15,
+        )
+        return page, loop.time() - started
+
+    page, elapsed = asyncio.run(scenario())
+    assert [m["body"] for m in page["messages"]] == ["the one that matters"]
+    assert elapsed < 5.0, (
+        f"took {elapsed:.1f}s to skip 60 own messages -- the burst is costing "
+        "a round trip per message"
+    )

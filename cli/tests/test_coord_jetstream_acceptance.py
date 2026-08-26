@@ -292,7 +292,7 @@ def test_revoke_during_blocked_wait_returns_empty(coord_env):
         wait_task = asyncio.create_task(
             api.wait_for_message(
                 "r", "agent", AGENT_A, since_sequence=0,
-                timeout_seconds=3, poll_interval_seconds=0.1,
+                timeout_seconds=3, fetch_window_seconds=0.1,
             )
         )
         await revoke_then_send()
@@ -328,7 +328,7 @@ def test_send_read_wait_all_fail_with_nats_unavailable_when_nats_down(coord_env)
     with pytest.raises(nats_client.NatsUnavailable):
         _run(api.wait_for_message(
             "r", "agent", AGENT_A, since_sequence=0,
-            timeout_seconds=1, poll_interval_seconds=0.05,
+            timeout_seconds=1, fetch_window_seconds=0.05,
         ))
 
 
@@ -438,7 +438,7 @@ def test_repeated_read_and_wait_do_not_grow_consumer_count(coord_env):
             await api.read_room("r", "agent", AGENT_A)
             await api.wait_for_message(
                 "r", "agent", AGENT_A, since_sequence=0,
-                timeout_seconds=0.05, poll_interval_seconds=0.02,
+                timeout_seconds=0.05, fetch_window_seconds=0.02,
             )
         return await nats_client.consumer_count(room_id)
 

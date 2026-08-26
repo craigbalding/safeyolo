@@ -21,6 +21,13 @@ from .identity import (
 )
 
 READ_PAGE_MAX = 200
+# How long one outstanding pull request may stay open while waiting. This is
+# not a poll interval: nothing happens while it is outstanding unless a
+# message arrives, so a quiet room costs one request per window rather than
+# one per tick. Kept well under a typical server max_request_expires.
+_WAIT_FETCH_WINDOW_S = 30.0
+# After a wake, how long to spend collecting anything else already stored.
+_WAIT_DRAIN_S = 0.05
 # A page is bounded by bytes as well as by message count. The count alone is
 # not a resource bound: 200 legal messages can be hundreds of MiB on the wire,
 # because a 256 KiB body can expand to roughly 1.5 MiB once JSON-escaped.
@@ -433,7 +440,7 @@ async def wait_for_message(
     principal_id: str,
     since_sequence: int,
     timeout_seconds: float = 300.0,
-    poll_interval_seconds: float = 0.5,
+    fetch_window_seconds: float = _WAIT_FETCH_WINDOW_S,
     limit: int = 1,
     exclude_self: bool = True,
 ) -> dict[str, Any]:
@@ -463,9 +470,18 @@ async def wait_for_message(
       `next_cursor=12` and `read_room(12)` silently omits 11. Process
       the full page, then advance the canonical cursor to the highest
       sequence seen. The caller owns that cursor; wait never does.
-    - One ephemeral consumer serves the whole call. Polling used to
-      open and delete a server-side consumer per tick -- roughly 120
-      cycles per idle 60s wait, per waiting agent.
+    - Event-driven, not timed. One ephemeral consumer serves the whole
+      call, and each fetch asks for a SINGLE message with a long
+      server-side window, so the server completes the request the
+      instant a message is stored. A quiet room costs one outstanding
+      pull request per `fetch_window_seconds`, not a fetch every tick.
+      Each fetch asks for one message, which keeps the wait on the
+      client's single-message path rather than its batch-filling loop.
+      Latency is the same either way on nats-py 2.15 -- a partial batch
+      comes back immediately -- so this is about code path, not speed.
+    - `fetch_window_seconds` bounds a single outstanding request, not a
+      sleep between requests. Nothing happens while it is outstanding
+      unless a message arrives.
     - Truncation reporting is deliberately NOT surfaced here: wait is
       an attention edge, `read_room` is the mandatory catch-up path
       where truncation is disclosed. The response always sets
@@ -495,7 +511,7 @@ async def wait_for_message(
             scan_since=since_sequence,
             deadline=deadline,
             loop=loop,
-            poll_interval_seconds=poll_interval_seconds,
+            fetch_window_seconds=fetch_window_seconds,
             limit=limit,
             exclude_self=exclude_self,
         )
@@ -510,7 +526,7 @@ async def _wait_loop(
     scan_since: int,
     deadline: float,
     loop,
-    poll_interval_seconds: float,
+    fetch_window_seconds: float,
     limit: int,
     exclude_self: bool,
 ) -> dict[str, Any]:
@@ -538,11 +554,29 @@ async def _wait_loop(
                 "oldest_available_at": None,
             }
 
-        # Fetch on the consumer opened for this call: waits server-side up
-        # to poll_interval. The consumer keeps its own position across ticks,
-        # so acked messages are not redelivered and no repositioning happens.
-        fetch_timeout = min(poll_interval_seconds, remaining)
-        envelopes = await session.fetch(READ_PAGE_MAX, timeout=fetch_timeout)
+        # Ask for ONE message with a long server-side window. The server
+        # completes the request as soon as a message is stored, so this is a
+        # subscription in behaviour even though the transport is a pull.
+        #
+        # Batch size is not about latency here: measured against nats-py
+        # 2.15, fetch(200, timeout=10) returns a partial batch ~1ms after a
+        # message arrives, exactly like fetch(1). It is about which client
+        # code path runs. batch == 1 routes to _fetch_one; anything larger
+        # routes to _fetch_n, whose multi-request deadline loop raises a bare
+        # asyncio.TimeoutError -- the path that surfaced to an operator as
+        # `NatsUnavailable: fetch failed:` on a quiet room. That is handled
+        # now, but an attention edge has no reason to be in a batch-filling
+        # loop at all.
+        envelopes = await session.fetch(
+            1, timeout=min(fetch_window_seconds, remaining))
+        if envelopes:
+            # Something arrived. Anything else already stored is picked up
+            # cheaply rather than one round trip at a time -- this keeps
+            # `limit` batching useful and, more importantly, lets the
+            # starvation guard skip a burst of the caller's own messages
+            # without a request per message.
+            envelopes += await session.fetch(
+                READ_PAGE_MAX - 1, timeout=_WAIT_DRAIN_S)
 
         if exclude_self and principal_kind == "agent":
             candidates = [e for e in envelopes if e.get("sender_agent_id") != principal_id]
@@ -564,7 +598,7 @@ async def _wait_loop(
                 return {
                     "messages": [],
                     "next_cursor": scan_since,
-                        "history_truncated": False,
+                    "history_truncated": False,
                     "oldest_available_at": None,
                 }
             trimmed = candidates[:limit]
