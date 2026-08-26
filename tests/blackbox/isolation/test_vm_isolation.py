@@ -13,6 +13,7 @@ import ctypes.util
 import os
 import platform as _platform
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -882,6 +883,11 @@ class TestSandboxExposure:
             # Linux kernel devices — allow all by prefix.
             prefix_allow = ("hvc", "tty", "pty", "vcs")
         else:
+            # gVisor 2026-08+ mirrors Linux devtmpfs by maintaining
+            # /dev/char/<major>:<minor> symlinks for each character device.
+            # The directory is an index, not an additional device surface;
+            # its entries are validated below against this same allowlist.
+            whitelist.add("char")
             prefix_allow = ("pts",)
 
         unexpected = []
@@ -897,6 +903,28 @@ class TestSandboxExposure:
             f"attack surface. If a new entry is legitimately needed, add "
             f"it to the whitelist and document why."
         )
+
+        if not _is_microvm() and os.path.isdir("/dev/char"):
+            unexpected_char_links = []
+            for entry in os.listdir("/dev/char"):
+                link = os.path.join("/dev/char", entry)
+                target = os.path.realpath(link)
+                try:
+                    target_mode = os.stat(target).st_mode
+                except OSError:
+                    target_mode = 0
+                if (
+                    not os.path.islink(link)
+                    or os.path.dirname(target) != "/dev"
+                    or os.path.basename(target) not in whitelist
+                    or not stat.S_ISCHR(target_mode)
+                ):
+                    unexpected_char_links.append((entry, target))
+            assert not unexpected_char_links, (
+                "Unexpected gVisor /dev/char mappings: "
+                f"{unexpected_char_links}. The device-number index may only "
+                "refer to approved top-level character devices."
+            )
 
     def test_proc_kcore_unreadable(self):
         """/proc/kcore is absent or unreadable.
@@ -1045,9 +1073,8 @@ class TestFilesystemBoundary:
         """Symlink to /etc/shadow inside /workspace doesn't reach host files.
 
         What: Create /workspace/.../shadow-link → /etc/shadow; try
-        to read it. If readable, assert the content does NOT look
-        like the host's real shadow file (which would have many
-        colon-separated fields and 'root:' entries).
+        to read it. If readable, assert it resolves to the same guest
+        inode and bytes as opening /etc/shadow directly.
         Why: virtiofs/lisafs gofer mounts are supposed to contain
         traversal within the sandbox rootfs. A bug that followed
         symlinks on the host side would let the agent read any host
@@ -1060,15 +1087,25 @@ class TestFilesystemBoundary:
         try:
             os.symlink("/etc/shadow", link_path)
             try:
-                with open(link_path) as f:
-                    content = f.read(200)
+                with open("/etc/shadow", "rb") as f:
+                    guest_content = f.read()
             except (PermissionError, FileNotFoundError, OSError):
-                return  # can't read → safe
-            # If readable, verify it's the SANDBOX's shadow (no real
-            # password hashes) not the HOST's.
-            assert "root:" not in content or content.count(":") < 5, (
-                f"Symlink traversal may have reached host /etc/shadow: "
-                f"{content[:100]!r}"
+                # If the guest file is protected, the workspace link must not
+                # make it readable through the gofer mount.
+                with pytest.raises((PermissionError, FileNotFoundError, OSError)):
+                    with open(link_path, "rb") as f:
+                        f.read(1)
+                return
+
+            with open(link_path, "rb") as f:
+                linked_content = f.read()
+            assert os.path.samefile(link_path, "/etc/shadow"), (
+                "Workspace absolute symlink did not resolve to the guest's "
+                "/etc/shadow inode"
+            )
+            assert linked_content == guest_content, (
+                "Workspace absolute symlink returned bytes other than the "
+                "guest's /etc/shadow; possible host-path traversal"
             )
         finally:
             os.unlink(link_path)
