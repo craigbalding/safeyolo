@@ -54,7 +54,13 @@ export MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-$HOME/.mise}"
 export MISE_CACHE_DIR="${MISE_CACHE_DIR:-$HOME/.mise/cache}"
 export PATH="$HOME/.local/bin:$MISE_DATA_DIR/shims:${PATH}"
 
-if ! command -v codex >/dev/null 2>&1; then
+# Validate an existing command as well as its absence: the CLI is an npm
+# wrapper plus a platform-native optional dependency, so the launcher can
+# survive while the native binary does not (mise declining npm lifecycle
+# scripts, or macOS Gatekeeper trashing the vendored Mach-O over a revoked
+# signing cert). `command -v` alone still succeeds in that state and the
+# install below is skipped, leaving the agent permanently unable to launch.
+if ! command -v codex >/dev/null 2>&1 || ! codex --version >/dev/null 2>&1; then
     if [ -f /etc/alpine-release ]; then
         if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
             sudo -n apk add nodejs npm >&2

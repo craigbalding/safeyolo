@@ -22,8 +22,12 @@
 #
 #   2. Retrofit for an already-running agent (no reprovision needed):
 #
-#          contrib/coord-mcp-bootstrap.sh --home ~/.safeyolo/agents/<name>
+#          contrib/coord-mcp-bootstrap.sh --home ~/.safeyolo/agents/<name>/home
 #          safeyolo agent stop <name> && safeyolo agent run <name>
+#
+#      Note the trailing `/home`: the agent's harness config lives in
+#      the `home/` subdir, not directly under `agents/<name>/`. See
+#      get_agent_home_dir() in cli/src/safeyolo/vm.py.
 #
 #      The stop+run is required so the harness picks up the new MCP
 #      server config; it does NOT touch the sandbox's persistent state.
@@ -33,7 +37,7 @@
 set -euo pipefail
 
 show_help() {
-    sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 AGENT_HOME=""
@@ -87,7 +91,11 @@ if [ -z "$HARNESS" ]; then
         HARNESS="codex"
     else
         echo "coord-mcp-bootstrap: cannot auto-detect harness under $AGENT_HOME" >&2
-        echo "  (expected .claude/, .claude.json, or .codex/); pass --harness claude|codex" >&2
+        echo "  (expected .claude/, .claude.json, or .codex/)" >&2
+        if [ -d "$AGENT_HOME/home" ]; then
+            echo "  hint: did you mean --home $AGENT_HOME/home ?" >&2
+        fi
+        echo "  or pass --harness claude|codex" >&2
         exit 1
     fi
 fi
