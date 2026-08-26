@@ -13,6 +13,7 @@ stays intact.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -501,3 +502,96 @@ def test_wait_does_not_starve_on_own_message_burst(coord_env):
         "wait should have scanned past the own-message burst and seen the peer"
     assert page["messages"][0]["body"] == "peer past the burst"
     assert page["messages"][0]["sender_agent_id"] == AGENT_B
+
+
+# --- size contract (review point 2) ------------------------------------------
+# The 256 KiB body limit and the 2 MiB JetStream envelope ceiling are two
+# different numbers and are routinely conflated. These pin both, and pin the
+# relationship between them: the largest legal body must still fit the
+# envelope after worst-case JSON escaping.
+
+
+def test_max_size_body_is_accepted(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    body = "x" * api.MAX_BODY_BYTES
+    assert len(body.encode()) == api.MAX_BODY_BYTES
+    res = _run(api.send("r", "agent", AGENT_A, body))
+    assert res["sequence"] == 1
+
+
+def test_one_byte_over_is_rejected(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    with pytest.raises(ValueError, match="body too large"):
+        _run(api.send("r", "agent", AGENT_A, "x" * (api.MAX_BODY_BYTES + 1)))
+
+
+def test_limit_is_measured_in_bytes_not_characters(coord_env):
+    """A body under the limit in characters can be over it in bytes."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    # 'e' with combining acute is 2 bytes in UTF-8; half the char count,
+    # exactly the byte count.
+    body = "é" * (api.MAX_BODY_BYTES // 2)
+    assert len(body) == api.MAX_BODY_BYTES // 2
+    assert len(body.encode()) == api.MAX_BODY_BYTES
+    _run(api.send("r", "agent", AGENT_A, body))
+    with pytest.raises(ValueError, match="body too large"):
+        _run(api.send("r", "agent", AGENT_A, "é" * (api.MAX_BODY_BYTES // 2 + 1)))
+
+
+def test_worst_case_legal_body_fits_the_envelope_ceiling(coord_env):
+    """The two ceilings must stay in step.
+
+    A maximum-sized body of characters that expand maximally under JSON
+    escaping (NUL -> \\u0000, six bytes out per byte in) is the worst case the
+    envelope has to carry. If MAX_BODY_BYTES is ever raised without raising
+    the stream/server payload ceiling with it, this fails rather than the
+    publish failing in production as an opaque nats-server error.
+    """
+    from safeyolo.coord.nats_client import _ROOM_MAX_MSG_SIZE
+
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    body = "\x00" * api.MAX_BODY_BYTES
+    assert len(body.encode()) == api.MAX_BODY_BYTES
+
+    res = _run(api.send("r", "agent", AGENT_A, body))
+    page = _run(api.read_room("r", "agent", AGENT_A))
+    stored = page["messages"][0]
+    wire = len(json.dumps(stored, separators=(",", ":")).encode())
+    assert wire < _ROOM_MAX_MSG_SIZE, (
+        f"worst-case legal body serialises to {wire} bytes, over the "
+        f"{_ROOM_MAX_MSG_SIZE} envelope ceiling"
+    )
+    assert res["sequence"] == 1
+    assert stored["body"] == body, "body did not survive the round trip intact"
+
+
+def test_page_byte_bound_returns_whole_message_prefix(coord_env):
+    """A page is cut on a message boundary, and has_more says so exactly."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    # 24 x 256 KiB bodies -> comfortably past the 4 MiB page bound.
+    for _ in range(24):
+        _run(api.send("r", "agent", AGENT_A, "x" * api.MAX_BODY_BYTES))
+
+    page = _run(api.read_room("r", "agent", AGENT_A, limit=api.READ_PAGE_MAX))
+    wire = sum(len(json.dumps(m, separators=(",", ":")).encode())
+               for m in page["messages"])
+    assert 0 < len(page["messages"]) < 24, "byte bound did not cut the page"
+    assert wire <= api.READ_PAGE_MAX_BYTES + api.MAX_BODY_BYTES * 2
+    assert page["has_more"] is True
+    assert page["next_cursor"] == page["messages"][-1]["sequence"]
+
+    # Draining from the cursor must terminate and reach the end exactly.
+    seen, cursor, rounds = len(page["messages"]), page["next_cursor"], 0
+    while page["has_more"]:
+        rounds += 1
+        assert rounds < 50, "pagination did not converge"
+        page = _run(api.read_room("r", "agent", AGENT_A,
+                                  since_sequence=cursor, limit=api.READ_PAGE_MAX))
+        seen += len(page["messages"])
+        cursor = page["next_cursor"]
+    assert seen == 24

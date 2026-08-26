@@ -8,6 +8,7 @@ grant checks.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from typing import Any
 
@@ -20,6 +21,11 @@ from .identity import (
 )
 
 READ_PAGE_MAX = 200
+# A page is bounded by bytes as well as by message count. The count alone is
+# not a resource bound: 200 legal messages can be hundreds of MiB on the wire,
+# because a 256 KiB body can expand to roughly 1.5 MiB once JSON-escaped.
+# Measured against serialized wire size, not raw body length.
+READ_PAGE_MAX_BYTES = 4 * 1024 * 1024
 MAX_BODY_BYTES = 256 * 1024
 
 
@@ -322,6 +328,32 @@ async def send(
     return {"envelope": envelope, "sequence": sequence}
 
 
+def _trim_page_to_byte_bound(messages: list[dict]) -> list[dict]:
+    """Cut a page to a whole-message prefix within READ_PAGE_MAX_BYTES.
+
+    Only ever returns a prefix, never a partial message, so the caller's
+    cursor stays on a message boundary and a follow-up read resumes cleanly.
+    At least one message is always returned: a single message larger than the
+    bound must still be delivered, or a cursor sitting behind it could never
+    advance.
+
+    This trims after receipt. Bounding the pull itself would be better --
+    JetStream supports max_bytes on pull requests -- but nats-py's legacy
+    PullSubscription.fetch() exposes only batch and timeout, so that needs a
+    raw-pull helper or the newer consumer API.
+    """
+    if not messages:
+        return messages
+    kept: list[dict] = []
+    total = 0
+    for m in messages:
+        total += len(json.dumps(m, separators=(",", ":")).encode("utf-8"))
+        if kept and total > READ_PAGE_MAX_BYTES:
+            break
+        kept.append(m)
+    return kept
+
+
 async def read_room(
     room_name: str,
     principal_kind: str,
@@ -367,6 +399,7 @@ async def read_room(
         m = {k: v for k, v in env.items() if k != "_stream_seq"}
         m["sequence"] = env["_stream_seq"]
         messages.append(m)
+    messages = _trim_page_to_byte_bound(messages)
     next_cursor = messages[-1]["sequence"] if messages else since_sequence
 
     # Truncation reporting from stream state (task #35). Only fetch the
@@ -381,13 +414,14 @@ async def read_room(
             room_id, state["first_seq"],
         )
 
-    # has_more is best-effort: if fetch returned `limit` messages there
-    # may or may not be more. Callers who care follow with another
-    # read_room from next_cursor.
+    # has_more is exact: the stream state we already fetched for truncation
+    # reporting tells us whether anything remains past the cursor. The old
+    # `len(messages) == limit` was best-effort and, now that a page can also
+    # be cut short by the byte bound, would have been wrong as well as vague.
     return {
         "messages": messages,
         "next_cursor": next_cursor,
-        "has_more": len(messages) == limit,
+        "has_more": state["last_seq"] > next_cursor,
         "history_truncated": history_truncated,
         "oldest_available_at": oldest_available_at,
     }
