@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from ..agents_store import get_or_mint_agent_id, load_all_agents
@@ -55,8 +56,12 @@ def _render_message(m: dict) -> None:
         who = m.get("sender_agent_name") or m.get("sender_agent_id") or "?"
     ts = _fmt_ts(m["sent_at"])
     style = "bold yellow" if kind == "operator" else "bold cyan"
-    console.print(f"[{style}]{who}[/] [dim]{ts} seq={m['sequence']}[/]")
-    console.print(m["body"])
+    console.print(f"[{style}]{escape(who)}[/] [dim]{ts} seq={m['sequence']}[/]")
+    # Bodies are peer-authored data, never console markup. Rendering them as
+    # markup lets a body emit bytes identical to the header above it and forge
+    # a message from any sender -- "operator" included, which is the one kind
+    # agents are told to trust as their own operator.
+    console.print(m["body"], markup=False, highlight=False)
     console.print()
 
 
