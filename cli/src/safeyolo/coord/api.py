@@ -219,8 +219,16 @@ def send(
         raise ValueError("sender_agent_id required when sender_kind='agent'")
     if sender_kind == "operator" and sender_agent_id is not None:
         raise ValueError("sender_agent_id must be None when sender_kind='operator'")
-    if len(body.encode("utf-8")) > MAX_BODY_BYTES:
-        raise ValueError(f"body too large ({len(body.encode('utf-8'))} > {MAX_BODY_BYTES} bytes)")
+    # Body must encode cleanly to UTF-8; a lone surrogate raises
+    # UnicodeEncodeError (subclass of ValueError). Catch it explicitly to
+    # keep the raw Python codec message out of the 400 response. Codex
+    # finding, post-patch.
+    try:
+        body_bytes_len = len(body.encode("utf-8"))
+    except UnicodeError as exc:
+        raise ValueError("invalid body encoding") from exc
+    if body_bytes_len > MAX_BODY_BYTES:
+        raise ValueError(f"body too large ({body_bytes_len} > {MAX_BODY_BYTES} bytes)")
 
     content_type = validate_content_type(declared_content_type)
     instance_id = get_or_create_instance_id()
@@ -347,17 +355,22 @@ async def wait_for_message(
                 "has_more": len(candidates) > limit or page["has_more"],
             }
 
-        # No peer messages in this window. If more retained messages exist
-        # past it, scan the next window immediately — don't sleep on a stale
-        # cursor while peer messages sit beyond the caller's own-message burst.
-        if page["has_more"]:
+        # No peer messages in this window. Advance scan_since past whatever
+        # we just read (filtered or not) so (a) we don't re-scan the same
+        # own-message batch on the next poll, and (b) the timeout cursor
+        # reflects what we already scanned. Fixes bob/codex finding: a small
+        # own-message batch (1..READ_PAGE_MAX-1) previously stayed at the
+        # original cursor since page.has_more was False.
+        if page["messages"]:
             scan_since = page["next_cursor"]
+
+        # If more retained messages exist past this window, scan next window
+        # immediately — starvation guard for 200+ own-message bursts.
+        if page["has_more"]:
             continue
 
         # Fully drained. Wait for arrivals past our scan point.
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
-            # Empty; carry scan_since as next_cursor so caller re-arms past
-            # what we already scanned rather than re-scanning own messages.
             return {**page, "messages": [], "next_cursor": scan_since}
         await asyncio.sleep(min(poll_interval_seconds, remaining))

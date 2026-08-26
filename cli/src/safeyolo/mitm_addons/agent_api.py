@@ -425,7 +425,14 @@ class AgentAPI:
                 if not isinstance(body, str) or not body:
                     self._respond(flow, 400, {"error": "body required (non-empty string)"})
                     return
-                if len(body.encode("utf-8")) > COORD_MAX_BODY_BYTES:
+                try:
+                    body_len = len(body.encode("utf-8"))
+                except UnicodeError:
+                    # Lone surrogate etc. — caller error; do not leak raw
+                    # codec text (codex finding, post-patch).
+                    self._respond(flow, 400, {"error": "invalid body encoding"})
+                    return
+                if body_len > COORD_MAX_BODY_BYTES:
                     self._respond(flow, 413, {
                         "error": "body too large",
                         "max_bytes": COORD_MAX_BODY_BYTES,

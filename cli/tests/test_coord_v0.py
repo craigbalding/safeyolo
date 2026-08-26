@@ -287,6 +287,60 @@ def test_grant_absorbs_same_ms_collision(coord_env):
         api.grant("r", "agent", AGENT_A)
 
 
+@pytest.mark.timeout(5)
+def test_wait_advances_cursor_past_partial_own_batch(coord_env):
+    """Codex finding: scan_since must advance past a filtered-empty batch
+    even when page.has_more is False (small own-message batch). Previously
+    the timeout cursor stayed at since_sequence, forcing re-scan next poll."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.send("r", "agent", AGENT_A, "own message")
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=0.5, poll_interval_seconds=0.1,
+        )
+
+    page = asyncio.run(scenario())
+    assert page["messages"] == []
+    assert page["next_cursor"] > 0, "cursor did not advance past filtered own message"
+
+
+def test_content_type_non_string_rejected_cleanly(coord_env):
+    """Codex finding: unhashable content_type (dict, list) used to hit
+    `dict in frozenset(...)` -> TypeError -> reached generic 500 boundary.
+    Should be a caller-shaped ValueError."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    with pytest.raises(ValueError, match="content_type must be a string"):
+        api.send("r", "agent", AGENT_A, "hi", declared_content_type={"a": 1})
+    with pytest.raises(ValueError, match="content_type must be a string"):
+        api.send("r", "agent", AGENT_A, "hi", declared_content_type=[1, 2])
+
+
+def test_body_with_lone_surrogate_rejected_cleanly(coord_env):
+    """Codex finding: body containing a lone surrogate raised
+    UnicodeEncodeError (subclass of ValueError), caught by the generic
+    ValueError branch which leaked raw codec text into the 400."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    with pytest.raises(ValueError, match="^invalid body encoding$"):
+        api.send("r", "agent", AGENT_A, "hello\ud800world")
+
+
+def test_instance_id_creation_is_race_safe(tmp_path, monkeypatch):
+    """Codex finding: two concurrent callers on a fresh install used to
+    mint different IDs (read-check-write with no lock)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from safeyolo.coord.identity import get_or_create_instance_id
+    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: get_or_create_instance_id(), range(32)))
+    unique = set(results)
+    assert len(unique) == 1, f"race produced {len(unique)} distinct instance IDs: {unique}"
+
+
 @pytest.mark.timeout(30)
 def test_wait_does_not_starve_on_own_message_burst(coord_env):
     """Bob's finding #17: without a scan-cursor, 200+ consecutive own

@@ -37,7 +37,13 @@ class Envelope:
         }
 
 
-def validate_content_type(declared: str) -> str:
+def validate_content_type(declared) -> str:
+    # Type-check FIRST — an unhashable value (dict, list) blows up in the
+    # `in frozenset(...)` check as TypeError, which would reach the addon's
+    # generic 500 boundary. That was a caller-error being reported as an
+    # internal error. Codex finding, post-patch.
+    if not isinstance(declared, str):
+        raise ValueError("content_type must be a string")
     if declared not in ALLOWED_CONTENT_TYPES:
         raise ValueError(
             f"content_type {declared!r} not in allowed set {sorted(ALLOWED_CONTENT_TYPES)}"

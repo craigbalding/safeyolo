@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import uuid
 from pathlib import Path
@@ -35,11 +36,31 @@ def instance_id_file() -> Path:
 
 
 def get_or_create_instance_id() -> str:
+    """Return the SafeYolo instance ID, creating it once on first call.
+
+    Race-safe: two concurrent callers on a fresh install will not mint
+    different IDs. The first to acquire the exclusive lock writes; the
+    second sees the file exists and returns the same value. Codex finding,
+    post-patch.
+    """
     path = instance_id_file()
+    # Fast path: already exists, no lock needed.
     if path.exists():
         return path.read_text().strip()
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    iid = new_instance_id()
-    path.write_text(iid + "\n")
-    path.chmod(0o600)
-    return iid
+    lock_path = path.parent / ".instance_id.lock"
+    lock_path.touch()
+    with open(lock_path, "r+") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            # Re-check under lock — another process may have written it
+            # between our fast-path check and lock acquisition.
+            if path.exists():
+                return path.read_text().strip()
+            iid = new_instance_id()
+            path.write_text(iid + "\n")
+            path.chmod(0o600)
+            return iid
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
