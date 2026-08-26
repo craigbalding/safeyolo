@@ -105,12 +105,19 @@ async def get_jetstream():
         _js = None
     user, password = nats_runtime.client_user_credentials()
     try:
+        # Bounded reconnect attempts: `-1` (unlimited) makes the initial
+        # `connect()` loop forever when the server is down, so a coord
+        # request during a NATS outage never surfaces as
+        # NatsUnavailable. A small cap gives nats-py room to ride out a
+        # transient blip but still fails fast when the server really
+        # isn't there. Combined with connect_timeout + reconnect_time_wait
+        # this bounds "am I unavailable" to a few seconds.
         client = await nats.connect(
             nats_runtime.client_url(),
             user=user,
             password=password,
             allow_reconnect=True,
-            max_reconnect_attempts=-1,
+            max_reconnect_attempts=3,
             reconnect_time_wait=0.5,
             connect_timeout=2.0,
             name="safeyolo-coord",

@@ -457,6 +457,22 @@ async def wait_for_message(
             candidates = envelopes
 
         if candidates:
+            # Re-check grant AFTER fetch: the check before fetch cannot
+            # cover a revoke that lands WHILE we were blocked waiting for
+            # a message. Without this second check, a revoked caller
+            # would receive the first peer message that arrived during
+            # their blocked wait. Task #37 correctness case.
+            try:
+                with store.connect() as conn:
+                    _check_grant(conn, room_id, principal_kind, principal_id, "receive")
+            except (NoMembershipError, GrantError):
+                return {
+                    "messages": [],
+                    "next_cursor": scan_since,
+                    "has_more": False,
+                    "history_truncated": False,
+                    "oldest_available_at": None,
+                }
             trimmed = candidates[:limit]
             out = []
             for env in trimmed:
