@@ -870,6 +870,7 @@ class TestSandboxExposure:
             # tmpfs mount
             "shm",
         }
+        gvisor_character_devices = set()
         if _is_microvm():
             # VZ microVMs run a real Linux kernel — standard VM devices
             # are expected. The VM boundary IS the isolation layer. vda is
@@ -887,7 +888,16 @@ class TestSandboxExposure:
             # /dev/char/<major>:<minor> symlinks for each character device.
             # The directory is an index, not an additional device surface;
             # its entries are validated below against this same allowlist.
-            whitelist.add("char")
+            # /dev/fuse and /dev/net/tun are sentry implementations operating
+            # entirely inside gVisor, not host-device passthrough. The root
+            # egress probes separately prove that a guest-created TUN cannot
+            # escape the sandbox netstack.
+            whitelist |= {"char", "fuse", "net"}
+            gvisor_character_devices = {
+                "/dev/null", "/dev/zero", "/dev/full", "/dev/random",
+                "/dev/urandom", "/dev/tty", "/dev/console", "/dev/fuse",
+                "/dev/net/tun",
+            }
             prefix_allow = ("pts",)
 
         unexpected = []
@@ -905,6 +915,10 @@ class TestSandboxExposure:
         )
 
         if not _is_microvm() and os.path.isdir("/dev/char"):
+            assert set(os.listdir("/dev/net")) == {"tun"}, (
+                "gVisor /dev/net exposes entries other than the expected "
+                "in-sentry TUN device"
+            )
             unexpected_char_links = []
             for entry in os.listdir("/dev/char"):
                 link = os.path.join("/dev/char", entry)
@@ -915,8 +929,7 @@ class TestSandboxExposure:
                     target_mode = 0
                 if (
                     not os.path.islink(link)
-                    or os.path.dirname(target) != "/dev"
-                    or os.path.basename(target) not in whitelist
+                    or target not in gvisor_character_devices
                     or not stat.S_ISCHR(target_mode)
                 ):
                     unexpected_char_links.append((entry, target))
