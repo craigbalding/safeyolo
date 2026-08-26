@@ -32,6 +32,7 @@ independently so its hardening can be reviewed on its own.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -42,6 +43,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -53,14 +55,16 @@ from .identity import coord_data_dir
 # system package: SafeYolo owns the binary.
 NATS_VERSION = "2.14.5"
 
-# SHA256 of the `.tar.gz` archives from
-# https://github.com/nats-io/nats-server/releases/download/v<VERSION>/
-# nats-server-v<VERSION>-<PLATFORM>.tar.gz
+# SHA256 of the EXTRACTED `nats-server` binary (not the .tar.gz archive).
+# Verified against the pinned value on every ensure_binary() call —
+# on-disk re-verification catches tampering with the binary between runs,
+# not just corruption at download time. Values obtained by downloading
+# and extracting each release tarball manually.
 _NATS_CHECKSUMS: dict[str, str] = {
-    "linux-amd64":  "5e3b603d47c447bda1f77f9ac16dbf91c90aac4ff3681f8fbbc7201e4ed99355",
-    "linux-arm64":  "673a98d3faa79dde3f9ebf16d6dfac36a5f694e7ad2015e4954dd7939c85cd4c",
-    "darwin-amd64": "f95c98d6b6ed2b63c5681b46b092c9585c99767d547cf495730c329234625e96",
-    "darwin-arm64": "ddd907854d9a2de834af133fa396915fe6442fe6d8909ae31390d1ea7a0fea50",
+    "linux-amd64":  "e1a2f9ba25077f4cf753bee829483bd68fbf0a4eec9b6645a1e5785a6de0c0d1",
+    "linux-arm64":  "ebccb25ba4f364dd8878630f1985d8b24d9e0a6e35aa4d8e1a7ecab38c881419",
+    "darwin-amd64": "5df71e798cab833b99514f42d65123bcbd60ef64673b4c543bfd00e6482a22a7",
+    "darwin-arm64": "0a8beaf990916185fa8a4e2236f1c6525a8be8f5f1c1d83225458b4baa822e0e",
 }
 
 # 127.0.0.1 only, mandatory auth. No LAN listener.
@@ -180,14 +184,29 @@ def _sha256_of(path: Path) -> str:
 def ensure_binary() -> Path:
     """Download and verify the pinned nats-server binary if not already
     present at the version-scoped path. Returns the executable path.
-    Idempotent."""
+    Idempotent.
+
+    ALWAYS re-verifies SHA256 against the pinned checksum, even if a
+    binary already exists at the versioned path. An attacker who wrote
+    to `nats/bin/<version>/nats-server` before SafeYolo's first
+    ensure_binary() call must not gain execution just because the file
+    exists and is executable (adversarial test class:
+    TestBinaryChecksumOnExisting).
+    """
     binary = nats_binary_path()
+    expected = _expected_checksum()
     if binary.exists() and os.access(binary, os.X_OK):
-        return binary
+        actual = _sha256_of(binary)
+        if actual == expected:
+            return binary
+        raise RuntimeError(
+            f"nats-server binary at {binary} has SHA256 {actual}, "
+            f"expected {expected}. Refusing to run — delete the file "
+            f"to trigger a fresh verified download."
+        )
 
     _secure_mkdir(nats_bin_dir())
     url = _download_url()
-    expected = _expected_checksum()
 
     with tempfile.NamedTemporaryFile(
         suffix=".tar.gz", dir=nats_bin_dir(), delete=False
@@ -196,14 +215,13 @@ def ensure_binary() -> Path:
     try:
         with urllib.request.urlopen(url) as resp:
             shutil.copyfileobj(resp, tmp_path.open("wb"))
-        actual = _sha256_of(tmp_path)
-        if actual != expected:
-            raise RuntimeError(
-                f"nats-server checksum mismatch for {_platform_key()}: "
-                f"expected {expected}, got {actual}. Refusing to install."
-            )
         with tarfile.open(tmp_path, "r:gz") as tar:
             for member in tar.getmembers():
+                # Restrict to regular files (symlinks named `nats-server`
+                # pointing at /etc/passwd would otherwise sneak through);
+                # rewrite member.name so path-traversal entries land as
+                # the safe leaf name; extract with filter="data" so any
+                # residual unsafe patterns are rejected by the stdlib.
                 if member.isfile() and member.name.endswith("/nats-server"):
                     member.name = "nats-server"
                     tar.extract(member, path=nats_bin_dir(), filter="data")
@@ -212,6 +230,16 @@ def ensure_binary() -> Path:
                 raise RuntimeError(
                     "nats-server archive did not contain expected 'nats-server' file"
                 )
+        # Verify the extracted binary against the pinned checksum. A
+        # tampered / corrupted tarball that manages to extract something
+        # is caught here; we never chmod +x a binary that doesn't match.
+        actual = _sha256_of(binary)
+        if actual != expected:
+            binary.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"nats-server binary checksum mismatch for {_platform_key()}: "
+                f"expected {expected}, got {actual}. Refusing to install."
+            )
         binary.chmod(0o755)
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -404,6 +432,12 @@ def is_healthy() -> bool:
 
 # ---------- lifecycle ----------
 
+# Intra-process serialization. `fcntl.flock` on Linux is per-process,
+# not per-thread, so multiple threads racing start_server would all
+# pass the file lock. threading.Lock inside the process + fcntl.flock
+# across processes gives full protection.
+_START_LOCK = threading.Lock()
+
 
 def _tail_log(nbytes: int = 4096) -> str:
     """Read the last `nbytes` of the NATS log for diagnostics."""
@@ -439,14 +473,30 @@ def _reap_child(proc: subprocess.Popen, term_timeout: float = 2.0, kill_timeout:
 def start_server(ready_timeout: float = 10.0) -> int:
     """Ensure binary + config, start nats-server, verify ownership + health.
 
-    Idempotent: if an already-running instance passes ownership verification,
-    returns that PID without spawning a duplicate.
+    Idempotent AND race-safe (adversarial test class:
+    TestConcurrentStart): serialized by an in-process threading.Lock plus
+    a cross-process fcntl.flock on a file under nats_root. Two callers
+    racing on either axis are guaranteed to end up sharing the same
+    single spawned nats-server, not two competing for port 4222.
 
     Diagnostics: child stdout/stderr → nats/log/nats-server.log. If the
     child exits before becoming healthy (bad config, port collision, etc.)
     this raises RuntimeError immediately with the log tail, rather than
     waiting for the full timeout.
     """
+    _secure_mkdir(nats_root())
+    lock_path = nats_root() / ".start.lock"
+    lock_path.touch()
+    with _START_LOCK, open(lock_path) as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            return _start_server_locked(ready_timeout)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def _start_server_locked(ready_timeout: float) -> int:
+    """Body of start_server, called under both threading + file locks."""
     verified = _verified_ownership()
     if verified:
         return verified["pid"]

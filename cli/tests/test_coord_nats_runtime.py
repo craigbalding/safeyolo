@@ -260,6 +260,160 @@ class TestFailedStartupDiagnostics:
         assert not nr.is_healthy()
 
 
+class TestConcurrentStart:
+    """Adversarial: 5 threads race start_server on a fresh install.
+    threading.Lock + fcntl.flock guarantee exactly one nats-server
+    spawns, no port-conflict deaths, no orphaned pidfile."""
+
+    def test_concurrent_starts_serialize_to_one_server(self, nats_env):
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(nr.start_server, 8.0) for _ in range(5)]
+            results = [f.result() for f in futures]
+        try:
+            # All 5 return the same PID
+            assert len(set(results)) == 1, f"race produced multiple PIDs: {results}"
+            # One healthy server
+            assert nr.is_healthy()
+            pf = nr._read_pidfile()
+            assert pf is not None
+            assert pf["pid"] == results[0]
+        finally:
+            nr.stop_server()
+
+
+class TestBinaryChecksumOnExisting:
+    """Adversarial: attacker who wrote to nats/bin/<version>/nats-server
+    before SafeYolo's first ensure_binary() must NOT gain execution just
+    because the file exists + is executable."""
+
+    def test_existing_binary_wrong_checksum_rejected(self, isolated_coord):
+        bp = nr.nats_binary_path()
+        bp.parent.mkdir(parents=True, exist_ok=True)
+        bp.write_bytes(b"#!/bin/sh\necho i-am-not-nats-server\n")
+        bp.chmod(0o755)
+        with pytest.raises(RuntimeError, match="SHA256"):
+            nr.ensure_binary()
+
+    def test_existing_binary_correct_checksum_accepted(self, nats_env):
+        """Positive case: legitimate binary passes re-verification and
+        is returned without re-downloading."""
+        # nats_env fixture symlinked the cached (real) binary in already
+        result = nr.ensure_binary()
+        assert result == nr.nats_binary_path()
+
+
+class TestPortCollisionFastFail:
+    """Adversarial: another process already bound to 4222. nats-server
+    exits immediately with a bind error; we should fast-fail with the
+    log tail rather than hang the full ready_timeout."""
+
+    def test_port_conflict_causes_fast_fail(self, nats_env):
+        import socket
+        squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        squatter.bind((nr.NATS_LISTEN_HOST, nr.NATS_CLIENT_PORT))
+        squatter.listen(1)
+        try:
+            t0 = time.monotonic()
+            with pytest.raises(RuntimeError):
+                nr.start_server(ready_timeout=6.0)
+            elapsed = time.monotonic() - t0
+            assert elapsed < 4.0, f"port-conflict should fail fast; took {elapsed:.1f}s"
+            assert not nr.nats_pid_path().exists()
+        finally:
+            squatter.close()
+
+
+class TestExternalKillHygiene:
+    """Adversarial: something else kills our nats-server. Next health
+    check must return False; stop_server must be a clean no-op."""
+
+    def test_external_sigkill_leaves_no_state(self, nats_env):
+        pid = nr.start_server(ready_timeout=8.0)
+        assert nr.is_healthy()
+        os.kill(pid, 9)
+        # Wait until the server stops responding on /varz. We can't rely on
+        # _pid_alive because start_server's Popen isn't reaped in this test
+        # scope so the killed process shows up as a zombie for a bit; the
+        # meaningful signal is the ownership predicate, which requires a
+        # live /varz answer.
+        for _ in range(60):
+            if nr._varz_server_name() is None:
+                break
+            time.sleep(0.05)
+        # Ownership check fails cleanly
+        assert not nr.is_healthy()
+        # stop_server is a no-op (nothing ours to stop) AND cleans stale state
+        assert nr.stop_server() is False
+        assert not nr.nats_pid_path().exists()
+
+
+class TestMaliciousTarball:
+    """Adversarial: whatever the download path fetches, extraction must
+    be safe. Defenses: filter='data' + manual name rewrite to the safe
+    leaf 'nats-server' + isfile() check that excludes symlinks."""
+
+    def _fake_download(self, monkeypatch, tarball_bytes: bytes):
+        import io
+        class FakeResp:
+            def __init__(self, data):
+                self._buf = io.BytesIO(data)
+            def read(self, n=-1):
+                return self._buf.read(n)
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda url: FakeResp(tarball_bytes),
+        )
+
+    def test_symlink_named_nats_server_rejected(self, isolated_coord, monkeypatch):
+        """A symlink named nats-server pointing at /etc/passwd would let
+        a chmod 0755 change the perms of the target if we treated it as
+        a regular file. isfile() filter blocks it."""
+        import io
+        import tarfile as tf
+        buf = io.BytesIO()
+        with tf.open(fileobj=buf, mode="w:gz") as t:
+            info = tf.TarInfo(name="release/nats-server")
+            info.type = tf.SYMTYPE
+            info.linkname = "/etc/passwd"
+            info.size = 0
+            t.addfile(info)
+        self._fake_download(monkeypatch, buf.getvalue())
+        with pytest.raises(RuntimeError, match="did not contain"):
+            nr.ensure_binary()
+
+    def test_path_traversal_member_extracted_safely(self, isolated_coord, monkeypatch):
+        """A member named `../../etc/evil/nats-server` should be renamed
+        to `nats-server` and land under nats_bin_dir, not outside it.
+        The extracted-binary checksum then rejects it since it's fake."""
+        import io
+        import tarfile as tf
+        buf = io.BytesIO()
+        fake_binary = b"#!/bin/sh\necho fake\n"
+        with tf.open(fileobj=buf, mode="w:gz") as t:
+            info = tf.TarInfo(name="../../etc/evil/nats-server")
+            info.size = len(fake_binary)
+            info.mode = 0o755
+            t.addfile(info, io.BytesIO(fake_binary))
+        self._fake_download(monkeypatch, buf.getvalue())
+
+        with pytest.raises(RuntimeError, match="checksum mismatch"):
+            nr.ensure_binary()
+
+        # Whatever landed on disk, it landed UNDER nats_bin_dir, not
+        # outside it. And ensure_binary cleaned it up on the checksum
+        # rejection path.
+        assert not nr.nats_binary_path().exists()
+        # Nothing escaped bin_dir
+        for p in nr.nats_bin_dir().rglob("*"):
+            assert str(p.resolve()).startswith(str(nr.nats_bin_dir().resolve()))
+
+
 class TestUnauthenticatedRejected:
     """Reviewer #4 acceptance: prove mandatory auth is actually enforced,
     not just config-shaped."""
