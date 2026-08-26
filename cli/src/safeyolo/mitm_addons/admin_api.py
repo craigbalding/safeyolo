@@ -19,6 +19,7 @@ import re
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import TCPServer
 from urllib.parse import urlparse
 
 from mitmproxy import ctx
@@ -36,6 +37,21 @@ log = logging.getLogger("safeyolo.admin")
 
 # Alias for brevity within this module
 _sanitize_log = sanitize_for_log
+
+
+class LoopbackHTTPServer(HTTPServer):
+    """HTTP server that binds loopback without performing reverse DNS."""
+
+    allow_reuse_address = True
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind() calls socket.getfqdn(host). A fixed
+        # loopback listener does not need that name, and macOS reverse-DNS
+        # failures can otherwise block proxy readiness for tens of seconds.
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 class AdminRequestHandler(BaseHTTPRequestHandler):
@@ -1643,10 +1659,8 @@ class AdminAPI:
         # Find other addons to wire up
         self._discover_addons()
 
-        # Start HTTP server in background thread with error handling
-        # allow_reuse_address must be set before bind() — use class attribute
-        HTTPServer.allow_reuse_address = True
-        self.server = HTTPServer(("127.0.0.1", port), AdminRequestHandler)  # DOC: SECURITY.md, docs/security-verification.md
+        # Start HTTP server in background thread with error handling.
+        self.server = LoopbackHTTPServer(("127.0.0.1", port), AdminRequestHandler)  # DOC: SECURITY.md, docs/security-verification.md
         self._server_port = port
 
         def serve_with_recovery():
@@ -1669,7 +1683,7 @@ class AdminAPI:
                     # Attempt restart after brief delay
                     time.sleep(1)
                     try:
-                        self.server = HTTPServer(("127.0.0.1", port), AdminRequestHandler)
+                        self.server = LoopbackHTTPServer(("127.0.0.1", port), AdminRequestHandler)
                         print("[admin_api] Restarting after crash", file=sys.stderr, flush=True)
                     except Exception as restart_err:
                         print(
