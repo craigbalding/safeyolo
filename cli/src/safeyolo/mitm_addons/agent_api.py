@@ -394,12 +394,11 @@ class AgentAPI:
         if agent_id is None:
             agent_id = await asyncio.to_thread(get_or_mint_agent_id, agent_name)
 
-        m = re.match(r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait)$", path)
+        m = re.match(r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait|members)$", path)
         if not m:
-            self._respond(flow, 404, {
-                "error": "Not Found",
-                "hint": "/api/coord/rooms/{name}/{join|send|messages|wait}",
-            })
+            # Per #20: 404 body must not confirm room existence, so no
+            # "hint" that echoes what a caller probed for.
+            self._respond(flow, 404, {"error": "room not found or not accessible"})
             return
         room = m.group(1)
         op = m.group(2)
@@ -442,6 +441,7 @@ class AgentAPI:
                     room_name=room,
                     sender_kind="agent",
                     sender_agent_id=agent_id,
+                    sender_agent_name=agent_name,  # #22: display metadata
                     body=body,
                     declared_content_type=declared,
                 )
@@ -456,6 +456,41 @@ class AgentAPI:
                     since_sequence=since,
                     limit=limit,
                 )
+            elif op == "members" and method == "GET":
+                # #22: roster discovery. Requires caller has active
+                # membership — join_room raises NoMembershipError (404 per
+                # #20 rules) if not, indistinguishable from nonexistent
+                # room. Only then do we list.
+                coord_api.join_room(room, "agent", agent_id)
+                principals = coord_api.list_members(room)
+                # Single agents_store read: build id -> name map once.
+                # Per reviewer feedback: repeated get_agent_by_id calls
+                # would reparse TOML for each member (same hot-path
+                # concern stage-0 already uncovered).
+                all_agents = load_all_agents()
+                id_to_name = {
+                    meta.get("agent_id"): name
+                    for name, meta in all_agents.items()
+                    if meta.get("agent_id")
+                }
+                # Instance ID is local for all agents in v0. Kept in the
+                # response so cross-host consumers don't silently assume
+                # agent_id is globally unique (reviewer point).
+                instance_id = await asyncio.to_thread(
+                    lambda: coord_api.get_or_create_instance_id()
+                )
+                members = []
+                for p in principals:
+                    if p["principal_kind"] == "agent":
+                        members.append({
+                            "principal_kind": "agent",
+                            "agent_id": p["principal_id"],
+                            "agent_name": id_to_name.get(p["principal_id"]),
+                            "origin_instance_id": instance_id,
+                        })
+                    else:
+                        members.append({"principal_kind": "operator"})
+                result = {"members": members}
             elif op == "wait" and method == "GET":
                 q = flow.request.query
                 since = _parse_qs_int(q.get("since", "0"), "since", default=0)

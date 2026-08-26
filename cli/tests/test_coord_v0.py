@@ -37,8 +37,9 @@ def test_room_grant_and_send_and_read(coord_env):
     api.grant("huddle", "agent", AGENT_A)
     api.grant("huddle", "agent", AGENT_B)
 
-    r = api.send("huddle", "agent", AGENT_A, "hey bob")
+    r = api.send("huddle", "agent", AGENT_A, "hey bob", sender_agent_name="alice")
     assert r["envelope"]["sender_agent_id"] == AGENT_A
+    assert r["envelope"]["sender_agent_name"] == "alice"  # #22
     assert r["envelope"]["sender_kind"] == "agent"
     assert r["envelope"]["origin_instance_id"].startswith("sy-")
     assert r["sequence"] > 0
@@ -47,8 +48,52 @@ def test_room_grant_and_send_and_read(coord_env):
     assert len(page["messages"]) == 1
     assert page["messages"][0]["body"] == "hey bob"
     assert page["messages"][0]["sender_agent_id"] == AGENT_A
+    assert page["messages"][0]["sender_agent_name"] == "alice"  # #22 persisted
     assert page["has_more"] is False
     assert page["history_truncated"] is False
+
+
+def test_operator_send_has_null_agent_name(coord_env):
+    """Per #22: operator envelopes must have sender_agent_name=None on the
+    wire — operator identity is not a registry name."""
+    api.create_room("r")
+    api.grant("r", "operator", "operator")
+    r = api.send("r", "operator", None, "kicking off")
+    assert r["envelope"]["sender_kind"] == "operator"
+    assert r["envelope"]["sender_agent_id"] is None
+    assert r["envelope"]["sender_agent_name"] is None
+
+
+def test_operator_send_rejects_explicit_agent_name(coord_env):
+    api.create_room("r")
+    api.grant("r", "operator", "operator")
+    with pytest.raises(ValueError, match="sender_agent_name must be None"):
+        api.send("r", "operator", None, "x", sender_agent_name="oops")
+
+
+def test_list_members_dedups_and_is_ordered(coord_env):
+    """Per reviewer point on #22: multiple active grant rows for the same
+    principal must NOT appear multiple times in the roster."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_A)  # duplicate
+    api.grant("r", "agent", AGENT_B)
+    api.grant("r", "operator", "operator")
+    members = api.list_members("r")
+    # DISTINCT on (kind, id) — 3 distinct: alice, bob, operator
+    principals = {(m["principal_kind"], m["principal_id"]) for m in members}
+    assert principals == {("agent", AGENT_A), ("agent", AGENT_B), ("operator", "operator")}
+    assert len(members) == 3
+
+
+def test_list_members_excludes_revoked(coord_env):
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    api.revoke_grant("r", "agent", AGENT_A)
+    members = api.list_members("r")
+    principals = {(m["principal_kind"], m["principal_id"]) for m in members}
+    assert principals == {("agent", AGENT_B)}
 
 
 def test_grant_enforcement(coord_env):
@@ -365,6 +410,7 @@ def test_instance_id_creation_is_race_safe(tmp_path, monkeypatch):
     """Codex finding: two concurrent callers on a fresh install used to
     mint different IDs (read-check-write with no lock)."""
     from concurrent.futures import ThreadPoolExecutor
+
     from safeyolo.coord.identity import get_or_create_instance_id
     monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path))
     with ThreadPoolExecutor(max_workers=8) as pool:

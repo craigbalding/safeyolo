@@ -193,6 +193,25 @@ def revoke_grant(
 # ---------- agent-facing operations ----------
 
 
+def list_members(room_name: str) -> list[dict[str, Any]]:
+    """Return active room members deduplicated by principal.
+
+    Read-only — does NOT permission-check the caller; the addon does that
+    before calling (via `join_room`) so per-#20 rules apply (non-member gets
+    404 as if the room didn't exist). Returns tuples ready to be joined
+    against agents_store by the caller.
+    """
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+        rows = conn.execute(
+            """SELECT DISTINCT principal_kind, principal_id
+               FROM memberships
+               WHERE room_id = ? AND revoked_at IS NULL""",
+            (room_id,),
+        ).fetchall()
+    return [{"principal_kind": r["principal_kind"], "principal_id": r["principal_id"]} for r in rows]
+
+
 def join_room(room_name: str, principal_kind: str, principal_id: str) -> dict[str, Any]:
     """Attach to an existing membership. Does not grant anything.
 
@@ -228,14 +247,24 @@ def send(
     sender_agent_id: str | None,
     body: str,
     declared_content_type: str = "text/markdown",
+    sender_agent_name: str | None = None,
 ) -> dict[str, Any]:
-    """Send a message. Envelope fields are SafeYolo-generated."""
+    """Send a message. Envelope fields are SafeYolo-generated.
+
+    `sender_agent_name` is display metadata per #22: SafeYolo-generated
+    (never caller-supplied), persisted at send time. Authorization decisions
+    still use `sender_agent_id`; the name is for humans and LLMs reading
+    the transcript. Persisting at send means retained history keeps naming
+    even after the agent is removed from the registry.
+    """
     if sender_kind not in {"agent", "operator"}:
         raise ValueError(f"sender_kind must be 'agent' or 'operator', got {sender_kind!r}")
     if sender_kind == "agent" and not sender_agent_id:
         raise ValueError("sender_agent_id required when sender_kind='agent'")
     if sender_kind == "operator" and sender_agent_id is not None:
         raise ValueError("sender_agent_id must be None when sender_kind='operator'")
+    if sender_kind == "operator" and sender_agent_name is not None:
+        raise ValueError("sender_agent_name must be None when sender_kind='operator'")
     # Body must encode cleanly to UTF-8; a lone surrogate raises
     # UnicodeEncodeError (subclass of ValueError). Catch it explicitly to
     # keep the raw Python codec message out of the 400 response. Codex
@@ -261,10 +290,10 @@ def send(
         conn.execute(
             """INSERT INTO messages
                (msg_id, room_id, sent_at, sender_kind, sender_agent_id,
-                origin_instance_id, content_type, body)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                sender_agent_name, origin_instance_id, content_type, body)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (msg_id, room_id, sent_at, sender_kind, sender_agent_id,
-             instance_id, content_type, body),
+             sender_agent_name, instance_id, content_type, body),
         )
         # rowid == sequence
         sequence = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -274,6 +303,7 @@ def send(
         sent_at=sent_at,
         sender_kind=sender_kind,  # type: ignore[arg-type]
         sender_agent_id=sender_agent_id,
+        sender_agent_name=sender_agent_name,
         origin_instance_id=instance_id,
         content_type=content_type,
         body=body,
@@ -300,7 +330,8 @@ def read_room(
         _check_grant(conn, room_id, principal_kind, principal_id, "receive")
         rows = conn.execute(
             """SELECT msg_id, rowid AS sequence, sent_at, sender_kind,
-                      sender_agent_id, origin_instance_id, content_type, body
+                      sender_agent_id, sender_agent_name, origin_instance_id,
+                      content_type, body
                FROM messages
                WHERE room_id = ? AND rowid > ?
                ORDER BY rowid ASC LIMIT ?""",

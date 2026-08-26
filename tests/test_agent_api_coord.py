@@ -532,3 +532,112 @@ class TestCoordValidationErrors:
             _run(api, flow)
         assert flow.response.status_code == 400
         assert json.loads(flow.response.content)["error"] == "invalid since"
+
+
+class TestCoordMembersEndpoint:
+    """Per #22: /members lets peers bind agent_id to a trusted
+    display name so body-prefix folklore stops being the identity."""
+
+    def test_members_endpoint_returns_roster_with_names(self, api, isolated_state):
+        _register_agent("alice")
+        _register_agent("bob")
+        _register_agent("codey")
+        _setup_room_with_grants("r", ["alice", "bob", "codey"])
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/members", method="GET")
+            _run(api, flow)
+        assert flow.response.status_code == 200
+        page = json.loads(flow.response.content)
+        agent_members = [m for m in page["members"] if m["principal_kind"] == "agent"]
+        names = {m["agent_name"] for m in agent_members}
+        assert names == {"alice", "bob", "codey"}
+        # Every agent entry carries agent_id + origin_instance_id + name
+        for m in agent_members:
+            assert m["agent_id"].startswith("ag-")
+            assert m["origin_instance_id"].startswith("sy-")
+        # Operator entry (from _setup_room_with_grants with_operator=True by default? No — that helper only grants listed agents)
+        # Not asserted; helper does not grant operator.
+
+    def test_members_endpoint_dedups_multi_grant(self, api, isolated_state):
+        from safeyolo.agents_store import get_or_mint_agent_id
+        from safeyolo.coord import api as coord_api
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        # Grant alice a second time — multi-grant is valid
+        alice_id = get_or_mint_agent_id("alice")
+        coord_api.grant("r", "agent", alice_id)
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/members", method="GET")
+            _run(api, flow)
+        page = json.loads(flow.response.content)
+        assert len([m for m in page["members"] if m.get("agent_name") == "alice"]) == 1
+
+    def test_members_endpoint_404_for_non_member(self, api, isolated_state):
+        """Per #20: non-member sees 404 (same as nonexistent room), not
+        403. /members is not a discovery oracle either."""
+        _register_agent("alice")
+        _register_agent("mallory")
+        _setup_room_with_grants("r", ["alice"])
+        with _as_agent("mallory"):
+            flow = _make_flow("/api/coord/rooms/r/members", method="GET")
+            _run(api, flow)
+        assert flow.response.status_code == 404
+        assert "r" not in flow.response.content.decode() or "not found" in flow.response.content.decode().lower()
+
+    def test_members_endpoint_reflects_revocation(self, api, isolated_state):
+        from safeyolo.agents_store import get_or_mint_agent_id
+        from safeyolo.coord import api as coord_api
+        _register_agent("alice")
+        _register_agent("bob")
+        _setup_room_with_grants("r", ["alice", "bob"])
+        # revoke bob
+        bob_id = get_or_mint_agent_id("bob")
+        coord_api.revoke_grant("r", "agent", bob_id)
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/members", method="GET")
+            _run(api, flow)
+        page = json.loads(flow.response.content)
+        names = {m.get("agent_name") for m in page["members"] if m["principal_kind"] == "agent"}
+        assert names == {"alice"}
+
+
+class TestCoordSenderAgentName:
+    """Per #22: envelope carries SafeYolo-generated sender_agent_name so
+    peers don't need to lookup /members for every message."""
+
+    def test_send_envelope_carries_agent_name(self, api, isolated_state):
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/send", method="POST",
+                              body={"body": "hello"})
+            _run(api, flow)
+        env = json.loads(flow.response.content)["envelope"]
+        assert env["sender_agent_name"] == "alice"
+
+    def test_read_room_returns_stored_agent_name(self, api, isolated_state):
+        _register_agent("alice")
+        _register_agent("bob")
+        _setup_room_with_grants("r", ["alice", "bob"])
+        with _as_agent("alice"):
+            _run(api, _make_flow("/api/coord/rooms/r/send", method="POST",
+                                 body={"body": "hi"}))
+        with _as_agent("bob"):
+            flow = _make_flow("/api/coord/rooms/r/messages?since=0", method="GET")
+            _run(api, flow)
+        page = json.loads(flow.response.content)
+        assert page["messages"][0]["sender_agent_name"] == "alice"
+
+    def test_caller_cannot_forge_sender_agent_name(self, api, isolated_state):
+        """Body-supplied sender_agent_name must be ignored; envelope
+        carries the transport-derived name."""
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/send", method="POST",
+                              body={"body": "spoof", "sender_agent_name": "bob"})
+            _run(api, flow)
+        env = json.loads(flow.response.content)["envelope"]
+        assert env["sender_agent_name"] == "alice"  # not "bob"
+
+

@@ -21,6 +21,7 @@ class Envelope:
     sent_at: int  # milliseconds since epoch
     sender_kind: SenderKind
     sender_agent_id: str | None  # None when sender_kind == "operator"
+    sender_agent_name: str | None  # display metadata per #22; SafeYolo-generated
     origin_instance_id: str
     content_type: str
     body: str
@@ -31,6 +32,7 @@ class Envelope:
             "sent_at": self.sent_at,
             "sender_kind": self.sender_kind,
             "sender_agent_id": self.sender_agent_id,
+            "sender_agent_name": self.sender_agent_name,
             "origin_instance_id": self.origin_instance_id,
             "content_type": self.content_type,
             "body": self.body,

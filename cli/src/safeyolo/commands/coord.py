@@ -33,7 +33,12 @@ def _fmt_ts(ms: int) -> str:
 
 def _render_message(m: dict) -> None:
     kind = m["sender_kind"]
-    who = m.get("sender_agent_id") or "operator"
+    # Prefer sender_agent_name (#22 display metadata) when present; fall
+    # back to agent_id for pre-#22 rows that have no name persisted.
+    if kind == "operator":
+        who = "operator"
+    else:
+        who = m.get("sender_agent_name") or m.get("sender_agent_id") or "?"
     ts = _fmt_ts(m["sent_at"])
     style = "bold yellow" if kind == "operator" else "bold cyan"
     console.print(f"[{style}]{who}[/] [dim]{ts} seq={m['sequence']}[/]")

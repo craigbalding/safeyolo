@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS messages (
     sent_at INTEGER NOT NULL,
     sender_kind TEXT NOT NULL,
     sender_agent_id TEXT,
+    sender_agent_name TEXT,
     origin_instance_id TEXT NOT NULL,
     content_type TEXT NOT NULL,
     body TEXT NOT NULL
@@ -49,6 +50,18 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id);
 """
+
+
+def _ensure_migrations(conn) -> None:
+    """Idempotent additive schema migrations for the v0 substrate.
+
+    Kept small and read-first: PRAGMA table_info is cheap and lets us add
+    columns to installs that predate later fields (e.g. sender_agent_name
+    added for #22) without needing a full migration framework.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
+    if "sender_agent_name" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN sender_agent_name TEXT")
 
 # rowid is SQLite's implicit monotonic per-table sequence. Used as the
 # `sequence` returned to clients for pagination and wait_for_message cursors.
@@ -78,6 +91,7 @@ def connect():
 def init_schema() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _ensure_migrations(conn)
 
 
 def now_ms() -> int:
