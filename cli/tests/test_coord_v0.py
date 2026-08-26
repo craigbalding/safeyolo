@@ -1,0 +1,857 @@
+"""Smoke tests for the coord substrate.
+
+The coord layer treats agent_id as an opaque string. Agent-registry
+integration is exercised in tests/test_agent_api_coord.py; here we only
+verify the storage/grant/API surface.
+
+v1 (JetStream): the API layer is async — `create_room`, `send`,
+`read_room`, `wait_for_message` all `await` into `nats_client`. These
+tests wrap each call in `asyncio.run(...)` so the sync test surface
+stays intact.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from safeyolo.coord import api, nats_client
+from safeyolo.coord import nats_runtime as nr
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+@pytest.fixture
+def coord_env(nats_env):
+    """Isolated coord dir + running nats-server + reset client state.
+
+    `nats_env` (from conftest.py) already isolates SAFEYOLO_COORD_DATA_DIR
+    and symlinks in the session-cached nats-server binary. On top of that
+    we start the server, reset the module-level nats-py client (so a stale
+    connection from a prior test doesn't leak in), and bootstrap the
+    coord schema. Teardown stops the server via `nats_env`.
+    """
+    nr.start_server(ready_timeout=8.0)
+    nats_client.reset_for_tests()
+    api.bootstrap()
+    return nats_env
+
+
+AGENT_A = "ag-aaaa000000000000000000000000aaaa"
+AGENT_B = "ag-bbbb000000000000000000000000bbbb"
+AGENT_C = "ag-cccc000000000000000000000000cccc"
+
+
+def test_bootstrap_is_idempotent(coord_env):
+    a = api.bootstrap()
+    b = api.bootstrap()
+    assert a == b
+
+
+def test_room_grant_and_send_and_read(coord_env):
+    _run(api.create_room("huddle"))
+    api.grant("huddle", "agent", AGENT_A)
+    api.grant("huddle", "agent", AGENT_B)
+
+    r = _run(api.send("huddle", "agent", AGENT_A, "hey bob", sender_agent_name="alice"))
+    assert r["envelope"]["sender_agent_id"] == AGENT_A
+    assert r["envelope"]["sender_agent_name"] == "alice"  # #22
+    assert r["envelope"]["sender_kind"] == "agent"
+    assert r["envelope"]["origin_instance_id"].startswith("sy-")
+    assert r["sequence"] > 0
+
+    page = _run(api.read_room("huddle", "agent", AGENT_B))
+    assert len(page["messages"]) == 1
+    assert page["messages"][0]["body"] == "hey bob"
+    assert page["messages"][0]["sender_agent_id"] == AGENT_A
+    assert page["messages"][0]["sender_agent_name"] == "alice"  # #22 persisted
+    assert page["has_more"] is False
+    assert page["history_truncated"] is False
+
+
+def test_operator_send_has_null_agent_name(coord_env):
+    """Per #22: operator envelopes must have sender_agent_name=None on the
+    wire — operator identity is not a registry name."""
+    _run(api.create_room("r"))
+    api.grant("r", "operator", "operator")
+    r = _run(api.send("r", "operator", None, "kicking off"))
+    assert r["envelope"]["sender_kind"] == "operator"
+    assert r["envelope"]["sender_agent_id"] is None
+    assert r["envelope"]["sender_agent_name"] is None
+
+
+def test_operator_send_rejects_explicit_agent_name(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "operator", "operator")
+    with pytest.raises(ValueError, match="sender_agent_name must be None"):
+        _run(api.send("r", "operator", None, "x", sender_agent_name="oops"))
+
+
+def test_list_members_dedups_and_is_ordered(coord_env):
+    """Per reviewer point on #22: multiple active grant rows for the same
+    principal must NOT appear multiple times in the roster."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_A)  # duplicate
+    api.grant("r", "agent", AGENT_B)
+    api.grant("r", "operator", "operator")
+    members = api.list_members("r")
+    # DISTINCT on (kind, id) — 3 distinct: alice, bob, operator
+    principals = {(m["principal_kind"], m["principal_id"]) for m in members}
+    assert principals == {("agent", AGENT_A), ("agent", AGENT_B), ("operator", "operator")}
+    assert len(members) == 3
+
+
+def test_list_members_excludes_revoked(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    api.revoke_grant("r", "agent", AGENT_A)
+    members = api.list_members("r")
+    principals = {(m["principal_kind"], m["principal_id"]) for m in members}
+    assert principals == {("agent", AGENT_B)}
+
+
+def test_grant_enforcement(coord_env):
+    """Non-member access — per #20, this is NoMembershipError (404
+    semantic), distinct from GrantError (403, member with wrong perm)."""
+    _run(api.create_room("huddle"))
+    api.grant("huddle", "agent", AGENT_A)
+
+    with pytest.raises(api.NoMembershipError):
+        _run(api.send("huddle", "agent", AGENT_C, "sneaking in"))
+    with pytest.raises(api.NoMembershipError):
+        _run(api.read_room("huddle", "agent", AGENT_C))
+    with pytest.raises(api.NoMembershipError):
+        api.join_room("huddle", "agent", AGENT_C)
+
+
+def test_permission_denied_is_grant_error(coord_env):
+    """Member with wrong permission (e.g. receive-only calling send)
+    gets GrantError (403), NOT NoMembershipError (404). Per #20 split."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A, permissions=["receive"])
+    # receive-only member: read OK, send raises GrantError (not NoMembership)
+    _run(api.read_room("r", "agent", AGENT_A))
+    with pytest.raises(api.GrantError, match="permission 'send' denied"):
+        _run(api.send("r", "agent", AGENT_A, "no send perm"))
+
+
+def test_no_membership_and_nonexistent_room_are_both_404_family(coord_env):
+    """Per #20: unauthorized caller cannot distinguish nonexistent room
+    from room-they-lack-membership-in. Both raise NotFoundError-family
+    exceptions."""
+    _run(api.create_room("exists"))
+    api.grant("exists", "agent", AGENT_A)
+
+    # Nonexistent room
+    with pytest.raises(api.NotFoundError):
+        api.join_room("does-not-exist", "agent", AGENT_C)
+    # Room exists but caller has no membership
+    with pytest.raises(api.NotFoundError):  # NoMembershipError IS NotFoundError
+        api.join_room("exists", "agent", AGENT_C)
+
+
+def test_operator_send_and_agent_read(coord_env):
+    _run(api.create_room("huddle"))
+    api.grant("huddle", "agent", AGENT_A)
+    api.grant("huddle", "operator", "operator")
+
+    _run(api.send("huddle", "operator", None, "kicking off"))
+    page = _run(api.read_room("huddle", "agent", AGENT_A))
+    assert page["messages"][0]["sender_kind"] == "operator"
+    assert page["messages"][0]["sender_agent_id"] is None
+
+
+def test_envelope_field_validation(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+
+    with pytest.raises(ValueError, match="sender_agent_id required"):
+        _run(api.send("r", "agent", None, "x"))
+    with pytest.raises(ValueError, match="must be None"):
+        _run(api.send("r", "operator", "some-id", "x"))
+    with pytest.raises(ValueError, match="content_type"):
+        _run(api.send("r", "agent", AGENT_A, "x", declared_content_type="application/exe"))
+
+
+def test_read_room_pagination_bound(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    for i in range(5):
+        _run(api.send("r", "agent", AGENT_A, f"msg {i}"))
+
+    page = _run(api.read_room("r", "agent", AGENT_A, limit=3))
+    assert len(page["messages"]) == 3
+    assert page["has_more"] is True
+
+    page2 = _run(api.read_room("r", "agent", AGENT_A,
+                               since_sequence=page["next_cursor"], limit=3))
+    assert len(page2["messages"]) == 2
+    assert page2["has_more"] is False
+
+
+@pytest.mark.timeout(10)
+def test_wait_for_message_wakes(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    async def scenario():
+        async def delayed_send():
+            await asyncio.sleep(0.2)
+            return await api.send("r", "agent", AGENT_A, "wake up")
+
+        _, page = await asyncio.gather(
+            delayed_send(),
+            api.wait_for_message("r", "agent", AGENT_B, since_sequence=0, timeout_seconds=3),
+        )
+        return page
+
+    page = asyncio.run(scenario())
+    assert len(page["messages"]) == 1
+    assert page["messages"][0]["body"] == "wake up"
+
+
+@pytest.mark.timeout(15)
+def test_wait_for_message_times_out_gracefully(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=0.5, fetch_window_seconds=0.1,
+        )
+
+    page = asyncio.run(scenario())
+    assert page["messages"] == []
+
+
+@pytest.mark.timeout(15)
+def test_wait_excludes_self_by_default(coord_env):
+    """Reviewer point 4: an agent's own send does not wake it."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    _run(api.send("r", "agent", AGENT_A, "my own message"))
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=0.5, fetch_window_seconds=0.1,
+        )
+
+    page = asyncio.run(scenario())
+    assert page["messages"] == []
+
+
+@pytest.mark.timeout(15)
+def test_wait_includes_self_when_asked(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    _run(api.send("r", "agent", AGENT_A, "my own message"))
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=1, fetch_window_seconds=0.1,
+            exclude_self=False,
+        )
+
+    page = asyncio.run(scenario())
+    assert len(page["messages"]) == 1
+    assert page["messages"][0]["body"] == "my own message"
+
+
+def test_read_room_always_includes_self(coord_env):
+    """Canonical history is inclusive per reviewer point 4."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    _run(api.send("r", "agent", AGENT_A, "my own message"))
+
+    page = _run(api.read_room("r", "agent", AGENT_A))
+    assert len(page["messages"]) == 1
+    assert page["messages"][0]["body"] == "my own message"
+
+
+@pytest.mark.timeout(15)
+def test_wait_default_limit_is_one(coord_env):
+    """Reviewer point 5: wake is an attention edge, not a bulk fetch."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    for i in range(5):
+        _run(api.send("r", "agent", AGENT_B, f"msg {i}"))
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=1, fetch_window_seconds=0.05,
+        )
+
+    page = asyncio.run(scenario())
+    assert len(page["messages"]) == 1
+    # wait is an attention edge and reports no backlog field; read_room from
+    # next_cursor is the canonical way to ask what remains.
+    assert "has_more" not in page
+
+
+def test_revoke_grant_returns_true_when_active(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    assert api.revoke_grant("r", "agent", AGENT_A) is True
+
+
+def test_revoke_grant_idempotent(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.revoke_grant("r", "agent", AGENT_A)
+    assert api.revoke_grant("r", "agent", AGENT_A) is False
+
+
+def test_revoke_then_ops_fail(coord_env):
+    """Post-revoke, all ops raise NoMembershipError (404 per #20).
+    A revoked principal has no active membership — same as never having
+    joined — and must not be able to distinguish that from room absence."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    _run(api.send("r", "agent", AGENT_A, "before"))
+    api.revoke_grant("r", "agent", AGENT_A)
+
+    with pytest.raises(api.NoMembershipError):
+        api.join_room("r", "agent", AGENT_A)
+    with pytest.raises(api.NoMembershipError):
+        _run(api.send("r", "agent", AGENT_A, "denied"))
+    with pytest.raises(api.NoMembershipError):
+        _run(api.read_room("r", "agent", AGENT_A))
+
+
+def test_regrant_exposes_retained_history(coord_env):
+    """Room semantic per #371: re-grant sees retained history."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    _run(api.send("r", "agent", AGENT_B, "before revoke"))
+    api.revoke_grant("r", "agent", AGENT_A)
+    _run(api.send("r", "agent", AGENT_B, "during revoke"))
+    api.grant("r", "agent", AGENT_A)
+
+    page = _run(api.read_room("r", "agent", AGENT_A))
+    bodies = [m["body"] for m in page["messages"]]
+    assert "before revoke" in bodies
+    assert "during revoke" in bodies
+
+
+def test_body_over_max_rejected(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    big = "x" * (api.MAX_BODY_BYTES + 1024)
+    with pytest.raises(ValueError, match="body too large"):
+        _run(api.send("r", "agent", AGENT_A, big))
+
+
+def test_revoke_cancels_all_active_grants(coord_env):
+    """Bug #18: revoke used to cancel only the newest grant, letting
+    _check_grant fall back to an older active one. Verify multi-grant.
+    Post-revoke, expect NoMembershipError (per #20 semantic split)."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_A)  # second grant, still active
+    api.grant("r", "agent", AGENT_A)  # third
+    assert api.revoke_grant("r", "agent", AGENT_A) is True
+    # After revoke, NO active grant should exist — access must fail.
+    with pytest.raises(api.NoMembershipError):
+        api.join_room("r", "agent", AGENT_A)
+    with pytest.raises(api.NoMembershipError):
+        _run(api.read_room("r", "agent", AGENT_A))
+    # Idempotent: nothing left to revoke.
+    assert api.revoke_grant("r", "agent", AGENT_A) is False
+
+
+def test_grant_absorbs_same_ms_collision(coord_env):
+    """Bug #19: two grants in the same millisecond used to trip the PK.
+    Absorbed as no-op — caller intent 'grant this principal' is already
+    satisfied by the first insert."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    # Force same-millisecond by mocking now_ms to a constant
+    from unittest.mock import patch
+    with patch(
+        "safeyolo.coord.store.now_ms",
+        autospec=True,
+        return_value=api.store.now_ms(),
+    ):
+        # Should NOT raise IntegrityError
+        api.grant("r", "agent", AGENT_A)
+        api.grant("r", "agent", AGENT_A)
+
+
+@pytest.mark.timeout(15)
+def test_wait_advances_cursor_past_partial_own_batch(coord_env):
+    """Codex finding: scan_since must advance past a filtered-empty batch
+    even when page.has_more is False (small own-message batch). Previously
+    the timeout cursor stayed at since_sequence, forcing re-scan next poll."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    _run(api.send("r", "agent", AGENT_A, "own message"))
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=0.5, fetch_window_seconds=0.1,
+        )
+
+    page = asyncio.run(scenario())
+    assert page["messages"] == []
+    assert page["next_cursor"] > 0, "cursor did not advance past filtered own message"
+
+
+def test_content_type_non_string_rejected_cleanly(coord_env):
+    """Codex finding: unhashable content_type (dict, list) used to hit
+    `dict in frozenset(...)` -> TypeError -> reached generic 500 boundary.
+    Should be a caller-shaped ValueError."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    with pytest.raises(ValueError, match="content_type must be a string"):
+        _run(api.send("r", "agent", AGENT_A, "hi", declared_content_type={"a": 1}))
+    with pytest.raises(ValueError, match="content_type must be a string"):
+        _run(api.send("r", "agent", AGENT_A, "hi", declared_content_type=[1, 2]))
+
+
+def test_body_with_lone_surrogate_rejected_cleanly(coord_env):
+    """Codex finding: body containing a lone surrogate raised
+    UnicodeEncodeError (subclass of ValueError), caught by the generic
+    ValueError branch which leaked raw codec text into the 400."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    with pytest.raises(ValueError, match="^invalid body encoding$"):
+        _run(api.send("r", "agent", AGENT_A, "hello\ud800world"))
+
+
+def test_instance_id_creation_is_race_safe(tmp_path, monkeypatch):
+    """Codex finding: two concurrent callers on a fresh install used to
+    mint different IDs (read-check-write with no lock).
+
+    Doesn't need NATS — pure identity/store race check."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from safeyolo.coord.identity import get_or_create_instance_id
+    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: get_or_create_instance_id(), range(32)))
+    unique = set(results)
+    assert len(unique) == 1, f"race produced {len(unique)} distinct instance IDs: {unique}"
+
+
+@pytest.mark.timeout(60)
+def test_instance_id_reader_never_sees_empty_file(tmp_path, monkeypatch):
+    """Regression for the fast-path visibility race: the old
+    `path.write_text()` implementation opened the file with
+    O_CREAT|O_TRUNC, so a concurrent reader taking the fast path could
+    see `path.exists()` == True and read an empty string before the
+    writer's data landed. The fix (mkstemp + os.replace) makes the file
+    appear atomically with content — this test hammers it hard enough to
+    catch a regression.
+
+    Two axes of stress:
+      1. Many fresh installs (200 iterations, one instance_id per iter).
+      2. Many concurrent callers per install (16 threads).
+    Any thread reading '' would fail startswith('sy-').
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from safeyolo.coord.identity import get_or_create_instance_id
+
+    for i in range(200):
+        d = tmp_path / f"iter-{i:03d}"
+        d.mkdir()
+        monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(d))
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(lambda _: get_or_create_instance_id(), range(16)))
+        # No reader saw a truncated / empty file.
+        assert all(r.startswith("sy-") for r in results), \
+            f"iter {i}: reader observed non-sy value: {[r for r in results if not r.startswith('sy-')]}"
+        # Everyone agrees on the same ID.
+        assert len(set(results)) == 1, \
+            f"iter {i}: writers minted {len(set(results))} distinct IDs"
+
+
+@pytest.mark.timeout(30)
+def test_wait_does_not_starve_on_own_message_burst(coord_env):
+    """Bob's finding #17: without a scan-cursor, 200+ consecutive own
+    messages before a peer message would keep the wait re-reading the same
+    filtered-empty window forever.
+    """
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    # 210 own messages, exceeds READ_PAGE_MAX (200)
+    for i in range(api.READ_PAGE_MAX + 10):
+        _run(api.send("r", "agent", AGENT_A, f"own {i}"))
+    # One peer message after the burst
+    _run(api.send("r", "agent", AGENT_B, "peer past the burst"))
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=5, fetch_window_seconds=0.05,
+        )
+
+    page = asyncio.run(scenario())
+    assert len(page["messages"]) == 1, \
+        "wait should have scanned past the own-message burst and seen the peer"
+    assert page["messages"][0]["body"] == "peer past the burst"
+    assert page["messages"][0]["sender_agent_id"] == AGENT_B
+
+
+# --- size contract (review point 2) ------------------------------------------
+# The 256 KiB body limit and the 2 MiB JetStream envelope ceiling are two
+# different numbers and are routinely conflated. These pin both, and pin the
+# relationship between them: the largest legal body must still fit the
+# envelope after worst-case JSON escaping.
+
+
+def test_max_size_body_is_accepted(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    body = "x" * api.MAX_BODY_BYTES
+    assert len(body.encode()) == api.MAX_BODY_BYTES
+    res = _run(api.send("r", "agent", AGENT_A, body))
+    assert res["sequence"] == 1
+
+
+def test_one_byte_over_is_rejected(coord_env):
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    with pytest.raises(ValueError, match="body too large"):
+        _run(api.send("r", "agent", AGENT_A, "x" * (api.MAX_BODY_BYTES + 1)))
+
+
+def test_limit_is_measured_in_bytes_not_characters(coord_env):
+    """A body under the limit in characters can be over it in bytes."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    # 'e' with combining acute is 2 bytes in UTF-8; half the char count,
+    # exactly the byte count.
+    body = "é" * (api.MAX_BODY_BYTES // 2)
+    assert len(body) == api.MAX_BODY_BYTES // 2
+    assert len(body.encode()) == api.MAX_BODY_BYTES
+    _run(api.send("r", "agent", AGENT_A, body))
+    with pytest.raises(ValueError, match="body too large"):
+        _run(api.send("r", "agent", AGENT_A, "é" * (api.MAX_BODY_BYTES // 2 + 1)))
+
+
+def test_worst_case_legal_body_fits_the_envelope_ceiling(coord_env):
+    """The two ceilings must stay in step.
+
+    A maximum-sized body of characters that expand maximally under JSON
+    escaping (NUL -> \\u0000, six bytes out per byte in) is the worst case the
+    envelope has to carry. If MAX_BODY_BYTES is ever raised without raising
+    the stream/server payload ceiling with it, this fails rather than the
+    publish failing in production as an opaque nats-server error.
+    """
+    from safeyolo.coord.nats_client import _ROOM_MAX_MSG_SIZE
+
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    body = "\x00" * api.MAX_BODY_BYTES
+    assert len(body.encode()) == api.MAX_BODY_BYTES
+
+    res = _run(api.send("r", "agent", AGENT_A, body))
+    page = _run(api.read_room("r", "agent", AGENT_A))
+    stored = page["messages"][0]
+    wire = len(json.dumps(stored, separators=(",", ":")).encode())
+    assert wire < _ROOM_MAX_MSG_SIZE, (
+        f"worst-case legal body serialises to {wire} bytes, over the "
+        f"{_ROOM_MAX_MSG_SIZE} envelope ceiling"
+    )
+    assert res["sequence"] == 1
+    assert stored["body"] == body, "body did not survive the round trip intact"
+
+
+def test_page_byte_bound_returns_whole_message_prefix(coord_env):
+    """A page is cut on a message boundary, and has_more says so exactly."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    # 24 x 256 KiB bodies -> comfortably past the 4 MiB page bound.
+    for _ in range(24):
+        _run(api.send("r", "agent", AGENT_A, "x" * api.MAX_BODY_BYTES))
+
+    page = _run(api.read_room("r", "agent", AGENT_A, limit=api.READ_PAGE_MAX))
+    wire = sum(len(json.dumps(m, separators=(",", ":")).encode())
+               for m in page["messages"])
+    assert 0 < len(page["messages"]) < 24, "byte bound did not cut the page"
+    assert wire <= api.READ_PAGE_MAX_BYTES + api.MAX_BODY_BYTES * 2
+    assert page["has_more"] is True
+    assert page["next_cursor"] == page["messages"][-1]["sequence"]
+
+    # Draining from the cursor must terminate and reach the end exactly.
+    seen, cursor, rounds = len(page["messages"]), page["next_cursor"], 0
+    while page["has_more"]:
+        rounds += 1
+        assert rounds < 50, "pagination did not converge"
+        page = _run(api.read_room("r", "agent", AGENT_A,
+                                  since_sequence=cursor, limit=api.READ_PAGE_MAX))
+        seen += len(page["messages"])
+        cursor = page["next_cursor"]
+    assert seen == 24
+
+
+# --- wait consumer lifecycle (review point 5) --------------------------------
+
+
+def test_wait_holds_one_consumer_for_the_whole_call(coord_env):
+    """An idle wait must not churn server-side consumers.
+
+    Polling used to call fetch_since per tick, creating and deleting an
+    ephemeral consumer every time: at a 0.5s interval that is ~120 consumer
+    create/delete cycles per idle 60s wait, per waiting agent. One consumer
+    now serves the whole call.
+    """
+    room_id = _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+
+    counts: list[int] = []
+
+    async def scenario():
+        async def sample():
+            # Sample while the wait is mid-flight.
+            for _ in range(6):
+                await asyncio.sleep(0.15)
+                counts.append(await nats_client.consumer_count(room_id))
+
+        waiter = asyncio.create_task(api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=1.2, fetch_window_seconds=0.1,
+        ))
+        sampler = asyncio.create_task(sample())
+        result = await waiter
+        await sampler
+        return result
+
+    page = asyncio.run(scenario())
+    assert page["messages"] == []
+    assert counts, "sampler never ran"
+    assert max(counts) <= 1, (
+        f"wait held more than one consumer at once: {counts}"
+    )
+
+    # And nothing is left behind once the wait returns.
+    assert _run(nats_client.consumer_count(room_id)) == 0
+
+
+def test_wait_does_not_report_a_backlog_field(coord_env):
+    """`has_more` is gone from wait: it could only ever describe the wake
+    scan, which reads as "backlog remains" and cannot answer that."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    for i in range(5):
+        _run(api.send("r", "agent", AGENT_B, f"msg {i}"))
+
+    page = _run(api.wait_for_message(
+        "r", "agent", AGENT_A, since_sequence=0,
+        timeout_seconds=1, fetch_window_seconds=0.05, limit=2,
+    ))
+    assert len(page["messages"]) == 2
+    assert "has_more" not in page
+    # The backlog question is answered by read_room, exactly.
+    rest = _run(api.read_room("r", "agent", AGENT_A,
+                              since_sequence=page["next_cursor"]))
+    assert [m["body"] for m in rest["messages"]] == ["msg 2", "msg 3", "msg 4"]
+    assert rest["has_more"] is False
+
+
+def test_catch_up_reads_from_the_canonical_cursor_not_the_wake_edge(coord_env):
+    """Pins the cursor rule in wait_for_message's docstring.
+
+    `exclude_self` means the wake edge can sit past the caller's own sends, so
+    reading from the wake's `next_cursor` silently drops them even though
+    read_room is supposed to be inclusive of self. Callers must read from the
+    canonical (pre-wait) cursor they already own.
+    """
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    for i in range(10):
+        _run(api.send("r", "agent", AGENT_B, f"peer {i}"))
+    canonical = 10
+    _run(api.send("r", "agent", AGENT_A, "own 11"))
+    _run(api.send("r", "agent", AGENT_B, "peer 12"))
+
+    page = _run(api.wait_for_message(
+        "r", "agent", AGENT_A, since_sequence=canonical,
+        timeout_seconds=2, fetch_window_seconds=0.05,
+    ))
+    assert [m["body"] for m in page["messages"]] == ["peer 12"]
+    assert page["next_cursor"] == 12
+
+    # The wrong pattern: own message 11 is gone.
+    from_edge = _run(api.read_room("r", "agent", AGENT_A,
+                                   since_sequence=page["next_cursor"]))
+    assert [m["body"] for m in from_edge["messages"]] == []
+
+    # The documented pattern: complete history, self included.
+    from_canonical = _run(api.read_room("r", "agent", AGENT_A,
+                                        since_sequence=canonical))
+    assert [m["body"] for m in from_canonical["messages"]] == ["own 11", "peer 12"]
+    # ...and the cursor to re-arm on is the highest sequence seen.
+    assert from_canonical["next_cursor"] == 12
+
+
+# --- timeout must not masquerade as an outage --------------------------------
+
+
+def test_asyncio_timeout_from_fetch_is_an_empty_page_not_an_outage(coord_env):
+    """nats-py raises two different timeouts; only one was being caught.
+
+    JetStreamContext._fetch_n raises a bare asyncio.TimeoutError when its
+    deadline has already passed, rather than nats.errors.TimeoutError. The
+    bare one is the builtin TimeoutError, which subclasses OSError, so it fell
+    through to the "runtime unreachable" branch and surfaced to the operator
+    as `NatsUnavailable: fetch failed:` with an empty reason -- for an
+    ordinary empty poll.
+    """
+    room_id = _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+
+    class _Timeout:
+        async def fetch(self, *_a, **_k):
+            raise asyncio.TimeoutError          # exactly what _fetch_n raises
+
+    assert _run(nats_client._drain(_Timeout(), "stream", 10, 0.1)) == []
+
+    # And the nats-flavoured one still behaves the same way.
+    from nats.errors import TimeoutError as NatsTimeout
+
+    class _NatsTimeout:
+        async def fetch(self, *_a, **_k):
+            raise NatsTimeout
+
+    assert _run(nats_client._drain(_NatsTimeout(), "stream", 10, 0.1)) == []
+
+    # A real outage must still be reported as one.
+    class _Down:
+        async def fetch(self, *_a, **_k):
+            raise ConnectionRefusedError("connection refused")
+
+    with pytest.raises(nats_client.NatsUnavailable):
+        _run(nats_client._drain(_Down(), "stream", 10, 0.1))
+
+    # An empty room still reads as an empty page end to end.
+    page = _run(api.read_room("r", "agent", AGENT_A))
+    assert page["messages"] == []
+    assert room_id
+
+
+# --- wait is event-driven, not timed (review round 3) ------------------------
+
+
+def test_wait_returns_the_instant_a_message_is_stored(coord_env):
+    """A wake must not be paced by a timer.
+
+    The fetch window is deliberately far longer than the delay before the
+    message is sent. If waking were driven by the request timing out, this
+    would take the whole window. It must instead return as soon as the server
+    stores the message.
+
+    Note this does NOT pin batch size: measured against nats-py 2.15,
+    fetch(200) returns a partial batch as fast as fetch(1). What it pins is
+    that the wait blocks on an outstanding request rather than sleeping
+    between short ones.
+    """
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        waiter = asyncio.create_task(api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=25, fetch_window_seconds=20,
+        ))
+        await asyncio.sleep(0.3)
+        started = loop.time()
+        await api.send("r", "agent", AGENT_B, "wake up")
+        page = await waiter
+        return page, loop.time() - started
+
+    page, elapsed = asyncio.run(scenario())
+    assert [m["body"] for m in page["messages"]] == ["wake up"]
+    assert elapsed < 5.0, (
+        f"took {elapsed:.1f}s to surface a stored message with a 20s fetch "
+        "window -- the wake is being paced by the request timeout, not by "
+        "the message arriving"
+    )
+
+
+def test_a_burst_of_own_messages_does_not_cost_a_request_each(coord_env):
+    """The starvation guard must skip a burst cheaply.
+
+    Asking for one message at a time makes the idle case event-driven, but
+    would make a burst of the caller's own sends cost one round trip per
+    message. The post-wake drain collects what is already stored instead.
+    """
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    for i in range(60):
+        _run(api.send("r", "agent", AGENT_A, f"own {i}"))
+    _run(api.send("r", "agent", AGENT_B, "the one that matters"))
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        page = await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=20, fetch_window_seconds=15,
+        )
+        return page, loop.time() - started
+
+    page, elapsed = asyncio.run(scenario())
+    assert [m["body"] for m in page["messages"]] == ["the one that matters"]
+    assert elapsed < 5.0, (
+        f"took {elapsed:.1f}s to skip 60 own messages -- the burst is costing "
+        "a round trip per message"
+    )
+
+
+def test_an_ordinary_wake_costs_one_fetch(coord_env):
+    """A peer message with limit=1 must not trigger the post-wake drain.
+
+    The drain exists for two cases only: skipping a burst of the caller's own
+    sends, and filling a wake batch the caller actually asked for. On the
+    ordinary path it would add a second NATS request and its window before
+    the attention edge is released.
+    """
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    _run(api.send("r", "agent", AGENT_B, "peer"))
+
+    fetches: list[int] = []
+
+    # Count fetches by wrapping the session's fetch.
+    real_fetch = nats_client.PullSession.fetch
+
+    async def counting_fetch(self, limit, timeout):
+        fetches.append(limit)
+        return await real_fetch(self, limit, timeout)
+
+    nats_client.PullSession.fetch = counting_fetch
+    try:
+        page = _run(api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=5, fetch_window_seconds=3, limit=1,
+        ))
+    finally:
+        nats_client.PullSession.fetch = real_fetch
+
+    assert [m["body"] for m in page["messages"]] == ["peer"]
+    assert fetches == [1], f"expected a single fetch(1), got {fetches}"

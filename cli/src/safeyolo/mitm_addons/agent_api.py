@@ -31,7 +31,9 @@ import urllib.parse
 from mitmproxy import ctx, http
 from request_id import REQUEST_ID_PATTERN as _REQUEST_ID_PATTERN
 
+from safeyolo.coord.nats_client import NatsUnavailable
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
+from safeyolo.core.identity import resolve_agent_identity
 from safeyolo.core.utils import sanitize_for_log, write_event
 from safeyolo.storage.flow_store import is_text_like_content_type
 from safeyolo.test_context_contract import TestContextError, parse_test_context
@@ -41,11 +43,65 @@ log = logging.getLogger("safeyolo.agent-api")
 AGENT_API_HOST = "_safeyolo.proxy.internal"
 MAX_EXPLAIN_LINES = 10000
 
+# Two limits, deliberately distinct:
+#   - COORD_MAX_BODY_BYTES caps the parsed message body itself. This is
+#     the user-facing contract mirrored in coord.api.MAX_BODY_BYTES so
+#     agents can size their sends against a single number.
+#   - COORD_MAX_REQUEST_BYTES caps the raw HTTP request. It sits above
+#     the body cap because the send payload is a JSON envelope
+#     ({"body":"...","declared_content_type":"..."}) that necessarily
+#     expands over the raw body — even a legal 256 KiB body wouldn't fit
+#     under a shared 256 KiB request cap. The stream/nats-server payload
+#     ceiling in nats_client + nats_runtime uses the same 2 MiB shape.
+COORD_MAX_BODY_BYTES = 256 * 1024
+COORD_MAX_REQUEST_BYTES = 2 * 1024 * 1024
+
+
+class _CoordValidationError(ValueError):
+    """Raised by the coord addon route for stable/actionable 400 messages
+    (`invalid since`, `invalid limit`, etc.). Distinct from `ValueError`
+    raised by the underlying coord.api to keep error messages sanitised."""
+
+
+# Cursor upper bound: SQLite ROWID is a signed 64-bit integer. Anything at
+# or above 2**63 will OverflowError inside the driver — that's a caller
+# error (out-of-range cursor), not a server bug, so it should surface as
+# 400, not 500. See stage-0 finding #21.
+_MAX_ROWID_CURSOR = 1 << 63
+
+
+def _parse_qs_int(raw, name: str, *, default: int, min_val: int = 0,
+                  max_val: int = _MAX_ROWID_CURSOR) -> int:
+    if raw is None or raw == "":
+        return default
+    try:
+        n = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise _CoordValidationError(f"invalid {name}") from exc
+    if n < min_val or n >= max_val:
+        raise _CoordValidationError(f"invalid {name}")
+    return n
+
+
+def _parse_qs_float(raw, name: str, *, default: float) -> float:
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as exc:
+        raise _CoordValidationError(f"invalid {name}") from exc
+
 
 class AgentAPI:
     """Authenticated agent self-service API, reached through the proxy via a virtual hostname."""
 
     name = "agent-api"
+
+    def __init__(self):
+        # Set on the first coord request handled by this addon. Bootstrap is
+        # idempotent, and keeping the flag on the addon avoids mutable module
+        # state shared by independently constructed test/proxy instances.
+        self._coord_bootstrapped = False
 
     def load(self, loader):
         loader.add_option(
@@ -87,6 +143,7 @@ class AgentAPI:
             path.startswith("/api/flows")
             or path.startswith("/gateway/")
             or path.startswith("/plumb")
+            or path.startswith("/api/coord/")
             or path == "/api/test-context/current"
         ):
             self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET"]})
@@ -125,10 +182,31 @@ class AgentAPI:
             self._respond(flow, 401, {"error": "Invalid agent token"})
             return
 
-        # Plumb: host-mediated agent-to-agent collaboration. Handled async
-        # (long-poll capable) before the sync handler table.
-        if path.startswith("/plumb"):
-            await self._handle_plumb(flow, path, method)
+        # Async internal-API dispatch: Plumb + coord long-poll routes. Any
+        # unhandled exception here MUST NOT allow mitmproxy to continue
+        # upstream — the request was recognised as a SafeYolo internal API
+        # call, so failing to respond synthetically is a boundary escape
+        # (agent-api URL becomes a real outbound DNS lookup). Wrap the whole
+        # block; individual handlers still map their own known errors to
+        # specific status codes before returning.
+        if path.startswith("/plumb") or path.startswith("/api/coord/"):
+            try:
+                if path.startswith("/plumb"):
+                    await self._handle_plumb(flow, path, method)
+                else:
+                    await self._handle_coord(flow, path, method)
+            except Exception as exc:
+                log.error(
+                    f"Async internal-API handler error on {sanitize_for_log(path)}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                # Only synthesise if the handler did not already set a response
+                # (its own known-error branches would have).
+                if flow.response is None:
+                    self._respond(
+                        flow, 500,
+                        {"error": f"Internal error: {type(exc).__name__}"},
+                    )
             return
 
         # Route to handler
@@ -267,7 +345,7 @@ class AgentAPI:
         return None
 
     def _resolve_agent_id(self, flow: http.HTTPFlow) -> str | None:
-        """Resolve calling agent name from the request's source IP.
+        """Resolve the caller through the shared trusted identity boundary.
 
         Used by flow-inspection endpoints to scope results to the
         calling agent — without this, any agent can search/read any
@@ -276,17 +354,213 @@ class AgentAPI:
         Returns agent name string, or None if unresolvable (caller
         should 403).
         """
-        sd = self._find_addon("service-discovery")
-        if not sd:
-            return None
-        from safeyolo.core.utils import get_client_ip
-        client_ip = get_client_ip(flow)
-        agent_name = sd.get_client_for_ip(client_ip)
-        # service_discovery returns "unknown" for an unmapped source; both
-        # "unknown" and "default" are non-identities and must not scope results.
-        if not agent_name or agent_name in ("unknown", "default"):
-            return None
-        return agent_name
+        identity = resolve_agent_identity(
+            flow, self._find_addon("service-discovery")
+        )
+        return identity.agent if identity.is_resolved else None
+
+    async def _handle_coord(self, flow: http.HTTPFlow, path: str, method: str):
+        """Coord v0 routes: room join/send/read plus long-poll wait.
+
+        Identity is resolved from per-agent transport attribution (never
+        supplied by the caller), then translated to durable `agent_id` via
+        the main agents_store. This is the enforcement point the coord
+        substrate is designed around — see #371 identity model.
+        """
+        import asyncio
+
+        from safeyolo.agents_store import (
+            get_agent_id,
+            get_or_mint_agent_id,
+            load_all_agents,
+        )
+        from safeyolo.coord import api as coord_api
+
+        # Lazy one-time bootstrap: idempotent, but only takes the SQLite
+        # lock on the first call per process. Ensures the addon works on a
+        # fresh host without a preceding `safeyolo coord init`.
+        if not self._coord_bootstrapped:
+            await asyncio.to_thread(coord_api.bootstrap)
+            self._coord_bootstrapped = True
+
+        agent_name = self._resolve_agent_id(flow)
+        if agent_name is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
+            return
+        if agent_name not in load_all_agents():
+            self._respond(flow, 403, {"error": f"Agent {agent_name!r} not registered"})
+            return
+
+        # Hot path: lock-free read. Fall back to lock+mint ONLY for pre-fa72c77
+        # agents that predate the agent_id field; that path runs in a thread
+        # so the mitmproxy event loop is never blocked by fcntl.flock.
+        agent_id = get_agent_id(agent_name)
+        if agent_id is None:
+            agent_id = await asyncio.to_thread(get_or_mint_agent_id, agent_name)
+
+        m = re.match(r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait|members)$", path)
+        if not m:
+            # Per #20: 404 body must not confirm room existence, so no
+            # "hint" that echoes what a caller probed for.
+            self._respond(flow, 404, {"error": "room not found or not accessible"})
+            return
+        room = m.group(1)
+        op = m.group(2)
+
+        try:
+            if op == "join" and method == "POST":
+                result = coord_api.join_room(room, "agent", agent_id)
+            elif op == "send" and method == "POST":
+                raw = flow.request.content or b""
+                # The raw HTTP body carries the JSON envelope wrapping the
+                # user body, so it must be allowed to grow above the body
+                # cap. The body-in-envelope check below still enforces the
+                # user-facing 256 KiB contract.
+                if len(raw) > COORD_MAX_REQUEST_BYTES:
+                    self._respond(flow, 413, {
+                        "error": "request body too large",
+                        "max_bytes": COORD_MAX_REQUEST_BYTES,
+                    })
+                    return
+                try:
+                    data = json.loads(raw or b"{}")
+                except json.JSONDecodeError:
+                    self._respond(flow, 400, {"error": "invalid JSON body"})
+                    return
+                body = data.get("body")
+                declared = data.get("declared_content_type", "text/markdown")
+                if not isinstance(body, str) or not body:
+                    self._respond(flow, 400, {"error": "body required (non-empty string)"})
+                    return
+                try:
+                    body_len = len(body.encode("utf-8"))
+                except UnicodeError:
+                    # Lone surrogate etc. — caller error; do not leak raw
+                    # codec text (codex finding, post-patch).
+                    self._respond(flow, 400, {"error": "invalid body encoding"})
+                    return
+                if body_len > COORD_MAX_BODY_BYTES:
+                    self._respond(flow, 413, {
+                        "error": "body too large",
+                        "max_bytes": COORD_MAX_BODY_BYTES,
+                    })
+                    return
+                result = await coord_api.send(
+                    room_name=room,
+                    sender_kind="agent",
+                    sender_agent_id=agent_id,
+                    sender_agent_name=agent_name,  # #22: display metadata
+                    body=body,
+                    declared_content_type=declared,
+                )
+            elif op == "messages" and method == "GET":
+                q = flow.request.query
+                since = _parse_qs_int(q.get("since", "0"), "since", default=0)
+                # min_val=1: zero means "no messages" which then gets
+                # min-clamped to 1 downstream — surprising the caller.
+                # Reject it explicitly instead.
+                limit = _parse_qs_int(q.get("limit", "50"), "limit", default=50, min_val=1)
+                result = await coord_api.read_room(
+                    room_name=room,
+                    principal_kind="agent",
+                    principal_id=agent_id,
+                    since_sequence=since,
+                    limit=limit,
+                )
+            elif op == "members" and method == "GET":
+                # #22: roster discovery. Requires caller has active
+                # membership — join_room raises NoMembershipError (404 per
+                # #20 rules) if not, indistinguishable from nonexistent
+                # room. Only then do we list.
+                coord_api.join_room(room, "agent", agent_id)
+                principals = coord_api.list_members(room)
+                # Single agents_store read: build id -> name map once.
+                # Per reviewer feedback: repeated get_agent_by_id calls
+                # would reparse TOML for each member (same hot-path
+                # concern stage-0 already uncovered).
+                all_agents = load_all_agents()
+                id_to_name = {
+                    meta.get("agent_id"): name
+                    for name, meta in all_agents.items()
+                    if meta.get("agent_id")
+                }
+                # Instance ID is local for all agents in v0. Kept in the
+                # response so cross-host consumers don't silently assume
+                # agent_id is globally unique (reviewer point).
+                instance_id = await asyncio.to_thread(
+                    lambda: coord_api.get_or_create_instance_id()
+                )
+                members = []
+                for p in principals:
+                    if p["principal_kind"] == "agent":
+                        members.append({
+                            "principal_kind": "agent",
+                            "agent_id": p["principal_id"],
+                            "agent_name": id_to_name.get(p["principal_id"]),
+                            "origin_instance_id": instance_id,
+                        })
+                    else:
+                        members.append({"principal_kind": "operator"})
+                result = {"members": members}
+            elif op == "wait" and method == "GET":
+                q = flow.request.query
+                since = _parse_qs_int(q.get("since", "0"), "since", default=0)
+                timeout = _parse_qs_float(q.get("timeout", "30"), "timeout", default=30.0)
+                # Cap timeout to keep pathological long-polls from stuck-forever
+                timeout = min(max(0.1, timeout), 300.0)
+                # Wake is an attention edge, not a bulk fetch: default limit=1
+                # (see coord.api.wait_for_message docstring). Callers wanting
+                # more per wake explicitly ask for it.
+                limit = _parse_qs_int(q.get("limit", "1"), "limit", default=1, min_val=1)
+                include_self = q.get("include_self", "").lower() in ("1", "true", "yes")
+                result = await coord_api.wait_for_message(
+                    room_name=room,
+                    principal_kind="agent",
+                    principal_id=agent_id,
+                    since_sequence=since,
+                    timeout_seconds=timeout,
+                    limit=limit,
+                    exclude_self=not include_self,
+                )
+            else:
+                self._respond(flow, 405, {"error": "Method Not Allowed", "op": op})
+                return
+        except coord_api.NotFoundError:
+            # Includes NoMembershipError (subclass). #20: unauthorized
+            # callers and callers probing nonexistent rooms MUST see the
+            # same response — no room name echoed, no distinction between
+            # "doesn't exist" and "you have no membership."
+            self._respond(flow, 404, {"error": "room not found or not accessible"})
+            return
+        except NatsUnavailable:
+            # Task #36: NATS runtime unreachable → coord surfaces 503 but
+            # the outer proxy stays healthy. Handled BEFORE GrantError so
+            # we don't accidentally paper over it as a client-side
+            # permission error.
+            self._respond(flow, 503, {"error": "coordination substrate unavailable"})
+            return
+        except coord_api.GrantError as e:
+            # Caller IS a member but lacks the specific permission. A
+            # legitimate 403 to a legitimate participant, not information
+            # disclosure. Message is under our control (composed in
+            # _check_grant with permission list only, no room name).
+            self._respond(flow, 403, {"error": str(e)})
+            return
+        except _CoordValidationError as e:
+            # Stable, actionable string ("invalid since" etc.) — safe to echo.
+            self._respond(flow, 400, {"error": str(e)})
+            return
+        except ValueError as e:
+            # Known validation from coord.api (envelope shape, content_type,
+            # sender_kind consistency, body-too-large). Message is under our
+            # control there. TypeError is deliberately NOT caught here: a
+            # signature mismatch between the addon and coord.api is our bug,
+            # not the caller's — it belongs on the generic 500 boundary
+            # around the whole async dispatch, not a plausible-looking 400.
+            self._respond(flow, 400, {"error": str(e)})
+            return
+
+        self._respond(flow, 200, result)
 
     def _handle_test_context_current(self, flow: http.HTTPFlow):
         """GET|POST|DELETE /api/test-context/current.
@@ -538,18 +812,9 @@ class AgentAPI:
         then returns authorized services (with capability, account, host, token) and
         available services (all services with their capabilities).
         """
-        # Resolve caller identity via service_discovery
-        sd = self._find_addon("service-discovery")
-        if not sd:
-            self._respond(flow, 503, {"error": "service-discovery addon not loaded"})
-            return
-
-        from safeyolo.core.utils import get_client_ip
-
-        client_ip = get_client_ip(flow)
-        agent_name = sd.get_client_for_ip(client_ip)
-        if not agent_name or agent_name == "default":
-            self._respond(flow, 403, {"error": "Could not identify agent", "client_ip": client_ip})
+        agent_name = self._resolve_agent_id(flow)
+        if agent_name is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
             return
 
         gw = self._find_addon("service-gateway")
@@ -611,17 +876,9 @@ class AgentAPI:
             self._respond(flow, 400, {"error": "service and capability are required"})
             return
 
-        # Resolve caller identity
-        sd = self._find_addon("service-discovery")
-        if not sd:
-            self._respond(flow, 503, {"error": "service-discovery addon not loaded"})
-            return
-
-        from safeyolo.core.utils import get_client_ip
-
-        client_ip = get_client_ip(flow)
-        agent_name = sd.get_client_for_ip(client_ip)
-        if not agent_name or agent_name == "default":
+        # Resolve caller identity.
+        agent_name = self._resolve_agent_id(flow)
+        if agent_name is None:
             self._respond(flow, 403, {"error": "Could not identify agent"})
             return
 
@@ -764,17 +1021,9 @@ class AgentAPI:
             self._respond(flow, 400, {"error": "bindings must be a non-empty object"})
             return
 
-        # Resolve caller
-        sd = self._find_addon("service-discovery")
-        if not sd:
-            self._respond(flow, 503, {"error": "service-discovery addon not loaded"})
-            return
-
-        from safeyolo.core.utils import get_client_ip
-
-        client_ip = get_client_ip(flow)
-        agent_name = sd.get_client_for_ip(client_ip)
-        if not agent_name or agent_name == "default":
+        # Resolve caller.
+        agent_name = self._resolve_agent_id(flow)
+        if agent_name is None:
             self._respond(flow, 403, {"error": "Could not identify agent"})
             return
 
@@ -989,13 +1238,17 @@ class AgentAPI:
         """
         query = flow.request.query
         host = query.get("host", "")
-        agent = flow.metadata.get("agent")  # from service_discovery, not query
+        agent = self._resolve_agent_id(flow)
 
         if not host:
             self._respond(flow, 400, {
                 "error": "Missing 'host' parameter",
                 "usage": "/lookup?host=example.com",
             })
+            return
+
+        if agent is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
             return
 
         client = self._get_policy_client()
@@ -1305,6 +1558,15 @@ class AgentAPI:
             return None
         return recorder.store
 
+    def _scope_flow_filters(self, flow: http.HTTPFlow, filters: dict) -> bool:
+        """Force a flow-store query into the trusted caller's scope."""
+        agent_id = self._resolve_agent_id(flow)
+        if agent_id is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
+            return False
+        filters["agent_id"] = agent_id
+        return True
+
     def _handle_flow_search(self, flow: http.HTTPFlow):
         """GET|POST /api/flows/search - Search flows by filter criteria.
 
@@ -1330,9 +1592,8 @@ class AgentAPI:
                 return
 
         # Scope to calling agent — prevent cross-agent info disclosure.
-        agent_id = self._resolve_agent_id(flow)
-        if agent_id:
-            filters["agent_id"] = agent_id
+        if not self._scope_flow_filters(flow, filters):
+            return
 
         try:
             results = store.search_flows(filters)
@@ -1345,14 +1606,12 @@ class AgentAPI:
                                flow_record: dict) -> bool:
         """Check that a fetched flow belongs to the calling agent.
 
-        Returns True if ownership verified (or if service-discovery is
-        unavailable, in which case we fail-open to avoid breaking
-        single-agent setups without service-discovery).
+        Unresolved callers fail closed because the bearer token is shared and
+        cannot establish which agent owns the requested flow.
         """
         agent_id = self._resolve_agent_id(flow)
         if agent_id is None:
-            # Can't resolve caller — fail-open for backwards compat.
-            return True
+            return False
         record_agent = flow_record.get("agent_id", "")
         return record_agent == agent_id
 
@@ -1429,9 +1688,8 @@ class AgentAPI:
         if body is None:
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
-        agent_id = self._resolve_agent_id(flow)
-        if agent_id:
-            body["agent_id"] = agent_id
+        if not self._scope_flow_filters(flow, body):
+            return
         results = store.get_endpoints(body)
         self._respond(flow, 200, {"endpoints": results, "count": len(results)})
 
@@ -1445,9 +1703,8 @@ class AgentAPI:
         if body is None or not isinstance(body, dict):
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
-        agent_id = self._resolve_agent_id(flow)
-        if agent_id:
-            body["agent_id"] = agent_id
+        if not self._scope_flow_filters(flow, body):
+            return
         try:
             facets = store.get_facets(body)
         except ValueError as exc:
@@ -1471,9 +1728,8 @@ class AgentAPI:
         if not body.get("query"):
             self._respond(flow, 400, {"error": "query required"})
             return
-        agent_id = self._resolve_agent_id(flow)
-        if agent_id:
-            body["agent_id"] = agent_id
+        if not self._scope_flow_filters(flow, body):
+            return
         results = store.search_bodies(body)
         self._respond(flow, 200, {"flows": results, "count": len(results)})
 
@@ -1521,9 +1777,8 @@ class AgentAPI:
         if not body.get("query"):
             self._respond(flow, 400, {"error": "query required"})
             return
-        agent_id = self._resolve_agent_id(flow)
-        if agent_id:
-            body["agent_id"] = agent_id
+        if not self._scope_flow_filters(flow, body):
+            return
         results = store.search_request_bodies(body)
         self._respond(flow, 200, {"flows": results, "count": len(results)})
 

@@ -3,13 +3,23 @@
 import asyncio
 import json
 import secrets
-from unittest.mock import Mock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 from agent_api import AGENT_API_HOST, AgentAPI
 from mitmproxy.test import taddons, tflow
 
+from pdp.client import PolicyClient
+from safeyolo.mitm_addons.circuit_breaker import CircuitBreaker
+from safeyolo.mitm_addons.flow_recorder import FlowRecorder
+from safeyolo.mitm_addons.memory_monitor import MemoryMonitor
+from safeyolo.mitm_addons.service_discovery import ServiceDiscovery
+from safeyolo.policy.engine import PolicyEngine
+from safeyolo.policy.models import PolicyDecision
+from safeyolo.proxy_modes.unix_listener import UnixMode
 from safeyolo.storage.flow_store import FlowStore
+
+pytestmark = pytest.mark.assurance_boundary
 
 
 def _make_agent_token():
@@ -34,7 +44,11 @@ def api(agent_token):
 
 def _patch_active_token(token_str):
     """Patch read_active_token to return the given token string."""
-    return patch("pdp.tokens.read_active_token", return_value=token_str)
+    return patch("pdp.tokens.read_active_token", autospec=True, return_value=token_str)
+
+
+def _policy_client() -> PolicyClient:
+    return create_autospec(PolicyClient, instance=True, spec_set=True)
 
 
 def _make_api_flow(path="/health", method="GET", token=None, query=None):
@@ -49,6 +63,12 @@ def _make_api_flow(path="/health", method="GET", token=None, query=None):
     if token:
         flow.request.headers["authorization"] = f"Bearer {token}"
     return flow
+
+
+def _set_uds_agent(flow, agent="agent-1"):
+    flow.client_conn.proxy_mode = UnixMode.parse(
+        f"unix:/tmp/10.0.0.5_{agent}/proxy.sock"
+    )
 
 
 class TestAPIRouting:
@@ -131,7 +151,7 @@ class TestAuth:
     def test_invalid_token_emits_audit_event(self, api, agent_token):
         """Failed auth writes a security.agent_auth_failed event."""
         with _patch_active_token(agent_token), \
-             patch("agent_api.write_event") as mock_write:
+             patch("agent_api.write_event", autospec=True) as mock_write:
             flow = _make_api_flow("/health", token="wrong-token")
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 401
@@ -188,13 +208,12 @@ class TestEndpoints:
 
     def test_agents_returns_discovery_data(self, api, agent_token):
         """Test /agents returns agent data from service-discovery addon."""
-        mock_sd = Mock()
-        mock_sd.get_agents.return_value = {
-            "agents": {"boris": {"ip": "172.20.0.5", "last_seen": 1000.0, "idle_seconds": 5.0}},
-            "count": 1,
-        }
+        mock_sd = ServiceDiscovery()
+        mock_sd._agent_map = {"boris": {"ip": "172.20.0.5"}}
+        mock_sd._ip_to_name = {"172.20.0.5": "boris"}
+        mock_sd._last_seen = {"boris": 1000.0}
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=mock_sd):
+             patch.object(api, "_find_addon", return_value=mock_sd, autospec=True,):
             flow = _make_api_flow("/agents", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -205,7 +224,7 @@ class TestEndpoints:
     def test_agents_503_when_addon_missing(self, api, agent_token):
         """Test /agents returns 503 when service-discovery not loaded."""
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=None):
+             patch.object(api, "_find_addon", return_value=None, autospec=True,):
             flow = _make_api_flow("/agents", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
@@ -241,7 +260,7 @@ class TestEndpoints:
     def test_handler_exception_returns_500(self, api, agent_token):
         """If a handler raises, the API returns 500 with the exception type."""
         with _patch_active_token(agent_token), \
-             patch.object(api, "_handle_health", side_effect=RuntimeError("boom")):
+             patch.object(api, "_handle_health", side_effect=RuntimeError("boom"), autospec=True,):
             flow = _make_api_flow("/health", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 500
@@ -250,16 +269,20 @@ class TestEndpoints:
 
 
 def _sd_stub(agent="agent-1"):
-    """Minimal service-discovery stub returning `agent` for any client IP."""
-    sd = Mock()
-    sd.get_client_for_ip.return_value = agent
+    """Real discovery state for the source addresses used by these tests."""
+    sd = ServiceDiscovery()
+    sd._ip_to_name = {
+        "10.0.0.5": agent,
+        "127.0.0.1": agent,
+        "192.0.2.1": agent,
+    }
     return sd
 
 
 class TestExplain:
     def test_explain_missing_param(self, api, agent_token):
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub()):
+             patch.object(api, "_find_addon", return_value=_sd_stub(), autospec=True,):
             flow = _make_api_flow("/explain", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
@@ -274,7 +297,7 @@ class TestExplain:
         # Point at a nonexistent log path so no file is scanned.
         monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(tmp_path / "does-not-exist.jsonl"))
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub()):
+             patch.object(api, "_find_addon", return_value=_sd_stub(), autospec=True,):
             valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
             asyncio.run(api.request(flow))
@@ -287,7 +310,7 @@ class TestExplain:
     def test_explain_invalid_request_id(self, api, agent_token):
         """Path traversal attempt is rejected."""
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub()):
+             patch.object(api, "_find_addon", return_value=_sd_stub(), autospec=True,):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=../../../etc/passwd")
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
@@ -295,7 +318,7 @@ class TestExplain:
     def test_explain_rejects_short_request_id(self, api, agent_token):
         """Request ID that doesn't match req-<32hex> format is rejected."""
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub()):
+             patch.object(api, "_find_addon", return_value=_sd_stub(), autospec=True,):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=req-123")
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
@@ -303,7 +326,7 @@ class TestExplain:
     def test_explain_rejects_old_12hex_format(self, api, agent_token):
         """Old 12-hex format is rejected (must be 32 hex)."""
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub()):
+             patch.object(api, "_find_addon", return_value=_sd_stub(), autospec=True,):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=req-0a1b2c3d4e5f")
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
@@ -323,7 +346,7 @@ class TestExplain:
         monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub(agent)):
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent), autospec=True,):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
 
@@ -355,7 +378,7 @@ class TestExplain:
         monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub(agent)):
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent), autospec=True,):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
 
@@ -369,7 +392,7 @@ class TestExplain:
     def test_explain_rejects_when_agent_unresolvable(self, api, agent_token):
         """Explain must fail-closed if the caller cannot be identified."""
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=None):
+             patch.object(api, "_find_addon", return_value=None, autospec=True,):
             valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
             asyncio.run(api.request(flow))
@@ -386,7 +409,7 @@ class TestExplain:
         monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub("agent-a")):
+             patch.object(api, "_find_addon", return_value=_sd_stub("agent-a"), autospec=True,):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
 
@@ -416,7 +439,7 @@ class TestExplain:
         monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(current))
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub(agent)):
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent), autospec=True,):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
 
@@ -456,8 +479,8 @@ class TestExplain:
                 return True
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub(agent)), \
-             patch("safeyolo.core.audit_writer.get_writer", return_value=_FakeWriter()):
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent), autospec=True,), \
+             patch("safeyolo.core.audit_writer.get_writer", autospec=True, return_value=_FakeWriter()):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
 
@@ -483,8 +506,8 @@ class TestExplain:
                 return False
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub(agent)), \
-             patch("safeyolo.core.audit_writer.get_writer", return_value=_StuckWriter()):
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent), autospec=True,), \
+             patch("safeyolo.core.audit_writer.get_writer", autospec=True, return_value=_StuckWriter()):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
 
@@ -536,8 +559,8 @@ class TestExplain:
                 return True
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub(agent)), \
-             patch("safeyolo.core.audit_writer.get_writer",
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent), autospec=True,), \
+             patch("safeyolo.core.audit_writer.get_writer", autospec=True,
                    return_value=_WriterWithPendingResponse()):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
@@ -576,7 +599,7 @@ class TestExplain:
             return real_open(path, *args, **kwargs)
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub(agent)), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent), autospec=True,), \
              patch("agent_api.open", failing_open, create=True):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
@@ -598,21 +621,21 @@ class TestTrace:
 
     def test_missing_param_400(self, api, agent_token):
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub()):
+             patch.object(api, "_find_addon", return_value=_sd_stub(), autospec=True,):
             flow = _make_api_flow("/trace", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_invalid_format_400(self, api, agent_token):
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub()):
+             patch.object(api, "_find_addon", return_value=_sd_stub(), autospec=True,):
             flow = _make_api_flow("/trace", token=agent_token, query="request_id=not-a-req")
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_unresolvable_agent_403(self, api, agent_token):
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=None):
+             patch.object(api, "_find_addon", return_value=None, autospec=True,):
             valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
             flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={valid_id}")
             asyncio.run(api.request(flow))
@@ -622,7 +645,7 @@ class TestTrace:
         from safeyolo.core.trace import reset_store_for_tests
         reset_store_for_tests()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub("agent-a")):
+             patch.object(api, "_find_addon", return_value=_sd_stub("agent-a"), autospec=True,):
             valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
             flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={valid_id}")
             asyncio.run(api.request(flow))
@@ -636,7 +659,7 @@ class TestTrace:
         self._seed(rid, "agent-a", Step(addon="x", hook="request", state=STATE_EVALUATED))
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub("agent-b")):
+             patch.object(api, "_find_addon", return_value=_sd_stub("agent-b"), autospec=True,):
             flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={rid}")
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 404
@@ -652,7 +675,7 @@ class TestTrace:
         )
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub("agent-a")):
+             patch.object(api, "_find_addon", return_value=_sd_stub("agent-a"), autospec=True,):
             flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={rid}")
             asyncio.run(api.request(flow))
 
@@ -679,7 +702,7 @@ class TestTrace:
             self._seed(rid, "agent-a", Step(addon="network-guard", hook="request", state=STATE_EVALUATED))
 
             with _patch_active_token(agent_token), \
-                 patch.object(api, "_find_addon", return_value=_sd_stub("agent-a")):
+                 patch.object(api, "_find_addon", return_value=_sd_stub("agent-a"), autospec=True,):
                 flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={rid}")
                 asyncio.run(api.request(flow))
 
@@ -695,10 +718,10 @@ class TestPDPEndpoints:
 
     def test_health_pdp_available(self, api, agent_token):
         """When PDP is healthy, /health returns pdp: ok."""
-        mock_client = Mock()
+        mock_client = _policy_client()
         mock_client.health_check.return_value = True
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=mock_client):
+             patch.object(api, "_get_policy_client", return_value=mock_client, autospec=True,):
             flow = _make_api_flow("/health", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -708,7 +731,7 @@ class TestPDPEndpoints:
     def test_health_pdp_unavailable(self, api, agent_token):
         """When PDP is not configured, /health returns pdp: unavailable."""
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=None):
+             patch.object(api, "_get_policy_client", return_value=None, autospec=True,):
             flow = _make_api_flow("/health", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -717,10 +740,10 @@ class TestPDPEndpoints:
 
     def test_health_pdp_unhealthy(self, api, agent_token):
         """When PDP health check fails, pdp field is 'unavailable'."""
-        mock_client = Mock()
+        mock_client = _policy_client()
         mock_client.health_check.return_value = False
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=mock_client):
+             patch.object(api, "_get_policy_client", return_value=mock_client, autospec=True,):
             flow = _make_api_flow("/health", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -729,14 +752,14 @@ class TestPDPEndpoints:
 
     def test_status_returns_pdp_stats(self, api, agent_token):
         """/status proxies PDP stats."""
-        mock_client = Mock()
+        mock_client = _policy_client()
         mock_client.get_stats.return_value = {
             "engine_version": "2.0",
             "policy_hash": "abc123",
             "eval_count": 42,
         }
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=mock_client):
+             patch.object(api, "_get_policy_client", return_value=mock_client, autospec=True,):
             flow = _make_api_flow("/status", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -750,7 +773,7 @@ class TestPDPEndpoints:
     def test_status_503_when_pdp_unavailable(self, api, agent_token):
         """/status returns 503 when PDP not configured."""
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=None):
+             patch.object(api, "_get_policy_client", return_value=None, autospec=True,):
             flow = _make_api_flow("/status", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
@@ -759,10 +782,10 @@ class TestPDPEndpoints:
 
     def test_policy_returns_baseline(self, api, agent_token):
         """/policy wraps baseline in a 'policy' key."""
-        mock_client = Mock()
+        mock_client = _policy_client()
         mock_client.get_baseline.return_value = {"permissions": [], "budgets": {}}
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=mock_client):
+             patch.object(api, "_get_policy_client", return_value=mock_client, autospec=True,):
             flow = _make_api_flow("/policy", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -771,7 +794,7 @@ class TestPDPEndpoints:
 
     def test_policy_503_when_pdp_unavailable(self, api, agent_token):
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=None):
+             patch.object(api, "_get_policy_client", return_value=None, autospec=True,):
             flow = _make_api_flow("/policy", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
@@ -780,12 +803,12 @@ class TestPDPEndpoints:
 
     def test_budgets_returns_budget_stats(self, api, agent_token):
         """/budgets proxies PDP budget stats."""
-        mock_client = Mock()
+        mock_client = _policy_client()
         mock_client.get_budget_stats.return_value = {
             "api.openai.com": {"used": 5, "limit": 100, "remaining": 95},
         }
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=mock_client):
+             patch.object(api, "_get_policy_client", return_value=mock_client, autospec=True,):
             flow = _make_api_flow("/budgets", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -796,7 +819,7 @@ class TestPDPEndpoints:
 
     def test_budgets_503_when_pdp_unavailable(self, api, agent_token):
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=None):
+             patch.object(api, "_get_policy_client", return_value=None, autospec=True,):
             flow = _make_api_flow("/budgets", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
@@ -805,14 +828,14 @@ class TestPDPEndpoints:
 
     def test_config_returns_sensor_config(self, api, agent_token):
         """/config proxies PDP sensor config (via the shared config cache)."""
-        mock_client = Mock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.return_value = {
             "credential_rules": [{"name": "openai"}],
             "scan_patterns": [],
         }
         with _patch_active_token(agent_token), \
-             patch("pdp.get_policy_client", return_value=mock_client), \
-             patch("pdp.is_policy_client_configured", return_value=True):
+             patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             flow = _make_api_flow("/config", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -824,7 +847,7 @@ class TestPDPEndpoints:
 
     def test_config_503_when_pdp_unavailable(self, api, agent_token):
         with _patch_active_token(agent_token), \
-             patch("pdp.is_policy_client_configured", return_value=False):
+             patch("pdp.is_policy_client_configured", autospec=True, return_value=False):
             flow = _make_api_flow("/config", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
@@ -837,13 +860,13 @@ class TestAddonEndpoints:
 
     def test_memory_returns_stats(self, api, agent_token):
         """/memory proxies memory-monitor stats."""
-        mock_monitor = Mock()
+        mock_monitor = create_autospec(MemoryMonitor, instance=True, spec_set=True)
         mock_monitor.get_stats.return_value = {
             "rss_mb": 128.5,
             "connections": 12,
         }
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=mock_monitor):
+             patch.object(api, "_find_addon", return_value=mock_monitor, autospec=True,):
             flow = _make_api_flow("/memory", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -852,7 +875,7 @@ class TestAddonEndpoints:
 
     def test_memory_503_when_addon_missing(self, api, agent_token):
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=None):
+             patch.object(api, "_find_addon", return_value=None, autospec=True,):
             flow = _make_api_flow("/memory", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
@@ -861,12 +884,12 @@ class TestAddonEndpoints:
 
     def test_circuits_returns_stats(self, api, agent_token):
         """/circuits proxies circuit-breaker stats."""
-        mock_cb = Mock()
+        mock_cb = create_autospec(CircuitBreaker, instance=True, spec_set=True)
         mock_cb.get_stats.return_value = {
             "api.openai.com": {"state": "closed", "failures": 0},
         }
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=mock_cb):
+             patch.object(api, "_find_addon", return_value=mock_cb, autospec=True,):
             flow = _make_api_flow("/circuits", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -877,7 +900,7 @@ class TestAddonEndpoints:
 
     def test_circuits_503_when_addon_missing(self, api, agent_token):
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=None):
+             patch.object(api, "_find_addon", return_value=None, autospec=True,):
             flow = _make_api_flow("/circuits", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
@@ -903,8 +926,9 @@ class TestLookup:
     def test_lookup_pdp_unavailable_returns_503(self, api, agent_token):
         """When PDP is not configured, returns 503."""
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=None):
+             patch.object(api, "_get_policy_client", return_value=None, autospec=True,):
             flow = _make_api_flow("/lookup", token=agent_token, query="host=example.com")
+            _set_uds_agent(flow)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
@@ -912,11 +936,14 @@ class TestLookup:
 
     def test_lookup_engine_unavailable_returns_503(self, api, agent_token):
         """When policy engine is not accessible via client, returns 503."""
-        mock_client = Mock()
-        mock_client._pdp = None  # No PDP core attached
+        class PolicyClientWithoutCore:
+            _pdp = None
+
+        mock_client = PolicyClientWithoutCore()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=mock_client):
+             patch.object(api, "_get_policy_client", return_value=mock_client, autospec=True,):
             flow = _make_api_flow("/lookup", token=agent_token, query="host=example.com")
+            _set_uds_agent(flow)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
@@ -924,30 +951,32 @@ class TestLookup:
 
     def test_lookup_returns_decision(self, api, agent_token):
         """Successful lookup returns host, agent, effect, reason."""
-        mock_decision = Mock()
-        mock_decision.effect = "allow"
-        mock_decision.reason = "explicit permission"
+        mock_decision = PolicyDecision(effect="allow", reason="explicit permission")
 
-        mock_engine = Mock()
+        mock_engine = create_autospec(PolicyEngine, instance=True, spec_set=True)
         mock_engine.evaluate_request.return_value = mock_decision
 
-        mock_pdp = Mock()
-        mock_pdp._engine = mock_engine
+        class PolicyCore:
+            def __init__(self, engine):
+                self._engine = engine
 
-        mock_client = Mock()
-        mock_client._pdp = mock_pdp
+        class PolicyClientWithCore:
+            def __init__(self, core):
+                self._pdp = core
+
+        mock_client = PolicyClientWithCore(PolicyCore(mock_engine))
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=mock_client):
+             patch.object(api, "_get_policy_client", return_value=mock_client, autospec=True,):
             flow = _make_api_flow("/lookup", token=agent_token, query="host=api.openai.com")
+            _set_uds_agent(flow)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["host"] == "api.openai.com"
             assert body["effect"] == "allow"
             assert body["reason"] == "explicit permission"
-            # agent comes from flow.metadata, which is None in this test
-            assert body["agent"] is None
+            assert body["agent"] == "agent-1"
 
 
 class TestMetadata:
@@ -1041,8 +1070,8 @@ def api_with_store(tmp_path, agent_token):
         "response_body": b'{"id":42,"owner":"alice","role":"admin"}',
     })
 
-    # Create mock recorder
-    mock_recorder = Mock()
+    # Create a real recorder around the temporary store.
+    mock_recorder = FlowRecorder()
     mock_recorder.store = store
 
     with taddons.context(addon) as tctx:
@@ -1053,6 +1082,8 @@ def api_with_store(tmp_path, agent_token):
         def patched_find(name):
             if name == "flow-recorder":
                 return mock_recorder
+            if name == "service-discovery":
+                return _sd_stub("agent-1")
             return original_find(name)
 
         addon._find_addon = patched_find
@@ -1166,7 +1197,7 @@ class TestFlowStoreAPI:
     def test_flow_store_503_when_not_available(self, api, agent_token):
         """Flow store routes return 503 when recorder not loaded."""
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=None):
+             patch.object(api, "_find_addon", return_value=None, autospec=True,):
             flow = _make_post_api_flow(
                 "/api/flows/search",
                 {"host": "example.com"},
@@ -1460,7 +1491,7 @@ class TestEnvVarPaths:
             captured_path = path
             return "test-token-value"
 
-        with patch("pdp.tokens.read_active_token", side_effect=capture_read_active_token):
+        with patch("pdp.tokens.read_active_token", autospec=True, side_effect=capture_read_active_token):
             flow = _make_api_flow("/health", token="test-token-value")
             asyncio.run(api.request(flow))
 
@@ -1478,7 +1509,7 @@ class TestEnvVarPaths:
             captured_path = path
             return "test-token-value"
 
-        with patch("pdp.tokens.read_active_token", side_effect=capture_read_active_token):
+        with patch("pdp.tokens.read_active_token", autospec=True, side_effect=capture_read_active_token):
             flow = _make_api_flow("/health", token="test-token-value")
             asyncio.run(api.request(flow))
 
@@ -1495,7 +1526,7 @@ class TestEnvVarPaths:
         monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
 
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub(agent)):
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent), autospec=True,):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
 
@@ -1510,7 +1541,7 @@ class TestEnvVarPaths:
 
         # The default path won't exist in test, so we get empty events (not an error)
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub()):
+             patch.object(api, "_find_addon", return_value=_sd_stub(), autospec=True,):
             valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
             asyncio.run(api.request(flow))
@@ -1553,9 +1584,7 @@ class TestTestContextEndpoint:
     """POST/GET/DELETE /api/test-context/current."""
 
     def _sd(self, agent="pickup"):
-        sd = Mock()
-        sd.get_client_for_ip.return_value = agent
-        return sd
+        return _sd_stub(agent)
 
     def _tc(self):
         from test_context import TestContext
@@ -1565,8 +1594,8 @@ class TestTestContextEndpoint:
         sd, tc = self._sd(), self._tc()
         body = {"context": "run=pickup-1;agent=pickup;suite=android;intent=baseline;expect=allowed", "ttl": 120}
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event"):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True):
             flow = _make_tc_flow("POST", agent_token, body)
             asyncio.run(api.request(flow))
         assert flow.response.status_code == 200
@@ -1582,8 +1611,8 @@ class TestTestContextEndpoint:
         sd, tc = self._sd(), self._tc()
         body = {"context": "run=r;agent=pickup"}
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event"):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True):
             flow = _make_tc_flow("POST", agent_token, body)
             asyncio.run(api.request(flow))
         assert json.loads(flow.response.content)["expires_in"] == 900
@@ -1592,8 +1621,8 @@ class TestTestContextEndpoint:
         sd, tc = self._sd(), self._tc()
         body = {"context": "run=r;agent=pickup", "ttl": 99999}
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event"):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True):
             flow = _make_tc_flow("POST", agent_token, body)
             asyncio.run(api.request(flow))
         assert json.loads(flow.response.content)["expires_in"] == 900
@@ -1601,7 +1630,7 @@ class TestTestContextEndpoint:
     def test_post_malformed_context_400(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,):
             flow = _make_tc_flow("POST", agent_token, {"context": "garbage-no-equals"})
             asyncio.run(api.request(flow))
         assert flow.response.status_code == 400
@@ -1609,7 +1638,7 @@ class TestTestContextEndpoint:
     def test_post_missing_context_400(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,):
             flow = _make_tc_flow("POST", agent_token, {"ttl": 60})
             asyncio.run(api.request(flow))
         assert flow.response.status_code == 400
@@ -1617,7 +1646,7 @@ class TestTestContextEndpoint:
     def test_post_non_string_context_400(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,):
             flow = _make_tc_flow("POST", agent_token, {"context": {"run": "r"}})
             asyncio.run(api.request(flow))
         assert flow.response.status_code == 400
@@ -1626,7 +1655,7 @@ class TestTestContextEndpoint:
         sd, tc = self._sd(), self._tc()
         for bad in (0, -1, 1.5, "60", True):
             with _patch_active_token(agent_token), \
-                 patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+                 patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,):
                 flow = _make_tc_flow("POST", agent_token, {"context": "run=r;agent=pickup", "ttl": bad})
                 asyncio.run(api.request(flow))
             assert flow.response.status_code == 400, f"ttl={bad!r}"
@@ -1636,8 +1665,8 @@ class TestTestContextEndpoint:
         # Declared agent differs from trusted source agent -> accepted, auditable.
         body = {"context": "run=r;agent=someone-else", "ttl": 60}
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event"):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True):
             flow = _make_tc_flow("POST", agent_token, body)
             asyncio.run(api.request(flow))
         assert flow.response.status_code == 200
@@ -1648,7 +1677,7 @@ class TestTestContextEndpoint:
     def test_unmapped_source_403(self, api, agent_token):
         sd, tc = self._sd("unknown"), self._tc()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,):
             flow = _make_tc_flow("POST", agent_token, {"context": "run=r;agent=pickup"})
             asyncio.run(api.request(flow))
         assert flow.response.status_code == 403
@@ -1656,7 +1685,7 @@ class TestTestContextEndpoint:
     def test_default_source_403(self, api, agent_token):
         sd, tc = self._sd("default"), self._tc()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,):
             flow = _make_tc_flow("GET", agent_token)
             asyncio.run(api.request(flow))
         assert flow.response.status_code == 403
@@ -1664,7 +1693,7 @@ class TestTestContextEndpoint:
     def test_addon_missing_503(self, api, agent_token):
         sd = self._sd("pickup")
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, None)):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, None), autospec=True,):
             flow = _make_tc_flow("GET", agent_token)
             asyncio.run(api.request(flow))
         assert flow.response.status_code == 503
@@ -1673,7 +1702,7 @@ class TestTestContextEndpoint:
         sd, tc = self._sd(), self._tc()
         tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 90)
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,):
             flow = _make_tc_flow("GET", agent_token)
             asyncio.run(api.request(flow))
         out = json.loads(flow.response.content)
@@ -1684,7 +1713,7 @@ class TestTestContextEndpoint:
     def test_get_absent_returns_null(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,):
             flow = _make_tc_flow("GET", agent_token)
             asyncio.run(api.request(flow))
         assert json.loads(flow.response.content) == {"context": None}
@@ -1693,8 +1722,8 @@ class TestTestContextEndpoint:
         sd, tc = self._sd(), self._tc()
         tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 90)
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event"):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True):
             flow = _make_tc_flow("DELETE", agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -1708,8 +1737,8 @@ class TestTestContextEndpoint:
     def test_all_methods_dispatch_to_one_handler(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event"):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True):
             for method in ("GET", "POST", "DELETE"):
                 body = {"context": "run=r;agent=pickup"} if method == "POST" else None
                 flow = _make_tc_flow(method, agent_token, body)
@@ -1728,17 +1757,15 @@ class TestResolveAgentIdRegression:
 
     def test_rejects_unknown_and_default(self, api):
         for name in ("unknown", "default"):
-            sd = Mock()
-            sd.get_client_for_ip.return_value = name
-            with patch.object(api, "_find_addon", return_value=sd):
+            sd = _sd_stub(name)
+            with patch.object(api, "_find_addon", return_value=sd, autospec=True,):
                 flow = _make_api_flow("/health")
                 flow.client_conn.peername = ("10.0.0.5", 1)
                 assert api._resolve_agent_id(flow) is None
 
     def test_accepts_mapped_agent(self, api):
-        sd = Mock()
-        sd.get_client_for_ip.return_value = "pickup"
-        with patch.object(api, "_find_addon", return_value=sd):
+        sd = _sd_stub("pickup")
+        with patch.object(api, "_find_addon", return_value=sd, autospec=True,):
             flow = _make_api_flow("/health")
             flow.client_conn.peername = ("10.0.0.5", 1)
             assert api._resolve_agent_id(flow) == "pickup"
@@ -1748,9 +1775,7 @@ class TestTestContextEndpointAudit:
     """Assert the security.test_context_declared / _cleared events fire with fields."""
 
     def _sd(self, agent="pickup"):
-        sd = Mock()
-        sd.get_client_for_ip.return_value = agent
-        return sd
+        return _sd_stub(agent)
 
     def _tc(self):
         from test_context import TestContext
@@ -1760,8 +1785,8 @@ class TestTestContextEndpointAudit:
         sd, tc = self._sd("pickup"), self._tc()
         body = {"context": "run=pickup-1;agent=pickup;test=IDOR-3", "ttl": 120}
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event") as we:
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True) as we:
             flow = _make_tc_flow("POST", agent_token, body)
             asyncio.run(api.request(flow))
         assert flow.response.status_code == 200
@@ -1782,8 +1807,8 @@ class TestTestContextEndpointAudit:
         sd, tc = self._sd("pickup"), self._tc()
         body = {"context": "run=r;agent=someone-else", "ttl": 60}
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event") as we:
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True) as we:
             flow = _make_tc_flow("POST", agent_token, body)
             asyncio.run(api.request(flow))
         d = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_declared"][0].kwargs["details"]
@@ -1794,8 +1819,8 @@ class TestTestContextEndpointAudit:
     def test_post_omitted_ttl_audit_records_requested_none(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event") as we:
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True) as we:
             flow = _make_tc_flow("POST", agent_token, {"context": "run=r;agent=pickup"})
             asyncio.run(api.request(flow))
         d = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_declared"][0].kwargs["details"]
@@ -1806,8 +1831,8 @@ class TestTestContextEndpointAudit:
         sd, tc = self._sd(), self._tc()
         tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 90)
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event") as we:
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True) as we:
             flow = _make_tc_flow("DELETE", agent_token)
             asyncio.run(api.request(flow))
         calls = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_cleared"]
@@ -1820,8 +1845,8 @@ class TestTestContextEndpointAudit:
     def test_delete_absent_records_had_declaration_false(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("agent_api.write_event") as we:
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("agent_api.write_event", autospec=True) as we:
             flow = _make_tc_flow("DELETE", agent_token)
             asyncio.run(api.request(flow))
         d = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_cleared"][0].kwargs["details"]
@@ -1832,9 +1857,7 @@ class TestTestContextEndpointExpiry:
     """GET reflects monotonic expiry and never refreshes the TTL."""
 
     def _sd(self, agent="pickup"):
-        sd = Mock()
-        sd.get_client_for_ip.return_value = agent
-        return sd
+        return _sd_stub(agent)
 
     def _tc(self):
         from test_context import TestContext
@@ -1842,24 +1865,24 @@ class TestTestContextEndpointExpiry:
 
     def test_get_expired_returns_null(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
-        with patch("test_context.time.monotonic", return_value=1000.0):
+        with patch("test_context.time.monotonic", autospec=True, return_value=1000.0):
             tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 30)
         with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-             patch("test_context.time.monotonic", return_value=2000.0):
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+             patch("test_context.time.monotonic", autospec=True, return_value=2000.0):
             flow = _make_tc_flow("GET", agent_token)
             asyncio.run(api.request(flow))
         assert json.loads(flow.response.content) == {"context": None}
 
     def test_get_does_not_refresh_ttl(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
-        with patch("test_context.time.monotonic", return_value=1000.0):
+        with patch("test_context.time.monotonic", autospec=True, return_value=1000.0):
             tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 90)  # exp 1090
 
         def _get(now):
             with _patch_active_token(agent_token), \
-                 patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
-                 patch("test_context.time.monotonic", return_value=now):
+                 patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,), \
+                 patch("test_context.time.monotonic", autospec=True, return_value=now):
                 flow = _make_tc_flow("GET", agent_token)
                 asyncio.run(api.request(flow))
             return json.loads(flow.response.content)["expires_in"]

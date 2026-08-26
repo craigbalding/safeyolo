@@ -2,8 +2,11 @@
 
 from unittest.mock import patch
 
+import pytest
 from mitmproxy import connection, http
 from operator_provenance import OperatorProvenance
+
+pytestmark = pytest.mark.assurance_boundary
 
 
 def make_flow(identifier: str = "source") -> http.HTTPFlow:
@@ -24,7 +27,7 @@ def test_duplicate_links_to_original_flow():
     duplicate = original.copy()
     duplicate.id = "duplicate"
 
-    with patch("operator_provenance.write_event") as audit:
+    with patch("operator_provenance.write_event", autospec=True) as audit:
         addon._view_add(duplicate)
 
     assert duplicate.metadata["origin"] == "operator"
@@ -40,7 +43,7 @@ def test_edit_and_revert_are_audited_without_reapplying_metadata_after_revert():
     item.backup()
     item.request.path = "/edited"
 
-    with patch("operator_provenance.write_event") as audit:
+    with patch("operator_provenance.write_event", autospec=True) as audit:
         addon._view_update(item)
         assert item.metadata["operator_action"] == "edit"
         item.revert()
@@ -58,7 +61,7 @@ def test_replay_gets_provenance_then_audits_with_fresh_request_id():
     item.is_replay = "request"
     item.response = None
 
-    with patch("operator_provenance.write_event") as audit:
+    with patch("operator_provenance.write_event", autospec=True) as audit:
         addon._view_update(item)
         assert item.metadata["operator_audit_pending"] is True
         item.metadata["request_id"] = "req-fresh"
@@ -85,7 +88,7 @@ def test_intercepted_resume_and_kill_are_distinct_actions():
     addon._remember(killed)
     killed.kill()
 
-    with patch("operator_provenance.write_event") as audit:
+    with patch("operator_provenance.write_event", autospec=True) as audit:
         addon._view_update(resumed)
         addon._view_update(killed)
 

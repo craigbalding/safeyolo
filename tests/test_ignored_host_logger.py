@@ -1,33 +1,38 @@
 """Tests for ignored-host connection lifecycle audit events."""
 
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 
 @pytest.fixture
 def connection_data():
-    data = MagicMock()
-    data.server.id = "server-connection-1"
-    data.server.peername = ("192.0.2.20", 443)
-    data.server.address = ("service.example.test", 443)
-    data.server.transport_protocol = "tcp"
-    data.server.error = None
-    data.client.sni = "service.example.test"
-    data.client.peername = ("192.0.2.2", 0)
-    data.client.proxy_mode.agent = "test-agent"
-    return data
+    return SimpleNamespace(
+        server=SimpleNamespace(
+            id="server-connection-1",
+            peername=("192.0.2.20", 443),
+            address=("service.example.test", 443),
+            transport_protocol="tcp",
+            error=None,
+        ),
+        client=SimpleNamespace(
+            sni="service.example.test",
+            peername=("192.0.2.2", 0),
+            proxy_mode=SimpleNamespace(agent="test-agent"),
+        ),
+    )
 
 
 def test_logs_successful_passthrough_start_and_end(connection_data):
     from ignored_host_logger import IgnoredHostLogger
 
     addon = IgnoredHostLogger()
-    options = MagicMock(ignore_hosts=[r"^service\.example\.test:443$"])
+    options = SimpleNamespace(ignore_hosts=[r"^service\.example\.test:443$"])
     with (
         patch("ignored_host_logger.ctx.options", options, create=True),
-        patch("ignored_host_logger.write_event") as write_event,
-        patch("ignored_host_logger.time.monotonic", side_effect=[10.0, 10.125]),
+        patch("ignored_host_logger.write_event", autospec=True,) as write_event,
+        patch("ignored_host_logger.time.monotonic", side_effect=[10.0, 10.125], autospec=True,),
     ):
         addon.server_connect(connection_data)
         addon.server_connected(connection_data)
@@ -48,11 +53,11 @@ def test_logs_passthrough_connection_error(connection_data):
 
     addon = IgnoredHostLogger()
     connection_data.server.error = "connection refused\nunsafe"
-    options = MagicMock(ignore_hosts=[r"^service\.example\.test:443$"])
+    options = SimpleNamespace(ignore_hosts=[r"^service\.example\.test:443$"])
     with (
         patch("ignored_host_logger.ctx.options", options, create=True),
-        patch("ignored_host_logger.write_event") as write_event,
-        patch("ignored_host_logger.time.monotonic", return_value=10.0),
+        patch("ignored_host_logger.write_event", autospec=True,) as write_event,
+        patch("ignored_host_logger.time.monotonic", return_value=10.0, autospec=True,),
     ):
         addon.server_connect(connection_data)
         addon.server_connect_error(connection_data)
@@ -68,10 +73,10 @@ def test_non_ignored_connection_is_not_logged(connection_data):
     from ignored_host_logger import IgnoredHostLogger
 
     addon = IgnoredHostLogger()
-    options = MagicMock(ignore_hosts=[r"^other\.example\.test:443$"])
+    options = SimpleNamespace(ignore_hosts=[r"^other\.example\.test:443$"])
     with (
         patch("ignored_host_logger.ctx.options", options, create=True),
-        patch("ignored_host_logger.write_event") as write_event,
+        patch("ignored_host_logger.write_event", autospec=True,) as write_event,
     ):
         addon.server_connect(connection_data)
         addon.server_connected(connection_data)

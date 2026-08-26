@@ -1,11 +1,71 @@
 """Shared fixtures for SafeYolo CLI tests."""
 
 import json
+import os
 import subprocess
-from unittest.mock import MagicMock
+from unittest.mock import create_autospec
 
+import httpx
 import pytest
 from typer.testing import CliRunner
+
+
+# ---------- NATS runtime fixtures ----------
+# Shared between test_coord_nats_runtime.py and test_coord_nats_client.py
+# so the binary download happens once per session across both files.
+
+
+@pytest.fixture
+def isolated_coord(tmp_path, monkeypatch):
+    """Point every coord path helper at a fresh temp dir."""
+    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture(scope="session")
+def _binary_cache(tmp_path_factory):
+    """Download the nats-server binary once per session."""
+    from safeyolo.coord import nats_runtime as nr
+    cache_dir = tmp_path_factory.mktemp("nats-binary-cache")
+    orig_env = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
+    os.environ["SAFEYOLO_COORD_DATA_DIR"] = str(cache_dir)
+    try:
+        try:
+            binary = nr.ensure_binary()
+        except Exception as e:
+            pytest.skip(f"nats-server binary unavailable: {e!s}")
+        return binary
+    finally:
+        if orig_env is None:
+            os.environ.pop("SAFEYOLO_COORD_DATA_DIR", None)
+        else:
+            os.environ["SAFEYOLO_COORD_DATA_DIR"] = orig_env
+
+
+@pytest.fixture
+def nats_env(isolated_coord, _binary_cache):
+    """Isolated coord dir with the cached nats-server binary symlinked
+    into the versioned path. Any nats-server we spawn is killed on
+    teardown."""
+    from safeyolo.coord import nats_runtime as nr
+    dest = nr.nats_binary_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists():
+        os.symlink(_binary_cache, dest)
+    yield isolated_coord
+    nr.stop_server()
+
+
+class _HTTPResponseBoundary:
+    """Small concrete response surface used by the AdminAPI transport mock."""
+
+    def __init__(self) -> None:
+        self.status_code = 200
+        self.headers = {"content-type": "application/json"}
+        self.text = '{"status": "healthy"}'
+
+    def json(self):
+        return {"status": "healthy"}
 
 
 @pytest.fixture
@@ -51,7 +111,7 @@ def tmp_config_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def mock_subprocess(monkeypatch):
     """Mock subprocess.run for external commands."""
-    mock_run = MagicMock()
+    mock_run = create_autospec(subprocess.run, spec_set=True)
     mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     monkeypatch.setattr("subprocess.run", mock_run)
     return mock_run
@@ -60,18 +120,19 @@ def mock_subprocess(monkeypatch):
 @pytest.fixture
 def mock_httpx(monkeypatch):
     """Mock httpx.Client for API calls."""
-    mock_client = MagicMock()
-    mock_response = MagicMock()
+    mock_client = create_autospec(httpx.Client, instance=True, spec_set=True)
+    mock_response = create_autospec(_HTTPResponseBoundary(), spec_set=True)
     mock_response.status_code = 200
     mock_response.headers = {"content-type": "application/json"}
     mock_response.json.return_value = {"status": "healthy"}
     mock_response.text = '{"status": "healthy"}'
 
-    mock_client.__enter__ = MagicMock(return_value=mock_client)
-    mock_client.__exit__ = MagicMock(return_value=False)
-    mock_client.request = MagicMock(return_value=mock_response)
+    mock_client.__enter__.return_value = mock_client
+    mock_client.__exit__.return_value = False
+    mock_client.request.return_value = mock_response
 
-    mock_client_class = MagicMock(return_value=mock_client)
+    mock_client_class = create_autospec(httpx.Client, spec_set=True)
+    mock_client_class.return_value = mock_client
     monkeypatch.setattr("httpx.Client", mock_client_class)
 
     return {

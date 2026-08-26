@@ -123,7 +123,7 @@ class TestSaveRoundtripAtomicity:
         path = tmp_path / "policy.toml"
         doc = tomlkit.parse(sample_toml)
 
-        with mock.patch("safeyolo.policy.toml_roundtrip.shutil.move", side_effect=OSError("simulated")):
+        with mock.patch("safeyolo.policy.toml_roundtrip.shutil.move", side_effect=OSError("simulated"), autospec=True,):
             with pytest.raises(OSError, match="simulated"):
                 save_roundtrip(path, doc)
 
@@ -142,7 +142,7 @@ class TestSaveRoundtripAtomicity:
         doc = load_roundtrip(path)
         doc["budget"] = 99999
 
-        with mock.patch("safeyolo.policy.toml_roundtrip.shutil.move", side_effect=OSError("fail")):
+        with mock.patch("safeyolo.policy.toml_roundtrip.shutil.move", side_effect=OSError("fail"), autospec=True,):
             with pytest.raises(OSError):
                 save_roundtrip(path, doc)
 
@@ -157,7 +157,7 @@ class TestSaveRoundtripAtomicity:
         doc = tomlkit.document()
         doc.add("version", "2.0")
 
-        with mock.patch("safeyolo.policy.toml_roundtrip.os.fsync") as fsync_mock:
+        with mock.patch("safeyolo.policy.toml_roundtrip.os.fsync", autospec=True,) as fsync_mock:
             save_roundtrip(path, doc)
 
         # fsync called at least once (tempfile, and optionally parent dir)

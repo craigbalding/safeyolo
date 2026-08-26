@@ -1,7 +1,8 @@
 """Tests for exact operator-managed TLS passthrough hosts."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
+import httpx
 import pytest
 import yaml
 
@@ -78,7 +79,7 @@ class TestIgnorePatterns:
 
 class TestIgnoreHostCLI:
     def test_add_persists_for_next_start(self, cli_runner, tmp_config_dir):
-        with patch("safeyolo.commands.proxy.is_proxy_running", return_value=False):
+        with patch("safeyolo.commands.proxy.is_proxy_running", return_value=False, autospec=True,):
             result = cli_runner.invoke(
                 app, ["proxy", "ignore-host", "add", "Service.Example.Test:443"]
             )
@@ -92,8 +93,8 @@ class TestIgnoreHostCLI:
 
     def test_add_hot_reloads_running_proxy(self, cli_runner, tmp_config_dir):
         with (
-            patch("safeyolo.commands.proxy.is_proxy_running", return_value=True),
-            patch("safeyolo.commands.proxy.sync_proxy_ignore_hosts", return_value=True) as sync,
+            patch("safeyolo.commands.proxy.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.commands.proxy.sync_proxy_ignore_hosts", return_value=True, autospec=True,) as sync,
         ):
             result = cli_runner.invoke(
                 app, ["proxy", "ignore-host", "add", "service.example.test"]
@@ -107,8 +108,8 @@ class TestIgnoreHostCLI:
         self, cli_runner, tmp_config_dir
     ):
         with (
-            patch("safeyolo.commands.proxy.is_proxy_running", return_value=True),
-            patch("safeyolo.commands.proxy.sync_proxy_ignore_hosts", return_value=False),
+            patch("safeyolo.commands.proxy.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.commands.proxy.sync_proxy_ignore_hosts", return_value=False, autospec=True,),
         ):
             result = cli_runner.invoke(
                 app, ["proxy", "ignore-host", "add", "service.example.test:443"]
@@ -129,7 +130,7 @@ class TestIgnoreHostCLI:
         assert listed.exit_code == 0
         assert "service.example.test:443" in listed.output
 
-        with patch("safeyolo.commands.proxy.is_proxy_running", return_value=False):
+        with patch("safeyolo.commands.proxy.is_proxy_running", return_value=False, autospec=True,):
             removed = cli_runner.invoke(
                 app, ["proxy", "ignore-host", "remove", "service.example.test:443"]
             )
@@ -145,11 +146,9 @@ class TestSyncProxyIgnoreHosts:
         from safeyolo.proxy import sync_proxy_ignore_hosts
 
         (tmp_config_dir / "data" / "admin_token").write_text("operator-token")
-        response = MagicMock(status_code=200, text="ok")
-        put = MagicMock(return_value=response)
-        monkeypatch.setattr("httpx.put", put)
-
-        assert sync_proxy_ignore_hosts(["Service.Example.Test:443"], admin_port=9191)
+        response = httpx.Response(200, text="ok")
+        with patch("httpx.put", return_value=response, autospec=True) as put:
+            assert sync_proxy_ignore_hosts(["Service.Example.Test:443"], admin_port=9191)
         put.assert_called_once_with(
             "http://127.0.0.1:9191/admin/proxy/ignore-hosts",
             json={"hosts": ["service.example.test:443"]},

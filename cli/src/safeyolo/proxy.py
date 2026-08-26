@@ -19,6 +19,7 @@ from .tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS, validate_tailnet_port
 from .timing import child_environment as _profile_child_environment
 from .timing import enter as _profile_enter
 from .traffic_session import (
+    capture_session,
     session_process_alive,
     start_session,
     stop_session,
@@ -103,6 +104,52 @@ def _read_startup_failure(path: Path, offset: int) -> str | None:
         return None
     event = candidates[-1]
     return str(event.get("summary") or event.get("details", {}).get("error") or "Proxy startup failed")
+
+
+def _tail_text(path: Path, *, offset: int = 0, limit: int = 4_000) -> str:
+    """Read a bounded diagnostic tail without turning logging into a failure."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as source:
+            source.seek(offset)
+            text = source.read()
+    except OSError:
+        return "<unavailable>"
+    return text[-limit:].strip() or "<empty>"
+
+
+def _startup_diagnostics(
+    *,
+    event_log: Path,
+    event_offset: int,
+    logs_dir: Path,
+    pid_file: Path,
+) -> str:
+    """Capture evidence before a failed traffic session is torn down."""
+    try:
+        pane = capture_session() or "<empty>"
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        pane = f"<unavailable: {type(exc).__name__}: {exc}>"
+    try:
+        alive = session_process_alive()
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        alive = False
+
+    profile_value = os.environ.get("SAFEYOLO_PROFILE_PATH")
+    profile = _tail_text(Path(profile_value)) if profile_value else "<profiling disabled>"
+    return "\n".join(
+        (
+            f"traffic session alive: {alive}",
+            f"readiness marker exists: {pid_file.exists()}",
+            "structured startup events:",
+            _tail_text(event_log, offset=event_offset),
+            "mitmproxy log:",
+            _tail_text(logs_dir / "mitmproxy.log"),
+            "traffic console:",
+            pane[-4_000:],
+            "startup profile:",
+            profile,
+        )
+    )
 
 
 def resolve_flow_cache(cli_value: int | None, environ: dict[str, str] | None = None) -> int:
@@ -844,18 +891,30 @@ def start_proxy(
                 failure = _read_startup_failure(event_log, event_offset) or (
                     "Traffic master exited before recording a structured startup failure."
                 )
+                diagnostics = _startup_diagnostics(
+                    event_log=event_log,
+                    event_offset=event_offset,
+                    logs_dir=logs_dir,
+                    pid_file=pid_file,
+                )
                 raise RuntimeError(
                     "shared traffic master exited during startup.\n"
-                    f"{failure}"
+                    f"{failure}\n{diagnostics}"
                 )
             time.sleep(0.05)
         else:
             failure = _read_startup_failure(event_log, event_offset) or (
                 "Traffic master remained alive but did not finish startup before the readiness deadline."
             )
+            diagnostics = _startup_diagnostics(
+                event_log=event_log,
+                event_offset=event_offset,
+                logs_dir=logs_dir,
+                pid_file=pid_file,
+            )
             raise RuntimeError(
                 f"Proxy did not signal ready within {startup_timeout:g}s.\n"
-                f"{failure}"
+                f"{failure}\n{diagnostics}"
             )
     except Exception:
         pid_file.unlink(missing_ok=True)

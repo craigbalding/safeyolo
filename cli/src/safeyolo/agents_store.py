@@ -1,11 +1,9 @@
 """Centralized read/write for agent config in policy.toml [agents] section."""
 
-import fcntl
 import ipaddress
 import json
 import logging
-import shutil
-import tempfile
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -26,11 +24,6 @@ def _policy_toml_path() -> Path:
     return get_config_dir() / "policy.toml"
 
 
-def _lock_path() -> Path:
-    """Path to lock file sibling."""
-    return get_config_dir() / ".policy.toml.lock"
-
-
 def _load_doc() -> tomlkit.TOMLDocument:
     """Load policy.toml as a TOMLDocument. Returns empty doc if missing.
 
@@ -45,31 +38,18 @@ def _load_doc() -> tomlkit.TOMLDocument:
 
 def _save_doc(doc: tomlkit.TOMLDocument) -> None:
     """Atomic write of TOMLDocument back to policy.toml."""
-    path = _policy_toml_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    content = tomlkit.dumps(doc)
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".toml", dir=path.parent, delete=False
-    ) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-    shutil.move(tmp_path, path)
+    from .policy.toml_roundtrip import save_roundtrip
+
+    save_roundtrip(_policy_toml_path(), doc)
 
 
 def _locked_mutate(mutate_fn: Callable[[tomlkit.TOMLDocument], Any]) -> Any:
     """Read-modify-write policy.toml under exclusive file lock."""
-    lock = _lock_path()
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.touch()
-    with open(lock) as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            doc = _load_doc()
-            result = mutate_fn(doc)
-            _save_doc(doc)
-            return result
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+    from .policy.toml_roundtrip import locked_policy_mutate
+
+    return locked_policy_mutate(
+        _policy_toml_path(), mutate_fn, create_if_missing=True
+    )
 
 
 def _get_agents(doc: tomlkit.TOMLDocument) -> dict:
@@ -132,6 +112,46 @@ def load_all_agents() -> dict[str, dict]:
 def load_agent(name: str) -> dict:
     """Read a single agent entry. Returns {} if not found."""
     return load_all_agents().get(name, {})
+
+
+def _new_agent_id() -> str:
+    return f"ag-{uuid.uuid4().hex}"
+
+
+def get_or_mint_agent_id(name: str) -> str:
+    """Return the durable `agent_id` for `name`, minting one if absent.
+
+    Idempotent. Raises KeyError if `name` is not a registered agent.
+    Backfills existing agents that pre-date the agent_id field.
+    """
+    def mutate(doc):
+        agents = _ensure_agents_table(doc)
+        if name not in agents:
+            raise KeyError(name)
+        agent_table = agents[name]
+        existing = agent_table.get("agent_id")
+        if existing:
+            return str(existing)
+        new_id = _new_agent_id()
+        agent_table["agent_id"] = new_id
+        return new_id
+
+    return _locked_mutate(mutate)
+
+
+def get_agent_id(name: str) -> str | None:
+    """Return the agent_id for `name` if set, else None (no mint)."""
+    meta = load_agent(name)
+    aid = meta.get("agent_id")
+    return str(aid) if aid else None
+
+
+def get_agent_by_id(agent_id: str) -> tuple[str, dict] | None:
+    """Reverse lookup by agent_id. Returns (name, metadata) or None."""
+    for name, meta in load_all_agents().items():
+        if meta.get("agent_id") == agent_id:
+            return (name, meta)
+    return None
 
 
 def save_agent(name: str, metadata: dict) -> None:

@@ -1,9 +1,10 @@
 """Tests for contract enforcement logic in service_gateway.py."""
 
 import json
-from unittest.mock import MagicMock
 
 import pytest
+from mitmproxy.http import Headers
+from mitmproxy.test import tflow
 from service_gateway import (
     ContractBindingState,
     ServiceGateway,
@@ -13,6 +14,7 @@ from service_gateway import (
 )
 
 from safeyolo.core.service_loader import (
+    AuthConfig,
     BodyConstraint,
     Capability,
     CapabilityRoute,
@@ -20,26 +22,27 @@ from safeyolo.core.service_loader import (
     ContractTemplate,
     EnforcementStatus,
     QueryConstraint,
+    ServiceDefinition,
     TransportConstraint,
 )
 from safeyolo.detection.matching import reject_path_tricks
+
+pytestmark = pytest.mark.assurance_boundary
 
 # --- Helpers ---
 
 
 def _make_flow(method="GET", path="/test", headers=None, body=None, query=""):
-    """Create a mock mitmproxy flow."""
-    flow = MagicMock()
-    url = f"http://example.com{path}"
-    if query:
-        url += f"?{query}"
+    """Create a real mitmproxy flow while preserving the raw request target."""
+    flow = tflow.tflow()
     flow.request.method = method
     flow.request.path = f"{path}?{query}" if query else path
-    flow.request.url = url
     flow.request.host = "example.com"
+    flow.request.scheme = "https"
     flow.request.content = body.encode() if isinstance(body, str) else body
-    flow.request.headers = headers or {}
-    flow.metadata = {}
+    flow.request.headers = Headers()
+    for name, value in (headers or {}).items():
+        flow.request.headers[name] = value
     flow.response = None
     return flow
 
@@ -92,47 +95,27 @@ def _make_contract(operations=None, enforcement=None):
 
 def _make_contract_flow(method="GET", path="/test", headers=None, body=None, query="",
                          header_fields=None):
-    """Create a mock flow with real mitmproxy Headers (supports .fields for duplicate detection).
+    """Create a real flow with optional duplicate raw header fields.
 
     Args:
         headers: dict of headers (no duplicates)
         header_fields: list of (name, value) tuples for raw fields (supports duplicates)
     """
-    from mitmproxy.http import Headers
-
-    flow = MagicMock()
-    url = f"http://example.com{path}"
-    if query:
-        url += f"?{query}"
-    flow.request.method = method
-    flow.request.path = f"{path}?{query}" if query else path
-    flow.request.url = url
-    flow.request.host = "example.com"
-    flow.request.scheme = "https"
-    flow.request.content = body.encode() if isinstance(body, str) else body
-    flow.metadata = {}
-    flow.response = None
+    flow = _make_flow(method=method, path=path, headers=headers, body=body, query=query)
 
     if header_fields is not None:
         flow.request.headers = Headers(
             fields=[(k.encode(), v.encode()) for k, v in header_fields]
         )
-    elif headers:
-        flow.request.headers = Headers(
-            fields=[(k.encode(), v.encode()) for k, v in headers.items()]
-        )
-    else:
-        flow.request.headers = Headers()
-
     return flow
 
 
-def _make_service_mock():
-    """Create a mock service with auth header."""
-    service = MagicMock()
-    service.auth.header = "Authorization"
-    service.name = "test-service"
-    return service
+def _make_service(auth_header="Authorization"):
+    """Create the same concrete service definition used by the gateway."""
+    return ServiceDefinition(
+        name="test-service",
+        auth=AuthConfig(type="bearer", header=auth_header),
+    )
 
 
 def _make_capability_with_contract(contract=None):
@@ -214,7 +197,7 @@ def _enforce(gateway, flow, op, binding=None, service=None):
     if binding is None:
         binding = _make_binding_state(grantable_ops=[op.name])
     if service is None:
-        service = _make_service_mock()
+        service = _make_service()
     contract = _make_contract(operations=[op])
     capability = _make_capability_with_contract(contract)
     # Override routes to match the operation path
@@ -270,9 +253,7 @@ class TestTransportEnforcement:
             name="test", method="GET", path="/test",
             transport=TransportConstraint(allow_headers=["Accept"]),
         )
-        service = MagicMock()
-        service.auth.header = "X-Auth-Token"
-        service.name = "test-service"
+        service = _make_service(auth_header="X-Auth-Token")
         assert _enforce(gateway, flow, op, service=service) is True
 
     def test_require_no_body_rejects_body(self, gateway):
@@ -591,7 +572,7 @@ class TestDuplicateHeaders:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["test"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             path="/test",
             header_fields=[("Accept", "a"), ("Accept", "b")],
@@ -620,7 +601,7 @@ class TestAbsentAllowHeaders:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["test"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             path="/test",
             headers={"X-Custom": "evil"},
@@ -641,7 +622,7 @@ class TestAbsentAllowHeaders:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["test"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             path="/test",
             headers={"Host": "example.com", "Connection": "keep-alive"},
@@ -655,7 +636,7 @@ class TestAbsentAllowHeaders:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["test"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             path="/test",
             header_fields=[("Host", "a"), ("Host", "b")],
@@ -671,7 +652,7 @@ class TestAbsentAllowHeaders:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["test"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             path="/test",
             headers={"X-Evil": "value"},
@@ -699,7 +680,7 @@ class TestContentType:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["create"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             method="POST", path="/test",
             headers={"Content-Type": "text/plain"},
@@ -720,7 +701,7 @@ class TestContentType:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["create"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             method="POST", path="/test",
             headers={"Content-Type": "application/json"},
@@ -739,7 +720,7 @@ class TestContentType:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["create"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             method="POST", path="/test",
             headers={"Content-Type": "application/json; charset=utf-8"},
@@ -758,7 +739,7 @@ class TestContentType:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["create"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             method="POST", path="/test",
             body='{"name": "test"}',
@@ -778,7 +759,7 @@ class TestContentType:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["create"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             method="POST", path="/test",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -807,7 +788,7 @@ class TestDuplicateJsonKeys:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["create"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             method="POST", path="/test",
             headers={"Content-Type": "application/json"},
@@ -828,7 +809,7 @@ class TestDuplicateJsonKeys:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["create"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             method="POST", path="/test",
             headers={"Content-Type": "application/json"},
@@ -867,7 +848,7 @@ class TestCrossLocationFields:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["create"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             method="POST", path="/test",
             query="name=query_value",
@@ -892,7 +873,7 @@ class TestCrossLocationFields:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["create"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(
             method="POST", path="/test",
             query="page=1",
@@ -939,7 +920,7 @@ class TestContractPathTrickIntegration:
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["test"])
-        service = _make_service_mock()
+        service = _make_service()
         flow = _make_contract_flow(path=path, method=method)
         return gateway._enforce_contract(flow, binding, service, capability, method, path), flow
 

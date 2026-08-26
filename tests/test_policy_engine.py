@@ -1340,7 +1340,8 @@ permissions:
     effect: allow
     tier: explicit
 
-budgets: {}
+budgets:
+  network:request: 12000
 required: []
 addons: {}
 """)

@@ -1,9 +1,11 @@
 """Tests for safeyolo doctor command."""
 
 import json
+import ssl
 import subprocess
-from unittest.mock import MagicMock
+from unittest.mock import create_autospec
 
+import httpx
 import pytest
 import yaml
 
@@ -28,6 +30,19 @@ from safeyolo.commands.doctor import (
     _check_vsock_term,
     _run_checks,
 )
+from safeyolo.commands.vault import _load_vault
+from safeyolo.core.vault import Vault
+
+
+class _OpenSocket:
+    def close(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
 
 
 def _completed(returncode=0, stdout="", stderr=""):
@@ -272,14 +287,16 @@ class TestCheckUpstreamCaCert:
     ):
         bundle = tmp_path / "environment-ca.pem"
         bundle.write_text("test fixture")
-        context = MagicMock()
+        context = create_autospec(ssl.SSLContext, instance=True, spec_set=True)
+        context_factory = create_autospec(ssl.SSLContext, spec_set=True)
+        context_factory.return_value = context
         monkeypatch.setattr(
             "safeyolo.commands.doctor.resolve_upstream_ca_cert",
             lambda _test, _proxy: (bundle, "SAFEYOLO_CA_CERT"),
         )
         monkeypatch.setattr(
             "safeyolo.commands.doctor.ssl.SSLContext",
-            MagicMock(return_value=context),
+            context_factory,
         )
 
         result = _check_upstream_ca_cert()
@@ -387,7 +404,7 @@ class TestCheckVault:
             "safeyolo.commands.vault._get_vault_path",
             lambda: vault_file,
         )
-        mock_vault = MagicMock()
+        mock_vault = create_autospec(Vault, instance=True, spec_set=True)
         mock_vault.list_names.return_value = ["openai", "anthropic"]
         monkeypatch.setattr(
             "safeyolo.commands.vault._load_vault",
@@ -411,10 +428,9 @@ class TestCheckVault:
             "safeyolo.commands.vault._get_vault_path",
             lambda: vault_file,
         )
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._load_vault",
-            MagicMock(side_effect=ValueError("bad key")),
-        )
+        load_vault = create_autospec(_load_vault, spec_set=True)
+        load_vault.side_effect = ValueError("bad key")
+        monkeypatch.setattr("safeyolo.commands.vault._load_vault", load_vault)
         result = _check_vault()
         assert result.status == "fail"
         assert "Cannot decrypt" in result.message
@@ -647,17 +663,14 @@ class TestCheckAdminApi:
         """Returns pass when admin API responds with 200 and port is open."""
 
         def mock_create_connection(address, timeout=None):
-            mock_sock = MagicMock()
-            return mock_sock
+            return _OpenSocket()
 
         monkeypatch.setattr("socket.create_connection", mock_create_connection)
         monkeypatch.setattr("safeyolo.config.get_admin_token", lambda: "test-token")
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_httpx = MagicMock()
-        mock_httpx.get.return_value = mock_resp
-        monkeypatch.setitem(__import__("sys").modules, "httpx", mock_httpx)
+        get = create_autospec(httpx.get, spec_set=True)
+        get.return_value = httpx.Response(200)
+        monkeypatch.setattr(httpx, "get", get)
 
         result = _check_admin_api()
         assert result.status == "pass"
@@ -674,16 +687,16 @@ class TestCheckAddonLoading:
 
     def test_stats_success(self, tmp_config_dir, monkeypatch):
         monkeypatch.setattr("safeyolo.config.get_admin_token", lambda: "test-token")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "proxy": {},
-            "credential-guard": {"checks": 10},
-            "network-guard": {"checks": 5},
-        }
-        mock_httpx = MagicMock()
-        mock_httpx.get.return_value = mock_resp
-        monkeypatch.setitem(__import__("sys").modules, "httpx", mock_httpx)
+        get = create_autospec(httpx.get, spec_set=True)
+        get.return_value = httpx.Response(
+            200,
+            json={
+                "proxy": {},
+                "credential-guard": {"checks": 10},
+                "network-guard": {"checks": 5},
+            },
+        )
+        monkeypatch.setattr(httpx, "get", get)
         result = _check_addon_loading()
         assert result.status == "pass"
         assert "2 addons" in result.message
@@ -745,8 +758,10 @@ class TestDoctorCLI:
     def test_doctor_runs(self, cli_runner, tmp_config_dir, monkeypatch):
         """Smoke test that doctor command runs without crashing."""
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
-        mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
-        monkeypatch.setattr("subprocess.run", mock_run)
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess([], 1, "", ""),
+        )
 
         from safeyolo.cli import app
 
@@ -762,8 +777,10 @@ class TestDoctorCLI:
         Exit code preserved (1 on any fail).
         """
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
-        mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
-        monkeypatch.setattr("subprocess.run", mock_run)
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess([], 1, "", ""),
+        )
 
         from safeyolo.cli import app
 
@@ -784,8 +801,10 @@ class TestDoctorCLI:
     def test_doctor_raw(self, cli_runner, tmp_config_dir, monkeypatch):
         """--raw emits human output with no color / no wrap; long tokens survive."""
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
-        mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
-        monkeypatch.setattr("subprocess.run", mock_run)
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess([], 1, "", ""),
+        )
 
         from safeyolo.cli import app
 

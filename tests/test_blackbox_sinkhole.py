@@ -19,7 +19,7 @@ def _load_sinkhole_server():
 def test_sinkhole_bind_does_not_perform_reverse_dns():
     server_module = _load_sinkhole_server()
 
-    with patch("socket.getfqdn", side_effect=AssertionError("reverse DNS lookup attempted")):
+    with patch("socket.getfqdn", side_effect=AssertionError("reverse DNS lookup attempted"), autospec=True,):
         server = server_module.NoReverseDNSThreadingHTTPServer(
             ("127.0.0.1", 0), server_module.ControlAPIHandler
         )

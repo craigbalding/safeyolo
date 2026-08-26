@@ -35,6 +35,7 @@ from service_discovery import get_service_discovery
 
 from pdp import get_policy_client
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
+from safeyolo.core.identity import AgentIdentity, IdentityStatus, resolve_agent_identity
 from safeyolo.core.trace import (
     REASON_POLICY_DISABLED,
     REASON_PRIOR_RESPONSE,
@@ -46,7 +47,6 @@ from safeyolo.core.trace import (
 )
 from safeyolo.core.utils import (
     find_addon,
-    get_client_ip,
     get_option_safe,
     make_block_response,
     write_event,
@@ -127,6 +127,10 @@ class SecurityAddon:
         # No running master at all (e.g. unit tests): fall back to the singleton.
         return get_service_discovery()
 
+    def resolve_agent_identity(self, flow: http.HTTPFlow) -> AgentIdentity:
+        """Resolve and stamp this flow's identity from trusted sources."""
+        return resolve_agent_identity(flow, self._resolve_service_discovery())
+
     def is_bypassed(self, flow: http.HTTPFlow) -> bool:
         """Check if addon is bypassed for this request.
 
@@ -145,6 +149,12 @@ class SecurityAddon:
             self._trace_bypassed(flow, reason=REASON_PRIOR_RESPONSE)
             return True
 
+        identity = self.resolve_agent_identity(flow)
+        if identity.status is IdentityStatus.CONFLICT:
+            # A disagreement must be evaluated and denied by the security
+            # addon, never converted into an unscoped policy bypass.
+            return False
+
         try:
             client = get_policy_client()
         except RuntimeError:
@@ -153,23 +163,17 @@ class SecurityAddon:
 
         domain = flow.request.host
 
-        # Get client_id from ServiceDiscovery IP mapping. Resolve the addon via
-        # the master registry first; the module-level singleton can be a distinct
-        # object that is None under the addon loader, which would silently drop
-        # per-client policy resolution (client_id stays None) proxy-wide.
-        discovery = self._resolve_service_discovery()
-        if discovery:
-            client_ip = get_client_ip(flow)
-            client_id = discovery.get_client_for_ip(client_ip)
-            # Non-identities are not project scopes: "default" (no specific
-            # project) and "unknown" (unmapped source) both resolve to None so
-            # per-client rules aren't evaluated against a literal placeholder.
-            if not client_id or client_id in ("unknown", "default"):
-                client_id = None
-        else:
-            client_id = None
+        # Identity conflicts and unavailable identities never become policy
+        # scopes. The resolver also prevents untrusted metadata from supplying
+        # a scope when the connection has no trusted identity.
+        client_id = identity.agent if identity.is_resolved else None
 
-        if not client.is_addon_enabled(self.name, domain, client_id):
+        # Policy files use Python/config-style addon keys (``network_guard``),
+        # while runtime/audit labels use kebab case (``network-guard``).
+        # Options already use this normalized prefix; policy lookups must use
+        # the same key or configured bypasses are silently ignored.
+        policy_addon_name = self._option_prefix()
+        if not client.is_addon_enabled(policy_addon_name, domain, client_id):
             self._trace_bypassed(flow, reason=REASON_POLICY_DISABLED)
             return True
         return False

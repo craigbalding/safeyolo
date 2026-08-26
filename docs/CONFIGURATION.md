@@ -136,9 +136,14 @@ match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']
 headers = ["authorization", "x-api-key"]
 ```
 
+`budget` is the aggregate request ceiling across all domains. Every allowed
+network request consumes it. A host `rate` adds a second, stricter ceiling for
+that host; it does not reserve capacity, and it cannot exceed `budget`.
+
 Each host entry can include:
 - `allow` - credential types allowed (e.g. `["openai:*"]`, `["hmac:a1b2c3d4"]`)
-- `rate` - requests per minute for this host
+- `rate` - optional requests per minute for this host; when omitted, the host
+  uses only the remaining global `budget`
 - `egress` - network-level access posture for this host: `allow`, `prompt`, or `deny`
 - `bypass` - addons to skip for this host
 - `expires` - TOML native datetime; the entry is automatically removed after this time
@@ -300,6 +305,7 @@ The `safeyolo policy` command group manages policy.toml from the command line. A
 
 ```bash
 # Add or update a host entry
+safeyolo policy host add api.stripe.com  # global budget only
 safeyolo policy host add api.stripe.com --rate 600
 safeyolo policy host add api.stripe.com --rate 600 --agent boris
 safeyolo policy host add temp-api.com --rate 100 --expires 1d
@@ -330,6 +336,10 @@ safeyolo policy addon-list remove circuit_breaker excluded_domains dev.example.c
 safeyolo policy host add-list known_bad --egress deny
 safeyolo policy host add-list package_registries --rate 1200
 ```
+
+The add command displays both the host rate and overall budget. If `--rate` is
+omitted, a global `budget` must be configured. A supplied rate equal to the
+global budget is valid; a higher value is rejected.
 
 `policy addon-list` holds an exclusive lock, preserves unrelated YAML text and
 comments, validates the document before and after the narrow list mutation, and

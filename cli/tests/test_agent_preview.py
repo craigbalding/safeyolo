@@ -356,7 +356,7 @@ def test_start_tailnet_serve_uses_foreground_mapping(monkeypatch):
     monkeypatch.setattr("safeyolo.tailnet.shutil.which", lambda command: "/usr/bin/tailscale")
     monkeypatch.setattr("safeyolo.tailnet.run_tailscale_json", lambda *args: next(responses))
 
-    with patch("safeyolo.tailnet.subprocess.Popen", return_value=process) as popen:
+    with patch("safeyolo.tailnet.subprocess.Popen", return_value=process, autospec=True,) as popen:
         session = start_tailnet_serve(54321, 8443)
 
     assert session.url("/") == "https://host.example.ts.net:8443/"
@@ -388,7 +388,7 @@ def test_start_tailnet_serve_refuses_existing_mapping(monkeypatch):
     monkeypatch.setattr("safeyolo.tailnet.shutil.which", lambda command: "/usr/bin/tailscale")
     monkeypatch.setattr("safeyolo.tailnet.run_tailscale_json", lambda *args: next(responses))
 
-    with patch("safeyolo.tailnet.subprocess.Popen") as popen, pytest.raises(PreviewError, match="already has"):
+    with patch("safeyolo.tailnet.subprocess.Popen", autospec=True,) as popen, pytest.raises(PreviewError, match="already has"):
         start_tailnet_serve(54321, 8443)
 
     popen.assert_not_called()
@@ -743,8 +743,8 @@ def test_preview_command_builds_single_agent_config():
     fake_platform = FakePlatform(running=True)
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=fake_platform),
-        patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve,
+        patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+        patch("safeyolo.preview.serve_agent_preview", return_value=0, autospec=True,) as mock_serve,
     ):
         result = runner.invoke(
             agent_app,
@@ -766,9 +766,9 @@ def test_preview_command_can_start_host_sized_vnc(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=fake_platform),
-        patch("safeyolo.commands.agent.stage_guest_desktop_launcher") as mock_stage,
-        patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve,
+        patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher", autospec=True,) as mock_stage,
+        patch("safeyolo.preview.serve_agent_preview", return_value=0, autospec=True,) as mock_serve,
     ):
         result = runner.invoke(agent_app, ["preview", "codey", "6080", "--start-vnc"])
 
@@ -794,9 +794,9 @@ def test_preview_command_can_start_browser_url(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=fake_platform),
-        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
-        patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve,
+        patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher", autospec=True,),
+        patch("safeyolo.preview.serve_agent_preview", return_value=0, autospec=True,) as mock_serve,
     ):
         result = runner.invoke(
             agent_app,
@@ -817,9 +817,10 @@ def test_preview_command_requires_running_agent():
     runner = CliRunner()
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=FakePlatform(running=False)),
+        patch("safeyolo.platform.get_platform", return_value=FakePlatform(running=False), autospec=True,),
         patch(
             "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
+        autospec=True,
         ) as mock_reserve,
     ):
         result = runner.invoke(agent_app, ["preview", "codey", "8000"])
@@ -835,9 +836,9 @@ def test_desktop_command_starts_core_launcher_and_preview(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=fake_platform),
-        patch("safeyolo.commands.agent.stage_guest_desktop_launcher") as mock_stage,
-        patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve,
+        patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher", autospec=True,) as mock_stage,
+        patch("safeyolo.preview.serve_agent_preview", return_value=0, autospec=True,) as mock_serve,
     ):
         result = runner.invoke(
             agent_app,
@@ -875,9 +876,9 @@ def test_desktop_command_uses_persistent_host_size(monkeypatch):
     )
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=fake_platform),
-        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
-        patch("safeyolo.preview.serve_agent_preview", return_value=0),
+        patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher", autospec=True,),
+        patch("safeyolo.preview.serve_agent_preview", return_value=0, autospec=True,),
     ):
         result = runner.invoke(agent_app, ["desktop", "codey"])
 
@@ -896,9 +897,9 @@ def test_desktop_command_explicit_size_overrides_host_preference(monkeypatch):
     )
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=fake_platform),
-        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
-        patch("safeyolo.preview.serve_agent_preview", return_value=0),
+        patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher", autospec=True,),
+        patch("safeyolo.preview.serve_agent_preview", return_value=0, autospec=True,),
     ):
         result = runner.invoke(agent_app, ["desktop", "codey", "--size", "1600x900"])
 
@@ -911,9 +912,9 @@ def test_desktop_command_remembers_explicit_host_size(tmp_config_dir):
     fake_platform = FakePlatform(running=True)
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=fake_platform),
-        patch("safeyolo.commands.agent.stage_guest_desktop_launcher") as mock_stage,
-        patch("safeyolo.preview.serve_agent_preview", return_value=0),
+        patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher", autospec=True,) as mock_stage,
+        patch("safeyolo.preview.serve_agent_preview", return_value=0, autospec=True,),
     ):
         result = runner.invoke(
             agent_app,
@@ -944,7 +945,7 @@ def test_desktop_command_remember_requires_explicit_size():
 def test_desktop_command_requires_running_agent():
     runner = CliRunner()
 
-    with patch("safeyolo.platform.get_platform", return_value=FakePlatform(running=False)):
+    with patch("safeyolo.platform.get_platform", return_value=FakePlatform(running=False), autospec=True,):
         result = runner.invoke(agent_app, ["desktop", "codey"])
 
     assert result.exit_code == 1
@@ -957,9 +958,9 @@ def test_desktop_status_uses_core_launcher_without_preview():
     fake_platform = FakePlatform(running=True)
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=fake_platform),
-        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
-        patch("safeyolo.preview.serve_agent_preview") as mock_serve,
+        patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher", autospec=True,),
+        patch("safeyolo.preview.serve_agent_preview", autospec=True,) as mock_serve,
     ):
         result = runner.invoke(agent_app, ["desktop", "codey", "--status"])
 
@@ -983,13 +984,14 @@ def test_desktop_command_reserves_tailnet_port(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: None)
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=fake_platform),
-        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
+        patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher", autospec=True,),
         patch(
             "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
             return_value=(8443, None),
+        autospec=True,
         ) as mock_reserve,
-        patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve,
+        patch("safeyolo.preview.serve_agent_preview", return_value=0, autospec=True,) as mock_serve,
     ):
         result = runner.invoke(
             agent_app,
@@ -1009,16 +1011,18 @@ def test_desktop_restores_changed_port_when_preview_start_fails(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: None)
 
     with (
-        patch("safeyolo.platform.get_platform", return_value=fake_platform),
-        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
+        patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher", autospec=True,),
         patch(
             "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
             return_value=(8444, 8443),
+        autospec=True,
         ),
-        patch("safeyolo.commands.agent.restore_agent_tailnet_port") as mock_restore,
+        patch("safeyolo.commands.agent.restore_agent_tailnet_port", autospec=True,) as mock_restore,
         patch(
             "safeyolo.preview.serve_agent_preview",
             side_effect=RuntimeError("serve denied"),
+        autospec=True,
         ),
     ):
         result = runner.invoke(
@@ -1035,7 +1039,7 @@ def test_desktop_rejects_tailnet_port_with_local_share():
     runner = CliRunner()
     fake_platform = FakePlatform(running=True)
 
-    with patch("safeyolo.platform.get_platform", return_value=fake_platform):
+    with patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,):
         result = runner.invoke(
             agent_app,
             ["desktop", "codey", "--tailnet-port", "10443"],
@@ -1559,6 +1563,8 @@ def _run_preview_in_subprocess(tmp_path, *, guest_port: int):
     events_file = tmp_path / "events.log"
     ready_file = tmp_path / "ready"
     exit_file = tmp_path / "exit_code"
+    stdout_file = tmp_path / "stdout.log"
+    stderr_file = tmp_path / "stderr.log"
     runner = tmp_path / "runner.py"
     runner.write_text(
         "import sys\n"
@@ -1581,12 +1587,18 @@ def _run_preview_in_subprocess(tmp_path, *, guest_port: int):
         "with open(exit_path, 'w') as f:\n"
         "    f.write(str(code))\n"
     )
-    proc = subprocess.Popen(
-        [_sys.executable, str(runner)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return proc, events_file, ready_file
+    stdout_stream = stdout_file.open("w")
+    stderr_stream = stderr_file.open("w")
+    try:
+        proc = subprocess.Popen(
+            [_sys.executable, str(runner)],
+            stdout=stdout_stream,
+            stderr=stderr_stream,
+        )
+    finally:
+        stdout_stream.close()
+        stderr_stream.close()
+    return proc, events_file, ready_file, stdout_file, stderr_file
 
 
 def _wait_for_file(path, *, timeout: float = 5.0) -> bool:
@@ -1597,6 +1609,18 @@ def _wait_for_file(path, *, timeout: float = 5.0) -> bool:
             return True
         _t.sleep(0.05)
     return False
+
+
+def _preview_process_diagnostics(proc, events_file, ready_file, stdout_file, stderr_file):
+    def _read(path):
+        return path.read_text(errors="replace") if path.exists() else "<missing>"
+
+    return (
+        f"pid={proc.pid} poll={proc.poll()} ready={ready_file.exists()}\n"
+        f"events:\n{_read(events_file)}\n"
+        f"stdout:\n{_read(stdout_file)}\n"
+        f"stderr:\n{_read(stderr_file)}"
+    )
 
 
 @pytest.mark.parametrize("signame", ["SIGTERM", "SIGHUP"])
@@ -1615,12 +1639,32 @@ def test_serve_agent_preview_cleans_up_on_signal(tmp_path, signame):
     if sig is None:
         pytest.skip(f"{signame} not available on this platform")
 
-    proc, events_file, ready_file = _run_preview_in_subprocess(tmp_path, guest_port=8000)
+    proc, events_file, ready_file, stdout_file, stderr_file = _run_preview_in_subprocess(
+        tmp_path, guest_port=8000
+    )
     try:
-        assert _wait_for_file(ready_file, timeout=5.0), "preview did not open"
+        assert _wait_for_file(ready_file, timeout=5.0), (
+            "preview did not open within 5 seconds\n"
+            + _preview_process_diagnostics(
+                proc, events_file, ready_file, stdout_file, stderr_file
+            )
+        )
         _os.kill(proc.pid, sig)
-        exit_code = proc.wait(timeout=5.0)
-        assert exit_code == 0, f"expected clean exit, got {exit_code}"
+        try:
+            exit_code = proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                "preview did not exit within 5 seconds after signal\n"
+                + _preview_process_diagnostics(
+                    proc, events_file, ready_file, stdout_file, stderr_file
+                )
+            )
+        assert exit_code == 0, (
+            f"expected clean exit, got {exit_code}\n"
+            + _preview_process_diagnostics(
+                proc, events_file, ready_file, stdout_file, stderr_file
+            )
+        )
         emitted = events_file.read_text().splitlines() if events_file.exists() else []
         assert "agent.preview_open" in emitted, emitted
         assert "agent.preview_close" in emitted, emitted

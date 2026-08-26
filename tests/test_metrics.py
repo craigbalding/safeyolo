@@ -5,7 +5,16 @@ Tests request/response tracking and metrics output.
 """
 
 import time
-from unittest.mock import Mock
+
+from mitmproxy import http
+from mitmproxy.test import tflow
+
+
+def _flow():
+    """Return the real mitmproxy flow consumed by MetricsCollector."""
+    flow = tflow.tflow()
+    flow.response = http.Response.make(200)
+    return flow
 
 
 class TestDomainStats:
@@ -107,7 +116,7 @@ class TestMetricsCollectorRequest:
 
         collector = MetricsCollector()
 
-        flow = Mock()
+        flow = _flow()
         flow.request.host = "api.example.com"
         flow.metadata = {}
 
@@ -124,7 +133,7 @@ class TestMetricsCollectorRequest:
         collector = MetricsCollector()
 
         for host in ["api.example.com", "api.example.com", "other.com"]:
-            flow = Mock()
+            flow = _flow()
             flow.request.host = host
             flow.metadata = {}
             collector.request(flow)
@@ -139,7 +148,7 @@ class TestMetricsCollectorRequest:
 
         collector = MetricsCollector()
 
-        flow = Mock()
+        flow = _flow()
         flow.request.host = "api.example.com"
         flow.metadata = {}
 
@@ -158,7 +167,7 @@ class TestMetricsCollectorResponse:
 
         collector = MetricsCollector()
 
-        flow = Mock()
+        flow = _flow()
         flow.request.host = "api.example.com"
         flow.metadata = {"metrics_start_time": time.time()}
         flow.response.status_code = 200
@@ -173,7 +182,7 @@ class TestMetricsCollectorResponse:
 
         collector = MetricsCollector()
 
-        flow = Mock()
+        flow = _flow()
         flow.request.host = "api.example.com"
         flow.metadata = {"blocked_by": "credential-guard"}
 
@@ -197,7 +206,7 @@ class TestMetricsCollectorResponse:
         ]
 
         for source in block_sources:
-            flow = Mock()
+            flow = _flow()
             flow.request.host = "api.example.com"
             flow.metadata = {"blocked_by": source}
             collector.response(flow)
@@ -214,7 +223,7 @@ class TestMetricsCollectorResponse:
 
         collector = MetricsCollector()
 
-        flow = Mock()
+        flow = _flow()
         flow.request.host = "api.example.com"
         flow.metadata = {}
         flow.response.status_code = 429
@@ -231,7 +240,7 @@ class TestMetricsCollectorResponse:
         collector = MetricsCollector()
 
         for status in [500, 502, 503]:
-            flow = Mock()
+            flow = _flow()
             flow.request.host = "api.example.com"
             flow.metadata = {}
             flow.response.status_code = status
@@ -249,7 +258,7 @@ class TestMetricsCollectorResponse:
         # Simulate request/response with known timing
         start_time = time.time() - 0.1  # 100ms ago
 
-        flow = Mock()
+        flow = _flow()
         flow.request.host = "api.example.com"
         flow.metadata = {"metrics_start_time": start_time}
         flow.response.status_code = 200
@@ -271,7 +280,7 @@ class TestMetricsCollectorEdgeCases:
 
         collector = MetricsCollector()
 
-        flow = Mock()
+        flow = _flow()
         flow.request.host = "api.example.com"
         flow.metadata = {}
         flow.response.status_code = 504
@@ -292,7 +301,7 @@ class TestMetricsCollectorEdgeCases:
 
         collector = MetricsCollector()
 
-        flow = Mock()
+        flow = _flow()
         flow.request.host = "api.example.com"
         flow.metadata = {"blocked_by": "credential-guard"}
         flow.response.status_code = 403  # Status doesn't matter; blocked_by causes early return
@@ -309,7 +318,7 @@ class TestMetricsCollectorEdgeCases:
 
         collector = MetricsCollector()
 
-        flow = Mock()
+        flow = _flow()
         flow.request.host = "api.example.com"
         flow.metadata = {"blocked_by": "network-guard"}
 
@@ -332,7 +341,7 @@ class TestMetricsCollectorEdgeCases:
         collector = MetricsCollector()
 
         for status in [400, 401, 403, 404, 422]:
-            flow = Mock()
+            flow = _flow()
             flow.request.host = "api.example.com"
             flow.metadata = {}
             flow.response.status_code = status

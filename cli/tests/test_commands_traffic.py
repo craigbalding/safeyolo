@@ -1,20 +1,21 @@
 """Tests for the shared traffic console command."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 from typer.testing import CliRunner
 
+from safeyolo.api import AdminAPI
 from safeyolo.cli import app
 
 
 def test_traffic_updates_scope_before_attaching():
-    api = MagicMock()
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
     api.set_traffic_scope.return_value = {"effective_filter": "agent cody"}
 
     with (
-        patch("safeyolo.commands.traffic.get_api", return_value=api),
-        patch("safeyolo.commands.traffic.session_exists", return_value=True),
-        patch("safeyolo.commands.traffic.attach_session", return_value=0) as attach,
+        patch("safeyolo.commands.traffic.get_api", return_value=api, autospec=True,),
+        patch("safeyolo.commands.traffic.session_exists", return_value=True, autospec=True,),
+        patch("safeyolo.commands.traffic.attach_session", return_value=0, autospec=True,) as attach,
     ):
         result = CliRunner().invoke(
             app,
@@ -34,12 +35,12 @@ def test_traffic_updates_scope_before_attaching():
 
 
 def test_traffic_can_update_scope_without_terminal_attach():
-    api = MagicMock()
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
     api.set_traffic_scope.return_value = {"effective_filter": ""}
 
     with (
-        patch("safeyolo.commands.traffic.get_api", return_value=api),
-        patch("safeyolo.commands.traffic.attach_session") as attach,
+        patch("safeyolo.commands.traffic.get_api", return_value=api, autospec=True,),
+        patch("safeyolo.commands.traffic.attach_session", autospec=True,) as attach,
     ):
         result = CliRunner().invoke(app, ["traffic", "--no-attach"])
 

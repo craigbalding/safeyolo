@@ -20,6 +20,7 @@ from ..config import (
     load_config,
     save_config,
 )
+from ..coord import nats_runtime as coord_nats
 from ..events import EventKind, Severity, write_event
 from ..proxy import (
     is_proxy_running,
@@ -49,6 +50,80 @@ def _attribution_ip_conflicts(
 # Path to bundled templates in package
 POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.toml"
 ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml"
+
+
+def _start_coord_best_effort() -> None:
+    """Start the coord message plane (nats-server) and bootstrap the
+    coord registry. NEVER blocks the proxy path: a failure here marks
+    coord degraded via a logged event and a console warning, then
+    returns. `safeyolo status`/`doctor` will show the substrate as
+    unhealthy so the operator knows why their agents can't reach the
+    coord API.
+
+    Bootstrap is invoked here (rather than lazily on the first coord
+    request) so `safeyolo_instance_id` exists after `safeyolo start`
+    completes — the #371 identity contract says the instance ID is a
+    property of a running SafeYolo, not something an agent's first
+    request happens to create.
+    """
+    try:
+        pid = coord_nats.start_server(ready_timeout=10.0)
+        console.print(f"[dim]coord message plane started (nats-server PID {pid})[/dim]")
+    except Exception as err:  # noqa: BLE001 — coord failure is non-fatal
+        write_event(
+            "ops.coord_nats_start_failed",
+            kind=EventKind.OPS,
+            severity=Severity.MEDIUM,
+            summary="nats-server did not start; coord API will return 503",
+            addon="cli.lifecycle",
+            details={"error_type": type(err).__name__, "error": str(err)[:500]},
+        )
+        console.print(
+            f"[yellow]coord message plane failed to start "
+            f"({type(err).__name__}): coord API will return 503.[/yellow]"
+        )
+        console.print(
+            "[dim]The proxy itself is up and healthy. Check the coord "
+            "runtime state with: safeyolo doctor[/dim]"
+        )
+        return
+
+    # Bootstrap the coord registry (schema + instance_id). Lazy on
+    # first coord request would still work, but the #371 contract
+    # says instance_id is minted at start; do it eagerly so
+    # `safeyolo status` can display it immediately.
+    try:
+        from ..coord import api as coord_api
+        instance_id = coord_api.bootstrap()
+        console.print(f"[dim]coord instance_id: {instance_id}[/dim]")
+    except Exception as err:  # noqa: BLE001
+        # Non-fatal: NATS is up, addon will bootstrap on first request.
+        write_event(
+            "ops.coord_bootstrap_failed",
+            kind=EventKind.OPS,
+            severity=Severity.LOW,
+            summary="coord bootstrap failed at start (will retry lazily on first request)",
+            addon="cli.lifecycle",
+            details={"error_type": type(err).__name__, "error": str(err)[:500]},
+        )
+
+
+def _stop_coord_best_effort() -> None:
+    """Stop the coord message plane. Never blocks the proxy stop path
+    — coord is optional infra on top of the proxy. Wedged-server state
+    surfaces as a warning so the operator can investigate, not as a
+    hard failure that leaves the proxy running."""
+    try:
+        stopped = coord_nats.stop_server()
+        if stopped:
+            console.print("[dim]coord message plane stopped[/dim]")
+    except coord_nats.WedgedNatsServer as err:
+        console.print(f"[yellow]{err}[/yellow]")
+    except Exception as err:  # noqa: BLE001
+        console.print(
+            f"[yellow]coord message plane stop encountered "
+            f"{type(err).__name__}: {err}[/yellow]"
+        )
 
 
 def _bootstrap_config(config_dir: Path) -> None:
@@ -221,6 +296,13 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
             )
             raise typer.Exit(1)
 
+    # Coord message plane (nats-server). Best-effort: a failure here
+    # marks coord degraded, it does NOT block the proxy from being
+    # usable. `safeyolo status` and `safeyolo doctor` surface the
+    # degraded state so the operator can investigate.
+    _profile_enter("coord message plane (nats-server) start")
+    _start_coord_best_effort()
+
     # Show connection info
     _profile_enter("render startup result")
     web_tailnet = _web_tailnet_runtime(config)
@@ -272,6 +354,14 @@ def stop(  # DOC: README.md
         raise typer.Exit(0)
 
     console.print("[bold]Stopping SafeYolo...[/bold]")
+
+    # Coord plane first: the addon holds a nats-py client that will
+    # complain if the server dies out from under it during proxy
+    # shutdown. Tearing NATS down first keeps the shutdown log clean
+    # and matches the invariant that coord is optional infra on top
+    # of the proxy.
+    _profile_enter("coord message plane stop")
+    _stop_coord_best_effort()
 
     # Stop proxy only -- agents and bridge sockets stay intact. Agents get
     # "connection refused" on the proxy port but remain alive and accessible
@@ -334,6 +424,10 @@ def stop_all() -> None:
             f"  [yellow]Firewall cleanup incomplete ({type(error).__name__})[/yellow]"
         )
 
+    # Coord plane before proxy (same reasoning as `stop`: coord is
+    # optional infra on top of the proxy, so tear it down first).
+    _stop_coord_best_effort()
+
     # Stop proxy. Per-agent UDS listeners are owned by mitmproxy
     # (UnixInstance per agent) — stopping the process tears them down
     # along with their socket files. No separate bridge process to stop.
@@ -388,6 +482,37 @@ def status() -> None:
         table.add_row("Guest Images", "[green]available[/green]")
     else:
         table.add_row("Guest Images", "[yellow]missing[/yellow]")
+
+    # Coord message plane. Degraded / not-started here means the coord
+    # API will 503; the proxy stays fine. See `safeyolo doctor` for
+    # detail on WHY it's degraded.
+    try:
+        coord_status = coord_nats.status()
+    except Exception as err:  # noqa: BLE001
+        table.add_row(
+            "Coord (nats-server)",
+            f"[yellow]unknown ({type(err).__name__})[/yellow]",
+        )
+    else:
+        state = coord_status.get("state", "not-running")
+        if state == "healthy":
+            table.add_row(
+                "Coord (nats-server)",
+                f"[green]healthy[/green]  ({coord_status['listen']} · "
+                f"pid {coord_status['pid']})",
+            )
+        elif state == "wedged":
+            table.add_row(
+                "Coord (nats-server)",
+                f"[red]wedged[/red]  (pid {coord_status['pid']} alive but "
+                f"/varz unverified) [dim]— see `safeyolo doctor`[/dim]",
+            )
+        else:
+            table.add_row(
+                "Coord (nats-server)",
+                "[yellow]not running[/yellow]  "
+                "[dim](coord API will 503; run `safeyolo doctor`)[/dim]",
+            )
 
     # Host firewall row removed -- egress isolation is structural (agent
     # sandbox has no external interface; the only path out is a per-agent

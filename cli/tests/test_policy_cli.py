@@ -93,6 +93,33 @@ class TestParseExpires:
 
 
 class TestPolicyHostAdd:
+    def test_add_host_without_rate_uses_and_displays_global_budget(self, tmp_config_dir):
+        path = tmp_config_dir / "policy.toml"
+        path.write_text('budget = 12000\n\n[hosts]\n"*" = { rate = 600 }\n')
+
+        result = runner.invoke(app, ["policy", "host", "add", "api.example.com"])
+
+        assert result.exit_code == 0
+        assert "global budget (12,000 req/min)" in result.output
+        assert _read_toml(tmp_config_dir)["hosts"]["api.example.com"]["egress"] == "allow"
+
+    def test_add_host_without_rate_rejects_missing_global_budget(self, tmp_config_dir):
+        result = runner.invoke(app, ["policy", "host", "add", "api.example.com"])
+
+        assert result.exit_code == 1
+        assert "no global budget is configured" in result.output
+
+    def test_add_host_rejects_rate_above_global_budget(self, tmp_config_dir):
+        path = tmp_config_dir / "policy.toml"
+        path.write_text('budget = 12000\n\n[hosts]\n"*" = { rate = 600 }\n')
+
+        result = runner.invoke(
+            app, ["policy", "host", "add", "api.example.com", "--rate", "12001"]
+        )
+
+        assert result.exit_code == 1
+        assert "exceeds global budget 12000" in result.output
+
     def test_add_host_with_rate(self, tmp_config_dir):
         result = runner.invoke(app, ["policy", "host", "add", "api.stripe.com", "--rate", "600"])
         assert result.exit_code == 0

@@ -98,6 +98,59 @@ class GCRABudgetTracker:  # DOC: SECURITY.md
 
             return True, remaining
 
+    def check_and_consume_many(
+        self,
+        limits: list[tuple[str, int, int]],
+    ) -> tuple[bool, dict[str, int]]:
+        """Atomically check and consume several limits for one operation.
+
+        No limit is consumed unless every limit admits the operation.  This is
+        used for network requests which may be subject to both a per-host rate
+        and the aggregate policy budget.
+
+        Args:
+            limits: ``(key, requests_per_minute, cost)`` tuples.
+
+        Returns:
+            ``(allowed, remaining_by_key)``.  On rejection the failing key has
+            zero remaining and all tracker state is unchanged.
+        """
+        with self._lock:
+            now_ms = time.time() * 1000
+            planned: dict[str, BudgetState] = {}
+            remaining_by_key: dict[str, int] = {}
+
+            for key, budget_per_minute, cost in limits:
+                if type(budget_per_minute) is not int or budget_per_minute < 1:
+                    raise ValueError("budget_per_minute must be a positive integer")
+                if type(cost) is not int or cost < 1:
+                    raise ValueError("cost must be a positive integer")
+
+                current = planned.get(key) or self._budgets.get(key)
+                state = BudgetState(
+                    tat=current.tat if current else now_ms,
+                    last_check=current.last_check if current else now_ms,
+                )
+                emission_interval_ms = 60000.0 / budget_per_minute
+                burst_capacity = max(1, budget_per_minute // 10)
+                burst_offset = emission_interval_ms * burst_capacity
+                allow_at = state.tat - burst_offset
+
+                if now_ms < allow_at:
+                    remaining_by_key[key] = 0
+                    return False, remaining_by_key
+
+                state.tat = max(state.tat, now_ms) + (emission_interval_ms * cost)
+                state.last_check = now_ms
+                remaining = int(
+                    (now_ms - (state.tat - burst_offset)) / emission_interval_ms
+                )
+                remaining_by_key[key] = max(0, min(burst_capacity, remaining))
+                planned[key] = state
+
+            self._budgets.update(planned)
+            return True, remaining_by_key
+
     def get_remaining(self, key: str, budget_per_minute: int) -> int:
         """Get remaining budget without consuming."""
         with self._lock:

@@ -10,7 +10,9 @@ import sys
 import threading
 from pathlib import Path
 from unittest import mock
-from unittest.mock import MagicMock
+from unittest.mock import create_autospec
+
+from pdp.client import LocalPolicyClient
 
 _ADDONS_DIR = Path(__file__).resolve().parent.parent / "addons"
 sys.path.insert(0, str(_ADDONS_DIR))
@@ -18,10 +20,21 @@ sys.path.insert(0, str(_ADDONS_DIR))
 from safeyolo.core.config_cache import _ConfigCache  # noqa: E402
 
 
+class _SensorConfigOnly:
+    """HTTP-client surface intentionally lacking reload callbacks."""
+
+    def get_sensor_config(self) -> dict:
+        return {}
+
+
+def _http_client():
+    return create_autospec(_SensorConfigOnly, instance=True, spec_set=True)
+
+
 def _client_with_hash(hash_value: str, rules=None, patterns=None):
     """Make a stub PolicyClient-alike whose get_sensor_config returns
     the given hash + optional rule/pattern lists."""
-    client = MagicMock()
+    client = create_autospec(LocalPolicyClient, instance=True, spec_set=True)
     client.get_sensor_config.return_value = {
         "credential_rules": rules or [],
         "scan_patterns": patterns or [],
@@ -35,8 +48,8 @@ class TestGet:
         client = _client_with_hash("abc")
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             result = cache.get()
 
         assert result["policy_hash"] == "abc"
@@ -47,8 +60,8 @@ class TestGet:
         client = _client_with_hash("abc")
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             cache.get()
             cache.get()
             cache.get()
@@ -59,8 +72,8 @@ class TestGet:
         client = _client_with_hash("abc")
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             cache.get()
             cache.invalidate()
             cache.get()
@@ -71,20 +84,20 @@ class TestGet:
         """Startup race — PDP not up yet — must return {} silently."""
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client") as gpc, \
-             mock.patch("pdp.is_policy_client_configured", return_value=False):
+        with mock.patch("pdp.get_policy_client", autospec=True,) as gpc, \
+             mock.patch("pdp.is_policy_client_configured", return_value=False, autospec=True,):
             result = cache.get()
 
         assert result == {}
         gpc.assert_not_called()
 
     def test_fetch_error_returns_empty_and_logs(self, caplog):
-        client = MagicMock()
+        client = create_autospec(LocalPolicyClient, instance=True, spec_set=True)
         client.get_sensor_config.side_effect = KeyError("boom")
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             result = cache.get()
 
         assert result == {}
@@ -96,8 +109,8 @@ class TestReloadCallback:
         client = _client_with_hash("abc")
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             cache.get()
 
         client.add_reload_callback.assert_called_once_with(cache.invalidate)
@@ -107,8 +120,8 @@ class TestReloadCallback:
         client = _client_with_hash("abc")
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             cache.get()
             cache.invalidate()
             cache.get()
@@ -119,12 +132,12 @@ class TestReloadCallback:
 
     def test_skips_registration_for_http_client(self):
         """HTTPClient has no add_reload_callback; we must not crash."""
-        client = MagicMock(spec=["get_sensor_config"])  # no add_reload_callback
+        client = _http_client()
         client.get_sensor_config.return_value = {"policy_hash": "x"}
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             result = cache.get()
 
         assert result["policy_hash"] == "x"
@@ -137,14 +150,14 @@ class TestAccessors:
         client = _client_with_hash("abc", rules=rules, patterns=patterns)
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             assert cache.credential_rules() == rules
             assert cache.scan_patterns() == patterns
             assert cache.policy_hash() == "abc"
 
     def test_addon_section_returns_subsection(self):
-        client = MagicMock()
+        client = create_autospec(LocalPolicyClient, instance=True, spec_set=True)
         client.get_sensor_config.return_value = {
             "policy_hash": "abc",
             "addons": {
@@ -154,8 +167,8 @@ class TestAccessors:
         }
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             assert cache.addon_section("credential_guard") == {"detection_level": "strict"}
             assert cache.addon_section("missing") == {}
 
@@ -165,23 +178,23 @@ class TestTTLFallback:
 
     def test_no_ttl_for_local_client(self):
         """LocalPolicyClient registers a callback — TTL stays None."""
-        client = _client_with_hash("abc")  # MagicMock has add_reload_callback
+        client = _client_with_hash("abc")
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             cache.get()
 
         assert cache._ttl_s is None
 
     def test_ttl_set_for_http_client(self):
         """HTTPClient shape (no add_reload_callback) → TTL fallback."""
-        client = MagicMock(spec=["get_sensor_config"])
+        client = _http_client()
         client.get_sensor_config.return_value = {"policy_hash": "x"}
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             cache.get()
 
         assert cache._ttl_s is not None
@@ -189,35 +202,35 @@ class TestTTLFallback:
 
     def test_ttl_env_override(self, monkeypatch):
         monkeypatch.setenv("SAFEYOLO_CONFIG_CACHE_TTL_S", "7")
-        client = MagicMock(spec=["get_sensor_config"])
+        client = _http_client()
         client.get_sensor_config.return_value = {"policy_hash": "x"}
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             cache.get()
 
         assert cache._ttl_s == 7.0
 
     def test_ttl_env_garbage_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("SAFEYOLO_CONFIG_CACHE_TTL_S", "not-a-number")
-        client = MagicMock(spec=["get_sensor_config"])
+        client = _http_client()
         client.get_sensor_config.return_value = {"policy_hash": "x"}
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             cache.get()
 
         assert cache._ttl_s == 30.0  # _DEFAULT_HTTP_TTL_S
 
     def test_ttl_expiry_triggers_refetch(self):
-        client = MagicMock(spec=["get_sensor_config"])
+        client = _http_client()
         client.get_sensor_config.return_value = {"policy_hash": "fresh"}
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             cache.get()
             assert client.get_sensor_config.call_count == 1
 
@@ -228,12 +241,12 @@ class TestTTLFallback:
         assert client.get_sensor_config.call_count == 2
 
     def test_within_ttl_still_caches(self):
-        client = MagicMock(spec=["get_sensor_config"])
+        client = _http_client()
         client.get_sensor_config.return_value = {"policy_hash": "fresh"}
         cache = _ConfigCache()
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             cache.get()
             # Well within the 30 s TTL.
             cache.get()
@@ -256,8 +269,8 @@ class TestConcurrency:
             except Exception as e:  # noqa: BLE001
                 errors.append(e)
 
-        with mock.patch("pdp.get_policy_client", return_value=client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", return_value=client, autospec=True,), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             threads = [threading.Thread(target=worker) for _ in range(8)]
             for t in threads:
                 t.start()

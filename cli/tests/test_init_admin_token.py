@@ -19,7 +19,7 @@ def test_regenerates_when_no_token_file(tmp_config_dir):
     token_path = tmp_config_dir / "data" / "admin_token"
     token_path.unlink(missing_ok=True)
 
-    with patch("safeyolo.proxy.is_proxy_running", return_value=False):
+    with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,):
         token, preserved = _generate_admin_token(tmp_config_dir)
 
     assert preserved is False
@@ -34,7 +34,7 @@ def test_regenerates_when_proxy_not_running(tmp_config_dir):
     token_path = tmp_config_dir / "data" / "admin_token"
     token_path.write_text("stale-token-from-a-previous-run")
 
-    with patch("safeyolo.proxy.is_proxy_running", return_value=False):
+    with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,):
         token, preserved = _generate_admin_token(tmp_config_dir)
 
     assert preserved is False
@@ -50,7 +50,7 @@ def test_preserves_when_proxy_running_and_token_exists(tmp_config_dir):
     token_path = tmp_config_dir / "data" / "admin_token"
     token_path.write_text(live_token)
 
-    with patch("safeyolo.proxy.is_proxy_running", return_value=True):
+    with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,):
         token, preserved = _generate_admin_token(tmp_config_dir)
 
     assert preserved is True
@@ -67,7 +67,7 @@ def test_regenerates_when_running_but_token_file_missing(tmp_config_dir):
     token_path = tmp_config_dir / "data" / "admin_token"
     token_path.unlink(missing_ok=True)
 
-    with patch("safeyolo.proxy.is_proxy_running", return_value=True):
+    with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,):
         token, preserved = _generate_admin_token(tmp_config_dir)
 
     assert preserved is False
@@ -84,8 +84,8 @@ def test_init_force_prints_preserved_marker(tmp_config_dir):
     live_token = "token-live-proxy-holds"
     (tmp_config_dir / "data" / "admin_token").write_text(live_token)
 
-    with patch("safeyolo.proxy.is_proxy_running", return_value=True):
-        with patch("safeyolo.commands.init.check_guest_images", return_value=True):
+    with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,):
+        with patch("safeyolo.commands.init.check_guest_images", return_value=True, autospec=True,):
             runner = CliRunner()
             result = runner.invoke(app, ["init", "--force", "--no-interactive"])
 
@@ -104,8 +104,8 @@ def test_init_fresh_prints_created_marker(tmp_config_dir):
     # Remove the fixture-seeded token so this really is the fresh path.
     (tmp_config_dir / "data" / "admin_token").unlink(missing_ok=True)
 
-    with patch("safeyolo.proxy.is_proxy_running", return_value=False):
-        with patch("safeyolo.commands.init.check_guest_images", return_value=True):
+    with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,):
+        with patch("safeyolo.commands.init.check_guest_images", return_value=True, autospec=True,):
             runner = CliRunner()
             result = runner.invoke(app, ["init", "--force", "--no-interactive"])
 

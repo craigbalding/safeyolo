@@ -1,0 +1,62 @@
+# Test-assurance policies enforced by scripts/check_test_assurance.py.
+#
+# boundary: the subject and domain objects are real. Collaborators may be
+# mocked only with autospec/spec_set, and the declared subjects may not be
+# patched. Add files here incrementally as they are migrated from legacy tests.
+
+[boundary."tests/test_network_guard.py"]
+subjects = ["NetworkGuard"]
+
+[boundary."tests/test_contract_enforcement.py"]
+subjects = ["ServiceGateway"]
+
+[boundary."tests/test_service_gateway.py"]
+subjects = ["ServiceGateway"]
+
+[boundary."tests/test_admin_shield.py"]
+subjects = ["AdminShield"]
+
+[boundary."tests/test_operator_provenance.py"]
+subjects = ["OperatorProvenance"]
+
+[boundary."tests/test_probe_sink.py"]
+subjects = ["ProbeSink"]
+
+[boundary."tests/test_pattern_scanner.py"]
+subjects = ["PatternScanner"]
+
+[boundary."tests/test_circuit_breaker.py"]
+subjects = ["CircuitBreaker"]
+
+[boundary."tests/test_transport_guard.py"]
+subjects = ["TransportGuard"]
+
+[boundary."tests/test_loop_guard.py"]
+subjects = ["LoopGuard"]
+
+[boundary."tests/test_credential_guard.py"]
+subjects = ["CredentialGuard", "guard"]
+
+[boundary."tests/test_service_discovery_file.py"]
+subjects = ["ServiceDiscovery", "d"]
+
+[boundary."tests/test_agent_identity_resolution.py"]
+subjects = ["AgentAPI", "RequestIdGenerator", "ServiceDiscovery", "ServiceGateway"]
+
+[boundary."tests/test_base.py"]
+subjects = ["SecurityAddon"]
+
+[boundary."tests/test_sse_streaming.py"]
+subjects = ["SSEStreaming"]
+
+[boundary."tests/test_request_logger.py"]
+subjects = ["RequestLogger"]
+
+[boundary."tests/test_flow_recorder.py"]
+subjects = ["FlowRecorder"]
+
+[boundary."tests/test_agent_api.py"]
+subjects = ["AgentAPI"]
+
+[boundary."tests/test_admin_api.py"]
+subjects = ["AdminRequestHandler", "AdminAPI"]

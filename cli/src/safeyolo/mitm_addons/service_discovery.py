@@ -14,8 +14,9 @@ from threading import Lock
 
 from mitmproxy import ctx, http
 
-from safeyolo.core.audit_schema import EventKind, Severity
-from safeyolo.core.utils import get_client_ip, sanitize_for_log, write_event
+from safeyolo.core.audit_schema import Decision, EventKind, Severity
+from safeyolo.core.identity import IdentityStatus, resolve_agent_identity
+from safeyolo.core.utils import sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.discovery")
 
@@ -116,14 +117,24 @@ class ServiceDiscovery:
         return "unknown"
 
     def request(self, flow: http.HTTPFlow):
-        """Stamp agent identity on every flow for downstream addons/loggers."""
-        client_ip = get_client_ip(flow)
-        if client_ip != "unknown":
-            agent = self.get_client_for_ip(client_ip)
-            flow.metadata["agent"] = agent
-            if agent != "unknown":
-                with self._lock:
-                    self._last_seen[agent] = time.time()
+        """Resolve and stamp one trusted identity for downstream consumers."""
+        identity = resolve_agent_identity(flow, self)
+        if identity.is_resolved:
+            with self._lock:
+                self._last_seen[identity.agent] = time.time()
+            return
+
+        if identity.status is IdentityStatus.CONFLICT:
+            write_event(
+                "security.agent_identity_conflict",
+                kind=EventKind.SECURITY,
+                severity=Severity.CRITICAL,
+                summary="Trusted agent identity sources disagree",
+                decision=Decision.DENY,
+                request_id=flow.metadata.get("request_id"),
+                addon=self.name,
+                details=flow.metadata.get("agent_identity_conflict"),
+            )
 
     def get_agents(self) -> dict:
         """Get agent overview for agent API /agents endpoint."""

@@ -363,7 +363,7 @@ def _production_sock_path(tmp_path, agent="agentx", ip="10.0.0.42"):
     from safeyolo import sockets as _sockets
 
     # Point sockets_dir at tmp_path so path_for lands under our tmp tree.
-    with patch.object(_sockets, "sockets_dir", return_value=tmp_path):
+    with patch.object(_sockets, "sockets_dir", return_value=tmp_path, autospec=True,):
         p = _sockets.path_for(agent, ip)
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
@@ -378,7 +378,7 @@ class TestProbeOneSocketNoResponse:
         from safeyolo.commands import doctor
 
         sock = _production_sock_path(tmp_path, agent="agentx")
-        with patch.object(doctor, "_send_uds_request", side_effect=OSError("no socket")):
+        with patch.object(doctor, "_send_uds_request", side_effect=OSError("no socket"), autospec=True,):
             result = doctor._probe_one_socket(sock, token="tok")
         assert result.status == "fail"
         assert "agentx" in result.name
@@ -394,7 +394,7 @@ class TestProbeOneSocketNoResponse:
 
         sock = _production_sock_path(tmp_path, agent="agentx")
         canned = b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{}"
-        with patch.object(doctor, "_send_uds_request", return_value=canned):
+        with patch.object(doctor, "_send_uds_request", return_value=canned, autospec=True,):
             result = doctor._probe_one_socket(sock, token="tok")
         assert result.status == "fail"
         assert "missing X-SafeYolo-Request-Id" in result.message
@@ -437,7 +437,7 @@ class TestProbeOneSocketNoResponse:
             calls["n"] += 1
             return probe_response if calls["n"] == 1 else trace_response
 
-        with patch.object(doctor, "_send_uds_request", side_effect=fake_send):
+        with patch.object(doctor, "_send_uds_request", side_effect=fake_send, autospec=True,):
             result = doctor._probe_one_socket(sock, token="tok")
 
         assert result.status == "pass"
@@ -490,7 +490,7 @@ class TestProbeStatusAffectsVerdict:
             calls["n"] += 1
             return probe if calls["n"] == 1 else trace
 
-        with patch.object(doctor, "_send_uds_request", side_effect=fake_send):
+        with patch.object(doctor, "_send_uds_request", side_effect=fake_send, autospec=True,):
             result = doctor._probe_one_socket(sock, token="tok")
 
         # Trace was clean, so classifier would say PASS — but non-200
@@ -529,7 +529,7 @@ class TestProbeStatusAffectsVerdict:
             calls["n"] += 1
             return probe if calls["n"] == 1 else bad_trace
 
-        with patch.object(doctor, "_send_uds_request", side_effect=fake_send):
+        with patch.object(doctor, "_send_uds_request", side_effect=fake_send, autospec=True,):
             result = doctor._probe_one_socket(sock, token="tok")
 
         assert result.status == "fail"
@@ -547,7 +547,7 @@ class TestProbeSocketPathParse:
 
         sock = _production_sock_path(tmp_path, agent="realagent", ip="10.9.8.7")
         assert sock.name == "proxy.sock"  # sanity: production layout
-        with patch.object(doctor, "_send_uds_request", side_effect=OSError("boom")):
+        with patch.object(doctor, "_send_uds_request", side_effect=OSError("boom"), autospec=True,):
             result = doctor._probe_one_socket(sock, token="tok")
         # Real agent name in DiagResult label + no "proxy" leak.
         assert "traced, realagent" in result.name

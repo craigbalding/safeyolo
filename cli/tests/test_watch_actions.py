@@ -1,9 +1,10 @@
 """Tests for watch command — ActionDispatch, action hints, and micro-prompts."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 
+from safeyolo.api import AdminAPI
 from safeyolo.commands.watch import (
     ACTION_DISPATCH,
     ActionDispatch,
@@ -30,6 +31,11 @@ from safeyolo.commands.watch import (
 from safeyolo.commands.watch import (
     DISPATCH as APPROVAL_DISPATCH,
 )
+
+
+def _api() -> AdminAPI:
+    return create_autospec(AdminAPI, instance=True, spec_set=True)
+
 
 # ---------------------------------------------------------------------------
 # Sample events
@@ -237,16 +243,16 @@ class TestHandleActionKey:
 
     def test_help_key(self):
         """? key shows help and returns True."""
-        result = handle_action_key("?", {}, MagicMock())
+        result = handle_action_key("?", {}, _api())
         assert result is True
 
     def test_unknown_key_returns_false(self):
-        result = handle_action_key("z", {}, MagicMock())
+        result = handle_action_key("z", {}, _api())
         assert result is False
 
     def test_instant_action(self):
         """Instant actions execute immediately."""
-        api = MagicMock()
+        api = _api()
         api.reset_budget.return_value = {"status": "reset"}
 
         event = _budget_exceeded_event()
@@ -259,7 +265,7 @@ class TestHandleActionKey:
 
     def test_instant_circuit_reset(self):
         """Circuit reset executes immediately."""
-        api = MagicMock()
+        api = _api()
         api.reset_circuit.return_value = {"status": "reset"}
 
         event = _circuit_open_event()
@@ -270,10 +276,10 @@ class TestHandleActionKey:
         assert result is True
         api.reset_circuit.assert_called_once_with(host="api.slack.com")
 
-    @patch("safeyolo.commands.watch.console")
+    @patch("safeyolo.commands.watch.console", autospec=True,)
     def test_explicit_action_confirmed(self, mock_console):
         """Explicit actions prompt and execute on 'y'."""
-        api = MagicMock()
+        api = _api()
         api.allow_host.return_value = {"status": "added", "host": "cdn.example.com", "rate": 600}
         mock_console.input.return_value = "y"
 
@@ -285,10 +291,10 @@ class TestHandleActionKey:
         assert result is True
         api.allow_host.assert_called_once()
 
-    @patch("safeyolo.commands.watch.console")
+    @patch("safeyolo.commands.watch.console", autospec=True,)
     def test_explicit_action_declined(self, mock_console):
         """Explicit actions don't execute when declined."""
-        api = MagicMock()
+        api = _api()
         mock_console.input.return_value = "n"
 
         event = _access_denied_event()
@@ -299,10 +305,10 @@ class TestHandleActionKey:
         assert result is True
         api.allow_host.assert_not_called()
 
-    @patch("safeyolo.commands.watch.console")
+    @patch("safeyolo.commands.watch.console", autospec=True,)
     def test_value_action_with_input(self, mock_console):
         """Value actions prompt for input and execute."""
-        api = MagicMock()
+        api = _api()
         api.update_host_rate.return_value = {"status": "updated", "old_rate": 3000, "new_rate": 6000}
         mock_console.input.return_value = "6000"
 
@@ -314,10 +320,10 @@ class TestHandleActionKey:
         assert result is True
         api.update_host_rate.assert_called_once_with(host="api.openai.com", rate=6000)
 
-    @patch("safeyolo.commands.watch.console")
+    @patch("safeyolo.commands.watch.console", autospec=True,)
     def test_value_action_uses_default(self, mock_console):
         """Value actions use default when input is empty."""
-        api = MagicMock()
+        api = _api()
         api.update_host_rate.return_value = {"status": "updated", "old_rate": 3000, "new_rate": 6000}
         mock_console.input.return_value = ""  # empty -> use default
 
@@ -329,10 +335,10 @@ class TestHandleActionKey:
         assert result is True
         api.update_host_rate.assert_called_once_with(host="api.openai.com", rate=6000)
 
-    @patch("safeyolo.commands.watch.console")
+    @patch("safeyolo.commands.watch.console", autospec=True,)
     def test_suppress_pattern_confirmed(self, mock_console):
         """Pattern suppress prompts and executes on 'y'."""
-        api = MagicMock()
+        api = _api()
         api.add_host_bypass.return_value = {"status": "updated", "host": "api.internal.com", "bypass": ["pattern-scanner"]}
         mock_console.input.return_value = "y"
 
@@ -475,7 +481,7 @@ class TestNetworkEgressApprovalDispatch:
     """Tests for network_egress approve/deny in the DISPATCH registry."""
 
     def test_approve_calls_allow_host(self):
-        api = MagicMock()
+        api = _api()
         api.allow_host.return_value = {"status": "ok"}
         event = _network_egress_event(host="cdn.example.com")
         result = _network_egress_approve(event, api)
@@ -483,7 +489,7 @@ class TestNetworkEgressApprovalDispatch:
         api.allow_host.assert_called_once_with(host="cdn.example.com", rate=600)
 
     def test_deny_calls_deny_host_with_expires(self):
-        api = MagicMock()
+        api = _api()
         event = _network_egress_event(host="cdn.example.com")
         _network_egress_deny(event, api)
         api.deny_host.assert_called_once()
@@ -500,7 +506,7 @@ class TestContractBindingApprovalDispatch:
     """Tests for contract_binding approve/deny in the DISPATCH registry."""
 
     def test_approve_calls_approve_contract_binding(self):
-        api = MagicMock()
+        api = _api()
         api.approve_contract_binding.return_value = {"status": "bound"}
         event = _contract_binding_event(
             agent="boris", service="gmail", capability="mail",
@@ -519,14 +525,14 @@ class TestContractBindingApprovalDispatch:
         )
 
     def test_approve_missing_capability_raises(self):
-        api = MagicMock()
+        api = _api()
         event = _contract_binding_event(capability="")
         event["approval"]["scope_hint"]["capability"] = ""
         with pytest.raises(NotImplementedError, match="missing"):
             _contract_binding_approve(event, api)
 
     def test_deny_calls_log_denial(self):
-        api = MagicMock()
+        api = _api()
         event = _contract_binding_event(agent="boris", service="gmail")
         _contract_binding_deny(event, api)
         api.log_denial.assert_called_once_with(
@@ -540,7 +546,7 @@ class TestServiceApprovalDispatch:
     """Tests for service approve/deny in the DISPATCH registry."""
 
     def test_deny_calls_log_denial(self):
-        api = MagicMock()
+        api = _api()
         event = _service_event(agent="boris", service="gmail")
         _service_deny(event, api)
         api.log_denial.assert_called_once_with(

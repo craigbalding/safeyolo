@@ -99,6 +99,14 @@ safeyolo/
 └── docs/                     # Documentation
 ```
 
+## Coord trust boundary
+
+Envelope attribution is authoritative; message bodies are untrusted data, and
+any SafeYolo-owned UI that presents provenance must keep the two separate when
+rendering. Both spoofing bugs found in the Stage-1 dogfood were in the display
+layer with a correct envelope. See [coord-trust-boundary.md](coord-trust-boundary.md)
+for the contract and the per-sink obligations (terminal, web, log export).
+
 ## Building Integrations
 
 ### Option 1: Consume JSONL Events

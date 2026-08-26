@@ -113,6 +113,16 @@ class FlowRecorder:
         # Skip agent API internal traffic
         if flow.request.host == AGENT_API_HOST:
             return False
+        # Evidence must never be assigned from caller-controlled metadata.
+        # Reconcile the trusted UDS/IP-map sources here even if an earlier
+        # addon failed to stamp identity; unresolved and conflicting flows
+        # cannot safely be placed in an agent-scoped evidence store.
+        from safeyolo.core.identity import resolve_agent_identity
+        from safeyolo.core.utils import find_addon
+
+        identity = resolve_agent_identity(flow, find_addon("service-discovery"))
+        if not identity.is_resolved:
+            return False
         return True
 
     def _build_record(self, flow: http.HTTPFlow, flow_state: str) -> dict:
@@ -127,7 +137,8 @@ class FlowRecorder:
         duration_ms = ts_end - ts_start
 
         # Identity
-        agent = flow.metadata.get("agent", "unknown")
+        # _should_record has already reconciled and stamped a trusted identity.
+        agent = flow.metadata["agent"]
         engagement_id = agent
         agent_id = agent
         source_id = get_client_ip(flow)

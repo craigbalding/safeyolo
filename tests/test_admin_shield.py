@@ -16,37 +16,51 @@ Contract:
 """
 
 import json
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from admin_shield import AdminShield
+from mitmproxy.test import tflow
+
+pytestmark = pytest.mark.assurance_boundary
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _make_shield(admin_port=9090, extra_ports=""):
-    """Create an AdminShield with mocked ctx.options."""
+    """Create an AdminShield and its option values."""
     return AdminShield(), admin_port, extra_ports
 
 
 def _make_flow(host="127.0.0.1", port=9090):
-    """Create a mock flow targeting the given host:port."""
-    flow = MagicMock()
+    """Create a real mitmproxy flow targeting the given host:port."""
+    flow = tflow.tflow()
     flow.request.host = host
     flow.request.port = port
-    flow.client_conn.peername = ("172.30.0.100", 54321)
-    flow.metadata = {}
     flow.response = None
     return flow
 
 
+def _ctx(admin_port=9090, extra_ports=""):
+    return SimpleNamespace(
+        options=SimpleNamespace(
+            admin_port=admin_port,
+            shield_extra_ports=extra_ports,
+        )
+    )
+
+
 def _call_request(shield, flow, admin_port=9090, extra_ports=""):
     """Call shield.request(flow) with ctx patched to the given options."""
-    with patch("admin_shield.ctx") as mock_ctx:
-        mock_ctx.options.admin_port = admin_port
-        mock_ctx.options.shield_extra_ports = extra_ports
+    with patch("admin_shield.ctx", _ctx(admin_port, extra_ports)):
         shield.request(flow)
+
+
+def _blocked_ports(shield, admin_port=9090, extra_ports=""):
+    with patch("admin_shield.ctx", _ctx(admin_port, extra_ports)):
+        return shield._get_blocked_ports()
 
 
 # ---------------------------------------------------------------------------
@@ -298,75 +312,43 @@ class TestGetBlockedPorts:
     def test_default_returns_admin_port_only(self):
         shield = AdminShield()
 
-        with patch("admin_shield.ctx") as mock_ctx:
-            mock_ctx.options.admin_port = 9090
-            mock_ctx.options.shield_extra_ports = ""
-
-            assert shield._get_blocked_ports() == {9090}
+        assert _blocked_ports(shield) == {9090}
 
     def test_extra_ports_parsed(self):
         shield = AdminShield()
 
-        with patch("admin_shield.ctx") as mock_ctx:
-            mock_ctx.options.admin_port = 9090
-            mock_ctx.options.shield_extra_ports = "9091,9092"
-
-            assert shield._get_blocked_ports() == {9090, 9091, 9092}
+        assert _blocked_ports(shield, extra_ports="9091,9092") == {9090, 9091, 9092}
 
     def test_whitespace_is_stripped(self):
         shield = AdminShield()
 
-        with patch("admin_shield.ctx") as mock_ctx:
-            mock_ctx.options.admin_port = 9090
-            mock_ctx.options.shield_extra_ports = " 9091 , 9092 "
-
-            assert shield._get_blocked_ports() == {9090, 9091, 9092}
+        assert _blocked_ports(shield, extra_ports=" 9091 , 9092 ") == {9090, 9091, 9092}
 
     def test_non_digit_entries_are_ignored(self):
         shield = AdminShield()
 
-        with patch("admin_shield.ctx") as mock_ctx:
-            mock_ctx.options.admin_port = 9090
-            mock_ctx.options.shield_extra_ports = "9091,invalid,9092"
-
-            assert shield._get_blocked_ports() == {9090, 9091, 9092}
+        assert _blocked_ports(shield, extra_ports="9091,invalid,9092") == {9090, 9091, 9092}
 
     def test_negative_number_is_ignored(self):
         """'-1' is not all digits, so isdigit() rejects it."""
         shield = AdminShield()
 
-        with patch("admin_shield.ctx") as mock_ctx:
-            mock_ctx.options.admin_port = 9090
-            mock_ctx.options.shield_extra_ports = "-1,9091"
-
-            assert shield._get_blocked_ports() == {9090, 9091}
+        assert _blocked_ports(shield, extra_ports="-1,9091") == {9090, 9091}
 
     def test_empty_entries_from_trailing_comma_are_ignored(self):
         shield = AdminShield()
 
-        with patch("admin_shield.ctx") as mock_ctx:
-            mock_ctx.options.admin_port = 9090
-            mock_ctx.options.shield_extra_ports = "9091,,9092,"
-
-            assert shield._get_blocked_ports() == {9090, 9091, 9092}
+        assert _blocked_ports(shield, extra_ports="9091,,9092,") == {9090, 9091, 9092}
 
     def test_whitespace_only_string_returns_admin_port_only(self):
         shield = AdminShield()
 
-        with patch("admin_shield.ctx") as mock_ctx:
-            mock_ctx.options.admin_port = 9090
-            mock_ctx.options.shield_extra_ports = "   "
-
-            assert shield._get_blocked_ports() == {9090}
+        assert _blocked_ports(shield, extra_ports="   ") == {9090}
 
     def test_single_extra_port(self):
         shield = AdminShield()
 
-        with patch("admin_shield.ctx") as mock_ctx:
-            mock_ctx.options.admin_port = 9090
-            mock_ctx.options.shield_extra_ports = "8443"
-
-            assert shield._get_blocked_ports() == {9090, 8443}
+        assert _blocked_ports(shield, extra_ports="8443") == {9090, 8443}
 
 
 # ---------------------------------------------------------------------------

@@ -396,37 +396,31 @@ class PolicyEngine:
             # setup wizard adds an explicit `*` allow rule to the baseline.
             return PolicyDecision(effect="deny", reason="No matching permission (default deny)")
 
-        # Handle budget effect
-        if permission.effect == "budget":
-            budget_key = f"network:request:{host}"
-            allowed, remaining = self._budget_tracker.check_and_consume(budget_key, permission.budget)
-
-            # Also check global budget
+        # All allowed network traffic consumes the aggregate policy budget.
+        # A budget permission adds a second, per-host ceiling.  Check both as
+        # one operation so rejection by one ceiling does not spend the other.
+        if permission.effect in {"allow", "budget"}:
+            limits: list[tuple[str, int, int]] = []
+            if permission.effect == "budget":
+                limits.append((f"network:request:{host}", permission.budget, 1))
             global_budget = self._get_global_budget("network:request")
-            if global_budget:
-                global_key = "network:request:__global__"
-                global_allowed, _ = self._budget_tracker.check_and_consume(global_key, global_budget)
-                if not global_allowed:
+            if global_budget is not None:
+                limits.append(("network:request:__global__", global_budget, 1))
+
+            if limits:
+                allowed, remaining = self._budget_tracker.check_and_consume_many(limits)
+                if not allowed:
                     return PolicyDecision(
                         effect="budget_exceeded",
                         permission=permission,
-                        reason="Global network budget exceeded",
+                        reason=f"Request budget exceeded for {host}",
                         budget_remaining=0,
                     )
-
-            if not allowed:
                 return PolicyDecision(
-                    effect="budget_exceeded",
+                    effect="allow",
                     permission=permission,
-                    reason=f"Rate limit exceeded for {host}",
-                    budget_remaining=0,
+                    budget_remaining=min(remaining.values()),
                 )
-
-            return PolicyDecision(
-                effect="allow",
-                permission=permission,
-                budget_remaining=remaining,
-            )
 
         return PolicyDecision(
             effect=permission.effect,
@@ -559,11 +553,16 @@ class PolicyEngine:
         if permission is None:
             permission = self._find_matching_permission(action, "*", {})
 
-        if permission is None or permission.effect != "budget":
-            return True, -1  # No budget constraint
-
-        budget_key = f"{action}:{resource}"
-        return self._budget_tracker.check_and_consume(budget_key, permission.budget, cost)
+        limits: list[tuple[str, int, int]] = []
+        if permission is not None and permission.effect == "budget":
+            limits.append((f"{action}:{resource}", permission.budget, cost))
+        global_budget = self._get_global_budget(action)
+        if global_budget is not None:
+            limits.append((f"{action}:__global__", global_budget, cost))
+        if not limits:
+            return True, -1
+        allowed, remaining = self._budget_tracker.check_and_consume_many(limits)
+        return allowed, min(remaining.values()) if remaining else 0
 
     # -------------------------------------------------------------------------
     # Addon Configuration
@@ -787,27 +786,38 @@ class PolicyEngine:
 
         cred_ids = [cred_id] if isinstance(cred_id, str) else cred_id
 
-        # Create new permission (destination-first)
-        condition = Condition(credential=cred_ids)
-        new_permission = Permission(
-            action="credential:use",
-            resource=f"{destination}/*",
-            effect="allow",
-            tier=tier,
-            condition=condition,
-        )
+        baseline_path = self._loader.baseline_path
+        if baseline_path and baseline_path.suffix == ".toml":
+            from safeyolo.policy.toml_roundtrip import (
+                add_host_credential,
+                locked_policy_transaction,
+            )
 
-        # Add to baseline (at beginning for higher priority)
-        with self._loader._lock:
-            baseline = self._loader._baseline
-            baseline.permissions.insert(0, new_permission)
+            locked_policy_transaction(
+                baseline_path,
+                lambda document: add_host_credential(document, destination, cred_ids),
+                self._loader.reload,
+            )
+            permission_count = len(self._loader.baseline.permissions)
+        else:
+            # Create new permission (destination-first)
+            condition = Condition(credential=cred_ids)
+            new_permission = Permission(
+                action="credential:use",
+                resource=f"{destination}/*",
+                effect="allow",
+                tier=tier,
+                condition=condition,
+            )
 
-        # Re-sort and update
-        self._loader.set_baseline(baseline)
-
-        # Save to file if path exists
-        if self._loader.baseline_path:
-            self._save_baseline_incremental(new_permission)
+            # Add to baseline (at beginning for higher priority)
+            with self._loader._lock:
+                baseline = self._loader._baseline
+                baseline.permissions.insert(0, new_permission)
+            self._loader.set_baseline(baseline)
+            if baseline_path:
+                self._save_baseline_incremental(new_permission)
+            permission_count = len(baseline.permissions)
 
         safe_cred_ids = [sanitize_for_log(cred_id) for cred_id in cred_ids]
         log.info("Added credential approval: %s accepts %s", sanitize_for_log(destination), safe_cred_ids)
@@ -822,7 +832,7 @@ class PolicyEngine:
 
         return {
             "status": "added",
-            "permission_count": len(baseline.permissions),
+            "permission_count": permission_count,
         }
 
     def update_host_rate(self, host: str, rate: int) -> dict[str, Any]:
@@ -838,45 +848,57 @@ class PolicyEngine:
         if type(rate) is not int or rate < 1:
             raise ValueError("rate must be a positive integer")
 
-        with self._loader._lock:
-            baseline = self._loader._baseline
+        baseline_path = self._loader.baseline_path
+        if baseline_path and baseline_path.suffix == ".toml":
+            from safeyolo.policy.toml_roundtrip import (
+                locked_policy_transaction,
+                update_host_field,
+            )
 
-            # Find existing budget permission for this host
-            old_rate = None
-            found = False
-            for perm in baseline.permissions:
-                if perm.action == "network:request" and perm.effect == "budget":
-                    resource_host = perm.resource.rstrip("/*") if perm.resource.endswith("/*") else perm.resource
-                    if resource_host == host:
-                        old_rate = perm.budget
-                        perm.budget = rate
-                        found = True
-                        break
+            def mutate(document):
+                self._validate_document_rate(document, rate)
+                hosts = document.get("hosts") or {}
+                existing = hosts.get(host) if host in hosts else None
+                old = existing.get("rate") if isinstance(existing, dict) else None
+                update_host_field(document, host, "rate", rate)
+                return old
 
-            if not found:
-                # Create new budget permission
-                new_perm = Permission(
-                    action="network:request",
-                    resource=f"{host}/*",
-                    effect="budget",
-                    budget=rate,
-                    tier="explicit",
+            old_rate = locked_policy_transaction(
+                baseline_path, mutate, self._loader.reload
+            )
+        else:
+            global_budget = self._get_global_budget("network:request")
+            if global_budget is not None and rate > global_budget:
+                raise ValueError(
+                    f"rate {rate} exceeds global budget {global_budget} requests/minute"
                 )
-                baseline.permissions.append(new_perm)
 
-        # Re-sort and update
-        self._loader.set_baseline(baseline)
+            with self._loader._lock:
+                baseline = self._loader._baseline
 
-        # Persist to TOML if path exists
-        if self._loader.baseline_path and self._loader.baseline_path.suffix == ".toml":
-            try:
-                from safeyolo.policy.toml_roundtrip import load_roundtrip, save_roundtrip, update_host_field
+                # Find existing budget permission for this host
+                old_rate = None
+                found = False
+                for perm in baseline.permissions:
+                    if perm.action == "network:request" and perm.effect == "budget":
+                        resource_host = perm.resource.rstrip("/*") if perm.resource.endswith("/*") else perm.resource
+                        if resource_host == host:
+                            old_rate = perm.budget
+                            perm.budget = rate
+                            found = True
+                            break
 
-                doc = load_roundtrip(self._loader.baseline_path)
-                update_host_field(doc, host, "rate", rate)
-                save_roundtrip(self._loader.baseline_path, doc)
-            except Exception as e:
-                log.warning("TOML round-trip save failed for host rate update: %s", sanitize_for_log(e))
+                if not found:
+                    baseline.permissions.append(
+                        Permission(
+                            action="network:request",
+                            resource=f"{host}/*",
+                            effect="budget",
+                            budget=rate,
+                            tier="explicit",
+                        )
+                    )
+            self._loader.set_baseline(baseline)
 
         log.info(
             "Updated host rate: %s %s -> %s",
@@ -911,59 +933,68 @@ class PolicyEngine:
         Returns:
             Dict with status, host, rate, agent
         """
-        condition = Condition(agent=agent) if agent else None
-        resource = f"{host}/*"
-
-        with self._loader._lock:
-            baseline = self._loader._baseline
-
-            # Remove existing permissions for this host+agent before adding
-            baseline.permissions = [
-                p for p in baseline.permissions
-                if not (p.action == "network:request" and p.resource == resource
-                        and p.effect in ("allow", "budget")
-                        and p.condition == condition)
-            ]
-
-            new_perm = Permission(
-                action="network:request",
-                resource=resource,
-                effect="allow",
-                tier="explicit",
-                condition=condition,
+        if rate is not None and (type(rate) is not int or rate < 1):
+            raise ValueError("rate must be a positive integer")
+        global_budget = self._get_global_budget("network:request")
+        if rate is None and global_budget is None:
+            raise ValueError(
+                "no global network budget is configured; pass rate or configure budget"
             )
-            baseline.permissions.insert(0, new_perm)
+        if rate is not None and global_budget is not None and rate > global_budget:
+            raise ValueError(
+                f"rate {rate} exceeds global budget {global_budget} requests/minute"
+            )
 
-            if rate is not None:
-                budget_perm = Permission(
-                    action="network:request",
-                    resource=resource,
-                    effect="budget",
-                    budget=rate,
-                    tier="explicit",
-                    condition=condition,
+        baseline_path = self._loader.baseline_path
+        if baseline_path and baseline_path.suffix == ".toml":
+            from safeyolo.policy.toml_roundtrip import (
+                locked_policy_transaction,
+                upsert_host,
+            )
+
+            def mutate(document):
+                current_global = self._validate_document_rate(
+                    document, rate, require_global=rate is None
                 )
-                baseline.permissions.append(budget_perm)
-
-        self._loader.set_baseline(baseline)
-
-        # Persist to TOML
-        if self._loader.baseline_path and self._loader.baseline_path.suffix == ".toml":
-            try:
-                from safeyolo.policy.toml_roundtrip import load_roundtrip, save_roundtrip, upsert_host
-
-                doc = load_roundtrip(self._loader.baseline_path)
-                config: dict[str, Any] = {}
+                config: dict[str, Any] = {"egress": "allow"}
                 if rate is not None:
                     config["rate"] = rate
-
                 if agent:
-                    self._write_agent_host(doc, agent, host, config)
+                    self._write_agent_host(document, agent, host, config)
                 else:
-                    upsert_host(doc, host, config)
-                save_roundtrip(self._loader.baseline_path, doc)
-            except (OSError, ValueError) as e:
-                log.warning("TOML round-trip save failed for host allowance: %s", sanitize_for_log(e))
+                    upsert_host(document, host, config)
+                return current_global
+
+            global_budget = locked_policy_transaction(
+                baseline_path, mutate, self._loader.reload
+            )
+        else:
+            condition = Condition(agent=agent) if agent else None
+            resource = f"{host}/*"
+
+            with self._loader._lock:
+                baseline = self._loader._baseline
+
+                baseline.permissions = [
+                    p for p in baseline.permissions
+                    if not (p.action == "network:request" and p.resource == resource
+                            and p.effect in ("allow", "budget")
+                            and p.condition == condition)
+                ]
+
+                effect = "budget" if rate is not None else "allow"
+                baseline.permissions.insert(
+                    0,
+                    Permission(
+                        action="network:request",
+                        resource=resource,
+                        effect=effect,
+                        budget=rate,
+                        tier="explicit",
+                        condition=condition,
+                    ),
+                )
+            self._loader.set_baseline(baseline)
 
         log.info("Added host allowance: %s (rate=%s, agent=%s)",
                  sanitize_for_log(host), sanitize_for_log(str(rate)), sanitize_for_log(str(agent)))
@@ -976,7 +1007,14 @@ class PolicyEngine:
             details={"host": host, "rate": rate, "agent": agent},
         )
 
-        return {"status": "added", "host": host, "rate": rate, "agent": agent}
+        return {
+            "status": "added",
+            "host": host,
+            "rate": rate,
+            "agent": agent,
+            "global_budget": global_budget,
+            "rate_source": "host" if rate is not None else "global",
+        }
 
     def add_host_denial(
         self, host: str, expires: str | None = None, agent: str | None = None,
@@ -997,49 +1035,46 @@ class PolicyEngine:
         Returns:
             Dict with status, host, expires, agent
         """
-        condition = Condition(agent=agent) if agent else None
-        resource = f"{host}/*"
-
-        with self._loader._lock:
-            baseline = self._loader._baseline
-
-            # Remove existing deny for this host+agent before adding
-            baseline.permissions = [
-                p for p in baseline.permissions
-                if not (p.action == "network:request" and p.resource == resource
-                        and p.effect == "deny" and p.condition == condition)
-            ]
-
-            new_perm = Permission(
-                action="network:request",
-                resource=resource,
-                effect="deny",
-                tier="explicit",
-                condition=condition,
+        baseline_path = self._loader.baseline_path
+        if baseline_path and baseline_path.suffix == ".toml":
+            from safeyolo.policy.toml_roundtrip import (
+                locked_policy_transaction,
+                upsert_host,
             )
-            baseline.permissions.insert(0, new_perm)
 
-        self._loader.set_baseline(baseline)
-
-        # Persist to TOML
-        if self._loader.baseline_path and self._loader.baseline_path.suffix == ".toml":
-            try:
-                from safeyolo.policy.toml_roundtrip import load_roundtrip, save_roundtrip, upsert_host
-
-                doc = load_roundtrip(self._loader.baseline_path)
+            def mutate(document):
                 config: dict[str, Any] = {"egress": "deny"}
                 if expires:
                     from datetime import datetime
 
                     config["expires"] = datetime.fromisoformat(expires)
-
                 if agent:
-                    self._write_agent_host(doc, agent, host, config)
+                    self._write_agent_host(document, agent, host, config)
                 else:
-                    upsert_host(doc, host, config)
-                save_roundtrip(self._loader.baseline_path, doc)
-            except (OSError, ValueError) as e:
-                log.warning("TOML round-trip save failed for host denial: %s", sanitize_for_log(e))
+                    upsert_host(document, host, config)
+
+            locked_policy_transaction(baseline_path, mutate, self._loader.reload)
+        else:
+            condition = Condition(agent=agent) if agent else None
+            resource = f"{host}/*"
+            with self._loader._lock:
+                baseline = self._loader._baseline
+                baseline.permissions = [
+                    p for p in baseline.permissions
+                    if not (p.action == "network:request" and p.resource == resource
+                            and p.effect == "deny" and p.condition == condition)
+                ]
+                baseline.permissions.insert(
+                    0,
+                    Permission(
+                        action="network:request",
+                        resource=resource,
+                        effect="deny",
+                        tier="explicit",
+                        condition=condition,
+                    ),
+                )
+            self._loader.set_baseline(baseline)
 
         log.info("Added host denial: %s (expires=%s, agent=%s)",
                  sanitize_for_log(host), sanitize_for_log(str(expires)), sanitize_for_log(str(agent)))
@@ -1053,6 +1088,33 @@ class PolicyEngine:
         )
 
         return {"status": "denied", "host": host, "expires": expires, "agent": agent}
+
+    @staticmethod
+    def _validate_document_rate(
+        document,
+        rate: int | None,
+        *,
+        require_global: bool = False,
+    ) -> int | None:
+        """Validate a requested rate against the latest locked TOML budget."""
+        global_budget = document.get("budget")
+        if global_budget is not None and (
+            not isinstance(global_budget, int)
+            or isinstance(global_budget, bool)
+            or global_budget < 1
+        ):
+            raise ValueError("global network budget must be a positive integer")
+        if global_budget is not None:
+            global_budget = int(global_budget)
+        if require_global and global_budget is None:
+            raise ValueError(
+                "no global network budget is configured; pass rate or configure budget"
+            )
+        if rate is not None and global_budget is not None and rate > global_budget:
+            raise ValueError(
+                f"rate {rate} exceeds global budget {global_budget} requests/minute"
+            )
+        return global_budget
 
     @staticmethod
     def _write_agent_host(doc, agent_name: str, host: str, config: dict) -> None:
@@ -1095,14 +1157,14 @@ class PolicyEngine:
         if not baseline_path or baseline_path.suffix != ".toml":
             raise ValueError("Host bypass requires a TOML policy file")
 
-        try:
-            from safeyolo.policy.toml_roundtrip import load_roundtrip, save_roundtrip, update_host_field
+        from safeyolo.policy.toml_roundtrip import (
+            locked_policy_transaction,
+            update_host_field,
+        )
 
-            doc = load_roundtrip(baseline_path)
-
-            # Read existing bypass list from TOML
+        def mutate(document):
             current_bypass: list[str] = []
-            hosts = doc.get("hosts")
+            hosts = document.get("hosts")
             if hosts and host in hosts:
                 host_config = hosts[host]
                 if isinstance(host_config, dict):
@@ -1111,17 +1173,17 @@ class PolicyEngine:
                         current_bypass = list(existing)
 
             if addon in current_bypass:
-                return {"status": "unchanged", "host": host, "bypass": current_bypass}
+                return current_bypass, False
 
             updated_bypass = current_bypass + [addon]
-            update_host_field(doc, host, "bypass", updated_bypass)
-            save_roundtrip(baseline_path, doc)
-        except Exception as e:
-            log.warning("TOML round-trip save failed for host bypass: %s", sanitize_for_log(e))
-            raise
+            update_host_field(document, host, "bypass", updated_bypass)
+            return updated_bypass, True
 
-        # Reload from disk to pick up the change
-        self._loader.reload()
+        updated_bypass, changed = locked_policy_transaction(
+            baseline_path, mutate, self._loader.reload
+        )
+        if not changed:
+            return {"status": "unchanged", "host": host, "bypass": updated_bypass}
 
         safe_bypass = [sanitize_for_log(value) for value in updated_bypass]
         log.info("Added host bypass: %s bypass=%s", sanitize_for_log(host), safe_bypass)

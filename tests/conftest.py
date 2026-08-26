@@ -36,6 +36,32 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 
+# ---------- NATS runtime fixtures ----------
+# Coord v1 tests need a running nats-server. Session-cache the binary
+# so downloads happen at most once per test session.
+
+
+@pytest.fixture(scope="session")
+def _binary_cache(tmp_path_factory):
+    """Download the nats-server binary once per session (matches
+    cli/tests/conftest.py). Ships the cached path so per-test coord dirs
+    can symlink it in without re-downloading."""
+    from safeyolo.coord import nats_runtime as nr
+    cache_dir = tmp_path_factory.mktemp("nats-binary-cache")
+    orig_env = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
+    os.environ["SAFEYOLO_COORD_DATA_DIR"] = str(cache_dir)
+    try:
+        try:
+            return nr.ensure_binary()
+        except Exception as e:
+            pytest.skip(f"nats-server binary unavailable: {e!s}")
+    finally:
+        if orig_env is None:
+            os.environ.pop("SAFEYOLO_COORD_DATA_DIR", None)
+        else:
+            os.environ["SAFEYOLO_COORD_DATA_DIR"] = orig_env
+
+
 @pytest.fixture(autouse=True)
 def _reset_config_cache():
     """Reset the sensor_config cache between tests.
@@ -227,7 +253,15 @@ def credential_guard(policy_engine_initialized):
 
 @pytest.fixture
 def network_guard(tmp_path):
-    """Create a fresh NetworkGuard instance with blocking enabled and default policy."""
+    """Create a real NetworkGuard in a mitmproxy context with a real PDP.
+
+    The baseline deliberately exercises the three ordinary network outcomes:
+    deny, require approval, and allow.  ``*.internal`` also verifies the
+    domain-level addon bypass path without patching ``NetworkGuard`` itself.
+    Tests that need synthetic PDP failures may replace only the PolicyClient
+    boundary with an autospecced collaborator.
+    """
+    from mitmproxy.test import taddons
     from network_guard import NetworkGuard
 
     from pdp import PolicyClientConfig, configure_policy_client, reset_policy_client
@@ -242,12 +276,23 @@ metadata:
   version: "1.0"
 permissions:
   - action: network:request
+    resource: "evil.com/*"
+    effect: deny
+  - action: network:request
+    resource: "unknown-host.com/*"
+    effect: prompt
+  - action: network:request
     resource: "*"
     effect: allow
 budgets: {}
 required: []
-addons: {}
-domains: {}
+addons:
+  network_guard:
+    enabled: true
+domains:
+  "*.internal":
+    bypass:
+      - network_guard
 """)
 
     # Initialize PolicyClient with baseline
@@ -255,10 +300,11 @@ domains: {}
     configure_policy_client(config)
 
     addon = NetworkGuard()
-    # Default to blocking mode for tests
-    addon.should_block = lambda: True
-
-    yield addon
+    with taddons.context(addon) as tctx:
+        tctx.options.network_guard_enabled = True
+        tctx.options.network_guard_block = True
+        tctx.options.network_guard_homoglyph = True
+        yield addon
 
     # Cleanup
     reset_policy_client()

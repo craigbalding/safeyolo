@@ -1,0 +1,60 @@
+name: Policy transaction chaos
+
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Optional single Hypothesis seed; blank uses the three published seeds"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: policy-chaos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hermetic-policy-chaos:
+    name: Hermetic policy chaos
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.9.24"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Run policy transaction chaos
+        env:
+          REQUESTED_SEED: ${{ inputs.seed }}
+        run: |
+          mkdir -p artifacts
+          args=(run --output artifacts/policy-chaos.json)
+          if [ -n "$REQUESTED_SEED" ]; then
+            args+=(--seed "$REQUESTED_SEED")
+          else
+            args+=(--published-seeds)
+          fi
+          uv run python -m tools.policy_chaos "${args[@]}"
+
+      - name: Upload policy assurance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: policy-chaos-${{ github.run_id }}
+          path: artifacts/policy-chaos.json
+          retention-days: 14
+          if-no-files-found: warn
