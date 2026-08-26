@@ -7,6 +7,7 @@ existing `safeyolo agent add` command; this module never mints agent IDs.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import UTC, datetime
@@ -17,6 +18,12 @@ from rich.table import Table
 
 from ..agents_store import get_or_mint_agent_id, load_all_agents
 from ..coord import api
+
+# CLI is sync but coord.api's send/read_room/create_room/wait_for_message
+# are async (they go to JetStream). Wrap with asyncio.run per invocation.
+# Cheap enough for interactive/one-shot commands; the addon uses the
+# async versions directly on its own event loop.
+_run = asyncio.run
 
 coord_app = typer.Typer(
     name="coord",
@@ -80,7 +87,7 @@ def room_create(
     """Create a room; optionally grant listed agents + the operator."""
     api.bootstrap()
     try:
-        room_id = api.create_room(name)
+        room_id = _run(api.create_room(name))
     except api.ConflictError as e:
         console.print(f"[red]{e}[/]")
         raise typer.Exit(1)
@@ -186,8 +193,8 @@ def chat(
 
     cursor = since
     while True:
-        page = api.read_room(room, "operator", "operator",
-                             since_sequence=cursor, limit=api.READ_PAGE_MAX)
+        page = _run(api.read_room(room, "operator", "operator",
+                                  since_sequence=cursor, limit=api.READ_PAGE_MAX))
         for m in page["messages"]:
             _render_message(m)
         cursor = page["next_cursor"]
@@ -204,8 +211,8 @@ def _observe_loop(room: str, cursor: int) -> None:
     console.print("[dim]--- observing (Ctrl-C to detach) ---[/]")
     try:
         while True:
-            page = api.read_room(room, "operator", "operator",
-                                 since_sequence=cursor, limit=api.READ_PAGE_MAX)
+            page = _run(api.read_room(room, "operator", "operator",
+                                      since_sequence=cursor, limit=api.READ_PAGE_MAX))
             for m in page["messages"]:
                 _render_message(m)
             cursor = page["next_cursor"]
@@ -231,13 +238,13 @@ def _interactive_loop(room: str, cursor: int) -> None:
                 break
             if line.strip():
                 try:
-                    api.send(room, "operator", None, line)
+                    _run(api.send(room, "operator", None, line))
                 except api.GrantError as e:
                     console.print(f"[red]{e}[/]")
                     break
             while True:
-                page = api.read_room(room, "operator", "operator",
-                                     since_sequence=cursor, limit=api.READ_PAGE_MAX)
+                page = _run(api.read_room(room, "operator", "operator",
+                                          since_sequence=cursor, limit=api.READ_PAGE_MAX))
                 for m in page["messages"]:
                     _render_message(m)
                 cursor = page["next_cursor"]

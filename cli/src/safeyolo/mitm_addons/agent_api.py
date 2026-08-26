@@ -31,6 +31,7 @@ import urllib.parse
 from mitmproxy import ctx, http
 from request_id import REQUEST_ID_PATTERN as _REQUEST_ID_PATTERN
 
+from safeyolo.coord.nats_client import NatsUnavailable
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from safeyolo.core.utils import sanitize_for_log, write_event
 from safeyolo.storage.flow_store import is_text_like_content_type
@@ -437,7 +438,7 @@ class AgentAPI:
                         "max_bytes": COORD_MAX_BODY_BYTES,
                     })
                     return
-                result = coord_api.send(
+                result = await coord_api.send(
                     room_name=room,
                     sender_kind="agent",
                     sender_agent_id=agent_id,
@@ -449,7 +450,7 @@ class AgentAPI:
                 q = flow.request.query
                 since = _parse_qs_int(q.get("since", "0"), "since", default=0)
                 limit = _parse_qs_int(q.get("limit", "50"), "limit", default=50)
-                result = coord_api.read_room(
+                result = await coord_api.read_room(
                     room_name=room,
                     principal_kind="agent",
                     principal_id=agent_id,
@@ -520,6 +521,13 @@ class AgentAPI:
             # same response — no room name echoed, no distinction between
             # "doesn't exist" and "you have no membership."
             self._respond(flow, 404, {"error": "room not found or not accessible"})
+            return
+        except NatsUnavailable:
+            # Task #36: NATS runtime unreachable → coord surfaces 503 but
+            # the outer proxy stays healthy. Handled BEFORE GrantError so
+            # we don't accidentally paper over it as a client-side
+            # permission error.
+            self._respond(flow, 503, {"error": "coordination substrate unavailable"})
             return
         except coord_api.GrantError as e:
             # Caller IS a member but lacks the specific permission. A

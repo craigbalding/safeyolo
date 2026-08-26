@@ -34,6 +34,7 @@ Deliberately NOT here:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -71,15 +72,15 @@ class NatsUnavailable(RuntimeError):
 
 # ---------- connection lifecycle ----------
 
-# Single connection per process. Lazily created; nats-py handles the
-# reconnect loop internally so we don't reopen from scratch on every
-# transient blip. No asyncio.Lock here on purpose: an asyncio.Lock is
-# bound to the event loop it's used on, and tests recreate the loop per
-# case which would leak lock state across tests. Race on connect is a
-# non-issue in the single-loop production case; if two coros do race a
-# first connect, one wins and the other's client is superseded.
+# Single connection per process — but nats-py transports are bound to
+# the asyncio loop they were opened on. Production has one long-lived
+# loop so this reduces to a real singleton; tests using asyncio.run()
+# open a fresh loop per call, so we track the owning loop and reconnect
+# transparently if it changes. Without this the second asyncio.run()
+# call in a test hangs on a dead transport.
 _client: nats.aio.client.Client | None = None
 _js: Any | None = None
+_client_loop: asyncio.AbstractEventLoop | None = None
 
 
 async def get_jetstream():
@@ -89,9 +90,19 @@ async def get_jetstream():
     should map this to a coord 503 (task #36) rather than letting it
     escape as a generic 500.
     """
-    global _client, _js
-    if _client is not None and _client.is_connected:
+    global _client, _js, _client_loop
+    current_loop = asyncio.get_running_loop()
+    if (
+        _client is not None
+        and _client_loop is current_loop
+        and _client.is_connected
+    ):
         return _js
+    if _client is not None and _client_loop is not current_loop:
+        # Loop changed — the transport is bound to a loop we can no
+        # longer touch. Drop refs; GC cleans up. Reconnect on the new loop.
+        _client = None
+        _js = None
     user, password = nats_runtime.client_user_credentials()
     try:
         client = await nats.connect(
@@ -108,15 +119,17 @@ async def get_jetstream():
         raise NatsUnavailable(f"cannot reach nats-server: {e!s}") from e
     _client = client
     _js = client.jetstream()
+    _client_loop = current_loop
     return _js
 
 
 async def close() -> None:
     """Best-effort teardown. Safe to call multiple times."""
-    global _client, _js
+    global _client, _js, _client_loop
     client = _client
     _client = None
     _js = None
+    _client_loop = None
     if client is not None:
         try:
             await client.close()
@@ -129,9 +142,10 @@ def reset_for_tests() -> None:
     event loop per test — the async close() runs on the wrong loop and
     stale state leaks across tests. This just drops the references;
     the previous connection's transport will be garbage collected."""
-    global _client, _js
+    global _client, _js, _client_loop
     _client = None
     _js = None
+    _client_loop = None
 
 
 # ---------- stream naming ----------
@@ -188,24 +202,40 @@ async def delete_room_stream(room_id: str) -> bool:
 
 
 async def room_stream_state(room_id: str) -> dict:
-    """Read stream state (first_seq, last_seq, messages, bytes, etc.)
-    from JetStream. Used by the API layer to populate
-    `history_truncated` / `oldest_available_at` (task #35).
-    """
+    """Read stream state (first_seq, last_seq, messages, bytes) from
+    JetStream. Used by the API layer to detect truncation (task #35);
+    the timestamp for the oldest surviving message is fetched separately
+    via oldest_message_ts to keep this call cheap on the read hot path."""
     js = await get_jetstream()
     try:
         info = await js.stream_info(stream_name_for_room(room_id))
     except NotFoundError:
-        return {"first_seq": 0, "last_seq": 0, "messages": 0, "first_ts": None}
+        return {"first_seq": 0, "last_seq": 0, "messages": 0}
     state = info.state
     return {
         "first_seq": state.first_seq,
         "last_seq": state.last_seq,
         "messages": state.messages,
-        # first_ts is a datetime; ISO-format for consumer-side rendering.
-        # None if the stream is empty.
-        "first_ts": state.first_ts.isoformat() if state.first_ts else None,
     }
+
+
+async def oldest_message_ts(room_id: str, first_seq: int) -> str | None:
+    """Return the ISO-8601 timestamp of the oldest surviving message in
+    the room's stream, or None if the fetch fails or the stream is empty.
+
+    nats-py's `StreamState` dataclass omits `first_ts`, so we peek the
+    first message directly via `get_msg`. Only called when the API layer
+    has already detected truncation — read hot path is unaffected."""
+    if first_seq <= 0:
+        return None
+    js = await get_jetstream()
+    try:
+        raw = await js._jsm.get_msg(stream_name_for_room(room_id), seq=first_seq)
+    except (NotFoundError, NatsError, NatsTimeout):
+        return None
+    if raw.time is None:
+        return None
+    return raw.time.isoformat()
 
 
 # ---------- publish ----------

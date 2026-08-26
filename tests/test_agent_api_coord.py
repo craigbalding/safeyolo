@@ -7,9 +7,10 @@ via the addon (not just via the underlying coord.api).
 """
 
 import asyncio
-import json
+import os
 from unittest.mock import patch
 
+import json
 import pytest
 from agent_api import AGENT_API_HOST, AgentAPI
 from mitmproxy.test import taddons, tflow
@@ -18,12 +19,34 @@ AGENT_TOKEN = "a" * 64
 
 
 @pytest.fixture
-def isolated_state(tmp_path, monkeypatch):
-    """Isolated policy.toml + coord DB per test."""
+def isolated_state(tmp_path, monkeypatch, _binary_cache):
+    """Isolated policy.toml + coord dir + running nats-server per test.
+
+    Coord v1 stores messages in JetStream, so every test that exercises
+    the coord addon needs an actual nats-server. `_binary_cache` (session
+    scope, defined in conftest.py) hands us the pre-downloaded binary;
+    we symlink it into the per-test versioned path and start the server.
+    """
+    from safeyolo.coord import nats_client
+    from safeyolo.coord import nats_runtime as nr
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path / "coord"))
     (tmp_path / "cfg").mkdir()
-    return tmp_path
+    dest = nr.nats_binary_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists():
+        os.symlink(_binary_cache, dest)
+    nr.start_server(ready_timeout=8.0)
+    # Reset the nats-py module singleton so a stale connection from a
+    # prior test doesn't leak into this event loop.
+    nats_client.reset_for_tests()
+    yield tmp_path
+    nr.stop_server()
+
+
+def _await(coro):
+    """Run one async coord.api call from a sync test body."""
+    return asyncio.run(coro)
 
 
 @pytest.fixture
@@ -63,7 +86,7 @@ def _setup_room_with_grants(room, agents):
     from safeyolo.agents_store import get_or_mint_agent_id
     from safeyolo.coord import api as coord_api
     coord_api.bootstrap()
-    coord_api.create_room(room)
+    _await(coord_api.create_room(room))
     for name in agents:
         coord_api.grant(room, "agent", get_or_mint_agent_id(name))
 
@@ -135,7 +158,7 @@ class TestCoordGrantEnforcement:
         from safeyolo.coord import api as coord_api
         _register_agent("alice")
         coord_api.bootstrap()
-        coord_api.create_room("r")
+        _await(coord_api.create_room("r"))
         alice_id = get_or_mint_agent_id("alice")
         # alice has receive only, no send
         coord_api.grant("r", "agent", alice_id, permissions=["receive"])
