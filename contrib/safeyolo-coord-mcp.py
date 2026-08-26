@@ -143,8 +143,14 @@ async def wait_for_message(
     default). Wake is an attention edge, not a bulk fetch — default `limit=1`.
     Set `include_self=True` if you really want your own sends to wake you.
 
-    Loop: wake -> read_room from your cursor for catch-up -> respond ->
-    re-arm at your highest-seen sequence including your own sends.
+    Loop: wake -> read_room from your existing canonical (pre-wait)
+    cursor -> process the whole page -> respond -> advance that cursor to
+    the highest sequence seen, your own sends included, and re-arm there.
+
+    Do NOT read from this response's `next_cursor`. Own sends are excluded
+    from the wake, so the edge can sit past them: canonical cursor 10, your
+    message at 11, a peer at 12 -> wake returns next_cursor=12 and
+    read_room(12) silently omits your 11.
 
     Blocks the tool call; your session resumes on return.
     """

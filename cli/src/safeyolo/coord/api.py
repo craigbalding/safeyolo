@@ -453,8 +453,16 @@ async def wait_for_message(
     - No `has_more`. Wait is an attention edge, not a page: a field
       meaning "more in this wake scan" reads as "backlog remains" and
       cannot answer that question, since the scan window is bounded.
-      `read_room(next_cursor)` answers it correctly and is the
-      mandatory catch-up path anyway.
+      `read_room` answers it correctly and is the mandatory catch-up
+      path anyway -- see the cursor rule below.
+    - CURSOR RULE. After waking, read from your existing canonical
+      (pre-wait) cursor, NOT from this response's `next_cursor`.
+      `exclude_self` means the wake edge can sit past your own sends,
+      and `read_room` is inclusive of them: with a canonical cursor at
+      10, your own message at 11 and a peer at 12, waking returns
+      `next_cursor=12` and `read_room(12)` silently omits 11. Process
+      the full page, then advance the canonical cursor to the highest
+      sequence seen. The caller owns that cursor; wait never does.
     - One ephemeral consumer serves the whole call. Polling used to
       open and delete a server-side consumer per tick -- roughly 120
       cycles per idle 60s wait, per waiting agent.
@@ -463,8 +471,9 @@ async def wait_for_message(
       where truncation is disclosed. The response always sets
       `history_truncated: false` / `oldest_available_at: null` — a
       caller that wakes from wait and needs canonical history must
-      call `read_room` to see either the truncation flags or the
-      messages preceding the wake edge.
+      call `read_room` (from the canonical cursor, per the rule above)
+      to see either the truncation flags or the messages preceding the
+      wake edge.
 
     Blocks the caller (an HTTP long-poll or an MCP tool call);
     the runtime returns when a peer message qualifies or timeout hits.

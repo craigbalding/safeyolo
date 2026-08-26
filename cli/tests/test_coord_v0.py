@@ -662,3 +662,40 @@ def test_wait_does_not_report_a_backlog_field(coord_env):
                               since_sequence=page["next_cursor"]))
     assert [m["body"] for m in rest["messages"]] == ["msg 2", "msg 3", "msg 4"]
     assert rest["has_more"] is False
+
+
+def test_catch_up_reads_from_the_canonical_cursor_not_the_wake_edge(coord_env):
+    """Pins the cursor rule in wait_for_message's docstring.
+
+    `exclude_self` means the wake edge can sit past the caller's own sends, so
+    reading from the wake's `next_cursor` silently drops them even though
+    read_room is supposed to be inclusive of self. Callers must read from the
+    canonical (pre-wait) cursor they already own.
+    """
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    for i in range(10):
+        _run(api.send("r", "agent", AGENT_B, f"peer {i}"))
+    canonical = 10
+    _run(api.send("r", "agent", AGENT_A, "own 11"))
+    _run(api.send("r", "agent", AGENT_B, "peer 12"))
+
+    page = _run(api.wait_for_message(
+        "r", "agent", AGENT_A, since_sequence=canonical,
+        timeout_seconds=2, poll_interval_seconds=0.05,
+    ))
+    assert [m["body"] for m in page["messages"]] == ["peer 12"]
+    assert page["next_cursor"] == 12
+
+    # The wrong pattern: own message 11 is gone.
+    from_edge = _run(api.read_room("r", "agent", AGENT_A,
+                                   since_sequence=page["next_cursor"]))
+    assert [m["body"] for m in from_edge["messages"]] == []
+
+    # The documented pattern: complete history, self included.
+    from_canonical = _run(api.read_room("r", "agent", AGENT_A,
+                                        since_sequence=canonical))
+    assert [m["body"] for m in from_canonical["messages"]] == ["own 11", "peer 12"]
+    # ...and the cursor to re-arm on is the highest sequence seen.
+    assert from_canonical["next_cursor"] == 12
