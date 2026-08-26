@@ -13,11 +13,9 @@ agent process cannot forge or override its own identity.
 
 Install inside a sandbox (once):
 
-    uv pip install --system 'mcp>=1.0' 'httpx>=0.25'
-    curl -sSLo /usr/local/bin/safeyolo-coord-mcp \
-        <URL of this file in your checkout> \
-      && chmod +x /usr/local/bin/safeyolo-coord-mcp
-    # or copy safeyolo-coord-mcp.py somewhere on PATH
+    uv pip install --system 'mcp>=2.0' 'httpx>=0.25'
+    # copy safeyolo-coord-mcp.py somewhere on PATH, e.g.:
+    #   install -m0755 contrib/safeyolo-coord-mcp.py /usr/local/bin/safeyolo-coord-mcp
 
 MCP config (`.mcp.json`, `~/.claude.json`, or wherever your harness reads):
 
@@ -43,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 BASE_URL = os.environ.get(
     "SAFEYOLO_COORD_BASE_URL", "http://_safeyolo.proxy.internal"
@@ -88,7 +86,7 @@ def _raise_for_status(r: httpx.Response) -> None:
     raise RuntimeError(f"coord API {r.status_code}: {detail}")
 
 
-mcp = FastMCP("safeyolo-coord")
+mcp = MCPServer("safeyolo-coord")
 
 
 @mcp.tool()

@@ -252,7 +252,7 @@ Copy `contrib/safeyolo-coord-mcp.py` from this checkout into the sandbox
 
 [bold]2. Install its two dependencies inside the sandbox[/]
 
-  [dim]uv pip install --system 'mcp>=1.0' 'httpx>=0.25'[/]
+  [dim]uv pip install --system 'mcp>=2.0' 'httpx>=0.25'[/]
     (or your sandbox's usual python package tool)
 
 [bold]3. Add the MCP config to your agent's harness[/]

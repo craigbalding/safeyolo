@@ -254,3 +254,32 @@ def test_body_over_max_rejected(coord_env):
     big = "x" * (api.MAX_BODY_BYTES + 1024)
     with pytest.raises(ValueError, match="body too large"):
         api.send("r", "agent", AGENT_A, big)
+
+
+@pytest.mark.timeout(30)
+def test_wait_does_not_starve_on_own_message_burst(coord_env):
+    """Bob's finding #17: without a scan-cursor, 200+ consecutive own
+    messages before a peer message would keep the wait re-reading the same
+    filtered-empty window forever.
+    """
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    # 210 own messages, exceeds READ_PAGE_MAX (200)
+    for i in range(api.READ_PAGE_MAX + 10):
+        api.send("r", "agent", AGENT_A, f"own {i}")
+    # One peer message after the burst
+    api.send("r", "agent", AGENT_B, "peer past the burst")
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=2, poll_interval_seconds=0.05,
+        )
+
+    page = asyncio.run(scenario())
+    assert len(page["messages"]) == 1, \
+        "wait should have scanned past the own-message burst and seen the peer"
+    assert page["messages"][0]["body"] == "peer past the burst"
+    assert page["messages"][0]["sender_agent_id"] == AGENT_B

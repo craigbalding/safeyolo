@@ -471,10 +471,13 @@ class AgentAPI:
             # Stable, actionable string ("invalid since" etc.) — safe to echo.
             self._respond(flow, 400, {"error": str(e)})
             return
-        except (ValueError, TypeError) as e:
+        except ValueError as e:
             # Known validation from coord.api (envelope shape, content_type,
-            # sender_kind consistency). Message is under our control there;
-            # anything else is caught by the outer generic boundary.
+            # sender_kind consistency, body-too-large). Message is under our
+            # control there. TypeError is deliberately NOT caught here: a
+            # signature mismatch between the addon and coord.api is our bug,
+            # not the caller's — it belongs on the generic 500 boundary
+            # around the whole async dispatch, not a plausible-looking 400.
             self._respond(flow, 400, {"error": str(e)})
             return
 

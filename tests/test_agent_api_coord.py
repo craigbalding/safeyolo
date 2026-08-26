@@ -228,6 +228,23 @@ class TestCoordBoundaryEscape:
         assert flow.response.status_code == 500
         assert "boom-identity" not in flow.response.content.decode()
 
+    def test_typeerror_is_500_not_400(self, api, isolated_state):
+        """Bob's finding #15: a signature mismatch between the addon and
+        coord.api is a server bug, not a caller mistake. Must be 500 (which
+        looks like a deployment problem) rather than a plausible-looking 400
+        (which sends the caller checking their query params).
+        """
+        _register_agent("alice")
+        _setup_room_with_grants("huddle", ["alice"])
+        with _as_agent("alice"), \
+             patch("safeyolo.coord.api.join_room",
+                   side_effect=TypeError("join_room() got an unexpected keyword argument 'foo'")):
+            flow = _make_flow("/api/coord/rooms/huddle/join", method="POST")
+            _run(api, flow)
+        assert flow.response is not None
+        assert flow.response.status_code == 500, \
+            "TypeError from callee = server bug, must not be 400"
+
 
 class TestCoordWaitSelfExclusion:
     """Reviewer point 4: read_room stays inclusive; wait_for_message

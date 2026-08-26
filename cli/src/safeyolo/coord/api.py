@@ -320,29 +320,42 @@ async def wait_for_message(
     """
     limit = max(1, min(limit, READ_PAGE_MAX))
     deadline = asyncio.get_running_loop().time() + timeout_seconds
+    # `scan_since` advances past filtered-out own messages within one poll
+    # cycle so a burst of 200+ consecutive own sends cannot starve peer
+    # messages sitting further back in the stream. If nothing peer-shaped
+    # is retrievable, scan_since carries into the next poll tick.
+    scan_since = since_sequence
     while True:
-        # Read a wide window so filtering doesn't miss peer messages when
-        # the caller has posted recent traffic; then apply exclusion and
-        # trim to `limit`.
         page = read_room(
             room_name, principal_kind, principal_id,
-            since_sequence=since_sequence, limit=READ_PAGE_MAX,
+            since_sequence=scan_since, limit=READ_PAGE_MAX,
         )
         candidates = page["messages"]
         if exclude_self and principal_kind == "agent":
             candidates = [m for m in candidates if m["sender_agent_id"] != principal_id]
         elif exclude_self and principal_kind == "operator":
             candidates = [m for m in candidates if m["sender_kind"] != "operator"]
+
         if candidates:
             trimmed = candidates[:limit]
             return {
                 **page,
                 "messages": trimmed,
                 "next_cursor": trimmed[-1]["sequence"],
-                "has_more": len(candidates) > limit,
+                "has_more": len(candidates) > limit or page["has_more"],
             }
+
+        # No peer messages in this window. If more retained messages exist
+        # past it, scan the next window immediately — don't sleep on a stale
+        # cursor while peer messages sit beyond the caller's own-message burst.
+        if page["has_more"]:
+            scan_since = page["next_cursor"]
+            continue
+
+        # Fully drained. Wait for arrivals past our scan point.
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
-            # Empty; preserve original next_cursor so caller can re-arm.
-            return {**page, "messages": []}
+            # Empty; carry scan_since as next_cursor so caller re-arms past
+            # what we already scanned rather than re-scanning own messages.
+            return {**page, "messages": [], "next_cursor": scan_since}
         await asyncio.sleep(min(poll_interval_seconds, remaining))
