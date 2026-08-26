@@ -161,7 +161,14 @@ def chat(
         0, "--since", help="Start displaying messages with sequence > SINCE (0 = all).",
     ),
 ) -> None:
-    """Attach to a room as operator. Interactive by default; --observe for read-only tail."""
+    """Attach to a room as operator. Interactive by default; --observe for read-only tail.
+
+    Interactive mode polls only when you press Enter (empty line is a
+    poll-and-print). For live scrolling of incoming messages, run a second
+    terminal pane with `safeyolo coord chat <room> --observe` — that mode
+    polls continuously and prints new messages as they arrive. Two panes:
+    interactive on one, observe on the other.
+    """
     api.bootstrap()
     try:
         api.join_room(room, "operator", "operator")
@@ -205,6 +212,10 @@ def _observe_loop(room: str, cursor: int) -> None:
 
 def _interactive_loop(room: str, cursor: int) -> None:
     console.print("[dim]--- interactive (empty line polls; :q to quit) ---[/]")
+    console.print(
+        f"[dim]tip: for live scrolling, run `safeyolo coord chat {room} "
+        "--observe` in a second pane[/]"
+    )
     try:
         while True:
             try:
