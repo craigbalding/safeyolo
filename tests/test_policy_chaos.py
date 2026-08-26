@@ -124,3 +124,22 @@ def test_power_cut_protocol_recovers_complete_policy(
     assert evidence["results"][0]["status"] == "PASS"
     assert evidence["results"][0]["visible_version"] == expected_version
     assert (config / "policy.toml").read_text() == POLICY
+
+    # Regression: the advertised replay_command must actually parse.
+    # The pre-fix emit only had `--run-id`, but the recover subparser
+    # requires --config-dir, --state-dir, --output too; the guard flag
+    # is optional at parse time but required for run authorization.
+    # Round-trip the emitted argv through the real parser rather than
+    # matching flag strings, so any future subparser change breaks the
+    # emit here too. (Merge dogfood finding.)
+    from tools.policy_chaos import _parser
+    replay = evidence["replay_command"]
+    # First two args are `python -m tools.policy_chaos`; strip them
+    # before feeding to the subcommand parser.
+    assert replay[:3] == [sys.executable, "-m", "tools.policy_chaos"]
+    parser = _parser()
+    parsed = parser.parse_args(replay[3:])
+    assert parsed.command == "fault"
+    assert parsed.fault_command == "recover"
+    assert parsed.run_id == run_id
+    assert parsed.confirm_disposable_vm is True

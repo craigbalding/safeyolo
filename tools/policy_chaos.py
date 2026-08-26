@@ -388,14 +388,21 @@ def recover_power_cut(args: argparse.Namespace) -> int:
         "visible_hash": visible_hash,
         "restored_hash": _sha256(policy_path.read_bytes()),
         "results": results,
+        # Every argument argparse requires for `fault recover`. The
+        # previous emit was `--run-id` only, which the parser rejects
+        # with a "the following arguments are required" error — so the
+        # advertised replay was unusable. Reviewer finding, merge dogfood.
         "replay_command": [
             sys.executable,
             "-m",
             "tools.policy_chaos",
             "fault",
             "recover",
-            "--run-id",
-            args.run_id,
+            "--run-id", args.run_id,
+            "--config-dir", str(args.config_dir),
+            "--state-dir", str(args.state_dir),
+            "--output", str(args.output),
+            "--confirm-disposable-vm",
         ],
     }
     _write_report(args.output, report)
