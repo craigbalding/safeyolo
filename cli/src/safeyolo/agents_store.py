@@ -24,11 +24,6 @@ def _policy_toml_path() -> Path:
     return get_config_dir() / "policy.toml"
 
 
-def _lock_path() -> Path:
-    """Path to lock file sibling."""
-    return get_config_dir() / ".policy.toml.lock"
-
-
 def _load_doc() -> tomlkit.TOMLDocument:
     """Load policy.toml as a TOMLDocument. Returns empty doc if missing.
 

@@ -133,6 +133,42 @@ class TestCoordIdentity:
         from safeyolo.agents_store import get_agent_id
         assert env["sender_agent_id"] == get_agent_id("alice")
 
+    def test_uds_ip_map_conflict_is_403(self, api, isolated_state):
+        """Merge regression (codey seq 100): the coord route must reject a
+        request whose UDS-attributed identity disagrees with the IP-map
+        identity. Uses the REAL merged _resolve_agent_id path — no
+        _as_agent mock — so the assurance-branch identity boundary is
+        exercised through the coord adapter as it will run in prod.
+        Silently trusting either source would be a cross-agent escalation
+        primitive.
+        """
+        from types import SimpleNamespace
+        from safeyolo.proxy_modes.unix_listener import UnixMode
+
+        _register_agent("alice")
+        _register_agent("bob")
+        _setup_room_with_grants("huddle", ["alice", "bob"])
+
+        # Flow the way it arrives at a per-agent UDS listener: proxy_mode
+        # carries the trusted UDS identity, peername is the mapped IP.
+        flow = _make_flow("/api/coord/rooms/huddle/send", method="POST",
+                          body={"body": "conflict probe"})
+        flow.client_conn.peername = ("10.0.0.5", 12345)
+        flow.client_conn.proxy_mode = UnixMode.parse(
+            "unix:/tmp/10.0.0.5_alice/proxy.sock"
+        )
+
+        # A service-discovery addon that maps the SAME source IP to a
+        # DIFFERENT agent. resolve_agent_identity should raise CONFLICT,
+        # is_resolved=False, _resolve_agent_id returns None, coord 403s.
+        stub_sd = SimpleNamespace(get_client_for_ip=lambda ip: "bob")
+        with patch.object(AgentAPI, "_find_addon",
+                          side_effect=lambda name: stub_sd if name == "service-discovery" else None):
+            _run(api, flow)
+
+        assert flow.response.status_code == 403
+        assert "identify agent" in json.loads(flow.response.content)["error"]
+
 
 class TestCoordGrantEnforcement:
     def test_send_denied_without_membership_is_404(self, api, isolated_state):
