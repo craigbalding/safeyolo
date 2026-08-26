@@ -346,30 +346,15 @@ class TestContext(SecurityAddon):
         inherited SecurityAddon._resolve_service_discovery() (master registry
         authoritative; singleton fallback only when there is no running master).
         """
-        sd = self._resolve_service_discovery()
-        if sd is None:
-            return None
-
-        source_id = get_client_ip(flow)
-        agent = sd.get_client_for_ip(source_id)
-
-        if not agent or agent in ("unknown", "default"):
-            return None
-
-        stamped = flow.metadata.get("agent")
-        if stamped not in (None, "unknown", agent):
+        identity = self.resolve_agent_identity(flow)
+        if not identity.is_resolved:
             log.warning(
-                "Trusted agent mismatch for source %s: metadata=%r resolved=%r",
-                sanitize_for_log(source_id),
-                stamped,
-                agent,
+                "Trusted agent identity unavailable for source %s: %s",
+                sanitize_for_log(get_client_ip(flow)),
+                identity.reason,
             )
             return None
-
-        # Populate for downstream FlowStore attribution even if the
-        # service_discovery request hook has not yet run.
-        flow.metadata["agent"] = agent
-        return agent
+        return identity.agent
 
     # ------------------------------------------------------------------
     # Request handling

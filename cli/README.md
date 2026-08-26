@@ -290,7 +290,7 @@ Manage hosts, egress posture, and named lists in policy.toml.
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo policy host add <host> [options]` | Add a host rule |
+| `safeyolo policy host add <host> [--rate N] [options]` | Allow a host, optionally with a stricter per-host requests/minute ceiling |
 | `safeyolo policy host remove <host>` | Remove a host rule |
 | `safeyolo policy host deny <host>` | Deny all traffic to a host |
 | `safeyolo policy host list` | List all host rules |
@@ -386,7 +386,7 @@ Host-centric policy defining hosts, credentials, and rate limits:
 
 ```toml
 version = "2.0"
-budget = 12_000
+budget = 12_000  # aggregate requests/minute across all domains
 # egress posture is set on the wildcard [hosts] entry, not at top level
 
 required = ["credential_guard", "network_guard", "circuit_breaker"]

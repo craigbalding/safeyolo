@@ -94,6 +94,9 @@ jobs:
       - name: Check Python syntax
         run: find cli/src -name "*.py" -exec uv run python -m py_compile {} \;
 
+      - name: Test assurance contracts
+        run: uv run python scripts/check_test_assurance.py
+
       - name: Lint with ruff
         run: uv run ruff check cli/src/ tests/ --exclude tests/blackbox/
 

@@ -178,14 +178,10 @@ def recover_trusted_agent(flow: http.HTTPFlow) -> str | None:
     Idempotent — callers can safely invoke and stash the result on
     `flow.metadata["agent"]` themselves.
     """
-    try:
-        proxy_mode = flow.client_conn.proxy_mode
-    except AttributeError:
-        return None
-    agent = getattr(proxy_mode, "agent", None)
-    if not agent or agent in ("unknown", "default"):
-        return None
-    return agent
+    from safeyolo.core.identity import resolve_agent_identity
+
+    identity = resolve_agent_identity(flow)
+    return identity.agent if identity.is_resolved else None
 
 
 class RequestIdGenerator:

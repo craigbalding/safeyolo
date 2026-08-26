@@ -446,10 +446,22 @@ def setup() -> None:  # DOC: README.md
             console.print("  [red]MISSING[/red]  newgidmap (install the `uidmap` package)")
             all_ok = False
         if not userns["subuid"]:
-            console.print("  [red]MISSING[/red]  /etc/subuid entry for the current user")
+            console.print(
+                "  [red]MISSING[/red]  /etc/subuid does not authorize "
+                "SafeYolo's required range for the current user"
+            )
+            console.print(
+                "    [bold]sudo usermod --add-subuids 100000-165535 $USER[/bold]"
+            )
             all_ok = False
         if not userns["subgid"]:
-            console.print("  [red]MISSING[/red]  /etc/subgid entry for the current user")
+            console.print(
+                "  [red]MISSING[/red]  /etc/subgid does not authorize "
+                "SafeYolo's required range for the current user"
+            )
+            console.print(
+                "    [bold]sudo usermod --add-subgids 100000-165535 $USER[/bold]"
+            )
             all_ok = False
         if not userns["setfacl"]:
             console.print("  [red]MISSING[/red]  setfacl (required for rootless rootfs ACL)")
@@ -472,7 +484,8 @@ def setup() -> None:  # DOC: README.md
         # Without the binary both paths fail with a misleading sudo-level
         # error, so gate the whole KVM-rule step on setfacl presence.
         need_kvm = (
-            kvm["kvm_exists"]
+            not kvm.get("forced")
+            and kvm["kvm_exists"]
             and kvm["kvm_operator_access"]
             and not kvm["kvm_subordinate_access"]
             and userns["setfacl"]
@@ -488,7 +501,12 @@ def setup() -> None:  # DOC: README.md
             console.print("  [dim]INFO[/dim]  AppArmor does not restrict userns here — profile not required")
 
         # KVM: report current state before/after
-        if kvm["platform"] == "kvm":
+        if kvm.get("forced"):
+            console.print(
+                "  [dim]INFO[/dim]  systrap selected by "
+                "SAFEYOLO_RUNSC_PLATFORM — KVM setup skipped"
+            )
+        elif kvm["platform"] == "kvm":
             console.print("  [green]OK[/green]  KVM platform (hardware isolation)")
         elif not kvm["kvm_exists"]:
             console.print("  [dim]INFO[/dim]  /dev/kvm not available — using systrap (software isolation)")

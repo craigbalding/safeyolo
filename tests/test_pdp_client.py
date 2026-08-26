@@ -8,7 +8,7 @@ Contract under test:
     configurable unavailable_mode, semaphore backpressure
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -34,6 +34,20 @@ from pdp.schemas import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _http_response(
+    status_code: int,
+    *,
+    payload: dict | None = None,
+    text: str | None = None,
+) -> httpx.Response:
+    kwargs = {"json": payload} if payload is not None else {"text": text or ""}
+    return httpx.Response(
+        status_code,
+        request=httpx.Request("GET", "http://pdp.test/"),
+        **kwargs,
+    )
 
 def _make_event(event_id: str = "evt-test-001"):
     """Build a minimal HttpEvent for tests."""
@@ -124,7 +138,7 @@ class TestPolicyClientRegistry:
         configure_policy_client(config)
 
         client = get_policy_client()
-        with patch.object(client, "shutdown") as mock_shutdown:
+        with patch.object(client, "shutdown", autospec=True,) as mock_shutdown:
             # Re-read the module-level reference via the function
             # reset_policy_client reads _client_instance directly, so
             # we patch the instance's shutdown method
@@ -196,7 +210,7 @@ class TestLocalPolicyClient:
         client = get_policy_client()
 
         # Force PDPCore.evaluate to raise
-        with patch.object(client._pdp, "evaluate", side_effect=RuntimeError("boom")):
+        with patch.object(client._pdp, "evaluate", side_effect=RuntimeError("boom"), autospec=True,):
             event = _make_event("evt-error-test")
             decision = client.evaluate(event)
 
@@ -210,7 +224,7 @@ class TestLocalPolicyClient:
         configure_policy_client(config)
         client = get_policy_client()
 
-        with patch.object(client._pdp, "evaluate", side_effect=ValueError("kaboom")):
+        with patch.object(client._pdp, "evaluate", side_effect=ValueError("kaboom"), autospec=True,):
             decision = client.evaluate(_make_event("evt-500-test"))
 
         assert decision.reason_codes == ["PDP_ERROR", "INTERNAL_ERROR"]
@@ -232,7 +246,7 @@ class TestLocalPolicyClient:
         configure_policy_client(config)
         client = get_policy_client()
 
-        with patch.object(client._pdp, "shutdown") as mock_shutdown:
+        with patch.object(client._pdp, "shutdown", autospec=True,) as mock_shutdown:
             client.shutdown()
             mock_shutdown.assert_called_once()
 
@@ -266,11 +280,12 @@ class TestHttpPolicyClient:
         client = self._make_client()
         allow = _make_allow_decision("evt-http-200")
 
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 200
-        mock_response.json.return_value = allow.model_dump(mode="json")
+        mock_response = _http_response(
+            200,
+            payload=allow.model_dump(mode="json"),
+        )
 
-        with patch.object(client._client, "post", return_value=mock_response):
+        with patch.object(client._client, "post", return_value=mock_response, autospec=True,):
             decision = client.evaluate(_make_event("evt-http-200"))
 
         assert decision.effect == Effect.ALLOW
@@ -283,11 +298,9 @@ class TestHttpPolicyClient:
         """4xx response returns DENY with PDP_ERROR reason code."""
         client = self._make_client()
 
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 422
-        mock_response.text = "Validation Error"
+        mock_response = _http_response(422, text="Validation Error")
 
-        with patch.object(client._client, "post", return_value=mock_response):
+        with patch.object(client._client, "post", return_value=mock_response, autospec=True,):
             decision = client.evaluate(_make_event("evt-4xx"))
 
         assert decision.effect == Effect.DENY
@@ -300,10 +313,9 @@ class TestHttpPolicyClient:
         """5xx response returns DENY with 503 status (fail-closed)."""
         client = self._make_client()
 
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 502
+        mock_response = _http_response(502)
 
-        with patch.object(client._client, "post", return_value=mock_response):
+        with patch.object(client._client, "post", return_value=mock_response, autospec=True,):
             decision = client.evaluate(_make_event("evt-5xx"))
 
         assert decision.effect == Effect.DENY
@@ -318,7 +330,8 @@ class TestHttpPolicyClient:
         client = self._make_client()
 
         with patch.object(
-            client._client, "post", side_effect=httpx.ReadTimeout("timed out")
+            client._client, "post", side_effect=httpx.ReadTimeout("timed out"),
+        autospec=True,
         ):
             decision = client.evaluate(_make_event("evt-timeout"))
 
@@ -334,7 +347,8 @@ class TestHttpPolicyClient:
         client = self._make_client()
 
         with patch.object(
-            client._client, "post", side_effect=httpx.ConnectError("refused")
+            client._client, "post", side_effect=httpx.ConnectError("refused"),
+        autospec=True,
         ):
             decision = client.evaluate(_make_event("evt-conn-err"))
 
@@ -350,7 +364,8 @@ class TestHttpPolicyClient:
         client = self._make_client()
 
         with patch.object(
-            client._client, "post", side_effect=OSError("something broke")
+            client._client, "post", side_effect=OSError("something broke"),
+        autospec=True,
         ):
             decision = client.evaluate(_make_event("evt-unexpected"))
 
@@ -410,10 +425,9 @@ class TestHttpPolicyClient:
         """health_check returns True on 200."""
         client = self._make_client()
 
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 200
+        mock_response = _http_response(200)
 
-        with patch.object(client._client, "get", return_value=mock_response):
+        with patch.object(client._client, "get", return_value=mock_response, autospec=True,):
             assert client.health_check() is True
 
     def test_health_check_error_returns_false(self):
@@ -421,7 +435,8 @@ class TestHttpPolicyClient:
         client = self._make_client()
 
         with patch.object(
-            client._client, "get", side_effect=httpx.ConnectError("down")
+            client._client, "get", side_effect=httpx.ConnectError("down"),
+        autospec=True,
         ):
             assert client.health_check() is False
 
@@ -429,10 +444,9 @@ class TestHttpPolicyClient:
         """health_check returns False on non-200 status."""
         client = self._make_client()
 
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 503
+        mock_response = _http_response(503)
 
-        with patch.object(client._client, "get", return_value=mock_response):
+        with patch.object(client._client, "get", return_value=mock_response, autospec=True,):
             assert client.health_check() is False
 
     # ---- is_addon_enabled ----
@@ -483,7 +497,7 @@ class TestHttpPolicyClient:
     def test_get_task_policy_rejects_unsafe_task_id_without_request(self, task_id):
         client = self._make_client()
 
-        with patch.object(client._client, "get") as mock_get:
+        with patch.object(client._client, "get", autospec=True,) as mock_get:
             assert client.get_task_policy(task_id) is None
 
         mock_get.assert_not_called()
@@ -495,7 +509,7 @@ class TestHttpPolicyClient:
     def test_upsert_task_policy_rejects_unsafe_task_id_without_request(self, task_id):
         client = self._make_client()
 
-        with patch.object(client._client, "put") as mock_put:
+        with patch.object(client._client, "put", autospec=True,) as mock_put:
             result = client.upsert_task_policy(task_id, {"permissions": []})
 
         assert result == {"error": "Invalid task ID"}
@@ -504,21 +518,18 @@ class TestHttpPolicyClient:
     @pytest.mark.parametrize("task_id", ["task-abc", "task_abc.123", "a" * 128])
     def test_task_policy_requests_use_one_validated_path_segment(self, task_id):
         client = self._make_client()
-        response = MagicMock(spec=httpx.Response)
-        response.status_code = 404
+        response = _http_response(404)
 
-        with patch.object(client._client, "get", return_value=response) as mock_get:
+        with patch.object(client._client, "get", return_value=response, autospec=True,) as mock_get:
             client.get_task_policy(task_id)
 
         assert mock_get.call_args.args[0] == f"/v1/tasks/{task_id}/policy"
 
     def test_upsert_task_policy_uses_one_validated_path_segment(self):
         client = self._make_client()
-        response = MagicMock(spec=httpx.Response)
-        response.status_code = 200
-        response.json.return_value = {"status": "ok"}
+        response = _http_response(200, payload={"status": "ok"})
 
-        with patch.object(client._client, "put", return_value=response) as mock_put:
+        with patch.object(client._client, "put", return_value=response, autospec=True,) as mock_put:
             result = client.upsert_task_policy("task-abc", {"permissions": []})
 
         assert result == {"status": "ok"}
@@ -530,7 +541,7 @@ class TestHttpPolicyClient:
         """shutdown() closes the underlying httpx client."""
         client = self._make_client()
 
-        with patch.object(client._client, "close") as mock_close:
+        with patch.object(client._client, "close", autospec=True,) as mock_close:
             client.shutdown()
             mock_close.assert_called_once()
 

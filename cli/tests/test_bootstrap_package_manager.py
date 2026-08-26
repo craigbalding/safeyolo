@@ -231,25 +231,25 @@ class TestPackageInstalledDispatch:
 
     def test_apt_calls_dpkg_query(self):
         calls, run = self._record_run()
-        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run):
+        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run, autospec=True,):
             assert _package_installed("apt", "skopeo") is True
         assert calls == [["dpkg-query", "-W", "-f=${Status}", "skopeo"]]
 
     def test_dnf_calls_rpm_q(self):
         calls, run = self._record_run()
-        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run):
+        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run, autospec=True,):
             assert _package_installed("dnf", "skopeo") is True
         assert calls == [["rpm", "-q", "skopeo"]]
 
     def test_apk_calls_apk_info(self):
         calls, run = self._record_run()
-        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run):
+        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run, autospec=True,):
             assert _package_installed("apk", "skopeo") is True
         assert calls == [["apk", "info", "-e", "skopeo"]]
 
     def test_pacman_calls_pacman_q(self):
         calls, run = self._record_run()
-        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run):
+        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run, autospec=True,):
             assert _package_installed("pacman", "skopeo") is True
         assert calls == [["pacman", "-Q", "skopeo"]]
 
@@ -400,6 +400,8 @@ class TestNeedsSetup:
         base = {
             "newuidmap": True,
             "newgidmap": True,
+            "subuid": True,
+            "subgid": True,
             "setfacl": True,
             "apparmor_restricts": False,
             "apparmor_profile_loaded": False,
@@ -448,6 +450,14 @@ class TestNeedsSetup:
 
         self._stub_platform(monkeypatch)
         self._stub_userns(monkeypatch, newuidmap=False)
+        assert _needs_setup() is True
+
+    @pytest.mark.parametrize("key", ["subuid", "subgid"])
+    def test_true_when_required_subid_range_missing(self, monkeypatch, key):
+        from safeyolo.commands.bootstrap import _needs_setup
+
+        self._stub_platform(monkeypatch)
+        self._stub_userns(monkeypatch, **{key: False})
         assert _needs_setup() is True
 
     def test_apparmor_check_ignores_hosts_without_apparmor(self, monkeypatch):

@@ -7,8 +7,13 @@ policy-driven settings, cache staleness fixes, and request/response hooks.
 
 import json
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
+import pytest
+
+from pdp.client import PolicyClient
+
+pytestmark = pytest.mark.assurance_boundary
 
 class TestCircuitStates:
     """Tests for circuit state machine."""
@@ -224,19 +229,16 @@ class TestCircuitBreakerBlocking:
         keeps repeated doctor probes from opening a diagnostic-host
         circuit.
         """
-        from unittest.mock import patch as _patch
-
         from safeyolo.core.probe import PROBE_HOST
 
         flow = make_flow(url=f"http://{PROBE_HOST}/__pipeline_probe")
         flow.response = make_response(status_code=502, content=b'{"error":"sink_failed"}')
 
-        with _patch.object(circuit_breaker, "record_failure") as record_failure, \
-             _patch.object(circuit_breaker, "record_success") as record_success:
-            circuit_breaker.response(flow)
+        circuit_breaker.response(flow)
 
-        record_failure.assert_not_called()
-        record_success.assert_not_called()
+        status = circuit_breaker.get_status(PROBE_HOST)
+        assert status.failure_count == 0
+        assert status.success_count == 0
 
     def test_request_when_disabled_does_nothing(self, circuit_breaker, make_flow):
         """Test that request hook is a no-op when addon is disabled."""
@@ -244,7 +246,11 @@ class TestCircuitBreakerBlocking:
 
         flow = make_flow(url="http://test.com/api")
 
-        with patch.object(circuit_breaker, "is_enabled", return_value=False):
+        with patch(
+            "safeyolo.core.base.get_option_safe",
+            autospec=True,
+            return_value=False,
+        ):
             circuit_breaker.request(flow)
 
         # Should NOT be blocked because addon is disabled
@@ -357,7 +363,11 @@ class TestResponseHandling:
         flow = make_flow(url="http://test.com/api")
         flow.response = make_response(status_code=500)
 
-        with patch.object(circuit_breaker, "is_enabled", return_value=False):
+        with patch(
+            "safeyolo.core.base.get_option_safe",
+            autospec=True,
+            return_value=False,
+        ):
             circuit_breaker.response(flow)
 
         status = circuit_breaker.get_status("test.com")
@@ -755,7 +765,7 @@ class TestPolicyLoading:
 
     def test_maybe_reload_config_skips_when_pdp_not_configured(self, circuit_breaker):
         """_maybe_reload_config silently skips when the PolicyClient is unconfigured."""
-        with patch("pdp.is_policy_client_configured", return_value=False):
+        with patch("pdp.is_policy_client_configured", autospec=True, return_value=False):
             # Should not raise
             circuit_breaker._maybe_reload_config()
 
@@ -764,7 +774,7 @@ class TestPolicyLoading:
 
     def test_policy_hash_prevents_redundant_reload(self, circuit_breaker):
         """Policy hash prevents redundant reload when unchanged."""
-        mock_client = MagicMock()
+        mock_client = create_autospec(PolicyClient, instance=True, spec_set=True)
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "hash123",
             "addons": {
@@ -774,8 +784,8 @@ class TestPolicyLoading:
             }
         }
 
-        with patch("pdp.get_policy_client", return_value=mock_client), \
-             patch("pdp.is_policy_client_configured", return_value=True):
+        with patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             # First call - should reload
             circuit_breaker._maybe_reload_config()
             assert circuit_breaker.failure_threshold == 10
@@ -982,7 +992,7 @@ class TestRequestIdPropagation:
             url="http://test.com/api"
         )
 
-        with patch("circuit_breaker.write_event") as mock_write:
+        with patch("circuit_breaker.write_event", autospec=True) as mock_write:
             circuit_breaker._log_circuit_event("open", "test.com", flow=flow, failure_count=5)
 
         mock_write.assert_called_once()
@@ -1016,7 +1026,7 @@ class TestRequestIdPropagation:
         )
         flow.response = make_response(status_code=500)
 
-        with patch("circuit_breaker.write_event") as mock_write:
+        with patch("circuit_breaker.write_event", autospec=True) as mock_write:
             circuit_breaker.response(flow)
 
         # The failure should have opened the circuit and logged an event with request_id
@@ -1026,7 +1036,7 @@ class TestRequestIdPropagation:
 
     def test_log_event_without_flow_has_none_request_id(self, circuit_breaker):
         """Verify _log_circuit_event passes None for request_id when no flow is provided."""
-        with patch("circuit_breaker.write_event") as mock_write:
+        with patch("circuit_breaker.write_event", autospec=True) as mock_write:
             circuit_breaker._log_circuit_event("reset", "test.com")
 
         mock_write.assert_called_once()

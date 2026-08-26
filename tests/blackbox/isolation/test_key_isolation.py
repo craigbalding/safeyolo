@@ -8,6 +8,8 @@ No JSON result files, no verifier containers — direct probes only.
 """
 
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -147,16 +149,28 @@ class TestPrivateKeyAbsent:
         )
 
     def test_full_filesystem_scan_for_private_keys(self):
-        """Whole-filesystem scan finds no PRIVATE KEY content.
+        """Whole-filesystem scan finds no private key for SafeYolo's CA.
 
         What: os.walk from / (skipping /proc, /sys, /dev, /run and
-        third-party site-packages); read the first 1 KiB of each
-        regular file; assert 'PRIVATE KEY' doesn't appear.
+        third-party site-packages); inspect private-key candidates and
+        assert none has the public key from safeyolo.crt.
         Why: The targeted tests above check known-critical paths.
-        This is the catch-all: if the key leaked to a surprising
+        This is the catch-all: if SafeYolo's CA key leaked to a surprising
         location (/tmp, /var/log, an agent workspace subdir), the
-        targeted tests would miss it but this scan would catch it.
+        targeted tests would miss it but this scan would catch it. Guest-local
+        SSH host keys are expected and are not SafeYolo trust material.
         """
+        openssl = shutil.which("openssl")
+        if openssl is None:
+            pytest.skip("openssl is required to compare private keys with the trusted CA")
+        trusted = subprocess.run(
+            [openssl, "x509", "-in", str(PUBLIC_CERT), "-pubkey", "-noout"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout.strip()
+
         found = []
         for root, dirs, files in os.walk("/"):
             # Skip pseudo-filesystems
@@ -173,10 +187,23 @@ class TestPrivateKeyAbsent:
                     with open(path) as fh:
                         head = fh.read(1024)
                     if "PRIVATE KEY" in head:
-                        found.append(path)
-                except (PermissionError, OSError, UnicodeDecodeError):
+                        candidate = subprocess.run(
+                            [openssl, "pkey", "-in", path, "-pubout", "-passin", "pass:"],
+                            capture_output=True,
+                            text=True,
+                            timeout=2,
+                            check=False,
+                        )
+                        if candidate.returncode == 0 and candidate.stdout.strip() == trusted:
+                            found.append(path)
+                except (
+                    PermissionError,
+                    OSError,
+                    UnicodeDecodeError,
+                    subprocess.TimeoutExpired,
+                ):
                     pass
 
         assert not found, (
-            f"SECURITY FAILURE: Private key found in VM: {found}"
+            f"SECURITY FAILURE: SafeYolo CA private key found in VM: {found}"
         )

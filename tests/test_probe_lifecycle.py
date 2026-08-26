@@ -30,7 +30,8 @@ shape.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from mitmproxy.test import taddons, tflow
 
@@ -167,15 +168,16 @@ class TestSinkFailureLifecycle:
         original_rid = flow.metadata["request_id"]
 
         # Simulate transport_guard.server_connect refusing on probe host.
-        data = MagicMock()
-        data.server.address = (PROBE_HOST, 80)
-        data.server.error = None
-        data.client.peername = ("10.0.0.42", 5555)
-        data.client.sni = None
-        data.client.proxy_mode = MagicMock()
-        data.client.proxy_mode.agent = "doctor-probe"
+        data = SimpleNamespace(
+            server=SimpleNamespace(address=(PROBE_HOST, 80), error=None),
+            client=SimpleNamespace(
+                peername=("10.0.0.42", 5555),
+                sni=None,
+                proxy_mode=SimpleNamespace(agent="doctor-probe"),
+            ),
+        )
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True,):
             guard.server_connect(data)
 
         assert data.server.error == REFUSAL_MESSAGE
@@ -183,7 +185,7 @@ class TestSinkFailureLifecycle:
         # mitmproxy then surfaces the error on the HTTPFlow. error(flow)
         # fires — the bridge we added in B12.
         flow.error = OSError("simulated: refused by transport_guard")
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True,):
             guard.error(flow)
 
         # request_id must be preserved (ensure_request_id is idempotent).
@@ -220,21 +222,22 @@ class TestSinkFailureLifecycle:
         original_rid = flow.metadata["request_id"]
 
         # server_connect fires with probe host address — refuse.
-        data = MagicMock()
-        data.server.address = (PROBE_HOST, 80)
-        data.server.error = None
-        data.client.peername = ("10.0.0.42", 5555)
-        data.client.sni = None
-        data.client.proxy_mode = MagicMock()
-        data.client.proxy_mode.agent = "doctor-probe"
+        data = SimpleNamespace(
+            server=SimpleNamespace(address=(PROBE_HOST, 80), error=None),
+            client=SimpleNamespace(
+                peername=("10.0.0.42", 5555),
+                sni=None,
+                proxy_mode=SimpleNamespace(agent="doctor-probe"),
+            ),
+        )
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True,):
             guard.server_connect(data)
         assert data.server.error is not None
 
         # error(flow) bridges to trace with the shared reason constant.
         flow.error = OSError("simulated: refused")
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True,):
             guard.error(flow)
 
         assert flow.metadata["request_id"] == original_rid

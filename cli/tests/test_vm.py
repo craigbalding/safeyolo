@@ -6,7 +6,8 @@ import shutil
 import signal
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -30,6 +31,16 @@ from safeyolo.vm import (
     start_vm,
     stop_vm,
 )
+
+_POPEN = subprocess.Popen
+
+
+def _process(pid: int = 1):
+    """Autospecced Popen instance with the runtime attributes tests inspect."""
+    process = object.__new__(_POPEN)
+    process.pid = pid
+    process.returncode = None
+    return create_autospec(process, spec_set=True)
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -322,6 +333,22 @@ class TestPrepareConfigShare:
             path = share / name
             assert path.exists(), f"{name} missing from config share"
             assert os.access(path, os.X_OK), f"{name} not executable"
+
+    def test_guest_sudo_helper_is_staged_for_runtime_migration(self, tmp_config_dir):
+        import safeyolo.vm as vm_mod
+
+        share = prepare_config_share("agent1", "/workspace")
+        helper = share / "guest-sudo"
+
+        assert helper.read_bytes() == vm_mod._guest_sudo_source().read_bytes()
+        assert os.access(helper, os.X_OK)
+
+    def test_guest_init_static_refreshes_sudo_policy(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-static").read_text()
+
+        assert "install -m 0755 /safeyolo/guest-sudo /usr/local/bin/sudo" in source
+        assert "agent ALL=(ALL) NOPASSWD:ALL" in source
 
     def test_guest_init_static_seeds_missing_skeleton_entries(self, tmp_config_dir):
         """Pre-seeded host config must not prevent distro skeleton defaults."""
@@ -684,7 +711,7 @@ class TestStartVm:
     def test_darwin_foreground_requires_vsock_term(self, tmp_config_dir, monkeypatch):
         (tmp_config_dir / "bin" / "vsock-term").unlink()
         monkeypatch.setattr("safeyolo.vm.platform.system", lambda: "Darwin")
-        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: _process())
 
         with pytest.raises(VMError, match="vsock-term not found"):
             start_vm("agent1", "/workspace", background=False)
@@ -692,7 +719,7 @@ class TestStartVm:
     def test_linux_foreground_does_not_require_vsock_term(self, tmp_config_dir, monkeypatch):
         (tmp_config_dir / "bin" / "vsock-term").unlink()
         monkeypatch.setattr("safeyolo.vm.platform.system", lambda: "Linux")
-        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: _process())
 
         start_vm("agent1", "/workspace", background=False)
 
@@ -703,7 +730,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            return MagicMock(pid=1)
+            return _process()
 
         monkeypatch.setattr("subprocess.Popen", mock_popen)
 
@@ -712,7 +739,7 @@ class TestStartVm:
         assert "--no-terminal" in captured_cmd
 
     def test_writes_pid_file(self, tmp_config_dir, monkeypatch):
-        mock_proc = MagicMock()
+        mock_proc = _process()
         mock_proc.pid = 12345
         monkeypatch.setattr(
             "subprocess.Popen",
@@ -725,7 +752,7 @@ class TestStartVm:
         assert pid_path.read_text() == "12345"
 
     def test_returns_popen_handle(self, tmp_config_dir, monkeypatch):
-        mock_proc = MagicMock()
+        mock_proc = _process()
         mock_proc.pid = 99
         monkeypatch.setattr("subprocess.Popen", lambda cmd, **kw: mock_proc)
 
@@ -737,7 +764,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -754,7 +781,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -772,7 +799,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -790,7 +817,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -812,7 +839,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -828,7 +855,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -844,7 +871,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -871,7 +898,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_kwargs.update(kw)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -889,7 +916,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_kwargs.update(kw)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -907,7 +934,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -934,7 +961,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            proc = MagicMock()
+            proc = _process()
             proc.pid = 1
             return proc
 
@@ -946,8 +973,8 @@ class TestStartVm:
             if cmd[0] == "cp" and "-c" in cmd:
                 src, dst = cmd[-2], cmd[-1]
                 Path(dst).write_bytes(Path(src).read_bytes())
-                return MagicMock(returncode=0, stdout=b"", stderr=b"")
-            return MagicMock(returncode=0)
+                return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+            return subprocess.CompletedProcess(cmd, 0)
 
         monkeypatch.setattr("subprocess.Popen", mock_popen)
         monkeypatch.setattr("subprocess.run", mock_cp_run)
@@ -979,14 +1006,14 @@ class TestStartVm:
         must be replaced, not appended to -- otherwise subsequent restores
         attach an overlay that drifted from save-time state."""
         def mock_popen(cmd, **kw):
-            return MagicMock(pid=1)
+            return _process()
 
         def mock_cp_run(cmd, **kw):
             if cmd[0] == "cp" and "-c" in cmd:
                 src, dst = cmd[-2], cmd[-1]
                 Path(dst).write_bytes(Path(src).read_bytes())
-                return MagicMock(returncode=0)
-            return MagicMock(returncode=0)
+                return subprocess.CompletedProcess(cmd, 0)
+            return subprocess.CompletedProcess(cmd, 0)
 
         monkeypatch.setattr("subprocess.Popen", mock_popen)
         monkeypatch.setattr("subprocess.run", mock_cp_run)
@@ -1004,7 +1031,7 @@ class TestStartVm:
     def test_restore_without_overlay_clone_raises(self, tmp_config_dir, monkeypatch):
         """If the paired overlay clone is missing, restore can't possibly
         succeed -- refuse early rather than hand VZ a mismatched overlay."""
-        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: _process())
         snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
         # No overlay clone file.
 
@@ -1020,7 +1047,7 @@ class TestStartVm:
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            return MagicMock(pid=1)
+            return _process()
 
         monkeypatch.setattr("subprocess.Popen", mock_popen)
         snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
@@ -1035,7 +1062,7 @@ class TestStartVm:
     def test_snapshot_and_restore_mutually_exclusive(self, tmp_config_dir, monkeypatch):
         """The helper's own arg parser would reject both flags together,
         but we should fail in Python so the error message is clearer."""
-        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: _process())
         snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
         with pytest.raises(VMError, match="mutually exclusive"):
             start_vm(
@@ -1353,7 +1380,7 @@ class TestGuestImageChecks:
         (share / "initramfs.cpio.gz").write_bytes(b"i")
         (share / "rootfs-base.ext4").write_bytes(b"r")
 
-        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+        with patch("safeyolo.vm.platform.system", return_value="Darwin", autospec=True,):
             assert check_guest_images() is True
 
     def test_check_guest_images_missing_kernel_darwin(self, tmp_config_dir):
@@ -1362,7 +1389,7 @@ class TestGuestImageChecks:
         (share / "initramfs.cpio.gz").write_bytes(b"i")
         (share / "rootfs-base.ext4").write_bytes(b"r")
 
-        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+        with patch("safeyolo.vm.platform.system", return_value="Darwin", autospec=True,):
             assert check_guest_images() is False
 
     def test_check_guest_images_missing_initrd_darwin(self, tmp_config_dir):
@@ -1371,7 +1398,7 @@ class TestGuestImageChecks:
         (share / "Image").write_bytes(b"k")
         (share / "rootfs-base.ext4").write_bytes(b"r")
 
-        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+        with patch("safeyolo.vm.platform.system", return_value="Darwin", autospec=True,):
             assert check_guest_images() is False
 
     def test_check_guest_images_missing_rootfs_on_darwin(self, tmp_config_dir):
@@ -1381,7 +1408,7 @@ class TestGuestImageChecks:
         (share / "Image").write_bytes(b"k")
         (share / "initramfs.cpio.gz").write_bytes(b"i")
 
-        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+        with patch("safeyolo.vm.platform.system", return_value="Darwin", autospec=True,):
             assert check_guest_images() is False
 
     def test_check_guest_images_none_present(self, tmp_config_dir):
@@ -1393,7 +1420,7 @@ class TestGuestImageChecks:
         tree = tmp_config_dir / "share" / "rootfs-tree"
         (tree / "etc").mkdir(parents=True)
 
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             assert check_guest_images() is True
 
     def test_check_guest_images_linux_ignores_missing_kernel(self, tmp_config_dir):
@@ -1404,7 +1431,7 @@ class TestGuestImageChecks:
         (tree / "etc").mkdir(parents=True)
         # No Image, no initramfs.cpio.gz, no ext4
 
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             assert check_guest_images() is True
 
     def test_check_guest_images_linux_rejects_ext4_only(self, tmp_config_dir):
@@ -1414,7 +1441,7 @@ class TestGuestImageChecks:
         share.mkdir(exist_ok=True)
         (share / "rootfs-base.ext4").write_bytes(b"r")
 
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             assert check_guest_images() is False
 
     def test_check_guest_images_linux_rejects_empty_tree(self, tmp_config_dir):
@@ -1423,7 +1450,7 @@ class TestGuestImageChecks:
         plain is_dir() would miss."""
         (tmp_config_dir / "share" / "rootfs-tree").mkdir(parents=True)
 
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             assert check_guest_images() is False
 
     def test_guest_image_status_all_present(self, tmp_config_dir):
@@ -1489,7 +1516,7 @@ class TestCloneCustomRootfs:
         (source_dir / "cache" / "var_cache_apt" / "package.deb").write_text("cache")
         (source_dir / "cache-paths.txt").write_text("/var/cache/apt\n")
 
-        clone_id = MagicMock(hex="fixed")
+        clone_id = SimpleNamespace(hex="fixed")
         temporary = tmp_config_dir / "agents" / "engagement" / ".rootfs-clone-fixed"
         real_stat = Path.stat
         commands = []
@@ -1509,10 +1536,10 @@ class TestCloneCustomRootfs:
             return subprocess.CompletedProcess(command, 0)
 
         with (
-            patch("safeyolo.vm.platform.system", return_value="Linux"),
-            patch("safeyolo.vm.uuid.uuid4", return_value=clone_id),
+            patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,),
+            patch("safeyolo.vm.uuid.uuid4", return_value=clone_id, autospec=True,),
             patch("safeyolo.vm.Path.stat", new=fake_stat),
-            patch("safeyolo.vm.subprocess.run", side_effect=fake_run),
+            patch("safeyolo.vm.subprocess.run", side_effect=fake_run, autospec=True,),
         ):
             result = clone_custom_rootfs("kali-base", "engagement")
 
@@ -1526,7 +1553,7 @@ class TestCloneCustomRootfs:
     def test_linux_rejects_agent_without_custom_rootfs(self, tmp_config_dir):
         (tmp_config_dir / "agents" / "plain").mkdir(parents=True)
 
-        with patch("safeyolo.vm.platform.system", return_value="Linux"), \
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,), \
              pytest.raises(VMError, match="no cloneable custom rootfs tree"):
             clone_custom_rootfs("plain", "engagement")
 
@@ -1539,8 +1566,8 @@ class TestCloneCustomRootfs:
 
         failed_clone = subprocess.CompletedProcess(["cp", "-c"], 1)
         with (
-            patch("safeyolo.vm.platform.system", return_value="Darwin"),
-            patch("safeyolo.vm.subprocess.run", return_value=failed_clone) as run,
+            patch("safeyolo.vm.platform.system", return_value="Darwin", autospec=True,),
+            patch("safeyolo.vm.subprocess.run", return_value=failed_clone, autospec=True,) as run,
         ):
             result = clone_custom_rootfs("kali-base", "engagement")
 
@@ -1592,7 +1619,7 @@ class TestBuildCustomRootfs:
             'echo -n stub > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
         )
 
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             out = build_custom_rootfs("myagent", script)
 
         assert out == tmp_config_dir / "agents" / "myagent" / "rootfs"
@@ -1609,7 +1636,7 @@ class TestBuildCustomRootfs:
             tmp_path,
             '#!/bin/sh\nmkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE"\n',
         )
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             out = build_custom_rootfs("agent0", script)
 
         assert out.is_dir()
@@ -1621,7 +1648,7 @@ class TestBuildCustomRootfs:
         from safeyolo.vm import build_custom_rootfs
 
         script = self._write_script(tmp_path, '#!/bin/sh\nexit 0\n')
-        with patch("safeyolo.vm.platform.system", return_value="Linux"), \
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,), \
              pytest.raises(VMError, match="did not produce"):
             build_custom_rootfs("agent0", script)
 
@@ -1632,7 +1659,7 @@ class TestBuildCustomRootfs:
         from safeyolo.vm import build_custom_rootfs
 
         script = self._write_script(tmp_path, '#!/bin/sh\nexit 7\n')
-        with patch("safeyolo.vm.platform.system", return_value="Linux"), \
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,), \
              pytest.raises(VMError, match="exited with code 7"):
             build_custom_rootfs("agent0", script)
 
@@ -1643,7 +1670,7 @@ class TestBuildCustomRootfs:
         from safeyolo.vm import build_custom_rootfs
 
         script = self._write_script(tmp_path, "#!/bin/sh\nexit 0\n")
-        process = MagicMock()
+        process = _process()
 
         def wait(*, timeout=None):
             if process.wait.call_count == 1:
@@ -1655,8 +1682,8 @@ class TestBuildCustomRootfs:
         process.poll.return_value = None
 
         with (
-            patch("safeyolo.vm.platform.system", return_value="Linux"),
-            patch("safeyolo.vm.subprocess.Popen", return_value=process),
+            patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,),
+            patch("safeyolo.vm.subprocess.Popen", return_value=process, autospec=True,),
             pytest.raises(KeyboardInterrupt),
         ):
             build_custom_rootfs("agent0", script)
@@ -1672,7 +1699,7 @@ class TestBuildCustomRootfs:
         from safeyolo.vm import build_custom_rootfs
 
         script = self._write_script(tmp_path, "#!/bin/sh\nexit 0\n")
-        process = MagicMock()
+        process = _process()
         process.wait.side_effect = [
             KeyboardInterrupt(),
             KeyboardInterrupt(),
@@ -1682,8 +1709,8 @@ class TestBuildCustomRootfs:
         process.poll.side_effect = [None, None, None, 137]
 
         with (
-            patch("safeyolo.vm.platform.system", return_value="Linux"),
-            patch("safeyolo.vm.subprocess.Popen", return_value=process),
+            patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,),
+            patch("safeyolo.vm.subprocess.Popen", return_value=process, autospec=True,),
             pytest.raises(KeyboardInterrupt),
         ):
             build_custom_rootfs("agent0", script)
@@ -1709,7 +1736,7 @@ class TestBuildCustomRootfs:
         # SafeYolo should read it into its private work directory and execute
         # the closed staged inode instead.
         with script.open("a"), \
-             patch("safeyolo.vm.platform.system", return_value="Linux"):
+             patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             out = build_custom_rootfs("agent0", script)
 
         assert (out / "etc" / "hostname").read_bytes() == b"staged"
@@ -1728,7 +1755,7 @@ class TestBuildCustomRootfs:
             'mkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE/etc"\n',
         )
         try:
-            with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
                 build_custom_rootfs("agent0", script)
             leaked["workdir"] = Path("/tmp/_safeyolo_test_workdir").read_text().strip()
         finally:
@@ -1751,7 +1778,7 @@ class TestBuildCustomRootfs:
             'exit 1\n',
         )
         try:
-            with patch("safeyolo.vm.platform.system", return_value="Linux"), \
+            with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,), \
                  pytest.raises(VMError):
                 build_custom_rootfs("agent0", script)
             workdir = Path("/tmp/_safeyolo_test_workdir").read_text().strip()
@@ -1781,7 +1808,7 @@ class TestBuildCustomRootfs:
             'mkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE/etc"\n'
             'echo -n fresh > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
         )
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             out = build_custom_rootfs("agent0", script)
 
         assert (out / "etc" / "hostname").read_bytes() == b"fresh"
@@ -1795,7 +1822,7 @@ class TestBuildCustomRootfs:
         from safeyolo.vm import build_custom_rootfs
 
         script = self._write_script(tmp_path, '#!/bin/sh\nexit 0\n')
-        with patch("safeyolo.vm.platform.system", return_value="Darwin"), \
-             patch("safeyolo.vm.shutil.which", return_value=None), \
+        with patch("safeyolo.vm.platform.system", return_value="Darwin", autospec=True,), \
+             patch("safeyolo.vm.shutil.which", return_value=None, autospec=True,), \
              pytest.raises(VMError, match="brew install lima"):
             build_custom_rootfs("agent0", script)

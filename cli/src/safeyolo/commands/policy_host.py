@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
-import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -53,12 +51,45 @@ def _load_toml() -> tuple[tomlkit.TOMLDocument, Path]:
 
 
 def _save_toml(doc: tomlkit.TOMLDocument, path: Path) -> None:
-    """Atomic write of TOMLDocument."""
-    content = tomlkit.dumps(doc)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", dir=path.parent, delete=False) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-    shutil.move(tmp_path, str(path))
+    """Compatibility helper for read-only callers; commands mutate under lock."""
+    from safeyolo.policy.toml_roundtrip import save_roundtrip
+
+    save_roundtrip(path, doc)
+
+
+def _locked_mutate(mutate_fn):
+    """Apply one CLI read-modify-write operation under the shared lock."""
+    path = get_config_dir() / "policy.toml"
+    if not path.exists():
+        console.print("[red]Error:[/red] policy.toml not found. Run [bold]safeyolo init[/bold].")
+        raise typer.Exit(1)
+    from safeyolo.policy.toml_roundtrip import locked_policy_mutate
+
+    try:
+        return locked_policy_mutate(path, mutate_fn)
+    except (OSError, ValueError, tomlkit.exceptions.TOMLKitError) as exc:
+        console.print(f"[red]Error:[/red] {escape(str(exc))}")
+        raise typer.Exit(1) from exc
+
+
+def _validate_rate(doc, rate: int | None, *, require_global: bool = False) -> int | None:
+    """Validate a CLI host rate against the latest policy-wide budget."""
+    budget = doc.get("budget")
+    if budget is not None and (
+        not isinstance(budget, int) or isinstance(budget, bool) or budget < 1
+    ):
+        raise ValueError("global network budget must be a positive integer")
+    if budget is not None:
+        budget = int(budget)
+    if require_global and budget is None:
+        raise ValueError("no global budget is configured; pass --rate or configure budget")
+    if rate is not None and (type(rate) is not int or rate < 1):
+        raise ValueError("--rate must be a positive integer")
+    if rate is not None and budget is not None and rate > budget:
+        raise ValueError(
+            f"--rate {rate} exceeds global budget {budget} requests/minute"
+        )
+    return budget
 
 
 def _get_hosts_table(doc: tomlkit.TOMLDocument, agent: str | None = None):
@@ -110,30 +141,43 @@ def host_add(  # DOC: docs/CONFIGURATION.md
         safeyolo policy host add api.stripe.com --rate 600 --agent boris
         safeyolo policy host add temp-api.com --rate 100 --expires 1d
     """
-    doc, path = _load_toml()
-    hosts = _get_hosts_table(doc, agent)
+    def mutate(doc):
+        budget = _validate_rate(doc, rate, require_global=rate is None)
+        hosts = _get_hosts_table(doc, agent)
+        config = tomlkit.inline_table()
+        config.append("egress", "allow")
+        if rate is not None:
+            config.append("rate", rate)
+        if expires is not None:
+            config.append("expires", _parse_expires(expires))
 
-    config = tomlkit.inline_table()
-    if rate is not None:
-        config.append("rate", rate)
-    if expires is not None:
-        config.append("expires", _parse_expires(expires))
-
-    if host in hosts:
-        # Merge into existing entry
-        existing = hosts[host]
-        if isinstance(existing, (dict, tomlkit.items.InlineTable, tomlkit.items.Table)):
-            if rate is not None:
-                existing["rate"] = rate
-            if expires is not None:
-                existing["expires"] = _parse_expires(expires)
+        if host in hosts:
+            existing = hosts[host]
+            if isinstance(existing, (dict, tomlkit.items.InlineTable, tomlkit.items.Table)):
+                existing["egress"] = "allow"
+                if rate is None:
+                    existing.pop("rate", None)
+                else:
+                    existing["rate"] = rate
+                if expires is not None:
+                    existing["expires"] = _parse_expires(expires)
+            else:
+                hosts[host] = config
         else:
             hosts[host] = config
-    else:
-        hosts[host] = config
+        return budget
 
-    _save_toml(doc, path)
-    console.print(f"[green]Added host:[/green] {escape(host)}{_scope_label(agent)}")
+    budget = _locked_mutate(mutate)
+    if rate is None:
+        rate_label = f"global budget ({budget:,} req/min)"
+    elif budget is None:
+        rate_label = f"{rate:,} req/min; global budget not configured"
+    else:
+        rate_label = f"{rate:,} req/min; global budget {budget:,} req/min"
+    console.print(
+        f"[green]Added host:[/green] {escape(host)}{_scope_label(agent)} "
+        f"[dim](rate: {rate_label})[/dim]"
+    )
 
 
 @host_app.command("remove")
@@ -147,15 +191,16 @@ def host_remove(
         safeyolo policy host remove api.stripe.com
         safeyolo policy host remove api.stripe.com --agent boris
     """
-    doc, path = _load_toml()
-    hosts = _get_hosts_table(doc, agent)
+    def mutate(doc):
+        hosts = _get_hosts_table(doc, agent)
+        if host not in hosts:
+            return False
+        del hosts[host]
+        return True
 
-    if host not in hosts:
+    if not _locked_mutate(mutate):
         console.print(f"[yellow]Not found:[/yellow] {escape(host)}{_scope_label(agent)}")
         raise typer.Exit(1)
-
-    del hosts[host]
-    _save_toml(doc, path)
     console.print(f"[green]Removed host:[/green] {escape(host)}{_scope_label(agent)}")
 
 
@@ -175,22 +220,21 @@ def host_deny(
         safeyolo policy host deny sketchy.io --expires 7d
         safeyolo policy host deny sketchy.io --expires 7d --agent boris
     """
-    doc, path = _load_toml()
-    hosts = _get_hosts_table(doc, agent)
+    def mutate(doc):
+        hosts = _get_hosts_table(doc, agent)
+        existing = hosts.get(host)
+        if isinstance(existing, dict):
+            existing["egress"] = "deny"
+            if expires is not None:
+                existing["expires"] = _parse_expires(expires)
+        else:
+            config = tomlkit.inline_table()
+            config.append("egress", "deny")
+            if expires is not None:
+                config.append("expires", _parse_expires(expires))
+            hosts[host] = config
 
-    # Merge into existing entry to preserve other fields (rate, credentials, etc.)
-    existing = hosts.get(host)
-    if isinstance(existing, dict):
-        existing["egress"] = "deny"
-        if expires is not None:
-            existing["expires"] = _parse_expires(expires)
-    else:
-        config = tomlkit.inline_table()
-        config.append("egress", "deny")
-        if expires is not None:
-            config.append("expires", _parse_expires(expires))
-        hosts[host] = config
-    _save_toml(doc, path)
+    _locked_mutate(mutate)
 
     dur = expires or "permanent"
     console.print(f"[red]Denied host:[/red] {escape(host)} [dim](expires {dur})[/dim]{_scope_label(agent)}")
@@ -210,33 +254,35 @@ def host_add_list(
         safeyolo policy host add-list known_bad --egress deny
         safeyolo policy host add-list package_registries --rate 1200
     """
-    doc, path = _load_toml()
-
-    # Verify the list exists in [lists]
-    lists = doc.get("lists", {})
-    if name not in lists:
-        console.print(f"[red]Error:[/red] List '${escape(name)}' not found in [lists]. Add it first with: safeyolo policy list add {escape(name)} <path>")
+    if egress is not None and egress not in ("allow", "deny", "prompt"):
+        console.print(f"[red]Error:[/red] Invalid egress '{escape(egress)}'. Use: allow, deny, prompt")
         raise typer.Exit(1)
 
-    hosts = doc.get("hosts")
-    if hosts is None:
-        hosts = tomlkit.table()
-        doc.add("hosts", hosts)
+    def mutate(doc):
+        lists = doc.get("lists", {})
+        if name not in lists:
+            raise ValueError(
+                f"List '${name}' not found in [lists]. Add it first with: "
+                f"safeyolo policy list add {name} <path>"
+            )
+        _validate_rate(doc, rate, require_global=egress == "allow" and rate is None)
+        hosts = doc.get("hosts")
+        if hosts is None:
+            hosts = tomlkit.table()
+            doc.add("hosts", hosts)
+        config = tomlkit.inline_table()
+        if egress is not None:
+            config.append("egress", egress)
+        if rate is not None:
+            config.append("rate", rate)
+        hosts[f"${name}"] = config
+        return dict(config)
 
-    config = tomlkit.inline_table()
-    if egress is not None:
-        if egress not in ("allow", "deny", "prompt"):
-            console.print(f"[red]Error:[/red] Invalid egress '{escape(egress)}'. Use: allow, deny, prompt")
-            raise typer.Exit(1)
-        config.append("egress", egress)
-    if rate is not None:
-        config.append("rate", rate)
-
-    key = f"${name}"
-    hosts[key] = config
-
-    _save_toml(doc, path)
-    console.print(f"[green]Added list reference:[/green] ${escape(name)} = {escape(str(dict(config)))}")
+    saved_config = _locked_mutate(mutate)
+    console.print(
+        f"[green]Added list reference:[/green] "
+        f"${escape(name)} = {escape(str(saved_config))}"
+    )
 
 
 @host_app.command("list")
@@ -298,27 +344,26 @@ def host_bypass(
         safeyolo policy host bypass api.stripe.com circuit_breaker
         safeyolo policy host bypass api.stripe.com pattern_scanner --agent boris
     """
-    doc, path = _load_toml()
-    hosts = _get_hosts_table(doc, agent)
-
-    if host in hosts:
-        existing = hosts[host]
-        if isinstance(existing, (dict, tomlkit.items.InlineTable, tomlkit.items.Table)):
-            bypass_list = existing.get("bypass", [])
-            if isinstance(bypass_list, list):
-                if addon not in bypass_list:
-                    bypass_list.append(addon)
-                    existing["bypass"] = bypass_list
+    def mutate(doc):
+        hosts = _get_hosts_table(doc, agent)
+        if host in hosts:
+            existing = hosts[host]
+            if isinstance(existing, (dict, tomlkit.items.InlineTable, tomlkit.items.Table)):
+                bypass_list = existing.get("bypass", [])
+                if isinstance(bypass_list, list):
+                    if addon not in bypass_list:
+                        bypass_list.append(addon)
+                        existing["bypass"] = bypass_list
+                else:
+                    existing["bypass"] = [addon]
             else:
-                existing["bypass"] = [addon]
+                config = tomlkit.inline_table()
+                config.append("bypass", [addon])
+                hosts[host] = config
         else:
             config = tomlkit.inline_table()
             config.append("bypass", [addon])
             hosts[host] = config
-    else:
-        config = tomlkit.inline_table()
-        config.append("bypass", [addon])
-        hosts[host] = config
 
-    _save_toml(doc, path)
+    _locked_mutate(mutate)
     console.print(f"[green]Bypass added:[/green] {escape(host)} \u2192 {escape(addon)}{_scope_label(agent)}")

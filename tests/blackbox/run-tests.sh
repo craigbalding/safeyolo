@@ -3,7 +3,7 @@
 # Run SafeYolo blackbox tests (split execution model)
 #
 # Host-side pytest: proxy functional tests (credential guard, network guard)
-# VM-side pytest:   isolation tests (network escape, privilege escalation, key isolation)
+# VM-side pytest:   isolation tests (including intended guest-root capability)
 #
 # Runs as an ISOLATED INSTANCE alongside production SafeYolo:
 #   - Separate config dir (~/.safeyolo-test)
@@ -16,6 +16,7 @@
 #   ./run-tests.sh              # Run all tests
 #   ./run-tests.sh --proxy      # Proxy functional tests only
 #   ./run-tests.sh --isolation  # VM isolation tests only
+#   ./run-tests.sh --expect-platform systrap|kvm|vz
 #   ./run-tests.sh --verbose    # Verbose pytest output
 #
 # Exit codes:
@@ -47,10 +48,16 @@ export SAFEYOLO_SUBNET_BASE=75
 # Logs + flow store scoped to the test instance so blackbox runs
 # don't pollute production logs/flows.sqlite3.
 export SAFEYOLO_LOGS_DIR="${SAFEYOLO_CONFIG_DIR}/logs"
+# Generated public certificates and private keys also belong to the test
+# instance. Keeping both outside the checkout and the source instance makes
+# --force regeneration harmless to production state and the worktree.
+export SAFEYOLO_TEST_CERT_DIR="${SAFEYOLO_TEST_CERT_DIR:-$SAFEYOLO_CONFIG_DIR/test-certs/public}"
+export SAFEYOLO_TEST_KEY_DIR="${SAFEYOLO_TEST_KEY_DIR:-$SAFEYOLO_CONFIG_DIR/test-certs/private}"
 
 # Test instance ports (different from production 8080/9090)
 TEST_PROXY_PORT=8180
 TEST_ADMIN_PORT=9190
+TEST_WEB_PORT=8181
 
 # Export for host-side pytest (conftest.py reads these)
 export PROXY_URL="http://127.0.0.1:${TEST_PROXY_PORT}"
@@ -61,6 +68,7 @@ RUN_PROXY=true
 RUN_ISOLATION=true
 VERBOSE=""
 AGENT_NAME="${SAFEYOLO_TEST_AGENT:-bbtest}"
+EXPECTED_PLATFORM=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -76,9 +84,24 @@ while [[ $# -gt 0 ]]; do
             VERBOSE="-v"
             shift
             ;;
+        --expect-platform)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: --expect-platform requires systrap, kvm, or vz" >&2
+                exit 2
+            fi
+            EXPECTED_PLATFORM="$2"
+            case "$EXPECTED_PLATFORM" in
+                systrap|kvm|vz) ;;
+                *)
+                    echo "ERROR: unsupported platform '$EXPECTED_PLATFORM'" >&2
+                    exit 2
+                    ;;
+            esac
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: ./run-tests.sh [--proxy|--isolation] [--verbose]"
+            echo "Usage: ./run-tests.sh [--proxy|--isolation] [--expect-platform PLATFORM] [--verbose]"
             exit 2
             ;;
     esac
@@ -86,7 +109,7 @@ done
 
 echo "=== SafeYolo Blackbox Tests ==="
 echo "  Instance: $SAFEYOLO_CONFIG_DIR"
-echo "  Proxy:    localhost:$TEST_PROXY_PORT  Admin: localhost:$TEST_ADMIN_PORT"
+echo "  Proxy:    localhost:$TEST_PROXY_PORT  Admin: localhost:$TEST_ADMIN_PORT  Web: localhost:$TEST_WEB_PORT"
 echo "  Netns base: SAFEYOLO_SUBNET_BASE=${SAFEYOLO_SUBNET_BASE}"
 echo ""
 
@@ -94,6 +117,24 @@ echo ""
 
 if ! command -v safeyolo &>/dev/null; then
     echo "ERROR: safeyolo CLI not found. Activate the venv or install."
+    exit 2
+fi
+
+# This script removes and recreates agent state beneath the test instance.
+# Refuse ambiguous or aliased targets before performing any mutation.
+SOURCE_CONFIG_REAL="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$SAFEYOLO_SOURCE_CONFIG_DIR")"
+TEST_CONFIG_REAL="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$SAFEYOLO_CONFIG_DIR")"
+HOME_REAL="$(python3 -c 'import pathlib; print(pathlib.Path.home().resolve())')"
+if [ "$TEST_CONFIG_REAL" = "$SOURCE_CONFIG_REAL" ] || \
+   [ "$TEST_CONFIG_REAL" = "$HOME_REAL" ] || \
+   [ "$TEST_CONFIG_REAL" = "/" ]; then
+    echo "ERROR: blackbox test config is not isolated: $TEST_CONFIG_REAL" >&2
+    echo "       Source/live config resolves to: $SOURCE_CONFIG_REAL" >&2
+    exit 2
+fi
+
+if [ -n "$EXPECTED_PLATFORM" ] && [ "$RUN_ISOLATION" != true ]; then
+    echo "ERROR: --expect-platform requires the isolation suite" >&2
     exit 2
 fi
 
@@ -112,8 +153,9 @@ config_path = Path('$SAFEYOLO_CONFIG_DIR/config.yaml')
 config = yaml.safe_load(config_path.read_text())
 config['proxy']['port'] = $TEST_PROXY_PORT
 config['proxy']['admin_port'] = $TEST_ADMIN_PORT
+config['proxy']['web_port'] = $TEST_WEB_PORT
 config['test']['sinkhole_router'] = '$SCRIPT_DIR/harness/sinkhole_router.py'
-config['test']['ca_cert'] = '$SCRIPT_DIR/certs/ca.crt'
+config['test']['ca_cert'] = '$SAFEYOLO_TEST_CERT_DIR/ca.crt'
 config_path.write_text(yaml.dump(config, default_flow_style=False))
 "
 
@@ -155,6 +197,22 @@ if [ -d "$PROD_BIN" ] && [ ! -L "$TEST_BIN" ]; then
     rm -rf "$TEST_BIN"
     ln -s "$PROD_BIN" "$TEST_BIN"
     echo "  Linked binaries: $TEST_BIN -> $PROD_BIN"
+fi
+
+# Capture and assert the selected runtime before producing isolation evidence.
+# Doctor may report unrelated non-fatal setup findings for the isolated test
+# config, so this gate deliberately validates the named platform check itself.
+if [ -n "$EXPECTED_PLATFORM" ]; then
+    ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts}"
+    mkdir -p "$ARTIFACTS_DIR"
+    DOCTOR_JSON="$ARTIFACTS_DIR/doctor.json"
+    DOCTOR_STDERR="$ARTIFACTS_DIR/doctor.stderr"
+    safeyolo doctor --json >"$DOCTOR_JSON" 2>"$DOCTOR_STDERR" || true
+    if ! python3 "$SCRIPT_DIR/assert-platform.py" "$EXPECTED_PLATFORM" "$DOCTOR_JSON"; then
+        echo "ERROR: runtime platform assertion failed" >&2
+        [ ! -s "$DOCTOR_STDERR" ] || sed -n '1,80p' "$DOCTOR_STDERR" >&2
+        exit 2
+    fi
 fi
 
 echo "Generating test certificates..."
@@ -228,16 +286,16 @@ else
         --http-port 18080 \
         --https-port 18443 \
         --control-port 19999 \
-        --cert "$SCRIPT_DIR/certs/sinkhole.crt" \
-        --key "$HOME/.safeyolo/test-certs/sinkhole.key" \
-        --extra-cert "ecc-chain:18444:$SCRIPT_DIR/certs/ecc_chain.pem:$HOME/.safeyolo/test-certs/ecc_chain.key" \
-        --extra-cert "rsa-deep:18445:$SCRIPT_DIR/certs/rsa_deep_chain.pem:$HOME/.safeyolo/test-certs/rsa_deep_chain.key" \
-        --extra-cert "nc-constrained:18446:$SCRIPT_DIR/certs/nc_chain.pem:$HOME/.safeyolo/test-certs/nc_chain.key" \
-        --extra-cert "extra-ints:18447:$SCRIPT_DIR/certs/extra_chain.pem:$HOME/.safeyolo/test-certs/extra_chain.key" \
-        --extra-cert "expired:18448:$SCRIPT_DIR/certs/expired_chain.pem:$HOME/.safeyolo/test-certs/expired_chain.key" \
-        --extra-cert "wrong-san:18449:$SCRIPT_DIR/certs/wrong_san_chain.pem:$HOME/.safeyolo/test-certs/wrong_san_chain.key" \
-        --extra-cert "self-signed:18450:$SCRIPT_DIR/certs/self_signed_chain.pem:$HOME/.safeyolo/test-certs/self_signed_chain.key" \
-        --extra-cert "aia-only:18451:$SCRIPT_DIR/certs/aia_chain.pem:$HOME/.safeyolo/test-certs/aia_chain.key" \
+        --cert "$SAFEYOLO_TEST_CERT_DIR/sinkhole.crt" \
+        --key "$SAFEYOLO_TEST_KEY_DIR/sinkhole.key" \
+        --extra-cert "ecc-chain:18444:$SAFEYOLO_TEST_CERT_DIR/ecc_chain.pem:$SAFEYOLO_TEST_KEY_DIR/ecc_chain.key" \
+        --extra-cert "rsa-deep:18445:$SAFEYOLO_TEST_CERT_DIR/rsa_deep_chain.pem:$SAFEYOLO_TEST_KEY_DIR/rsa_deep_chain.key" \
+        --extra-cert "nc-constrained:18446:$SAFEYOLO_TEST_CERT_DIR/nc_chain.pem:$SAFEYOLO_TEST_KEY_DIR/nc_chain.key" \
+        --extra-cert "extra-ints:18447:$SAFEYOLO_TEST_CERT_DIR/extra_chain.pem:$SAFEYOLO_TEST_KEY_DIR/extra_chain.key" \
+        --extra-cert "expired:18448:$SAFEYOLO_TEST_CERT_DIR/expired_chain.pem:$SAFEYOLO_TEST_KEY_DIR/expired_chain.key" \
+        --extra-cert "wrong-san:18449:$SAFEYOLO_TEST_CERT_DIR/wrong_san_chain.pem:$SAFEYOLO_TEST_KEY_DIR/wrong_san_chain.key" \
+        --extra-cert "self-signed:18450:$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem:$SAFEYOLO_TEST_KEY_DIR/self_signed_chain.key" \
+        --extra-cert "aia-only:18451:$SAFEYOLO_TEST_CERT_DIR/aia_chain.pem:$SAFEYOLO_TEST_KEY_DIR/aia_chain.key" \
         &
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true
@@ -327,6 +385,7 @@ echo ""
 
 PROXY_RESULT=0
 ISOLATION_RESULT=0
+ROOT_ISOLATION_RESULT=0
 
 FIREWALL_RESULT=0
 
@@ -370,8 +429,17 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     safeyolo agent shell "$AGENT_NAME" -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE -rs --tb=short --timeout=60"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
     ISOLATION_RESULT=$?
+    set -e
+    echo ""
+
+    echo "=== Guest-Root Capability and Containment Tests (in-VM) ==="
+    echo ""
+    set +e
+    safeyolo agent shell "$AGENT_NAME" --root -c \
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py"
+    ROOT_ISOLATION_RESULT=$?
     set -e
     echo ""
 
@@ -420,6 +488,11 @@ if [ "$RUN_ISOLATION" = true ]; then
     else
         echo "Isolation tests: FAILED (exit code: $ISOLATION_RESULT)"
     fi
+    if [ "$ROOT_ISOLATION_RESULT" = "0" ]; then
+        echo "Guest-root tests: PASSED"
+    else
+        echo "Guest-root tests: FAILED (exit code: $ROOT_ISOLATION_RESULT)"
+    fi
     if [ "${LIFECYCLE_RESULT:-0}" != "0" ]; then
         echo "Lifecycle tests: FAILED (exit code: $LIFECYCLE_RESULT)"
     else
@@ -427,7 +500,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
 fi
 
-if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ] || [ "${LIFECYCLE_RESULT:-0}" != "0" ] || [ "$IDENTITY_RESULT" != "0" ]; then
+if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$ROOT_ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ] || [ "${LIFECYCLE_RESULT:-0}" != "0" ] || [ "$IDENTITY_RESULT" != "0" ]; then
     echo ""
     echo "Result: FAILED"
     exit 1

@@ -27,6 +27,18 @@ from safeyolo.policy.toml_normalize import normalize
 log = logging.getLogger("safeyolo.toml-roundtrip")
 
 
+class PolicySaveError(OSError):
+    """A policy save failed after the replacement became visible."""
+
+    def __init__(self, message: str, *, committed: bool):
+        super().__init__(message)
+        self.committed = committed
+
+
+class PolicyReloadError(RuntimeError):
+    """A durable policy mutation could not be activated and was rolled back."""
+
+
 # =========================================================================
 # Load / save
 # =========================================================================
@@ -79,11 +91,17 @@ def save_roundtrip(path: Path, doc: tomlkit.TOMLDocument) -> None:
         tmp_path = None  # moved successfully, no cleanup needed
 
         # fsync the parent directory so the rename is durable
-        dir_fd = os.open(str(path.parent), os.O_RDONLY)
         try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError as exc:
+            raise PolicySaveError(
+                f"policy replacement is visible but directory fsync failed: {exc}",
+                committed=True,
+            ) from exc
 
         log.debug("Saved TOML (round-trip) to %s", path)
     finally:
@@ -362,6 +380,8 @@ def _lock_path(policy_path: Path) -> Path:
 def locked_policy_mutate(
     policy_path: Path,
     mutate_fn: Callable[[tomlkit.TOMLDocument], Any],
+    *,
+    create_if_missing: bool = False,
 ) -> Any:
     """Read-modify-write policy.toml under an exclusive file lock.
 
@@ -384,7 +404,10 @@ def locked_policy_mutate(
     try:
         fcntl.flock(lf, fcntl.LOCK_EX)
         try:
-            doc = load_roundtrip(policy_path)
+            if create_if_missing and not policy_path.exists():
+                doc = tomlkit.document()
+            else:
+                doc = load_roundtrip(policy_path)
             result = mutate_fn(doc)
             save_roundtrip(policy_path, doc)
             return result
@@ -392,6 +415,59 @@ def locked_policy_mutate(
             fcntl.flock(lf, fcntl.LOCK_UN)
     finally:
         lf.close()
+
+
+def locked_policy_transaction(
+    policy_path: Path,
+    mutate_fn: Callable[[tomlkit.TOMLDocument], Any],
+    activate_fn: Callable[[], bool],
+) -> Any:
+    """Persist and activate a TOML mutation as one locked transaction.
+
+    A failed activation restores the previous document and reloads it before
+    returning an error.  A durability error after rename follows the same
+    rollback path, so a failed operation cannot become active later merely
+    because the process restarts.
+    """
+    lock = _lock_path(policy_path)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.touch()
+
+    with open(lock) as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            original_text = policy_path.read_text()
+            document = tomlkit.parse(original_text)
+            result = mutate_fn(document)
+            try:
+                save_roundtrip(policy_path, document)
+            except PolicySaveError as exc:
+                if exc.committed:
+                    _restore_and_activate(policy_path, original_text, activate_fn)
+                raise
+
+            try:
+                activated = activate_fn()
+            except Exception as exc:
+                _restore_and_activate(policy_path, original_text, activate_fn)
+                raise PolicyReloadError(f"policy reload raised: {exc}") from exc
+            if not activated:
+                _restore_and_activate(policy_path, original_text, activate_fn)
+                raise PolicyReloadError("policy reload rejected the saved mutation")
+            return result
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _restore_and_activate(
+    policy_path: Path,
+    original_text: str,
+    activate_fn: Callable[[], bool],
+) -> None:
+    """Restore the pre-transaction document and require its activation."""
+    save_roundtrip(policy_path, tomlkit.parse(original_text))
+    if not activate_fn():
+        raise PolicyReloadError("failed to reactivate the restored policy")
 
 
 class LoaderNotConfigured(RuntimeError):

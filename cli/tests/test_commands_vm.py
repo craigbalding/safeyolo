@@ -9,14 +9,26 @@ processes are started.
 import json
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import call, create_autospec, patch
 
 import click
 import pytest
 from click import unstyle
 from typer.testing import CliRunner
 
+from safeyolo.api import AdminAPI
 from safeyolo.cli import app
+from safeyolo.commands.agent import _store_remove_agent
+from safeyolo.platform import AgentPlatform
+from safeyolo.proxy import start_proxy, wait_for_healthy
+
+
+def _platform() -> AgentPlatform:
+    return create_autospec(AgentPlatform, instance=True, spec_set=True)
+
+
+def _api() -> AdminAPI:
+    return create_autospec(AdminAPI, instance=True, spec_set=True)
 
 
 @pytest.fixture
@@ -64,7 +76,7 @@ class TestLifecycleStart:
 
     def test_already_running_exits_zero(self, runner, config_dir):
         """If proxy is already running, prints message and exits 0."""
-        with patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True):
+        with patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,):
             result = runner.invoke(app, ["start", "--no-wait"])
         assert result.exit_code == 0
         assert "already running" in result.output.lower()
@@ -77,10 +89,10 @@ class TestLifecycleStart:
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs))
 
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
-            patch("safeyolo.commands.lifecycle.start_proxy"),
-            patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=True),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
+            patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=True, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.POLICY_TEMPLATE_PATH", cfg / "nonexistent"),
             patch("safeyolo.commands.lifecycle.ADDONS_TEMPLATE_PATH", cfg / "nonexistent"),
         ):
@@ -92,14 +104,15 @@ class TestLifecycleStart:
     def test_guest_images_missing_warns_but_continues(self, runner, config_dir):
         """Missing guest images produce a warning but don't block start."""
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=False),
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=False, autospec=True,),
             patch(
                 "safeyolo.commands.lifecycle.missing_guest_images",
                 return_value=["rootfs-erofs"],
+            autospec=True,
             ),
-            patch("safeyolo.commands.lifecycle.start_proxy"),
-            patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=True),
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
+            patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=True, autospec=True,),
         ):
             result = runner.invoke(app, ["start"])
 
@@ -109,9 +122,9 @@ class TestLifecycleStart:
     def test_proxy_start_failure_exits_one(self, runner, config_dir):
         """If start_proxy raises, prints error and exits 1."""
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
-            patch("safeyolo.commands.lifecycle.start_proxy", side_effect=RuntimeError("no mitmdump")),
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.commands.lifecycle.start_proxy", side_effect=RuntimeError("no mitmdump"), autospec=True,),
         ):
             result = runner.invoke(app, ["start", "--no-wait"])
 
@@ -121,11 +134,11 @@ class TestLifecycleStart:
     def test_wait_timeout_fails_and_cleans_up(self, runner, config_dir):
         """A proxy that does not remain healthy cannot report success."""
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
-            patch("safeyolo.commands.lifecycle.start_proxy"),
-            patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=False),
-            patch("safeyolo.commands.lifecycle.stop_proxy") as stop_proxy,
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
+            patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.stop_proxy", autospec=True,) as stop_proxy,
         ):
             result = runner.invoke(app, ["start"])
 
@@ -136,11 +149,11 @@ class TestLifecycleStart:
 
     def test_no_wait_skips_health_check(self, runner, config_dir):
         """--no-wait skips the health check entirely."""
-        mock_wait = MagicMock()
+        mock_wait = create_autospec(wait_for_healthy, spec_set=True)
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
-            patch("safeyolo.commands.lifecycle.start_proxy"),
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
             patch("safeyolo.commands.lifecycle.wait_for_healthy", mock_wait),
         ):
             result = runner.invoke(app, ["start", "--no-wait"])
@@ -150,9 +163,9 @@ class TestLifecycleStart:
 
     def test_flow_cache_is_forwarded_to_proxy_start(self, runner, config_dir):
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
-            patch("safeyolo.commands.lifecycle.start_proxy") as start_proxy,
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,) as start_proxy,
         ):
             result = runner.invoke(app, ["start", "--no-wait", "--flow-cache", "4321"])
 
@@ -166,9 +179,9 @@ class TestLifecycleStart:
 
     def test_profile_emits_report_and_jsonl_artifact(self, runner, config_dir):
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
-            patch("safeyolo.commands.lifecycle.start_proxy"),
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
         ):
             result = runner.invoke(app, ["start", "--no-wait", "--profile"])
 
@@ -204,8 +217,8 @@ class TestLifecycleStop:
 
     def test_not_running_exits_zero(self, runner, config_dir):
         """If proxy not running, prints message and exits 0."""
-        with patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False), \
-             patch("safeyolo.commands.lifecycle.stop_proxy") as stop_proxy:
+        with patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,), \
+             patch("safeyolo.commands.lifecycle.stop_proxy", autospec=True,) as stop_proxy:
             result = runner.invoke(app, ["stop"])
         assert result.exit_code == 0
         assert "not running" in result.output.lower()
@@ -216,12 +229,12 @@ class TestLifecycleStop:
         agent_dir = config_dir / "agents" / "test-agent"
         agent_dir.mkdir(parents=True)
 
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = True
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.commands.lifecycle.stop_proxy"),
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.commands.lifecycle.stop_proxy", autospec=True,),
         ):
             result = runner.invoke(app, ["stop"])
 
@@ -234,13 +247,13 @@ class TestLifecycleStop:
         agent_dir = config_dir / "agents" / "test-agent"
         agent_dir.mkdir(parents=True)
 
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = True
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.commands.lifecycle.stop_proxy"),
-            patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")),
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.commands.lifecycle.stop_proxy", autospec=True,),
+            patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", ""), autospec=True,),
         ):
             result = runner.invoke(app, ["stop", "--all"])
 
@@ -250,11 +263,11 @@ class TestLifecycleStop:
     def test_stop_all_unloads_firewall_rules(self, runner, config_dir):
         """stop --all calls plat.unload_firewall_rules() (iptables on Linux,
         no-op on macOS)."""
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.commands.lifecycle.stop_proxy"),
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.commands.lifecycle.stop_proxy", autospec=True,),
         ):
             result = runner.invoke(app, ["stop", "--all"])
 
@@ -263,12 +276,12 @@ class TestLifecycleStop:
 
     def test_stop_all_firewall_unload_failure_is_nonfatal(self, runner, config_dir):
         """Firewall unload failure doesn't prevent stop --all from completing."""
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.unload_firewall_rules.side_effect = RuntimeError("iptables error")
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.commands.lifecycle.stop_proxy"),
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.commands.lifecycle.stop_proxy", autospec=True,),
         ):
             result = runner.invoke(app, ["stop", "--all"])
 
@@ -291,7 +304,7 @@ class TestLifecycleStatus:
 
     def test_proxy_not_running_exits_zero(self, runner, config_dir):
         """Proxy not running shows panel and exits 0."""
-        with patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False):
+        with patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,):
             result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
         assert "not running" in result.output.lower()
@@ -299,12 +312,12 @@ class TestLifecycleStatus:
     def test_proxy_running_shows_table(self, runner, config_dir):
         """Proxy running shows status table with ports and guest image status."""
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
-            patch("safeyolo.commands.lifecycle.get_api") as mock_api_factory,
-            patch("safeyolo.vm.is_vm_running", return_value=False),
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.commands.lifecycle.get_api", autospec=True,) as mock_api_factory,
+            patch("safeyolo.vm.is_vm_running", return_value=False, autospec=True,),
         ):
-            mock_api = MagicMock()
+            mock_api = _api()
             mock_api.stats.return_value = {}
             mock_api.pending_approvals.return_value = []
             mock_api.get_modes.return_value = {"modes": {}}
@@ -327,14 +340,14 @@ class TestLifecycleBuild:
         """If build-all.sh doesn't exist at the expected repo-relative path, exits 1."""
         # Point the build script path to a non-existent directory
         fake_parents = Path("/tmp/not-a-repo")
-        with patch.object(Path, "resolve", return_value=fake_parents / "cli" / "src" / "safeyolo" / "commands" / "lifecycle.py"):
+        with patch.object(Path, "resolve", return_value=fake_parents / "cli" / "src" / "safeyolo" / "commands" / "lifecycle.py", autospec=True,):
             # Simpler: just patch the computed script path directly
             pass
 
         # The function derives the path from __file__.parents[4], so we can't
         # easily mock Path resolution. Instead, test the failure case by mocking
         # subprocess.run to simulate a build failure.
-        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "build-all.sh")):
+        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "build-all.sh"), autospec=True,):
             result = runner.invoke(app, ["build"])
 
         assert result.exit_code == 1
@@ -354,10 +367,11 @@ class TestLifecycleBuild:
         build_script.touch()
 
         with (
-            patch("subprocess.run"),
+            patch("subprocess.run", autospec=True,),
             patch.object(
                 Path, "exists",
                 side_effect=lambda self=None: True,
+            autospec=True,
             ),
         ):
             # This is tricky to mock because of Path resolution from __file__
@@ -384,7 +398,7 @@ class TestLifecycleBuild:
         (out_dir / "rootfs-base.ext4").write_bytes(b"rootfs")
         (out_dir / "cache-paths.txt").write_text("/var/cache/apt\n")
 
-        with patch("safeyolo.commands.lifecycle.platform.system", return_value="Darwin"):
+        with patch("safeyolo.commands.lifecycle.platform.system", return_value="Darwin", autospec=True,):
             _install_guest_artifacts(out_dir, share_dir)
 
         assert (share_dir / "rootfs-base.ext4").read_bytes() == b"rootfs"
@@ -417,8 +431,8 @@ class TestLifecycleBuild:
             return subprocess.CompletedProcess(args[0], 0)
 
         with (
-            patch("safeyolo.commands.lifecycle.platform.system", return_value="Linux"),
-            patch("safeyolo.commands.lifecycle.subprocess.run", side_effect=fake_rsync) as run,
+            patch("safeyolo.commands.lifecycle.platform.system", return_value="Linux", autospec=True,),
+            patch("safeyolo.commands.lifecycle.subprocess.run", side_effect=fake_rsync, autospec=True,) as run,
             patch.object(Path, "stat", autospec=True, side_effect=stat_with_subuid_owner),
         ):
             _install_guest_artifacts(out_dir, share_dir)
@@ -571,11 +585,11 @@ class TestAgentAdd:
         value = value.format(missing=tmp_path / "missing")
 
         with (
-            patch("safeyolo.commands.agent._check_project_ownership"),
-            patch("safeyolo.commands.agent.build_custom_rootfs") as build_rootfs,
-            patch("safeyolo.platform.get_platform") as get_platform,
-            patch("safeyolo.vm.ensure_agent_persistent_dirs") as ensure_dirs,
-            patch("safeyolo.commands.agent._run_host_script_for_agent") as run_host_script,
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
+            patch("safeyolo.commands.agent.build_custom_rootfs", autospec=True,) as build_rootfs,
+            patch("safeyolo.platform.get_platform", autospec=True,) as get_platform,
+            patch("safeyolo.vm.ensure_agent_persistent_dirs", autospec=True,) as ensure_dirs,
+            patch("safeyolo.commands.agent._run_host_script_for_agent", autospec=True,) as run_host_script,
         ):
             result = runner.invoke(
                 app,
@@ -607,7 +621,7 @@ class TestAgentAdd:
         script.chmod(0o755)
 
         mock_rootfs = config_dir / "agents" / "test" / "rootfs.ext4"
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.prepare_rootfs.return_value = mock_rootfs
 
         saved = {}
@@ -617,12 +631,12 @@ class TestAgentAdd:
             saved["metadata"] = metadata
 
         with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.vm.ensure_agent_persistent_dirs"),
-            patch("safeyolo.commands.agent.save_agent", side_effect=_capture_save),
-            patch("safeyolo.commands.agent.write_event"),
-            patch("safeyolo.commands.agent._check_project_ownership"),
-            patch("safeyolo.commands.agent.build_custom_rootfs") as mock_build,
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.vm.ensure_agent_persistent_dirs", autospec=True,),
+            patch("safeyolo.commands.agent.save_agent", side_effect=_capture_save, autospec=True,),
+            patch("safeyolo.commands.agent.write_event", autospec=True,),
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
+            patch("safeyolo.commands.agent.build_custom_rootfs", autospec=True,) as mock_build,
         ):
             result = runner.invoke(
                 app,
@@ -650,10 +664,11 @@ class TestAgentAdd:
         script.chmod(0o755)
 
         with (
-            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
             patch(
                 "safeyolo.commands.agent.build_custom_rootfs",
                 side_effect=VMError("builder returned 1"),
+            autospec=True,
             ),
         ):
             result = runner.invoke(
@@ -672,7 +687,7 @@ class TestAgentAdd:
         folder = tmp_path / "project"
         folder.mkdir()
         mock_rootfs = config_dir / "agents" / "engagement" / "rootfs"
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.prepare_rootfs.return_value = mock_rootfs
         saved = {}
 
@@ -681,12 +696,12 @@ class TestAgentAdd:
             saved["metadata"] = metadata
 
         with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.vm.ensure_agent_persistent_dirs"),
-            patch("safeyolo.commands.agent.save_agent", side_effect=_capture_save),
-            patch("safeyolo.commands.agent.write_event"),
-            patch("safeyolo.commands.agent._check_project_ownership"),
-            patch("safeyolo.commands.agent.clone_custom_rootfs") as mock_clone,
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.vm.ensure_agent_persistent_dirs", autospec=True,),
+            patch("safeyolo.commands.agent.save_agent", side_effect=_capture_save, autospec=True,),
+            patch("safeyolo.commands.agent.write_event", autospec=True,),
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
+            patch("safeyolo.commands.agent.clone_custom_rootfs", autospec=True,) as mock_clone,
         ):
             result = runner.invoke(
                 app,
@@ -730,10 +745,11 @@ class TestAgentAdd:
         folder = tmp_path / "project"
         folder.mkdir()
         with (
-            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
             patch(
                 "safeyolo.commands.agent.clone_custom_rootfs",
                 side_effect=VMError("source has no custom rootfs"),
+            autospec=True,
             ),
         ):
             result = runner.invoke(
@@ -754,15 +770,15 @@ class TestAgentAdd:
         folder.mkdir()
 
         mock_rootfs = config_dir / "agents" / "test" / "rootfs.ext4"
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.prepare_rootfs.return_value = mock_rootfs
 
         with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.vm.ensure_agent_persistent_dirs"),
-            patch("safeyolo.commands.agent.save_agent"),
-            patch("safeyolo.commands.agent.write_event"),
-            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.vm.ensure_agent_persistent_dirs", autospec=True,),
+            patch("safeyolo.commands.agent.save_agent", autospec=True,),
+            patch("safeyolo.commands.agent.write_event", autospec=True,),
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "add", "test", str(folder), "--no-run"])
 
@@ -785,8 +801,9 @@ class TestAgentAdd:
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
                 return_value={"folder": folder_str},
+            autospec=True,
             ),
-            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
         ):
             result = runner.invoke(app, ["agent", "add", "test", str(folder)])
 
@@ -808,9 +825,10 @@ class TestAgentAdd:
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
                 return_value={"folder": folder_str},
+            autospec=True,
             ),
-            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
-            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
         ):
             result = runner.invoke(app, ["agent", "add", "test", str(folder)])
 
@@ -832,9 +850,10 @@ class TestAgentAdd:
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
                 return_value={"folder": folder_str},
+            autospec=True,
             ),
-            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
-            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
         ):
             result = runner.invoke(
                 app,
@@ -860,9 +879,10 @@ class TestAgentAdd:
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
                 return_value={"folder": folder_str},
+            autospec=True,
             ),
-            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
-            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
         ):
             result = runner.invoke(
                 app, ["agent", "add", "test", str(folder), "--no-run"]
@@ -884,8 +904,9 @@ class TestAgentAdd:
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
                 return_value={"folder": "/other"},
+            autospec=True,
             ),
-            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "add", "test", str(folder)])
 
@@ -919,7 +940,7 @@ class TestAgentList:
         # Mock platform returns the ext4 file path for any name it's asked about.
         # The filter will then find vm-agent/rootfs.ext4 (exists) and skip
         # not-an-agent/rootfs.ext4 (doesn't).
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.agent_rootfs_path.side_effect = (
             lambda n: config_dir / "agents" / n / "rootfs.ext4"
         )
@@ -927,8 +948,8 @@ class TestAgentList:
         with (
             patch("safeyolo.commands.agent.load_all_agents", return_value={
                 "vm-agent": {"folder": "/proj"},
-            }),
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
+            }, autospec=True,),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "list"])
 
@@ -939,7 +960,7 @@ class TestAgentList:
     def test_no_agents_shows_message(self, runner, config_dir):
         """No agents configured shows appropriate message."""
         with (
-            patch("safeyolo.commands.agent.load_all_agents", return_value={}),
+            patch("safeyolo.commands.agent.load_all_agents", return_value={}, autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "list"])
 
@@ -966,7 +987,7 @@ class TestAgentRemove:
         agent_dir.mkdir()
         (agent_dir / "rootfs.ext4").touch()
 
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = True
         # Dir deletion is now platform-dispatched; have the mock actually
         # delete so other asserts behave naturally.
@@ -974,9 +995,9 @@ class TestAgentRemove:
         mock_platform.remove_agent_dir.side_effect = lambda n: _sh.rmtree(
             config_dir / "agents" / n, ignore_errors=True)
         with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.commands.agent._store_remove_agent"),
-            patch("safeyolo.commands.agent.write_event"),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.commands.agent._store_remove_agent", autospec=True,),
+            patch("safeyolo.commands.agent.write_event", autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "remove", "test-agent"])
 
@@ -991,16 +1012,16 @@ class TestAgentRemove:
         agent_dir.mkdir()
         (agent_dir / "rootfs.ext4").touch()
 
-        mock_store_remove = MagicMock()
-        mock_platform = MagicMock()
+        mock_store_remove = create_autospec(_store_remove_agent, spec_set=True)
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = False
         import shutil as _sh
         mock_platform.remove_agent_dir.side_effect = lambda n: _sh.rmtree(
             config_dir / "agents" / n, ignore_errors=True)
         with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
             patch("safeyolo.commands.agent._store_remove_agent", mock_store_remove),
-            patch("safeyolo.commands.agent.write_event"),
+            patch("safeyolo.commands.agent.write_event", autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "remove", "test-agent"])
 
@@ -1020,19 +1041,19 @@ class TestAgentShell:
 
     def test_not_running_exits_one(self, runner, config_dir):
         """Shell into non-running agent exits 1."""
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = False
-        with patch("safeyolo.platform.get_platform", return_value=mock_platform):
+        with patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,):
             result = runner.invoke(app, ["agent", "shell", "test-agent"])
         assert result.exit_code == 1
         assert "not running" in result.output.lower()
 
     def test_running_calls_exec_in_sandbox(self, runner, config_dir):
         """Running agent: shell invokes plat.exec_in_sandbox."""
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = True
         mock_platform.exec_in_sandbox.return_value = 0
-        with patch("safeyolo.platform.get_platform", return_value=mock_platform):
+        with patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,):
             result = runner.invoke(app, ["agent", "shell", "test-agent"])
         assert result.exit_code == 0
         mock_platform.exec_in_sandbox.assert_called_once()
@@ -1041,10 +1062,10 @@ class TestAgentShell:
 
     def test_root_flag_passes_root_user(self, runner, config_dir):
         """--root flag passes user='root' to exec_in_sandbox."""
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = True
         mock_platform.exec_in_sandbox.return_value = 0
-        with patch("safeyolo.platform.get_platform", return_value=mock_platform):
+        with patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,):
             result = runner.invoke(app, ["agent", "shell", "test-agent", "--root"])
         assert result.exit_code == 0
         _, kwargs = mock_platform.exec_in_sandbox.call_args
@@ -1060,22 +1081,22 @@ class TestAgentStop:
 
     def test_not_running_exits_zero(self, runner, config_dir):
         """Stopping a non-running agent exits 0."""
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = False
-        with patch("safeyolo.platform.get_platform", return_value=mock_platform):
+        with patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,):
             result = runner.invoke(app, ["agent", "stop", "test-agent"])
         assert result.exit_code == 0
         assert "not running" in result.output.lower()
 
     def test_calls_stop_sandbox(self, runner, config_dir):
         """Stopping a running agent calls plat.stop_sandbox."""
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = True
         with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.proxy.is_proxy_running", return_value=False),
-            patch("safeyolo.proxy.sync_proxy_modes") as sync_proxy_modes,
-            patch("safeyolo.commands.agent.write_event"),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.proxy.sync_proxy_modes", autospec=True,) as sync_proxy_modes,
+            patch("safeyolo.commands.agent.write_event", autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "stop", "test-agent"])
 
@@ -1085,13 +1106,13 @@ class TestAgentStop:
         assert "stopped" in result.output.lower()
 
     def test_syncs_removed_listener_when_proxy_is_running(self, runner, config_dir):
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = True
         with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.proxy.is_proxy_running", return_value=True),
-            patch("safeyolo.proxy.sync_proxy_modes") as sync_proxy_modes,
-            patch("safeyolo.commands.agent.write_event"),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.proxy.sync_proxy_modes", autospec=True,) as sync_proxy_modes,
+            patch("safeyolo.commands.agent.write_event", autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "stop", "test-agent"])
 
@@ -1138,8 +1159,8 @@ class TestRunAgent:
 
     def test_run_associates_current_tmux_pane(self, runner, config_dir):
         with (
-            patch("safeyolo.commands.agent._run_agent", return_value=0),
-            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,),
+            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
         ):
             result = runner.invoke(app, ["agent", "run", "test-agent"])
 
@@ -1148,8 +1169,8 @@ class TestRunAgent:
 
     def test_run_requests_window_rename_by_default(self, runner, config_dir):
         with (
-            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
-            patch("safeyolo.commands.agent.associate_agent_pane"),
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "run", "test-agent"])
 
@@ -1158,8 +1179,8 @@ class TestRunAgent:
 
     def test_run_detach_skips_window_rename(self, runner, config_dir):
         with (
-            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
-            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
         ):
             result = runner.invoke(app, ["agent", "run", "test-agent", "--detach"])
 
@@ -1169,8 +1190,8 @@ class TestRunAgent:
 
     def test_run_no_rename_window_skips_rename_only(self, runner, config_dir):
         with (
-            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
-            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
         ):
             result = runner.invoke(
                 app, ["agent", "run", "test-agent", "--no-rename-window"]
@@ -1186,7 +1207,7 @@ class TestRunAgent:
         so the sandbox layer is never invoked. Any test using this reaches the
         rename boundary iff the rename flag is on and no failure was injected
         earlier in the chain."""
-        fake_platform = MagicMock()
+        fake_platform = _platform()
         fake_platform.agent_rootfs_path.return_value = rootfs
         fake_platform.is_sandbox_running.return_value = False
         fake_platform.setup_networking.return_value = {
@@ -1200,22 +1221,24 @@ class TestRunAgent:
         import safeyolo.platform as platform_module
 
         return [
-            patch.object(platform_module, "get_platform", return_value=fake_platform),
+            patch.object(platform_module, "get_platform", return_value=fake_platform, autospec=True,),
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
                 return_value={"folder": str(folder)},
+            autospec=True,
             ),
-            patch("safeyolo.commands.agent._check_project_ownership"),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
-            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1),
-            patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[]),
-            patch("safeyolo.commands.agent._update_agent_map"),
-            patch("safeyolo.commands.agent.platform_supports_snapshot", return_value=False),
-            patch("safeyolo.commands.agent.prepare_config_share"),
-            patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock")),
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1, autospec=True,),
+            patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[], autospec=True,),
+            patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
+            patch("safeyolo.commands.agent.platform_supports_snapshot", return_value=False, autospec=True,),
+            patch("safeyolo.commands.agent.prepare_config_share", autospec=True,),
+            patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock"), autospec=True,),
             patch(
                 "safeyolo.commands.agent.write_event",
                 side_effect=RuntimeError("stop after rename boundary"),
+            autospec=True,
             ),
         ]
 
@@ -1230,7 +1253,7 @@ class TestRunAgent:
         from safeyolo.commands.agent import _run_agent
 
         patches = self._committed_launch_patches(folder, rootfs)
-        rename_patch = patch("safeyolo.commands.agent.rename_window_for_agent")
+        rename_patch = patch("safeyolo.commands.agent.rename_window_for_agent", autospec=True,)
 
         with rename_patch as rename:
             for p in patches:
@@ -1255,7 +1278,7 @@ class TestRunAgent:
         from safeyolo.commands.agent import _run_agent
 
         patches = self._committed_launch_patches(folder, rootfs)
-        rename_patch = patch("safeyolo.commands.agent.rename_window_for_agent")
+        rename_patch = patch("safeyolo.commands.agent.rename_window_for_agent", autospec=True,)
 
         with rename_patch as rename:
             for p in patches:
@@ -1279,7 +1302,7 @@ class TestRunAgent:
         rootfs = tmp_path / "rootfs"
         rootfs.mkdir()
 
-        fake_platform = MagicMock()
+        fake_platform = _platform()
         fake_platform.agent_rootfs_path.return_value = rootfs
         fake_platform.is_sandbox_running.return_value = False
 
@@ -1287,18 +1310,20 @@ class TestRunAgent:
         from safeyolo.commands.agent import _run_agent
 
         with (
-            patch.object(platform_module, "get_platform", return_value=fake_platform),
+            patch.object(platform_module, "get_platform", return_value=fake_platform, autospec=True,),
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
                 return_value={"folder": str(folder)},
+            autospec=True,
             ),
-            patch("safeyolo.commands.agent._check_project_ownership"),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
             patch(
                 "safeyolo.commands.agent.reserve_agent_network_slot",
                 side_effect=OSError("no slot"),
+            autospec=True,
             ),
-            patch("safeyolo.commands.agent.rename_window_for_agent") as rename,
+            patch("safeyolo.commands.agent.rename_window_for_agent", autospec=True,) as rename,
             pytest.raises(click.exceptions.Exit),
         ):
             _run_agent("committed", rename_tmux_window=True)
@@ -1315,7 +1340,7 @@ class TestRunAgent:
         rootfs = tmp_path / "rootfs"
         rootfs.mkdir()
 
-        fake_platform = MagicMock()
+        fake_platform = _platform()
         fake_platform.agent_rootfs_path.return_value = rootfs
         fake_platform.is_sandbox_running.return_value = False
         fake_platform.setup_networking.return_value = {
@@ -1330,26 +1355,29 @@ class TestRunAgent:
         from safeyolo.commands.agent import _run_agent
 
         with (
-            patch.object(platform_module, "get_platform", return_value=fake_platform),
+            patch.object(platform_module, "get_platform", return_value=fake_platform, autospec=True,),
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
                 return_value={"folder": str(folder)},
+            autospec=True,
             ),
-            patch("safeyolo.commands.agent._check_project_ownership"),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
-            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1),
-            patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[]),
-            patch("safeyolo.commands.agent._update_agent_map"),
-            patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock")),
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1, autospec=True,),
+            patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[], autospec=True,),
+            patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
+            patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock"), autospec=True,),
             patch(
                 "safeyolo.commands.agent.platform_supports_snapshot",
                 return_value=False,
+            autospec=True,
             ),
             patch(
                 "safeyolo.commands.agent.prepare_config_share",
                 side_effect=RuntimeError("config share broken"),
+            autospec=True,
             ),
-            patch("safeyolo.commands.agent.rename_window_for_agent") as rename,
+            patch("safeyolo.commands.agent.rename_window_for_agent", autospec=True,) as rename,
             pytest.raises(click.exceptions.Exit),
         ):
             _run_agent("committed", rename_tmux_window=True)
@@ -1359,7 +1387,7 @@ class TestRunAgent:
     def test_run_preflight_failure_does_not_rename(self, runner, config_dir):
         """Nonexistent agent: preflight fails before rename gets a chance."""
         with (
-            patch("safeyolo.commands.agent.rename_window_for_agent") as rename,
+            patch("safeyolo.commands.agent.rename_window_for_agent", autospec=True,) as rename,
         ):
             result = runner.invoke(app, ["agent", "run", "no-such-agent"])
 
@@ -1370,7 +1398,7 @@ class TestRunAgent:
         """_run_agent via `agent run` exits 1 if rootfs doesn't exist."""
         # Use the run command which calls _run_agent
         with (
-            patch("safeyolo.commands.agent._load_agent_metadata", return_value={"folder": "."}),
+            patch("safeyolo.commands.agent._load_agent_metadata", return_value={"folder": "."}, autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "run", "no-rootfs"])
         assert result.exit_code == 1
@@ -1395,7 +1423,7 @@ class TestRunAgent:
             f'[agents.web]\nfolder = "{project}"\n'
         )
 
-        with patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run:
+        with patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run:
             result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(script)])
 
         assert result.exit_code == 0
@@ -1408,7 +1436,7 @@ class TestRunAgent:
 
     def test_run_host_script_missing_exits_one(self, runner, config_dir, tmp_path):
         """agent run --host-script validates the script before booting."""
-        with patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run:
+        with patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run:
             result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(tmp_path / "missing.sh")])
 
         assert result.exit_code == 1
@@ -1422,15 +1450,15 @@ class TestRunAgent:
         rootfs_path = agent_dir / "rootfs.ext4"
         rootfs_path.touch()
 
-        mock_platform = MagicMock()
+        mock_platform = _platform()
         mock_platform.is_sandbox_running.return_value = True
         # agent_rootfs_path is platform-dispatched -- return the same file we
         # just touched so the existence check passes regardless of host OS.
         mock_platform.agent_rootfs_path.return_value = rootfs_path
         with (
-            patch("safeyolo.commands.agent._load_agent_metadata", return_value={"folder": "."}),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
-            patch("safeyolo.platform.get_platform", return_value=mock_platform),
+            patch("safeyolo.commands.agent._load_agent_metadata", return_value={"folder": "."}, autospec=True,),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "run", "test-agent"])
 
@@ -1470,7 +1498,7 @@ class TestRunAgent:
             (str(transient), "/proj/toolage", False),
         ]
         running = False
-        platform = MagicMock()
+        platform = _platform()
         platform.agent_rootfs_path.return_value = rootfs
 
         def is_running(_name):
@@ -1493,14 +1521,14 @@ class TestRunAgent:
         }
 
         with (
-            patch("safeyolo.commands.agent._load_agent_metadata", return_value=metadata),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
-            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=0),
-            patch("safeyolo.commands.agent._update_agent_map"),
-            patch("safeyolo.commands.agent.write_event"),
-            patch("safeyolo.commands.agent.prepare_config_share") as prepare,
-            patch("safeyolo.platform.get_platform", return_value=platform),
-            patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock"),
+            patch("safeyolo.commands.agent._load_agent_metadata", return_value=metadata, autospec=True,),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=0, autospec=True,),
+            patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
+            patch("safeyolo.commands.agent.write_event", autospec=True,),
+            patch("safeyolo.commands.agent.prepare_config_share", autospec=True,) as prepare,
+            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True,),
+            patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock", autospec=True,),
         ):
             result = _run_agent(
                 "mount-agent",
@@ -1527,7 +1555,7 @@ class TestInit:
 
     def test_existing_config_without_force_exits_one(self, runner, config_dir):
         """Exits 1 if config already exists and no --force."""
-        with patch("safeyolo.commands.init.check_guest_images", return_value=True):
+        with patch("safeyolo.commands.init.check_guest_images", return_value=True, autospec=True,):
             result = runner.invoke(app, ["init"])
         assert result.exit_code == 1
         assert "already exists" in result.output.lower()
@@ -1540,7 +1568,7 @@ class TestInit:
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs))
 
         with (
-            patch("safeyolo.commands.init.check_guest_images", return_value=False),
+            patch("safeyolo.commands.init.check_guest_images", return_value=False, autospec=True,),
             patch("safeyolo.commands.init.POLICY_TEMPLATE_PATH", tmp_path / "policy.toml"),
             patch("safeyolo.commands.init.ADDONS_TEMPLATE_PATH", tmp_path / "addons.yaml"),
             patch("safeyolo.commands.init.LISTS_TEMPLATE_DIR", tmp_path / "lists"),
@@ -1561,7 +1589,7 @@ class TestInit:
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs))
 
         with (
-            patch("safeyolo.commands.init.check_guest_images", return_value=True),
+            patch("safeyolo.commands.init.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.init.POLICY_TEMPLATE_PATH", tmp_path / "policy.toml"),
             patch("safeyolo.commands.init.ADDONS_TEMPLATE_PATH", tmp_path / "addons.yaml"),
             patch("safeyolo.commands.init.LISTS_TEMPLATE_DIR", tmp_path / "lists"),
@@ -1580,7 +1608,7 @@ class TestInit:
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs))
 
         with (
-            patch("safeyolo.commands.init.check_guest_images", return_value=True),
+            patch("safeyolo.commands.init.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.init.POLICY_TEMPLATE_PATH", tmp_path / "policy.toml"),
             patch("safeyolo.commands.init.ADDONS_TEMPLATE_PATH", tmp_path / "addons.yaml"),
             patch("safeyolo.commands.init.LISTS_TEMPLATE_DIR", tmp_path / "lists"),
@@ -1624,9 +1652,9 @@ class TestSetup:
             return subprocess.CompletedProcess(command, 0, stdout=stdout)
 
         with (
-            patch("safeyolo.commands.setup.shutil.which", return_value="/usr/bin/tool"),
-            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run),
-            patch("safeyolo.commands.bootstrap._detect_package_manager", return_value="apt"),
+            patch("safeyolo.commands.setup.shutil.which", return_value="/usr/bin/tool", autospec=True,),
+            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run, autospec=True,),
+            patch("safeyolo.commands.bootstrap._detect_package_manager", return_value="apt", autospec=True,),
         ):
             assert _install_linux_runtime_packages(
                 need_runsc=True,
@@ -1680,9 +1708,9 @@ class TestSetup:
             return subprocess.CompletedProcess(cmd, 0)
 
         with (
-            patch("safeyolo.commands.setup._platform.machine", return_value="x86_64"),
-            patch("safeyolo.commands.setup.urllib.request.urlopen", side_effect=fake_urlopen_mismatch),
-            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run),
+            patch("safeyolo.commands.setup._platform.machine", return_value="x86_64", autospec=True,),
+            patch("safeyolo.commands.setup.urllib.request.urlopen", side_effect=fake_urlopen_mismatch, autospec=True,),
+            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run, autospec=True,),
         ):
             with pytest.raises(RuntimeError, match="SHA-512 mismatch"):
                 _install_gvisor_tarball()
@@ -1695,9 +1723,9 @@ class TestSetup:
             return _Resp(tarball_bytes if url.endswith(".bz2") else right_sha_bytes)
 
         with (
-            patch("safeyolo.commands.setup._platform.machine", return_value="x86_64"),
-            patch("safeyolo.commands.setup.urllib.request.urlopen", side_effect=fake_urlopen_match),
-            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run),
+            patch("safeyolo.commands.setup._platform.machine", return_value="x86_64", autospec=True,),
+            patch("safeyolo.commands.setup.urllib.request.urlopen", side_effect=fake_urlopen_match, autospec=True,),
+            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run, autospec=True,),
         ):
             _install_gvisor_tarball()
         assert any(c[:3] == ["sudo", "tar", "-xf"] and c[-2:] == ["-C", "/usr/local/bin"] for c in calls)
@@ -1723,10 +1751,10 @@ class TestSetup:
             tarball_called.append(True)
 
         with (
-            patch("safeyolo.commands.setup.shutil.which", return_value="/usr/bin/sudo"),
-            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run),
-            patch("safeyolo.commands.bootstrap._detect_package_manager", return_value="dnf"),
-            patch("safeyolo.commands.setup._install_gvisor_tarball", side_effect=_fake_tarball),
+            patch("safeyolo.commands.setup.shutil.which", return_value="/usr/bin/sudo", autospec=True,),
+            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run, autospec=True,),
+            patch("safeyolo.commands.bootstrap._detect_package_manager", return_value="dnf", autospec=True,),
+            patch("safeyolo.commands.setup._install_gvisor_tarball", side_effect=_fake_tarball, autospec=True,),
         ):
             assert _install_linux_runtime_packages(
                 need_runsc=True,
@@ -1746,9 +1774,9 @@ class TestSetup:
     def test_guest_images_ok(self, runner, config_dir):
         """Reports OK when guest images are available."""
         with (
-            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
-            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin", autospec=True,),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm"), autospec=True,),
         ):
             result = runner.invoke(app, ["setup"])
 
@@ -1760,13 +1788,14 @@ class TestSetup:
         """Reports MISSING when guest images are absent, listing the platform-
         appropriate artifacts (e.g. initramfs on Darwin, rootfs-tree on Linux)."""
         with (
-            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
-            patch("safeyolo.commands.setup.check_guest_images", return_value=False),
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin", autospec=True,),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=False, autospec=True,),
             patch(
                 "safeyolo.commands.setup.missing_guest_images",
                 return_value=["initramfs", "rootfs-ext4"],
+            autospec=True,
             ),
-            patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
+            patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm"), autospec=True,),
         ):
             result = runner.invoke(app, ["setup"])
 
@@ -1779,9 +1808,9 @@ class TestSetup:
         from safeyolo.vm import VMError as _VMError
 
         with (
-            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
-            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.vm.find_vm_helper", side_effect=_VMError("not found")),
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin", autospec=True,),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.vm.find_vm_helper", side_effect=_VMError("not found"), autospec=True,),
         ):
             result = runner.invoke(app, ["setup"])
 
@@ -1792,9 +1821,9 @@ class TestSetup:
     def test_all_ok_summary(self, runner, config_dir):
         """Shows all-OK summary when everything passes."""
         with (
-            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
-            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin", autospec=True,),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm"), autospec=True,),
         ):
             result = runner.invoke(app, ["setup"])
 
@@ -1806,20 +1835,20 @@ class TestSetup:
     def test_runsc_ok_on_linux(self, runner, config_dir):
         """Linux: reports OK when runsc is present."""
         with (
-            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
-            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.platform.linux.find_runsc", return_value="/usr/bin/runsc"),
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux", autospec=True,),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.platform.linux.find_runsc", return_value="/usr/bin/runsc", autospec=True,),
             patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
                 "newuidmap": True, "newgidmap": True,
                 "subuid": True, "subgid": True,
                 "setfacl": True,
                 "apparmor_restricts": False, "apparmor_profile_loaded": False,
-            }),
+            }, autospec=True,),
             patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
                 "platform": "kvm", "kvm_exists": True,
                 "kvm_operator_access": True, "kvm_subordinate_access": True,
                 "reason": "KVM available with full access",
-            }),
+            }, autospec=True,),
         ):
             result = runner.invoke(app, ["setup"])
 
@@ -1832,24 +1861,25 @@ class TestSetup:
     def test_runsc_missing_shows_missing_on_linux(self, runner, config_dir):
         """Linux: reports MISSING when runsc is not found, with install hint."""
         with (
-            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
-            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.platform.linux.find_runsc", return_value=None),
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux", autospec=True,),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.platform.linux.find_runsc", return_value=None, autospec=True,),
             patch(
                 "safeyolo.commands.setup._install_linux_runtime_packages",
                 return_value=False,
+            autospec=True,
             ),
             patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
                 "newuidmap": True, "newgidmap": True,
                 "subuid": True, "subgid": True,
                 "setfacl": True,
                 "apparmor_restricts": False, "apparmor_profile_loaded": False,
-            }),
+            }, autospec=True,),
             patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
                 "platform": "systrap", "kvm_exists": False,
                 "kvm_operator_access": False, "kvm_subordinate_access": False,
                 "reason": "/dev/kvm not found",
-            }),
+            }, autospec=True,),
         ):
             result = runner.invoke(app, ["setup"])
 
@@ -1867,25 +1897,28 @@ class TestSetup:
             "apparmor_restricts": False, "apparmor_profile_loaded": False,
         }
         with (
-            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
-            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux", autospec=True,),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True, autospec=True,),
             patch(
                 "safeyolo.platform.linux.find_runsc",
                 side_effect=[None, "/usr/bin/runsc"],
+            autospec=True,
             ),
             patch(
                 "safeyolo.platform.linux.check_userns_prerequisites",
                 return_value=userns,
+            autospec=True,
             ),
             patch(
                 "safeyolo.commands.setup._install_linux_runtime_packages",
                 return_value=True,
+            autospec=True,
             ) as install,
             patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
                 "platform": "systrap", "kvm_exists": False,
                 "kvm_operator_access": False, "kvm_subordinate_access": False,
                 "reason": "/dev/kvm not found",
-            }),
+            }, autospec=True,),
         ):
             result = runner.invoke(app, ["setup"])
 
@@ -1900,20 +1933,20 @@ class TestSetup:
     def test_setup_fails_when_subuid_mapping_is_missing(self, runner, config_dir):
         """A missing user mapping must stop callers such as migration."""
         with (
-            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
-            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.platform.linux.find_runsc", return_value="/usr/bin/runsc"),
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux", autospec=True,),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.platform.linux.find_runsc", return_value="/usr/bin/runsc", autospec=True,),
             patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
                 "newuidmap": True, "newgidmap": True,
                 "subuid": False, "subgid": True,
                 "setfacl": True,
                 "apparmor_restricts": False, "apparmor_profile_loaded": False,
-            }),
+            }, autospec=True,),
             patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
                 "platform": "systrap", "kvm_exists": False,
                 "kvm_operator_access": False, "kvm_subordinate_access": False,
                 "reason": "/dev/kvm not found",
-            }),
+            }, autospec=True,),
         ):
             result = runner.invoke(app, ["setup"])
 
@@ -1924,22 +1957,22 @@ class TestSetup:
         """/dev/kvm present, group has rw, operator not in group — print the
         exact `usermod -aG <group>` remediation instead of a bare INFO."""
         with (
-            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
-            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.platform.linux.find_runsc", return_value="/usr/bin/runsc"),
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux", autospec=True,),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.platform.linux.find_runsc", return_value="/usr/bin/runsc", autospec=True,),
             patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
                 "newuidmap": True, "newgidmap": True,
                 "subuid": True, "subgid": True,
                 "setfacl": True,
                 "apparmor_restricts": False, "apparmor_profile_loaded": False,
-            }),
+            }, autospec=True,),
             patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
                 "platform": "systrap", "kvm_exists": True,
                 "kvm_operator_access": False, "kvm_subordinate_access": False,
                 "kvm_group": "kvm", "kvm_group_has_rw": True,
                 "operator_in_kvm_group": False,
                 "reason": "/dev/kvm exists but operator lacks rw access",
-            }),
+            }, autospec=True,),
         ):
             result = runner.invoke(app, ["setup"])
 
@@ -1959,7 +1992,7 @@ class TestDoctorProxyCheck:
         """_check_proxy_process returns pass when proxy is running."""
         from safeyolo.commands.doctor import _check_proxy_process
 
-        with patch("safeyolo.commands.doctor.is_proxy_running", return_value=True):
+        with patch("safeyolo.commands.doctor.is_proxy_running", return_value=True, autospec=True,):
             result = _check_proxy_process()
 
         assert result.status == "pass"
@@ -1970,7 +2003,7 @@ class TestDoctorProxyCheck:
         """_check_proxy_process returns fail with remediation when proxy not running."""
         from safeyolo.commands.doctor import _check_proxy_process
 
-        with patch("safeyolo.commands.doctor.is_proxy_running", return_value=False):
+        with patch("safeyolo.commands.doctor.is_proxy_running", return_value=False, autospec=True,):
             result = _check_proxy_process()
 
         assert result.status == "fail"
@@ -1988,7 +2021,7 @@ class TestDoctorAutoFix:
             DiagResult(name="Proxy running", status="fail", message="not running"),
         ]
 
-        mock_start = MagicMock()
+        mock_start = create_autospec(start_proxy, spec_set=True)
         with patch("safeyolo.proxy.start_proxy", mock_start):
             actions = _attempt_fix(results)
 
@@ -2005,7 +2038,7 @@ class TestDoctorAutoFix:
             DiagResult(name="CA certificate", status="warn", message="not found"),
         ]
 
-        mock_start = MagicMock()
+        mock_start = create_autospec(start_proxy, spec_set=True)
         with patch("safeyolo.proxy.start_proxy", mock_start):
             actions = _attempt_fix(results)
 
@@ -2020,9 +2053,9 @@ class TestDoctorDependencyCascade:
         from safeyolo.commands.doctor import _run_checks
 
         with (
-            patch("safeyolo.commands.doctor.is_proxy_running", return_value=False),
-            patch("safeyolo.commands.doctor.find_config_dir", return_value=config_dir),
-            patch("safeyolo.commands.doctor.load_config", return_value={"proxy": {"port": 8080, "admin_port": 9090}}),
+            patch("safeyolo.commands.doctor.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.doctor.find_config_dir", return_value=config_dir, autospec=True,),
+            patch("safeyolo.commands.doctor.load_config", return_value={"proxy": {"port": 8080, "admin_port": 9090}}, autospec=True,),
         ):
             results = _run_checks()
 
@@ -2102,7 +2135,7 @@ class TestAdminCheck:
 
     def test_proxy_not_running_shows_warning(self, runner, config_dir):
         """Shows warning when proxy not running."""
-        with patch("safeyolo.commands.admin.is_proxy_running", return_value=False):
+        with patch("safeyolo.commands.admin.is_proxy_running", return_value=False, autospec=True,):
             result = runner.invoke(app, ["check"])
 
         assert "not running" in result.output.lower()
@@ -2129,9 +2162,9 @@ class TestGuestImageChecks:
         (share / "rootfs-base.ext4").touch()
         (share / "rootfs-tree" / "etc").mkdir(parents=True)
 
-        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+        with patch("safeyolo.vm.platform.system", return_value="Darwin", autospec=True,):
             assert check_guest_images() is True
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             assert check_guest_images() is True
 
     def test_missing_kernel_on_darwin(self, config_dir):
@@ -2142,7 +2175,7 @@ class TestGuestImageChecks:
         (share / "initramfs.cpio.gz").touch()
         (share / "rootfs-base.ext4").touch()
 
-        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+        with patch("safeyolo.vm.platform.system", return_value="Darwin", autospec=True,):
             assert check_guest_images() is False
 
     def test_missing_initramfs_on_darwin(self, config_dir):
@@ -2153,7 +2186,7 @@ class TestGuestImageChecks:
         (share / "Image").touch()
         (share / "rootfs-base.ext4").touch()
 
-        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+        with patch("safeyolo.vm.platform.system", return_value="Darwin", autospec=True,):
             assert check_guest_images() is False
 
     def test_missing_rootfs_on_darwin(self, config_dir):
@@ -2164,7 +2197,7 @@ class TestGuestImageChecks:
         (share / "Image").touch()
         (share / "initramfs.cpio.gz").touch()
 
-        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+        with patch("safeyolo.vm.platform.system", return_value="Darwin", autospec=True,):
             assert check_guest_images() is False
 
     def test_missing_rootfs_tree_on_linux(self, config_dir):
@@ -2175,7 +2208,7 @@ class TestGuestImageChecks:
         share = config_dir / "share"
         (share / "rootfs-base.ext4").touch()
 
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             assert check_guest_images() is False
 
     def test_linux_only_needs_rootfs_tree(self, config_dir):
@@ -2187,7 +2220,7 @@ class TestGuestImageChecks:
         (share / "rootfs-tree" / "etc").mkdir(parents=True)
         # No Image, no initramfs.cpio.gz, no ext4
 
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             assert check_guest_images() is True
 
     def test_linux_ext4_alone_is_not_enough(self, config_dir):
@@ -2198,7 +2231,7 @@ class TestGuestImageChecks:
         share = config_dir / "share"
         (share / "rootfs-base.ext4").touch()
 
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+        with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             assert check_guest_images() is False
 
     def test_guest_image_status_returns_per_artifact(self, config_dir):

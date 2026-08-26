@@ -6,6 +6,8 @@ Tests for PolicyEngine mutation methods — update_host_rate, add_host_allowance
 import pytest
 
 SAMPLE_TOML = """\
+budget = 12000
+
 [metadata]
 version = "2.0"
 description = "Test policy"
@@ -148,6 +150,8 @@ class TestAddHostAllowance:
         assert result["status"] == "added"
         assert result["host"] == "cdn.example.com"
         assert result["rate"] is None
+        assert result["global_budget"] == 12000
+        assert result["rate_source"] == "global"
 
     def test_add_host_with_rate(self, engine):
         result = engine.add_host_allowance("cdn.example.com", rate=1200)
@@ -172,6 +176,11 @@ class TestAddHostAllowance:
             method="GET",
         )
         assert decision.effect == "allow"
+
+        assert engine._loader.reload() is True
+        assert engine.evaluate_request(
+            host="cdn.example.com", path="/asset.js", method="GET"
+        ).effect == "allow"
 
     def test_add_host_allowance_agent_scoped(self, engine):
         """Passing agent= writes a condition with agent field on the permission."""

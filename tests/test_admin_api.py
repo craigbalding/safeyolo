@@ -7,16 +7,91 @@ Uses mock handler to simulate HTTP requests without a real server.
 
 import asyncio
 import json
+from concurrent.futures import Future
 from io import BytesIO
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
+
+from pdp.client import PolicyClient
+from safeyolo.mitm_addons.circuit_breaker import CircuitBreaker
+from safeyolo.mitm_addons.service_gateway import GrantEntry, ServiceGateway
+
+pytestmark = pytest.mark.assurance_boundary
 
 # ---------------------------------------------------------------------------
 # Shared test infrastructure
 # ---------------------------------------------------------------------------
 
 TEST_TOKEN = "test-token-for-unit-tests"
+
+
+def _policy_client() -> PolicyClient:
+    return create_autospec(PolicyClient, instance=True, spec_set=True)
+
+
+class _StatsAddon:
+    def __init__(self, stats: dict):
+        self._stats = stats
+
+    def get_stats(self) -> dict:
+        return dict(self._stats)
+
+
+class _ServersBoundary:
+    async def update(self, modes: list[str]) -> bool: ...
+
+
+class _ProxyServerBoundary:
+    def __init__(self, servers):
+        self.servers = servers
+
+
+class _WebTailnetBoundary:
+    def reconcile(self, enabled: bool, port: int): ...
+
+
+class _AddonManagerBoundary:
+    def get(self, name: str): ...
+
+
+class _OptionsBoundary:
+    credguard_block = False
+    network_guard_block = False
+    pattern_block_request = False
+    pattern_block_response = False
+
+    def update(self, **kwargs): ...
+
+
+class _MasterBoundary:
+    addons = None
+    event_loop = None
+
+
+class _ContextBoundary:
+    master = None
+    options = None
+
+
+def _ctx_boundary():
+    context = create_autospec(_ContextBoundary, instance=True, spec_set=True)
+    context.options = create_autospec(_OptionsBoundary, instance=True, spec_set=True)
+    context.master = create_autospec(_MasterBoundary, instance=True, spec_set=True)
+    context.master.addons = create_autospec(
+        _AddonManagerBoundary, instance=True, spec_set=True
+    )
+    context.master.event_loop = asyncio.new_event_loop()
+    return context
+
+
+def _future(*, result=None, error: Exception | None = None):
+    future = create_autospec(Future, instance=True, spec_set=True)
+    if error is not None:
+        future.result.side_effect = error
+    else:
+        future.result.return_value = result
+    return future
 
 
 def _make_handler(handler_class, method, path, body=None, include_auth=True, token=TEST_TOKEN):
@@ -129,8 +204,7 @@ class TestGetStats:
         assert response["proxy"] == "safeyolo"
 
     def test_includes_addon_stats(self, handler_class):
-        mock_addon = MagicMock()
-        mock_addon.get_stats.return_value = {"scans": 100, "blocks": 5}
+        mock_addon = _StatsAddon({"scans": 100, "blocks": 5})
         handler_class.addons_with_stats = {"test-addon": mock_addon}
 
         handler = _make_handler(handler_class, "GET", "/stats")
@@ -144,7 +218,7 @@ class TestGetModes:
     """GET /modes - current mode for all switchable addons."""
 
     def test_returns_all_addon_modes(self, handler_class):
-        with patch("admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx:
             # Set the EXACT option names from MODE_SWITCHABLE
             mock_ctx.options.credguard_block = False
             mock_ctx.options.network_guard_block = True
@@ -166,7 +240,7 @@ class TestGetPluginMode:
     """GET /plugins/{name}/mode - mode for a specific addon."""
 
     def test_returns_block_mode(self, handler_class):
-        with patch("admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx:
             mock_ctx.options.credguard_block = True
 
             handler = _make_handler(handler_class, "GET", "/plugins/credential-guard/mode")
@@ -188,11 +262,11 @@ class TestGetPolicyBaseline:
     """GET /admin/policy/baseline - read baseline policy."""
 
     def test_returns_baseline_and_path(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.get_baseline.return_value = {"permissions": []}
         mock_client.get_baseline_path.return_value = "/etc/safeyolo/policy.yaml"
 
-        with patch("admin_api.get_policy_client", return_value=mock_client):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client):
             handler = _make_handler(handler_class, "GET", "/admin/policy/baseline")
             handler.do_GET()
 
@@ -202,10 +276,10 @@ class TestGetPolicyBaseline:
         assert response["path"] == "/etc/safeyolo/policy.yaml"
 
     def test_no_baseline_returns_404(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.get_baseline.return_value = None
 
-        with patch("admin_api.get_policy_client", return_value=mock_client):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client):
             handler = _make_handler(handler_class, "GET", "/admin/policy/baseline")
             handler.do_GET()
 
@@ -218,12 +292,12 @@ class TestGetBudgets:
     """GET /admin/budgets - current budget usage."""
 
     def test_returns_budget_stats(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.get_budget_stats.return_value = {
             "api.openai.com": {"used": 50, "limit": 100},
         }
 
-        with patch("admin_api.get_policy_client", return_value=mock_client):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client):
             handler = _make_handler(handler_class, "GET", "/admin/budgets")
             handler.do_GET()
 
@@ -252,7 +326,7 @@ class TestPutPluginMode:
     """PUT /plugins/{name}/mode - set mode for a specific addon."""
 
     def test_sets_mode_to_block(self, handler_class):
-        with patch("admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx:
             mock_ctx.options.credguard_block = False
 
             body = json.dumps({"mode": "block"})
@@ -265,7 +339,7 @@ class TestPutPluginMode:
             assert response["status"] == "updated"
 
     def test_invalid_mode_returns_400_with_message(self, handler_class):
-        with patch("admin_api.ctx"):
+        with patch("admin_api.ctx", new=_ctx_boundary()):
             body = json.dumps({"mode": "invalid"})
             handler = _make_handler(handler_class, "PUT", "/plugins/credential-guard/mode", body=body)
             handler.do_PUT()
@@ -279,7 +353,7 @@ class TestPutModesAll:
     """PUT /modes - set mode for all switchable addons at once."""
 
     def test_sets_all_to_block(self, handler_class):
-        with patch("admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx:
             # Set the EXACT option names from MODE_SWITCHABLE
             mock_ctx.options.credguard_block = False
             mock_ctx.options.network_guard_block = False
@@ -296,7 +370,7 @@ class TestPutModesAll:
             assert response["mode"] == "block"
 
     def test_sets_all_to_warn(self, handler_class):
-        with patch("admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx:
             mock_ctx.options.credguard_block = True
             mock_ctx.options.network_guard_block = True
             mock_ctx.options.pattern_block_request = True
@@ -321,7 +395,7 @@ class TestPostBaselineApprove:
     """POST /admin/policy/baseline/approve - add credential permission."""
 
     def test_happy_path(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_credential_approval.return_value = {
             "status": "added",
             "permission_count": 3,
@@ -330,8 +404,8 @@ class TestPostBaselineApprove:
         body = json.dumps({"destination": "api.openai.com", "cred_id": "openai:sk-abc", "tier": "explicit"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/approve", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -347,14 +421,14 @@ class TestPostBaselineApprove:
         )
 
     def test_defaults_tier_to_explicit(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_credential_approval.return_value = {"status": "added", "permission_count": 1}
 
         body = json.dumps({"destination": "api.openai.com", "cred_id": "openai:sk-abc"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/approve", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 200
@@ -366,7 +440,7 @@ class TestPostBaselineApprove:
         body = json.dumps({"cred_id": "openai:sk-abc"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/approve", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=MagicMock()):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=_policy_client()):
             handler.do_POST()
 
         assert handler._status == 400
@@ -376,7 +450,7 @@ class TestPostBaselineApprove:
         body = json.dumps({"destination": "api.openai.com"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/approve", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=MagicMock()):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=_policy_client()):
             handler.do_POST()
 
         assert handler._status == 400
@@ -385,21 +459,21 @@ class TestPostBaselineApprove:
     def test_missing_body_returns_400(self, handler_class):
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/approve")
 
-        with patch("admin_api.get_policy_client", return_value=MagicMock()):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=_policy_client()):
             handler.do_POST()
 
         assert handler._status == 400
         assert _parse_response(handler)["error"] == "missing request body"
 
     def test_client_error_returns_400(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_credential_approval.return_value = {"status": "error", "error": "invalid cred_id format"}
 
         body = json.dumps({"destination": "api.openai.com", "cred_id": "bad"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/approve", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 400
@@ -413,7 +487,7 @@ class TestPostBaselineDeny:
         body = json.dumps({"destination": "evil.com", "cred_id": "openai:sk-abc", "reason": "user_denied"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/deny", body=body)
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -427,7 +501,7 @@ class TestPostBaselineDeny:
         body = json.dumps({"destination": "evil.com", "cred_id": "openai:sk-abc"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/deny", body=body)
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -438,7 +512,7 @@ class TestPostBaselineDeny:
         body = json.dumps({"cred_id": "openai:sk-abc"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/deny", body=body)
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 400
@@ -448,7 +522,7 @@ class TestPostBaselineDeny:
         body = json.dumps({"destination": "evil.com"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/deny", body=body)
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 400
@@ -457,7 +531,7 @@ class TestPostBaselineDeny:
     def test_missing_body_returns_400(self, handler_class):
         handler = _make_handler(handler_class, "POST", "/admin/policy/baseline/deny")
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 400
@@ -473,7 +547,7 @@ class TestPostHostDeny:
     """POST /admin/policy/host/deny - deny egress to a host."""
 
     def test_happy_path(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_host_denial.return_value = {
             "status": "denied",
             "host": "evil.com",
@@ -483,8 +557,8 @@ class TestPostHostDeny:
         body = json.dumps({"host": "evil.com", "expires": "2026-04-06T00:00:00Z"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/deny", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -510,14 +584,14 @@ class TestPostHostDeny:
 
     def test_valueerror_from_client_returns_400(self, handler_class):
         """B2 fix: ValueError from policy client maps to 400, not 500."""
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_host_denial.side_effect = ValueError("invalid host format")
 
         body = json.dumps({"host": "not a valid host!"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/deny", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 400
@@ -525,14 +599,14 @@ class TestPostHostDeny:
 
     def test_unexpected_exception_from_client_returns_500(self, handler_class):
         """B2 fix: non-ValueError exceptions map to 500."""
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_host_denial.side_effect = RuntimeError("disk full")
 
         body = json.dumps({"host": "evil.com"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/deny", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 500
@@ -543,7 +617,7 @@ class TestPostHostRate:
     """POST /admin/policy/host/rate - update host rate limit."""
 
     def test_happy_path(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.update_host_rate.return_value = {
             "status": "updated", "host": "api.openai.com", "old_rate": 3000, "new_rate": 6000,
         }
@@ -551,8 +625,8 @@ class TestPostHostRate:
         body = json.dumps({"host": "api.openai.com", "rate": 6000})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/rate", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -595,14 +669,14 @@ class TestPostHostRate:
 
     def test_valueerror_from_client_returns_400(self, handler_class):
         """B2 fix: ValueError from policy client maps to 400."""
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.update_host_rate.side_effect = ValueError("host not in policy")
 
         body = json.dumps({"host": "unknown.com", "rate": 100})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/rate", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 400
@@ -610,21 +684,21 @@ class TestPostHostRate:
 
     def test_unexpected_exception_returns_500(self, handler_class):
         """B2 fix: non-ValueError maps to 500."""
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.update_host_rate.side_effect = RuntimeError("disk full")
 
         body = json.dumps({"host": "api.openai.com", "rate": 100})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/rate", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 500
         assert _parse_response(handler)["error"] == "Internal server error"
 
     def test_emits_audit_event(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.update_host_rate.return_value = {
             "status": "updated", "host": "api.openai.com", "old_rate": 3000, "new_rate": 6000,
         }
@@ -632,8 +706,8 @@ class TestPostHostRate:
         body = json.dumps({"host": "api.openai.com", "rate": 6000})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/rate", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event") as mock_write:
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True) as mock_write:
             handler.do_POST()
 
         mock_write.assert_called_once()
@@ -644,7 +718,7 @@ class TestPostHostAllow:
     """POST /admin/policy/host/allow - allow a new host."""
 
     def test_happy_path(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_host_allowance.return_value = {
             "status": "added", "host": "cdn.example.com", "rate": 600,
         }
@@ -652,8 +726,8 @@ class TestPostHostAllow:
         body = json.dumps({"host": "cdn.example.com", "rate": 600})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/allow", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -662,7 +736,7 @@ class TestPostHostAllow:
         assert response["host"] == "cdn.example.com"
 
     def test_without_rate(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_host_allowance.return_value = {
             "status": "added", "host": "cdn.example.com", "rate": None,
         }
@@ -670,8 +744,8 @@ class TestPostHostAllow:
         body = json.dumps({"host": "cdn.example.com"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/allow", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 200
@@ -687,14 +761,14 @@ class TestPostHostAllow:
 
     def test_valueerror_from_client_returns_400(self, handler_class):
         """B2 fix: ValueError maps to 400."""
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_host_allowance.side_effect = ValueError("duplicate host")
 
         body = json.dumps({"host": "cdn.example.com"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/allow", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 400
@@ -702,14 +776,14 @@ class TestPostHostAllow:
 
     def test_unexpected_exception_returns_500(self, handler_class):
         """B2 fix: non-ValueError maps to 500."""
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_host_allowance.side_effect = RuntimeError("disk full")
 
         body = json.dumps({"host": "cdn.example.com"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/allow", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 500
@@ -720,7 +794,7 @@ class TestPostHostBypass:
     """POST /admin/policy/host/bypass - add addon bypass for a host."""
 
     def test_happy_path(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_host_bypass.return_value = {
             "status": "updated", "host": "api.internal.com", "bypass": ["pattern-scanner"],
         }
@@ -728,8 +802,8 @@ class TestPostHostBypass:
         body = json.dumps({"host": "api.internal.com", "addon": "pattern-scanner"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/bypass", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -755,14 +829,14 @@ class TestPostHostBypass:
 
     def test_valueerror_from_client_returns_400(self, handler_class):
         """B2 fix: ValueError maps to 400."""
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_host_bypass.side_effect = ValueError("unknown addon")
 
         body = json.dumps({"host": "api.internal.com", "addon": "bad-addon"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/bypass", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 400
@@ -770,14 +844,14 @@ class TestPostHostBypass:
 
     def test_unexpected_exception_returns_500(self, handler_class):
         """B2 fix: non-ValueError maps to 500."""
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.add_host_bypass.side_effect = RuntimeError("disk full")
 
         body = json.dumps({"host": "api.internal.com", "addon": "pattern-scanner"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/bypass", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 500
@@ -793,13 +867,13 @@ class TestPostBudgetsReset:
     """POST /admin/budgets/reset - reset budget counters."""
 
     def test_reset_all(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.reset_budgets.return_value = {"status": "reset", "count": 5}
 
         handler = _make_handler(handler_class, "POST", "/admin/budgets/reset")
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -808,14 +882,14 @@ class TestPostBudgetsReset:
         mock_client.reset_budgets.assert_called_once_with(resource=None)
 
     def test_reset_specific_resource(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.reset_budgets.return_value = {"status": "reset", "count": 1}
 
         body = json.dumps({"resource": "api.openai.com"})
         handler = _make_handler(handler_class, "POST", "/admin/budgets/reset", body=body)
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -824,13 +898,13 @@ class TestPostBudgetsReset:
         mock_client.reset_budgets.assert_called_once_with(resource="api.openai.com")
 
     def test_client_error_returns_500(self, handler_class):
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.reset_budgets.return_value = {"status": "error", "error": "budget store unavailable"}
 
         handler = _make_handler(handler_class, "POST", "/admin/budgets/reset")
 
-        with patch("admin_api.get_policy_client", return_value=mock_client), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 500
@@ -846,9 +920,14 @@ class TestPostGatewayGrant:
     """POST /admin/gateway/grant - add a risky route grant."""
 
     def test_happy_path(self, handler_class):
-        mock_gateway = MagicMock()
-        mock_grant = MagicMock()
-        mock_grant.grant_id = "grant-abc123"
+        mock_gateway = create_autospec(ServiceGateway, instance=True, spec_set=True)
+        mock_grant = GrantEntry(
+            grant_id="grant-abc123",
+            agent="boris",
+            service="github",
+            method="DELETE",
+            path="/repos/test/test",
+        )
         mock_gateway.add_grant.return_value = mock_grant
         handler_class.addons_with_stats = {"service-gateway": mock_gateway}
         handler_class._addons_obj = None
@@ -862,7 +941,7 @@ class TestPostGatewayGrant:
         })
         handler = _make_handler(handler_class, "POST", "/admin/gateway/grant", body=body)
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -909,7 +988,7 @@ class TestPostGatewayGrant:
         })
         handler = _make_handler(handler_class, "POST", "/admin/gateway/grant", body=body)
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 503
@@ -925,14 +1004,14 @@ class TestDeleteGatewayGrant:
     """DELETE /admin/gateway/grants/{id} - revoke a grant."""
 
     def test_happy_path(self, handler_class):
-        mock_gateway = MagicMock()
+        mock_gateway = create_autospec(ServiceGateway, instance=True, spec_set=True)
         mock_gateway.revoke_grant.return_value = True
         handler_class.addons_with_stats = {"service-gateway": mock_gateway}
         handler_class._addons_obj = None
 
         handler = _make_handler(handler_class, "DELETE", "/admin/gateway/grants/grant-abc123")
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_DELETE()
 
         response = _parse_response(handler)
@@ -942,14 +1021,14 @@ class TestDeleteGatewayGrant:
         mock_gateway.revoke_grant.assert_called_once_with("grant-abc123")
 
     def test_not_found_returns_404(self, handler_class):
-        mock_gateway = MagicMock()
+        mock_gateway = create_autospec(ServiceGateway, instance=True, spec_set=True)
         mock_gateway.revoke_grant.return_value = False
         handler_class.addons_with_stats = {"service-gateway": mock_gateway}
         handler_class._addons_obj = None
 
         handler = _make_handler(handler_class, "DELETE", "/admin/gateway/grants/no-such-grant")
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_DELETE()
 
         assert handler._status == 404
@@ -961,7 +1040,7 @@ class TestDeleteGatewayGrant:
 
         handler = _make_handler(handler_class, "DELETE", "/admin/gateway/grants/grant-abc123")
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_DELETE()
 
         assert handler._status == 503
@@ -977,14 +1056,14 @@ class TestPostCircuitBreakerReset:
     """POST /admin/circuit-breaker/reset - reset circuit breaker for a host."""
 
     def test_happy_path(self, handler_class):
-        mock_cb = MagicMock()
+        mock_cb = create_autospec(CircuitBreaker, instance=True, spec_set=True)
         handler_class.addons_with_stats = {"circuit-breaker": mock_cb}
         handler_class._addons_obj = None
 
         body = json.dumps({"host": "api.slack.com"})
         handler = _make_handler(handler_class, "POST", "/admin/circuit-breaker/reset", body=body)
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -1008,7 +1087,7 @@ class TestPostCircuitBreakerReset:
         body = json.dumps({"host": "api.slack.com"})
         handler = _make_handler(handler_class, "POST", "/admin/circuit-breaker/reset", body=body)
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 503
@@ -1053,22 +1132,24 @@ class TestAgentServiceEndpoints:
 
     @pytest.fixture
     def mock_pdp(self, policy_toml):
-        """Mock PDP to return a loader with _baseline_path."""
-        mock_loader = MagicMock()
-        mock_loader._baseline_path = policy_toml
+        """Provide the concrete policy-path graph consumed by these endpoints."""
+        class Loader:
+            _baseline_path = policy_toml
 
-        mock_engine = MagicMock()
-        mock_engine._loader = mock_loader
+        class Engine:
+            _loader = Loader()
 
-        mock_pdp = MagicMock()
-        mock_pdp._engine = mock_engine
+        class Core:
+            _engine = Engine()
 
-        mock_client = MagicMock()
-        mock_client._pdp = mock_pdp
+        class Client:
+            _pdp = Core()
+
+        client = Client()
 
         with (
-            patch("admin_api.is_policy_client_configured", return_value=True),
-            patch("admin_api.get_policy_client", return_value=mock_client),
+            patch("admin_api.is_policy_client_configured", autospec=True, return_value=True),
+            patch("admin_api.get_policy_client", autospec=True, return_value=client),
         ):
             yield
 
@@ -1078,7 +1159,7 @@ class TestAgentServiceEndpoints:
         body = json.dumps({"service": "gmail", "capability": "readonly", "credential": "gmail-oauth2"})
         handler = _make_handler(handler_class, "POST", "/admin/agents/boris/services", body=body)
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         response = _parse_response(handler)
@@ -1121,7 +1202,7 @@ class TestAgentServiceEndpoints:
 
         handler = _make_handler(handler_class, "DELETE", "/admin/agents/boris/services/slack")
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_DELETE()
 
         response = _parse_response(handler)
@@ -1151,7 +1232,7 @@ class TestAgentServiceEndpoints:
         body = json.dumps({"service": "gmail", "capability": "readonly", "credential": "gmail-key"})
         handler = _make_handler(handler_class, "POST", "/admin/agents/boris/services", body=body)
 
-        with patch("admin_api.write_event") as mock_write:
+        with patch("admin_api.write_event", autospec=True) as mock_write:
             handler.do_POST()
 
         mock_write.assert_called_once()
@@ -1162,7 +1243,7 @@ class TestAgentServiceEndpoints:
     def test_delete_emits_audit_event(self, handler_class, mock_pdp, policy_toml):
         handler = _make_handler(handler_class, "DELETE", "/admin/agents/boris/services/slack")
 
-        with patch("admin_api.write_event") as mock_write:
+        with patch("admin_api.write_event", autospec=True) as mock_write:
             handler.do_DELETE()
 
         mock_write.assert_called_once()
@@ -1174,7 +1255,7 @@ class TestAgentServiceEndpoints:
         body = json.dumps({"service": "gmail", "capability": "readonly", "credential": "gmail-key"})
         handler = _make_handler(handler_class, "POST", "/admin/agents/boris/services", body=body)
 
-        with patch("admin_api.write_event"):
+        with patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         tmp = policy_toml.with_suffix(".tmp")
@@ -1195,10 +1276,10 @@ class TestPutProxyMode:
             "/admin/proxy/mode",
             body=json.dumps({"modes": []}),
         )
-        servers = MagicMock()
-        servers.update = AsyncMock(return_value=True)
-        proxyserver = MagicMock(servers=servers)
-        future = MagicMock()
+        servers = create_autospec(_ServersBoundary, instance=True, spec_set=True)
+        servers.update.return_value = True
+        proxyserver = _ProxyServerBoundary(servers)
+        future = _future()
 
         def submit(coroutine, _loop):
             result = asyncio.run(coroutine)
@@ -1206,9 +1287,9 @@ class TestPutProxyMode:
             return future
 
         with (
-            patch("admin_api.ctx") as mock_ctx,
-            patch("admin_api.asyncio.run_coroutine_threadsafe", side_effect=submit),
-            patch("admin_api.write_event"),
+            patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx,
+            patch("admin_api.asyncio.run_coroutine_threadsafe", autospec=True, side_effect=submit),
+            patch("admin_api.write_event", autospec=True),
         ):
             mock_ctx.master.addons.get.return_value = proxyserver
             handler.do_PUT()
@@ -1225,24 +1306,20 @@ class TestPutProxyMode:
             "/admin/proxy/mode",
             body=json.dumps({"modes": []}),
         )
-        servers = MagicMock()
-        servers.update = AsyncMock(return_value=False)
-        proxyserver = MagicMock(servers=servers)
+        servers = create_autospec(_ServersBoundary, instance=True, spec_set=True)
+        servers.update.return_value = False
+        proxyserver = _ProxyServerBoundary(servers)
 
         def submit(coroutine, _loop):
             try:
                 result = asyncio.run(coroutine)
             except Exception as exc:
-                future = MagicMock()
-                future.result.side_effect = exc
-                return future
-            future = MagicMock()
-            future.result.return_value = result
-            return future
+                return _future(error=exc)
+            return _future(result=result)
 
         with (
-            patch("admin_api.ctx") as mock_ctx,
-            patch("admin_api.asyncio.run_coroutine_threadsafe", side_effect=submit),
+            patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx,
+            patch("admin_api.asyncio.run_coroutine_threadsafe", autospec=True, side_effect=submit),
         ):
             mock_ctx.master.addons.get.return_value = proxyserver
             handler.do_PUT()
@@ -1258,7 +1335,7 @@ class TestPutProxyIgnoreHosts:
             handler_class, "PUT", "/admin/proxy/ignore-hosts", body=body
         )
 
-        future = MagicMock()
+        future = _future()
 
         def submit(coroutine, _loop):
             try:
@@ -1270,9 +1347,9 @@ class TestPutProxyIgnoreHosts:
             return future
 
         with (
-            patch("admin_api.ctx") as mock_ctx,
-            patch("admin_api.asyncio.run_coroutine_threadsafe", side_effect=submit),
-            patch("admin_api.write_event") as write_event,
+            patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx,
+            patch("admin_api.asyncio.run_coroutine_threadsafe", autospec=True, side_effect=submit),
+            patch("admin_api.write_event", autospec=True) as write_event,
         ):
             handler.do_PUT()
 
@@ -1299,7 +1376,7 @@ class TestPutProxyIgnoreHosts:
             body=json.dumps({"hosts": hosts}),
         )
 
-        with patch("admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx:
             handler.do_PUT()
 
         assert handler._status == 400
@@ -1313,7 +1390,7 @@ class TestPutProxyIgnoreHosts:
             body=json.dumps(["service.example.test"]),
         )
 
-        with patch("admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx:
             handler.do_PUT()
 
         assert handler._status == 400
@@ -1323,8 +1400,10 @@ class TestPutProxyIgnoreHosts:
 
 class TestPutProxyWebTailnet:
     def test_reconciles_on_master_event_loop(self, handler_class):
-        addon = MagicMock()
-        handler_class._addons_obj = MagicMock()
+        addon = create_autospec(_WebTailnetBoundary, instance=True, spec_set=True)
+        handler_class._addons_obj = create_autospec(
+            _AddonManagerBoundary, instance=True, spec_set=True
+        )
         handler_class._addons_obj.get.return_value = addon
         handler = _make_handler(
             handler_class,
@@ -1332,21 +1411,21 @@ class TestPutProxyWebTailnet:
             "/admin/proxy/web-tailnet",
             body=json.dumps({"enabled": True, "port": 8446}),
         )
-        future = MagicMock()
-        future.result.return_value = {
+        future = _future(result={
             "enabled": True,
             "port": 8446,
             "state": "healthy",
             "url": "https://host.example.ts.net:8446/",
-        }
+        })
 
         with (
-            patch("admin_api.ctx") as mock_ctx,
+            patch("admin_api.ctx", new=_ctx_boundary()) as mock_ctx,
             patch(
                 "admin_api.asyncio.run_coroutine_threadsafe",
+                autospec=True,
                 return_value=future,
             ) as submit,
-            patch("admin_api.write_event") as write_event,
+            patch("admin_api.write_event", autospec=True) as write_event,
         ):
             handler.do_PUT()
 
@@ -1386,8 +1465,10 @@ class TestPutProxyWebTailnet:
     def test_surfaces_reconcile_failure_without_mutating_other_routes(
         self, handler_class
     ):
-        addon = MagicMock()
-        handler_class._addons_obj = MagicMock()
+        addon = create_autospec(_WebTailnetBoundary, instance=True, spec_set=True)
+        handler_class._addons_obj = create_autospec(
+            _AddonManagerBoundary, instance=True, spec_set=True
+        )
         handler_class._addons_obj.get.return_value = addon
         handler = _make_handler(
             handler_class,
@@ -1395,13 +1476,13 @@ class TestPutProxyWebTailnet:
             "/admin/proxy/web-tailnet",
             body=json.dumps({"enabled": True, "port": 443}),
         )
-        future = MagicMock()
-        future.result.side_effect = RuntimeError("port already mapped")
+        future = _future(error=RuntimeError("port already mapped"))
 
         with (
-            patch("admin_api.ctx"),
+            patch("admin_api.ctx", new=_ctx_boundary()),
             patch(
                 "admin_api.asyncio.run_coroutine_threadsafe",
+                autospec=True,
                 return_value=future,
             ),
         ):
@@ -1510,7 +1591,7 @@ class TestAuthFailureAuditEvent:
     def test_auth_failure_emits_event(self, handler_class):
         handler = _make_handler(handler_class, "GET", "/stats", token="wrong-token")
 
-        with patch("admin_api.write_event") as mock_write:
+        with patch("admin_api.write_event", autospec=True) as mock_write:
             handler.do_GET()
 
         assert handler._status == 401
@@ -1526,7 +1607,7 @@ class TestAuthFailureAuditEvent:
         body = json.dumps({"host": "evil.com"})
         handler = _make_handler(handler_class, "POST", "/admin/policy/host/deny", body=body, include_auth=False)
 
-        with patch("admin_api.write_event") as mock_write:
+        with patch("admin_api.write_event", autospec=True) as mock_write:
             handler.do_POST()
 
         assert handler._status == 401
@@ -1548,8 +1629,8 @@ class TestMalformedJsonBody:
             handler_class, "POST", "/admin/policy/host/deny", body="not valid json{{"
         )
 
-        with patch("admin_api.get_policy_client", return_value=MagicMock()), \
-             patch("admin_api.write_event"):
+        with patch("admin_api.get_policy_client", autospec=True, return_value=_policy_client()), \
+             patch("admin_api.write_event", autospec=True):
             handler.do_POST()
 
         assert handler._status == 400
@@ -1562,7 +1643,7 @@ class TestMalformedJsonBody:
             handler_class, "PUT", "/plugins/credential-guard/mode", body="{{bad"
         )
 
-        with patch("admin_api.ctx"):
+        with patch("admin_api.ctx", new=_ctx_boundary()):
             handler.do_PUT()
 
         assert handler._status == 400
@@ -1590,6 +1671,18 @@ class TestAdminAPIAddon:
 
         addon = AdminAPI()
         assert addon.name == "admin-api"
+
+    def test_loopback_server_bind_does_not_perform_reverse_dns(self):
+        from admin_api import AdminRequestHandler, LoopbackHTTPServer
+
+        with patch("socket.getfqdn", autospec=True, side_effect=AssertionError("reverse DNS lookup attempted")):
+            server = LoopbackHTTPServer(("127.0.0.1", 0), AdminRequestHandler)
+        try:
+            assert server.server_address[0] == "127.0.0.1"
+            assert server.server_name == "127.0.0.1"
+            assert server.server_port == server.server_address[1]
+        finally:
+            server.server_close()
 
     def test_mode_switchable_contains_expected_addons(self):
         from admin_api import AdminRequestHandler

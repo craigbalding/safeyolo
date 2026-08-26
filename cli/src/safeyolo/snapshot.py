@@ -35,6 +35,7 @@ from pathlib import Path
 
 from .config import get_config_dir, get_data_dir
 from .vm import (
+    _guest_sudo_source,
     find_vm_helper,
     get_agents_dir,
     get_base_rootfs_path,
@@ -237,6 +238,7 @@ def compute_snapshot_version(
     """
     cli_dir = Path(__file__).parent
     static_script = cli_dir / "guest-init-static.sh"
+    guest_sudo = _guest_sudo_source()
     ca_cert = get_config_dir() / "certs" / "mitmproxy-ca-cert.pem"
     kernel = get_kernel_path()
     initrd = get_initrd_path()
@@ -245,6 +247,7 @@ def compute_snapshot_version(
     return {
         "snapshot_schema": SNAPSHOT_SCHEMA,
         "guest_init_static_sha256": _sha256_file(static_script),
+        "guest_sudo_sha256": _sha256_file(guest_sudo),
         "ca_cert_sha256": _sha256_file(ca_cert) if ca_cert.exists() else "",
         "kernel_sha256": _sha256_file(kernel) if kernel.exists() else "",
         "initrd_sha256": _sha256_file(initrd) if initrd.exists() else "",

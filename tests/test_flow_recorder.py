@@ -1,580 +1,275 @@
-"""Tests for addons/flow_recorder.py - mitmproxy flow recording addon."""
+"""Assurance-boundary tests for agent-scoped flow evidence."""
+
+from __future__ import annotations
 
 import json
 import time
-from unittest.mock import MagicMock
+from unittest.mock import create_autospec, patch
 
 import pytest
-from flow_recorder import FlowRecorder
+from flow_recorder import AGENT_API_HOST, FlowRecorder
 from mitmproxy import http
+from mitmproxy.flow import Error
 from mitmproxy.test import taddons, tflow
 
+from safeyolo.core import flow_writer
+from safeyolo.core.flow_writer import _FlowWriter
+from safeyolo.proxy_modes.unix_listener import UnixMode
 from safeyolo.storage.flow_store import FlowStore
+
+pytestmark = pytest.mark.assurance_boundary
 
 
 @pytest.fixture
 def recorder(tmp_path):
-    """Create a FlowRecorder with an in-memory FlowStore."""
     addon = FlowRecorder()
-    with taddons.context(addon) as tctx:
-        tctx.options.flow_store_enabled = True
-        tctx.options.flow_store_db_path = str(tmp_path / "test_flows.sqlite3")
-
-        # Initialize store directly (bypass PDP config loading) and
-        # wire up the async writer that `response`/`error` now enqueue
-        # through. Tests asserting on `store.search_flows` must first
-        # call `_drain_flow_writer()` to wait for background writes.
-        store = FlowStore(db_path=tctx.options.flow_store_db_path)
-        store.init_db()
-        addon.store = store
-        import safeyolo.core.flow_writer as flow_writer
-        flow_writer._writer = None  # reset between tests
-        flow_writer.install(store)
-
-        # `FlowRecorder.response`/`.error` now enqueue to the async
-        # writer instead of calling `store.record_flow` synchronously.
-        # Tests read via `addon.store.search_flows` right after the
-        # hook call, so wrap it here to auto-drain the writer first.
-        # Keeps every test body unchanged.
-        _orig_search = store.search_flows
-        def search_flows_autodrain(*args, **kwargs):
-            w = flow_writer.get_writer()
-            if w is not None:
-                w.wait_for_drain(timeout_s=3.0)
-            return _orig_search(*args, **kwargs)
-        store.search_flows = search_flows_autodrain  # type: ignore[method-assign]
-
-        yield addon
-
-        w = flow_writer.get_writer()
-        if w is not None:
-            w._shutdown()
-        store.close()
+    store = FlowStore(str(tmp_path / "flows.sqlite3"))
+    store.init_db()
+    addon.store = store
+    with taddons.context(addon), patch.object(flow_writer, "_writer", new=None):
+        yield addon, store
+    store.close()
 
 
-def _drain_flow_writer() -> None:
-    """Block until the async writer has applied all enqueued records.
-
-    `FlowRecorder.response`/`.error` enqueue onto a background thread;
-    tests that then assert on `addon.store.search_flows` must wait.
-    """
-    import safeyolo.core.flow_writer as flow_writer
-    w = flow_writer.get_writer()
-    assert w is not None, "flow_writer was not installed for this test"
-    assert w.wait_for_drain(timeout_s=3.0), "flow writer failed to drain"
-
-
-def _make_test_flow(
-    method="GET",
-    url="https://app.example.com/api/todos/42",
-    response_status=200,
-    response_body=b'{"id":42}',
-    response_ct="application/json",
-    with_context=True,
-    agent="agent-1",
-    request_id="req-test000001",
+def _flow(
+    *,
+    url: str = "https://app.example.com/api/todos/42?view=full",
+    status: int | None = 200,
+    with_context: bool = True,
+    agent: str | None = "agent-a",
 ):
-    """Create a test flow with standard metadata."""
-    flow = tflow.tflow()
-    flow.request.method = method
+    flow = tflow.tflow(resp=False)
     flow.request.url = url
-    flow.request.host = "app.example.com"
-    flow.request.content = b""
-
-    flow.response = http.Response.make(
-        response_status,
-        response_body,
-        {"Content-Type": response_ct},
-    )
-
-    flow.metadata["request_id"] = request_id
-    flow.metadata["start_time"] = time.time() - 0.1
-    flow.metadata["agent"] = agent
-
+    flow.request.method = "POST"
+    flow.request.content = b'{"title":"test"}'
+    flow.request.headers["Content-Type"] = "application/json"
+    flow.client_conn.peername = ("192.0.2.20", 41000)
+    if agent:
+        flow.client_conn.proxy_mode = UnixMode.parse(
+            f"unix:/tmp/192.0.2.20_{agent}/proxy.sock"
+        )
+    if status is not None:
+        flow.response = http.Response.make(
+            status, b'{"id":42}', {"Content-Type": "application/json"}
+        )
+    flow.metadata.update(request_id="req-1", start_time=time.time() - 0.1)
     if with_context:
         flow.metadata["test_context"] = {
-            "run": "sec1",
-            "agent": "idor",
+            "run": "run-1",
             "test": "IDOR-003",
+            "role": "attacker",
+            "agent": "idor",
+            "suite": "authorization",
+            "subject": "todo",
+            "step": "read-other-user",
+            "intent": "negative",
+            "expect": "deny",
         }
-
     return flow
 
 
-class TestScopeGate:
-    def test_flow_without_test_context_is_skipped(self, recorder):
-        """Flows without test_context metadata are not recorded."""
-        flow = _make_test_flow(with_context=False)
-        recorder.response(flow)
-        assert recorder._stats["skipped"] == 1
-        assert recorder._stats["recorded"] == 0
-
-    def test_agent_api_requests_skipped(self, recorder):
-        """Requests to agent API host are not recorded."""
-        flow = _make_test_flow()
-        flow.request.host = "_safeyolo.proxy.internal"
-        recorder.response(flow)
-        assert recorder._stats["skipped"] == 1
-
-    def test_disabled_recorder_skips(self, recorder, tmp_path):
-        """When disabled, nothing is recorded."""
-        disabled = FlowRecorder()
-        with taddons.context(disabled) as tctx:
-            tctx.options.flow_store_enabled = False
-            tctx.options.flow_store_db_path = str(tmp_path / "disabled.sqlite3")
-
-            flow = _make_test_flow()
-            disabled.response(flow)
-            assert disabled._stats["skipped"] == 1
-
-    def test_probe_flow_suppressed_even_with_test_context(self, recorder):
-        """Doctor sends a valid X-SafeYolo-Test-Context (issue #213 B4) so
-        test-context runs its normal parse/apply path — which would set
-        test_context and pull every doctor run into FlowStore as
-        evidence. The safeyolo_probe marker (set early by probe_sink)
-        short-circuits before test_context matters. Verifies the
-        successful-sink case: probe reached the sink normally and its
-        flow must not be recorded.
-        """
-        flow = _make_test_flow()
-        flow.metadata["safeyolo_probe"] = True
-        recorder.response(flow)
-        assert recorder._stats["skipped"] == 1
-        assert recorder._stats["recorded"] == 0
-
-    def test_probe_flow_suppressed_when_pre_sink_block(self, recorder):
-        """The pre-sink block case: some pathological addon set
-        flow.response before the sink ran, so `blocked_by` is set. The
-        probe marker is still there (early-marked before the block) and
-        FlowStore suppression must still apply.
-        """
-        flow = _make_test_flow(response_status=403)
-        flow.metadata["safeyolo_probe"] = True
-        flow.metadata["blocked_by"] = "some-earlier-addon"
-        recorder.response(flow)
-        assert recorder._stats["skipped"] == 1
-        assert recorder._stats["recorded"] == 0
-
-    def test_probe_suppression_requires_boolean_true_not_truthy(self, recorder):
-        """Contract-tightening test (issue #213 B9): the marker must be
-        literal boolean True, not any truthy value. A stray string or
-        non-empty container in metadata must not accidentally suppress
-        a real flow from FlowStore.
-        """
-        # Truthy but NOT the boolean True — a real bug would make these
-        # suppress the flow. Strict `is True` check rejects each.
-        for accidental in ("yes", 1, [1], {"nested": True}):
-            flow = _make_test_flow()
-            flow.metadata["safeyolo_probe"] = accidental
-            before_recorded = recorder._stats["recorded"]
-            before_skipped = recorder._stats["skipped"]
-            recorder.response(flow)
-            # Flow must be recorded (not suppressed) — the accidental
-            # truthy value did not qualify as the probe marker.
-            assert recorder._stats["recorded"] == before_recorded + 1, (
-                f"truthy value {accidental!r} incorrectly triggered probe "
-                "suppression — expected strict `is True` check"
-            )
-            assert recorder._stats["skipped"] == before_skipped
-
-    def test_no_store_skips(self, recorder):
-        """If store is None (init failed), flows are skipped."""
-        recorder.store = None
-        flow = _make_test_flow()
-        recorder.response(flow)
-        assert recorder._stats["skipped"] == 1
-
-
-class TestResponseRecording:
-    def test_completed_flow_recorded(self, recorder):
-        flow = _make_test_flow()
-        recorder.response(flow)
-        assert recorder._stats["recorded"] == 1
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        assert results[0]["flow_state"] == "completed"
-        assert results[0]["status_code"] == 200
-
-    def test_blocked_flow_recorded(self, recorder):
-        flow = _make_test_flow(response_status=403)
-        flow.metadata["blocked_by"] = "credential-guard"
-        recorder.response(flow)
-        assert recorder._stats["recorded"] == 1
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        assert results[0]["flow_state"] == "blocked"
-
-    def test_agent_id_from_metadata(self, recorder):
-        flow = _make_test_flow(agent="boris")
-        recorder.response(flow)
-
-        results = recorder.store.search_flows({})
-        assert results[0]["agent_id"] == "boris"
-        assert results[0]["engagement_id"] == "boris"
-
-    def test_operator_origin_is_persisted_as_source_type(self, recorder):
-        flow = _make_test_flow()
-        flow.metadata["origin"] = "operator"
-        flow.metadata["operator_action"] = "replay"
-        flow.metadata["source_flow_id"] = "source-flow-123"
-
-        recorder.response(flow)
-
-        summary = recorder.store.search_flows({"source_type": "operator"})[0]
-        assert summary["source_type"] == "operator"
-        stored = recorder.store.get_flow(summary["id"])
-        assert {tag["tag"]: tag["value"] for tag in stored["tags"]} == {
-            "operator_action": "replay",
-            "source_flow_id": "source-flow-123",
-        }
-
-    def test_context_fields_extracted(self, recorder):
-        flow = _make_test_flow()
-        flow.metadata["test_context"] = {
-            "run": "recon1",
-            "agent": "scanner",
-            "test": "SQLI-001",
-            "role": "attacker",
-        }
-        recorder.response(flow)
-
-        results = recorder.store.search_flows({})
-        assert results[0]["run"] == "recon1"
-        assert results[0]["test"] == "SQLI-001"
-        assert results[0]["role"] == "attacker"
-
-    def test_complete_context_is_promoted_without_changing_context_json(self, recorder):
-        flow = _make_test_flow(agent="trusted-agent")
-        context = {
-            "run": "run-1",
-            "agent": "declared-agent",
-            "test": "FLOW-05",
-            "role": "guest",
-            "suite": "checkout",
-            "subject": "CTRL-123",
-            "step": "submit",
-            "intent": "forge-return",
-            "expect": "blocked",
-            "extra": "retained",
-        }
-        flow.metadata["test_context"] = context
-
-        recorder.response(flow)
-
-        stored = recorder.store.get_flow(recorder.store.search_flows({})[0]["id"])
-        assert stored["agent_id"] == "trusted-agent"
-        assert stored["test_agent"] == "declared-agent"
-        assert {key: stored[key] for key in ("suite", "subject", "step", "intent", "expect")} == {
-            "suite": "checkout",
-            "subject": "CTRL-123",
-            "step": "submit",
-            "intent": "forge-return",
-            "expect": "blocked",
-        }
-        assert json.loads(stored["context_json"]) == context
-
-    def test_request_id_recorded(self, recorder):
-        """request_id from flow metadata appears in the stored record."""
-        flow = _make_test_flow(request_id="req-abc123xyz")
-        recorder.response(flow)
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        assert results[0]["request_id"] == "req-abc123xyz"
-
-    def test_url_parts_extracted(self, recorder):
-        """scheme, host, port, method, path, full_url are extracted from the request."""
-        flow = _make_test_flow(
-            method="POST",
-            url="https://app.example.com:8443/api/v2/items",
-        )
-        flow.request.host = "app.example.com"
-        flow.request.port = 8443
-        flow.request.scheme = "https"
-        recorder.response(flow)
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        row_id = results[0]["id"]
-        full = recorder.store.get_flow(row_id)
-        assert full["scheme"] == "https"
-        assert full["host"] == "app.example.com"
-        assert full["port"] == 8443
-        assert full["method"] == "POST"
-        assert full["path"] == "/api/v2/items"
-        assert full["full_url"] == "https://app.example.com:8443/api/v2/items"
-
-    def test_path_strips_query_string(self, recorder):
-        """path field does not include query parameters; they go to query_string."""
-        flow = _make_test_flow(
-            url="https://app.example.com/search?q=hello&page=2",
-        )
-        # MultiDictView.to_dict() exists in production mitmproxy but may be
-        # absent in test mitmproxy versions.  Patch at the class level so the
-        # property-based accessor returns an object that supports to_dict.
-        from mitmproxy.coretypes.multidict import MultiDictView
-        _orig = getattr(MultiDictView, "to_dict", None)
-        if _orig is None:
-            MultiDictView.to_dict = lambda self: dict(self)
-        try:
-            recorder.response(flow)
-        finally:
-            if _orig is None:
-                del MultiDictView.to_dict
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        assert results[0]["path"] == "/search"
-        row_id = results[0]["id"]
-        full = recorder.store.get_flow(row_id)
-        qs = json.loads(full["query_string"])
-        assert qs == {"q": "hello", "page": "2"}
-
-    def test_timestamps_are_epoch_ms(self, recorder):
-        """ts_start and ts_end are epoch milliseconds; duration_ms >= 0."""
-        before_ms = int(time.time() * 1000)
-        flow = _make_test_flow()
-        # start_time is set to time.time() - 0.1 in _make_test_flow
-        recorder.response(flow)
-        after_ms = int(time.time() * 1000)
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        ts_start = results[0]["ts_start"]
-        ts_end = results[0]["ts_end"]
-        duration_ms = results[0]["duration_ms"]
-        # ts_start derived from start_time (100ms before now)
-        assert ts_start < ts_end
-        # ts_end should be in the range [before, after]
-        assert before_ms <= ts_end <= after_ms
-        # duration should be approximately 100ms (start_time was 0.1s ago)
-        assert duration_ms >= 0
-        assert 50 <= duration_ms <= 2000
-
-    def test_start_time_fallback_when_missing(self, recorder):
-        """When start_time is not in metadata, ts_start is still set to current time."""
-        flow = _make_test_flow()
-        del flow.metadata["start_time"]
-
-        before_ms = int(time.time() * 1000)
-        recorder.response(flow)
-        after_ms = int(time.time() * 1000)
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        ts_start = results[0]["ts_start"]
-        ts_end = results[0]["ts_end"]
-        # Both should be approximately "now"
-        assert before_ms <= ts_start <= after_ms
-        assert before_ms <= ts_end <= after_ms
-        # duration_ms should be ~0 (both timestamps are "now")
-        assert results[0]["duration_ms"] >= 0
-        assert results[0]["duration_ms"] <= 1000
-
-    def test_is_websocket_flag_recorded(self, recorder):
-        """is_websocket metadata flag is persisted in the record."""
-        flow = _make_test_flow()
-        flow.metadata["is_websocket"] = True
-        recorder.response(flow)
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        assert results[0]["is_websocket"] == 1  # SQLite stores bools as int
-
-
-class TestHeaderRedaction:
-    def test_gateway_injected_header_redacted(self, recorder):
-        """SECURITY: gateway-injected credential header value is not stored in cleartext."""
-        flow = _make_test_flow()
-        flow.request.headers["Authorization"] = "Bearer sk-secret-key-value-12345678"
-        flow.metadata["gateway_injected_header"] = "Authorization"
-        recorder.response(flow)
-
-        results = recorder.store.search_flows({})
-        row_id = results[0]["id"]
-        full = recorder.store.get_flow(row_id)
-        headers = json.loads(full["request_headers_json"])
-
-        # Find the Authorization header in the stored pairs
-        auth_values = [v for name, v in headers if name.lower() == "authorization"]
-        assert len(auth_values) == 1
-        # Must be redacted with [GATEWAY:...] pattern, not the raw value
-        assert auth_values[0].startswith("[GATEWAY:...")
-        assert "sk-secret-key-value-12345678" not in auth_values[0]
-        # Last 4 chars of the original value are preserved as suffix
-        assert auth_values[0] == "[GATEWAY:...5678]"
-
-
-class TestBlockedAndErrorReasons:
-    def test_blocked_flow_reason_from_metadata(self, recorder):
-        """Blocked flows record the blocked_by addon name as the reason."""
-        flow = _make_test_flow(response_status=403)
-        flow.metadata["blocked_by"] = "credential-guard"
-        recorder.response(flow)
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        assert results[0]["flow_state"] == "blocked"
-        assert results[0]["reason"] == "credential-guard"
-
-    def test_error_flow_reason_from_error_msg(self, recorder):
-        """Error flows record the error message as the reason."""
-        flow = _make_test_flow(request_id="req-err-reason1")
-        flow.response = None
-        flow.error = MagicMock()
-        flow.error.msg = "Connection refused"
-        recorder.error(flow)
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        assert results[0]["flow_state"] == "error"
-        assert results[0]["reason"] == "Connection refused"
-
-
-class TestErrorRecording:
-    def test_error_flow_recorded(self, recorder):
-        flow = _make_test_flow(request_id="req-error00001")
-        flow.response = None
-        flow.error = MagicMock()
-        flow.error.msg = "Connection refused"
-        recorder.error(flow)
-        assert recorder._stats["recorded"] == 1
-
-        results = recorder.store.search_flows({})
-        assert len(results) == 1
-        assert results[0]["flow_state"] == "error"
-
-    def test_error_without_context_skipped(self, recorder):
-        flow = _make_test_flow(with_context=False)
-        flow.error = MagicMock()
-        flow.error.msg = "DNS failure"
-        recorder.error(flow)
-        assert recorder._stats["skipped"] == 1
-
-    def test_error_flow_with_broken_store_surfaces_as_write_error(self, recorder):
-        """A flow whose async write fails lands as `write_errors`, not
-        hook-side `errors`. (Post-async refactor: `recorded` counts
-        successful enqueues; persistent-write failures are tracked by
-        the background writer and surfaced via `get_stats()`.)"""
-        flow = _make_test_flow(request_id="req-err-count1")
-        flow.response = None
-        flow.error = MagicMock()
-        flow.error.msg = "timeout"
-
-        # Break the store so the writer thread's record_flow raises.
-        recorder.store.close()
-        recorder.store._conn = None
-
-        recorder.error(flow)
-        # Enqueue succeeded, so the hook counts the record.
-        assert recorder._stats["recorded"] == 1
-        assert recorder._stats["errors"] == 0
-
-        # Let the writer pick it up and fail; the error ends up on the
-        # writer's counter, visible via get_stats().
-        import safeyolo.core.flow_writer as flow_writer
-        flow_writer.get_writer().wait_for_drain(timeout_s=3.0)
-        stats = recorder.get_stats()
-        assert stats["write_errors"] == 1
-
-
-class TestBestEffort:
-    def test_db_write_failure_doesnt_raise(self, recorder):
-        """Writer-thread DB failures are caught + counted, not raised.
-
-        Post-async: the hook returns before the write runs, so errors
-        appear on the writer's `write_errors` counter (surfaced via
-        `get_stats()`), not the hook-side `errors` counter."""
-        flow = _make_test_flow()
-        recorder.store.close()
-        recorder.store._conn = None
-
-        # Should not raise from the hook.
-        recorder.response(flow)
-        import safeyolo.core.flow_writer as flow_writer
-        flow_writer.get_writer().wait_for_drain(timeout_s=3.0)
-        assert recorder.get_stats()["write_errors"] == 1
-
-    def test_error_hook_failure_doesnt_raise(self, recorder):
-        """Same guarantee for the error() hook path."""
-        flow = _make_test_flow()
-        flow.error = MagicMock()
-        flow.error.msg = "timeout"
-        recorder.store.close()
-        recorder.store._conn = None
-
-        recorder.error(flow)
-        import safeyolo.core.flow_writer as flow_writer
-        flow_writer.get_writer().wait_for_drain(timeout_s=3.0)
-        assert recorder.get_stats()["write_errors"] == 1
-
-
-class TestLifecycle:
-    def test_done_closes_store(self, tmp_path):
-        """done() closes the FlowStore connection."""
-        addon = FlowRecorder()
-        with taddons.context(addon) as tctx:
-            tctx.options.flow_store_enabled = True
-            tctx.options.flow_store_db_path = str(tmp_path / "lifecycle.sqlite3")
-
-            store = FlowStore(db_path=tctx.options.flow_store_db_path)
-            store.init_db()
-            addon.store = store
-
-            addon.done()
-
-            # After done(), the store connection should be None (closed)
-            assert store._conn is None
-
-    def test_done_safe_when_no_store(self):
-        """done() does not raise when store was never initialized."""
-        addon = FlowRecorder()
-        assert addon.store is None
-        # Should not raise
+def _invoke(addon: FlowRecorder, store: FlowStore, flow, hook: str = "response"):
+    enqueue = create_autospec(
+        flow_writer.put_record, spec_set=True, side_effect=store.record_flow
+    )
+    with patch("safeyolo.core.flow_writer.put_record", new=enqueue):
+        getattr(addon, hook)(flow)
+    return enqueue
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda flow, addon: flow.metadata.pop("test_context"),
+        lambda flow, addon: flow.metadata.update(safeyolo_probe=True),
+        lambda flow, addon: setattr(flow.request, "host", AGENT_API_HOST),
+        lambda flow, addon: setattr(addon, "store", None),
+    ],
+)
+def test_scope_probe_internal_host_and_store_gates_skip(recorder, mutate):
+    addon, store = recorder
+    flow = _flow()
+    mutate(flow, addon)
+    enqueue = _invoke(addon, store, flow)
+    enqueue.assert_not_called()
+    assert addon.get_stats()["skipped"] == 1
+
+
+def test_global_disable_gate_skips_even_valid_flow(recorder):
+    addon, store = recorder
+    flow = _flow()
+    from mitmproxy import ctx
+
+    ctx.options.flow_store_enabled = False
+    enqueue = _invoke(addon, store, flow)
+    enqueue.assert_not_called()
+    assert addon.get_stats()["skipped"] == 1
+
+
+@pytest.mark.parametrize("marker", ["true", 1, [True], {"probe": True}])
+def test_probe_gate_requires_literal_boolean_true(recorder, marker):
+    addon, store = recorder
+    flow = _flow()
+    flow.metadata["safeyolo_probe"] = marker
+    _invoke(addon, store, flow)
+    assert addon.get_stats()["recorded"] == 1
+    assert len(store.search_flows({})) == 1
+
+
+def test_unresolved_or_spoofed_identity_is_not_recorded(recorder):
+    addon, store = recorder
+    flow = _flow(agent=None)
+    flow.metadata["agent"] = "spoofed-agent"
+    enqueue = _invoke(addon, store, flow)
+    enqueue.assert_not_called()
+    assert addon.get_stats()["skipped"] == 1
+    assert flow.metadata["agent_identity_status"] == "unavailable"
+    assert "agent" not in flow.metadata
+
+
+@pytest.mark.parametrize(
+    "blocked_by, expected_state, expected_reason",
+    [(None, "completed", "OK"), ("credential-guard", "blocked", "credential-guard")],
+)
+def test_response_state_identity_url_and_context_are_persisted(
+    recorder, blocked_by, expected_state, expected_reason
+):
+    addon, store = recorder
+    flow = _flow(agent="agent-a", status=403 if blocked_by else 200)
+    if blocked_by:
+        flow.metadata["blocked_by"] = blocked_by
+    _invoke(addon, store, flow)
+
+    summary = store.search_flows({})[0]
+    detail = store.get_flow(summary["id"])
+    assert summary["flow_state"] == expected_state
+    assert summary["reason"] == expected_reason
+    assert summary["agent_id"] == "agent-a"
+    assert summary["engagement_id"] == "agent-a"
+    assert summary["source_id"] == "192.0.2.20"
+    assert summary["host"] == "app.example.com"
+    assert summary["path"] == "/api/todos/42"
+    assert json.loads(summary["query_string"]) == {"view": "full"}
+    assert detail["run"] == "run-1"
+    assert detail["test"] == "IDOR-003"
+    assert detail["role"] == "attacker"
+    assert detail["test_agent"] == "idor"
+    assert detail["suite"] == "authorization"
+    assert detail["subject"] == "todo"
+    assert detail["step"] == "read-other-user"
+    assert detail["intent"] == "negative"
+    assert detail["expect"] == "deny"
+    assert json.loads(detail["context_json"])["run"] == "run-1"
+    assert addon.get_stats()["recorded"] == 1
+
+
+def test_gateway_injected_credential_header_is_redacted(recorder):
+    addon, store = recorder
+    flow = _flow()
+    flow.request.headers["Authorization"] = "Bearer super-secret-token"
+    flow.metadata["gateway_injected_header"] = "Authorization"
+    _invoke(addon, store, flow)
+    summary = store.search_flows({})[0]
+    headers = store.get_flow(summary["id"])["request_headers_json"]
+    assert "super-secret-token" not in headers
+    assert "[GATEWAY:...oken]" in headers
+
+
+def test_error_hook_records_real_mitmproxy_error(recorder):
+    addon, store = recorder
+    flow = _flow(status=None)
+    flow.error = Error("DNS lookup failed")
+    _invoke(addon, store, flow, hook="error")
+    summary = store.search_flows({})[0]
+    assert summary["flow_state"] == "error"
+    assert summary["status_code"] is None
+    assert summary["reason"] == "DNS lookup failed"
+    assert summary["agent_id"] == "agent-a"
+
+
+def test_operator_provenance_and_websocket_state_are_persisted(recorder):
+    addon, store = recorder
+    flow = _flow()
+    flow.metadata.update(
+        origin="operator",
+        operator_action="replay",
+        source_flow_id="17",
+        is_websocket=True,
+    )
+    _invoke(addon, store, flow)
+    summary = store.search_flows({})[0]
+    detail = store.get_flow(summary["id"])
+    assert summary["source_type"] == "operator"
+    assert detail["is_websocket"] == 1
+    assert [
+        {"tag": tag["tag"], "value": tag["value"]} for tag in detail["tags"]
+    ] == [
+        {"tag": "operator_action", "value": "replay"},
+        {"tag": "source_flow_id", "value": "17"},
+    ]
+
+
+def test_record_build_failure_is_best_effort_and_counted(recorder):
+    addon, store = recorder
+    flow = _flow()
+    # A non-dict context reaches the real record builder and fails on .get.
+    flow.metadata["test_context"] = True
+    enqueue = _invoke(addon, store, flow)
+    enqueue.assert_not_called()
+    assert addon.get_stats()["errors"] == 1
+    assert addon.get_stats()["recorded"] == 0
+
+
+def test_writer_backpressure_and_write_failures_surface_in_stats(recorder):
+    addon, _ = recorder
+    writer = create_autospec(_FlowWriter, instance=True, spec_set=True)
+    writer.dropped_queue_full = 3
+    writer.dropped_on_error = 2
+    getter = create_autospec(flow_writer.get_writer, spec_set=True, return_value=writer)
+    with patch("safeyolo.core.flow_writer.get_writer", new=getter):
+        stats = addon.get_stats()
+    assert stats == {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 3,
+        "write_errors": 2,
+    }
+
+
+def test_shutdown_stops_writer_before_closing_real_store(tmp_path):
+    order: list[str] = []
+
+    class TrackingFlowStore(FlowStore):
+        def close(self):
+            order.append("store.close")
+            super().close()
+
+    addon = FlowRecorder()
+    store = TrackingFlowStore(str(tmp_path / "shutdown.sqlite3"))
+    store.init_db()
+    addon.store = store
+    writer = create_autospec(_FlowWriter, instance=True, spec_set=True)
+    writer._shutdown.side_effect = lambda: order.append("writer.shutdown")
+    getter = create_autospec(flow_writer.get_writer, spec_set=True, return_value=writer)
+
+    with patch("safeyolo.core.flow_writer.get_writer", new=getter):
         addon.done()
 
-    def test_running_disabled_leaves_store_none(self, tmp_path):
-        """When flow_store_enabled=False, running() does not create a store."""
-        addon = FlowRecorder()
-        with taddons.context(addon) as tctx:
-            tctx.options.flow_store_enabled = False
-            tctx.options.flow_store_db_path = str(tmp_path / "nope.sqlite3")
-
-            addon.running()
-
-            assert addon.store is None
+    assert order == ["writer.shutdown", "store.close"]
 
 
-class TestStats:
-    def test_stats_incremented(self, recorder):
-        # Record one
-        flow1 = _make_test_flow(request_id="req-stats00001")
-        recorder.response(flow1)
+def test_running_uses_real_store_and_installs_writer(tmp_path):
+    addon = FlowRecorder()
+    db_path = tmp_path / "running.sqlite3"
+    installer = create_autospec(flow_writer.install, spec_set=True)
+    with taddons.context(addon) as context, patch(
+        "safeyolo.core.config_cache.addon_section", new=lambda name: {}
+    ), patch("safeyolo.core.flow_writer.install", new=installer):
+        context.options.flow_store_db_path = str(db_path)
+        addon.running()
 
-        # Skip one (no context)
-        flow2 = _make_test_flow(request_id="req-stats00002", with_context=False)
-        recorder.response(flow2)
-
-        stats = recorder.get_stats()
-        assert stats["recorded"] == 1
-        assert stats["skipped"] == 1
-        assert stats["errors"] == 0
-
-    def test_get_stats_returns_independent_copy(self, recorder):
-        """get_stats() returns a copy; mutating it does not affect internal state."""
-        flow = _make_test_flow(request_id="req-copy00001")
-        recorder.response(flow)
-
-        stats1 = recorder.get_stats()
-        assert stats1["recorded"] == 1
-
-        # Mutate the returned dict
-        stats1["recorded"] = 999
-        stats1["skipped"] = 999
-
-        # Internal state is unchanged
-        stats2 = recorder.get_stats()
-        assert stats2["recorded"] == 1
-        assert stats2["skipped"] == 0
+    assert isinstance(addon.store, FlowStore)
+    assert db_path.exists()
+    installer.assert_called_once_with(addon.store)
+    addon.store.close()

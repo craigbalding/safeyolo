@@ -13,6 +13,7 @@ import ctypes.util
 import os
 import platform as _platform
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -869,6 +870,8 @@ class TestSandboxExposure:
             # tmpfs mount
             "shm",
         }
+        gvisor_character_devices = set()
+        gvisor_unmaterialized_aliases = set()
         if _is_microvm():
             # VZ microVMs run a real Linux kernel — standard VM devices
             # are expected. The VM boundary IS the isolation layer. vda is
@@ -882,6 +885,23 @@ class TestSandboxExposure:
             # Linux kernel devices — allow all by prefix.
             prefix_allow = ("hvc", "tty", "pty", "vcs")
         else:
+            # gVisor 2026-08+ mirrors Linux devtmpfs by maintaining
+            # /dev/char/<major>:<minor> symlinks for each character device.
+            # The directory is an index, not an additional device surface;
+            # its entries are validated below against this same allowlist.
+            whitelist.add("char")
+            gvisor_character_devices = {
+                "/dev/null", "/dev/zero", "/dev/full", "/dev/random",
+                "/dev/urandom", "/dev/tty", "/dev/console",
+            }
+            # gVisor registers in-sentry FUSE and TUN implementations, but
+            # SafeYolo's OCI spec does not materialize their device nodes.
+            # Current runsc still indexes them in /dev/char as dangling
+            # aliases. Keep that distinction strict: if either target becomes
+            # openable in a future runtime, this test must fail for review.
+            gvisor_unmaterialized_aliases = {
+                "/dev/fuse", "/dev/net/tun",
+            }
             prefix_allow = ("pts",)
 
         unexpected = []
@@ -897,6 +917,35 @@ class TestSandboxExposure:
             f"attack surface. If a new entry is legitimately needed, add "
             f"it to the whitelist and document why."
         )
+
+        if not _is_microvm() and os.path.isdir("/dev/char"):
+            unexpected_char_links = []
+            for entry in os.listdir("/dev/char"):
+                link = os.path.join("/dev/char", entry)
+                target = os.path.realpath(link)
+                try:
+                    target_mode = os.stat(target).st_mode
+                except OSError:
+                    target_mode = None
+                materialized_device = (
+                    target in gvisor_character_devices
+                    and target_mode is not None
+                    and stat.S_ISCHR(target_mode)
+                )
+                approved_dangling_alias = (
+                    target in gvisor_unmaterialized_aliases
+                    and target_mode is None
+                )
+                if (
+                    not os.path.islink(link)
+                    or not (materialized_device or approved_dangling_alias)
+                ):
+                    unexpected_char_links.append((entry, target))
+            assert not unexpected_char_links, (
+                "Unexpected gVisor /dev/char mappings: "
+                f"{unexpected_char_links}. The device-number index may only "
+                "refer to approved top-level character devices."
+            )
 
     def test_proc_kcore_unreadable(self):
         """/proc/kcore is absent or unreadable.
@@ -1032,21 +1081,21 @@ class TestSandboxExposure:
 
 
 class TestFilesystemBoundary:
-    """Workspace mount is contained; no setuid, mknod, or traversal escape.
+    """Workspace mount cannot expose host files or host devices.
 
     Why: /workspace is a shared surface between agent and host. If
-    the agent can create setuid binaries, device nodes, or symlinks
-    that leak outside the mount, it can either escalate inside the
-    sandbox or trick the host into touching files outside /workspace.
+    the agent can create usable device nodes or symlinks that leak
+    outside the mount, it can trick the host mount implementation into
+    exposing resources beyond /workspace. Guest-root access itself is
+    tested as an intended capability in test_root_containment.py.
     """
 
     def test_workspace_symlink_traversal(self):
         """Symlink to /etc/shadow inside /workspace doesn't reach host files.
 
         What: Create /workspace/.../shadow-link → /etc/shadow; try
-        to read it. If readable, assert the content does NOT look
-        like the host's real shadow file (which would have many
-        colon-separated fields and 'root:' entries).
+        to read it. If readable, assert it resolves to the same guest
+        inode and bytes as opening /etc/shadow directly.
         Why: virtiofs/lisafs gofer mounts are supposed to contain
         traversal within the sandbox rootfs. A bug that followed
         symlinks on the host side would let the agent read any host
@@ -1059,61 +1108,29 @@ class TestFilesystemBoundary:
         try:
             os.symlink("/etc/shadow", link_path)
             try:
-                with open(link_path) as f:
-                    content = f.read(200)
+                with open("/etc/shadow", "rb") as f:
+                    guest_content = f.read()
             except (PermissionError, FileNotFoundError, OSError):
-                return  # can't read → safe
-            # If readable, verify it's the SANDBOX's shadow (no real
-            # password hashes) not the HOST's.
-            assert "root:" not in content or content.count(":") < 5, (
-                f"Symlink traversal may have reached host /etc/shadow: "
-                f"{content[:100]!r}"
+                # If the guest file is protected, the workspace link must not
+                # make it readable through the gofer mount.
+                with pytest.raises((PermissionError, FileNotFoundError, OSError)):
+                    with open(link_path, "rb") as f:
+                        f.read(1)
+                return
+
+            with open(link_path, "rb") as f:
+                linked_content = f.read()
+            assert os.path.samefile(link_path, "/etc/shadow"), (
+                "Workspace absolute symlink did not resolve to the guest's "
+                "/etc/shadow inode"
+            )
+            assert linked_content == guest_content, (
+                "Workspace absolute symlink returned bytes other than the "
+                "guest's /etc/shadow; possible host-path traversal"
             )
         finally:
             os.unlink(link_path)
             os.rmdir(link_dir)
-
-    def test_workspace_no_setuid(self):
-        """setuid bit on a /workspace binary doesn't execute as root.
-
-        What: Create a script in /workspace, chmod 4755 (setuid
-        root), execute it; if it reports 'root', fail. Bit present
-        on disk but not effective at exec is acceptable.
-        Why: /workspace should be mounted `nosuid`. Otherwise the
-        agent (uid 1000) could make a suid-root shell and
-        immediately gain root inside the sandbox — the first step
-        of most escape paths.
-        """
-        import stat
-        import tempfile
-        test_file = tempfile.NamedTemporaryFile(
-            dir="/workspace", prefix="suidtest-", delete=False,
-        )
-        try:
-            test_file.write(b"#!/bin/sh\nwhoami\n")
-            test_file.close()
-            os.chmod(test_file.name, 0o4755)  # setuid root
-            actual_mode = os.stat(test_file.name).st_mode
-            # If nosuid mount, the kernel strips the suid bit silently
-            # OR allows the chmod but ignores the bit at exec time.
-            # Check the bit on disk:
-            has_suid = bool(actual_mode & stat.S_ISUID)
-            if has_suid:
-                # Bit stuck — test if exec actually escalates.
-                result = subprocess.run(
-                    [test_file.name], capture_output=True, text=True,
-                    timeout=5,
-                )
-                # If output is "root", the suid is effective — bad.
-                if result.stdout.strip() == "root":
-                    pytest.fail(
-                        "setuid binary on /workspace executed as root — "
-                        "mount lacks nosuid"
-                    )
-                # Bit is on disk but not effective at exec → acceptable
-                # (common on overlayfs + gVisor).
-        finally:
-            os.unlink(test_file.name)
 
     def test_workspace_no_mknod(self):
         """mknod on /workspace fails with PermissionError/OSError.
@@ -1141,52 +1158,6 @@ class TestFilesystemBoundary:
             if os.path.exists(mknod_path):
                 os.unlink(mknod_path)
             os.rmdir(os.path.dirname(mknod_path))
-
-    def test_ca_trust_store_immutable(self):
-        """Writes to /usr/local/share/ca-certificates fail.
-
-        What: Attempt to write a fake-CA PEM to the trust store
-        directory; expect PermissionError/OSError.
-        Why: If the agent can add a CA to its own trust store, it
-        can stand up a local MITM for its own traffic — TLS-
-        inspecting requests that should have gone through SafeYolo.
-        The trust store must be read-only to uid 1000.
-        """
-        # Attempt to write a fake CA cert. The target dir is
-        # /usr/local/share/ca-certificates/ — if writable, the agent
-        # could inject a CA and re-run update-ca-certificates.
-        fake_ca = "/usr/local/share/ca-certificates/evil-test.crt"
-        try:
-            with open(fake_ca, "w") as f:
-                f.write("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
-        except (PermissionError, OSError):
-            return  # can't write → strong property
-
-        # Written — that's a concern. Clean up and try update-ca-certificates.
-        try:
-            result = subprocess.run(
-                ["update-ca-certificates"], capture_output=True,
-                text=True, timeout=10,
-            )
-            # Even if the write succeeded and update ran, the proxy
-            # won't honour the new CA for its own outbound validation
-            # (proxy runs on the HOST, not inside the sandbox). So the
-            # actual security impact is limited to in-sandbox TLS
-            # clients trusting the fake CA — which only matters if the
-            # agent is trying to MITM itself (to hide traffic from the
-            # proxy's content inspection).
-            #
-            # Flag it anyway — defence in depth.
-            if result.returncode == 0:
-                pytest.fail(
-                    "Agent was able to add a CA to the trust store AND "
-                    "run update-ca-certificates. While the proxy's own "
-                    "trust store is unaffected, in-sandbox TLS clients "
-                    "would honour the injected CA."
-                )
-        finally:
-            os.unlink(fake_ca) if os.path.exists(fake_ca) else None
-
 
 class TestSyscallSeccompEquivalents:
     """Dangerous syscalls (keyring, pivot_root, unshare, ptrace) are blocked or contained.

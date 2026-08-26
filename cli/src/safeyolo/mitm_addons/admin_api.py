@@ -19,6 +19,7 @@ import re
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import TCPServer
 from urllib.parse import urlparse
 
 from mitmproxy import ctx
@@ -36,6 +37,21 @@ log = logging.getLogger("safeyolo.admin")
 
 # Alias for brevity within this module
 _sanitize_log = sanitize_for_log
+
+
+class LoopbackHTTPServer(HTTPServer):
+    """HTTP server that binds loopback without performing reverse DNS."""
+
+    allow_reuse_address = True
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind() calls socket.getfqdn(host). A fixed
+        # loopback listener does not need that name, and macOS reverse-DNS
+        # failures can otherwise block proxy readiness for tens of seconds.
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 class AdminRequestHandler(BaseHTTPRequestHandler):
@@ -505,13 +521,18 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "service gateway not available"}, 503)
             return
 
-        grant = gateway.add_grant(
-            agent=agent,
-            service=service,
-            method=method,
-            path=path,
-            scope=lifetime,
-        )
+        try:
+            grant = gateway.add_grant(
+                agent=agent,
+                service=service,
+                method=method,
+                path=path,
+                scope=lifetime,
+            )
+        except (OSError, RuntimeError) as exc:
+            log.error("Gateway grant persistence failed: %s", type(exc).__name__)
+            self._send_json({"error": "gateway grant persistence failed"}, 503)
+            return
 
         client_ip = self._get_client_ip()
         write_event(
@@ -559,7 +580,14 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "service gateway not available"}, 503)
             return
 
-        if gateway.revoke_grant(grant_id):
+        try:
+            revoked = gateway.revoke_grant(grant_id)
+        except (OSError, RuntimeError) as exc:
+            log.error("Gateway grant revocation persistence failed: %s", type(exc).__name__)
+            self._send_json({"error": "gateway grant persistence failed"}, 503)
+            return
+
+        if revoked:
             client_ip = self._get_client_ip()
             write_event(
                 "admin.gateway_grant_revoked",
@@ -767,14 +795,19 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "service gateway not available"}, 503)
             return
 
-        binding_state = gateway.add_contract_binding(
-            agent=agent,
-            service=service,
-            capability=capability,
-            template=template,
-            bound_values=bindings,
-            grantable_operations=grantable_operations,
-        )
+        try:
+            binding_state = gateway.add_contract_binding(
+                agent=agent,
+                service=service,
+                capability=capability,
+                template=template,
+                bound_values=bindings,
+                grantable_operations=grantable_operations,
+            )
+        except (OSError, RuntimeError) as exc:
+            log.error("Contract binding persistence failed: %s", type(exc).__name__)
+            self._send_json({"error": "contract binding persistence failed"}, 503)
+            return
 
         client_ip = self._get_client_ip()
         write_event(
@@ -1643,10 +1676,8 @@ class AdminAPI:
         # Find other addons to wire up
         self._discover_addons()
 
-        # Start HTTP server in background thread with error handling
-        # allow_reuse_address must be set before bind() — use class attribute
-        HTTPServer.allow_reuse_address = True
-        self.server = HTTPServer(("127.0.0.1", port), AdminRequestHandler)  # DOC: SECURITY.md, docs/security-verification.md
+        # Start HTTP server in background thread with error handling.
+        self.server = LoopbackHTTPServer(("127.0.0.1", port), AdminRequestHandler)  # DOC: SECURITY.md, docs/security-verification.md
         self._server_port = port
 
         def serve_with_recovery():
@@ -1669,7 +1700,7 @@ class AdminAPI:
                     # Attempt restart after brief delay
                     time.sleep(1)
                     try:
-                        self.server = HTTPServer(("127.0.0.1", port), AdminRequestHandler)
+                        self.server = LoopbackHTTPServer(("127.0.0.1", port), AdminRequestHandler)
                         print("[admin_api] Restarting after crash", file=sys.stderr, flush=True)
                     except Exception as restart_err:
                         print(

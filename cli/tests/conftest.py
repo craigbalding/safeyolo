@@ -3,8 +3,9 @@
 import json
 import os
 import subprocess
-from unittest.mock import MagicMock
+from unittest.mock import create_autospec
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
@@ -55,6 +56,18 @@ def nats_env(isolated_coord, _binary_cache):
     nr.stop_server()
 
 
+class _HTTPResponseBoundary:
+    """Small concrete response surface used by the AdminAPI transport mock."""
+
+    def __init__(self) -> None:
+        self.status_code = 200
+        self.headers = {"content-type": "application/json"}
+        self.text = '{"status": "healthy"}'
+
+    def json(self):
+        return {"status": "healthy"}
+
+
 @pytest.fixture
 def cli_runner():
     """Typer CLI test runner."""
@@ -98,7 +111,7 @@ def tmp_config_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def mock_subprocess(monkeypatch):
     """Mock subprocess.run for external commands."""
-    mock_run = MagicMock()
+    mock_run = create_autospec(subprocess.run, spec_set=True)
     mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     monkeypatch.setattr("subprocess.run", mock_run)
     return mock_run
@@ -107,18 +120,19 @@ def mock_subprocess(monkeypatch):
 @pytest.fixture
 def mock_httpx(monkeypatch):
     """Mock httpx.Client for API calls."""
-    mock_client = MagicMock()
-    mock_response = MagicMock()
+    mock_client = create_autospec(httpx.Client, instance=True, spec_set=True)
+    mock_response = create_autospec(_HTTPResponseBoundary(), spec_set=True)
     mock_response.status_code = 200
     mock_response.headers = {"content-type": "application/json"}
     mock_response.json.return_value = {"status": "healthy"}
     mock_response.text = '{"status": "healthy"}'
 
-    mock_client.__enter__ = MagicMock(return_value=mock_client)
-    mock_client.__exit__ = MagicMock(return_value=False)
-    mock_client.request = MagicMock(return_value=mock_response)
+    mock_client.__enter__.return_value = mock_client
+    mock_client.__exit__.return_value = False
+    mock_client.request.return_value = mock_response
 
-    mock_client_class = MagicMock(return_value=mock_client)
+    mock_client_class = create_autospec(httpx.Client, spec_set=True)
+    mock_client_class.return_value = mock_client
     monkeypatch.setattr("httpx.Client", mock_client_class)
 
     return {

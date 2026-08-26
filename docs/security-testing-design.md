@@ -3,7 +3,7 @@
 ## Overview
 
 Security tests run against real infrastructure — real proxy, real
-sandbox, real microVM or rootless gVisor container. No mocks, no
+sandbox, real Apple VZ microVM or rootless gVisor sandbox. No mocks, no
 shortcuts. Every test class has a structured docstring
 (Title + Why) and every test function states the probe and the
 consequence if the property didn't hold; `docs/blackbox-coverage.md`
@@ -14,51 +14,75 @@ Tests are split across two execution domains:
 - **Host pytest** (`tests/blackbox/host/`): Proxy functional tests and
   agent-identity checks. Runs on the host where sinkhole, admin API,
   and proxy are directly accessible.
-- **VM pytest** (`tests/blackbox/isolation/`): Isolation tests. Runs
+- **Sandbox pytest** (`tests/blackbox/isolation/`): Isolation tests. Runs
   inside the sandbox (VZ microVM on macOS, gVisor on Linux) via
-  `safeyolo agent shell`, probing from the adversary's perspective.
+  `safeyolo agent shell`, probing from the adversary's perspective. A second
+  pass uses `agent shell --root`: guest root is an intended package-management
+  feature, and the boundary must remain intact from that context.
 
 ## Quick Start
 
 ```bash
-cd tests/blackbox
+cd /path/to/safeyolo
 
-# Run all tests
-./run-tests.sh
+# Prepare through install.sh + bootstrap and run a named lane
+./tests/blackbox/run-lane.sh systrap --verbose
+./tests/blackbox/run-lane.sh kvm --verbose
+./tests/blackbox/run-lane.sh vz --verbose
 
-# Proxy tests only
-./run-tests.sh --proxy
+# Proxy-only installation smoke; no sandbox boot
+./tests/blackbox/run-lane.sh proxy --verbose
 
-# Isolation tests only
-./run-tests.sh --isolation
-
-# Verbose output
-./run-tests.sh --verbose
+# Already-prepared host
+./tests/blackbox/run-tests.sh --expect-platform kvm --verbose
 ```
+
+## Execution lanes and cadence
+
+| Runtime | Execution host | Evidence |
+|---------|----------------|----------|
+| gVisor systrap | GitHub-hosted Ubuntu | Nightly/manual full suite; platform assertion recorded |
+| gVisor KVM | Fresh libvirt guest on the KVM VPS | Full nested-KVM acceptance evidence |
+| Apple VZ | Physical Apple Silicon Mac mini | Full native macOS + VZ acceptance evidence |
+
+Blackbox is not a required per-PR check. The scheduled GitHub lane tests the
+latest default-branch state once per day; KVM VPS and Mac mini runs use the
+same lane wrapper nightly, for high-risk changes, and before release. Manual
+runs select an exact trusted ref. All three runtimes must pass for a release.
+
+GitHub macOS can run a proxy-only smoke or compile the Swift helper, but it
+cannot supply VZ runtime evidence. GitHub-hosted nested KVM is not accepted as
+KVM evidence. These boundaries keep a green run from claiming an isolation
+mechanism it did not execute.
 
 ## Architecture
 
 ```
-Host (pytest)                          VM (pytest via SSH)
+Host (pytest)                          Sandbox (pytest via agent shell)
 ├── proxy_client → proxy:8080          ├── test_vm_isolation.py
-├── sinkhole.get_requests() → :19999   │   ├── setuid(0) fails
-├── admin_client → :9090               │   ├── init_module → ENOSYS
-└── no VM interaction needed           │   ├── SOCK_RAW → PermissionError
-                                       │   └── /dev/mem not found
-                                       └── test_key_isolation.py
-                                           ├── cert exists & readable
-                                           ├── no .key files anywhere
-                                           └── full filesystem scan
+├── sinkhole.get_requests() → :19999   │   ├── proxy-only egress
+├── admin_client → :9090               │   └── default-user hardening
+└── no VM interaction needed           ├── test_root_containment.py (--root)
+                                       │   ├── UID 0 + local .deb install
+                                       │   └── host/network/share containment
+                                       └── test_key_isolation.py (user + root)
+                                           └── no private keys anywhere
 ```
 
-The `run-tests.sh` script orchestrates:
+The `run-lane.sh` wrapper performs the supported source install, uses
+`safeyolo bootstrap --check --json` as the source of truth for build packages,
+runs bootstrap, and declares the required platform. `run-tests.sh` then
+orchestrates:
 1. Generate test certs (keys stored outside repo tree)
 2. Start sinkhole (HTTP/HTTPS capture server)
 3. Start proxy in test mode (`safeyolo start --test`)
-4. Boot a BYOA microVM with the repo as workspace
-5. Run host-side pytest (credential guard, network guard)
-6. Run VM-side pytest via `safeyolo agent shell`
-7. Cleanup
+4. Assert `doctor --json` reports the requested systrap, KVM, or VZ runtime
+5. Boot a BYOA sandbox with the repo as workspace
+6. Run host-side pytest (credential guard, network guard)
+7. Run sandbox-side pytest as the default agent user
+8. Open `safeyolo agent shell --root`, prove local package installation, and
+   rerun root-relevant containment and key-isolation probes
+9. Cleanup
 
 ## Test Suites
 
@@ -73,15 +97,19 @@ The `run-tests.sh` script orchestrates:
 the sinkhole control API to verify what *actually reached* the upstream — not
 what the proxy said it blocked.
 
-### VM Isolation Tests (in-VM)
+### Sandbox Isolation Tests
 
 | File | Tests |
 |------|-------|
-| `test_vm_isolation.py` | Network escape (HTTP/HTTPS/DNS/raw socket), privilege escalation (setuid, kernel modules, /dev/mem, eBPF), filesystem isolation |
-| `test_key_isolation.py` | Public cert present, no private keys in trust store/config share/full filesystem |
+| `test_vm_isolation.py` | Default-user network escape, privilege transition, kernel/device hardening, filesystem isolation |
+| `test_root_containment.py` | Guest UID 0, local package install/purge, root-context egress and host-boundary containment |
+| `test_key_isolation.py` | Public cert present and no private keys; also rerun as guest root so permissions cannot hide key material |
 
-**Verification method:** Direct probes from inside the VM. Tests call syscalls
-directly (setuid, init_module, BPF) rather than relying on userspace tools.
+**Verification method:** Direct probes from inside the VM. The default-user
+suite checks its restricted posture. The guest-root suite positively verifies
+UID 0 and a real local package transaction, then tests outcomes at the actual
+security boundary: no direct egress, host listener access, writable host share,
+host KVM device, or hidden private key material.
 
 ## Key Design Decisions
 
@@ -98,15 +126,18 @@ tree. The workspace is mounted into agent VMs via VirtioFS — keys in the repo
 would be accessible to agents. The `test_full_filesystem_scan_for_private_keys`
 test verifies this on every run.
 
-### Test kernel properties directly
+### Guest root is inside the boundary
 
-Privilege escalation tests call syscalls directly:
-- `os.setuid(0)` — can the agent become root?
-- `init_module(2)` — does the kernel support loadable modules?
-- `BPF` syscall — is eBPF available?
+SafeYolo deliberately supports guest root for `apt` and repair. The default
+agent shell remains uid 1000, but `sudo` and the operator-mediated
+`agent shell --root` path reach uid 0. That is not host root:
 
-This tests the actual security property regardless of whether userspace tools
-(sudo, modprobe) are installed.
+- gVisor maps sandbox uid 0 to an unprivileged subordinate host uid, verified
+  from the host-side live user-namespace map.
+- Apple VZ contains uid 0 inside the hardware microVM.
+
+Accordingly, acceptance tests root as a supported capability and then probes
+containment, rather than treating `setuid(0)` itself as an escape.
 
 ### Ground truth TLS
 
@@ -118,12 +149,15 @@ same way it verifies production certs. No `ssl_insecure` flags. See
 
 | File | Purpose |
 |------|---------|
-| `run-tests.sh` | Orchestrator (idempotent, reuses running services) |
+| `run-lane.sh` | Install/bootstrap/platform-aware acceptance entrypoint |
+| `assert-platform.py` | Refuse runtime fallback and normalize doctor evidence |
+| `run-tests.sh` | Cross-platform orchestrator (idempotent, reuses running services) |
 | `host/conftest.py` | Host-side fixtures (sinkhole, proxy, admin clients) |
 | `host/sinkhole_client.py` | Sinkhole control API client |
 | `host/proxy/test_credential_guard.py` | Credential routing/blocking tests |
 | `host/proxy/test_network_guard.py` | Access control, rate limiting tests |
-| `isolation/test_vm_isolation.py` | Network escape, privilege escalation tests |
+| `isolation/test_vm_isolation.py` | Default-user network, device, syscall, and filesystem hardening tests |
+| `isolation/test_root_containment.py` | Guest-root capability, package install, and containment tests |
 | `isolation/test_key_isolation.py` | Private key isolation tests |
 | `harness/sinkhole_router.py` | mitmproxy addon redirecting test traffic to sinkhole |
 | `sinkhole/server.py` | HTTP/HTTPS capture server |

@@ -25,13 +25,14 @@ from mitmproxy import http
 from request_id import ensure_request_id
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
-from safeyolo.core.utils import find_addon, get_client_ip, make_block_response, sanitize_for_log, write_event
+from safeyolo.core.identity import resolve_agent_identity
+from safeyolo.core.utils import find_addon, make_block_response, sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.loop-guard")
 
 
 def _resolve_agent(flow: http.HTTPFlow) -> str | None:
-    """Resolve the trusted agent for this flow's source IP.
+    """Resolve the trusted agent before normal request hooks run.
 
     loop-guard fires in `requestheaders`, before `service_discovery.request()`
     would stamp `flow.metadata["agent"]`. But service_discovery's
@@ -42,18 +43,9 @@ def _resolve_agent(flow: http.HTTPFlow) -> str | None:
     lead the originating agent to a genuinely empty result (issue #213
     fifth-pass review).
     """
-    client_ip = get_client_ip(flow)
-    if client_ip == "unknown":
-        return None
     sd = find_addon("service-discovery")
-    if sd is None:
-        return None
-    agent = sd.get_client_for_ip(client_ip)
-    # "unknown" and "default" are non-identities from service_discovery's
-    # perspective — same treatment as agent_api._resolve_agent_id.
-    if agent in (None, "unknown", "default"):
-        return None
-    return agent
+    identity = resolve_agent_identity(flow, sd)
+    return identity.agent if identity.is_resolved else None
 
 
 class LoopGuard:

@@ -378,7 +378,7 @@ class TestPeriodicEvent:
         conn_id = flow.client_conn.id
         addon._connections[conn_id] = _make_conn_info()
 
-        with patch("memory_monitor.write_event") as mock_write:
+        with patch("memory_monitor.write_event", autospec=True,) as mock_write:
             addon.request(flow)
 
             # Should have emitted periodic event
@@ -399,7 +399,7 @@ class TestPeriodicEvent:
         conn_id = flow.client_conn.id
         addon._connections[conn_id] = _make_conn_info()
 
-        with patch("memory_monitor.write_event") as mock_write:
+        with patch("memory_monitor.write_event", autospec=True,) as mock_write:
             addon.request(flow)
 
             # Should NOT have emitted periodic event

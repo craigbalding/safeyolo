@@ -1,531 +1,255 @@
-"""
-Tests for base.py - SecurityAddon base class.
+"""Assurance-boundary tests for the shared security addon contract."""
 
-Tests base addon functionality including stats, options, and decision logging.
-"""
+from __future__ import annotations
 
-from unittest.mock import Mock, patch
+import json
+from unittest.mock import create_autospec, patch
 
+import pytest
+from mitmproxy import http
+from mitmproxy.test import taddons, tflow
 
-class TestAddonStats:
-    """Tests for AddonStats dataclass."""
+from pdp.client import PolicyClient
+from safeyolo.core.audit_schema import Decision, EventKind, Severity
+from safeyolo.core.base import AddonStats, SecurityAddon
+from safeyolo.core.identity import IdentityStatus
+from safeyolo.core.trace import get_store
+from safeyolo.mitm_addons.service_discovery import ServiceDiscovery
 
-    def test_default_values(self):
-        """Test stats initialize to zero."""
-        from safeyolo.core.base import AddonStats
-
-        stats = AddonStats()
-        assert stats.checks == 0
-        assert stats.allowed == 0
-        assert stats.blocked == 0
-        assert stats.warned == 0
-
-    def test_stats_increment(self):
-        """Test stats can be incremented."""
-        from safeyolo.core.base import AddonStats
-
-        stats = AddonStats()
-        stats.checks += 1
-        stats.allowed += 2
-        stats.blocked += 3
-        stats.warned += 4
-
-        assert stats.checks == 1
-        assert stats.allowed == 2
-        assert stats.blocked == 3
-        assert stats.warned == 4
+pytestmark = pytest.mark.assurance_boundary
 
 
-class TestSecurityAddon:
-    """Tests for SecurityAddon base class."""
+class BoundaryAddon(SecurityAddon):
+    name = "test-addon"
 
-    def test_stats_initialization(self):
-        """Test addon initializes with empty stats."""
-        from safeyolo.core.base import SecurityAddon
 
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
+def _flow(host: str = "example.com") -> http.HTTPFlow:
+    flow = tflow.tflow(resp=False)
+    flow.request.host = host
+    flow.client_conn.peername = ("10.0.0.4", 32100)
+    return flow
 
-        addon = TestAddon()
-        assert addon.stats.checks == 0
-        assert addon.stats.allowed == 0
-        assert addon.stats.blocked == 0
-        assert addon.stats.warned == 0
 
-    def test_option_prefix_conversion(self):
-        """Test addon name converts to option prefix."""
-        from safeyolo.core.base import SecurityAddon
+def _policy(*, enabled: bool = True) -> PolicyClient:
+    client = create_autospec(PolicyClient, instance=True, spec_set=True)
+    client.is_addon_enabled.return_value = enabled
+    return client
 
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
 
-        addon = TestAddon()
-        assert addon._option_prefix() == "test_addon"
+def _discovery(agent: str) -> ServiceDiscovery:
+    discovery = ServiceDiscovery()
+    discovery._ip_to_name["10.0.0.4"] = agent
+    return discovery
 
-        class NetworkGuard(SecurityAddon):
-            name = "network-guard"
 
-        guard = NetworkGuard()
-        assert guard._option_prefix() == "network_guard"
+def _steps(flow: http.HTTPFlow):
+    return get_store().get(
+        flow.metadata["request_id"], flow.metadata["agent"]
+    ).steps
 
-    def test_is_enabled_default_true(self):
-        """Test is_enabled defaults to True when option not set."""
-        from safeyolo.core.base import SecurityAddon
 
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
+def test_stats_and_option_contracts_use_real_addon_and_option_state():
+    stats = AddonStats()
+    assert (stats.checks, stats.allowed, stats.blocked, stats.warned) == (0, 0, 0, 0)
 
-        addon = TestAddon()
-        # Without mitmproxy context, get_option_safe returns default
+    addon = BoundaryAddon()
+    assert addon._option_prefix() == "test_addon"
+    with taddons.context(addon) as context:
         assert addon.is_enabled() is True
-
-    def test_should_block_default_true(self):
-        """Test should_block defaults to True when option not set."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-        # Without mitmproxy context, get_option_safe returns default
         assert addon.should_block() is True
+        context.options.add_option("test_addon_enabled", bool, False, "test")
+        context.options.add_option("test_addon_block", bool, False, "test")
+        assert addon.is_enabled() is False
+        assert addon.should_block() is False
 
 
-class TestSecurityAddonBypass:
-    """Tests for addon bypass logic."""
+def test_prior_response_bypasses_without_policy_lookup_and_records_trace():
+    addon = BoundaryAddon()
+    flow = _flow()
+    flow.response = http.Response.make(451, b"blocked")
+    flow.metadata.update(trace=True, request_id="req-prior", agent="agent-a")
+    client = _policy()
 
-    def test_bypassed_when_flow_has_response(self):
-        """Test addon is bypassed when flow already has a response."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        # Create mock flow with a response already set
-        flow = Mock()
-        flow.response = Mock()  # Non-None response
-
+    with patch("safeyolo.core.base.get_policy_client", new=lambda: client):
         assert addon.is_bypassed(flow) is True
 
-    def test_not_bypassed_when_no_response(self):
-        """Test addon is not bypassed when flow has no response."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        # Create mock flow without response
-        flow = Mock()
-        flow.response = None
-        flow.request.host = "example.com"
-        flow.client_conn.peername = ("10.0.0.1", 12345)
-
-        # Mock get_policy_client to return client with addon enabled
-        mock_client = Mock()
-        mock_client.is_addon_enabled.return_value = True
-
-        # Mock get_service_discovery to return None (no discovery)
-        with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
-             patch('safeyolo.core.base.get_service_discovery', return_value=None):
-            assert addon.is_bypassed(flow) is False
-
-
-    def test_is_bypassed_when_policy_disables_addon(self):
-        """Addon is bypassed when PolicyClient says addon is disabled for this domain."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        flow = Mock()
-        flow.response = None
-        flow.request.host = "example.com"
-        flow.client_conn.peername = ("10.0.0.1", 12345)
-
-        mock_client = Mock()
-        mock_client.is_addon_enabled.return_value = False
-
-        with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
-             patch('safeyolo.core.base.get_service_discovery', return_value=None):
-            assert addon.is_bypassed(flow) is True
-
-        mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", None)
-
-    def test_resolves_agent_via_registry_when_singleton_none(self):
-        """When the module singleton is None but the master registry has the
-        live discovery addon, the agent-scoped rule must still be evaluated."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        flow = Mock()
-        flow.response = None
-        flow.request.host = "example.com"
-        flow.client_conn.peername = ("10.200.0.4", 12345)
-
-        sd = Mock()
-        sd.get_client_for_ip.return_value = "boris"
-        mock_client = Mock()
-        # Agent-scoped policy disables the addon for this agent.
-        mock_client.is_addon_enabled.return_value = False
-
-        # A running master is present, so resolution goes through the registry
-        # (find_addon), not the (None) singleton.
-        with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
-             patch('mitmproxy.ctx.master', Mock(), create=True), \
-             patch('safeyolo.core.base.find_addon', return_value=sd), \
-             patch('safeyolo.core.base.get_service_discovery', return_value=None):
-            # The agent-scoped bypass actually takes effect.
-            assert addon.is_bypassed(flow) is True
-
-        # Resolved agent is passed, not None — proving registry resolution worked.
-        mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", "boris")
-
-    def test_no_singleton_fallback_when_master_present_but_addon_absent(self):
-        """With a running master, its registry is authoritative: an absent
-        service-discovery must NOT fall back to the module singleton."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        flow = Mock()
-        flow.response = None
-        flow.request.host = "example.com"
-        flow.client_conn.peername = ("10.0.0.1", 12345)
-
-        stale_singleton = Mock()
-        stale_singleton.get_client_for_ip.return_value = "boris"
-        master = Mock()  # present, with a truthy addons registry
-        mock_client = Mock()
-        mock_client.is_addon_enabled.return_value = True
-
-        with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
-             patch('safeyolo.core.base.find_addon', return_value=None), \
-             patch('mitmproxy.ctx.master', master, create=True), \
-             patch('safeyolo.core.base.get_service_discovery', return_value=stale_singleton) as singleton:
-            addon.is_bypassed(flow)
-
-        # Unresolved -> client_id None, and the stale singleton is never consulted.
-        mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", None)
-        singleton.assert_not_called()
-
-    def test_unknown_agent_normalized_to_none(self):
-        """An unmapped source ('unknown') is not a project scope -> None."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        flow = Mock()
-        flow.response = None
-        flow.request.host = "example.com"
-        flow.client_conn.peername = ("10.0.0.9", 12345)
-
-        sd = Mock()
-        sd.get_client_for_ip.return_value = "unknown"
-        mock_client = Mock()
-        mock_client.is_addon_enabled.return_value = True
-
-        with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
-             patch('mitmproxy.ctx.master', Mock(), create=True), \
-             patch('safeyolo.core.base.find_addon', return_value=sd), \
-             patch('safeyolo.core.base.get_service_discovery', return_value=None):
-            addon.is_bypassed(flow)
-
-        mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", None)
-
-    def test_default_agent_normalized_to_none(self):
-        """'default' (no specific project) resolves to None (regression)."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        flow = Mock()
-        flow.response = None
-        flow.request.host = "example.com"
-        flow.client_conn.peername = ("10.0.0.10", 12345)
-
-        sd = Mock()
-        sd.get_client_for_ip.return_value = "default"
-        mock_client = Mock()
-        mock_client.is_addon_enabled.return_value = True
-
-        with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
-             patch('mitmproxy.ctx.master', Mock(), create=True), \
-             patch('safeyolo.core.base.find_addon', return_value=sd), \
-             patch('safeyolo.core.base.get_service_discovery', return_value=None):
-            addon.is_bypassed(flow)
-
-        mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", None)
-
-
-class TestSecurityAddonBlocking:
-    """Tests for addon blocking functionality."""
-
-    def test_block_sets_response(self):
-        """Test block() sets flow response correctly."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        flow = Mock()
-        flow.metadata = {}
-        flow.response = None
-
-        body = {"error": "Blocked", "reason": "test"}
-        addon.block(flow, 403, body)
-
-        assert flow.response is not None
-        assert flow.metadata["blocked_by"] == "test-addon"
-        assert addon.stats.blocked == 1
-
-    def test_block_records_reason_when_present(self):
-        """block() promotes body["reason"] to flow.metadata["block_reason"] so
-        downstream readers (request_logger, traffic view) can surface the
-        deny reason without correlating a separate security event by
-        request_id (#337)."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "network-guard"
-
-        addon = TestAddon()
-        flow = Mock()
-        flow.metadata = {}
-        flow.response = None
-
-        addon.block(flow, 403, {"error": "Blocked", "reason": "host not in allow list"})
-
-        assert flow.metadata["block_reason"] == "host not in allow list"
-
-    def test_block_omits_reason_when_body_has_none(self):
-        """block() does not synthesise a block_reason when the addon didn't
-        provide one — no key beats a fake key."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-        flow = Mock()
-        flow.metadata = {}
-        flow.response = None
-
-        addon.block(flow, 403, {"error": "Blocked"})
-
-        assert "block_reason" not in flow.metadata
-
-    def test_block_reason_ignored_when_body_not_dict(self):
-        """Defence-in-depth: an addon that mis-typed body as bytes/str should
-        still block cleanly without crashing on `body.get`."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-        flow = Mock()
-        flow.metadata = {}
-        flow.response = None
-
-        addon.block(flow, 403, {"error": "x", "reason": None})
-
-        assert "block_reason" not in flow.metadata
-
-    def test_block_with_extra_headers(self):
-        """Test block() includes extra headers."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        flow = Mock()
-        flow.metadata = {}
-        flow.response = None
-
-        body = {"error": "Rate limited"}
-        extra_headers = {"Retry-After": "60"}
-        addon.block(flow, 429, body, extra_headers)
-
-        assert flow.response is not None
-        assert addon.stats.blocked == 1
-
-
-    def test_block_response_has_correct_status_and_body(self):
-        """block() produces response with the exact status code, JSON body, and X-Blocked-By header."""
-        import json
-
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        flow = Mock()
-        flow.metadata = {}
-        flow.response = None
-
-        body = {"error": "Credential leak", "event_id": "ev-123"}
-        addon.block(flow, 403, body)
-
-        resp = flow.response
-        assert resp.status_code == 403
-        assert json.loads(resp.content) == {"error": "Credential leak", "event_id": "ev-123"}
-        assert resp.headers["Content-Type"] == "application/json"
-        assert resp.headers["X-Blocked-By"] == "test-addon"
-
-    def test_block_with_extra_headers_verifies_headers(self):
-        """block() with extra_headers includes those headers in the response."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "rate-limiter"
-
-        addon = TestAddon()
-
-        flow = Mock()
-        flow.metadata = {}
-        flow.response = None
-
-        body = {"error": "Rate limited"}
-        addon.block(flow, 429, body, extra_headers={"Retry-After": "60"})
-
-        resp = flow.response
-        assert resp.status_code == 429
-        assert resp.headers["Retry-After"] == "60"
-        assert resp.headers["X-Blocked-By"] == "rate-limiter"
-
-
-class TestSecurityAddonWarn:
-    """Tests for addon warn functionality."""
-
-    def test_warn_increments_warned_count(self):
-        """Test warn() increments warned counter."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-        flow = Mock()
-
-        assert addon.stats.warned == 0
-        addon.warn(flow)
-        assert addon.stats.warned == 1
-        addon.warn(flow)
-        assert addon.stats.warned == 2
-
-
-class TestSecurityAddonStats:
-    """Tests for get_stats() method."""
-
-    def test_get_stats_returns_dict(self):
-        """Test get_stats() returns dict with all fields."""
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-        addon.stats.checks = 10
-        addon.stats.allowed = 5
-        addon.stats.blocked = 3
-        addon.stats.warned = 2
-
-        stats = addon.get_stats()
-
-        assert isinstance(stats, dict)
-        assert stats["checks_total"] == 10
-        assert stats["allowed_total"] == 5
-        assert stats["blocked_total"] == 3
-        assert stats["warned_total"] == 2
-        assert "enabled" in stats
-
-
-class TestSecurityAddonLogging:
-    """Tests for decision logging."""
-
-    def test_log_decision_calls_write_event(self):
-        """Test log_decision() calls write_event with correct params."""
-        from safeyolo.core.audit_schema import Decision, EventKind, Severity
-        from safeyolo.core.base import SecurityAddon
-
-        class TestAddon(SecurityAddon):
-            name = "test-addon"
-
-        addon = TestAddon()
-
-        flow = Mock()
-        flow.metadata = {"request_id": "req-123", "agent": "boris"}
-
-        with patch('safeyolo.core.base.write_event') as mock_write:
-            addon.log_decision(
-                flow, Decision.DENY,
-                severity=Severity.HIGH,
-                summary="Blocked for test",
-                host="example.com",
-                reason="test",
-            )
-
-            mock_write.assert_called_once()
-            call_args = mock_write.call_args
-
-            # Check event type format
-            assert call_args[0][0] == "security.test_addon"
-
-            # Check kwargs
-            assert call_args[1]["kind"] == EventKind.SECURITY
-            assert call_args[1]["severity"] == Severity.HIGH
-            assert call_args[1]["summary"] == "Blocked for test"
-            assert call_args[1]["request_id"] == "req-123"
-            assert call_args[1]["agent"] == "boris"
-            assert call_args[1]["addon"] == "test-addon"
-            assert call_args[1]["decision"] == Decision.DENY
-            assert call_args[1]["host"] == "example.com"
-
-
-class TestFindAddon:
-    """Direct tests for the shared find_addon() registry helper."""
-
-    def test_returns_addon_from_master_registry(self):
-        from unittest.mock import Mock, patch
-
-        from safeyolo.core.utils import find_addon
-
-        sd = Mock()
-        master = Mock()
-        master.addons.get.return_value = sd
-        with patch("mitmproxy.ctx.master", master, create=True):
-            assert find_addon("service-discovery") is sd
-        master.addons.get.assert_called_with("service-discovery")
-
-    def test_returns_none_without_master(self):
-        from unittest.mock import patch
-
-        from safeyolo.core.utils import find_addon
-
-        with patch("mitmproxy.ctx.master", None, create=True):
-            assert find_addon("service-discovery") is None
+    client.is_addon_enabled.assert_not_called()
+    steps = _steps(flow)
+    assert [(step.state, step.reason) for step in steps] == [
+        ("bypassed", "prior_response")
+    ]
+
+
+@pytest.mark.parametrize("enabled, expected", [(True, False), (False, True)])
+def test_policy_controls_bypass_for_unscoped_identity(enabled: bool, expected: bool):
+    addon = BoundaryAddon()
+    flow = _flow()
+    client = _policy(enabled=enabled)
+
+    with patch("safeyolo.core.base.get_policy_client", new=lambda: client), patch(
+        "safeyolo.core.base.get_service_discovery", new=lambda: None
+    ), patch("mitmproxy.ctx.master", new=None, create=True):
+        assert addon.is_bypassed(flow) is expected
+
+    assert flow.metadata["agent_identity_status"] == IdentityStatus.UNAVAILABLE.value
+    client.is_addon_enabled.assert_called_once_with("test_addon", "example.com", None)
+
+
+def test_live_registry_discovery_takes_precedence_and_scopes_policy():
+    addon = BoundaryAddon()
+    discovery = _discovery("agent-a")
+    flow = _flow()
+    client = _policy(enabled=False)
+
+    with taddons.context(addon, discovery), patch(
+        "safeyolo.core.base.get_policy_client", new=lambda: client
+    ), patch(
+        "safeyolo.core.base.get_service_discovery",
+        new=lambda: (_ for _ in ()).throw(AssertionError("stale singleton consulted")),
+    ):
+        assert addon.is_bypassed(flow) is True
+
+    assert flow.metadata["agent"] == "agent-a"
+    assert flow.metadata["agent_identity_source"] == "ip_map"
+    client.is_addon_enabled.assert_called_once_with("test_addon", "example.com", "agent-a")
+
+
+def test_registry_absence_does_not_fall_back_to_stale_singleton():
+    addon = BoundaryAddon()
+    stale = _discovery("stale-agent")
+    flow = _flow()
+    client = _policy()
+
+    with taddons.context(addon), patch(
+        "safeyolo.core.base.get_policy_client", new=lambda: client
+    ), patch("safeyolo.core.base.get_service_discovery", new=lambda: stale):
+        assert addon.is_bypassed(flow) is False
+
+    assert "agent" not in flow.metadata
+    client.is_addon_enabled.assert_called_once_with("test_addon", "example.com", None)
+
+
+def test_identity_conflict_is_never_converted_to_policy_bypass():
+    addon = BoundaryAddon()
+    discovery = _discovery("mapped-agent")
+    flow = _flow()
+    flow.metadata["agent"] = "different-agent"
+    client = _policy(enabled=False)
+
+    with taddons.context(addon, discovery), patch(
+        "safeyolo.core.base.get_policy_client", new=lambda: client
+    ):
+        assert addon.is_bypassed(flow) is False
+
+    assert flow.metadata["agent_identity_status"] == IdentityStatus.CONFLICT.value
+    assert "agent" not in flow.metadata
+    client.is_addon_enabled.assert_not_called()
+
+
+def test_policy_unavailability_does_not_bypass_security_addon():
+    addon = BoundaryAddon()
+    flow = _flow()
+
+    def unavailable() -> PolicyClient:
+        raise RuntimeError("PDP unavailable")
+
+    with patch("safeyolo.core.base.get_policy_client", new=unavailable), patch(
+        "mitmproxy.ctx.master", new=None, create=True
+    ), patch("safeyolo.core.base.get_service_discovery", new=lambda: None):
+        assert addon.is_bypassed(flow) is False
+
+
+def test_block_sets_exact_response_metadata_stats_and_trace():
+    addon = BoundaryAddon()
+    flow = _flow()
+    flow.metadata.update(trace=True, request_id="req-block", agent="agent-a")
+
+    addon.block(
+        flow,
+        429,
+        {"error": "Rate limited", "reason": "budget exhausted"},
+        {"Retry-After": "60"},
+    )
+
+    assert flow.response.status_code == 429
+    assert json.loads(flow.response.content) == {
+        "error": "Rate limited",
+        "reason": "budget exhausted",
+    }
+    assert flow.response.headers["Content-Type"] == "application/json"
+    assert flow.response.headers["X-Blocked-By"] == "test-addon"
+    assert flow.response.headers["X-SafeYolo-Request-Id"] == "req-block"
+    assert flow.response.headers["Retry-After"] == "60"
+    assert flow.metadata["blocked_by"] == "test-addon"
+    assert flow.metadata["block_reason"] == "budget exhausted"
+    assert addon.stats.blocked == 1
+    assert _steps(flow)[-1].outcome == "blocked"
+
+
+@pytest.mark.parametrize("body", [{"error": "blocked"}, {"reason": None}])
+def test_block_does_not_invent_missing_reason(body: dict):
+    addon = BoundaryAddon()
+    flow = _flow()
+    addon.block(flow, 403, body)
+    assert "block_reason" not in flow.metadata
+
+
+def test_warn_and_stats_snapshot_report_exact_counters():
+    addon = BoundaryAddon()
+    flow = _flow()
+    flow.metadata.update(trace=True, request_id="req-warn", agent="agent-a")
+    addon.stats.checks = 4
+    addon.stats.allowed = 2
+    addon.warn(flow)
+
+    assert addon.get_stats() == {
+        "enabled": True,
+        "checks_total": 4,
+        "allowed_total": 2,
+        "blocked_total": 0,
+        "warned_total": 1,
+    }
+    assert _steps(flow)[-1].outcome == "warned"
+
+
+def test_log_decision_emits_schema_values_and_attribution():
+    addon = BoundaryAddon()
+    flow = _flow()
+    flow.metadata.update(request_id="req-123", agent="agent-a")
+    from safeyolo.core import base
+
+    writer = create_autospec(base.write_event, spec_set=True)
+    with patch("safeyolo.core.base.write_event", new=writer):
+        addon.log_decision(
+            flow,
+            Decision.DENY,
+            severity=Severity.HIGH,
+            summary="Blocked for test",
+            host="example.com",
+            reason="policy denied",
+        )
+
+    writer.assert_called_once_with(
+        "security.test_addon",
+        kind=EventKind.SECURITY,
+        severity=Severity.HIGH,
+        summary="Blocked for test",
+        decision=Decision.DENY,
+        host="example.com",
+        request_id="req-123",
+        agent="agent-a",
+        addon="test-addon",
+        approval=None,
+        details={"reason": "policy denied"},
+    )
+
+
+def test_trace_error_records_exception_type_without_sensitive_message():
+    addon = BoundaryAddon()
+    flow = _flow()
+    flow.metadata.update(trace=True, request_id="req-error", agent="agent-a")
+    addon._trace_error(flow, exc=ValueError("secret-in-url"))
+    step = _steps(flow)[-1]
+    assert step.state == "error"
+    assert step.reason == "ValueError"
+    assert "secret-in-url" not in repr(step)

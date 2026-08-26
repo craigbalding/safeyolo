@@ -10,9 +10,20 @@ import os
 import signal
 import socket
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
+
+
+class _HealthResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
 
 # ---------------------------------------------------------------------------
 # TestAddonChain
@@ -282,7 +293,7 @@ class TestEnsureCerts:
         ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
         ca_cert.write_text("EXISTING CERT")
 
-        with patch("safeyolo.proxy.subprocess.Popen") as mock_popen:
+        with patch("safeyolo.proxy.subprocess.Popen", autospec=True,) as mock_popen:
             result = _ensure_certs(cert_dir)
 
         assert result == ca_cert
@@ -381,8 +392,7 @@ class TestMergeSystemCasIntoCertifi:
         certifi_file = tmp_path / "certifi_bundle.pem"
         certifi_file.write_text(_CERT_A)
 
-        fake_certifi = MagicMock()
-        fake_certifi.where.return_value = str(certifi_file)
+        fake_certifi = SimpleNamespace(where=lambda: str(certifi_file))
 
         original_exists = Path.exists
         original_read_text = Path.read_text
@@ -415,8 +425,7 @@ class TestMergeSystemCasIntoCertifi:
         certifi_file = tmp_path / "certifi_bundle.pem"
         certifi_file.write_text(both_certs)
 
-        fake_certifi = MagicMock()
-        fake_certifi.where.return_value = str(certifi_file)
+        fake_certifi = SimpleNamespace(where=lambda: str(certifi_file))
 
         original_exists = Path.exists
 
@@ -448,8 +457,7 @@ class TestMergeSystemCasIntoCertifi:
         certifi_file = tmp_path / "certifi_bundle.pem"
         certifi_file.write_text(_CERT_A)
 
-        fake_certifi = MagicMock()
-        fake_certifi.where.return_value = str(certifi_file)
+        fake_certifi = SimpleNamespace(where=lambda: str(certifi_file))
 
         original_exists = Path.exists
 
@@ -485,8 +493,8 @@ class TestMergeSystemCasIntoCertifi:
                 raise ImportError("No module named 'certifi'")
             return original_import(name, *args, **kwargs)
 
-        with patch("builtins.__import__", side_effect=fail_certifi), \
-             patch("safeyolo.proxy.log") as mock_log:
+        with patch("builtins.__import__", side_effect=fail_certifi, autospec=True,), \
+             patch("safeyolo.proxy.log", autospec=True,) as mock_log:
             _merge_system_cas_into_certifi()
 
         mock_log.warning.assert_called_once()
@@ -500,8 +508,7 @@ class TestMergeSystemCasIntoCertifi:
         certifi_file = tmp_path / "certifi_bundle.pem"
         certifi_file.write_text(_CERT_A)
 
-        fake_certifi = MagicMock()
-        fake_certifi.where.return_value = str(certifi_file)
+        fake_certifi = SimpleNamespace(where=lambda: str(certifi_file))
 
         # System has CERT_A (already in certifi) + CERT_C + CERT_D (new)
         system_content = _CERT_A + _CERT_C + _CERT_D
@@ -523,7 +530,7 @@ class TestMergeSystemCasIntoCertifi:
         with patch.dict("sys.modules", {"certifi": fake_certifi}), \
              patch.object(Path, "exists", fake_exists), \
              patch.object(Path, "read_text", fake_read_text), \
-             patch("safeyolo.proxy.log") as mock_log:
+             patch("safeyolo.proxy.log", autospec=True,) as mock_log:
             _merge_system_cas_into_certifi()
 
         result = certifi_file.read_text()
@@ -543,8 +550,7 @@ class TestMergeSystemCasIntoCertifi:
         certifi_file = tmp_path / "certifi_bundle.pem"
         certifi_file.write_text(_CERT_A)
 
-        fake_certifi = MagicMock()
-        fake_certifi.where.return_value = str(certifi_file)
+        fake_certifi = SimpleNamespace(where=lambda: str(certifi_file))
 
         debian_content = _CERT_C  # Unique to Debian bundle
         macos_content = _CERT_D   # Unique to macOS bundle
@@ -1602,7 +1608,7 @@ class TestPidFileManagement:
         pid_file = data_dir / "proxy.pid"
         pid_file.write_text("99999999")  # Almost certainly not a real PID
 
-        with patch("safeyolo.proxy.os.kill", side_effect=ProcessLookupError):
+        with patch("safeyolo.proxy.os.kill", side_effect=ProcessLookupError, autospec=True,):
             result = is_proxy_running()
 
         assert result is False
@@ -1625,8 +1631,8 @@ class TestPidFileManagement:
                 return  # "Process received signal"
             raise ProcessLookupError  # Process already exited when we check
 
-        with patch("safeyolo.proxy.os.kill", side_effect=mock_kill), \
-             patch("safeyolo.proxy.time.sleep"):
+        with patch("safeyolo.proxy.os.kill", side_effect=mock_kill, autospec=True,), \
+             patch("safeyolo.proxy.time.sleep", autospec=True,):
             stop_proxy()
 
         # First call is SIGTERM
@@ -1652,7 +1658,7 @@ class TestPidFileManagement:
         pid_file = data_dir / "proxy.pid"
         pid_file.write_text("12345")
 
-        with patch("safeyolo.proxy.os.kill", side_effect=ProcessLookupError):
+        with patch("safeyolo.proxy.os.kill", side_effect=ProcessLookupError, autospec=True,):
             stop_proxy()
 
         assert not pid_file.exists()
@@ -1673,8 +1679,8 @@ class TestPidFileManagement:
             # Process never dies — signal 0 always succeeds (no exception)
             return None
 
-        with patch("safeyolo.proxy.os.kill", side_effect=mock_kill), \
-             patch("safeyolo.proxy.time.sleep"):
+        with patch("safeyolo.proxy.os.kill", side_effect=mock_kill, autospec=True,), \
+             patch("safeyolo.proxy.time.sleep", autospec=True,):
             stop_proxy()
 
         signals_sent = [sig for _, sig in kill_calls]
@@ -1820,8 +1826,8 @@ class TestStartProxy:
 
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=True), \
-             patch("safeyolo.proxy._find_addons_dir") as mock_find:
+        with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,), \
+             patch("safeyolo.proxy._find_addons_dir", autospec=True,) as mock_find:
             start_proxy()
 
         # _find_addons_dir should never be called if already running
@@ -1834,8 +1840,8 @@ class TestStartProxy:
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
         (tmp_path / "data").mkdir(exist_ok=True)
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
-             patch("safeyolo.proxy._find_addons_dir", return_value=None):
+        with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,), \
+             patch("safeyolo.proxy._find_addons_dir", return_value=None, autospec=True,):
             with pytest.raises(RuntimeError, match="Cannot find the SafeYolo addons directory"):
                 start_proxy()
 
@@ -1867,12 +1873,12 @@ class TestStartProxy:
             pid_file.write_text("42\n")
             launched.update(kwargs)
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
-             patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir), \
-             patch("safeyolo.proxy._find_pdp_dir", return_value=None), \
-             patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem"), \
-             patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent")), \
-             patch("safeyolo.proxy._build_command", return_value=["traffic-master"]), \
+        with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,), \
+             patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir, autospec=True,), \
+             patch("safeyolo.proxy._find_pdp_dir", return_value=None, autospec=True,), \
+             patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem", autospec=True,), \
+             patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent"), autospec=True,), \
+             patch("safeyolo.proxy._build_command", return_value=["traffic-master"], autospec=True,), \
              patch(
                  "safeyolo.proxy._profile_child_environment",
                  return_value={
@@ -1880,8 +1886,9 @@ class TestStartProxy:
                      "SAFEYOLO_PROFILE_OPERATION": "proxy start",
                      "SAFEYOLO_PROFILE_PROCESS": "traffic-master",
                  },
+             autospec=True,
              ), \
-             patch("safeyolo.proxy.start_session", side_effect=_start_simulate_addon):
+             patch("safeyolo.proxy.start_session", side_effect=_start_simulate_addon, autospec=True,):
             start_proxy()
 
         assert pid_file.exists()
@@ -1919,15 +1926,15 @@ class TestStartProxy:
                 "summary": "Traffic master startup failed: address already in use",
             }) + "\n")
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
-             patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir), \
-             patch("safeyolo.proxy._find_pdp_dir", return_value=None), \
-             patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem"), \
-             patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent")), \
-             patch("safeyolo.proxy._build_command", return_value=["traffic-master"]), \
-             patch("safeyolo.proxy.start_session", side_effect=_write_structured_failure), \
-             patch("safeyolo.proxy.session_process_alive", return_value=False), \
-             patch("safeyolo.proxy.stop_session") as stop_session:
+        with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,), \
+             patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir, autospec=True,), \
+             patch("safeyolo.proxy._find_pdp_dir", return_value=None, autospec=True,), \
+             patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem", autospec=True,), \
+             patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent"), autospec=True,), \
+             patch("safeyolo.proxy._build_command", return_value=["traffic-master"], autospec=True,), \
+             patch("safeyolo.proxy.start_session", side_effect=_write_structured_failure, autospec=True,), \
+             patch("safeyolo.proxy.session_process_alive", return_value=False, autospec=True,), \
+             patch("safeyolo.proxy.stop_session", autospec=True,) as stop_session:
             with pytest.raises(RuntimeError, match="address already in use"):
                 start_proxy()
         stop_session.assert_called_once_with()
@@ -1948,6 +1955,40 @@ def test_pid_writer_defers_until_traffic_master_signals_ready(tmp_path, monkeypa
     assert pid_file.read_text().strip().isdigit()
 
 
+def test_missing_structured_startup_failure_is_reported_by_caller_context(tmp_path):
+    from safeyolo.proxy import _read_startup_failure
+
+    assert _read_startup_failure(tmp_path / "missing.jsonl", 0) is None
+
+
+def test_startup_diagnostics_capture_state_before_cleanup(tmp_path, monkeypatch):
+    from safeyolo.proxy import _startup_diagnostics
+
+    event_log = tmp_path / "safeyolo.jsonl"
+    event_log.write_text('old\n{"event":"ops.proxy_start_failed"}\n')
+    mitmproxy_log = tmp_path / "mitmproxy.log"
+    mitmproxy_log.write_text("addon load stalled\n")
+    profile = tmp_path / "startup-profile.jsonl"
+    profile.write_text('{"name":"traffic-master: listeners"}\n')
+    monkeypatch.setenv("SAFEYOLO_PROFILE_PATH", str(profile))
+    monkeypatch.setattr("safeyolo.proxy.capture_session", lambda: "pane traceback")
+    monkeypatch.setattr("safeyolo.proxy.session_process_alive", lambda: True)
+
+    diagnostics = _startup_diagnostics(
+        event_log=event_log,
+        event_offset=4,
+        logs_dir=tmp_path,
+        pid_file=tmp_path / "proxy.pid",
+    )
+
+    assert "traffic session alive: True" in diagnostics
+    assert "readiness marker exists: False" in diagnostics
+    assert "ops.proxy_start_failed" in diagnostics
+    assert "addon load stalled" in diagnostics
+    assert "pane traceback" in diagnostics
+    assert "traffic-master: listeners" in diagnostics
+
+
 # ---------------------------------------------------------------------------
 # TestWaitForHealthy
 # ---------------------------------------------------------------------------
@@ -1964,13 +2005,10 @@ class TestWaitForHealthy:
         data_dir.mkdir(exist_ok=True)
         (data_dir / "admin_token").write_text("test-token")
 
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp = _HealthResponse()
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=True), \
-             patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,), \
+             patch("urllib.request.urlopen", return_value=mock_resp, autospec=True,):
             result = wait_for_healthy(timeout=1, admin_port=9090)
 
         assert result is True
@@ -1984,9 +2022,9 @@ class TestWaitForHealthy:
         data_dir = tmp_path / "data"
         data_dir.mkdir(exist_ok=True)
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=True), \
-             patch("urllib.request.urlopen", side_effect=ConnectionError), \
-             patch("safeyolo.proxy.time.sleep"):
+        with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,), \
+             patch("urllib.request.urlopen", side_effect=ConnectionError, autospec=True,), \
+             patch("safeyolo.proxy.time.sleep", autospec=True,):
             result = wait_for_healthy(timeout=2, admin_port=9090)
 
         assert result is False
@@ -2000,10 +2038,7 @@ class TestWaitForHealthy:
         data_dir.mkdir(exist_ok=True)
         (data_dir / "admin_token").write_text("secret-tok-123")
 
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp = _HealthResponse()
 
         captured_request = None
 
@@ -2012,8 +2047,8 @@ class TestWaitForHealthy:
             captured_request = req
             return mock_resp
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=True), \
-             patch("urllib.request.urlopen", side_effect=capture_urlopen):
+        with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,), \
+             patch("urllib.request.urlopen", side_effect=capture_urlopen, autospec=True,):
             wait_for_healthy(timeout=1, admin_port=9090)
 
         assert captured_request is not None
@@ -2025,9 +2060,9 @@ class TestWaitForHealthy:
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
         (tmp_path / "data").mkdir()
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
-             patch("urllib.request.urlopen") as urlopen, \
-             patch("safeyolo.proxy.time.sleep") as sleep:
+        with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,), \
+             patch("urllib.request.urlopen", autospec=True,) as urlopen, \
+             patch("safeyolo.proxy.time.sleep", autospec=True,) as sleep:
             result = wait_for_healthy(timeout=30, admin_port=9090)
 
         assert result is False

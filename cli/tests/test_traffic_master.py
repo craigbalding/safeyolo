@@ -3,13 +3,15 @@
 import asyncio
 import errno
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 from argon2 import PasswordHasher
 from mitmproxy import flowfilter, options
 from mitmproxy.test import tflow
+from tornado.httpserver import HTTPServer
 
+from safeyolo.tailnet import TailnetServeSession
 from safeyolo.traffic_master import (
     _SCOPE_SCRIPT,
     _SCOPE_STYLE,
@@ -20,6 +22,22 @@ from safeyolo.traffic_master import (
     _initial_proxy_modes,
     _scope_toolbar,
 )
+
+
+def _tailnet_session(url: str, exposed_port: int, *, pid: int):
+    process = SimpleNamespace(pid=pid, poll=lambda: None)
+    real = TailnetServeSession(
+        process=process,
+        dns_name="host.example.ts.net",
+        exposed_port=exposed_port,
+        target="http://127.0.0.1:8081",
+    )
+    session = create_autospec(real, spec_set=True)
+    session.url.return_value = url
+    session.target = real.target
+    session.process.pid = pid
+    session.process.poll.return_value = None
+    return session
 
 
 def make_master() -> TrafficMaster:
@@ -98,8 +116,8 @@ def test_normal_console_exit_prompt_does_not_shutdown_data_plane(monkeypatch):
     assert master.keymap.get("global", "Q") is None
 
     with (
-        patch.object(master, "shutdown") as shutdown,
-        patch("safeyolo.traffic_master.console_signals.status_message.send") as status,
+        patch.object(master, "shutdown", autospec=True,) as shutdown,
+        patch("safeyolo.traffic_master.console_signals.status_message.send", autospec=True,) as status,
     ):
         master.prompt_for_exit()
 
@@ -115,12 +133,12 @@ def test_web_bind_failure_is_written_at_source_to_structured_event_log():
     frontend = WebFrontend.__new__(WebFrontend)
     frontend.master = master
     frontend.server = None
-    server = MagicMock()
+    server = create_autospec(HTTPServer, instance=True, spec_set=True)
     server.listen.side_effect = OSError(errno.EADDRINUSE, "Address already in use")
 
     with (
-        patch("safeyolo.traffic_master.tornado.httpserver.HTTPServer", return_value=server),
-        patch("safeyolo.traffic_master.write_event") as write_event,
+        patch("safeyolo.traffic_master.tornado.httpserver.HTTPServer", return_value=server, autospec=True,),
+        patch("safeyolo.traffic_master.write_event", autospec=True,) as write_event,
         pytest.raises(OSError, match="127.0.0.1:8081"),
     ):
         asyncio.run(frontend.running())
@@ -138,17 +156,13 @@ def test_web_tailnet_share_owns_foreground_session(tmp_path, monkeypatch):
     master = SimpleNamespace(
         options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
     )
-    session = MagicMock()
-    session.url.return_value = "https://host.example.ts.net:8445/"
-    session.target = "http://127.0.0.1:8081"
-    session.process.pid = 1234
-    session.process.poll.return_value = None
+    session = _tailnet_session("https://host.example.ts.net:8445/", 8445, pid=1234)
     share = WebTailnetShare(master)
 
     with (
-        patch("safeyolo.traffic_master.start_tailnet_serve", return_value=session) as start,
-        patch.object(share, "_watch_session") as watch,
-        patch("safeyolo.traffic_master.write_event") as write_event,
+        patch("safeyolo.traffic_master.start_tailnet_serve", return_value=session, autospec=True,) as start,
+        patch.object(share, "_watch_session", autospec=True,) as watch,
+        patch("safeyolo.traffic_master.write_event", autospec=True,) as write_event,
     ):
         asyncio.run(share.running())
         assert '"state": "healthy"' in state_path.read_text()
@@ -180,8 +194,9 @@ def test_web_tailnet_share_failure_blocks_proxy_readiness(tmp_path, monkeypatch)
         patch(
             "safeyolo.traffic_master.start_tailnet_serve",
             side_effect=RuntimeError("port already mapped"),
+        autospec=True,
         ),
-        patch("safeyolo.traffic_master.write_event") as write_event,
+        patch("safeyolo.traffic_master.write_event", autospec=True,) as write_event,
         pytest.raises(RuntimeError, match="port already mapped"),
     ):
         asyncio.run(share.running())
@@ -208,24 +223,20 @@ def test_web_tailnet_live_port_change_preserves_old_share_until_ready(
             options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
         )
     )
-    old = MagicMock()
-    old.process.poll.return_value = None
-    old.url.return_value = "https://host.example.ts.net:8445/"
-    old.target = "http://127.0.0.1:8081"
-    replacement = MagicMock()
-    replacement.process.poll.return_value = None
-    replacement.process.pid = 4321
-    replacement.url.return_value = "https://host.example.ts.net:8446/"
-    replacement.target = "http://127.0.0.1:8081"
+    old = _tailnet_session("https://host.example.ts.net:8445/", 8445, pid=1234)
+    replacement = _tailnet_session(
+        "https://host.example.ts.net:8446/", 8446, pid=4321
+    )
     share.session = old
 
     with (
         patch(
             "safeyolo.traffic_master.start_tailnet_serve",
             return_value=replacement,
+        autospec=True,
         ) as start,
-        patch.object(share, "_watch_session"),
-        patch("safeyolo.traffic_master.write_event"),
+        patch.object(share, "_watch_session", autospec=True,),
+        patch("safeyolo.traffic_master.write_event", autospec=True,),
     ):
         result = asyncio.run(share.reconcile(True, 8446))
 
@@ -248,19 +259,16 @@ def test_web_tailnet_live_failure_keeps_existing_healthy_share(
             options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
         )
     )
-    old = MagicMock()
-    old.process.poll.return_value = None
-    old.process.pid = 1234
-    old.url.return_value = "https://host.example.ts.net:8445/"
-    old.target = "http://127.0.0.1:8081"
+    old = _tailnet_session("https://host.example.ts.net:8445/", 8445, pid=1234)
     share.session = old
 
     with (
         patch(
             "safeyolo.traffic_master.start_tailnet_serve",
             side_effect=RuntimeError("serve denied"),
+        autospec=True,
         ),
-        patch("safeyolo.traffic_master.write_event"),
+        patch("safeyolo.traffic_master.write_event", autospec=True,),
         pytest.raises(RuntimeError, match="serve denied"),
     ):
         asyncio.run(share.reconcile(True, 8446))
@@ -313,7 +321,7 @@ def test_status_bar_leads_with_host_and_pinned_evidence_scope():
     )
 
     with (
-        patch("safeyolo.traffic_master.socket.gethostname", return_value="workstation"),
+        patch("safeyolo.traffic_master.socket.gethostname", return_value="workstation", autospec=True,),
         patch(
             "safeyolo.traffic_master.statusbar.StatusBar.get_status",
             return_value=[
@@ -322,6 +330,7 @@ def test_status_bar_leads_with_host_and_pinned_evidence_scope():
                 "[scripts:2]",
                 "[10m]",
             ],
+        autospec=True,
         ),
     ):
         result = bar.get_status()
@@ -355,6 +364,7 @@ def test_status_bar_extracts_stream_threshold_from_combined_stock_modes():
     with patch(
         "safeyolo.traffic_master.statusbar.StatusBar.get_status",
         return_value=["[anticache:1g]"],
+    autospec=True,
     ):
         result = bar.get_status()
 
@@ -417,7 +427,7 @@ def test_websocket_broadcasts_only_flows_in_composed_live_view(monkeypatch):
     hidden.metadata["agent"] = "bob"
     master.view.filter = flowfilter.parse('~meta "^agent: alice$" & (~m GET)')
 
-    with patch("safeyolo.traffic_master.app.ClientConnection.broadcast_flow") as broadcast:
+    with patch("safeyolo.traffic_master.app.ClientConnection.broadcast_flow", autospec=True,) as broadcast:
         master.view.add([matching, hidden])
 
     broadcast.assert_called_once_with("flows/add", matching)

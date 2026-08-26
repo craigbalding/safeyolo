@@ -8,9 +8,16 @@ a distinctive audit event. Doctor uses this event to fail loudly.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
+import pytest
+from mitmproxy import connection
+from mitmproxy.proxy.server_hooks import ServerConnectionHookData
 
 from safeyolo.core.probe import PROBE_HOST
+from safeyolo.proxy_modes.unix_listener import UnixMode
+
+pytestmark = pytest.mark.assurance_boundary
 
 
 def _addon():
@@ -24,16 +31,25 @@ def _hook_data(
     sni: str | None = None,
     client_ip: str = "10.0.0.42",
     agent: str | None = None,
-) -> MagicMock:
-    """Minimal fake `ServerConnectionHookData` for the guard's checks."""
-    data = MagicMock()
-    data.server.address = (server_host, server_port) if server_host else None
-    data.server.error = None
-    data.client.peername = (client_ip, 5555)
-    data.client.sni = sni
-    data.client.proxy_mode = MagicMock()
-    data.client.proxy_mode.agent = agent
-    return data
+) -> ServerConnectionHookData:
+    """Build real hook data with real mitmproxy connections and proxy mode."""
+    proxy_mode = _unix_mode(client_ip, agent) if agent else None
+    client_kwargs = {
+        "peername": (client_ip, 5555),
+        "sockname": ("127.0.0.1", 8080),
+        "sni": sni,
+    }
+    if proxy_mode is not None:
+        client_kwargs["proxy_mode"] = proxy_mode
+    client = connection.Client(**client_kwargs)
+    server = connection.Server(
+        address=(server_host, server_port) if server_host else None,
+    )
+    return ServerConnectionHookData(server=server, client=client)
+
+
+def _unix_mode(client_ip: str, agent: str) -> UnixMode:
+    return UnixMode.parse(f"unix:/tmp/{client_ip}_{agent}/proxy.sock")
 
 
 class TestRefusalForProbeHost:
@@ -41,7 +57,7 @@ class TestRefusalForProbeHost:
         addon, refusal = _addon()
         data = _hook_data(server_host=PROBE_HOST, server_port=80)
 
-        with patch("transport_guard.write_event") as mock_write:
+        with patch("transport_guard.write_event", autospec=True) as mock_write:
             addon.server_connect(data)
 
         assert data.server.error == refusal
@@ -58,7 +74,7 @@ class TestRefusalForProbeHost:
         addon, refusal = _addon()
         data = _hook_data(server_host="_SAFEYOLO.PROBE.INTERNAL")
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             addon.server_connect(data)
 
         assert data.server.error == refusal
@@ -70,7 +86,7 @@ class TestRefusalForProbeHost:
         addon, refusal = _addon()
         data = _hook_data(server_host="unrelated.example.com", sni=PROBE_HOST)
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             addon.server_connect(data)
 
         assert data.server.error == refusal
@@ -81,7 +97,7 @@ class TestNoOpForNonProbeHosts:
         addon, _ = _addon()
         data = _hook_data(server_host="httpbin.org", server_port=443)
 
-        with patch("transport_guard.write_event") as mock_write:
+        with patch("transport_guard.write_event", autospec=True) as mock_write:
             addon.server_connect(data)
 
         assert data.server.error is None
@@ -94,7 +110,7 @@ class TestNoOpForNonProbeHosts:
         data = _hook_data(server_host=None, sni=None)
         data.server.address = None
 
-        with patch("transport_guard.write_event") as mock_write:
+        with patch("transport_guard.write_event", autospec=True) as mock_write:
             addon.server_connect(data)
 
         assert data.server.error is None
@@ -106,7 +122,7 @@ class TestAuditEventShape:
         addon, _ = _addon()
         data = _hook_data(server_host=PROBE_HOST, client_ip="10.9.8.7", agent="test-agent")
 
-        with patch("transport_guard.write_event") as mock_write:
+        with patch("transport_guard.write_event", autospec=True) as mock_write:
             addon.server_connect(data)
 
         kwargs = mock_write.call_args[1]
@@ -122,7 +138,7 @@ class TestAuditEventShape:
         addon, _ = _addon()
         data = _hook_data(server_host=PROBE_HOST)
 
-        with patch("transport_guard.write_event") as mock_write:
+        with patch("transport_guard.write_event", autospec=True) as mock_write:
             addon.server_connect(data)
 
         assert mock_write.call_args[1]["severity"] == Severity.CRITICAL
@@ -159,7 +175,7 @@ class TestErrorHookBridgesToTrace:
         from transport_guard import TransportGuard
 
         flow = self._flow()
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             TransportGuard().error(flow)
 
         rid = flow.metadata.get("request_id")
@@ -184,7 +200,7 @@ class TestErrorHookBridgesToTrace:
         from transport_guard import TransportGuard
 
         flow = self._flow(host="httpbin.org")
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             TransportGuard().error(flow)
 
         rid = flow.metadata.get("request_id")
@@ -209,8 +225,6 @@ class TestErrorHookBridgesToTrace:
         `RequestIdGenerator.request()` first, and asserts the trace
         step is created AND readable via the agent-scoped store.
         """
-        from unittest.mock import MagicMock
-
         from mitmproxy.test import tflow
 
         from safeyolo.core.trace import get_store, reset_store_for_tests
@@ -226,8 +240,7 @@ class TestErrorHookBridgesToTrace:
         flow.request.headers[TRACE_REQUEST_HEADER] = "1"
         # Trusted agent lives on the connection-level UnixMode. Simulate
         # the shape `flow.client_conn.proxy_mode.agent`.
-        flow.client_conn.proxy_mode = MagicMock()
-        flow.client_conn.proxy_mode.agent = "trusted-uds-agent"
+        flow.client_conn.proxy_mode = _unix_mode("10.0.0.42", "trusted-uds-agent")
         # Deliberately NOT calling RequestIdGenerator.request — the
         # premise is that the request-hook was preempted.
 
@@ -236,7 +249,7 @@ class TestErrorHookBridgesToTrace:
 
         flow.error = OSError("simulated: refused by transport_guard")
         from unittest.mock import patch as _patch
-        with _patch("transport_guard.write_event"):
+        with _patch("transport_guard.write_event", autospec=True):
             TransportGuard().error(flow)
 
         # The hook recovered the opt-in from the request header.
@@ -286,7 +299,7 @@ class TestErrorHookBridgesToTrace:
         flow.error = OSError("simulated: server_connect refused")
         flow.response = None
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             TransportGuard().error(flow)
 
         # Must NOT synthesise — that would be dishonest, since mitmproxy
@@ -314,7 +327,7 @@ class TestErrorHookBridgesToTrace:
         flow.response = mitm_http.Response.make(502, b"", {})
         original = dict(flow.response.headers)
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             TransportGuard().error(flow)
 
         assert dict(flow.response.headers) == original
@@ -350,7 +363,7 @@ class TestRequestHookFailsafe:
         flow.response = mitm_http.Response.make(200, b'{"probe_ok":true}', {})
         pre = flow.response
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             addon.request(flow)
 
         # Response untouched.
@@ -363,7 +376,7 @@ class TestRequestHookFailsafe:
         addon = self._addon()
         flow = tflow.tflow()
         flow.request.host = "example.com"
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             addon.request(flow)
         assert flow.response is None
 
@@ -391,7 +404,7 @@ class TestRequestHookFailsafe:
         flow.metadata["agent"] = "test-agent"
         assert flow.response is None
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             addon.request(flow)
 
         # Correlated 5xx synthesised.
@@ -440,7 +453,7 @@ class TestRequestHookFailsafe:
         flow.metadata["test_context"] = {"run": "doctor", "agent": "x", "test": "y"}
         assert "safeyolo_probe" not in flow.metadata
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             addon.request(flow)
 
         # Marker set — flow_recorder's _should_record will now short-
@@ -470,7 +483,7 @@ class TestRequestHookFailsafe:
         # Simulate test_context having accepted a valid X-SafeYolo-Test-Context.
         flow.metadata["test_context"] = {"run": "doctor", "agent": "x", "test": "y"}
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             addon.request(flow)
 
         # Now simulate the response side going through flow_recorder.
@@ -497,8 +510,6 @@ class TestRequestHookFailsafe:
         (probe-marker set by requestheaders is enough), the failsafe
         recovers trace opt-in and trusted agent from the header + UnixMode.
         """
-        from unittest.mock import MagicMock
-
         from mitmproxy.test import tflow
 
         from safeyolo.core.trace import get_store, reset_store_for_tests
@@ -510,11 +521,10 @@ class TestRequestHookFailsafe:
         flow = tflow.tflow()
         flow.request.host = PROBE_HOST
         flow.request.headers[TRACE_REQUEST_HEADER] = "1"
-        flow.client_conn.proxy_mode = MagicMock()
-        flow.client_conn.proxy_mode.agent = "recovered-agent"
+        flow.client_conn.proxy_mode = _unix_mode("10.0.0.42", "recovered-agent")
         # Deliberately no trace / agent / request_id metadata set.
 
-        with patch("transport_guard.write_event"):
+        with patch("transport_guard.write_event", autospec=True):
             addon.request(flow)
 
         # Recovered opt-in + agent + request_id.

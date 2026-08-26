@@ -1,9 +1,24 @@
 """Tests for egress control feature — egress field, 428 responses, expires pruning."""
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+
+from pdp.schemas import DecisionEventBlock, Effect, PolicyDecision
+
+
+def _approval_decision() -> PolicyDecision:
+    return PolicyDecision(
+        event=DecisionEventBlock(
+            event_id="evt-egress-test",
+            policy_hash="test-policy",
+            engine_version="test-engine",
+        ),
+        effect=Effect.REQUIRE_APPROVAL,
+        reason="egress prompt",
+        reason_codes=["REQUIRE_APPROVAL"],
+    )
 
 # =========================================================================
 # Policy compiler — egress field
@@ -157,20 +172,14 @@ class TestNetworkGuardEgressApproval:
 
     def test_require_approval_blocks_with_428(self, network_guard, make_flow):
         """REQUIRE_APPROVAL from PDP triggers 428 block."""
-        from pdp.schemas import Effect
-
         flow = make_flow("http://unknown-host.com/api")
-
-        mock_decision = MagicMock()
-        mock_decision.effect = Effect.REQUIRE_APPROVAL
-        mock_decision.reason = "egress prompt"
-        mock_decision.budget = None
+        decision = _approval_decision()
 
         with (
-            patch("network_guard.get_policy_client") as mock_client,
-            patch("safeyolo.core.base.write_event"),
+            patch("network_guard.get_policy_client", autospec=True,) as mock_client,
+            patch("safeyolo.core.base.write_event", autospec=True,),
         ):
-            mock_client.return_value.evaluate.return_value = mock_decision
+            mock_client.return_value.evaluate.return_value = decision
             network_guard.request(flow)
 
         assert flow.response is not None
@@ -179,20 +188,14 @@ class TestNetworkGuardEgressApproval:
 
     def test_require_approval_emits_approval_event(self, network_guard, make_flow):
         """REQUIRE_APPROVAL emits an audit event with approval metadata."""
-        from pdp.schemas import Effect
-
         flow = make_flow("http://unknown-host.com/api")
-
-        mock_decision = MagicMock()
-        mock_decision.effect = Effect.REQUIRE_APPROVAL
-        mock_decision.reason = "egress prompt"
-        mock_decision.budget = None
+        decision = _approval_decision()
 
         with (
-            patch("network_guard.get_policy_client") as mock_client,
-            patch("safeyolo.core.base.write_event") as mock_write,
+            patch("network_guard.get_policy_client", autospec=True,) as mock_client,
+            patch("safeyolo.core.base.write_event", autospec=True,) as mock_write,
         ):
-            mock_client.return_value.evaluate.return_value = mock_decision
+            mock_client.return_value.evaluate.return_value = decision
             network_guard.request(flow)
 
         # Find the security event

@@ -1,7 +1,14 @@
 """Tests for test_context addon — context header enforcement for target hosts."""
 
 import json
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import create_autospec, patch
+
+from mitmproxy import http
+from mitmproxy.test import tflow
+
+from pdp.client import PolicyClient
+from safeyolo.mitm_addons.service_discovery import ServiceDiscovery
 
 # =============================================================================
 # Unit tests for helper functions
@@ -135,8 +142,8 @@ def _make_mock_flow(
     headers=None,
     content=b"",
 ):
-    """Create a mock flow for test_context tests."""
-    flow = MagicMock()
+    """Create the real mitmproxy flow consumed by TestContext."""
+    flow = tflow.tflow()
     flow.request.method = method
     flow.request.host = host
     flow.request.path = path
@@ -144,14 +151,16 @@ def _make_mock_flow(
     flow.request.scheme = "https"
     flow.request.url = f"https://{host}{path}"
     flow.request.content = content
-    flow.request.headers = {}
+    flow.request.headers.clear()
     if headers:
         flow.request.headers.update(headers)
-    flow.request.query = None
     flow.client_conn.peername = ("192.168.1.1", 12345)
-    flow.metadata = {}
     flow.response = None
     return flow
+
+
+def _policy_client() -> PolicyClient:
+    return create_autospec(PolicyClient, instance=True, spec_set=True)
 
 
 def _make_addon_with_targets(targets=None, block=True):
@@ -188,7 +197,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets(["target.example.com"])
         flow = _make_mock_flow(host="api.openai.com", path="/v1/chat")
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow)
 
         assert flow.response is None
@@ -208,8 +217,8 @@ class TestTestContextAddon:
         flow.metadata["agent"] = "codey"
 
         with (
-            patch.object(addon, "_maybe_reload_config"),
-            patch("test_context.write_event"),
+            patch.object(addon, "_maybe_reload_config", autospec=True,),
+            patch("test_context.write_event", autospec=True,),
         ):
             addon.request(flow)
 
@@ -229,8 +238,8 @@ class TestTestContextAddon:
         )
 
         with (
-            patch.object(addon, "_maybe_reload_config"),
-            patch("test_context.write_event"),
+            patch.object(addon, "_maybe_reload_config", autospec=True,),
+            patch("test_context.write_event", autospec=True,),
         ):
             addon.request(flow)
 
@@ -245,7 +254,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow()
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow)
 
         assert flow.response is not None
@@ -264,7 +273,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "garbage-no-equals"})
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow)
 
         assert flow.response is not None
@@ -277,7 +286,7 @@ class TestTestContextAddon:
         # Missing 'agent' key
         flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "run=sec1;test=IDOR-003"})
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow)
 
         assert flow.response is not None
@@ -290,8 +299,8 @@ class TestTestContextAddon:
             headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
         )
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event"):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,):
             addon.request(flow)
 
         assert flow.response is None
@@ -310,8 +319,8 @@ class TestTestContextAddon:
             headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
         )
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event"):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,):
             addon.request(flow)
 
         assert "X-SafeYolo-Test-Context" not in flow.request.headers
@@ -331,8 +340,8 @@ class TestTestContextAddon:
         )
         flow.metadata["agent"] = "trusted"
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event") as mock_write:
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,) as mock_write:
             addon.request(flow)
 
         assert flow.metadata["agent"] == "trusted"
@@ -362,8 +371,8 @@ class TestTestContextAddon:
             headers={"X-SafeYolo-Test-Context": "run=sec1;agent=cody"}
         )
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event"):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,):
             addon.request(matching)
             addon.request(unattributed)
 
@@ -376,7 +385,7 @@ class TestTestContextAddon:
         flow = _make_mock_flow()
 
         # should_block returns False in warn mode
-        with patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block"):
+        with patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block", autospec=True,):
             addon.request(flow)
 
         assert flow.response is None
@@ -388,7 +397,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets(targets=[])
         flow = _make_mock_flow()
 
-        with patch.object(addon, "_maybe_reload_config"):
+        with patch.object(addon, "_maybe_reload_config", autospec=True,):
             addon.request(flow)
 
         assert flow.response is None
@@ -405,8 +414,8 @@ class TestTestContextAddon:
         flow.metadata["agent"] = "codey"
 
         with (
-            patch.object(addon, "_maybe_reload_config"),
-            patch("test_context.write_event"),
+            patch.object(addon, "_maybe_reload_config", autospec=True,),
+            patch("test_context.write_event", autospec=True,),
         ):
             addon.request(flow)
 
@@ -419,9 +428,9 @@ class TestTestContextAddon:
         """Flow already blocked by another addon is skipped."""
         addon = _make_addon_with_targets()
         flow = _make_mock_flow()
-        flow.response = MagicMock()  # Already has a response
+        flow.response = http.Response.make(200)  # Already has a response
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow)
 
         assert addon.stats.checks == 0
@@ -431,7 +440,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets(["*.example.com"])
         flow = _make_mock_flow(host="target.example.com")
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow)
 
         # Should be treated as target host (blocked for missing header)
@@ -453,16 +462,14 @@ class TestTestContextAddon:
         flow.metadata["agent"] = "resolved-agent"
 
         # Simulate request phase
-        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event"):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,):
             addon.request(flow)
 
         # Simulate response
-        flow.response = MagicMock()
-        flow.response.status_code = 200
-        flow.response.content = b'{"data": "test"}'
+        flow.response = http.Response.make(200, b'{"data": "test"}')
 
-        with patch("test_context.write_event") as mock_write:
+        with patch("test_context.write_event", autospec=True,) as mock_write:
             addon.response(flow)
 
         mock_write.assert_called_once()
@@ -478,11 +485,9 @@ class TestTestContextAddon:
         """Response phase is a no-op if request didn't set context."""
         addon = _make_addon_with_targets()
         flow = _make_mock_flow()
-        flow.response = MagicMock()
-        flow.response.status_code = 200
-        flow.response.content = b"ok"
+        flow.response = http.Response.make(200, b"ok")
 
-        with patch("test_context.write_event") as mock_write:
+        with patch("test_context.write_event", autospec=True,) as mock_write:
             addon.response(flow)
 
         mock_write.assert_not_called()
@@ -497,8 +502,8 @@ class TestTestContextAddon:
             content=b'{"title": "test"}',
         )
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event") as mock_write:
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,) as mock_write:
             addon.request(flow)
 
         mock_write.assert_called_once()
@@ -518,7 +523,7 @@ class TestTestContextAddon:
         addon = TestContext()
         assert addon._target_hosts == []
 
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "new-hash",
             "addons": {
@@ -528,8 +533,8 @@ class TestTestContextAddon:
             },
         }
 
-        with patch("pdp.get_policy_client", return_value=mock_client), \
-             patch("pdp.is_policy_client_configured", return_value=True):
+        with patch("pdp.get_policy_client", return_value=mock_client, autospec=True,), \
+             patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             addon._maybe_reload_config()
 
         assert addon._target_hosts == ["target1.example.com", "target2.example.com"]
@@ -540,7 +545,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets(["original.example.com"])
         addon._last_policy_hash = "same-hash"
 
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "same-hash",
             "addons": {
@@ -550,8 +555,8 @@ class TestTestContextAddon:
             },
         }
 
-        with patch("pdp.get_policy_client", return_value=mock_client), \
-             patch("pdp.is_policy_client_configured", return_value=True):
+        with patch("pdp.get_policy_client", return_value=mock_client, autospec=True,), \
+             patch("pdp.is_policy_client_configured", return_value=True, autospec=True,):
             addon._maybe_reload_config()
 
         # Should still have original targets
@@ -565,7 +570,7 @@ class TestTestContextAddon:
         addon.stats.blocked = 2
         addon.stats.warned = 1
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             stats = addon.get_stats()
 
         assert stats["target_hosts"] == 2
@@ -584,7 +589,7 @@ class TestTestContextAddon:
         flow1 = _make_mock_flow(host="other-target.example.com")
         flow2 = _make_mock_flow(host="not-a-target.example.com")
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow1)
             addon.request(flow2)
 
@@ -606,16 +611,14 @@ class TestTestContextAddon:
         # Simulate request_id addon having run first.
         flow.metadata["start_time"] = 1000.0
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event"):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,):
             addon.request(flow)
 
-        flow.response = MagicMock()
-        flow.response.status_code = 200
-        flow.response.content = b"ok"
+        flow.response = http.Response.make(200, b"ok")
 
-        with patch("test_context.write_event") as mock_write, \
-             patch("test_context.time") as mock_time:
+        with patch("test_context.write_event", autospec=True,) as mock_write, \
+             patch("test_context.time", autospec=True,) as mock_time:
             mock_time.time.return_value = 1000.250  # 250ms later
             addon.response(flow)
 
@@ -726,7 +729,7 @@ class TestTestContextBlockBody:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "not;valid;pairs"})
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -737,7 +740,7 @@ class TestTestContextBlockBody:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow()
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -748,7 +751,7 @@ class TestTestContextBlockBody:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow()
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -767,7 +770,7 @@ class TestTestContextCounters:
 
         # Missing header -> blocked, but checks still counts
         flow1 = _make_mock_flow()
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow1)
         assert addon.stats.checks == 1
 
@@ -775,8 +778,8 @@ class TestTestContextCounters:
         flow2 = _make_mock_flow(
             headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor"}
         )
-        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event"):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,):
             addon.request(flow2)
         assert addon.stats.checks == 2
 
@@ -785,7 +788,7 @@ class TestTestContextCounters:
         addon = _make_addon_with_targets(["target.example.com"])
         flow = _make_mock_flow(host="other.example.com")
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,):
             addon.request(flow)
 
         assert addon.stats.checks == 0
@@ -801,7 +804,7 @@ class TestTestContextConfigReload:
         addon = TestContext()
         addon._target_hosts = ["original.example.com"]
 
-        with patch("pdp.is_policy_client_configured", return_value=False):
+        with patch("pdp.is_policy_client_configured", return_value=False, autospec=True,):
             addon._maybe_reload_config()
 
         # Target hosts unchanged
@@ -814,11 +817,11 @@ class TestTestContextConfigReload:
         addon = TestContext()
         addon._target_hosts = ["original.example.com"]
 
-        mock_client = MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.side_effect = ConnectionError("timeout")
-        with patch("pdp.get_policy_client", return_value=mock_client), \
-             patch("pdp.is_policy_client_configured", return_value=True), \
-             patch("test_context.log") as mock_log:
+        with patch("pdp.get_policy_client", return_value=mock_client, autospec=True,), \
+             patch("pdp.is_policy_client_configured", return_value=True, autospec=True,), \
+             patch("test_context.log", autospec=True,) as mock_log:
             addon._maybe_reload_config()
 
         # Target hosts unchanged
@@ -837,7 +840,7 @@ class TestTestContextWarnMode:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "garbage-no-equals"})
 
-        with patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block"):
+        with patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block", autospec=True,):
             addon.request(flow)
 
         assert flow.response is None
@@ -858,10 +861,9 @@ def _mock_discovery(agent="pickup"):
     master left behind by another test (the module singleton is not consulted
     when a master is present).
     """
-    sd = MagicMock()
+    sd = create_autospec(ServiceDiscovery, instance=True, spec_set=True)
     sd.get_client_for_ip.return_value = agent
-    master = MagicMock()
-    master.addons.get.return_value = sd
+    master = SimpleNamespace(addons=SimpleNamespace(get=lambda name: sd))
     return patch("mitmproxy.ctx.master", master, create=True)
 
 
@@ -919,13 +921,13 @@ class TestDeclarationStore:
 
     def test_expiry_uses_monotonic(self):
         addon = _make_addon_with_targets()
-        with patch("test_context.time.monotonic", return_value=1000.0):
+        with patch("test_context.time.monotonic", return_value=1000.0, autospec=True,):
             addon.set_declaration("s", "pickup", {"run": "r", "agent": "pickup"}, 60)
         # Before expiry
-        with patch("test_context.time.monotonic", return_value=1059.0):
+        with patch("test_context.time.monotonic", return_value=1059.0, autospec=True,):
             assert addon.get_declaration("s", "pickup") is not None
         # At/after expiry -> None and removed
-        with patch("test_context.time.monotonic", return_value=1060.0):
+        with patch("test_context.time.monotonic", return_value=1060.0, autospec=True,):
             assert addon.get_declaration("s", "pickup") is None
         assert "s" not in addon._declarations
 
@@ -952,10 +954,10 @@ class TestDeclarationStore:
 
     def test_active_count_evicts_expired(self):
         addon = _make_addon_with_targets()
-        with patch("test_context.time.monotonic", return_value=100.0):
+        with patch("test_context.time.monotonic", return_value=100.0, autospec=True,):
             addon.set_declaration("live", "pickup", {"run": "r", "agent": "pickup"}, 60)
             addon.set_declaration("dead", "pickup", {"run": "r", "agent": "pickup"}, 10)
-        with patch("test_context.time.monotonic", return_value=140.0):
+        with patch("test_context.time.monotonic", return_value=140.0, autospec=True,):
             assert addon._declared_active_count() == 1
         assert "dead" not in addon._declarations
 
@@ -965,31 +967,31 @@ class TestDeclaredConfig:
 
     def test_inject_enabled_from_config(self):
         addon = _make_addon_with_targets()
-        with patch("safeyolo.core.config_cache.addon_section", return_value={"inject_declared": True}):
+        with patch("safeyolo.core.config_cache.addon_section", return_value={"inject_declared": True}, autospec=True,):
             assert addon._inject_declared_enabled() is True
 
     def test_inject_invalid_config_falls_back_to_option(self):
         addon = _make_addon_with_targets()
-        with patch("safeyolo.core.config_cache.addon_section", return_value={"inject_declared": "yes"}), \
-             patch("test_context.get_option_safe", return_value=False):
+        with patch("safeyolo.core.config_cache.addon_section", return_value={"inject_declared": "yes"}, autospec=True,), \
+             patch("test_context.get_option_safe", return_value=False, autospec=True,):
             assert addon._inject_declared_enabled() is False
 
     def test_inject_default_option_false(self):
         addon = _make_addon_with_targets()
-        with patch("safeyolo.core.config_cache.addon_section", return_value={}):
+        with patch("safeyolo.core.config_cache.addon_section", return_value={}, autospec=True,):
             # Option unavailable -> default False
             assert addon._inject_declared_enabled() is False
 
     def test_ttl_max_from_config(self):
         addon = _make_addon_with_targets()
-        with patch("safeyolo.core.config_cache.addon_section", return_value={"declared_ttl_max": 300}):
+        with patch("safeyolo.core.config_cache.addon_section", return_value={"declared_ttl_max": 300}, autospec=True,):
             assert addon._declared_ttl_max() == 300
 
     def test_ttl_max_invalid_config_falls_back(self):
         addon = _make_addon_with_targets()
         for bad in ({"declared_ttl_max": 0}, {"declared_ttl_max": -1}, {"declared_ttl_max": True}, {"declared_ttl_max": "60"}):
-            with patch("safeyolo.core.config_cache.addon_section", return_value=bad), \
-                 patch("test_context.get_option_safe", return_value=900):
+            with patch("safeyolo.core.config_cache.addon_section", return_value=bad, autospec=True,), \
+                 patch("test_context.get_option_safe", return_value=900, autospec=True,):
                 assert addon._declared_ttl_max() == 900
 
 
@@ -999,12 +1001,12 @@ class TestDeclaredInjection:
     def _run(self, addon, flow, *, enabled=True, block=True):
         side = (lambda name, default=True: name != "test_context_block") if not block else None
         basepatch = (
-            patch("safeyolo.core.base.get_option_safe", side_effect=side)
-            if side else patch("safeyolo.core.base.get_option_safe", return_value=True)
+            patch("safeyolo.core.base.get_option_safe", side_effect=side, autospec=True,)
+            if side else patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,)
         )
         with _mock_discovery("pickup"), \
-             patch.object(addon, "_inject_declared_enabled", return_value=enabled), \
-             patch("test_context.write_event"), \
+             patch.object(addon, "_inject_declared_enabled", return_value=enabled, autospec=True,), \
+             patch("test_context.write_event", autospec=True,), \
              basepatch:
             addon.request(flow)
 
@@ -1039,10 +1041,10 @@ class TestDeclaredInjection:
 
     def test_missing_header_expired_declaration_blocks(self):
         addon = _make_addon_with_targets()
-        with patch("test_context.time.monotonic", return_value=1000.0):
+        with patch("test_context.time.monotonic", return_value=1000.0, autospec=True,):
             addon.set_declaration("192.168.1.1", "pickup", {"run": "r", "agent": "pickup"}, 30)
         flow = _make_mock_flow()
-        with patch("test_context.time.monotonic", return_value=2000.0):
+        with patch("test_context.time.monotonic", return_value=2000.0, autospec=True,):
             self._run(addon, flow)
         assert flow.response.status_code == 428
 
@@ -1091,8 +1093,8 @@ class TestDeclaredInjection:
         addon.set_declaration("192.168.1.1", "pickup", {"run": "r", "agent": "pickup"}, 120)
         flow = _make_mock_flow(host="ordinary.example.com")
         # Injection must not be consulted for a non-target host.
-        with patch.object(addon, "_trusted_agent", side_effect=AssertionError("must not resolve")), \
-             patch.object(addon, "_inject_declared_enabled", return_value=True):
+        with patch.object(addon, "_trusted_agent", side_effect=AssertionError("must not resolve"), autospec=True,), \
+             patch.object(addon, "_inject_declared_enabled", return_value=True, autospec=True,):
             addon.request(flow)
         assert flow.response is None
         assert "test_context" not in flow.metadata
@@ -1102,16 +1104,14 @@ class TestProvenanceAuditContract:
     """test_context_source must appear in BOTH request and response events."""
 
     def _set_response(self, flow):
-        flow.response = MagicMock()
-        flow.response.status_code = 200
-        flow.response.content = b'{"ok": true}'
+        flow.response = http.Response.make(200, b'{"ok": true}')
         return flow
 
     def test_header_source_in_request_and_response_events(self):
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor"})
-        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event") as we:
+        with patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,) as we:
             addon.request(flow)          # flow.response is None here
             self._set_response(flow)     # backend responded
             addon.response(flow)
@@ -1125,9 +1125,9 @@ class TestProvenanceAuditContract:
         addon.set_declaration("192.168.1.1", "pickup", {"run": "r", "agent": "pickup"}, 120)
         flow = _make_mock_flow()
         with _mock_discovery("pickup"), \
-             patch.object(addon, "_inject_declared_enabled", return_value=True), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event") as we:
+             patch.object(addon, "_inject_declared_enabled", return_value=True, autospec=True,), \
+             patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,) as we:
             addon.request(flow)          # flow.response is None here
             self._set_response(flow)     # backend responded
             addon.response(flow)
@@ -1145,7 +1145,7 @@ class TestTrustedAgentResolution:
         flow = _make_mock_flow()
         # No running master and no singleton -> unresolved (deterministic).
         with patch("mitmproxy.ctx.master", None, create=True), \
-             patch("service_discovery.get_service_discovery", return_value=None):
+             patch("service_discovery.get_service_discovery", return_value=None, autospec=True,):
             assert addon._trusted_agent(flow) is None
 
     def test_unknown_and_default_rejected(self):
@@ -1170,7 +1170,7 @@ class TestTrustedAgentResolution:
             assert addon._trusted_agent(flow) == "pickup"
         assert flow.metadata["agent"] == "pickup"
 
-    def test_conflicting_prestamped_metadata_fails_no_overwrite(self):
+    def test_conflicting_prestamped_metadata_is_quarantined(self):
         """Security-relevant: a pre-stamped agent that conflicts with the
         resolved trusted agent must fail rather than be silently overwritten."""
         addon = _make_addon_with_targets()
@@ -1178,8 +1178,9 @@ class TestTrustedAgentResolution:
         flow.metadata["agent"] = "attacker"
         with _mock_discovery("pickup"):
             assert addon._trusted_agent(flow) is None
-        # Must NOT overwrite the conflicting stamp.
-        assert flow.metadata["agent"] == "attacker"
+        # A conflicting untrusted value must not remain canonical metadata.
+        assert "agent" not in flow.metadata
+        assert flow.metadata["agent_identity_status"] == "conflict"
 
 
 class TestEmptyHeaderNoDeclaration:
@@ -1189,9 +1190,9 @@ class TestEmptyHeaderNoDeclaration:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": ""})
         with _mock_discovery("pickup"), \
-             patch.object(addon, "_inject_declared_enabled", return_value=True), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event"):
+             patch.object(addon, "_inject_declared_enabled", return_value=True, autospec=True,), \
+             patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,):
             addon.request(flow)
         assert flow.response.status_code == 428
         assert "X-SafeYolo-Test-Context" not in flow.request.headers
@@ -1201,9 +1202,9 @@ class TestEmptyHeaderNoDeclaration:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": ""})
         with _mock_discovery("pickup"), \
-             patch.object(addon, "_inject_declared_enabled", return_value=True), \
-             patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block"), \
-             patch("test_context.write_event"):
+             patch.object(addon, "_inject_declared_enabled", return_value=True, autospec=True,), \
+             patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block", autospec=True,), \
+             patch("test_context.write_event", autospec=True,):
             addon.request(flow)
         assert flow.response is None
         assert "X-SafeYolo-Test-Context" not in flow.request.headers
@@ -1226,8 +1227,8 @@ class TestLegacyHeaderNameNotAccepted:
         flow = _make_mock_flow(headers={"X-Test-Context": "run=r1;agent=pickup"})
 
         with _mock_discovery("pickup"), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event"):
+             patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,):
             addon.request(flow)
 
         # Block mode + no valid new header + no declaration → 428.
@@ -1251,8 +1252,8 @@ class TestLegacyHeaderNameNotAccepted:
         )
 
         with _mock_discovery("pickup"), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event"):
+             patch("safeyolo.core.base.get_option_safe", return_value=True, autospec=True,), \
+             patch("test_context.write_event", autospec=True,):
             addon.request(flow)
 
         assert flow.response is None
@@ -1266,13 +1267,13 @@ class TestDeclarationReplacementRace:
     def test_replacement_not_evicted_by_stale_expiry(self):
         addon = _make_addon_with_targets()
         # Original short-lived declaration.
-        with patch("test_context.time.monotonic", return_value=1000.0):
+        with patch("test_context.time.monotonic", return_value=1000.0, autospec=True,):
             addon.set_declaration("s", "pickup", {"run": "old", "agent": "pickup"}, 10)  # exp 1010
         # Replaced with a fresh, longer one before the original would expire.
-        with patch("test_context.time.monotonic", return_value=1005.0):
+        with patch("test_context.time.monotonic", return_value=1005.0, autospec=True,):
             addon.set_declaration("s", "pickup", {"run": "new", "agent": "pickup"}, 100)  # exp 1105
         # A read past the ORIGINAL expiry must see the fresh record, not evict it.
-        with patch("test_context.time.monotonic", return_value=1050.0):
+        with patch("test_context.time.monotonic", return_value=1050.0, autospec=True,):
             rec = addon.get_declaration("s", "pickup")
         assert rec is not None
         assert rec[0]["run"] == "new"
@@ -1284,18 +1285,18 @@ class TestConfigFallbackHonorsOption:
 
     def test_option_enables_injection_when_config_key_absent(self):
         addon = _make_addon_with_targets()
-        with patch("safeyolo.core.config_cache.addon_section", return_value={}), \
-             patch("test_context.get_option_safe", return_value=True):
+        with patch("safeyolo.core.config_cache.addon_section", return_value={}, autospec=True,), \
+             patch("test_context.get_option_safe", return_value=True, autospec=True,):
             assert addon._inject_declared_enabled() is True
 
     def test_non_default_option_ttl_honored_when_config_key_absent(self):
         addon = _make_addon_with_targets()
-        with patch("safeyolo.core.config_cache.addon_section", return_value={}), \
-             patch("test_context.get_option_safe", return_value=300):
+        with patch("safeyolo.core.config_cache.addon_section", return_value={}, autospec=True,), \
+             patch("test_context.get_option_safe", return_value=300, autospec=True,):
             assert addon._declared_ttl_max() == 300
         # And that ceiling is actually applied to an over-max request.
-        with patch("safeyolo.core.config_cache.addon_section", return_value={}), \
-             patch("test_context.get_option_safe", return_value=300):
+        with patch("safeyolo.core.config_cache.addon_section", return_value={}, autospec=True,), \
+             patch("test_context.get_option_safe", return_value=300, autospec=True,):
             assert addon.set_declaration("s", "pickup", {"run": "r", "agent": "pickup"}, 9999) == 300
 
 # The registry-vs-singleton resolution mechanics now live in the inherited

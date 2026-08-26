@@ -20,6 +20,7 @@ from safeyolo.core.trace import (
     get_store,
     reset_store_for_tests,
 )
+from safeyolo.proxy_modes.unix_listener import UnixMode
 
 
 class _TestAddon(SecurityAddon):
@@ -35,6 +36,9 @@ def fresh_store():
 
 def _traced_flow(request_id="req-aabbccdd11223344aabbccdd11223344", agent="agent-1"):
     flow = tflow.tflow()
+    flow.client_conn.proxy_mode = UnixMode.parse(
+        f"unix:/tmp/10.0.0.5_{agent}/proxy.sock"
+    )
     flow.metadata["trace"] = True
     flow.metadata["request_id"] = request_id
     flow.metadata["agent"] = agent
@@ -78,7 +82,7 @@ class TestIsBypassedTrace:
         flow = _traced_flow()
 
         mock_client = type("MockClient", (), {"is_addon_enabled": staticmethod(lambda *_a, **_kw: False)})
-        with patch("safeyolo.core.base.get_policy_client", return_value=mock_client):
+        with patch("safeyolo.core.base.get_policy_client", return_value=mock_client, autospec=True,):
             assert addon.is_bypassed(flow) is True
 
         rec = fresh_store.get(flow.metadata["request_id"], "agent-1")

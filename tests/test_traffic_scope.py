@@ -112,7 +112,7 @@ def test_filter_editor_exposes_only_user_owned_filter():
     options = FakeOptions()
     with (
         patch("traffic_scope.ctx", SimpleNamespace(options=options)),
-        patch("traffic_scope.console_signals.status_prompt_command.send") as prompt,
+        patch("traffic_scope.console_signals.status_prompt_command.send", autospec=True,) as prompt,
     ):
         addon.set_scope(agent="codey")
         addon.set_user_filter("~b base_instruction")
@@ -227,7 +227,7 @@ def test_test_chooser_has_context_count_and_recency_and_clear_retains_agent():
     )
     with (
         patch("traffic_scope.ctx", SimpleNamespace(options=options, master=master)),
-        patch("traffic_scope.time.time", return_value=1000),
+        patch("traffic_scope.time.time", return_value=1000, autospec=True,),
     ):
         addon.set_scope(agent="alice")
         choices = addon.test_options()
@@ -255,7 +255,7 @@ def test_test_chooser_reports_empty_agent_scope_without_opening_modal():
     )
     with (
         patch("traffic_scope.ctx", SimpleNamespace(options=options, master=master)),
-        patch("traffic_scope.console_signals.status_message.send") as status,
+        patch("traffic_scope.console_signals.status_message.send", autospec=True,) as status,
     ):
         addon.set_scope(agent="claude")
         addon.choose_test()

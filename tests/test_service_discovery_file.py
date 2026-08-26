@@ -9,8 +9,13 @@ import json
 import time
 from pathlib import Path
 from threading import Thread
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import pytest
+from mitmproxy.test import tflow
+
+pytestmark = pytest.mark.assurance_boundary
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -24,6 +29,12 @@ def _make_discovery():
 def _write_map(path: Path, data: dict) -> None:
     """Write agent map JSON to disk."""
     path.write_text(json.dumps(data))
+
+
+def _flow(client_ip: str = "10.0.0.1"):
+    flow = tflow.tflow()
+    flow.client_conn.peername = (client_ip, 12345)
+    return flow
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +133,7 @@ class TestReloadMap:
         assert d._ip_to_name == {"10.0.0.2": "bob"}
         assert "alice" not in d._ip_to_name
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_reload_keeps_previous_state_on_invalid_json(self, mock_event, tmp_path):
         """Malformed JSON -> logs warning, keeps previous map."""
         d = _make_discovery()
@@ -145,7 +156,7 @@ class TestReloadMap:
         # Mtime was NOT updated (so next reload will re-attempt)
         assert d._map_mtime == old_mtime
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_reload_keeps_previous_state_on_read_os_error(self, mock_event, tmp_path):
         """OSError during file read -> keeps previous map."""
         d = _make_discovery()
@@ -159,14 +170,14 @@ class TestReloadMap:
         # then make read_text fail
         time.sleep(0.05)
         _write_map(map_file, {"bob": {"ip": "10.0.0.2"}})
-        with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+        with patch.object(Path, "read_text", autospec=True, side_effect=OSError("permission denied")):
             d._reload_map()
 
         # Previous state preserved, mtime not updated
         assert d._ip_to_name == {"10.0.0.1": "alice"}
         assert d._map_mtime == old_mtime
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_reload_returns_early_on_stat_race(self, mock_event, tmp_path):
         """File disappears between exists() and stat() -> keeps previous map."""
         d = _make_discovery()
@@ -196,7 +207,7 @@ class TestReloadMap:
 
         assert d._ip_to_name == {"10.0.0.1": "alice"}
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_reload_logs_newly_discovered_agents(self, mock_event, tmp_path):
         """write_event called for each newly discovered agent, not for existing ones."""
         d = _make_discovery()
@@ -225,7 +236,7 @@ class TestReloadMap:
         call_kwargs = mock_event.call_args[1]
         assert call_kwargs["agent"] == "bob"
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_reload_empty_map_clears_state(self, mock_event, tmp_path):
         """Loading an empty map file clears agent_map and reverse index."""
         d = _make_discovery()
@@ -249,7 +260,7 @@ class TestReloadMap:
 class TestGetClientForIp:
     """Tests for get_client_for_ip() — reverse IP lookup."""
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_known_ip_returns_agent_name(self, mock_event, tmp_path):
         """IP in map returns the correct agent name."""
         d = _make_discovery()
@@ -277,7 +288,7 @@ class TestGetClientForIp:
         result = d.get_client_for_ip("10.0.0.1")
         assert result == "unknown"
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_triggers_reload_on_each_call(self, mock_event, tmp_path):
         """get_client_for_ip calls _reload_map to check for file changes."""
         d = _make_discovery()
@@ -295,7 +306,7 @@ class TestGetClientForIp:
         # Second call picks up the change
         assert d.get_client_for_ip("10.0.0.1") == "bob"
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_thread_safe_concurrent_lookups(self, mock_event, tmp_path):
         """Concurrent reads from multiple threads don't corrupt state."""
         d = _make_discovery()
@@ -330,7 +341,7 @@ class TestGetClientForIp:
 class TestRequest:
     """Tests for request() hook — flow metadata stamping."""
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_stamps_agent_on_flow_metadata(self, mock_event, tmp_path):
         """Known agent IP -> flow.metadata['agent'] = agent name."""
         d = _make_discovery()
@@ -338,43 +349,37 @@ class TestRequest:
         _write_map(map_file, {"alice": {"ip": "10.0.0.1"}})
         d._map_path = str(map_file)
 
-        flow = Mock()
-        flow.client_conn.peername = ("10.0.0.1", 12345)
-        flow.metadata = {}
-
-        with patch("service_discovery.get_client_ip", return_value="10.0.0.1"):
-            d.request(flow)
+        flow = _flow("10.0.0.1")
+        d.request(flow)
 
         assert flow.metadata["agent"] == "alice"
 
-    @patch("service_discovery.write_event")
-    def test_stamps_unknown_for_unmapped_ip(self, mock_event, tmp_path):
-        """Unmapped IP -> flow.metadata['agent'] = 'unknown'."""
+    @patch("service_discovery.write_event", autospec=True)
+    def test_marks_identity_unavailable_for_unmapped_ip(self, mock_event, tmp_path):
+        """An unmapped IP must not become a canonical pseudo-identity."""
         d = _make_discovery()
         map_file = tmp_path / "agent_map.json"
         _write_map(map_file, {"alice": {"ip": "10.0.0.1"}})
         d._map_path = str(map_file)
 
-        flow = Mock()
-        flow.metadata = {}
-
-        with patch("service_discovery.get_client_ip", return_value="99.99.99.99"):
-            d.request(flow)
-
-        assert flow.metadata["agent"] == "unknown"
-
-    def test_skips_when_client_ip_is_unknown(self):
-        """get_client_ip returns 'unknown' -> no metadata stamp at all."""
-        d = _make_discovery()
-        flow = Mock()
-        flow.metadata = {}
-
-        with patch("service_discovery.get_client_ip", return_value="unknown"):
-            d.request(flow)
+        flow = _flow("99.99.99.99")
+        d.request(flow)
 
         assert "agent" not in flow.metadata
+        assert flow.metadata["agent_identity_status"] == "unavailable"
 
-    @patch("service_discovery.write_event")
+    def test_marks_identity_unavailable_when_peername_is_missing(self):
+        """A flow without a source address has no trusted identity."""
+        d = _make_discovery()
+        flow = _flow()
+        flow.client_conn.peername = None
+
+        d.request(flow)
+
+        assert "agent" not in flow.metadata
+        assert flow.metadata["agent_identity_status"] == "unavailable"
+
+    @patch("service_discovery.write_event", autospec=True)
     def test_updates_last_seen_for_known_agent(self, mock_event, tmp_path):
         """Known agent's _last_seen is updated on request()."""
         d = _make_discovery()
@@ -382,18 +387,16 @@ class TestRequest:
         _write_map(map_file, {"alice": {"ip": "10.0.0.1"}})
         d._map_path = str(map_file)
 
-        flow = Mock()
-        flow.metadata = {}
+        flow = _flow("10.0.0.1")
 
         before = time.time()
-        with patch("service_discovery.get_client_ip", return_value="10.0.0.1"):
-            d.request(flow)
+        d.request(flow)
         after = time.time()
 
         assert "alice" in d._last_seen
         assert before <= d._last_seen["alice"] <= after
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_no_last_seen_for_unknown_agent(self, mock_event, tmp_path):
         """'unknown' agent does not get a _last_seen entry."""
         d = _make_discovery()
@@ -401,16 +404,13 @@ class TestRequest:
         _write_map(map_file, {"alice": {"ip": "10.0.0.1"}})
         d._map_path = str(map_file)
 
-        flow = Mock()
-        flow.metadata = {}
-
-        with patch("service_discovery.get_client_ip", return_value="99.99.99.99"):
-            d.request(flow)
+        flow = _flow("99.99.99.99")
+        d.request(flow)
 
         assert "unknown" not in d._last_seen
         assert len(d._last_seen) == 0
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_last_seen_advances_on_subsequent_request(self, mock_event, tmp_path):
         """Second request from same agent updates _last_seen to a later time."""
         d = _make_discovery()
@@ -418,18 +418,15 @@ class TestRequest:
         _write_map(map_file, {"alice": {"ip": "10.0.0.1"}})
         d._map_path = str(map_file)
 
-        with patch("service_discovery.get_client_ip", return_value="10.0.0.1"):
-            flow1 = Mock()
-            flow1.metadata = {}
-            d.request(flow1)
-            ts1 = d._last_seen["alice"]
+        flow1 = _flow("10.0.0.1")
+        d.request(flow1)
+        ts1 = d._last_seen["alice"]
 
-            time.sleep(0.01)
+        time.sleep(0.01)
 
-            flow2 = Mock()
-            flow2.metadata = {}
-            d.request(flow2)
-            ts2 = d._last_seen["alice"]
+        flow2 = _flow("10.0.0.1")
+        d.request(flow2)
+        ts2 = d._last_seen["alice"]
 
         assert ts2 > ts1
 
@@ -447,7 +444,7 @@ class TestGetAgents:
         result = d.get_agents()
         assert result == {"agents": {}, "count": 0}
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_returns_agents_from_map_with_ip(self, mock_event, tmp_path):
         """Agents from map file are returned with their IP."""
         d = _make_discovery()
@@ -464,7 +461,7 @@ class TestGetAgents:
         assert result["agents"]["alice"]["ip"] == "10.0.0.1"
         assert result["agents"]["bob"]["ip"] == "10.0.0.2"
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_includes_last_seen_and_idle_for_seen_agents(self, mock_event, tmp_path):
         """After request(), agent entry includes last_seen and idle_seconds."""
         d = _make_discovery()
@@ -472,10 +469,8 @@ class TestGetAgents:
         _write_map(map_file, {"alice": {"ip": "10.0.0.1"}})
         d._map_path = str(map_file)
 
-        flow = Mock()
-        flow.metadata = {}
-        with patch("service_discovery.get_client_ip", return_value="10.0.0.1"):
-            d.request(flow)
+        flow = _flow("10.0.0.1")
+        d.request(flow)
 
         result = d.get_agents()
         agent = result["agents"]["alice"]
@@ -483,7 +478,7 @@ class TestGetAgents:
         assert "idle_seconds" in agent
         assert agent["idle_seconds"] >= 0
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_agent_in_map_but_not_seen_has_no_last_seen(self, mock_event, tmp_path):
         """Agent in map that hasn't sent traffic has ip but no timing fields."""
         d = _make_discovery()
@@ -515,7 +510,7 @@ class TestGetStats:
         assert stats["known_ips"] == 0
         assert stats["agents_seen"] == 0
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_stats_reflect_loaded_agents(self, mock_event, tmp_path):
         """After loading a map, stats reflect the correct counts."""
         d = _make_discovery()
@@ -563,15 +558,16 @@ class TestLoadAndConfigure:
             "default": "",
         }
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_configure_stores_path_and_triggers_reload(self, mock_event, tmp_path):
         """configure() stores the path and calls _reload_map."""
         d = _make_discovery()
         map_file = tmp_path / "agent_map.json"
         _write_map(map_file, {"alice": {"ip": "10.0.0.1"}})
 
-        mock_ctx = Mock()
-        mock_ctx.options.agent_map_file = str(map_file)
+        mock_ctx = SimpleNamespace(
+            options=SimpleNamespace(agent_map_file=str(map_file))
+        )
 
         with patch("service_discovery.ctx", mock_ctx):
             d.configure({"agent_map_file"})
@@ -579,7 +575,7 @@ class TestLoadAndConfigure:
         assert d._map_path == str(map_file)
         assert d._ip_to_name == {"10.0.0.1": "alice"}
 
-    @patch("service_discovery.write_event")
+    @patch("service_discovery.write_event", autospec=True)
     def test_configure_ignores_unrelated_updates(self, mock_event, tmp_path):
         """configure() with unrelated keys does not change map_path."""
         d = _make_discovery()

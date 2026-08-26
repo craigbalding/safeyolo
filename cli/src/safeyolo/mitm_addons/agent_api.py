@@ -33,6 +33,7 @@ from request_id import REQUEST_ID_PATTERN as _REQUEST_ID_PATTERN
 
 from safeyolo.coord.nats_client import NatsUnavailable
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
+from safeyolo.core.identity import resolve_agent_identity
 from safeyolo.core.utils import sanitize_for_log, write_event
 from safeyolo.storage.flow_store import is_text_like_content_type
 from safeyolo.test_context_contract import TestContextError, parse_test_context
@@ -342,7 +343,7 @@ class AgentAPI:
         return None
 
     def _resolve_agent_id(self, flow: http.HTTPFlow) -> str | None:
-        """Resolve calling agent name from the request's source IP.
+        """Resolve the caller through the shared trusted identity boundary.
 
         Used by flow-inspection endpoints to scope results to the
         calling agent — without this, any agent can search/read any
@@ -351,17 +352,10 @@ class AgentAPI:
         Returns agent name string, or None if unresolvable (caller
         should 403).
         """
-        sd = self._find_addon("service-discovery")
-        if not sd:
-            return None
-        from safeyolo.core.utils import get_client_ip
-        client_ip = get_client_ip(flow)
-        agent_name = sd.get_client_for_ip(client_ip)
-        # service_discovery returns "unknown" for an unmapped source; both
-        # "unknown" and "default" are non-identities and must not scope results.
-        if not agent_name or agent_name in ("unknown", "default"):
-            return None
-        return agent_name
+        identity = resolve_agent_identity(
+            flow, self._find_addon("service-discovery")
+        )
+        return identity.agent if identity.is_resolved else None
 
     async def _handle_coord(self, flow: http.HTTPFlow, path: str, method: str):
         """Coord v0 routes: room join/send/read plus long-poll wait.
@@ -817,18 +811,9 @@ class AgentAPI:
         then returns authorized services (with capability, account, host, token) and
         available services (all services with their capabilities).
         """
-        # Resolve caller identity via service_discovery
-        sd = self._find_addon("service-discovery")
-        if not sd:
-            self._respond(flow, 503, {"error": "service-discovery addon not loaded"})
-            return
-
-        from safeyolo.core.utils import get_client_ip
-
-        client_ip = get_client_ip(flow)
-        agent_name = sd.get_client_for_ip(client_ip)
-        if not agent_name or agent_name == "default":
-            self._respond(flow, 403, {"error": "Could not identify agent", "client_ip": client_ip})
+        agent_name = self._resolve_agent_id(flow)
+        if agent_name is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
             return
 
         gw = self._find_addon("service-gateway")
@@ -890,17 +875,9 @@ class AgentAPI:
             self._respond(flow, 400, {"error": "service and capability are required"})
             return
 
-        # Resolve caller identity
-        sd = self._find_addon("service-discovery")
-        if not sd:
-            self._respond(flow, 503, {"error": "service-discovery addon not loaded"})
-            return
-
-        from safeyolo.core.utils import get_client_ip
-
-        client_ip = get_client_ip(flow)
-        agent_name = sd.get_client_for_ip(client_ip)
-        if not agent_name or agent_name == "default":
+        # Resolve caller identity.
+        agent_name = self._resolve_agent_id(flow)
+        if agent_name is None:
             self._respond(flow, 403, {"error": "Could not identify agent"})
             return
 
@@ -1043,17 +1020,9 @@ class AgentAPI:
             self._respond(flow, 400, {"error": "bindings must be a non-empty object"})
             return
 
-        # Resolve caller
-        sd = self._find_addon("service-discovery")
-        if not sd:
-            self._respond(flow, 503, {"error": "service-discovery addon not loaded"})
-            return
-
-        from safeyolo.core.utils import get_client_ip
-
-        client_ip = get_client_ip(flow)
-        agent_name = sd.get_client_for_ip(client_ip)
-        if not agent_name or agent_name == "default":
+        # Resolve caller.
+        agent_name = self._resolve_agent_id(flow)
+        if agent_name is None:
             self._respond(flow, 403, {"error": "Could not identify agent"})
             return
 
@@ -1268,13 +1237,17 @@ class AgentAPI:
         """
         query = flow.request.query
         host = query.get("host", "")
-        agent = flow.metadata.get("agent")  # from service_discovery, not query
+        agent = self._resolve_agent_id(flow)
 
         if not host:
             self._respond(flow, 400, {
                 "error": "Missing 'host' parameter",
                 "usage": "/lookup?host=example.com",
             })
+            return
+
+        if agent is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
             return
 
         client = self._get_policy_client()
@@ -1584,6 +1557,15 @@ class AgentAPI:
             return None
         return recorder.store
 
+    def _scope_flow_filters(self, flow: http.HTTPFlow, filters: dict) -> bool:
+        """Force a flow-store query into the trusted caller's scope."""
+        agent_id = self._resolve_agent_id(flow)
+        if agent_id is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
+            return False
+        filters["agent_id"] = agent_id
+        return True
+
     def _handle_flow_search(self, flow: http.HTTPFlow):
         """GET|POST /api/flows/search - Search flows by filter criteria.
 
@@ -1609,9 +1591,8 @@ class AgentAPI:
                 return
 
         # Scope to calling agent — prevent cross-agent info disclosure.
-        agent_id = self._resolve_agent_id(flow)
-        if agent_id:
-            filters["agent_id"] = agent_id
+        if not self._scope_flow_filters(flow, filters):
+            return
 
         try:
             results = store.search_flows(filters)
@@ -1624,14 +1605,12 @@ class AgentAPI:
                                flow_record: dict) -> bool:
         """Check that a fetched flow belongs to the calling agent.
 
-        Returns True if ownership verified (or if service-discovery is
-        unavailable, in which case we fail-open to avoid breaking
-        single-agent setups without service-discovery).
+        Unresolved callers fail closed because the bearer token is shared and
+        cannot establish which agent owns the requested flow.
         """
         agent_id = self._resolve_agent_id(flow)
         if agent_id is None:
-            # Can't resolve caller — fail-open for backwards compat.
-            return True
+            return False
         record_agent = flow_record.get("agent_id", "")
         return record_agent == agent_id
 
@@ -1708,9 +1687,8 @@ class AgentAPI:
         if body is None:
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
-        agent_id = self._resolve_agent_id(flow)
-        if agent_id:
-            body["agent_id"] = agent_id
+        if not self._scope_flow_filters(flow, body):
+            return
         results = store.get_endpoints(body)
         self._respond(flow, 200, {"endpoints": results, "count": len(results)})
 
@@ -1724,9 +1702,8 @@ class AgentAPI:
         if body is None or not isinstance(body, dict):
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
-        agent_id = self._resolve_agent_id(flow)
-        if agent_id:
-            body["agent_id"] = agent_id
+        if not self._scope_flow_filters(flow, body):
+            return
         try:
             facets = store.get_facets(body)
         except ValueError as exc:
@@ -1750,9 +1727,8 @@ class AgentAPI:
         if not body.get("query"):
             self._respond(flow, 400, {"error": "query required"})
             return
-        agent_id = self._resolve_agent_id(flow)
-        if agent_id:
-            body["agent_id"] = agent_id
+        if not self._scope_flow_filters(flow, body):
+            return
         results = store.search_bodies(body)
         self._respond(flow, 200, {"flows": results, "count": len(results)})
 
@@ -1800,9 +1776,8 @@ class AgentAPI:
         if not body.get("query"):
             self._respond(flow, 400, {"error": "query required"})
             return
-        agent_id = self._resolve_agent_id(flow)
-        if agent_id:
-            body["agent_id"] = agent_id
+        if not self._scope_flow_filters(flow, body):
+            return
         results = store.search_request_bodies(body)
         self._respond(flow, 200, {"flows": results, "count": len(results)})
 

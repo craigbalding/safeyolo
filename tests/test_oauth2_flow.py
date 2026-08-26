@@ -7,7 +7,7 @@ import sys
 import threading
 import urllib.parse
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -135,11 +135,9 @@ class TestOAuth2Flow:
             state = params["state"][0]
             _send_callback_async(f"{redirect_uri}?code=fake-auth-code&state={state}")
 
-        with patch("safeyolo.commands._oauth2_flow.webbrowser.open", side_effect=fake_browser_open):
-            with patch("safeyolo.commands._oauth2_flow.httpx.post") as mock_post:
-                mock_resp = MagicMock()
-                mock_resp.json.return_value = token_response
-                mock_resp.raise_for_status = MagicMock()
+        with patch("safeyolo.commands._oauth2_flow.webbrowser.open", side_effect=fake_browser_open, autospec=True,):
+            with patch("safeyolo.commands._oauth2_flow.httpx.post", autospec=True,) as mock_post:
+                mock_resp = _response(token_response)
                 mock_post.return_value = mock_resp
 
                 result = run_oauth2_flow(
@@ -172,7 +170,7 @@ class TestOAuth2Flow:
             redirect_uri = params["redirect_uri"][0]
             _send_callback_async(f"{redirect_uri}?code=test&state=wrong-state")
 
-        with patch("safeyolo.commands._oauth2_flow.webbrowser.open", side_effect=fake_browser_open):
+        with patch("safeyolo.commands._oauth2_flow.webbrowser.open", side_effect=fake_browser_open, autospec=True,):
             with pytest.raises(OAuth2Error, match="State mismatch"):
                 run_oauth2_flow(
                     client_id="cid",
@@ -190,7 +188,7 @@ class TestOAuth2Flow:
             redirect_uri = params["redirect_uri"][0]
             _send_callback_async(f"{redirect_uri}?error=access_denied")
 
-        with patch("safeyolo.commands._oauth2_flow.webbrowser.open", side_effect=fake_browser_open):
+        with patch("safeyolo.commands._oauth2_flow.webbrowser.open", side_effect=fake_browser_open, autospec=True,):
             with pytest.raises(OAuth2Error, match="Authorization denied"):
                 run_oauth2_flow(
                     client_id="cid",
@@ -213,11 +211,9 @@ class TestOAuth2Flow:
             state = params["state"][0]
             _send_callback_async(f"{redirect_uri}?code=test&state={state}")
 
-        with patch("safeyolo.commands._oauth2_flow.webbrowser.open", side_effect=fake_browser_open):
-            with patch("safeyolo.commands._oauth2_flow.httpx.post") as mock_post:
-                mock_resp = MagicMock()
-                mock_resp.json.return_value = {"access_token": "tok"}
-                mock_resp.raise_for_status = MagicMock()
+        with patch("safeyolo.commands._oauth2_flow.webbrowser.open", side_effect=fake_browser_open, autospec=True,):
+            with patch("safeyolo.commands._oauth2_flow.httpx.post", autospec=True,) as mock_post:
+                mock_resp = _response({"access_token": "tok"})
                 mock_post.return_value = mock_resp
 
                 run_oauth2_flow(
@@ -246,11 +242,9 @@ class TestOAuth2Flow:
             state = params["state"][0]
             _send_callback_async(f"{redirect_uri}?code=test&state={state}")
 
-        with patch("safeyolo.commands._oauth2_flow.webbrowser.open", side_effect=fake_browser_open):
-            with patch("safeyolo.commands._oauth2_flow.httpx.post") as mock_post:
-                mock_resp = MagicMock()
-                mock_resp.json.return_value = {"access_token": "tok"}
-                mock_resp.raise_for_status = MagicMock()
+        with patch("safeyolo.commands._oauth2_flow.webbrowser.open", side_effect=fake_browser_open, autospec=True,):
+            with patch("safeyolo.commands._oauth2_flow.httpx.post", autospec=True,) as mock_post:
+                mock_resp = _response({"access_token": "tok"})
                 mock_post.return_value = mock_resp
 
                 run_oauth2_flow(
@@ -377,10 +371,8 @@ class TestManualFlow:
                     return f"http://localhost/?code=manual-auth-code&state={state}"
             return "manual-auth-code"  # fallback: bare code
 
-        with patch("safeyolo.commands._oauth2_flow.httpx.post") as mock_post:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = token_response
-            mock_resp.raise_for_status = MagicMock()
+        with patch("safeyolo.commands._oauth2_flow.httpx.post", autospec=True,) as mock_post:
+            mock_resp = _response(token_response)
             mock_post.return_value = mock_resp
 
             result = run_oauth2_flow_manual(
@@ -405,10 +397,8 @@ class TestManualFlow:
         """User pastes just the authorization code."""
         token_response = {"access_token": "tok123"}
 
-        with patch("safeyolo.commands._oauth2_flow.httpx.post") as mock_post:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = token_response
-            mock_resp.raise_for_status = MagicMock()
+        with patch("safeyolo.commands._oauth2_flow.httpx.post", autospec=True,) as mock_post:
+            mock_resp = _response(token_response)
             mock_post.return_value = mock_resp
 
             result = run_oauth2_flow_manual(
@@ -447,14 +437,9 @@ class TestExchangeCodeErrors:
         from safeyolo.commands._oauth2_flow import _exchange_code
 
         error_body = {"error": "invalid_grant", "error_description": "Code expired"}
-        mock_response = MagicMock()
-        mock_response.status_code = 400
-        mock_response.json.return_value = error_body
-        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Bad Request", request=MagicMock(), response=mock_response,
-        )
+        mock_response = _response(error_body, status_code=400)
 
-        with patch("safeyolo.commands._oauth2_flow.httpx.post", return_value=mock_response):
+        with patch("safeyolo.commands._oauth2_flow.httpx.post", return_value=mock_response, autospec=True,):
             with pytest.raises(OAuth2Error, match="Code expired"):
                 _exchange_code(
                     code="expired-code",
@@ -471,6 +456,7 @@ class TestExchangeCodeErrors:
         with patch(
             "safeyolo.commands._oauth2_flow.httpx.post",
             side_effect=httpx.ConnectError("DNS resolution failed"),
+        autospec=True,
         ):
             with pytest.raises(OAuth2Error, match="Token exchange request failed"):
                 _exchange_code(
@@ -480,3 +466,9 @@ class TestExchangeCodeErrors:
                     client_secret="csec",
                     token_url="https://unreachable.example.com/token",
                 )
+def _response(payload: dict, status_code: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        json=payload,
+        request=httpx.Request("POST", "https://oauth.example/token"),
+    )

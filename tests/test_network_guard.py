@@ -1,899 +1,526 @@
-"""Tests for network_guard addon (combined access control + rate limiting).
+"""Behavioral tests for the network policy enforcement addon.
 
-Contract under test:
-  C1: On every request, evaluates the destination host against PDP policy.
-  C2: DENY -> 403 block response with reason, type, action, reflection.
-  C3: BUDGET_EXCEEDED -> 429 with Retry-After and X-RateLimit-Remaining headers.
-  C4: REQUIRE_APPROVAL -> 428 with approval metadata.
-  C5: ALLOW -> no response, flow continues; sets budget remaining in metadata if present.
-  C6: ERROR from PDP -> fail-closed 403.
-  C7: RuntimeError from get_policy_client() -> fail-closed 403.
-  C8: Homoglyph detection: detects confusable Unicode in domain names -> 403.
-  C9: Sets flow.metadata["blocked_by"] = "network-guard" on all blocks.
-  C10: Emits security.network_guard audit events.
-  C11: Warn mode: logs but does not set flow.response, increments warned stat.
-  C12: Stats: checks, allowed, blocked, warned, rate_limited counters.
-  C13: Per-flow bypass via is_bypassed() — early return if flow.response already set.
-  C14: is_bypassed() is called in request() before any evaluation.
-  C15: Disabled addon skips all checks.
+Assurance contract:
+  C1: Each non-bypassed request is evaluated exactly once.
+  C2: DENY produces a structured 403 response.
+  C3: BUDGET_EXCEEDED produces a structured 429 response.
+  C4: REQUIRE_APPROVAL produces a structured 428 response.
+  C5: ALLOW passes through and preserves budget metadata.
+  C6: PDP ERROR fails closed.
+  C7: An unconfigured PDP fails closed.
+  C8: Homoglyph attacks are detected and blocked.
+  C9: Every block records ``blocked_by`` metadata.
+  C10: Security decisions emit audit events.
+  C11: Warn mode records but does not block violations.
+  C12: Counters describe the observed outcomes.
+  C13: Prior responses and policy-disabled domains bypass evaluation.
+  C14: Bypass happens before evaluation.
+  C15: A disabled addon performs no checks.
+
+``NetworkGuard``, mitmproxy flows, PDP decisions, options, and ordinary policy
+evaluation are real. Autospecced PolicyClient collaborators are used only to
+inject boundary outcomes that are not practical to obtain from a static policy
+(budget exhaustion and PDP failures).
 """
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
+from mitmproxy import ctx, http
 from network_guard import HOMOGLYPH_ENABLED, NetworkGuard, detect_homoglyph_attack
 
-from pdp import BudgetBlock, Effect
+from pdp import BudgetBlock, DecisionEventBlock, Effect, PolicyClient, PolicyDecision
+from safeyolo.proxy_modes.unix_listener import UnixMode
+
+pytestmark = pytest.mark.assurance_boundary
+
+
+def make_decision(
+    effect: Effect,
+    *,
+    reason: str = "decision injected by test",
+    budget_remaining: int | None = None,
+) -> PolicyDecision:
+    """Return a schema-valid PDP decision, never a permissive data mock."""
+    return PolicyDecision(
+        event=DecisionEventBlock(
+            event_id="evt-network-guard-test",
+            policy_hash="test-policy-hash",
+            engine_version="test-engine",
+        ),
+        effect=effect,
+        reason=reason,
+        reason_codes=[effect.value.upper()],
+        budget=(BudgetBlock(remaining=budget_remaining) if budget_remaining is not None else None),
+    )
+
+
+@pytest.fixture
+def network_flow(make_flow):
+    """Create a real mitmproxy HTTPFlow with a concise network-test API."""
+
+    def _make(
+        host: str = "example.com",
+        path: str = "/",
+        method: str = "GET",
+    ):
+        # A real HTTP request carries an internationalized hostname in IDNA
+        # wire form. mitmproxy decodes it back to Unicode in Request.host.
+        wire_host = host.encode("idna").decode("ascii")
+        return make_flow(method=method, url=f"https://{wire_host}{path}")
+
+    return _make
+
+
+@pytest.fixture
+def policy_boundary():
+    """Autospecced collaborator for exceptional PolicyClient outcomes."""
+    return create_autospec(PolicyClient, instance=True, spec_set=True)
+
+
+def evaluate_with(policy_boundary, decision):
+    """Patch only NetworkGuard's PDP boundary with signature enforcement."""
+    policy_boundary.evaluate.return_value = decision
+    return patch(
+        "network_guard.get_policy_client",
+        autospec=True,
+        return_value=policy_boundary,
+    )
+
 
 # ---------------------------------------------------------------------------
-# Helpers
+# C2, C4, C5: ordinary outcomes through the real LocalPolicyClient
 # ---------------------------------------------------------------------------
 
-def make_mock_decision(effect, reason="", budget_remaining=None):
-    """Create a mock PolicyDecision with the given effect."""
-    decision = MagicMock()
-    decision.effect = effect
-    decision.reason = reason
-    decision.reason_codes = []
 
-    if budget_remaining is not None:
-        decision.budget = BudgetBlock(remaining=budget_remaining)
-    else:
-        decision.budget = None
-
-    return decision
-
-
-def make_flow(host="example.com", path="/", method="GET"):
-    """Create a minimal mock flow suitable for NetworkGuard.request().
-
-    CRITICAL: flow.response is set to None so is_bypassed() does not
-    short-circuit.  Every test that calls addon.request() must use this
-    helper or explicitly set flow.response = None.
-    """
-    flow = MagicMock()
-    flow.response = None
-    flow.request.host = host
-    flow.request.path = path
-    flow.request.method = method
-    flow.request.port = 443
-    flow.request.scheme = "https"
-    flow.request.headers = {}
-    flow.request.content = b""
-    flow.request.query = None
-    flow.client_conn.peername = ("192.168.1.1", 12345)
-    flow.metadata = {}
-    return flow
-
-
-# ---------------------------------------------------------------------------
-# C2: DENY -> 403
-# ---------------------------------------------------------------------------
-
-class TestDenyDecision:
-    """Requests denied by PDP produce a 403 with structured body."""
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_deny_returns_403(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.DENY, reason="Access denied to evil.com"
+class TestRealPolicyOutcomes:
+    def test_identity_conflict_fails_closed_before_policy(self, network_guard, network_flow):
+        # *.internal normally bypasses network_guard. A conflict must never
+        # turn into that more permissive unscoped policy decision.
+        flow = network_flow("safe.internal", "/resource")
+        flow.client_conn.proxy_mode = UnixMode.parse(
+            "unix:/tmp/10.0.0.5_alice/proxy.sock"
         )
+        flow.metadata["agent"] = "bob"
 
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
+        network_guard.request(flow)
 
         assert flow.response.status_code == 403
+        body = json.loads(flow.response.content)
+        assert "identity sources disagree" in body["reason"]
+        assert flow.metadata["agent_identity_status"] == "conflict"
+        assert "agent" not in flow.metadata
 
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_deny_body_has_required_fields(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
+    def test_deny_is_a_structured_403(self, network_guard, network_flow):
+        flow = network_flow("evil.com", "/malware")
 
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.DENY, reason="Access denied to evil.com"
-        )
+        network_guard.request(flow)
 
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
+        assert flow.response.status_code == 403
+        assert flow.response.headers["X-Blocked-By"] == "network-guard"
         body = json.loads(flow.response.content)
         assert body["type"] == "access_denied"
         assert body["action"] == "self_correct"
         assert body["domain"] == "evil.com"
-        assert body["reason"] == "Access denied to evil.com"
+        assert body["reason"]
         assert "reflection" in body
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_deny_sets_blocked_by_metadata(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.DENY, reason="Access denied"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
         assert flow.metadata["blocked_by"] == "network-guard"
+        assert flow.metadata["block_reason"] == body["reason"]
+        assert network_guard.stats.blocked == 1
+        assert network_guard.stats.allowed == 0
 
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_deny_increments_blocked_stat(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
+    def test_approval_is_a_structured_428(self, network_guard, network_flow):
+        flow = network_flow("unknown-host.com", "/api")
 
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.DENY, reason="Access denied"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert addon.stats.blocked == 1
-        assert addon.stats.allowed == 0
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_deny_with_none_reason_uses_fallback(self, _bypass):
-        """When PDP returns None reason, a human-readable fallback is used."""
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.DENY, reason=None
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        body = json.loads(flow.response.content)
-        assert body["reason"] == "Access denied to evil.com"
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_deny_x_blocked_by_header(self, _bypass):
-        """Block response has X-Blocked-By: network-guard header."""
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.DENY, reason="denied"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert flow.response.headers["X-Blocked-By"] == "network-guard"
-
-
-# ---------------------------------------------------------------------------
-# C3: BUDGET_EXCEEDED -> 429
-# ---------------------------------------------------------------------------
-
-class TestRateLimitDecision:
-    """Requests exceeding budget produce a 429 with rate-limit headers."""
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_budget_exceeded_returns_429(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.BUDGET_EXCEEDED, reason="Rate limit exceeded"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert flow.response.status_code == 429
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_budget_exceeded_body_has_required_fields(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.BUDGET_EXCEEDED, reason="Rate limit exceeded"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        body = json.loads(flow.response.content)
-        assert body["type"] == "rate_limit_exceeded"
-        assert body["action"] == "retry_with_backoff"
-        assert body["domain"] == "api.openai.com"
-        assert "reflection" in body
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_budget_exceeded_has_retry_after_header(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.BUDGET_EXCEEDED, reason="Rate limit exceeded"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert flow.response.headers["Retry-After"] == "60"
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_budget_exceeded_has_ratelimit_remaining_header(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.BUDGET_EXCEEDED, reason="Rate limit exceeded"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert flow.response.headers["X-RateLimit-Remaining"] == "0"
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_budget_exceeded_increments_rate_limited_stat(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.BUDGET_EXCEEDED, reason="Rate limit exceeded"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert addon.rate_limited == 1
-        assert addon.stats.blocked == 1
-
-
-# ---------------------------------------------------------------------------
-# C4: REQUIRE_APPROVAL -> 428
-# ---------------------------------------------------------------------------
-
-class TestEgressApprovalDecision:
-    """Requests needing egress approval produce a 428."""
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_require_approval_returns_428(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("unknown-host.com", "/api")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.REQUIRE_APPROVAL, reason="egress prompt"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("safeyolo.core.base.write_event"):
-            addon.request(flow)
+        network_guard.request(flow)
 
         assert flow.response.status_code == 428
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_require_approval_body_has_required_fields(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("unknown-host.com", "/api")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.REQUIRE_APPROVAL, reason="egress prompt"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("safeyolo.core.base.write_event"):
-            addon.request(flow)
-
         body = json.loads(flow.response.content)
         assert body["type"] == "egress_approval_required"
         assert body["action"] == "wait_for_approval"
         assert body["destination"] == "unknown-host.com"
         assert "reflection" in body
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_require_approval_sets_blocked_by(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("unknown-host.com", "/api")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.REQUIRE_APPROVAL, reason="egress prompt"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("safeyolo.core.base.write_event"):
-            addon.request(flow)
-
         assert flow.metadata["blocked_by"] == "network-guard"
 
+    def test_allow_passes_through(self, network_guard, network_flow):
+        flow = network_flow("good.com", "/resource")
 
-# ---------------------------------------------------------------------------
-# C5: ALLOW -> pass through
-# ---------------------------------------------------------------------------
-
-class TestAllowDecision:
-    """Allowed requests pass through with optional budget metadata."""
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_allow_does_not_set_response(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.ALLOW, reason="Allowed", budget_remaining=2999
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
+        network_guard.request(flow)
 
         assert flow.response is None
+        assert "blocked_by" not in flow.metadata
+        assert "ratelimit_remaining" not in flow.metadata
+        assert network_guard.stats.allowed == 1
+        assert network_guard.stats.blocked == 0
 
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_allow_increments_allowed_stat(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
 
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.ALLOW, reason="Allowed", budget_remaining=2999
+# ---------------------------------------------------------------------------
+# C1, C3, C5, C6, C7: exceptional PolicyClient boundary outcomes
+# ---------------------------------------------------------------------------
+
+
+class TestPolicyBoundaryOutcomes:
+    def test_budget_exceeded_is_a_structured_429(
+        self,
+        network_guard,
+        network_flow,
+        policy_boundary,
+    ):
+        flow = network_flow("api.openai.com", "/v1/chat", "POST")
+        decision = make_decision(
+            Effect.BUDGET_EXCEEDED,
+            reason="Rate limit exceeded",
+            budget_remaining=0,
         )
 
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
+        with evaluate_with(policy_boundary, decision):
+            network_guard.request(flow)
 
-        assert addon.stats.allowed == 1
-        assert addon.stats.blocked == 0
+        assert flow.response.status_code == 429
+        assert flow.response.headers["Retry-After"] == "60"
+        assert flow.response.headers["X-RateLimit-Remaining"] == "0"
+        body = json.loads(flow.response.content)
+        assert body["type"] == "rate_limit_exceeded"
+        assert body["action"] == "retry_with_backoff"
+        assert body["domain"] == "api.openai.com"
+        assert "reflection" in body
+        assert flow.metadata["blocked_by"] == "network-guard"
+        assert network_guard.rate_limited == 1
+        assert network_guard.stats.blocked == 1
 
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_allow_stores_budget_remaining_in_metadata(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.ALLOW, reason="Allowed", budget_remaining=2999
+    def test_allow_preserves_budget_remaining(
+        self,
+        network_guard,
+        network_flow,
+        policy_boundary,
+    ):
+        flow = network_flow("api.openai.com", "/v1/chat", "POST")
+        decision = make_decision(
+            Effect.ALLOW,
+            reason="Allowed",
+            budget_remaining=2999,
         )
 
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
+        with evaluate_with(policy_boundary, decision):
+            network_guard.request(flow)
 
+        assert flow.response is None
         assert flow.metadata["ratelimit_remaining"] == 2999
 
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_allow_without_budget_does_not_set_metadata(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
+    def test_empty_deny_reason_uses_fallback(
+        self,
+        network_guard,
+        network_flow,
+        policy_boundary,
+    ):
+        """An empty string is schema-valid; ``None`` is not."""
+        flow = network_flow("empty-reason.example", "/")
+        decision = make_decision(Effect.DENY, reason="")
 
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.ALLOW, reason="Allowed"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert "ratelimit_remaining" not in flow.metadata
-
-
-# ---------------------------------------------------------------------------
-# C6: PDP ERROR -> fail-closed 403
-# ---------------------------------------------------------------------------
-
-class TestPDPErrorFailClosed:
-    """PDP errors result in fail-closed denial."""
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_pdp_error_returns_403(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("any.com", "/")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.ERROR, reason="PDP unavailable"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert flow.response.status_code == 403
-        assert addon.stats.blocked == 1
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_pdp_error_body_contains_reason(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("any.com", "/")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.ERROR, reason="PDP unavailable"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
+        with evaluate_with(policy_boundary, decision):
+            network_guard.request(flow)
 
         body = json.loads(flow.response.content)
-        assert "PDP error" in body["reason"]
+        assert body["reason"] == "Access denied to empty-reason.example"
 
+    def test_pdp_error_fails_closed(
+        self,
+        network_guard,
+        network_flow,
+        policy_boundary,
+    ):
+        flow = network_flow("any.com", "/")
+        decision = make_decision(Effect.ERROR, reason="PDP unavailable")
 
-# ---------------------------------------------------------------------------
-# C7: RuntimeError from get_policy_client() -> fail-closed 403
-# ---------------------------------------------------------------------------
-
-class TestRuntimeErrorFailClosed:
-    """When PDP is not configured, get_policy_client() raises RuntimeError.
-    NetworkGuard must catch it and fail closed."""
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_runtime_error_returns_403(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("any.com", "/")
-
-        with patch("network_guard.get_policy_client", side_effect=RuntimeError("not configured")), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
+        with evaluate_with(policy_boundary, decision):
+            network_guard.request(flow)
 
         assert flow.response.status_code == 403
+        assert network_guard.stats.blocked == 1
+        body = json.loads(flow.response.content)
+        assert body["reason"] == "PDP error: PDP unavailable"
 
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_runtime_error_sets_blocked_by(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("any.com", "/")
+    def test_unconfigured_pdp_fails_closed(self, network_guard, network_flow):
+        flow = network_flow("any.com", "/")
 
-        with patch("network_guard.get_policy_client", side_effect=RuntimeError("not configured")), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
+        with patch(
+            "network_guard.get_policy_client",
+            autospec=True,
+            side_effect=RuntimeError("not configured"),
+        ):
+            network_guard.request(flow)
 
+        assert flow.response.status_code == 403
         assert flow.metadata["blocked_by"] == "network-guard"
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_runtime_error_increments_blocked(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("any.com", "/")
-
-        with patch("network_guard.get_policy_client", side_effect=RuntimeError("not configured")), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert addon.stats.blocked == 1
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_runtime_error_body_mentions_fail_closed(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("any.com", "/")
-
-        with patch("network_guard.get_policy_client", side_effect=RuntimeError("not configured")), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
+        assert network_guard.stats.blocked == 1
         body = json.loads(flow.response.content)
-        assert "PDP not configured" in body["reason"]
+        assert body["reason"] == "PDP not configured (fail-closed)"
+
+    def test_each_request_is_evaluated_once(
+        self,
+        network_guard,
+        network_flow,
+        policy_boundary,
+    ):
+        flow = network_flow("api.openai.com", "/v1/chat", "POST")
+        decision = make_decision(Effect.ALLOW, budget_remaining=100)
+
+        with evaluate_with(policy_boundary, decision):
+            network_guard.request(flow)
+
+        policy_boundary.evaluate.assert_called_once()
+        event = policy_boundary.evaluate.call_args.args[0]
+        assert event.http.host == "api.openai.com"
+        assert event.http.path == "/v1/chat"
+        assert event.http.method == "POST"
 
 
 # ---------------------------------------------------------------------------
-# C8: Homoglyph detection
+# C8: homoglyph detection
 # ---------------------------------------------------------------------------
+
 
 class TestHomoglyphDetection:
-    """Homoglyph attack detection blocks mixed-script domain spoofing."""
-
-    @pytest.mark.skipif(not HOMOGLYPH_ENABLED, reason="confusable-homoglyphs not installed")
+    @pytest.mark.skipif(
+        not HOMOGLYPH_ENABLED,
+        reason="confusable-homoglyphs not installed",
+    )
     def test_detects_cyrillic_in_domain(self):
-        # Cyrillic 'a' (U+0430) instead of Latin 'a'
         result = detect_homoglyph_attack("\u0430pi.openai.com")
+
         assert result is not None
         assert result["dangerous"] is True
         assert result["domain"] == "\u0430pi.openai.com"
         assert "Mixed scripts" in result["message"]
 
-    @pytest.mark.skipif(not HOMOGLYPH_ENABLED, reason="confusable-homoglyphs not installed")
+    @pytest.mark.skipif(
+        not HOMOGLYPH_ENABLED,
+        reason="confusable-homoglyphs not installed",
+    )
     def test_normal_ascii_domain_returns_none(self):
-        result = detect_homoglyph_attack("api.openai.com")
-        assert result is None
+        assert detect_homoglyph_attack("api.openai.com") is None
 
-    @pytest.mark.skipif(not HOMOGLYPH_ENABLED, reason="confusable-homoglyphs not installed")
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_homoglyph_domain_blocked_with_403(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("\u0430pi.openai.com", "/v1/chat")
+    @pytest.mark.skipif(
+        not HOMOGLYPH_ENABLED,
+        reason="confusable-homoglyphs not installed",
+    )
+    def test_homoglyph_domain_is_blocked(self, network_guard, network_flow):
+        flow = network_flow("\u0430pi.openai.com", "/v1/chat")
 
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
+        network_guard.request(flow)
 
         assert flow.response.status_code == 403
         body = json.loads(flow.response.content)
         assert body["type"] == "homoglyph_attack"
         assert body["action"] == "abort"
         assert "reflection" in body
-
-    @pytest.mark.skipif(not HOMOGLYPH_ENABLED, reason="confusable-homoglyphs not installed")
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_homoglyph_sets_blocked_by(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("\u0430pi.openai.com", "/v1/chat")
-
-        with patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
         assert flow.metadata["blocked_by"] == "network-guard"
 
-    def test_homoglyph_disabled_returns_none(self):
-        """When HOMOGLYPH_ENABLED is False, detection always returns None."""
+    def test_disabled_detector_returns_none(self):
         with patch("network_guard.HOMOGLYPH_ENABLED", False):
             result = detect_homoglyph_attack("\u0430pi.openai.com")
+
         assert result is None
 
-    @pytest.mark.skipif(not HOMOGLYPH_ENABLED, reason="confusable-homoglyphs not installed")
-    def test_homoglyph_exception_returns_none(self):
-        """If the homoglyph library raises, detection returns None (not crash)."""
-        with patch("network_guard.confusables") as mock_conf:
-            mock_conf.is_dangerous.side_effect = ValueError("boom")
+    @pytest.mark.skipif(
+        not HOMOGLYPH_ENABLED,
+        reason="confusable-homoglyphs not installed",
+    )
+    def test_detector_failure_does_not_crash_request_path(self):
+        with patch("network_guard.confusables", autospec=True) as confusables:
+            confusables.is_dangerous.side_effect = ValueError("boom")
             result = detect_homoglyph_attack("some.domain")
+
         assert result is None
 
 
 # ---------------------------------------------------------------------------
-# C11: Warn mode
+# C11: warn mode through real options
 # ---------------------------------------------------------------------------
+
 
 class TestWarnMode:
-    """Warn mode logs decisions but does not block requests."""
+    def test_deny_warns_without_blocking(self, network_guard, network_flow):
+        ctx.options.network_guard_block = False
+        flow = network_flow("evil.com", "/malware")
 
-    def _option_warn(self, name, default=True):
-        """Side effect: enabled=True, block=False (warn mode)."""
-        if name == "network_guard_enabled":
-            return True
-        if name == "network_guard_block":
-            return False
-        if name == "network_guard_homoglyph":
-            return True
-        return default
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_warn_mode_deny_does_not_block(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.DENY, reason="Access denied"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", side_effect=self._option_warn):
-            addon.request(flow)
+        network_guard.request(flow)
 
         assert flow.response is None
         assert "blocked_by" not in flow.metadata
-        assert addon.stats.warned == 1
-        assert addon.stats.blocked == 0
+        assert network_guard.stats.warned == 1
+        assert network_guard.stats.blocked == 0
 
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_warn_mode_rate_limit_does_not_block(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
+    def test_approval_warns_without_blocking(self, network_guard, network_flow):
+        ctx.options.network_guard_block = False
+        flow = network_flow("unknown-host.com", "/api")
 
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.BUDGET_EXCEEDED, reason="Rate limit exceeded"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", side_effect=self._option_warn):
-            addon.request(flow)
+        network_guard.request(flow)
 
         assert flow.response is None
-        assert addon.stats.warned == 1
-        assert addon.rate_limited == 1
+        assert network_guard.stats.warned == 1
 
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_warn_mode_egress_approval_does_not_block(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("unknown-host.com", "/api")
+    def test_rate_limit_warns_without_blocking(
+        self,
+        network_guard,
+        network_flow,
+        policy_boundary,
+    ):
+        ctx.options.network_guard_block = False
+        flow = network_flow("api.openai.com", "/v1/chat", "POST")
+        decision = make_decision(Effect.BUDGET_EXCEEDED, reason="exceeded")
 
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.REQUIRE_APPROVAL, reason="egress prompt"
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", side_effect=self._option_warn), \
-             patch("safeyolo.core.base.write_event"):
-            addon.request(flow)
+        with evaluate_with(policy_boundary, decision):
+            network_guard.request(flow)
 
         assert flow.response is None
-        assert addon.stats.warned == 1
+        assert network_guard.stats.warned == 1
+        assert network_guard.rate_limited == 1
 
-    @pytest.mark.skipif(not HOMOGLYPH_ENABLED, reason="confusable-homoglyphs not installed")
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_warn_mode_homoglyph_does_not_block(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("\u0430pi.openai.com", "/v1/chat")
+    @pytest.mark.skipif(
+        not HOMOGLYPH_ENABLED,
+        reason="confusable-homoglyphs not installed",
+    )
+    def test_homoglyph_warns_without_blocking(self, network_guard, network_flow):
+        ctx.options.network_guard_block = False
+        flow = network_flow("\u0430pi.openai.com", "/v1/chat")
 
-        with patch("safeyolo.core.base.get_option_safe", side_effect=self._option_warn):
-            addon.request(flow)
+        network_guard.request(flow)
 
         assert flow.response is None
-        assert addon.stats.warned == 1
+        assert network_guard.stats.warned == 1
 
 
 # ---------------------------------------------------------------------------
-# C13 + C14: Bypass behaviour
+# C13, C14, C15: bypass and disabled behavior
 # ---------------------------------------------------------------------------
 
-class TestBypassBehaviour:
-    """is_bypassed() integration: flow.response set -> skip evaluation."""
 
-    def test_flow_with_existing_response_is_bypassed(self):
-        """If another addon already set flow.response, request() returns early."""
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
-        flow.response = MagicMock()  # truthy — simulates another addon's block
+class TestBypassAndDisable:
+    def test_prior_response_bypasses_before_evaluation(
+        self,
+        network_guard,
+        network_flow,
+        policy_boundary,
+    ):
+        flow = network_flow("evil.com", "/malware")
+        flow.response = http.Response.make(451, b"blocked upstream")
 
-        mock_client = MagicMock()
+        with patch(
+            "network_guard.get_policy_client",
+            autospec=True,
+            return_value=policy_boundary,
+        ):
+            network_guard.request(flow)
 
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
+        assert flow.response.status_code == 451
+        policy_boundary.evaluate.assert_not_called()
+        assert network_guard.stats.checks == 0
 
-        # Evaluation should NOT have been called
-        mock_client.evaluate.assert_not_called()
-        assert addon.stats.checks == 0
+    def test_policy_disabled_domain_bypasses_before_evaluation(
+        self,
+        network_guard,
+        network_flow,
+        policy_boundary,
+    ):
+        flow = network_flow("db.internal", "/query")
 
-    def test_is_bypassed_called_before_evaluation(self):
-        """request() calls is_bypassed() before any PDP evaluation."""
-        addon = NetworkGuard()
-        flow = make_flow("any.com", "/")
+        with patch(
+            "network_guard.get_policy_client",
+            autospec=True,
+            return_value=policy_boundary,
+        ):
+            network_guard.request(flow)
 
-        call_order = []
+        assert flow.response is None
+        policy_boundary.evaluate.assert_not_called()
+        assert network_guard.stats.checks == 0
 
-        def tracking_is_bypassed(f):
-            call_order.append("is_bypassed")
-            return True  # short-circuit
+    def test_disabled_addon_performs_no_checks(
+        self,
+        network_guard,
+        network_flow,
+        policy_boundary,
+    ):
+        ctx.options.network_guard_enabled = False
+        flow = network_flow("evil.com", "/malware")
 
-        mock_client = MagicMock()
+        with patch(
+            "network_guard.get_policy_client",
+            autospec=True,
+            return_value=policy_boundary,
+        ):
+            network_guard.request(flow)
 
-        def tracking_evaluate(event):
-            call_order.append("evaluate")
-            return make_mock_decision(Effect.ALLOW)
-
-        mock_client.evaluate.side_effect = tracking_evaluate
-
-        with patch.object(addon, "is_bypassed", side_effect=tracking_is_bypassed), \
-             patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert call_order == ["is_bypassed"]
-
-
-# ---------------------------------------------------------------------------
-# C15: Disabled addon
-# ---------------------------------------------------------------------------
-
-class TestDisabledAddon:
-    """Disabled addon skips all checks."""
-
-    def test_disabled_does_not_call_evaluate(self):
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
-
-        mock_client = MagicMock()
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=False):
-            addon.request(flow)
-
-        mock_client.evaluate.assert_not_called()
-        assert addon.stats.checks == 0
+        assert flow.response is None
+        policy_boundary.evaluate.assert_not_called()
+        assert network_guard.stats.checks == 0
 
 
 # ---------------------------------------------------------------------------
-# C1: Single evaluation per request
+# C10, C12: audit evidence and counters
 # ---------------------------------------------------------------------------
 
-class TestSingleEvaluation:
-    """NetworkGuard calls PolicyClient.evaluate exactly once per request."""
 
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_evaluate_called_once(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.ALLOW, budget_remaining=100
-        )
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert mock_client.evaluate.call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# C12: Stats
-# ---------------------------------------------------------------------------
-
-class TestStats:
-    """get_stats() returns accurate counters after operations."""
-
-    def test_initial_stats(self):
-        addon = NetworkGuard()
-        stats = addon.get_stats()
-        assert stats == {
-            "enabled": True,  # default from get_option_safe
-            "checks": 0,
-            "allowed": 0,
-            "blocked": 0,
-            "warned": 0,
-            "rate_limited": 0,
-        }
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_stats_after_deny_and_allow(self, _bypass):
-        addon = NetworkGuard()
-
-        # First request: deny
-        flow1 = make_flow("evil.com", "/malware")
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.DENY, reason="denied"
-        )
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow1)
-
-        # Second request: allow
-        flow2 = make_flow("good.com", "/")
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.ALLOW, reason="allowed"
-        )
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow2)
-
-        stats = addon.get_stats()
-        assert stats["checks"] == 2
-        assert stats["allowed"] == 1
-        assert stats["blocked"] == 1
-        assert stats["rate_limited"] == 0
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_stats_after_rate_limit(self, _bypass):
-        addon = NetworkGuard()
-
-        flow = make_flow("api.openai.com", "/v1/chat", "POST")
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.BUDGET_EXCEEDED, reason="exceeded"
-        )
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        stats = addon.get_stats()
-        assert stats["rate_limited"] == 1
-        assert stats["blocked"] == 1
-        assert stats["checks"] == 1
-
-    def test_stats_checks_not_incremented_when_bypassed(self):
-        """Bypassed flows should not increment checks counter."""
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
-        flow.response = MagicMock()  # truthy — triggers bypass
-
-        mock_client = MagicMock()
-
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True):
-            addon.request(flow)
-
-        assert addon.stats.checks == 0
-
-
-# ---------------------------------------------------------------------------
-# C10: Audit events
-# ---------------------------------------------------------------------------
-
-class TestAuditEvents:
-    """Audit events emitted via write_event on security decisions."""
-
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_deny_emits_audit_event(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("evil.com", "/malware")
+class TestAuditAndStats:
+    def test_deny_emits_correlated_audit_event(self, network_guard, network_flow):
+        flow = network_flow("evil.com", "/malware")
         flow.metadata["request_id"] = "req-123"
 
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.DENY, reason="Access denied"
-        )
+        with patch("safeyolo.core.base.write_event", autospec=True) as write_event:
+            network_guard.request(flow)
 
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("safeyolo.core.base.write_event") as mock_write:
-            addon.request(flow)
-
-        calls = [c for c in mock_write.call_args_list if c[0][0] == "security.network_guard"]
+        calls = [call for call in write_event.call_args_list if call.args[0] == "security.network_guard"]
         assert len(calls) == 1
-        kwargs = calls[0][1]
+        kwargs = calls[0].kwargs
         assert kwargs["decision"].value == "deny"
         assert kwargs["host"] == "evil.com"
+        assert kwargs["request_id"] == "req-123"
 
-    @patch.object(NetworkGuard, "is_bypassed", return_value=False)
-    def test_require_approval_emits_approval_metadata(self, _bypass):
-        addon = NetworkGuard()
-        flow = make_flow("unknown-host.com", "/api")
+    def test_approval_event_contains_approval_metadata(
+        self,
+        network_guard,
+        network_flow,
+    ):
+        flow = network_flow("unknown-host.com", "/api")
 
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = make_mock_decision(
-            Effect.REQUIRE_APPROVAL, reason="egress prompt"
-        )
+        with patch("safeyolo.core.base.write_event", autospec=True) as write_event:
+            network_guard.request(flow)
 
-        with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("safeyolo.core.base.write_event") as mock_write:
-            addon.request(flow)
+        calls = [call for call in write_event.call_args_list if call.args[0] == "security.network_guard"]
+        assert len(calls) == 1
+        approval = calls[0].kwargs["approval"]
+        assert approval.approval_type == "network_egress"
+        assert approval.key == "unknown-host.com"
 
-        calls = [c for c in mock_write.call_args_list if c[0][0] == "security.network_guard"]
-        assert len(calls) >= 1
-        kwargs = calls[-1][1]
-        assert kwargs["approval"] is not None
-        assert kwargs["approval"].approval_type == "network_egress"
-        assert kwargs["approval"].key == "unknown-host.com"
+    def test_stats_track_deny_allow_and_rate_limit(
+        self,
+        network_guard,
+        network_flow,
+        policy_boundary,
+    ):
+        network_guard.request(network_flow("evil.com", "/malware"))
+        network_guard.request(network_flow("good.com", "/"))
+
+        decision = make_decision(Effect.BUDGET_EXCEEDED, reason="exceeded")
+        with evaluate_with(policy_boundary, decision):
+            network_guard.request(network_flow("api.openai.com", "/v1/chat", "POST"))
+
+        assert network_guard.get_stats() == {
+            "enabled": True,
+            "checks": 3,
+            "allowed": 1,
+            "blocked": 2,
+            "warned": 0,
+            "rate_limited": 1,
+        }
 
 
-# ---------------------------------------------------------------------------
-# Module-level addon instance
-# ---------------------------------------------------------------------------
-
-class TestModuleInstance:
-    """The module-level addons list is correct."""
-
-    def test_addons_list_contains_network_guard(self):
+class TestModuleContract:
+    def test_module_exports_one_network_guard(self):
         from network_guard import addons
+
         assert len(addons) == 1
         assert isinstance(addons[0], NetworkGuard)
-
-    def test_addon_name(self):
-        addon = NetworkGuard()
-        assert addon.name == "network-guard"
+        assert addons[0].name == "network-guard"

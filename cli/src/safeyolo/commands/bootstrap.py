@@ -399,14 +399,21 @@ def _needs_setup() -> bool:
         return True
 
     userns = check_userns_prerequisites()
-    if not (userns["newuidmap"] and userns["newgidmap"] and userns["setfacl"]):
+    if not (
+        userns["newuidmap"]
+        and userns["newgidmap"]
+        and userns["subuid"]
+        and userns["subgid"]
+        and userns["setfacl"]
+    ):
         return True
     if userns["apparmor_restricts"] and not userns["apparmor_profile_loaded"]:
         return True
 
     kvm = detect_runsc_platform()
     if (
-        kvm.get("kvm_exists")
+        not kvm.get("forced")
+        and kvm.get("kvm_exists")
         and kvm.get("kvm_operator_access")
         and not kvm.get("kvm_subordinate_access")
     ):

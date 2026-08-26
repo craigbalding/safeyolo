@@ -37,7 +37,7 @@ def ca_bundle(tmp_path):
 def test_set_persists_absolute_bundle_path(cli_runner, tmp_config_dir, ca_bundle):
     bundle = ca_bundle
 
-    with patch("safeyolo.commands.proxy.is_proxy_running", return_value=False):
+    with patch("safeyolo.commands.proxy.is_proxy_running", return_value=False, autospec=True,):
         result = cli_runner.invoke(app, ["proxy", "upstream-ca", "set", str(bundle)])
 
     assert result.exit_code == 0
@@ -51,7 +51,7 @@ def test_set_requires_restart_when_proxy_is_running(
 ):
     bundle = ca_bundle
 
-    with patch("safeyolo.commands.proxy.is_proxy_running", return_value=True):
+    with patch("safeyolo.commands.proxy.is_proxy_running", return_value=True, autospec=True,):
         result = cli_runner.invoke(app, ["proxy", "upstream-ca", "set", str(bundle)])
 
     assert result.exit_code == 0
@@ -89,7 +89,7 @@ def test_remove_clears_persistent_bundle(cli_runner, tmp_config_dir, tmp_path):
     config["proxy"]["upstream_ca_cert"] = str(tmp_path / "additional-ca.pem")
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
-    with patch("safeyolo.commands.proxy.is_proxy_running", return_value=False):
+    with patch("safeyolo.commands.proxy.is_proxy_running", return_value=False, autospec=True,):
         result = cli_runner.invoke(app, ["proxy", "upstream-ca", "remove"])
 
     assert result.exit_code == 0

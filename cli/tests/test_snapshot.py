@@ -46,11 +46,13 @@ def snapshot_inputs(tmp_config_dir, monkeypatch):
     (share / "Image").write_bytes(b"fake-kernel")
     (share / "initramfs.cpio.gz").write_bytes(b"fake-initrd")
     (share / "rootfs-base.ext4").write_bytes(b"fake-rootfs")
+    (share / "guest-sudo").write_bytes(b"fake-guest-sudo")
     (tmp_config_dir / "certs" / "mitmproxy-ca-cert.pem").write_bytes(b"fake-ca")
 
     monkeypatch.setattr(snap_mod, "get_kernel_path", lambda: share / "Image")
     monkeypatch.setattr(snap_mod, "get_initrd_path", lambda: share / "initramfs.cpio.gz")
     monkeypatch.setattr(snap_mod, "get_base_rootfs_path", lambda: share / "rootfs-base.ext4")
+    monkeypatch.setattr(snap_mod, "_guest_sudo_source", lambda: share / "guest-sudo")
     monkeypatch.setattr(snap_mod, "_vm_helper_version", lambda: "0.2.0")
     return share
 
@@ -147,6 +149,12 @@ class TestComputeSnapshotVersion:
 
         script.write_text("v2")
         os.utime(script, ns=(2_000_000_000_000_000_000, 2_000_000_000_000_000_000))
+        v2 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
+        assert v1 != v2
+
+    def test_guest_sudo_content_change_invalidates(self, snapshot_inputs):
+        v1 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
+        (snapshot_inputs / "guest-sudo").write_bytes(b"updated-guest-sudo")
         v2 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
         assert v1 != v2
 

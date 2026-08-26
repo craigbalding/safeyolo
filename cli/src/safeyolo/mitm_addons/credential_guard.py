@@ -23,6 +23,7 @@ from mitmproxy import ctx, http
 
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, Severity
 from safeyolo.core.base import SecurityAddon
+from safeyolo.core.identity import IdentityStatus
 from safeyolo.detection import (
     DEFAULT_RULES,
     CredentialRule,
@@ -39,7 +40,6 @@ from pdp import (
 from safeyolo.core.sensor_utils import build_http_event_from_flow
 from safeyolo.core.trace import REASON_POLICY_DISABLED, REASON_PRIOR_RESPONSE, trace_addon_hook
 from safeyolo.core.utils import (
-    get_client_ip,
     hmac_fingerprint,
     load_hmac_secret,
     make_block_response,
@@ -260,7 +260,8 @@ class CredentialGuard(SecurityAddon):
             }),
             "detection_level": cg.get("detection_level", "standard"),
             "standard_auth_headers": cg.get("standard_auth_headers", [
-                "authorization", "x-api-key", "api-key", "x-auth-token", "apikey"
+                "authorization", "x-api-key", "api-key", "x-auth-token", "apikey",
+                "x-goog-api-key",
             ]),
         }
         self.safe_headers_config = cg.get("safe_headers", {})
@@ -269,7 +270,7 @@ class CredentialGuard(SecurityAddon):
         """Load credential rules.
 
         Rules are built by taking `safeyolo.detection.DEFAULT_RULES`
-        (openai, anthropic, github token families) and appending any
+        (derived from the shared credential-family catalogue) and appending any
         rules supplied by the policy under `credential_rules`, in the
         order they appear. A policy can therefore add classifiers for
         internal services or additional third-party credential types
@@ -353,19 +354,9 @@ class CredentialGuard(SecurityAddon):
         return ctx.options.credguard_block
 
     def _get_project_id(self, flow: http.HTTPFlow) -> str:
-        """Get project ID from service discovery."""
-        client_ip = get_client_ip(flow)
-        if client_ip == "unknown":
-            return "default"
-
-        try:
-            from service_discovery import get_service_discovery
-            sd = get_service_discovery()
-            if sd:
-                return sd.get_client_for_ip(client_ip)
-        except Exception as e:
-            log.debug(f"Service discovery lookup failed: {type(e).__name__}: {e}")
-        return "default"
+        """Get the trusted agent policy scope, or the baseline scope."""
+        identity = self.resolve_agent_identity(flow)
+        return identity.agent if identity.is_resolved else "default"
 
     def _record_violation(self, rule: str, host: str):
         """Record violation for stats."""
@@ -377,7 +368,7 @@ class CredentialGuard(SecurityAddon):
         try:
             client = get_policy_client()
             return client.is_addon_enabled(
-                "credential-guard",
+                "credential_guard",
                 domain=flow.request.host,
                 client_id=self._get_project_id(flow),
             )
@@ -397,6 +388,18 @@ class CredentialGuard(SecurityAddon):
         # Reload rules if policy changed
         self._maybe_reload_rules()
 
+        identity = self.resolve_agent_identity(flow)
+        if identity.status is IdentityStatus.CONFLICT:
+            self.block(
+                flow,
+                403,
+                {
+                    "error": "Trusted agent identity sources disagree",
+                    "reason": "agent_identity_conflict",
+                },
+            )
+            return
+
         # Check if addon is disabled via policy (PolicyClient.is_addon_enabled).
         # This is scope-dependent disablement, not a global mitmproxy option —
         # the DAG must distinguish it from REASON_ADDON_DISABLED so triage
@@ -414,7 +417,8 @@ class CredentialGuard(SecurityAddon):
         })
         detection_level = self.config.get("detection_level", "standard")
         standard_auth_headers = self.config.get("standard_auth_headers", [
-            "authorization", "x-api-key", "api-key", "x-auth-token", "apikey"
+            "authorization", "x-api-key", "api-key", "x-auth-token", "apikey",
+            "x-goog-api-key",
         ])
 
         detections = analyze_headers(
