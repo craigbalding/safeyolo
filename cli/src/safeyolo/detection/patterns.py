@@ -11,8 +11,9 @@ Use cases:
 - Secret detection (enable 'secrets' builtin set)
 - PII patterns (enable 'pii' builtin set)
 
-By default, no patterns are loaded. Users configure patterns in their policy file
-under the `scan_patterns` section, and optionally enable builtin pattern sets.
+Patterns are loaded from policy. The shipped SafeYolo configuration enables the
+`secrets` builtin set; operators can add rules under `scan_patterns` or change
+the enabled builtin sets.
 
 Example policy configuration:
     pattern_scanner:
@@ -30,6 +31,8 @@ Example policy configuration:
 import logging
 import re
 from dataclasses import dataclass, field
+
+from .credential_catalog import build_dlp_pattern_configs
 
 log = logging.getLogger("safeyolo.patterns")
 
@@ -200,40 +203,17 @@ def load_patterns_from_config(scan_patterns: list[dict]) -> list[PatternRule]:
 # =============================================================================
 # Built-in Pattern Sets
 # =============================================================================
-# Optional pattern sets users can enable. These are disabled by default to avoid
-# false positives and unnecessary overhead. Enable via:
+# Optional pattern sets users can enable. The shipped configuration enables the
+# secrets set. Configure sets via:
 #   pattern_scanner:
 #     builtin_sets: [secrets]
 
 BUILTIN_PATTERN_SETS = {
     "secrets": [
-        {
-            "name": "openai-api-key",
-            "pattern": r"sk-[a-zA-Z0-9]{48}",
-            "target": "both",
-            "scope": ["body", "url", "headers"],
-            "action": "block",
-            "severity": "critical",
-            "message": "OpenAI API key detected",
-        },
-        {
-            "name": "openai-project-key",
-            "pattern": r"sk-proj-[a-zA-Z0-9_-]{80,}",
-            "target": "both",
-            "scope": ["body", "url", "headers"],
-            "action": "block",
-            "severity": "critical",
-            "message": "OpenAI project API key detected",
-        },
-        {
-            "name": "anthropic-api-key",
-            "pattern": r"sk-ant-[a-zA-Z0-9-]{95}",
-            "target": "both",
-            "scope": ["body", "url", "headers"],
-            "action": "block",
-            "severity": "critical",
-            "message": "Anthropic API key detected",
-        },
+        *build_dlp_pattern_configs(),
+        # DLP-only entries below do not have enough information to bind a
+        # credential to one provider destination.  Keep them separate from
+        # the shared routing/DLP catalogue by design.
         {
             "name": "aws-access-key",
             "pattern": r"AKIA[0-9A-Z]{16}",
@@ -242,69 +222,6 @@ BUILTIN_PATTERN_SETS = {
             "action": "block",
             "severity": "critical",
             "message": "AWS access key ID detected",
-        },
-        {
-            "name": "google-api-key",
-            "pattern": r"AIza[0-9A-Za-z-_]{35}",
-            "target": "both",
-            "scope": ["body", "url", "headers"],
-            "action": "block",
-            "severity": "critical",
-            "message": "Google API key detected",
-        },
-        {
-            "name": "github-pat",
-            "pattern": r"ghp_[A-Za-z0-9]{36,251}",
-            "target": "both",
-            "scope": ["body", "url", "headers"],
-            "action": "block",
-            "severity": "critical",
-            "message": "GitHub personal access token detected",
-        },
-        {
-            "name": "github-oauth",
-            "pattern": r"gho_[A-Za-z0-9]{36,251}",
-            "target": "both",
-            "scope": ["body", "url", "headers"],
-            "action": "block",
-            "severity": "critical",
-            "message": "GitHub OAuth token detected",
-        },
-        {
-            "name": "github-app-user",
-            "pattern": r"ghu_[A-Za-z0-9]{36,251}",
-            "target": "both",
-            "scope": ["body", "url", "headers"],
-            "action": "block",
-            "severity": "critical",
-            "message": "GitHub App user-to-server token detected",
-        },
-        {
-            "name": "github-app-server",
-            "pattern": r"ghs_[A-Za-z0-9]{36,251}",
-            "target": "both",
-            "scope": ["body", "url", "headers"],
-            "action": "block",
-            "severity": "critical",
-            "message": "GitHub App server-to-server (installation) token detected",
-        },
-        {
-            "name": "github-refresh",
-            "pattern": r"ghr_[A-Za-z0-9]{36,251}",
-            "target": "both",
-            "scope": ["body", "url", "headers"],
-            "action": "block",
-            "severity": "critical",
-            "message": "GitHub refresh token detected",
-        },
-        {
-            "name": "github-fine-grained-pat",
-            "pattern": r"github_pat_[A-Za-z0-9_]{60,255}",
-            "target": "both",
-            "scope": ["body", "url", "headers"],
-            "action": "block",
-            "severity": "critical",
-            "message": "GitHub fine-grained personal access token detected",
         },
         {
             "name": "private-key",

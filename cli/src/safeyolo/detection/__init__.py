@@ -4,11 +4,18 @@ detection - Pattern and credential detection logic
 Pure functions suitable for testing and fuzzing.
 
 Modules:
+- credential_catalog: Shared provider-family routing and DLP specifications
 - credentials: Credential detection in headers, routing validation
 - patterns: User-configurable pattern scanning framework
 - matching: Host/resource pattern matching utilities
 """
 
+from .credential_catalog import (
+    CREDENTIAL_FAMILIES,
+    CredentialFamilySpec,
+    build_default_rule_configs,
+    build_dlp_pattern_configs,
+)
 from .credentials import (
     DEFAULT_RULES,
     CredentialRule,
@@ -36,6 +43,11 @@ from .patterns import (
 )
 
 __all__ = [
+    # Shared provider credential catalogue
+    "CredentialFamilySpec",
+    "CREDENTIAL_FAMILIES",
+    "build_default_rule_configs",
+    "build_dlp_pattern_configs",
     # Credentials (header detection + routing)
     "CredentialRule",
     "DEFAULT_RULES",

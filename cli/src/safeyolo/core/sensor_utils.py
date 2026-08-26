@@ -27,13 +27,6 @@ from pdp import (
     create_http_event,
 )
 
-# Map rule names to CredentialType enum
-RULE_TO_CREDENTIAL_TYPE = {
-    "openai": CredentialType.OPENAI,
-    "anthropic": CredentialType.ANTHROPIC,
-    "github": CredentialType.GITHUB,
-}
-
 # Map confidence strings to enum
 CONFIDENCE_MAP = {
     "high": CredentialConfidence.HIGH,
@@ -80,15 +73,19 @@ def build_http_event_from_flow(
     if flow.client_conn and flow.client_conn.peername:
         client_ip = flow.client_conn.peername[0]
 
-    # Map credential type string to enum if needed
-    cred_type_enum = None
+    # Preserve catalogue/policy-defined family names. Known values are
+    # normalized to the compatibility enum; new families remain stable strings
+    # so the PDP can evaluate e.g. ``openrouter:*`` without a schema release.
+    cred_type_value = None
     if credential_detected and credential_type:
         if isinstance(credential_type, CredentialType):
-            cred_type_enum = credential_type
+            cred_type_value = credential_type
         else:
-            cred_type_enum = RULE_TO_CREDENTIAL_TYPE.get(
-                credential_type.lower(), CredentialType.UNKNOWN
-            )
+            normalized_type = credential_type.lower()
+            try:
+                cred_type_value = CredentialType(normalized_type)
+            except ValueError:
+                cred_type_value = normalized_type
 
     # Map confidence string to enum if needed
     confidence_enum = None
@@ -135,7 +132,7 @@ def build_http_event_from_flow(
         path=path_no_query,
         headers_present=headers_present,
         credential_detected=credential_detected,
-        credential_type=cred_type_enum,
+        credential_type=cred_type_value,
         credential_fingerprint=credential_fingerprint,
         credential_confidence=confidence_enum,
         body_present=bool(flow.request.content),

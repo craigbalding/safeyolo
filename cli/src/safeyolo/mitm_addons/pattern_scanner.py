@@ -8,7 +8,8 @@ Complements credential_guard:
   credential_guard: Credential ROUTING (is this key going to the right host?)
   pattern_scanner: Pattern DETECTION (should this content be blocked/logged?)
 
-By default, pattern_scanner has NO patterns loaded. Configure via policy:
+The scanner starts empty until policy is loaded. SafeYolo's shipped addon
+configuration enables the `secrets` set; operators can configure it via:
 
     # Enable optional builtin pattern sets
     pattern_scanner:
@@ -56,8 +57,8 @@ OUTCOME_MATCH_BLOCKED = "match_blocked"   # rule matched and produced a block
 class PatternScanner(SecurityAddon):
     """User-configurable pattern scanner for URLs, headers, and bodies.
 
-    Scans request/response content for user-defined patterns. Empty by default -
-    users configure patterns via policy or enable builtin pattern sets.
+    Scans request/response content for policy-defined patterns. The object
+    starts empty and is populated from user rules and enabled builtin sets.
     """
 
     name = "pattern-scanner"
