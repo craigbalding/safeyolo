@@ -260,6 +260,11 @@ def _observe_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
         console.print("\n[dim]detached[/]")
 
 
+# Short aliases matter at a chat prompt -- these get typed constantly.
+_PASTE_CMDS = (":paste", ":p")
+_EDIT_CMDS = (":edit", ":e")
+
+
 def _read_clipboard() -> tuple[str | None, str]:
     """Read the host clipboard verbatim. Returns (text, error).
 
@@ -332,8 +337,8 @@ def _confirm_send(body: str) -> bool:
 
 def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
     console.print(
-        "[dim]--- interactive (empty line polls; :paste clipboard, "
-        ":edit in $EDITOR, :q to quit) ---[/]"
+        "[dim]--- interactive (empty line polls; :paste/:p clipboard, "
+        ":edit/:e in $EDITOR, :q to quit) ---[/]"
     )
     console.print(
         f"[dim]tip: for live scrolling, run `safeyolo coord chat {room} "
@@ -349,12 +354,12 @@ def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
             if command == ":q":
                 break
             body: str | None = None
-            if command in (":paste", ":edit"):
+            if command in _PASTE_CMDS or command in _EDIT_CMDS:
                 # Typing at the prompt routes bytes through the terminal line
                 # discipline, which eats embedded control characters. Both of
                 # these read the text from somewhere the tty never sees.
                 body, err = (
-                    _read_clipboard() if command == ":paste" else _read_editor()
+                    _read_clipboard() if command in _PASTE_CMDS else _read_editor()
                 )
                 if body is None:
                     console.print(f"[red]{err}[/]")
