@@ -112,7 +112,9 @@ class TestCoordIdentity:
 
 
 class TestCoordGrantEnforcement:
-    def test_send_denied_without_grant(self, api, isolated_state):
+    def test_send_denied_without_membership_is_404(self, api, isolated_state):
+        """Per #20: non-member sees 404 (indistinguishable from nonexistent
+        room), NOT 403 which would confirm the room exists."""
         _register_agent("alice")
         _register_agent("dave")
         _setup_room_with_grants("huddle", ["alice"])  # dave has no grant
@@ -122,7 +124,49 @@ class TestCoordGrantEnforcement:
                 body={"body": "sneaking in"},
             )
             _run(api, flow)
+        assert flow.response.status_code == 404
+        # Generic body: no room name echoed
+        assert "huddle" not in flow.response.content.decode()
+
+    def test_permission_denied_is_403_not_404(self, api, isolated_state):
+        """Per #20 split: a member with wrong permission gets 403 (legitimate
+        auth signal), NOT 404. Non-member gets 404 (no membership)."""
+        from safeyolo.agents_store import get_or_mint_agent_id
+        from safeyolo.coord import api as coord_api
+        _register_agent("alice")
+        coord_api.bootstrap()
+        coord_api.create_room("r")
+        alice_id = get_or_mint_agent_id("alice")
+        # alice has receive only, no send
+        coord_api.grant("r", "agent", alice_id, permissions=["receive"])
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/send", method="POST",
+                              body={"body": "no send perm"})
+            _run(api, flow)
         assert flow.response.status_code == 403
+        # 403 body carries the permission info — that's a legitimate signal
+        # to a member (they know the room exists; they need send permission).
+        assert "permission" in flow.response.content.decode().lower()
+
+    def test_nonexistent_room_and_no_membership_indistinguishable(self, api, isolated_state):
+        """Both cases must return identical 404 responses to prevent
+        room-existence enumeration (per bob's #20 finding)."""
+        _register_agent("alice")
+        _register_agent("dave")
+        _setup_room_with_grants("exists-r", ["alice"])
+        # 1: dave probing nonexistent room
+        with _as_agent("dave"):
+            flow1 = _make_flow("/api/coord/rooms/does-not-exist/join", method="POST")
+            _run(api, flow1)
+        # 2: dave probing existing room he has no membership on
+        with _as_agent("dave"):
+            flow2 = _make_flow("/api/coord/rooms/exists-r/join", method="POST")
+            _run(api, flow2)
+        assert flow1.response.status_code == 404
+        assert flow2.response.status_code == 404
+        # Bodies identical — no room name in either
+        assert flow1.response.content == flow2.response.content
+        assert "exists-r" not in flow2.response.content.decode()
 
     def test_send_and_read_roundtrip(self, api, isolated_state):
         _register_agent("alice")
@@ -379,7 +423,8 @@ class TestCoordRevokeRoundtrip:
                               body={"body": "during revoke"})
             _run(api, flow)
 
-        # alice cannot join / send / read / wait
+        # alice cannot join / send / read / wait — per #20 this is 404
+        # (indistinguishable from nonexistent room). Revoked = no membership.
         for path, method, body in [
             ("/api/coord/rooms/r/join", "POST", None),
             ("/api/coord/rooms/r/send", "POST", {"body": "denied"}),
@@ -389,7 +434,7 @@ class TestCoordRevokeRoundtrip:
             with _as_agent("alice"):
                 flow = _make_flow(path, method=method, body=body)
                 _run(api, flow)
-            assert flow.response.status_code == 403, f"{path} should be 403"
+            assert flow.response.status_code == 404, f"{path} should be 404"
 
         # re-grant: retained history becomes visible again (room semantic)
         coord_api.grant("r", "agent", alice_id)

@@ -479,10 +479,18 @@ class AgentAPI:
             else:
                 self._respond(flow, 405, {"error": "Method Not Allowed", "op": op})
                 return
-        except coord_api.NotFoundError as e:
-            self._respond(flow, 404, {"error": str(e)})
+        except coord_api.NotFoundError:
+            # Includes NoMembershipError (subclass). #20: unauthorized
+            # callers and callers probing nonexistent rooms MUST see the
+            # same response — no room name echoed, no distinction between
+            # "doesn't exist" and "you have no membership."
+            self._respond(flow, 404, {"error": "room not found or not accessible"})
             return
         except coord_api.GrantError as e:
+            # Caller IS a member but lacks the specific permission. A
+            # legitimate 403 to a legitimate participant, not information
+            # disclosure. Message is under our control (composed in
+            # _check_grant with permission list only, no room name).
             self._respond(flow, 403, {"error": str(e)})
             return
         except _CoordValidationError as e:

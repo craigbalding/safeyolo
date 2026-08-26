@@ -52,15 +52,43 @@ def test_room_grant_and_send_and_read(coord_env):
 
 
 def test_grant_enforcement(coord_env):
+    """Non-member access — per #20, this is NoMembershipError (404
+    semantic), distinct from GrantError (403, member with wrong perm)."""
     api.create_room("huddle")
     api.grant("huddle", "agent", AGENT_A)
 
-    with pytest.raises(api.GrantError):
+    with pytest.raises(api.NoMembershipError):
         api.send("huddle", "agent", AGENT_C, "sneaking in")
-    with pytest.raises(api.GrantError):
+    with pytest.raises(api.NoMembershipError):
         api.read_room("huddle", "agent", AGENT_C)
-    with pytest.raises(api.GrantError):
+    with pytest.raises(api.NoMembershipError):
         api.join_room("huddle", "agent", AGENT_C)
+
+
+def test_permission_denied_is_grant_error(coord_env):
+    """Member with wrong permission (e.g. receive-only calling send)
+    gets GrantError (403), NOT NoMembershipError (404). Per #20 split."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A, permissions=["receive"])
+    # receive-only member: read OK, send raises GrantError (not NoMembership)
+    api.read_room("r", "agent", AGENT_A)
+    with pytest.raises(api.GrantError, match="permission 'send' denied"):
+        api.send("r", "agent", AGENT_A, "no send perm")
+
+
+def test_no_membership_and_nonexistent_room_are_both_404_family(coord_env):
+    """Per #20: unauthorized caller cannot distinguish nonexistent room
+    from room-they-lack-membership-in. Both raise NotFoundError-family
+    exceptions."""
+    api.create_room("exists")
+    api.grant("exists", "agent", AGENT_A)
+
+    # Nonexistent room
+    with pytest.raises(api.NotFoundError):
+        api.join_room("does-not-exist", "agent", AGENT_C)
+    # Room exists but caller has no membership
+    with pytest.raises(api.NotFoundError):  # NoMembershipError IS NotFoundError
+        api.join_room("exists", "agent", AGENT_C)
 
 
 def test_operator_send_and_agent_read(coord_env):
@@ -218,16 +246,19 @@ def test_revoke_grant_idempotent(coord_env):
 
 
 def test_revoke_then_ops_fail(coord_env):
+    """Post-revoke, all ops raise NoMembershipError (404 per #20).
+    A revoked principal has no active membership — same as never having
+    joined — and must not be able to distinguish that from room absence."""
     api.create_room("r")
     api.grant("r", "agent", AGENT_A)
     api.send("r", "agent", AGENT_A, "before")
     api.revoke_grant("r", "agent", AGENT_A)
 
-    with pytest.raises(api.GrantError):
+    with pytest.raises(api.NoMembershipError):
         api.join_room("r", "agent", AGENT_A)
-    with pytest.raises(api.GrantError):
+    with pytest.raises(api.NoMembershipError):
         api.send("r", "agent", AGENT_A, "denied")
-    with pytest.raises(api.GrantError):
+    with pytest.raises(api.NoMembershipError):
         api.read_room("r", "agent", AGENT_A)
 
 
@@ -258,16 +289,17 @@ def test_body_over_max_rejected(coord_env):
 
 def test_revoke_cancels_all_active_grants(coord_env):
     """Bug #18: revoke used to cancel only the newest grant, letting
-    _check_grant fall back to an older active one. Verify multi-grant."""
+    _check_grant fall back to an older active one. Verify multi-grant.
+    Post-revoke, expect NoMembershipError (per #20 semantic split)."""
     api.create_room("r")
     api.grant("r", "agent", AGENT_A)
     api.grant("r", "agent", AGENT_A)  # second grant, still active
     api.grant("r", "agent", AGENT_A)  # third
     assert api.revoke_grant("r", "agent", AGENT_A) is True
     # After revoke, NO active grant should exist — access must fail.
-    with pytest.raises(api.GrantError):
+    with pytest.raises(api.NoMembershipError):
         api.join_room("r", "agent", AGENT_A)
-    with pytest.raises(api.GrantError):
+    with pytest.raises(api.NoMembershipError):
         api.read_room("r", "agent", AGENT_A)
     # Idempotent: nothing left to revoke.
     assert api.revoke_grant("r", "agent", AGENT_A) is False

@@ -23,12 +23,25 @@ READ_PAGE_MAX = 200
 MAX_BODY_BYTES = 256 * 1024
 
 
-class GrantError(PermissionError):
-    """Raised when the caller lacks a valid grant for the requested operation."""
-
-
 class NotFoundError(LookupError):
     """Raised when a room / agent / message does not exist."""
+
+
+class NoMembershipError(NotFoundError):
+    """Raised when the caller has no active membership on a room.
+
+    Inherits from NotFoundError so unauthorized callers see the same 404 as
+    callers probing for nonexistent rooms (per #20 fix). Splitting this from
+    GrantError distinguishes "you are not a member" (404, indistinguishable
+    from room-doesn't-exist to prevent enumeration) from "you are a member
+    but you lack this permission" (403, a legitimate signal to a member).
+    """
+
+
+class GrantError(PermissionError):
+    """Raised when a caller with an active membership lacks the specific
+    permission needed for the requested operation (e.g. `receive`-only
+    member calling `send`). 403 semantic — the caller IS in the room."""
 
 
 class ConflictError(ValueError):
@@ -132,13 +145,17 @@ def _check_grant(
         (room_id, principal_kind, principal_id),
     ).fetchone()
     if not row:
-        raise GrantError(
-            f"no active grant for {principal_kind}:{principal_id} on this room"
+        # No active membership — 404 semantic (indistinguishable from
+        # nonexistent room to an unauthorized caller, per #20).
+        raise NoMembershipError(
+            f"no active membership for {principal_kind}:{principal_id}"
         )
     perms = row["permissions"].split(",")
     if required_perm not in perms:
+        # Caller IS a member but lacks this specific permission —
+        # 403 semantic. Legitimate signal to a member; not a leak.
         raise GrantError(
-            f"{required_perm!r} not in grant permissions {perms}"
+            f"permission {required_perm!r} denied; grant permits {perms}"
         )
 
 
@@ -179,13 +196,13 @@ def revoke_grant(
 def join_room(room_name: str, principal_kind: str, principal_id: str) -> dict[str, Any]:
     """Attach to an existing membership. Does not grant anything.
 
-    A room ID is not a capability; this call verifies a valid grant exists
-    for the caller and returns room metadata + the caller's current
-    sequence cursor position (0 = start of retained history).
+    A room ID is not a capability; this call verifies a valid membership
+    exists for the caller and returns room metadata. Missing membership
+    raises NoMembershipError (404 semantic per #20); nonexistent room
+    raises NotFoundError (also 404).
     """
     with store.connect() as conn:
         room_id = _resolve_room(conn, room_name)
-        # Just verify some grant exists; both send/receive callers use join.
         row = conn.execute(
             """SELECT permissions FROM memberships
                WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
@@ -194,8 +211,8 @@ def join_room(room_name: str, principal_kind: str, principal_id: str) -> dict[st
             (room_id, principal_kind, principal_id),
         ).fetchone()
         if not row:
-            raise GrantError(
-                f"no active grant for {principal_kind}:{principal_id} on room {room_name!r}"
+            raise NoMembershipError(
+                f"no active membership for {principal_kind}:{principal_id}"
             )
         return {
             "room_id": room_id,
