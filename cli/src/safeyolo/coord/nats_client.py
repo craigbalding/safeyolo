@@ -19,10 +19,15 @@ Design decisions (per #371 comment 5421943173 + reviewer feedback):
       streams the config is verified against the expected contract;
       drift fails loud so a silent stale-config bump can't happen
       (reviewer round-3 point 5).
-    - Reads use EPHEMERAL pull consumers with deliver_by_start_sequence.
-      The consumer is explicitly deleted after every fetch so
-      /messages+/wait traffic does not leave a rolling population of
-      server-side consumer resources (reviewer round-3 point 3).
+    - Reads use EPHEMERAL pull consumers with deliver_by_start_sequence,
+      explicitly deleted rather than left to nats-py's inactivity
+      cleanup, so read traffic does not leave a rolling population of
+      server-side consumers (reviewer round-3 point 3). Scope differs
+      by caller: a `read_room` page is one consumer per call, while a
+      `wait_for_message` holds ONE consumer across every fetch of a
+      single wait (`pull_session`) and deletes it when the wait ends.
+      A wait leaves a long pull request outstanding rather than polling,
+      so the server completes it when a message is stored.
     - Publish uses `Nats-Msg-Id = msg_id` header so an ambiguous
       PubAck can be retried with the same msg_id inside the JetStream
       duplicate window without duplicating the message.
@@ -491,7 +496,7 @@ async def _close_pull(js, stream: str, psub, consumer_name: str) -> None:
     unsubscribe() closes our inbox; delete_consumer removes the actual
     server-side consumer. nats-py's ephemeral consumers rely on
     inactivity-based cleanup otherwise, which leaks state under high
-    /messages+/wait volume.
+    read volume.
     """
     with contextlib.suppress(Exception):
         await psub.unsubscribe()

@@ -354,7 +354,11 @@ def _observe_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
                     room, "operator", "operator",
                     since_sequence=cursor,
                     timeout_seconds=_OBSERVE_WAIT_SECONDS,
-                    limit=api.READ_PAGE_MAX,
+                    # Only the edge is needed: the wake page is discarded and
+                    # a canonical read_room follows, so asking for a full page
+                    # here would fetch up to 200 messages and then fetch the
+                    # same history again.
+                    limit=1,
                     exclude_self=False,
                 ))
             except CoordDataError as e:

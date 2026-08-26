@@ -434,6 +434,19 @@ async def read_room(
     }
 
 
+def _qualifies_as_wake(
+    env: dict, principal_kind: str, principal_id: str, exclude_self: bool
+) -> bool:
+    """Would this envelope end a wait, or is it the caller's own traffic?"""
+    if not exclude_self:
+        return True
+    if principal_kind == "agent":
+        return env.get("sender_agent_id") != principal_id
+    if principal_kind == "operator":
+        return env.get("sender_kind") != "operator"
+    return True
+
+
 async def wait_for_message(
     room_name: str,
     principal_kind: str,
@@ -569,21 +582,25 @@ async def _wait_loop(
         # loop at all.
         envelopes = await session.fetch(
             1, timeout=min(fetch_window_seconds, remaining))
-        if envelopes:
-            # Something arrived. Anything else already stored is picked up
-            # cheaply rather than one round trip at a time -- this keeps
-            # `limit` batching useful and, more importantly, lets the
-            # starvation guard skip a burst of the caller's own messages
-            # without a request per message.
+        if envelopes and (
+            limit > 1
+            or not _qualifies_as_wake(
+                envelopes[0], principal_kind, principal_id, exclude_self)
+        ):
+            # Drain only when that one message cannot end the wait by itself:
+            # it was the caller's own traffic (skip the rest of the burst in
+            # one request rather than a round trip per message), or the
+            # caller asked for more than one message on the wake. In the
+            # ordinary case -- a peer message and limit=1 -- returning
+            # straight away avoids a second NATS request and the drain window
+            # before the attention edge is released.
             envelopes += await session.fetch(
                 READ_PAGE_MAX - 1, timeout=_WAIT_DRAIN_S)
 
-        if exclude_self and principal_kind == "agent":
-            candidates = [e for e in envelopes if e.get("sender_agent_id") != principal_id]
-        elif exclude_self and principal_kind == "operator":
-            candidates = [e for e in envelopes if e.get("sender_kind") != "operator"]
-        else:
-            candidates = envelopes
+        candidates = [
+            e for e in envelopes
+            if _qualifies_as_wake(e, principal_kind, principal_id, exclude_self)
+        ]
 
         if candidates:
             # Re-check grant AFTER fetch: the check before fetch cannot

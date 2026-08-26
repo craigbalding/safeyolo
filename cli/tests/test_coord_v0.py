@@ -816,3 +816,38 @@ def test_a_burst_of_own_messages_does_not_cost_a_request_each(coord_env):
         f"took {elapsed:.1f}s to skip 60 own messages -- the burst is costing "
         "a round trip per message"
     )
+
+
+def test_an_ordinary_wake_costs_one_fetch(coord_env):
+    """A peer message with limit=1 must not trigger the post-wake drain.
+
+    The drain exists for two cases only: skipping a burst of the caller's own
+    sends, and filling a wake batch the caller actually asked for. On the
+    ordinary path it would add a second NATS request and its window before
+    the attention edge is released.
+    """
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    _run(api.send("r", "agent", AGENT_B, "peer"))
+
+    fetches: list[int] = []
+
+    # Count fetches by wrapping the session's fetch.
+    real_fetch = nats_client.PullSession.fetch
+
+    async def counting_fetch(self, limit, timeout):
+        fetches.append(limit)
+        return await real_fetch(self, limit, timeout)
+
+    nats_client.PullSession.fetch = counting_fetch
+    try:
+        page = _run(api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=5, fetch_window_seconds=3, limit=1,
+        ))
+    finally:
+        nats_client.PullSession.fetch = real_fetch
+
+    assert [m["body"] for m in page["messages"]] == ["peer"]
+    assert fetches == [1], f"expected a single fetch(1), got {fetches}"
