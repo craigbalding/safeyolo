@@ -1,7 +1,6 @@
 """Tests for safeyolo doctor command."""
 
 import json
-import socket
 import ssl
 import subprocess
 from unittest.mock import create_autospec

@@ -521,13 +521,18 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "service gateway not available"}, 503)
             return
 
-        grant = gateway.add_grant(
-            agent=agent,
-            service=service,
-            method=method,
-            path=path,
-            scope=lifetime,
-        )
+        try:
+            grant = gateway.add_grant(
+                agent=agent,
+                service=service,
+                method=method,
+                path=path,
+                scope=lifetime,
+            )
+        except (OSError, RuntimeError) as exc:
+            log.error("Gateway grant persistence failed: %s", type(exc).__name__)
+            self._send_json({"error": "gateway grant persistence failed"}, 503)
+            return
 
         client_ip = self._get_client_ip()
         write_event(
@@ -575,7 +580,14 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "service gateway not available"}, 503)
             return
 
-        if gateway.revoke_grant(grant_id):
+        try:
+            revoked = gateway.revoke_grant(grant_id)
+        except (OSError, RuntimeError) as exc:
+            log.error("Gateway grant revocation persistence failed: %s", type(exc).__name__)
+            self._send_json({"error": "gateway grant persistence failed"}, 503)
+            return
+
+        if revoked:
             client_ip = self._get_client_ip()
             write_event(
                 "admin.gateway_grant_revoked",
@@ -783,14 +795,19 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "service gateway not available"}, 503)
             return
 
-        binding_state = gateway.add_contract_binding(
-            agent=agent,
-            service=service,
-            capability=capability,
-            template=template,
-            bound_values=bindings,
-            grantable_operations=grantable_operations,
-        )
+        try:
+            binding_state = gateway.add_contract_binding(
+                agent=agent,
+                service=service,
+                capability=capability,
+                template=template,
+                bound_values=bindings,
+                grantable_operations=grantable_operations,
+            )
+        except (OSError, RuntimeError) as exc:
+            log.error("Contract binding persistence failed: %s", type(exc).__name__)
+            self._send_json({"error": "contract binding persistence failed"}, 503)
+            return
 
         client_ip = self._get_client_ip()
         write_event(

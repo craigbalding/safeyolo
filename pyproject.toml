@@ -61,6 +61,7 @@ Issues = "https://github.com/craigbalding/safeyolo/issues"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.0.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
@@ -148,6 +149,6 @@ markers = [
 # module top, not pytest tests). They're invoked directly by the VPS
 # smoke-test scripts. Excluded from collection so pytest doesn't import
 # them and trigger their top-level exits.
-norecursedirs = ["uds-networking", "__pycache__"]
+norecursedirs = ["uds-networking", "__pycache__", ".hypothesis"]
 
 # Ruff config is in ruff.toml

@@ -4,8 +4,8 @@ from unittest.mock import create_autospec, patch
 
 from typer.testing import CliRunner
 
-from safeyolo.cli import app
 from safeyolo.api import AdminAPI
+from safeyolo.cli import app
 
 
 def test_traffic_updates_scope_before_attaching():

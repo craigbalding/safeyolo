@@ -5,8 +5,8 @@ from unittest.mock import call, create_autospec, patch
 
 from typer.testing import CliRunner
 
-from safeyolo.cli import app
 from safeyolo.api import AdminAPI
+from safeyolo.cli import app
 from safeyolo.commands.tmux import (
     TMUX_CONFIG_SNIPPET,
     associate_agent_pane,

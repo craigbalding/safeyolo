@@ -1,11 +1,8 @@
 """Centralized read/write for agent config in policy.toml [agents] section."""
 
-import fcntl
 import ipaddress
 import json
 import logging
-import shutil
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -45,31 +42,18 @@ def _load_doc() -> tomlkit.TOMLDocument:
 
 def _save_doc(doc: tomlkit.TOMLDocument) -> None:
     """Atomic write of TOMLDocument back to policy.toml."""
-    path = _policy_toml_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    content = tomlkit.dumps(doc)
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".toml", dir=path.parent, delete=False
-    ) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-    shutil.move(tmp_path, path)
+    from .policy.toml_roundtrip import save_roundtrip
+
+    save_roundtrip(_policy_toml_path(), doc)
 
 
 def _locked_mutate(mutate_fn: Callable[[tomlkit.TOMLDocument], Any]) -> Any:
     """Read-modify-write policy.toml under exclusive file lock."""
-    lock = _lock_path()
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.touch()
-    with open(lock) as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            doc = _load_doc()
-            result = mutate_fn(doc)
-            _save_doc(doc)
-            return result
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+    from .policy.toml_roundtrip import locked_policy_mutate
+
+    return locked_policy_mutate(
+        _policy_toml_path(), mutate_fn, create_if_missing=True
+    )
 
 
 def _get_agents(doc: tomlkit.TOMLDocument) -> dict:

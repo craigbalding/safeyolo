@@ -40,14 +40,15 @@ class TestAgentEgressCompilation:
         assert len(perms) == 1
         assert perms[0]["effect"] == "prompt"
 
-    def test_agent_egress_allow_no_permission(self):
-        """egress = allow doesn't emit a catch-all permission."""
+    def test_agent_egress_allow_emits_catch_all_permission(self):
+        """egress = allow emits the explicit catch-all required by default-deny."""
         result = self._compile({"boris": {"egress": "allow"}})
         perms = [
             p for p in result["permissions"]
             if p.get("condition", {}).get("agent") == "boris"
         ]
-        assert len(perms) == 0
+        assert len(perms) == 1
+        assert perms[0]["effect"] == "allow"
 
     def test_agent_egress_absent_no_permission(self):
         """No egress field doesn't emit a catch-all permission."""

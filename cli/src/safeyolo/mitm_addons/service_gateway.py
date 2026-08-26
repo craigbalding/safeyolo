@@ -763,10 +763,9 @@ class ServiceGateway:
             created=created,
             expires=expires,
         )
+        self._persist_grant_delta(add=(grant,))
         with self._lock:
             self._grants[grant.grant_id] = grant
-
-        self._persist_grants()
 
         log.info(
             f"Grant added: {grant.grant_id} {sanitize_for_log(agent)}/{sanitize_for_log(service)} "
@@ -811,9 +810,11 @@ class ServiceGateway:
     def revoke_grant(self, grant_id: str) -> bool:
         """Revoke a grant by ID. Returns True if found and removed."""
         with self._lock:
-            grant = self._grants.pop(grant_id, None)
+            grant = self._grants.get(grant_id)
         if grant:
-            self._persist_grants()
+            self._persist_grant_delta(remove_ids=(grant_id,))
+            with self._lock:
+                self._grants.pop(grant_id, None)
             log.info(f"Grant revoked: {sanitize_for_log(grant_id)}")
             write_event(
                 "gateway.grant_revoked",
@@ -837,11 +838,14 @@ class ServiceGateway:
                     expired.append(grant)
                 elif result is None and grant.matches(agent, service, method, path):
                     result = grant
-            for grant in expired:
-                self._grants.pop(grant.grant_id, None)
 
         if expired:
-            self._persist_grants()
+            self._persist_grant_delta(
+                remove_ids=tuple(grant.grant_id for grant in expired)
+            )
+            with self._lock:
+                for grant in expired:
+                    self._grants.pop(grant.grant_id, None)
             for grant in expired:
                 log.info(
                     f"Grant expired: {grant.grant_id} {sanitize_for_log(grant.agent)}/{sanitize_for_log(grant.service)} "
@@ -861,9 +865,9 @@ class ServiceGateway:
 
     def _consume_grant(self, grant: GrantEntry) -> None:
         """Consume a once-scope grant after successful response."""
+        self._persist_grant_delta(remove_ids=(grant.grant_id,))
         with self._lock:
             self._grants.pop(grant.grant_id, None)
-        self._persist_grants()
         log.info(f"Grant consumed (once): {sanitize_for_log(grant.grant_id)}")
         write_event(
             "gateway.grant_consumed",
@@ -941,48 +945,64 @@ class ServiceGateway:
         except Exception as e:
             log.warning("Failed to load grants from policy.toml: %s: %s", type(e).__name__, e)
 
+    @staticmethod
+    def _grant_record(grant: GrantEntry) -> dict:
+        return {
+            "grant_id": grant.grant_id,
+            "service": grant.service,
+            "method": grant.method,
+            "path": grant.path,
+            "scope": grant.scope,
+            "created": grant.created,
+            "expires": grant.expires,
+        }
+
+    def _persist_grant_delta(
+        self,
+        *,
+        add: tuple[GrantEntry, ...] = (),
+        remove_ids: tuple[str, ...] = (),
+    ) -> None:
+        """Merge grant additions/removals into the latest locked document."""
+        from safeyolo.policy.toml_roundtrip import (
+            load_agents,
+            locked_policy_mutate,
+            upsert_agent,
+        )
+
+        policy_path = self._get_policy_path()
+        if not policy_path:
+            return
+
+        remove_set = set(remove_ids)
+
+        def mutate(document):
+            agents = load_agents(document)
+            for agent_data in agents.values():
+                current = agent_data.get("grants", [])
+                agent_data["grants"] = [
+                    item for item in current
+                    if item.get("grant_id") not in remove_set
+                ]
+            for grant in add:
+                if grant.agent not in agents or grant.scope == "session":
+                    continue
+                current = agents[grant.agent].setdefault("grants", [])
+                current[:] = [
+                    item for item in current
+                    if item.get("grant_id") != grant.grant_id
+                ]
+                current.append(self._grant_record(grant))
+            for name, data in agents.items():
+                upsert_agent(document, name, data)
+
+        locked_policy_mutate(policy_path, mutate)
+
     def _persist_grants(self) -> None:
-        """Write grants back to policy.toml [agents] section."""
-        try:
-            from safeyolo.policy.toml_roundtrip import load_agents, locked_policy_mutate, upsert_agent
-
-            policy_path = self._get_policy_path()
-            if not policy_path:
-                return
-
-            with self._lock:
-                # Snapshot current grants grouped by agent
-                grants_by_agent: dict[str, list[dict]] = {}
-                for grant in self._grants.values():
-                    grants_by_agent.setdefault(grant.agent, []).append(
-                        {
-                            "grant_id": grant.grant_id,
-                            "service": grant.service,
-                            "method": grant.method,
-                            "path": grant.path,
-                            "scope": grant.scope,
-                            "created": grant.created,
-                            "expires": grant.expires,
-                        }
-                    )
-
-            def _mutate(doc):
-                agents = load_agents(doc)
-                # Clear existing grants
-                for agent_data in agents.values():
-                    agent_data.pop("grants", None)
-                # Write new grants
-                for agent_name, grants in grants_by_agent.items():
-                    if agent_name in agents:
-                        agents[agent_name]["grants"] = grants
-                # Write back modified agents
-                for name, data in agents.items():
-                    upsert_agent(doc, name, data)
-
-            locked_policy_mutate(policy_path, _mutate)
-
-        except Exception as e:
-            log.warning(f"Failed to persist grants: {type(e).__name__}: {e}")
+        """Compatibility helper that safely upserts the current grant set."""
+        with self._lock:
+            grants = tuple(self._grants.values())
+        self._persist_grant_delta(add=grants)
 
     # =========================================================================
     # Contract binding management
@@ -1008,10 +1028,9 @@ class ServiceGateway:
             grantable_operations=grantable_operations,
         )
         key = (agent, service, capability)
+        self._persist_contract_binding_delta(add=(binding,))
         with self._lock:
             self._contract_bindings[key] = binding
-
-        self._persist_contract_bindings()
 
         log.info(
             f"Contract binding added: {binding.binding_id} "
@@ -1027,12 +1046,21 @@ class ServiceGateway:
     def revoke_contract_binding(self, binding_id: str) -> bool:
         """Remove a contract binding by ID. Returns True if found."""
         with self._lock:
-            for key, binding in self._contract_bindings.items():
-                if binding.binding_id == binding_id:
-                    del self._contract_bindings[key]
-                    log.info(f"Contract binding revoked: {sanitize_for_log(binding_id)}")
-                    self._persist_contract_bindings()
-                    return True
+            found = next(
+                (
+                    (key, binding)
+                    for key, binding in self._contract_bindings.items()
+                    if binding.binding_id == binding_id
+                ),
+                None,
+            )
+        if found:
+            key, _binding = found
+            self._persist_contract_binding_delta(remove_ids=(binding_id,))
+            with self._lock:
+                self._contract_bindings.pop(key, None)
+            log.info(f"Contract binding revoked: {sanitize_for_log(binding_id)}")
+            return True
         return False
 
     def _load_contract_bindings_from_policy(self) -> None:
@@ -1071,48 +1099,66 @@ class ServiceGateway:
         except Exception as e:
             log.warning(f"Failed to load contract bindings from policy.toml: {type(e).__name__}: {e}")
 
-    def _persist_contract_bindings(self) -> None:
-        """Write contract bindings to policy.toml [agents] section."""
-        try:
-            from safeyolo.policy.toml_roundtrip import load_agents, locked_policy_mutate, upsert_agent
+    @staticmethod
+    def _contract_binding_record(binding: ContractBindingState) -> dict:
+        return {
+            "binding_id": binding.binding_id,
+            "service": binding.service,
+            "capability": binding.capability,
+            "template": binding.template,
+            "bound_values": binding.bound_values,
+            "grantable_operations": binding.grantable_operations,
+            "created": binding.created,
+        }
 
-            policy_path = self._get_policy_path()
-            if not policy_path:
-                return
+    def _persist_contract_binding_delta(
+        self,
+        *,
+        add: tuple[ContractBindingState, ...] = (),
+        remove_ids: tuple[str, ...] = (),
+    ) -> None:
+        """Merge binding additions/removals into the latest locked document."""
+        from safeyolo.policy.toml_roundtrip import (
+            load_agents,
+            locked_policy_mutate,
+            upsert_agent,
+        )
 
-            with self._lock:
-                # Snapshot current bindings grouped by agent
-                bindings_by_agent: dict[str, list[dict]] = {}
-                for binding in self._contract_bindings.values():
-                    bindings_by_agent.setdefault(binding.agent, []).append(
-                        {
-                            "binding_id": binding.binding_id,
-                            "service": binding.service,
-                            "capability": binding.capability,
-                            "template": binding.template,
-                            "bound_values": binding.bound_values,
-                            "grantable_operations": binding.grantable_operations,
-                            "created": binding.created,
-                        }
+        policy_path = self._get_policy_path()
+        if not policy_path:
+            return
+        remove_set = set(remove_ids)
+
+        def mutate(document):
+            agents = load_agents(document)
+            for agent_data in agents.values():
+                current = agent_data.get("contract_bindings", [])
+                agent_data["contract_bindings"] = [
+                    item for item in current
+                    if item.get("binding_id") not in remove_set
+                ]
+            for binding in add:
+                if binding.agent not in agents:
+                    continue
+                current = agents[binding.agent].setdefault("contract_bindings", [])
+                current[:] = [
+                    item for item in current
+                    if not (
+                        item.get("service") == binding.service
+                        and item.get("capability") == binding.capability
                     )
+                ]
+                current.append(self._contract_binding_record(binding))
+            for name, data in agents.items():
+                upsert_agent(document, name, data)
 
-            def _mutate(doc):
-                agents = load_agents(doc)
-                # Clear existing contract_bindings
-                for agent_data in agents.values():
-                    agent_data.pop("contract_bindings", None)
-                # Write new bindings
-                for agent_name, bindings in bindings_by_agent.items():
-                    if agent_name in agents:
-                        agents[agent_name]["contract_bindings"] = bindings
-                # Write back modified agents
-                for name, data in agents.items():
-                    upsert_agent(doc, name, data)
+        locked_policy_mutate(policy_path, mutate)
 
-            locked_policy_mutate(policy_path, _mutate)
-
-        except Exception as e:
-            log.warning(f"Failed to persist contract bindings: {type(e).__name__}: {e}")
+    def _persist_contract_bindings(self) -> None:
+        """Compatibility helper that safely upserts current bindings."""
+        with self._lock:
+            bindings = tuple(self._contract_bindings.values())
+        self._persist_contract_binding_delta(add=bindings)
 
     @trace_addon_hook("response")
     def response(self, flow: http.HTTPFlow):

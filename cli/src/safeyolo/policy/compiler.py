@@ -50,6 +50,7 @@ def compile_policy(raw: dict) -> dict:
     Returns:
         Dict in IAM format ready for UnifiedPolicy validation
     """
+    _validate_budget_hierarchy(raw)
     result: dict[str, Any] = {}
 
     # Pass through metadata
@@ -111,6 +112,15 @@ def compile_policy(raw: dict) -> dict:
                     "action": "network:request",
                     "resource": resource,
                     "effect": "deny",
+                    "tier": "explicit",
+                }
+            )
+        elif egress == "allow" and "rate_limit" not in config:
+            permissions.append(
+                {
+                    "action": "network:request",
+                    "resource": resource,
+                    "effect": "allow",
                     "tier": "explicit",
                 }
             )
@@ -195,6 +205,46 @@ def compile_policy(raw: dict) -> dict:
     return result
 
 
+def _validate_budget_hierarchy(raw: dict[str, Any]) -> None:
+    """Validate the aggregate and per-host request ceilings.
+
+    A host rate is an additional restriction beneath the policy-wide budget;
+    it cannot advertise a ceiling which the aggregate policy can never grant.
+    Policies without a global network budget remain valid for compatibility.
+    """
+    global_budget = raw.get("global_budget")
+    if global_budget is None:
+        budgets = raw.get("budgets")
+        if isinstance(budgets, dict):
+            global_budget = budgets.get("network:request")
+    if global_budget is None:
+        return
+    if type(global_budget) is not int or global_budget < 1:
+        raise ValueError("global network budget must be a positive integer")
+
+    def validate_hosts(hosts: Any, scope: str) -> None:
+        if not isinstance(hosts, dict):
+            return
+        for host, config in hosts.items():
+            if not isinstance(config, dict) or "rate_limit" not in config:
+                continue
+            rate = config["rate_limit"]
+            if type(rate) is not int or rate < 1:
+                raise ValueError(f"{scope} host '{host}' rate must be a positive integer")
+            if rate > global_budget:
+                raise ValueError(
+                    f"{scope} host '{host}' rate {rate} exceeds global budget "
+                    f"{global_budget} requests/minute"
+                )
+
+    validate_hosts(raw.get("hosts", {}), "policy")
+    agents = raw.get("agents", {})
+    if isinstance(agents, dict):
+        for agent, config in agents.items():
+            if isinstance(config, dict):
+                validate_hosts(config.get("hosts", {}), f"agent '{agent}'")
+
+
 def _compile_wildcard(config: dict, permissions: list[dict]) -> None:
     """Compile the wildcard host entry into default permissions."""
     # Unknown credentials handling
@@ -238,7 +288,15 @@ def _compile_wildcard(config: dict, permissions: list[dict]) -> None:
                 "tier": "explicit",
             }
         )
-    # egress = "allow" or absent → default-allow behaviour, no permission needed
+    elif egress == "allow" and "rate_limit" not in config:
+        permissions.append(
+            {
+                "action": "network:request",
+                "resource": "*",
+                "effect": "allow",
+                "tier": "explicit",
+            }
+        )
 
     # Default rate limit
     if "rate_limit" in config:
@@ -284,6 +342,16 @@ def _compile_agent_hosts(
                     "condition": {"agent": agent_name},
                 }
             )
+        elif agent_egress == "allow":
+            permissions.append(
+                {
+                    "action": "network:request",
+                    "resource": "*",
+                    "effect": "allow",
+                    "tier": "explicit",
+                    "condition": {"agent": agent_name},
+                }
+            )
 
         agent_hosts = agent_config.get("hosts", {})
         for host_pattern, config in agent_hosts.items():
@@ -302,6 +370,16 @@ def _compile_agent_hosts(
                         "action": "network:request",
                         "resource": resource,
                         "effect": egress,
+                        "tier": "explicit",
+                        "condition": {"agent": agent_name},
+                    }
+                )
+            elif egress == "allow" and "rate_limit" not in config:
+                permissions.append(
+                    {
+                        "action": "network:request",
+                        "resource": resource,
+                        "effect": "allow",
                         "tier": "explicit",
                         "condition": {"agent": agent_name},
                     }

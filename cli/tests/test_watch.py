@@ -7,8 +7,8 @@ from unittest.mock import create_autospec, patch
 import pytest
 from rich.console import Console
 from rich.panel import Panel
-from safeyolo.api import AdminAPI
 
+from safeyolo.api import AdminAPI
 from safeyolo.commands.watch import (
     DISPATCH,
     FALLBACK_DISPATCH,

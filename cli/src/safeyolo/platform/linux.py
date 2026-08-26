@@ -1653,7 +1653,7 @@ class LinuxPlatform(AgentPlatform):
             # `ln -sf /safeyolo-status/boot.log /var/log/safeyolo-boot.log`
             # fails with EROFS because /var/log is in the tree and the
             # runsc --overlay2 flag is ignored for write routing when
-            # the root is marked readonly. Behaviour confirmed on devstack
+            # the root is marked readonly. Behaviour confirmed on a KVM VPS
             # (linux-amd64, gVisor release-20260413.0) with runsc
             # --debug logs: task 3 (ln -sf) exits non-zero, task 1
             # (bash) exits, boot.log stays 0 bytes. Flipping to false

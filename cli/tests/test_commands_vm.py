@@ -16,8 +16,8 @@ import pytest
 from click import unstyle
 from typer.testing import CliRunner
 
-from safeyolo.cli import app
 from safeyolo.api import AdminAPI
+from safeyolo.cli import app
 from safeyolo.commands.agent import _store_remove_agent
 from safeyolo.platform import AgentPlatform
 from safeyolo.proxy import start_proxy, wait_for_healthy

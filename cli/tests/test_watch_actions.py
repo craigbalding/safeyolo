@@ -3,8 +3,8 @@
 from unittest.mock import create_autospec, patch
 
 import pytest
-from safeyolo.api import AdminAPI
 
+from safeyolo.api import AdminAPI
 from safeyolo.commands.watch import (
     ACTION_DISPATCH,
     ActionDispatch,
@@ -28,13 +28,14 @@ from safeyolo.commands.watch import (
     format_action_help,
     handle_action_key,
 )
+from safeyolo.commands.watch import (
+    DISPATCH as APPROVAL_DISPATCH,
+)
 
 
 def _api() -> AdminAPI:
     return create_autospec(AdminAPI, instance=True, spec_set=True)
-from safeyolo.commands.watch import (
-    DISPATCH as APPROVAL_DISPATCH,
-)
+
 
 # ---------------------------------------------------------------------------
 # Sample events

@@ -330,7 +330,10 @@ budget = 12_000   # Global cap across all domains
 "*"                 = { egress = "allow", unknown_creds = "prompt", rate = 600 }
 ```
 
-Each host's `rate` controls requests per minute. The `budget` caps total traffic across all hosts. Hosts listed in `[hosts]` are implicitly allowed; unlisted hosts fall through to the `"*"` wildcard.
+Every allowed request consumes the aggregate `budget`. A host `rate` is an
+optional second ceiling for that host: it does not reserve budget and cannot be
+higher than the aggregate budget. A host without a rate uses only the remaining
+aggregate budget. Unlisted hosts fall through to the `"*"` wildcard.
 
 **Response when denied (403):**
 ```json

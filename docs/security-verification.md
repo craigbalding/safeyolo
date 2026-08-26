@@ -86,6 +86,26 @@ safeyolo doctor      # full health check; reports runtime, isolation
 
 The [blackbox test suite](../tests/blackbox/) verifies SafeYolo's security guarantees end-to-end using real microVMs. Tests are split across two domains:
 
+Policy-file assurance is scoped separately in
+[Policy File Assurance: Threat-Model Decision](policy-assurance-threat-model.md).
+Because agents cannot directly write the host-owned policy file, that strategy
+prioritizes semantic permission deltas, cross-agent isolation, concurrent
+mutation integrity, and fail-closed behavior over generic parser fuzzing.
+
+Focused policy transaction and budget regressions run in normal pytest
+discovery. The broader deterministic campaign runs nightly or manually through
+`.github/workflows/policy-chaos.yml` and retains machine-readable evidence:
+
+```bash
+uv run python -m tools.policy_chaos run \
+  --published-seeds --output /tmp/policy-chaos.json
+```
+
+The default command creates only temporary policies. Abrupt-VM-death checks use
+the separately guarded `fault prepare-power-cut` / `fault recover` protocol on
+disposable KVM VPS guests. Those results are evidence about guest VM death,
+not a claim about physical storage power-loss durability.
+
 **Host-side proxy tests** (`tests/blackbox/host/`):
 
 | Test | Verifies |
@@ -155,3 +175,4 @@ All installed package versions verified clean against [OSV.dev](https://osv.dev)
 | Request logging | [request_logger.py](../cli/src/safeyolo/mitm_addons/request_logger.py) |
 | Startup verification | [start-safeyolo.sh](../scripts/start-safeyolo.sh) |
 | Blackbox tests | [tests/blackbox/](../tests/blackbox/) |
+| Policy assurance threat model | [policy-assurance-threat-model.md](policy-assurance-threat-model.md) |

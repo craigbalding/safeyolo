@@ -181,7 +181,7 @@ class TestCompileEgress:
             }
         ]
 
-    def test_per_host_egress_allow_generates_no_permission(self):
+    def test_per_host_egress_allow_generates_explicit_permission(self):
         from safeyolo.policy.compiler import compile_policy
 
         raw = {
@@ -191,7 +191,14 @@ class TestCompileEgress:
         }
         result = compile_policy(raw)
 
-        assert result["permissions"] == []
+        assert result["permissions"] == [
+            {
+                "action": "network:request",
+                "resource": "safe.com/*",
+                "effect": "allow",
+                "tier": "explicit",
+            }
+        ]
 
     def test_per_host_egress_absent_generates_no_permission(self):
         from safeyolo.policy.compiler import compile_policy
@@ -309,7 +316,7 @@ class TestCompileWildcard:
             }
         ]
 
-    def test_wildcard_egress_allow_generates_no_permission(self):
+    def test_wildcard_egress_allow_generates_explicit_permission(self):
         from safeyolo.policy.compiler import compile_policy
 
         raw = {
@@ -319,7 +326,14 @@ class TestCompileWildcard:
         }
         result = compile_policy(raw)
 
-        assert result["permissions"] == []
+        assert result["permissions"] == [
+            {
+                "action": "network:request",
+                "resource": "*",
+                "effect": "allow",
+                "tier": "explicit",
+            }
+        ]
 
     def test_wildcard_credentials_fallback_for_unknown_credentials(self):
         """When unknown_credentials is absent, credentials key is used."""
