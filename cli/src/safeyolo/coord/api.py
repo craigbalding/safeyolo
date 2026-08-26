@@ -101,12 +101,20 @@ def grant(
     now = store.now_ms()
     with store.connect() as conn:
         room_id = _resolve_room(conn, room_name)
-        conn.execute(
-            """INSERT INTO memberships
-               (room_id, principal_kind, principal_id, permissions, granted_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (room_id, principal_kind, principal_id, ",".join(permissions), now),
-        )
+        try:
+            conn.execute(
+                """INSERT INTO memberships
+                   (room_id, principal_kind, principal_id, permissions, granted_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (room_id, principal_kind, principal_id, ",".join(permissions), now),
+            )
+        except sqlite3.IntegrityError:
+            # Two grants in the same millisecond collide on the PK
+            # (room_id, principal_kind, principal_id, granted_at). Absorb as
+            # a no-op: caller intent was "grant this principal", which the
+            # first insert already achieved. #371 room semantics do not need
+            # per-millisecond uniqueness.
+            pass
 
 
 def _check_grant(
@@ -139,11 +147,14 @@ def revoke_grant(
     principal_kind: str,
     principal_id: str,
 ) -> bool:
-    """Revoke the caller-specified active grant on `room_name`.
+    """Revoke ALL active grants for the principal on `room_name`.
 
-    Sets `revoked_at` on the most-recent grant record for the principal.
-    Idempotent — a no-op if there is no active grant. Returns True if a
-    grant was actually revoked, False if there was nothing to revoke.
+    Bug fix per stage-0 finding #18: the earlier implementation revoked only
+    the most-recent grant row, but `_check_grant` also picks the newest
+    active row — so with multiple grants, revoke reported success while
+    access persisted via an older still-active grant. This now sets
+    `revoked_at` on every row with `revoked_at IS NULL`. Idempotent: returns
+    True if any row changed, False if there was nothing to revoke.
 
     Room-semantics per #371: revocation removes access but does NOT erase
     history. A future re-grant exposes whatever is still retained.
@@ -153,22 +164,13 @@ def revoke_grant(
     now = store.now_ms()
     with store.connect() as conn:
         room_id = _resolve_room(conn, room_name)
-        row = conn.execute(
-            """SELECT granted_at FROM memberships
-               WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
-                 AND revoked_at IS NULL
-               ORDER BY granted_at DESC LIMIT 1""",
-            (room_id, principal_kind, principal_id),
-        ).fetchone()
-        if not row:
-            return False
-        conn.execute(
+        cur = conn.execute(
             """UPDATE memberships SET revoked_at = ?
                WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
-                 AND granted_at = ?""",
-            (now, room_id, principal_kind, principal_id, row["granted_at"]),
+                 AND revoked_at IS NULL""",
+            (now, room_id, principal_kind, principal_id),
         )
-    return True
+        return cur.rowcount > 0
 
 
 # ---------- agent-facing operations ----------

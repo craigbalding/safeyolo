@@ -461,3 +461,29 @@ class TestCoordValidationErrors:
             _run(api, flow)
         assert flow.response.status_code == 400
         assert json.loads(flow.response.content)["error"] == "invalid timeout"
+
+    def test_out_of_range_since_is_400(self, api, isolated_state):
+        """Bug #21: out-of-range cursor used to reach SQLite and 500 as
+        OverflowError. Should be caller-shaped 400."""
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        with _as_agent("alice"):
+            flow = _make_flow(
+                f"/api/coord/rooms/r/messages?since={1 << 70}",
+                method="GET",
+            )
+            _run(api, flow)
+        assert flow.response.status_code == 400
+        assert json.loads(flow.response.content)["error"] == "invalid since"
+
+    def test_negative_since_is_400(self, api, isolated_state):
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        with _as_agent("alice"):
+            flow = _make_flow(
+                "/api/coord/rooms/r/messages?since=-1",
+                method="GET",
+            )
+            _run(api, flow)
+        assert flow.response.status_code == 400
+        assert json.loads(flow.response.content)["error"] == "invalid since"

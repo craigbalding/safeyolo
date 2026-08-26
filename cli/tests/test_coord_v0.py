@@ -256,6 +256,37 @@ def test_body_over_max_rejected(coord_env):
         api.send("r", "agent", AGENT_A, big)
 
 
+def test_revoke_cancels_all_active_grants(coord_env):
+    """Bug #18: revoke used to cancel only the newest grant, letting
+    _check_grant fall back to an older active one. Verify multi-grant."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_A)  # second grant, still active
+    api.grant("r", "agent", AGENT_A)  # third
+    assert api.revoke_grant("r", "agent", AGENT_A) is True
+    # After revoke, NO active grant should exist — access must fail.
+    with pytest.raises(api.GrantError):
+        api.join_room("r", "agent", AGENT_A)
+    with pytest.raises(api.GrantError):
+        api.read_room("r", "agent", AGENT_A)
+    # Idempotent: nothing left to revoke.
+    assert api.revoke_grant("r", "agent", AGENT_A) is False
+
+
+def test_grant_absorbs_same_ms_collision(coord_env):
+    """Bug #19: two grants in the same millisecond used to trip the PK.
+    Absorbed as no-op — caller intent 'grant this principal' is already
+    satisfied by the first insert."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    # Force same-millisecond by mocking now_ms to a constant
+    from unittest.mock import patch
+    with patch("safeyolo.coord.store.now_ms", return_value=api.store.now_ms()):
+        # Should NOT raise IntegrityError
+        api.grant("r", "agent", AGENT_A)
+        api.grant("r", "agent", AGENT_A)
+
+
 @pytest.mark.timeout(30)
 def test_wait_does_not_starve_on_own_message_burst(coord_env):
     """Bob's finding #17: without a scan-cursor, 200+ consecutive own

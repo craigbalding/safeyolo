@@ -57,13 +57,24 @@ class _CoordValidationError(ValueError):
     raised by the underlying coord.api to keep error messages sanitised."""
 
 
-def _parse_qs_int(raw, name: str, *, default: int) -> int:
+# Cursor upper bound: SQLite ROWID is a signed 64-bit integer. Anything at
+# or above 2**63 will OverflowError inside the driver — that's a caller
+# error (out-of-range cursor), not a server bug, so it should surface as
+# 400, not 500. See stage-0 finding #21.
+_MAX_ROWID_CURSOR = 1 << 63
+
+
+def _parse_qs_int(raw, name: str, *, default: int, min_val: int = 0,
+                  max_val: int = _MAX_ROWID_CURSOR) -> int:
     if raw is None or raw == "":
         return default
     try:
-        return int(raw)
+        n = int(raw)
     except (TypeError, ValueError) as exc:
         raise _CoordValidationError(f"invalid {name}") from exc
+    if n < min_val or n >= max_val:
+        raise _CoordValidationError(f"invalid {name}")
+    return n
 
 
 def _parse_qs_float(raw, name: str, *, default: float) -> float:
