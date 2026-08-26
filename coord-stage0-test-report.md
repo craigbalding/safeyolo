@@ -41,7 +41,8 @@ break in what stage 0 set out to prove.
 | **Identity spoof** | **POST body carrying `sender_agent_id` + `sender_kind` ignored; envelope carried transport-derived id** |
 | Operator envelope | `sender_kind=operator` with `sender_agent_id` JSON `null`, not the internal `"operator"` principal_id |
 | Per-agent identity | bob `ag-280746d1...` vs claude `ag-a94101b1...` — distinct, no token on either side |
-| No-grant 403 | operator manually revoked claude's `stage0` grant via `UPDATE memberships SET revoked_at = ...`; claude then got 403 on all four ops (join / send / read / wait) with the expected error shape. Added to the record after this report's original writing. |
+| No-grant 403 (revoked) | operator manually revoked claude's `stage0` grant via `UPDATE memberships SET revoked_at = ...`; claude then got 403 on all four ops (join / send / read / wait) with the expected error shape. Added to the record after this report's original writing. |
+| **No-grant 403 (never granted)** | **independently verified by `bob`** against room `secret`, created by the operator excluding bob. All four ops denied: `join` 403, `send` 403, `messages` 403, `wait` 403 (immediate, no long-poll leak). Complements the revoked-grant case above — this is the never-granted path. |
 
 Concurrency result matters beyond itself: the entire cursor/pagination contract
 rests on `rowid` monotonicity and had no direct coverage. It holds.
@@ -50,8 +51,21 @@ The no-grant test was the only untested authorization case at report time.
 The operator drove the revocation via manual SQL (no `coord revoke` command
 existed yet) and claude ran the four operations from a still-live sandbox
 session. The `revoked_at IS NULL` filter in `_check_grant` correctly rejected
-the revoked membership on every op. Grant→revoke→re-grant contract now has
-end-to-end coverage.
+the revoked membership on every op.
+
+**Scope correction (bob).** This proves the *read side*: `_check_grant` honours
+`revoked_at`. It does not prove the *write side*: that `revoke_grant()` actually
+sets `revoked_at` on everything it needs to. Those are separate halves, and
+finding #18 lives entirely in the half this test did not touch — the revocation
+here was hand-written SQL, not the `coord revoke` command.
+
+The test passed because claude held exactly **one** grant row, created by
+`room create --member claude`. Had claude been granted a second time — an
+ordinary thing to do — `coord revoke` would have revoked one row, left the other
+active, reported success, and claude would have kept full access. So this result
+should not be read as "grant→revoke→re-grant has end-to-end coverage"; it is
+coverage of grant→(manually revoked state)→re-grant. The command in the middle
+remains untested, and #18 shows it is broken.
 
 ## Findings
 
@@ -362,3 +376,161 @@ describes a case it does not handle.
 Findings #15, #17, #18 and #19 are all absent from the 17-test suite. #18 in
 particular deserves a regression test asserting that access is actually denied
 after a single revoke, given the control's whole purpose is removing access.
+
+### 20. Room existence is enumerable by any registered agent
+
+`_handle_coord` maps `NotFoundError` to **404** and `GrantError` to **403**.
+So for a room the caller is not a member of:
+
+- room does not exist -> `404 room 'x' not found`
+- room exists, no grant -> `403 no active grant ...`
+
+Any registered agent can therefore **enumerate which rooms exist** by probing
+names, including rooms it has no membership in and will never be granted. Room
+names are frequently meaningful (`acme-incident-response`, `q3-layoffs`), so
+the name set is itself information.
+
+Found incidentally while probing for a room to test no-grant denial against —
+twelve candidate names, all 404. The 403 branch could not be exercised for the
+same reason the no-grant test could not be: no excluding room exists and agents
+cannot create rooms.
+
+**Demonstrated directly**, once the operator created room `secret` excluding
+`bob`:
+
+    POST /api/coord/rooms/secret/join       403 no active grant ... on room 'secret'
+    POST /api/coord/rooms/secret-typo/join  404 room 'secret-typo' not found
+
+Same caller, same credential, one character apart in the room name — 403 for a
+room that exists, 404 for one that does not. The oracle is observed, not
+inferred.
+
+Two aggravating details from the same run:
+
+- The **403 body echoes the room name back** (`on room 'secret'`), so a probe
+  confirms the exact spelling, not just existence. `send`/`messages`/`wait`
+  say "on this room" instead — the leak is specific to `join`, which is also
+  the cheapest op to probe with.
+- `wait` returns its 403 **immediately** rather than long-polling, so an
+  unauthorised prober is not even rate-limited by the timeout they asked for.
+
+*Fix, restated:* collapse both to 404 with an identical body for non-members,
+and do not echo the requested room name.
+
+*Fix:* return 404 for both "no such room" and "exists but you are not a
+member". Non-members should not be able to distinguish the two. The membership
+check already runs; only the status mapping needs to collapse. Note this
+trades away a diagnostic: a legitimately-granted agent hitting a typo'd room
+name gets the same 404 as an unauthorised probe, which is the usual and
+accepted cost of closing an enumeration oracle.
+
+---
+
+# Patch round 3 (after second proxy bounce)
+
+## Fixed and verified
+
+### 15. Internal `TypeError` misclassified as 400 — FIXED
+
+`_handle_coord` now catches `ValueError` only; `TypeError` and every other
+unexpected type fall through to the #1 boundary. Verified live with a caller
+cursor beyond SQLite's 64-bit integer range, which raises `OverflowError`
+inside `read_room`:
+
+    GET /messages?since=2^70   500 {"error": "Internal error: OverflowError"}
+    GET /wait?since=2^70       500 {"error": "Internal error: OverflowError"}
+    POST /send bad content_type 400 {"error": "content_type '...' not in allowed set [...]"}
+
+Clean separation: caller-input errors stay 400, internal errors are 500.
+
+**This is also the strongest evidence yet for #1.** `OverflowError` is a type
+nobody anticipated — not in any catch list, not in any test. It produced a
+synthetic 500 and did **not** escape upstream. The boundary holds against a
+genuinely novel exception, which is the only way to test a catch-all.
+
+## Still open — unchanged on disk
+
+- **#18** `revoke_grant` still `ORDER BY granted_at DESC LIMIT 1`, single row.
+  Access-removal still reports success while access persists.
+- **#19** `grant()` still has no `except IntegrityError`.
+- **#20** oracle intact, re-verified after the bounce:
+  `secret` -> 403 (echoing the room name), `secret-typo` -> 404.
+- #3, #5, #8, #10, #11, #13, #14, #17 — unchanged.
+
+## New
+
+### 21. Out-of-range cursor is a 500 when it should be a 400
+
+The mirror image of #15, discovered while testing it. `_parse_qs_int` validates
+that `since` and `limit` are *syntactically* integers but not that they are in
+range. A caller passing `since=2^70` — valid JSON, valid integer, plainly
+caller-supplied — gets `500 Internal error: OverflowError` rather than
+`400 invalid since`.
+
+So #15 fixed internal errors being reported as client errors, and this is the
+same boundary crossed in the opposite direction: a client error reported as an
+internal one. Both make the status code lie about whose fault it is, and both
+mislead the person debugging.
+
+Low severity, cheap fix: range-check in `_parse_qs_int` — `since` and `limit`
+are rowid cursors, so `0 <= n < 2**63` — and raise `_CoordValidationError`,
+which already maps to a sanitised 400. Negative `since` currently works as
+"from the beginning" and should either be clamped explicitly or rejected;
+right now it is accepted by accident rather than by decision.
+
+---
+
+# Three-agent phase
+
+Agent `codex` (`ag-9d4ce0ee…`) joined `stage0`, giving three distinct
+transport-derived identities in one room — `bob` `ag-280746d1…`,
+`claude` `ag-a94101b1…`, `codex` `ag-9d4ce0ee…`.
+
+### 22. Transport identity is unforgeable but unrecognisable
+
+When `codex` joined, no agent in the room could determine which registered
+agent it was. There is no `agent_id` -> name mapping available to any agent:
+
+    GET /rooms/{room}/{members,roster,participants,list,agents}  -> 404 (all)
+    POST /rooms/{room}/join  -> {room_id, room_name, permissions,
+                                 history_visibility}   — no member list
+    GET  /agents             -> {"bob": {"ip": ...}, ...}  — names + IPs, no agent_id
+
+`/agents` does not list a `codex` at all; registered names are alpine, alps,
+bob, claude, codey, cody, expenses, kali, web. The agent posting as
+`ag-9d4ce0ee…` is running under one of those and peers cannot tell which.
+
+**Consequence.** `sender_agent_id` is genuinely unforgeable — confirmed by the
+spoof test at seq=2, where a caller-supplied `sender_agent_id` in the POST body
+was ignored. But it is an opaque 32-hex string. The identity participants
+actually act on is the **body prefix** (`bob:`, `claude:`, `Codex here`), which
+is agent-controlled text with none of the transport's guarantees. A body
+beginning `claude: agreed on all points` reads as claude to every participant
+regardless of which id sent it. Checking `sender_agent_id` only helps if you
+already know which id belongs to whom — and that can only be learned from a
+prior self-declaration in a body. Trust-on-first-use, with no verification path.
+
+So #371's invariant — "agent identity is the transport binding, not a token" —
+is **true at the enforcement point and false at the point of use.** The
+unforgeable identifier exists; nothing lets a peer bind it to a name it can
+reason about, so the binding circulates as folklore in message bodies, which is
+precisely what the identity model was built to avoid.
+
+*Fix:* expose a room-members endpoint returning `{agent_id, agent_name}` for
+current members, sourced from `agents_store`. The mapping already exists
+server-side and is simply not exposed. Cheap, and it converts a strong identity
+into a usable one.
+
+Related to #10 (no read tracking) and #11 (no addressing): all three are cases
+where the room carries enough for enforcement but not enough for participants
+to reason about each other.
+
+## Remaining coverage gaps, three-agent specific
+
+- **#17 exclusion starvation** — needs 200+ consecutive own messages after a
+  stale cursor. Not run: the burst would pollute the shared room. Verified by
+  code reading only.
+- **Three-way wake interleaving** — two peers writing while a third is armed at
+  the new `limit=1` default. Untestable with two agents, and now the most
+  realistic path to a lost-message bug, since `has_more` handling is the only
+  thing standing between a `limit=1` wake and a silently-skipped peer message.
