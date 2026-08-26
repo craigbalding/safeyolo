@@ -109,6 +109,12 @@ install -m 0755 "$SHIM_SRC" "$AGENT_HOME/.safeyolo/safeyolo-coord-mcp.py"
 # The sandbox mounts $AGENT_HOME → /home/agent, so the shim's in-sandbox
 # path is fixed.
 SHIM_INSANDBOX="/home/agent/.safeyolo/safeyolo-coord-mcp.py"
+# The shim needs mcp+httpx. Debian/Ubuntu rootfs images mark the system
+# interpreter externally-managed (PEP 668), so `pip install --user` is
+# refused there. Install into a dedicated venv instead and point the
+# harness at that interpreter rather than bare `python3`.
+VENV_INSANDBOX="/home/agent/.safeyolo/venv"
+PY_INSANDBOX="$VENV_INSANDBOX/bin/python"
 
 # --- 2. Register the MCP server with the harness ----------------------------
 case "$HARNESS" in
@@ -116,9 +122,9 @@ case "$HARNESS" in
         # Claude Code reads user-scope MCP servers from ~/.claude.json.
         # Merge into whatever the base host script already wrote — never
         # clobber unrelated keys.
-        python3 - "$AGENT_HOME/.claude.json" "$SHIM_INSANDBOX" <<'PY'
+        python3 - "$AGENT_HOME/.claude.json" "$SHIM_INSANDBOX" "$PY_INSANDBOX" <<'PY'
 import json, os, sys
-path, shim = sys.argv[1], sys.argv[2]
+path, shim, interp = sys.argv[1], sys.argv[2], sys.argv[3]
 data = {}
 if os.path.exists(path):
     try:
@@ -129,7 +135,7 @@ if os.path.exists(path):
         data = {}
 servers = data.setdefault("mcpServers", {})
 servers["safeyolo-coord"] = {
-    "command": "python3",
+    "command": interp,
     "args": [shim],
 }
 with open(path, "w") as f:
@@ -139,10 +145,10 @@ PY
     codex)
         # Codex reads MCP servers from ~/.codex/config.toml under an
         # [mcp_servers.<name>] table.
-        python3 - "$AGENT_HOME/.codex/config.toml" "$SHIM_INSANDBOX" <<'PY'
+        python3 - "$AGENT_HOME/.codex/config.toml" "$SHIM_INSANDBOX" "$PY_INSANDBOX" <<'PY'
 import os, sys
 
-path, shim = sys.argv[1], sys.argv[2]
+path, shim, interp = sys.argv[1], sys.argv[2], sys.argv[3]
 os.makedirs(os.path.dirname(path), exist_ok=True)
 
 existing_lines = []
@@ -172,7 +178,7 @@ for line in existing_lines:
 
 new_block = (
     "[mcp_servers.safeyolo-coord]\n"
-    'command = "python3"\n'
+    f'command = "{interp}"\n'
     f'args = ["{shim}"]\n'
 )
 
@@ -219,9 +225,13 @@ if exec_i is None:
 
 inject = [
     marker + "\n",
-    "if ! python3 -c 'import mcp, httpx' >/dev/null 2>&1; then\n",
-    "    python3 -m pip install --user --quiet 'mcp>=2.0' 'httpx>=0.25' >&2 || \\\n",
-    "        uv pip install --system 'mcp>=2.0' 'httpx>=0.25' >&2 || true\n",
+    'SY_COORD_VENV="$HOME/.safeyolo/venv"\n',
+    'if ! "$SY_COORD_VENV/bin/python" -c \'import mcp, httpx\' >/dev/null 2>&1; then\n',
+    '    { python3 -m venv "$SY_COORD_VENV" \\\n',
+    '        && "$SY_COORD_VENV/bin/pip" install --quiet "mcp>=2.0" "httpx>=0.25"; } >&2 || true\n',
+    '    "$SY_COORD_VENV/bin/python" -c \'import mcp, httpx\' >/dev/null 2>&1 || \\\n',
+    '        echo "coord-mcp: could not install mcp+httpx into $SY_COORD_VENV;'
+    ' the safeyolo-coord MCP server will not start" >&2\n',
     "fi\n",
     "\n",
 ]
@@ -237,7 +247,8 @@ else
     # installs the deps inside the sandbox.
     echo "coord-mcp-bootstrap: $FG not found; skipped dep install injection" >&2
     echo "  Install deps manually inside the sandbox:" >&2
-    echo "    python3 -m pip install --user 'mcp>=2.0' 'httpx>=0.25'" >&2
+    echo "    python3 -m venv $VENV_INSANDBOX" >&2
+    echo "    $VENV_INSANDBOX/bin/pip install 'mcp>=2.0' 'httpx>=0.25'" >&2
 fi
 
 echo "coord-mcp-bootstrap: $HARNESS shim staged at $AGENT_HOME/.safeyolo/"
