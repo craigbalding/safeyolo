@@ -889,7 +889,13 @@ class LinuxPlatform(AgentPlatform):
                 f"Rebuild it with the current guest/install-guest-common.sh "
                 f"helper."
             )
-        return path
+        # gVisor's safe-mount validation compares the opened rootfs path with
+        # the OCI path. A config-scoped share may deliberately be a symlink to
+        # prepared guest artifacts (the isolated blackbox instance does this);
+        # passing that alias makes runsc reject valid bind destinations because
+        # openat resolves them beneath the real path. Canonicalize only after
+        # validating the selected tree so the OCI root and mount checks agree.
+        return path.resolve()
 
     # --- Sandbox lifecycle ---
 

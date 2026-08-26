@@ -416,6 +416,38 @@ def test_prepare_rootfs_rejects_missing_bind_targets(isolated_env, monkeypatch):
         platform.prepare_rootfs("incomplete")
 
 
+def test_prepare_rootfs_canonicalizes_config_share_symlink(isolated_env, monkeypatch):
+    """runsc safe-mount checks require the OCI root's canonical path."""
+    from pathlib import Path
+
+    from safeyolo.platform import linux
+    from safeyolo.platform.linux import LinuxPlatform
+
+    real_rootfs = isolated_env / "prepared" / "rootfs-tree"
+    real_rootfs.mkdir(parents=True)
+    linked_rootfs = isolated_env / "isolated-share" / "rootfs-tree"
+    linked_rootfs.parent.mkdir()
+    linked_rootfs.symlink_to(real_rootfs, target_is_directory=True)
+
+    platform = LinuxPlatform()
+    monkeypatch.setattr(platform, "agent_rootfs_path", lambda _name: linked_rootfs)
+    monkeypatch.setattr(
+        "safeyolo.vm.get_base_rootfs_tree_path",
+        lambda: isolated_env / "unrelated-base",
+    )
+    monkeypatch.setattr(linux, "_direct_rootfs_target_state", lambda *_args: True)
+    original_stat = Path.stat
+
+    def subordinate_root_stat(path, *args, **kwargs):
+        if path == linked_rootfs:
+            return SimpleNamespace(st_uid=100000)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", subordinate_root_stat)
+
+    assert platform.prepare_rootfs("linked") == real_rootfs.resolve()
+
+
 def test_runsc_command_restores_mise_after_environment_path():
     """runsc commands source mise activation after /etc/environment."""
     from safeyolo.platform.linux import _wrap_runsc_command
