@@ -144,10 +144,14 @@ a parallel CI-only installation recipe:
 2. `safeyolo bootstrap --check --json` supplies the current Linux package
    prerequisites; the lane wrapper installs missing apt packages on fresh CI
    and KVM VPS guests.
-3. `safeyolo bootstrap` initializes, builds guest artifacts, and applies host
+3. The automated KVM wrapper grants its current operator UID access to
+   `/dev/kvm`, replacing the interactive `kvm`-group logout/login step. Product
+   bootstrap remains responsible for the persistent udev rule and UID 100000
+   ACL required by rootless gVisor.
+4. `safeyolo bootstrap` initializes, builds guest artifacts, and applies host
    setup. The VZ lane also builds the source-only Swift helper with
    `make -C vm install`.
-4. `run-tests.sh --expect-platform ...` records `doctor --json` and refuses a
+5. `run-tests.sh --expect-platform ...` records `doctor --json` and refuses a
    runtime mismatch before running isolation tests.
 
 The systrap wrapper explicitly selects `SAFEYOLO_RUNSC_PLATFORM=systrap`, so

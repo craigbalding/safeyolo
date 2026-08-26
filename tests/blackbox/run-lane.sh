@@ -104,6 +104,29 @@ PY
             sudo -n apt-get update
             sudo -n apt-get install -y --no-install-recommends "${MISSING_DEPS[@]}"
         fi
+
+        if [ "$LANE" = "kvm" ]; then
+            # Automated acceptance has no interactive logout/login boundary in
+            # which a newly-added `kvm` group becomes effective. Perform the
+            # operator-side prerequisite directly for this process. The normal
+            # product bootstrap below remains responsible for installing the
+            # persistent udev rule and uid 100000 ACL used by rootless runsc.
+            if [ ! -e /dev/kvm ]; then
+                echo "ERROR: KVM lane requires /dev/kvm" >&2
+                exit 2
+            fi
+            if ! command -v setfacl >/dev/null 2>&1; then
+                echo "ERROR: KVM lane requires setfacl after dependency preparation" >&2
+                exit 2
+            fi
+            OPERATOR_UID="$(id -u)"
+            echo "Granting blackbox operator uid $OPERATOR_UID access to /dev/kvm..."
+            sudo -n setfacl -m "u:${OPERATOR_UID}:rw" /dev/kvm
+            if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+                echo "ERROR: blackbox operator still lacks rw access to /dev/kvm" >&2
+                exit 2
+            fi
+        fi
         rm -f "$PLAN_FILE"
         trap - EXIT
     fi
