@@ -447,24 +447,8 @@ async def _delete_consumer_best_effort(js: Any, stream: str, consumer: str) -> N
         raise NatsUnavailable(f"delete_consumer failed: {e!s}") from e
 
 
-async def fetch_since(
-    room_id: str,
-    since_sequence: int,
-    limit: int,
-    timeout: float = _DEFAULT_FETCH_TIMEOUT_S,
-) -> list[dict]:
-    """Fetch up to `limit` envelopes with stream sequence > since_sequence.
-
-    Uses an ephemeral pull consumer. The consumer is explicitly deleted
-    on the way out so /messages+/wait traffic does not leave a rolling
-    population of server-side consumer resources
-    (reviewer round-3 point 3).
-
-    Returns envelopes decoded from JSON with an added `_stream_seq`
-    field. Empty list if no messages arrive within `timeout`. A
-    persisted payload that is not a JSON object raises `CoordDataError`
-    — SafeYolo is the sole writer, so this signals storage corruption.
-    """
+async def _open_pull(room_id: str, since_sequence: int):
+    """Create one ephemeral pull consumer positioned after `since_sequence`."""
     js = await get_jetstream()
     stream = stream_name_for_room(room_id)
     start_seq = max(1, since_sequence + 1)
@@ -489,52 +473,123 @@ async def fetch_since(
         ) from e
     except _UNAVAILABLE_EXCEPTIONS as e:
         raise NatsUnavailable(f"consumer create failed: {e!s}") from e
-    consumer_name = psub._consumer
+    return js, stream, psub, psub._consumer
 
+
+async def _close_pull(js, stream: str, psub, consumer_name: str) -> None:
+    """Tear down a pull consumer, inbox and server-side object both.
+
+    unsubscribe() closes our inbox; delete_consumer removes the actual
+    server-side consumer. nats-py's ephemeral consumers rely on
+    inactivity-based cleanup otherwise, which leaks state under high
+    /messages+/wait volume.
+    """
+    with contextlib.suppress(Exception):
+        await psub.unsubscribe()
+    await _delete_consumer_best_effort(js, stream, consumer_name)
+
+
+async def _drain(psub, stream: str, limit: int, timeout: float) -> list[dict]:
+    """Fetch and decode up to `limit` envelopes from an open consumer."""
     try:
+        msgs = await psub.fetch(limit, timeout=timeout)
+    except NatsTimeout:
+        return []
+    except _UNAVAILABLE_EXCEPTIONS as e:
+        raise NatsUnavailable(f"fetch failed: {e!s}") from e
+    out: list[dict] = []
+    for m in msgs:
         try:
-            msgs = await psub.fetch(limit, timeout=timeout)
-        except NatsTimeout:
-            return []
-        except _UNAVAILABLE_EXCEPTIONS as e:
-            raise NatsUnavailable(f"fetch failed: {e!s}") from e
-        out: list[dict] = []
-        for m in msgs:
-            try:
-                envelope = json.loads(m.data.decode())
-            except (ValueError, UnicodeDecodeError) as e:
-                # SafeYolo wrote this. Unshaped payload = corruption.
-                # ACK first so the consumer moves past this seq, then
-                # raise — the caller sees a 500 and the bad message is
-                # not silently dropped from the record.
-                with contextlib.suppress(Exception):
-                    await m.ack()
-                raise CoordDataError(
-                    f"corrupt envelope at stream {stream} seq "
-                    f"{m.metadata.sequence.stream}: {e!s}"
-                ) from e
-            if not isinstance(envelope, dict) or "msg_id" not in envelope:
-                with contextlib.suppress(Exception):
-                    await m.ack()
-                raise CoordDataError(
-                    f"non-envelope payload at stream {stream} seq "
-                    f"{m.metadata.sequence.stream}"
-                )
-            envelope["_stream_seq"] = m.metadata.sequence.stream
-            out.append(envelope)
-            try:
+            envelope = json.loads(m.data.decode())
+        except (ValueError, UnicodeDecodeError) as e:
+            # SafeYolo wrote this. Unshaped payload = corruption.
+            # ACK first so the consumer moves past this seq, then
+            # raise — the caller sees a 500 and the bad message is
+            # not silently dropped from the record.
+            with contextlib.suppress(Exception):
                 await m.ack()
-            except _UNAVAILABLE_EXCEPTIONS as e:
-                raise NatsUnavailable(f"ack failed: {e!s}") from e
-        return out
+            raise CoordDataError(
+                f"corrupt envelope at stream {stream} seq "
+                f"{m.metadata.sequence.stream}: {e!s}"
+            ) from e
+        if not isinstance(envelope, dict) or "msg_id" not in envelope:
+            with contextlib.suppress(Exception):
+                await m.ack()
+            raise CoordDataError(
+                f"non-envelope payload at stream {stream} seq "
+                f"{m.metadata.sequence.stream}"
+            )
+        envelope["_stream_seq"] = m.metadata.sequence.stream
+        out.append(envelope)
+        try:
+            await m.ack()
+        except _UNAVAILABLE_EXCEPTIONS as e:
+            raise NatsUnavailable(f"ack failed: {e!s}") from e
+    return out
+
+
+class PullSession:
+    """One ephemeral consumer, fetched from repeatedly.
+
+    A long poll used to call fetch_since per tick, creating and deleting a
+    server-side consumer every time: at a 0.5s interval that is ~120 consumer
+    create/delete cycles per idle 60s wait, per waiting agent. Holding one
+    consumer for the life of the wait removes that control-plane churn.
+
+    The consumer keeps its own position as messages are acked, so successive
+    fetches continue past what was already seen without repositioning.
+    """
+
+    def __init__(self, js, stream: str, psub, consumer_name: str) -> None:
+        self._js = js
+        self._stream = stream
+        self._psub = psub
+        self._consumer_name = consumer_name
+
+    async def fetch(self, limit: int, timeout: float) -> list[dict]:
+        return await _drain(self._psub, self._stream, limit, timeout)
+
+    async def close(self) -> None:
+        await _close_pull(self._js, self._stream, self._psub, self._consumer_name)
+
+
+@contextlib.asynccontextmanager
+async def pull_session(room_id: str, since_sequence: int):
+    """Hold one ephemeral consumer open for the duration of a long poll.
+
+    Closed on every exit path -- return, timeout, revocation, exception --
+    so a wait that ends early does not leave the consumer behind.
+    """
+    js, stream, psub, consumer_name = await _open_pull(room_id, since_sequence)
+    session = PullSession(js, stream, psub, consumer_name)
+    try:
+        yield session
     finally:
-        # unsubscribe() closes our inbox; delete_consumer removes the
-        # actual server-side consumer. nats-py's ephemeral consumers
-        # rely on inactivity-based cleanup otherwise, which leaks state
-        # under high /messages+/wait volume.
-        with contextlib.suppress(Exception):
-            await psub.unsubscribe()
-        await _delete_consumer_best_effort(js, stream, consumer_name)
+        await session.close()
+
+
+async def fetch_since(
+    room_id: str,
+    since_sequence: int,
+    limit: int,
+    timeout: float = _DEFAULT_FETCH_TIMEOUT_S,
+) -> list[dict]:
+    """Fetch up to `limit` envelopes with stream sequence > since_sequence.
+
+    One-shot: opens an ephemeral pull consumer, drains it, and deletes it.
+    Callers that fetch repeatedly (a long poll) should use `pull_session`
+    instead so one consumer serves the whole call.
+
+    Returns envelopes decoded from JSON with an added `_stream_seq`
+    field. Empty list if no messages arrive within `timeout`. A
+    persisted payload that is not a JSON object raises `CoordDataError`
+    — SafeYolo is the sole writer, so this signals storage corruption.
+    """
+    js, stream, psub, consumer_name = await _open_pull(room_id, since_sequence)
+    try:
+        return await _drain(psub, stream, limit, timeout)
+    finally:
+        await _close_pull(js, stream, psub, consumer_name)
 
 
 async def consumer_count(room_id: str) -> int:

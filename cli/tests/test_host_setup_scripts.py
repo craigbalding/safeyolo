@@ -730,3 +730,125 @@ def test_codex_warns_when_mise_lacks_min_release_age(tmp_path: Path) -> None:
     )
     assert supported.returncode == 0, supported.stderr
     assert "no delayed-deployment protection" not in supported.stderr
+
+
+_HEALTHY_CLAUDE = (
+    "#!/bin/sh\n"
+    "if [ \"$1\" = --version ]; then echo '9.9.9 (Claude Code)'; exit 0; fi\n"
+    "printf '%s\\0' \"$@\" > \"$TEST_EXEC_LOG\"\n"
+)
+
+# Wrapper present and on PATH, native binary gone: `command -v` succeeds,
+# `--version` does not. Same shape as the Codex case.
+_BROKEN_CLAUDE = (
+    "#!/bin/sh\n"
+    "echo 'Error: could not find @anthropic-ai/claude-code-linux-arm64' >&2\n"
+    "exit 1\n"
+)
+
+_FAKE_MISE_CLAUDE = (
+    "#!/usr/bin/env python3\n"
+    "import os, sys\n"
+    "from pathlib import Path\n"
+    "argv = sys.argv[1:]\n"
+    "with Path(os.environ['TEST_MISE_LOG']).open('a') as f:\n"
+    "    f.write(' '.join(argv) + '\\n')\n"
+    "state = Path(os.environ['TEST_INSTALLED_STATE'])\n"
+    "if argv[:2] == ['settings', 'get']:\n"
+    "    sys.exit(1)\n"
+    "if argv[:1] == ['latest']:\n"
+    "    if '--installed' in argv:\n"
+    "        v = state.read_text().strip() if state.exists() else ''\n"
+    "        if v: print(v)\n"
+    "        sys.exit(0)\n"
+    "    remote = os.environ.get('TEST_REMOTE_VERSION', '')\n"
+    "    if not remote: sys.exit(1)\n"
+    "    print(remote); sys.exit(0)\n"
+    "if argv[:2] == ['use', '-g'] and 'claude-code' in argv[-1]:\n"
+    "    state.write_text(argv[-1].split('@')[-1])\n"
+    "    shim = Path(os.environ['TEST_CLAUDE_SHIM'])\n"
+    "    shim.write_text(os.environ['TEST_HEALTHY_CLAUDE'])\n"
+    "    shim.chmod(0o755)\n"
+    "if argv[:1] == ['where']:\n"
+    "    print(os.environ.get('TEST_CLAUDE_INSTALL_DIR', '/nonexistent'))\n"
+)
+
+
+def _claude_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dict:
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith(("MISE_", "__MISE_")) or key == "BASH_ENV":
+            env.pop(key)
+    env.update({
+        "HOME": str(agent_home),
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "TEST_CLAUDE_SHIM": str(fake_bin / "claude"),
+        "TEST_EXEC_LOG": str(tmp_path / "claude-exec-args.bin"),
+        "TEST_MISE_LOG": str(tmp_path / "claude-mise.log"),
+        "TEST_INSTALLED_STATE": str(tmp_path / "claude-installed-version"),
+        "TEST_HEALTHY_CLAUDE": _HEALTHY_CLAUDE,
+        "TEST_REMOTE_VERSION": "9.9.9",
+    })
+    return env
+
+
+def _stage_claude(tmp_path: Path, wrapper: str):
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("claude-host-setup.sh", operator_home, agent_home, tmp_path)
+    (fake_bin / "claude").write_text(wrapper)
+    (fake_bin / "claude").chmod(0o755)
+    (fake_bin / "mise").write_text(_FAKE_MISE_CLAUDE)
+    (fake_bin / "mise").chmod(0o755)
+    return agent_home, fake_bin
+
+
+def test_claude_repair_installs_an_explicitly_resolved_remote_version(
+    tmp_path: Path,
+) -> None:
+    """Parity with the Codex path, and the reason it needed its own test.
+
+    The pre-existing Claude fixture's mise stub predated `latest`, so the
+    script fell through to the `@latest` fallback and the test passed without
+    ever exercising remote resolution.
+    """
+    agent_home, fake_bin = _stage_claude(tmp_path, _BROKEN_CLAUDE)
+    env = _claude_command_env(agent_home, fake_bin, tmp_path)
+    Path(env["TEST_INSTALLED_STATE"]).write_text("2.1.100")   # stale build
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--probe"],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert any(c.startswith("latest npm:@anthropic-ai/claude-code")
+               and "--installed" not in c for c in calls), (
+        f"never resolved a remote version: {calls}")
+    assert any("use -g --force npm:@anthropic-ai/claude-code@9.9.9" in c
+               for c in calls), (
+        f"did not install the resolved version by exact value: {calls}")
+    assert not any(c.startswith("use") and c.endswith("claude-code@latest")
+                   for c in calls), f"fell back to @latest: {calls}"
+    assert "--probe" in Path(env["TEST_EXEC_LOG"]).read_bytes().decode().split("\0")
+
+
+def test_claude_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> None:
+    agent_home, fake_bin = _stage_claude(tmp_path, _HEALTHY_CLAUDE)
+    env = _claude_command_env(agent_home, fake_bin, tmp_path)
+    Path(env["TEST_INSTALLED_STATE"]).write_text("2.1.100")
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--probe"],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "claude 2.1.100" in result.stderr, result.stderr
+    assert "9.9.9 is available" in result.stderr, result.stderr
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert not any(c.startswith("use ") for c in calls), (
+        f"a healthy install was upgraded: {calls}")

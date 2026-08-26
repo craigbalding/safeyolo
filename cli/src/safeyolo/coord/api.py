@@ -450,6 +450,14 @@ async def wait_for_message(
     - Revocation check inside the loop: if the caller loses their
       grant mid-flight (task #37), return empty rather than deliver a
       message that arrived after revocation.
+    - No `has_more`. Wait is an attention edge, not a page: a field
+      meaning "more in this wake scan" reads as "backlog remains" and
+      cannot answer that question, since the scan window is bounded.
+      `read_room(next_cursor)` answers it correctly and is the
+      mandatory catch-up path anyway.
+    - One ephemeral consumer serves the whole call. Polling used to
+      open and delete a server-side consumer per tick -- roughly 120
+      cycles per idle 60s wait, per waiting agent.
     - Truncation reporting is deliberately NOT surfaced here: wait is
       an attention edge, `read_room` is the mandatory catch-up path
       where truncation is disclosed. The response always sets
@@ -469,14 +477,41 @@ async def wait_for_message(
         room_id = _resolve_room(conn, room_name)
         _check_grant(conn, room_id, principal_kind, principal_id, "receive")
 
-    scan_since = since_sequence
+    async with nats_client.pull_session(room_id, since_sequence) as session:
+        return await _wait_loop(
+            session,
+            room_id=room_id,
+            principal_kind=principal_kind,
+            principal_id=principal_id,
+            scan_since=since_sequence,
+            deadline=deadline,
+            loop=loop,
+            poll_interval_seconds=poll_interval_seconds,
+            limit=limit,
+            exclude_self=exclude_self,
+        )
+
+
+async def _wait_loop(
+    session,
+    *,
+    room_id: str,
+    principal_kind: str,
+    principal_id: str,
+    scan_since: int,
+    deadline: float,
+    loop,
+    poll_interval_seconds: float,
+    limit: int,
+    exclude_self: bool,
+) -> dict[str, Any]:
+    """Poll one already-open consumer until a peer lands or time runs out."""
     while True:
         remaining = deadline - loop.time()
         if remaining <= 0:
             return {
                 "messages": [],
                 "next_cursor": scan_since,
-                "has_more": False,
                 "history_truncated": False,
                 "oldest_available_at": None,
             }
@@ -490,17 +525,15 @@ async def wait_for_message(
             return {
                 "messages": [],
                 "next_cursor": scan_since,
-                "has_more": False,
                 "history_truncated": False,
                 "oldest_available_at": None,
             }
 
-        # JetStream fetch: this waits server-side up to poll_interval
-        # for a message. If nothing arrives it returns [] and we loop.
+        # Fetch on the consumer opened for this call: waits server-side up
+        # to poll_interval. The consumer keeps its own position across ticks,
+        # so acked messages are not redelivered and no repositioning happens.
         fetch_timeout = min(poll_interval_seconds, remaining)
-        envelopes = await nats_client.fetch_since(
-            room_id, scan_since, READ_PAGE_MAX, timeout=fetch_timeout,
-        )
+        envelopes = await session.fetch(READ_PAGE_MAX, timeout=fetch_timeout)
 
         if exclude_self and principal_kind == "agent":
             candidates = [e for e in envelopes if e.get("sender_agent_id") != principal_id]
@@ -522,8 +555,7 @@ async def wait_for_message(
                 return {
                     "messages": [],
                     "next_cursor": scan_since,
-                    "has_more": False,
-                    "history_truncated": False,
+                        "history_truncated": False,
                     "oldest_available_at": None,
                 }
             trimmed = candidates[:limit]
@@ -535,7 +567,6 @@ async def wait_for_message(
             return {
                 "messages": out,
                 "next_cursor": out[-1]["sequence"],
-                "has_more": len(candidates) > limit,
                 "history_truncated": False,
                 "oldest_available_at": None,
             }

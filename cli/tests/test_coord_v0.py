@@ -295,7 +295,9 @@ def test_wait_default_limit_is_one(coord_env):
 
     page = asyncio.run(scenario())
     assert len(page["messages"]) == 1
-    assert page["has_more"] is True
+    # wait is an attention edge and reports no backlog field; read_room from
+    # next_cursor is the canonical way to ask what remains.
+    assert "has_more" not in page
 
 
 def test_revoke_grant_returns_true_when_active(coord_env):
@@ -595,3 +597,68 @@ def test_page_byte_bound_returns_whole_message_prefix(coord_env):
         seen += len(page["messages"])
         cursor = page["next_cursor"]
     assert seen == 24
+
+
+# --- wait consumer lifecycle (review point 5) --------------------------------
+
+
+def test_wait_holds_one_consumer_for_the_whole_call(coord_env):
+    """An idle wait must not churn server-side consumers.
+
+    Polling used to call fetch_since per tick, creating and deleting an
+    ephemeral consumer every time: at a 0.5s interval that is ~120 consumer
+    create/delete cycles per idle 60s wait, per waiting agent. One consumer
+    now serves the whole call.
+    """
+    room_id = _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+
+    counts: list[int] = []
+
+    async def scenario():
+        async def sample():
+            # Sample while the wait is mid-flight.
+            for _ in range(6):
+                await asyncio.sleep(0.15)
+                counts.append(await nats_client.consumer_count(room_id))
+
+        waiter = asyncio.create_task(api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=1.2, poll_interval_seconds=0.1,
+        ))
+        sampler = asyncio.create_task(sample())
+        result = await waiter
+        await sampler
+        return result
+
+    page = asyncio.run(scenario())
+    assert page["messages"] == []
+    assert counts, "sampler never ran"
+    assert max(counts) <= 1, (
+        f"wait held more than one consumer at once: {counts}"
+    )
+
+    # And nothing is left behind once the wait returns.
+    assert _run(nats_client.consumer_count(room_id)) == 0
+
+
+def test_wait_does_not_report_a_backlog_field(coord_env):
+    """`has_more` is gone from wait: it could only ever describe the wake
+    scan, which reads as "backlog remains" and cannot answer that."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    for i in range(5):
+        _run(api.send("r", "agent", AGENT_B, f"msg {i}"))
+
+    page = _run(api.wait_for_message(
+        "r", "agent", AGENT_A, since_sequence=0,
+        timeout_seconds=1, poll_interval_seconds=0.05, limit=2,
+    ))
+    assert len(page["messages"]) == 2
+    assert "has_more" not in page
+    # The backlog question is answered by read_room, exactly.
+    rest = _run(api.read_room("r", "agent", AGENT_A,
+                              since_sequence=page["next_cursor"]))
+    assert [m["body"] for m in rest["messages"]] == ["msg 2", "msg 3", "msg 4"]
+    assert rest["has_more"] is False

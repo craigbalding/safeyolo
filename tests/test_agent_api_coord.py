@@ -390,7 +390,7 @@ class TestCoordWaitLimit:
             _run(api, flow)
         page = json.loads(flow.response.content)
         assert len(page["messages"]) == 1
-        assert page["has_more"] is True
+        assert "has_more" not in page, "wait must not report a backlog field"
 
     def test_wait_explicit_limit(self, api, isolated_state):
         _register_agent("alice")
@@ -408,7 +408,7 @@ class TestCoordWaitLimit:
             _run(api, flow)
         page = json.loads(flow.response.content)
         assert len(page["messages"]) == 3
-        assert page["has_more"] is True
+        assert "has_more" not in page, "wait must not report a backlog field"
 
 
 class TestCoordRevokeRoundtrip:

@@ -165,3 +165,53 @@ credential_guard:
 - [ ] Migrate existing state files (version 1 → 2)
 
 **Current Status (2026-01)**: Not implemented. State files grow unbounded. Low priority for small deployments, but could be problematic for high-traffic proxies with many unique domains.
+
+## Coord: server-side byte-bounded fetch via the modern NATS JetStream API
+
+`read_room` bounds a page at `READ_PAGE_MAX_BYTES` (4 MiB) alongside the
+200-message ceiling, but the trim happens **after receipt**. The bytes still
+cross the wire; only what the caller is handed is bounded.
+
+NATS itself supports `max_bytes` on pull requests. The blocker is the client:
+in nats-py 2.15 — the version this repo pins — the legacy
+`PullSubscription.fetch()` exposes only `batch` and `timeout`, and its
+`ConsumerConfig` does not surface `MaxRequestMaxBytes` either. The newer
+`nats-jetstream` Python API does expose `consumer.fetch(max_bytes=...)`.
+
+Writing raw pull-request protocol against the private client internals to get
+this on the current dependency was judged not worth it during the #327 review.
+The follow-up is the migration, not a workaround:
+
+- move coord's JetStream usage to the modern `nats-jetstream` consumer API
+- enforce the page byte bound server-side, keeping the post-receipt trim as a
+  belt-and-braces check
+- revisit the wait-consumer lifecycle at the same time — `wait_for_message`
+  currently holds one ephemeral consumer open per call via
+  `nats_client.pull_session()`, and the newer API may offer a cleaner
+  primitive for a long poll than an ephemeral pull consumer
+
+Until then the byte bound is a client-side protection against handing a caller
+an unbounded page, not a defence against a large transfer.
+
+## Harness maintenance: minimum supported mise version and release-age policy
+
+Agent host scripts set `MISE_MIN_RELEASE_AGE` and verify it took, because the
+setting does not exist on every mise. The mise in an agent sandbox observed
+during the #327 dogfood was `2026.4.19`, where `mise settings get
+min_release_age` returns `Unknown setting`; the feature landed shortly after,
+around `2026.4.28`. A persistent agent home can therefore carry an old mise
+indefinitely and silently have **no delayed-deployment protection at all**.
+
+The scripts now say so on stderr rather than assuming the default is present,
+which is the right behaviour for coord but not a fix. The fix is a harness
+decision:
+
+- establish a minimum supported mise version for agent sandboxes
+- upgrade or refuse below it, rather than inheriting whatever an old
+  persistent home contains
+- then configure the release-age policy explicitly on a version that honours it
+
+Note that mise's minimum-release-age implementation has had bugs during 2026
+(prereleases being selected, `mise upgrade` not respecting the setting), so
+treat it as defence in depth against a compromised or hastily-published
+release, not as a security guarantee.
