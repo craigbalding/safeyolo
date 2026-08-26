@@ -33,41 +33,8 @@ import pytest
 
 from safeyolo.coord import nats_runtime as nr
 
-# ---------- shared fixtures ----------
-
-
-@pytest.fixture
-def isolated_coord(tmp_path, monkeypatch):
-    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path))
-    return tmp_path
-
-
-@pytest.fixture(scope="session")
-def _binary_cache(tmp_path_factory):
-    cache_dir = tmp_path_factory.mktemp("nats-binary-cache")
-    orig_env = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
-    os.environ["SAFEYOLO_COORD_DATA_DIR"] = str(cache_dir)
-    try:
-        try:
-            binary = nr.ensure_binary()
-        except Exception as e:
-            pytest.skip(f"nats-server binary unavailable: {e!s}")
-        return binary
-    finally:
-        if orig_env is None:
-            os.environ.pop("SAFEYOLO_COORD_DATA_DIR", None)
-        else:
-            os.environ["SAFEYOLO_COORD_DATA_DIR"] = orig_env
-
-
-@pytest.fixture
-def nats_env(isolated_coord, _binary_cache):
-    dest = nr.nats_binary_path()
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if not dest.exists():
-        os.symlink(_binary_cache, dest)
-    yield isolated_coord
-    nr.stop_server()
+# Fixtures (isolated_coord, _binary_cache, nats_env) live in
+# conftest.py and are shared with test_coord_nats_client.py.
 
 
 # ---------- unit ----------

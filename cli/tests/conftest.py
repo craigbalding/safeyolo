@@ -1,11 +1,58 @@
 """Shared fixtures for SafeYolo CLI tests."""
 
 import json
+import os
 import subprocess
 from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner
+
+
+# ---------- NATS runtime fixtures ----------
+# Shared between test_coord_nats_runtime.py and test_coord_nats_client.py
+# so the binary download happens once per session across both files.
+
+
+@pytest.fixture
+def isolated_coord(tmp_path, monkeypatch):
+    """Point every coord path helper at a fresh temp dir."""
+    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture(scope="session")
+def _binary_cache(tmp_path_factory):
+    """Download the nats-server binary once per session."""
+    from safeyolo.coord import nats_runtime as nr
+    cache_dir = tmp_path_factory.mktemp("nats-binary-cache")
+    orig_env = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
+    os.environ["SAFEYOLO_COORD_DATA_DIR"] = str(cache_dir)
+    try:
+        try:
+            binary = nr.ensure_binary()
+        except Exception as e:
+            pytest.skip(f"nats-server binary unavailable: {e!s}")
+        return binary
+    finally:
+        if orig_env is None:
+            os.environ.pop("SAFEYOLO_COORD_DATA_DIR", None)
+        else:
+            os.environ["SAFEYOLO_COORD_DATA_DIR"] = orig_env
+
+
+@pytest.fixture
+def nats_env(isolated_coord, _binary_cache):
+    """Isolated coord dir with the cached nats-server binary symlinked
+    into the versioned path. Any nats-server we spawn is killed on
+    teardown."""
+    from safeyolo.coord import nats_runtime as nr
+    dest = nr.nats_binary_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists():
+        os.symlink(_binary_cache, dest)
+    yield isolated_coord
+    nr.stop_server()
 
 
 @pytest.fixture
