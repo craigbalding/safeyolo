@@ -461,7 +461,10 @@ class AgentAPI:
             elif op == "messages" and method == "GET":
                 q = flow.request.query
                 since = _parse_qs_int(q.get("since", "0"), "since", default=0)
-                limit = _parse_qs_int(q.get("limit", "50"), "limit", default=50)
+                # min_val=1: zero means "no messages" which then gets
+                # min-clamped to 1 downstream — surprising the caller.
+                # Reject it explicitly instead.
+                limit = _parse_qs_int(q.get("limit", "50"), "limit", default=50, min_val=1)
                 result = await coord_api.read_room(
                     room_name=room,
                     principal_kind="agent",
@@ -513,7 +516,7 @@ class AgentAPI:
                 # Wake is an attention edge, not a bulk fetch: default limit=1
                 # (see coord.api.wait_for_message docstring). Callers wanting
                 # more per wake explicitly ask for it.
-                limit = _parse_qs_int(q.get("limit", "1"), "limit", default=1)
+                limit = _parse_qs_int(q.get("limit", "1"), "limit", default=1, min_val=1)
                 include_self = q.get("include_self", "").lower() in ("1", "true", "yes")
                 result = await coord_api.wait_for_message(
                     room_name=room,

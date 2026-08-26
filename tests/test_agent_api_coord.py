@@ -537,6 +537,31 @@ class TestCoordValidationErrors:
         assert flow.response.status_code == 400
         assert json.loads(flow.response.content)["error"] == "invalid limit"
 
+    def test_limit_zero_is_400_on_messages(self, api, isolated_state):
+        """Live dogfood finding: /messages?limit=0 used to silently
+        min-clamp to 1 and return one message, which is a surprising
+        UX for a caller who asked for zero. Reject explicitly instead."""
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/messages?since=0&limit=0",
+                              method="GET")
+            _run(api, flow)
+        assert flow.response.status_code == 400
+        assert json.loads(flow.response.content)["error"] == "invalid limit"
+
+    def test_limit_zero_is_400_on_wait(self, api, isolated_state):
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        with _as_agent("alice"):
+            flow = _make_flow(
+                "/api/coord/rooms/r/wait?since=0&limit=0&timeout=0.1",
+                method="GET",
+            )
+            _run(api, flow)
+        assert flow.response.status_code == 400
+        assert json.loads(flow.response.content)["error"] == "invalid limit"
+
     def test_invalid_timeout_400(self, api, isolated_state):
         _register_agent("alice")
         _setup_room_with_grants("r", ["alice"])
