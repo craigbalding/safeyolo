@@ -1,73 +1,30 @@
-name: Blackbox Tests
+name: Blackbox Tests — systrap
 
-# Blackbox tests validate SafeYolo's security guarantees end-to-end.
+# The GitHub-hosted lane deliberately proves gVisor's no-KVM fallback.
+# Hardware-backed lanes run through the same tests on the KVM VPS and a
+# physical Apple Silicon Mac mini (VZ); see tests/blackbox/README.md.
 #
-# Two test suites:
-#   - Host pytest: Credential routing, network guard via sinkhole inspection
-#   - VM pytest: Network isolation, privilege escalation, key isolation (inside real microVM)
-#
-# The VM side requires a macOS host with Virtualization.framework. Guest
-# artifacts are built natively on Linux (no Docker) and consumed by the
-# macOS job.
-#
-# See docs/security-testing-design.md for architecture details.
+# BB is intentionally not a per-PR check. A nightly run coalesces the day's
+# changes on the default branch, and workflow_dispatch permits any trusted ref
+# to be tested before merge or release.
 
 on:
-  workflow_dispatch:  # Manual trigger from GitHub UI
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: blackbox-systrap-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build-artifacts:
-    name: Build Guest Artifacts (Linux arm64)
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
-
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            mmdebstrap \
-            e2fsprogs \
-            build-essential \
-            bc \
-            flex \
-            bison \
-            libelf-dev \
-            libssl-dev \
-            gcc-aarch64-linux-gnu \
-            busybox-static \
-            pax-utils \
-            cpio \
-            curl \
-            xz-utils
-
-      - name: Build guest artifacts
-        env:
-          BUILD_KERNEL: "1"  # macOS consumer needs kernel + initramfs too
-        run: |
-          cd guest && ./build-all.sh
-
-      - name: Upload guest artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: guest-artifacts
-          path: |
-            guest/out/Image
-            guest/out/initramfs.cpio.gz
-            guest/out/rootfs-base.ext4
-          retention-days: 1
-          if-no-files-found: error
-
-  blackbox:
-    name: Security Blackbox Tests
-    runs-on: macos-latest
-    needs: build-artifacts
-    timeout-minutes: 15
+  systrap:
+    name: Full BB — Linux systrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -80,35 +37,16 @@ jobs:
       - name: Set up Python
         run: uv python install 3.13
 
-      # Install via uv sync (reads hash-pinned uv.lock) to satisfy
-      # Scorecard PinnedDependenciesID — `pip install -e` was flagged
-      # as an unpinned pipCommand (alert #245).
-      - name: Install SafeYolo
-        run: |
-          uv sync --frozen --group dev
-          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+      - name: Install, bootstrap, and run full systrap BB
+        run: ./tests/blackbox/run-lane.sh systrap --verbose
 
-      - name: Download guest artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: guest-artifacts
-          path: guest/out
-
-      - name: Stage guest artifacts
-        run: |
-          mkdir -p ~/.safeyolo/share
-          cp guest/out/Image ~/.safeyolo/share/
-          cp guest/out/initramfs.cpio.gz ~/.safeyolo/share/
-          cp guest/out/rootfs-base.ext4 ~/.safeyolo/share/
-
-      - name: Run blackbox tests
-        run: ./tests/blackbox/run-tests.sh --verbose
-
-      - name: Upload test logs
-        if: failure()
+      - name: Upload platform evidence and failure logs
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: blackbox-test-logs
+          name: blackbox-systrap-${{ github.run_id }}
           path: |
-            ~/.local/state/safeyolo/
+            tests/blackbox/artifacts/
+            ~/.safeyolo-test/logs/
           retention-days: 7
+          if-no-files-found: warn

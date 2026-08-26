@@ -1272,6 +1272,16 @@ def _check_isolation_platform() -> DiagResult:
     if system == "Linux":
         from ..platform.linux import detect_runsc_platform
         info = detect_runsc_platform()
+        if info.get("forced"):
+            return DiagResult(
+                name="Isolation platform",
+                status="pass",
+                message=(
+                    "systrap (software isolation) — forced by "
+                    "SAFEYOLO_RUNSC_PLATFORM"
+                ),
+                detail="KVM auto-detection was intentionally bypassed",
+            )
         if info["platform"] == "kvm":
             return DiagResult(
                 name="Isolation platform",

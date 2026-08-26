@@ -56,6 +56,7 @@ USERNS_POLL_INTERVAL_SECONDS = 0.005
 EXPERIMENT_WORKSPACE_DCACHE_ENV = "SAFEYOLO_EXPERIMENT_WORKSPACE_DCACHE"
 EXPERIMENT_RUNSC_DCACHE_ENV = "SAFEYOLO_EXPERIMENT_RUNSC_DCACHE"
 EXPERIMENT_RUNSC_DIRECTFS_ENV = "SAFEYOLO_EXPERIMENT_RUNSC_DIRECTFS"
+RUNSC_PLATFORM_ENV = "SAFEYOLO_RUNSC_PLATFORM"
 
 
 class _SocketReader:
@@ -263,6 +264,28 @@ def _run(
     )
 
 
+def _apply_runsc_platform_override(info: dict) -> dict:
+    """Apply the explicit software-isolation selection used by operators/CI.
+
+    KVM remains auto-detected because claiming hardware isolation without
+    proving both operator and subordinate-uid access would produce false test
+    evidence. Selecting systrap makes its acceptance lane deterministic even
+    on a host which happens to expose /dev/kvm.
+    """
+    requested = os.environ.get(RUNSC_PLATFORM_ENV, "").strip().lower()
+    if requested in {"", "auto"}:
+        return info
+    if requested != "systrap":
+        raise RuntimeError(
+            f"{RUNSC_PLATFORM_ENV} must be 'auto' or 'systrap', got {requested!r}"
+        )
+
+    info["platform"] = "systrap"
+    info["forced"] = True
+    info["reason"] = f"forced by {RUNSC_PLATFORM_ENV}"
+    return info
+
+
 def detect_runsc_platform() -> dict:
     """Detect best runsc platform with diagnostic detail.
 
@@ -274,6 +297,7 @@ def detect_runsc_platform() -> dict:
       kvm_group: str  (group name owning /dev/kvm, or "" / gid str if unresolved)
       kvm_group_has_rw: bool  (group bits on /dev/kvm include rw)
       operator_in_kvm_group: bool  (current process is in the owning group)
+      forced: bool  (systrap was selected explicitly instead of auto-detected)
       reason: human-readable explanation
     """
     info: dict = {
@@ -284,11 +308,12 @@ def detect_runsc_platform() -> dict:
         "kvm_group": "",
         "kvm_group_has_rw": False,
         "operator_in_kvm_group": False,
+        "forced": False,
         "reason": "",
     }
     if not info["kvm_exists"]:
         info["reason"] = "/dev/kvm not found"
-        return info
+        return _apply_runsc_platform_override(info)
 
     # Group/mode facts are useful for targeted remediation even when the
     # operator does have rw access, so capture them unconditionally.
@@ -309,7 +334,7 @@ def detect_runsc_platform() -> dict:
     info["kvm_operator_access"] = os.access("/dev/kvm", os.R_OK | os.W_OK)
     if not info["kvm_operator_access"]:
         info["reason"] = "/dev/kvm exists but operator lacks rw access"
-        return info
+        return _apply_runsc_platform_override(info)
     try:
         result = subprocess.run(
             ["getfacl", "/dev/kvm"],
@@ -322,10 +347,10 @@ def detect_runsc_platform() -> dict:
         pass
     if not info["kvm_subordinate_access"]:
         info["reason"] = "subordinate uid 100000 lacks /dev/kvm ACL"
-        return info
+        return _apply_runsc_platform_override(info)
     info["platform"] = "kvm"
     info["reason"] = "KVM available with full access"
-    return info
+    return _apply_runsc_platform_override(info)
 
 
 def _detect_runsc_platform() -> str:

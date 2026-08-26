@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**95 tests across 33 threat categories.**
+**100 tests across 35 threat categories.**
 
 ## Host-side
 
@@ -574,6 +574,61 @@ This is the catch-all: if the key leaked to a surprising
 location (/tmp, /var/log, an agent workspace subdir), the
 targeted tests would miss it but this scan would catch it.
 
+### `tests/blackbox/isolation/test_root_containment.py`
+
+#### TestGuestRootCapability — Guest root is available and useful inside the isolated environment.
+
+**Threat:** Agents need to install distro packages and repair their own guest
+environment. A test suite which only proves non-root operation can miss a
+broken sudo/root path even though that path is a supported feature.
+
+- **`test_root_shell_has_uid_zero`** — The operator-selected root shell really runs as guest UID 0.
+  - *Probe:* Read the effective and real process UIDs and require both to be
+zero when the suite is launched with ``agent shell --root``.
+  - *Consequence if unasserted:* Merely accepting the CLI flag is not useful acceptance evidence;
+package installation and guest repair require actual guest-root
+privileges.
+- **`test_root_can_install_local_apt_package`** — Guest root can install and remove a local package with apt/dpkg.
+  - *Probe:* Build a minimal local Debian package, install it through apt,
+verify its payload under /usr/local, then purge it without network
+downloads.
+  - *Consequence if unasserted:* This exercises the filesystem overlay and package database that
+real ``apt`` installs depend on, while keeping acceptance deterministic
+and independent of an external mirror.
+
+#### TestGuestRootContainment — Guest root cannot cross the SafeYolo isolation boundary.
+
+**Threat:** UID 0 is intentionally powerful inside the guest. It must still be
+unable to bypass proxy-only egress, reach host listeners, modify the
+host-backed SafeYolo share, or access a host virtualization device.
+
+- **`test_root_direct_egress_blocked`** — Guest root cannot bypass the proxy with a direct connection.
+  - *Probe:* Use curl with all proxy handling disabled against a public IP
+and require the connection to fail.
+  - *Consequence if unasserted:* Package-management privilege must not also grant an unobserved
+network path around SafeYolo's policy and credential controls.
+- **`test_root_proxy_path_works`** — Guest root retains the authorised proxy egress path.
+  - *Probe:* Send an HTTP request through HTTP_PROXY to the allowlisted test
+host and require a 200 response.
+  - *Consequence if unasserted:* A direct-egress failure is only meaningful when the intended
+proxy path is a working positive control for the same root process.
+- **`test_root_cannot_reach_live_host_listener`** — Guest root cannot connect to a known-live host TCP service.
+  - *Probe:* Read the harness listener port from the read-only config share
+and attempt a direct TCP connection to the host address.
+  - *Consequence if unasserted:* Testing a live listener distinguishes real host isolation from a
+connection failure caused only by choosing an unused port.
+- **`test_root_cannot_modify_host_config_share`** — Guest root cannot write the host-backed SafeYolo config share.
+  - *Probe:* Attempt to create a probe beneath /safeyolo and require an
+operating-system error with no file left behind.
+  - *Consequence if unasserted:* A writable share would let a root package maintainer script
+mutate host-side proxy or agent configuration across the boundary.
+- **`test_gvisor_root_cannot_access_host_kvm_device`** — The host KVM device is not exposed inside a gVisor sandbox.
+  - *Probe:* In a gVisor lane, assert /dev/kvm is absent even in a
+guest-root shell; hardware microVMs use their own device boundary.
+  - *Consequence if unasserted:* The Linux KVM lane gives gVisor's sentry host-side access to KVM;
+passing that device through to the agent would expose a powerful host
+virtualization interface outside the intended boundary.
+
 ### `tests/blackbox/isolation/test_vm_isolation.py`
 
 #### TestNetworkEscape — Sandbox cannot reach external networks except through the proxy.
@@ -897,12 +952,13 @@ that could be used to ssh OUT to the host or another agent.
 A leaked private key turns the sandbox into a lateral-
 movement pivot.
 
-#### TestFilesystemBoundary — Workspace mount is contained; no setuid, mknod, or traversal escape.
+#### TestFilesystemBoundary — Workspace mount cannot expose host files or host devices.
 
 **Threat:** /workspace is a shared surface between agent and host. If
-the agent can create setuid binaries, device nodes, or symlinks
-that leak outside the mount, it can either escalate inside the
-sandbox or trick the host into touching files outside /workspace.
+the agent can create usable device nodes or symlinks that leak
+outside the mount, it can trick the host mount implementation into
+exposing resources beyond /workspace. Guest-root access itself is
+tested as an intended capability in test_root_containment.py.
 
 - **`test_workspace_symlink_traversal`** — Symlink to /etc/shadow inside /workspace doesn't reach host files.
   - *Probe:* Create /workspace/.../shadow-link → /etc/shadow; try
@@ -914,14 +970,6 @@ traversal within the sandbox rootfs. A bug that followed
 symlinks on the host side would let the agent read any host
 file the mount process can see — /etc/shadow, SSH keys,
 cloud credentials.
-- **`test_workspace_no_setuid`** — setuid bit on a /workspace binary doesn't execute as root.
-  - *Probe:* Create a script in /workspace, chmod 4755 (setuid
-root), execute it; if it reports 'root', fail. Bit present
-on disk but not effective at exec is acceptable.
-  - *Consequence if unasserted:* /workspace should be mounted `nosuid`. Otherwise the
-agent (uid 1000) could make a suid-root shell and
-immediately gain root inside the sandbox — the first step
-of most escape paths.
 - **`test_workspace_no_mknod`** — mknod on /workspace fails with PermissionError/OSError.
   - *Probe:* os.mknod('/workspace/.../testdev', S_IFCHR, makedev(1,3));
 assert the call fails.
@@ -929,13 +977,6 @@ assert the call fails.
 should lack CAP_MKNOD. Device nodes on a shared mount let
 the agent access arbitrary devices (raw block devices like
 /dev/sda, tty, etc.) once the host views the file.
-- **`test_ca_trust_store_immutable`** — Writes to /usr/local/share/ca-certificates fail.
-  - *Probe:* Attempt to write a fake-CA PEM to the trust store
-directory; expect PermissionError/OSError.
-  - *Consequence if unasserted:* If the agent can add a CA to its own trust store, it
-can stand up a local MITM for its own traffic — TLS-
-inspecting requests that should have gone through SafeYolo.
-The trust store must be read-only to uid 1000.
 
 #### TestSyscallSeccompEquivalents — Dangerous syscalls (keyring, pivot_root, unshare, ptrace) are blocked or contained.
 

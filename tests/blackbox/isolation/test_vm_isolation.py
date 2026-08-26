@@ -1032,12 +1032,13 @@ class TestSandboxExposure:
 
 
 class TestFilesystemBoundary:
-    """Workspace mount is contained; no setuid, mknod, or traversal escape.
+    """Workspace mount cannot expose host files or host devices.
 
     Why: /workspace is a shared surface between agent and host. If
-    the agent can create setuid binaries, device nodes, or symlinks
-    that leak outside the mount, it can either escalate inside the
-    sandbox or trick the host into touching files outside /workspace.
+    the agent can create usable device nodes or symlinks that leak
+    outside the mount, it can trick the host mount implementation into
+    exposing resources beyond /workspace. Guest-root access itself is
+    tested as an intended capability in test_root_containment.py.
     """
 
     def test_workspace_symlink_traversal(self):
@@ -1073,48 +1074,6 @@ class TestFilesystemBoundary:
             os.unlink(link_path)
             os.rmdir(link_dir)
 
-    def test_workspace_no_setuid(self):
-        """setuid bit on a /workspace binary doesn't execute as root.
-
-        What: Create a script in /workspace, chmod 4755 (setuid
-        root), execute it; if it reports 'root', fail. Bit present
-        on disk but not effective at exec is acceptable.
-        Why: /workspace should be mounted `nosuid`. Otherwise the
-        agent (uid 1000) could make a suid-root shell and
-        immediately gain root inside the sandbox — the first step
-        of most escape paths.
-        """
-        import stat
-        import tempfile
-        test_file = tempfile.NamedTemporaryFile(
-            dir="/workspace", prefix="suidtest-", delete=False,
-        )
-        try:
-            test_file.write(b"#!/bin/sh\nwhoami\n")
-            test_file.close()
-            os.chmod(test_file.name, 0o4755)  # setuid root
-            actual_mode = os.stat(test_file.name).st_mode
-            # If nosuid mount, the kernel strips the suid bit silently
-            # OR allows the chmod but ignores the bit at exec time.
-            # Check the bit on disk:
-            has_suid = bool(actual_mode & stat.S_ISUID)
-            if has_suid:
-                # Bit stuck — test if exec actually escalates.
-                result = subprocess.run(
-                    [test_file.name], capture_output=True, text=True,
-                    timeout=5,
-                )
-                # If output is "root", the suid is effective — bad.
-                if result.stdout.strip() == "root":
-                    pytest.fail(
-                        "setuid binary on /workspace executed as root — "
-                        "mount lacks nosuid"
-                    )
-                # Bit is on disk but not effective at exec → acceptable
-                # (common on overlayfs + gVisor).
-        finally:
-            os.unlink(test_file.name)
-
     def test_workspace_no_mknod(self):
         """mknod on /workspace fails with PermissionError/OSError.
 
@@ -1141,52 +1100,6 @@ class TestFilesystemBoundary:
             if os.path.exists(mknod_path):
                 os.unlink(mknod_path)
             os.rmdir(os.path.dirname(mknod_path))
-
-    def test_ca_trust_store_immutable(self):
-        """Writes to /usr/local/share/ca-certificates fail.
-
-        What: Attempt to write a fake-CA PEM to the trust store
-        directory; expect PermissionError/OSError.
-        Why: If the agent can add a CA to its own trust store, it
-        can stand up a local MITM for its own traffic — TLS-
-        inspecting requests that should have gone through SafeYolo.
-        The trust store must be read-only to uid 1000.
-        """
-        # Attempt to write a fake CA cert. The target dir is
-        # /usr/local/share/ca-certificates/ — if writable, the agent
-        # could inject a CA and re-run update-ca-certificates.
-        fake_ca = "/usr/local/share/ca-certificates/evil-test.crt"
-        try:
-            with open(fake_ca, "w") as f:
-                f.write("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
-        except (PermissionError, OSError):
-            return  # can't write → strong property
-
-        # Written — that's a concern. Clean up and try update-ca-certificates.
-        try:
-            result = subprocess.run(
-                ["update-ca-certificates"], capture_output=True,
-                text=True, timeout=10,
-            )
-            # Even if the write succeeded and update ran, the proxy
-            # won't honour the new CA for its own outbound validation
-            # (proxy runs on the HOST, not inside the sandbox). So the
-            # actual security impact is limited to in-sandbox TLS
-            # clients trusting the fake CA — which only matters if the
-            # agent is trying to MITM itself (to hide traffic from the
-            # proxy's content inspection).
-            #
-            # Flag it anyway — defence in depth.
-            if result.returncode == 0:
-                pytest.fail(
-                    "Agent was able to add a CA to the trust store AND "
-                    "run update-ca-certificates. While the proxy's own "
-                    "trust store is unaffected, in-sandbox TLS clients "
-                    "would honour the injected CA."
-                )
-        finally:
-            os.unlink(fake_ca) if os.path.exists(fake_ca) else None
-
 
 class TestSyscallSeccompEquivalents:
     """Dangerous syscalls (keyring, pivot_root, unshare, ptrace) are blocked or contained.

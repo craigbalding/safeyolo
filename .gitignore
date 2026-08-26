@@ -39,3 +39,6 @@ guest/.scratch/
 # Swift build artifacts for the safeyolo-vm helper.
 # Regenerate via `cd vm && make build` (or `make install`).
 vm/.build/
+
+# Runtime evidence emitted by tests/blackbox/run-lane.sh.
+tests/blackbox/artifacts/

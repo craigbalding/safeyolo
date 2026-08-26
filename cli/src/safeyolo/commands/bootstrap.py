@@ -406,7 +406,8 @@ def _needs_setup() -> bool:
 
     kvm = detect_runsc_platform()
     if (
-        kvm.get("kvm_exists")
+        not kvm.get("forced")
+        and kvm.get("kvm_exists")
         and kvm.get("kvm_operator_access")
         and not kvm.get("kvm_subordinate_access")
     ):

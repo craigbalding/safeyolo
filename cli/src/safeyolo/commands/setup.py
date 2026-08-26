@@ -472,7 +472,8 @@ def setup() -> None:  # DOC: README.md
         # Without the binary both paths fail with a misleading sudo-level
         # error, so gate the whole KVM-rule step on setfacl presence.
         need_kvm = (
-            kvm["kvm_exists"]
+            not kvm.get("forced")
+            and kvm["kvm_exists"]
             and kvm["kvm_operator_access"]
             and not kvm["kvm_subordinate_access"]
             and userns["setfacl"]
@@ -488,7 +489,12 @@ def setup() -> None:  # DOC: README.md
             console.print("  [dim]INFO[/dim]  AppArmor does not restrict userns here — profile not required")
 
         # KVM: report current state before/after
-        if kvm["platform"] == "kvm":
+        if kvm.get("forced"):
+            console.print(
+                "  [dim]INFO[/dim]  systrap selected by "
+                "SAFEYOLO_RUNSC_PLATFORM — KVM setup skipped"
+            )
+        elif kvm["platform"] == "kvm":
             console.print("  [green]OK[/green]  KVM platform (hardware isolation)")
         elif not kvm["kvm_exists"]:
             console.print("  [dim]INFO[/dim]  /dev/kvm not available — using systrap (software isolation)")

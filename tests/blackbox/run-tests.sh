@@ -3,7 +3,7 @@
 # Run SafeYolo blackbox tests (split execution model)
 #
 # Host-side pytest: proxy functional tests (credential guard, network guard)
-# VM-side pytest:   isolation tests (network escape, privilege escalation, key isolation)
+# VM-side pytest:   isolation tests (including intended guest-root capability)
 #
 # Runs as an ISOLATED INSTANCE alongside production SafeYolo:
 #   - Separate config dir (~/.safeyolo-test)
@@ -16,6 +16,7 @@
 #   ./run-tests.sh              # Run all tests
 #   ./run-tests.sh --proxy      # Proxy functional tests only
 #   ./run-tests.sh --isolation  # VM isolation tests only
+#   ./run-tests.sh --expect-platform systrap|kvm|vz
 #   ./run-tests.sh --verbose    # Verbose pytest output
 #
 # Exit codes:
@@ -61,6 +62,7 @@ RUN_PROXY=true
 RUN_ISOLATION=true
 VERBOSE=""
 AGENT_NAME="${SAFEYOLO_TEST_AGENT:-bbtest}"
+EXPECTED_PLATFORM=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -76,9 +78,24 @@ while [[ $# -gt 0 ]]; do
             VERBOSE="-v"
             shift
             ;;
+        --expect-platform)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: --expect-platform requires systrap, kvm, or vz" >&2
+                exit 2
+            fi
+            EXPECTED_PLATFORM="$2"
+            case "$EXPECTED_PLATFORM" in
+                systrap|kvm|vz) ;;
+                *)
+                    echo "ERROR: unsupported platform '$EXPECTED_PLATFORM'" >&2
+                    exit 2
+                    ;;
+            esac
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: ./run-tests.sh [--proxy|--isolation] [--verbose]"
+            echo "Usage: ./run-tests.sh [--proxy|--isolation] [--expect-platform PLATFORM] [--verbose]"
             exit 2
             ;;
     esac
@@ -94,6 +111,11 @@ echo ""
 
 if ! command -v safeyolo &>/dev/null; then
     echo "ERROR: safeyolo CLI not found. Activate the venv or install."
+    exit 2
+fi
+
+if [ -n "$EXPECTED_PLATFORM" ] && [ "$RUN_ISOLATION" != true ]; then
+    echo "ERROR: --expect-platform requires the isolation suite" >&2
     exit 2
 fi
 
@@ -155,6 +177,22 @@ if [ -d "$PROD_BIN" ] && [ ! -L "$TEST_BIN" ]; then
     rm -rf "$TEST_BIN"
     ln -s "$PROD_BIN" "$TEST_BIN"
     echo "  Linked binaries: $TEST_BIN -> $PROD_BIN"
+fi
+
+# Capture and assert the selected runtime before producing isolation evidence.
+# Doctor may report unrelated non-fatal setup findings for the isolated test
+# config, so this gate deliberately validates the named platform check itself.
+if [ -n "$EXPECTED_PLATFORM" ]; then
+    ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts}"
+    mkdir -p "$ARTIFACTS_DIR"
+    DOCTOR_JSON="$ARTIFACTS_DIR/doctor.json"
+    DOCTOR_STDERR="$ARTIFACTS_DIR/doctor.stderr"
+    safeyolo doctor --json >"$DOCTOR_JSON" 2>"$DOCTOR_STDERR" || true
+    if ! python3 "$SCRIPT_DIR/assert-platform.py" "$EXPECTED_PLATFORM" "$DOCTOR_JSON"; then
+        echo "ERROR: runtime platform assertion failed" >&2
+        [ ! -s "$DOCTOR_STDERR" ] || sed -n '1,80p' "$DOCTOR_STDERR" >&2
+        exit 2
+    fi
 fi
 
 echo "Generating test certificates..."
@@ -327,6 +365,7 @@ echo ""
 
 PROXY_RESULT=0
 ISOLATION_RESULT=0
+ROOT_ISOLATION_RESULT=0
 
 FIREWALL_RESULT=0
 
@@ -370,8 +409,17 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     safeyolo agent shell "$AGENT_NAME" -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE -rs --tb=short --timeout=60"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
     ISOLATION_RESULT=$?
+    set -e
+    echo ""
+
+    echo "=== Guest-Root Capability and Containment Tests (in-VM) ==="
+    echo ""
+    set +e
+    safeyolo agent shell "$AGENT_NAME" --root -c \
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py"
+    ROOT_ISOLATION_RESULT=$?
     set -e
     echo ""
 
@@ -420,6 +468,11 @@ if [ "$RUN_ISOLATION" = true ]; then
     else
         echo "Isolation tests: FAILED (exit code: $ISOLATION_RESULT)"
     fi
+    if [ "$ROOT_ISOLATION_RESULT" = "0" ]; then
+        echo "Guest-root tests: PASSED"
+    else
+        echo "Guest-root tests: FAILED (exit code: $ROOT_ISOLATION_RESULT)"
+    fi
     if [ "${LIFECYCLE_RESULT:-0}" != "0" ]; then
         echo "Lifecycle tests: FAILED (exit code: $LIFECYCLE_RESULT)"
     else
@@ -427,7 +480,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
 fi
 
-if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ] || [ "${LIFECYCLE_RESULT:-0}" != "0" ] || [ "$IDENTITY_RESULT" != "0" ]; then
+if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$ROOT_ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ] || [ "${LIFECYCLE_RESULT:-0}" != "0" ] || [ "$IDENTITY_RESULT" != "0" ]; then
     echo ""
     echo "Result: FAILED"
     exit 1
