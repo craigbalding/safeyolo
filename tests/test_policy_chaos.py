@@ -125,21 +125,40 @@ def test_power_cut_protocol_recovers_complete_policy(
     assert evidence["results"][0]["visible_version"] == expected_version
     assert (config / "policy.toml").read_text() == POLICY
 
-    # Regression: the advertised replay_command must actually parse.
-    # The pre-fix emit only had `--run-id`, but the recover subparser
-    # requires --config-dir, --state-dir, --output too; the guard flag
-    # is optional at parse time but required for run authorization.
-    # Round-trip the emitted argv through the real parser rather than
-    # matching flag strings, so any future subparser change breaks the
-    # emit here too. (Merge dogfood finding.)
+    # Regression: the advertised replay_command must actually parse
+    # AND actually run to completion when paired with replay_env. The
+    # pre-fix emit only had `--run-id` and no env hint, so executing
+    # the advertised command in a clean environment exited 2 twice
+    # over: argparse missing-args, then `_safe_fault_paths` refusing
+    # without SAFEYOLO_CHAOS_DISPOSABLE_VM. Round-trip both by
+    # running the replay end-to-end. (Merge dogfood finding.)
     from tools.policy_chaos import _parser
     replay = evidence["replay_command"]
-    # First two args are `python -m tools.policy_chaos`; strip them
-    # before feeding to the subcommand parser.
     assert replay[:3] == [sys.executable, "-m", "tools.policy_chaos"]
-    parser = _parser()
-    parsed = parser.parse_args(replay[3:])
+    parsed = _parser().parse_args(replay[3:])
     assert parsed.command == "fault"
     assert parsed.fault_command == "recover"
     assert parsed.run_id == run_id
     assert parsed.confirm_disposable_vm is True
+
+    replay_env = evidence["replay_env"]
+    assert replay_env == {"SAFEYOLO_CHAOS_DISPOSABLE_VM": "1"}, (
+        "replay_env must set the disposable-VM env guard the caller "
+        "would otherwise forget"
+    )
+    # Execute the replay in a clean environment plus the emitted
+    # replay_env. If _safe_fault_paths' env check ever gains a new
+    # required key, this catches it — the emit has to keep up.
+    replay_env_full = {**os.environ.copy(), **replay_env}
+    replayed = subprocess.run(
+        replay,
+        cwd=Path(__file__).parents[1],
+        env=replay_env_full,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert replayed.returncode == 0, (
+        f"replay exited {replayed.returncode}: stderr={replayed.stderr}"
+    )

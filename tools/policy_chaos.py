@@ -404,6 +404,12 @@ def recover_power_cut(args: argparse.Namespace) -> int:
             "--output", str(args.output),
             "--confirm-disposable-vm",
         ],
+        # The disposable-VM contract is guarded at THREE points: the
+        # CLI flag above, this env var, and the sentinel file already
+        # in config-dir. The env var is the one a caller most often
+        # forgets, so surface it alongside the command rather than
+        # leaving them to discover exit 2 the hard way.
+        "replay_env": {"SAFEYOLO_CHAOS_DISPOSABLE_VM": "1"},
     }
     _write_report(args.output, report)
     exit_code = _aggregate_exit(results)
