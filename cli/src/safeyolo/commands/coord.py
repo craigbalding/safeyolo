@@ -9,6 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shlex
+import shutil
+import subprocess
+import tempfile
 import time
 from datetime import UTC, datetime
 
@@ -255,8 +260,81 @@ def _observe_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
         console.print("\n[dim]detached[/]")
 
 
+def _read_clipboard() -> tuple[str | None, str]:
+    """Read the host clipboard verbatim. Returns (text, error).
+
+    Terminal input mangles embedded control bytes -- ^R is REPRINT under
+    IEXTEN, or reverse-i-search when readline drives input() -- so pasted
+    terminal output arrives truncated. Reading the clipboard directly skips
+    the line discipline entirely.
+    """
+    candidates = (
+        ["pbpaste"],                                   # macOS
+        ["wl-paste", "--no-newline"],                  # Wayland
+        ["xclip", "-selection", "clipboard", "-o"],    # X11
+        ["xsel", "--clipboard", "--output"],           # X11, alternative
+    )
+    tried = []
+    for argv in candidates:
+        if shutil.which(argv[0]) is None:
+            continue
+        tried.append(argv[0])
+        try:
+            proc = subprocess.run(argv, capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as e:  # noqa: PERF203
+            return None, f"{argv[0]} failed: {e}"
+        if proc.returncode == 0:
+            return proc.stdout.decode("utf-8", errors="replace"), ""
+    if not tried:
+        return None, "no clipboard tool found (need pbpaste, wl-paste, xclip or xsel)"
+    return None, f"clipboard read failed via {', '.join(tried)}"
+
+
+def _read_editor() -> tuple[str | None, str]:
+    """Compose a message in $EDITOR. Portable fallback to :paste."""
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+    fd, path = tempfile.mkstemp(suffix=".md", prefix="safeyolo-coord-")
+    os.close(fd)
+    try:
+        # shell=True so a multi-word $EDITOR ("code -w", "emacsclient -nw")
+        # works the way the user configured it.
+        rc = subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+        if rc != 0:
+            return None, f"{editor} exited {rc}; nothing sent"
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read(), ""
+    except OSError as e:
+        return None, f"could not run {editor}: {e}"
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _confirm_send(body: str) -> bool:
+    """Preview a composed body and ask before it goes to the room."""
+    n_bytes = len(body.encode("utf-8"))
+    if n_bytes > api.MAX_BODY_BYTES:
+        console.print(
+            f"[red]{n_bytes} bytes exceeds the {api.MAX_BODY_BYTES} byte "
+            "limit; not sent[/]"
+        )
+        return False
+    lines = body.splitlines()
+    head = lines[0][:70] if lines else ""
+    console.print(f"[dim]{len(lines)} lines, {n_bytes} bytes -- {head}...[/]")
+    try:
+        return input("send? [Y/n] ").strip().lower() in ("", "y", "yes")
+    except EOFError:
+        return False
+
+
 def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
-    console.print("[dim]--- interactive (empty line polls; :q to quit) ---[/]")
+    console.print(
+        "[dim]--- interactive (empty line polls; :paste clipboard, "
+        ":edit in $EDITOR, :q to quit) ---[/]"
+    )
     console.print(
         f"[dim]tip: for live scrolling, run `safeyolo coord chat {room} "
         "--observe` in a second pane[/]"
@@ -267,11 +345,35 @@ def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
                 line = input("op> ")
             except EOFError:
                 break
-            if line.strip() == ":q":
+            command = line.strip()
+            if command == ":q":
                 break
-            if line.strip():
+            body: str | None = None
+            if command in (":paste", ":edit"):
+                # Typing at the prompt routes bytes through the terminal line
+                # discipline, which eats embedded control characters. Both of
+                # these read the text from somewhere the tty never sees.
+                body, err = (
+                    _read_clipboard() if command == ":paste" else _read_editor()
+                )
+                if body is None:
+                    console.print(f"[red]{err}[/]")
+                    body = None
+                else:
+                    body = body.rstrip("\n")
+                    if not body.strip():
+                        console.print("[dim]empty; nothing sent[/]")
+                        body = None
+                    elif not _confirm_send(body):
+                        console.print("[dim]cancelled[/]")
+                        body = None
+            elif command:
+                body = line
+            if body is not None:
                 try:
-                    runtime.run(api.send(room, "operator", None, line))
+                    runtime.run(api.send(room, "operator", None, body))
+                except ValueError as e:
+                    console.print(f"[red]{e}[/]")
                 except api.GrantError as e:
                     console.print(f"[red]{e}[/]")
                     break
