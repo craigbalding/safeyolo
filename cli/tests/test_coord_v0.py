@@ -441,6 +441,39 @@ def test_instance_id_creation_is_race_safe(tmp_path, monkeypatch):
     assert len(unique) == 1, f"race produced {len(unique)} distinct instance IDs: {unique}"
 
 
+@pytest.mark.timeout(60)
+def test_instance_id_reader_never_sees_empty_file(tmp_path, monkeypatch):
+    """Regression for the fast-path visibility race: the old
+    `path.write_text()` implementation opened the file with
+    O_CREAT|O_TRUNC, so a concurrent reader taking the fast path could
+    see `path.exists()` == True and read an empty string before the
+    writer's data landed. The fix (mkstemp + os.replace) makes the file
+    appear atomically with content — this test hammers it hard enough to
+    catch a regression.
+
+    Two axes of stress:
+      1. Many fresh installs (200 iterations, one instance_id per iter).
+      2. Many concurrent callers per install (16 threads).
+    Any thread reading '' would fail startswith('sy-').
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from safeyolo.coord.identity import get_or_create_instance_id
+
+    for i in range(200):
+        d = tmp_path / f"iter-{i:03d}"
+        d.mkdir()
+        monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(d))
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(lambda _: get_or_create_instance_id(), range(16)))
+        # No reader saw a truncated / empty file.
+        assert all(r.startswith("sy-") for r in results), \
+            f"iter {i}: reader observed non-sy value: {[r for r in results if not r.startswith('sy-')]}"
+        # Everyone agrees on the same ID.
+        assert len(set(results)) == 1, \
+            f"iter {i}: writers minted {len(set(results))} distinct IDs"
+
+
 @pytest.mark.timeout(30)
 def test_wait_does_not_starve_on_own_message_burst(coord_env):
     """Bob's finding #17: without a scan-cursor, 200+ consecutive own

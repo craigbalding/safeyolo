@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -40,8 +41,14 @@ def get_or_create_instance_id() -> str:
 
     Race-safe: two concurrent callers on a fresh install will not mint
     different IDs. The first to acquire the exclusive lock writes; the
-    second sees the file exists and returns the same value. Codex finding,
-    post-patch.
+    second sees the file exists and returns the same value.
+
+    Fast-path readers observe the file atomically: writers stage the ID
+    into a sibling temp file and `os.replace` it into place, so a
+    concurrent reader sees either "not there yet" or the fully written
+    ID — never "exists but empty," which was a subtle race in the
+    earlier `path.write_text()` implementation (O_CREAT|O_TRUNC leaves
+    an empty file visible to `exists()` before the write completes).
     """
     path = instance_id_file()
     # Fast path: already exists, no lock needed.
@@ -59,8 +66,24 @@ def get_or_create_instance_id() -> str:
             if path.exists():
                 return path.read_text().strip()
             iid = new_instance_id()
-            path.write_text(iid + "\n")
-            path.chmod(0o600)
+            # Stage into a sibling temp file then atomically rename into
+            # place. Fast-path readers never see a half-written file.
+            fd, tmp_name = tempfile.mkstemp(
+                dir=path.parent, prefix=".instance_id.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(iid + "\n")
+                os.chmod(tmp_name, 0o600)
+                os.replace(tmp_name, path)
+            except BaseException:
+                # Any failure between mkstemp and replace: clean the
+                # temp file so we don't leave debris under coord/.
+                try:
+                    os.unlink(tmp_name)
+                except FileNotFoundError:
+                    pass
+                raise
             return iid
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
