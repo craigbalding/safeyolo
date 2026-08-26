@@ -57,6 +57,7 @@ export SAFEYOLO_TEST_KEY_DIR="${SAFEYOLO_TEST_KEY_DIR:-$SAFEYOLO_CONFIG_DIR/test
 # Test instance ports (different from production 8080/9090)
 TEST_PROXY_PORT=8180
 TEST_ADMIN_PORT=9190
+TEST_WEB_PORT=8181
 
 # Export for host-side pytest (conftest.py reads these)
 export PROXY_URL="http://127.0.0.1:${TEST_PROXY_PORT}"
@@ -108,7 +109,7 @@ done
 
 echo "=== SafeYolo Blackbox Tests ==="
 echo "  Instance: $SAFEYOLO_CONFIG_DIR"
-echo "  Proxy:    localhost:$TEST_PROXY_PORT  Admin: localhost:$TEST_ADMIN_PORT"
+echo "  Proxy:    localhost:$TEST_PROXY_PORT  Admin: localhost:$TEST_ADMIN_PORT  Web: localhost:$TEST_WEB_PORT"
 echo "  Netns base: SAFEYOLO_SUBNET_BASE=${SAFEYOLO_SUBNET_BASE}"
 echo ""
 
@@ -152,6 +153,7 @@ config_path = Path('$SAFEYOLO_CONFIG_DIR/config.yaml')
 config = yaml.safe_load(config_path.read_text())
 config['proxy']['port'] = $TEST_PROXY_PORT
 config['proxy']['admin_port'] = $TEST_ADMIN_PORT
+config['proxy']['web_port'] = $TEST_WEB_PORT
 config['test']['sinkhole_router'] = '$SCRIPT_DIR/harness/sinkhole_router.py'
 config['test']['ca_cert'] = '$SAFEYOLO_TEST_CERT_DIR/ca.crt'
 config_path.write_text(yaml.dump(config, default_flow_style=False))
