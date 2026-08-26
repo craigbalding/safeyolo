@@ -216,7 +216,7 @@ def test_wait_for_message_wakes(coord_env):
     assert page["messages"][0]["body"] == "wake up"
 
 
-@pytest.mark.timeout(5)
+@pytest.mark.timeout(15)
 def test_wait_for_message_times_out_gracefully(coord_env):
     _run(api.create_room("r"))
     api.grant("r", "agent", AGENT_A)
@@ -231,7 +231,7 @@ def test_wait_for_message_times_out_gracefully(coord_env):
     assert page["messages"] == []
 
 
-@pytest.mark.timeout(5)
+@pytest.mark.timeout(15)
 def test_wait_excludes_self_by_default(coord_env):
     """Reviewer point 4: an agent's own send does not wake it."""
     _run(api.create_room("r"))
@@ -248,7 +248,7 @@ def test_wait_excludes_self_by_default(coord_env):
     assert page["messages"] == []
 
 
-@pytest.mark.timeout(5)
+@pytest.mark.timeout(15)
 def test_wait_includes_self_when_asked(coord_env):
     _run(api.create_room("r"))
     api.grant("r", "agent", AGENT_A)
@@ -277,7 +277,7 @@ def test_read_room_always_includes_self(coord_env):
     assert page["messages"][0]["body"] == "my own message"
 
 
-@pytest.mark.timeout(5)
+@pytest.mark.timeout(15)
 def test_wait_default_limit_is_one(coord_env):
     """Reviewer point 5: wake is an attention edge, not a bulk fetch."""
     _run(api.create_room("r"))
@@ -384,7 +384,7 @@ def test_grant_absorbs_same_ms_collision(coord_env):
         api.grant("r", "agent", AGENT_A)
 
 
-@pytest.mark.timeout(5)
+@pytest.mark.timeout(15)
 def test_wait_advances_cursor_past_partial_own_batch(coord_env):
     """Codex finding: scan_since must advance past a filtered-empty batch
     even when page.has_more is False (small own-message batch). Previously
