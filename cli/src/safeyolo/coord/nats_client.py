@@ -64,12 +64,16 @@ from . import nats_runtime
 # one hyperactive room from taking more than its share.
 _ROOM_MAX_BYTES = 100 * 1024 * 1024        # 100 MiB
 _ROOM_MAX_AGE_S = 7 * 24 * 60 * 60         # 7 days (nats-py takes seconds)
-# The API-layer body cap is 256 KiB (MAX_BODY_BYTES). The envelope
-# JSON adds ids, timestamps, sender_agent_name, content_type, and
-# origin_instance_id on top of that body. A max-sized body must
-# still fit through JetStream, so the stream ceiling is set to the
-# body cap plus headroom for envelope + Nats-Msg-Id header overhead.
-_ROOM_MAX_MSG_SIZE = 320 * 1024
+# The API-layer body cap is 256 KiB (MAX_BODY_BYTES) of UTF-8. JSON
+# serialization can expand that: even with ensure_ascii=False (we do),
+# a body of pure control chars encodes as `\uXXXX` = 6× expansion, so
+# 256 KiB worst-case → 1.5 MiB. Plus envelope overhead. Reviewer's
+# guidance: don't try to calculate a tight ceiling — use 1–2 MiB of
+# headroom. 2 MiB comfortably fits any legal max-sized body regardless
+# of content, and matches the nats-server max_payload we set in
+# nats_runtime.write_config so an oversized publish fails at the API
+# validator (MAX_BODY_BYTES) rather than at the server.
+_ROOM_MAX_MSG_SIZE = 2 * 1024 * 1024
 # Generous ceiling on the number of messages retained per room, per
 # #371 spec. Bytes/age still bound retention in most rooms; this
 # catches pathological write patterns where each message is tiny but
@@ -337,12 +341,21 @@ async def room_stream_state(room_id: str) -> dict:
     JetStream. Used by the API layer to detect truncation; the
     timestamp for the oldest surviving message is fetched separately
     via oldest_message_ts to keep this call cheap on the read hot path.
+
+    Callers only reach this after SQLite has resolved the room, so a
+    missing JetStream stream means coord storage has vanished for a
+    room the registry still claims exists — a genuine data-integrity
+    failure, not an empty room. Raises CoordDataError in that case
+    (reviewer round-5 point 2).
     """
     js = await get_jetstream()
     try:
         info = await js.stream_info(stream_name_for_room(room_id))
-    except NotFoundError:
-        return {"first_seq": 0, "last_seq": 0, "messages": 0}
+    except NotFoundError as e:
+        raise CoordDataError(
+            f"room {room_id!r} registered in SQLite but JetStream stream "
+            f"{stream_name_for_room(room_id)!r} is missing — storage lost"
+        ) from e
     except _UNAVAILABLE_EXCEPTIONS as e:
         raise NatsUnavailable(f"stream_info failed: {e!s}") from e
     state = info.state
@@ -389,7 +402,11 @@ async def publish_envelope(room_id: str, envelope: dict) -> int:
     inside JetStream's duplicate window without producing a duplicate.
     """
     js = await get_jetstream()
-    body = json.dumps(envelope).encode()
+    # ensure_ascii=False keeps UTF-8 body bytes as UTF-8 in the JSON
+    # payload instead of `\uXXXX`-escaping every non-ASCII char (which
+    # would let a legal 256 KiB body of `é` blow past a tight stream
+    # ceiling). Reviewer round-5 point 1.
+    body = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
     try:
         ack = await js.publish(
             subject_for_room(room_id),
@@ -450,8 +467,15 @@ async def fetch_since(
                 opt_start_seq=start_seq,
             ),
         )
-    except NotFoundError:
-        return []
+    except NotFoundError as e:
+        # SQLite already resolved the room, so a missing JetStream
+        # stream means storage vanished for a still-registered room.
+        # Silent empty result would hide the data loss (reviewer
+        # round-5 point 2).
+        raise CoordDataError(
+            f"room {room_id!r} registered in SQLite but JetStream stream "
+            f"{stream!r} is missing — storage lost"
+        ) from e
     except _UNAVAILABLE_EXCEPTIONS as e:
         raise NatsUnavailable(f"consumer create failed: {e!s}") from e
     consumer_name = psub._consumer

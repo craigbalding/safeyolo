@@ -108,6 +108,14 @@ NATS_MONITOR_PORT = 8222
 # own MaxBytes/MaxAge on top of this ceiling.
 JETSTREAM_MAX_FILE_STORE = 1 * 1024 * 1024 * 1024
 
+# nats-server's default max_payload is 1 MiB, but our per-room stream
+# needs 2 MiB headroom to fit a max-sized (256 KiB) body's worst-case
+# JSON encoding plus envelope overhead. Raise the server ceiling in
+# lockstep so an oversized publish fails at the API validator
+# (MAX_BODY_BYTES) rather than as a nats-server "maximum payload
+# exceeded" that would look like a NATS bug to the operator.
+NATS_MAX_PAYLOAD = 2 * 1024 * 1024
+
 _ACCOUNT_LOCAL = "SY_LOCAL"
 _USERNAME = "safeyolo"
 
@@ -262,7 +270,11 @@ def ensure_binary() -> Path:
     ) as tmp:
         tmp_path = Path(tmp.name)
     try:
-        with urllib.request.urlopen(url) as resp:
+        # Bounded per-request timeout. urlopen's default is infinite;
+        # a stalled GitHub connection would otherwise turn best-effort
+        # `safeyolo start` into an indefinite hang on first run
+        # (reviewer round-5 follow-up).
+        with urllib.request.urlopen(url, timeout=30) as resp:
             shutil.copyfileobj(resp, tmp_path.open("wb"))
 
         # ARCHIVE verify BEFORE tar parsing — a modified download must
@@ -370,6 +382,10 @@ def write_config(server_name: str) -> Path:
 listen: {NATS_LISTEN_HOST}:{NATS_CLIENT_PORT}
 http: {NATS_LISTEN_HOST}:{NATS_MONITOR_PORT}
 server_name: {server_name}
+
+# Match per-room MaxMsgSize in nats_client (2 MiB) so an oversized
+# publish is rejected by the API validator, not by nats-server.
+max_payload: {NATS_MAX_PAYLOAD}
 
 # JetStream lives under coord data dir; global cap enforced here so
 # unlimited room creation cannot exhaust disk (per #371 reviewer point 3).
@@ -735,9 +751,24 @@ def _stop_server_locked() -> bool:
 
 
 def status() -> dict:
-    """Diagnostic summary for `safeyolo doctor` / status commands."""
+    """Diagnostic summary for `safeyolo doctor` / status commands.
+
+    `state` is one of:
+      - "healthy"      : running + owned (verified via /varz)
+      - "wedged"       : pidfile PID alive but /varz unverified — a live
+                         process we cannot signal safely; needs operator
+                         attention (reviewer round-5 follow-up)
+      - "not-running"  : no live NATS we own (pidfile absent or stale)
+    """
     binary = nats_binary_path()
     verified = _verified_ownership()
+    stored = _read_pidfile()
+    if verified is not None:
+        state = "healthy"
+    elif stored is not None and _pid_alive(stored["pid"]):
+        state = "wedged"
+    else:
+        state = "not-running"
     return {
         "binary": str(binary) if binary.exists() else None,
         "requested_version": NATS_VERSION,
@@ -746,10 +777,13 @@ def status() -> dict:
         "data_dir": str(nats_data_path()),
         "log_file": str(nats_log_path()) if nats_log_path().exists() else None,
         "listen": f"{NATS_LISTEN_HOST}:{NATS_CLIENT_PORT}",
-        "pid": verified["pid"] if verified else None,
-        "server_name": verified["server_name"] if verified else None,
+        "pid": verified["pid"] if verified else (stored["pid"] if stored else None),
+        "server_name": verified["server_name"] if verified else (
+            stored["server_name"] if stored else None
+        ),
         "server_id": verified["server_id"] if verified else None,
         "healthy": verified is not None,
+        "state": state,
     }
 
 

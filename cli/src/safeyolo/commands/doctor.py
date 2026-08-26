@@ -1508,7 +1508,8 @@ def _check_coord_message_plane() -> DiagResult:
             status="warn",
             message=f"nats-server status query failed: {type(exc).__name__}",
         )
-    if info["healthy"]:
+    state = info.get("state", "not-running")
+    if state == "healthy":
         return DiagResult(
             name="Coord message plane",
             status="pass",
@@ -1516,6 +1517,27 @@ def _check_coord_message_plane() -> DiagResult:
                 f"nats-server running (pid {info['pid']}, "
                 f"listen {info['listen']}, "
                 f"version {info.get('actual_version') or info['requested_version']})"
+            ),
+        )
+    if state == "wedged":
+        # Live PID we can't verify ownership of. Fail (not warn) so
+        # the operator sees this in the doctor summary — silent
+        # cleanup would risk orphaning a live NATS.
+        return DiagResult(
+            name="Coord message plane",
+            status="fail",
+            message=(
+                f"nats-server wedged: pid {info['pid']} alive but /varz "
+                f"ownership unverified"
+            ),
+            detail=(
+                f"listen={info['listen']}  config={info.get('config') or 'absent'}  "
+                f"log={info.get('log_file') or 'absent'}"
+            ),
+            remediation=(
+                "Investigate the process manually. If it is not SafeYolo's "
+                f"nats-server, remove the pidfile ({info.get('config')}) "
+                "and rerun `safeyolo start`."
             ),
         )
     if info.get("binary") is None:

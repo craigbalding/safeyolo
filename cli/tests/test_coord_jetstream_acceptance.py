@@ -323,6 +323,59 @@ def test_body_at_api_max_survives_jetstream(coord_env):
     assert page["messages"][0]["body"] == big
 
 
+@pytest.mark.timeout(30)
+def test_body_at_api_max_survives_jetstream_non_ascii(coord_env):
+    """Reviewer round-5 point 1: an ASCII body of `x` doesn't exercise
+    JSON's Unicode-escape behavior. A legal 256 KiB body of `é` used to
+    serialize to ~768 KiB (because json.dumps' default ensure_ascii=True
+    expanded each 2-byte UTF-8 char to `\\u00e9`, 6 chars), blowing past
+    a tight stream ceiling. This test locks in the ensure_ascii=False
+    fix + 2 MiB headroom."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    # 128 KiB of `é` = 256 KiB UTF-8 = MAX_BODY_BYTES on the nose.
+    per_char_bytes = len("é".encode("utf-8"))
+    assert per_char_bytes == 2
+    big = "é" * (api.MAX_BODY_BYTES // per_char_bytes)
+    assert len(big.encode("utf-8")) == api.MAX_BODY_BYTES
+
+    r = _run(api.send("r", "agent", AGENT_A, big, sender_agent_name="alice"))
+    assert r["sequence"] > 0
+
+    page = _run(api.read_room("r", "agent", AGENT_B))
+    assert len(page["messages"]) == 1
+    assert page["messages"][0]["body"] == big
+
+
+@pytest.mark.timeout(30)
+def test_missing_jetstream_stream_for_existing_room_raises_coord_data_error(coord_env):
+    """Reviewer round-5 point 2: SQLite says the room exists but the
+    JetStream stream is gone. Silently returning an empty page would
+    hide the data loss. Must surface as CoordDataError (→ addon 500).
+    delete_room_stream itself stays idempotent."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    room_id = next(r["room_id"] for r in api.list_rooms() if r["name"] == "r")
+
+    # Directly drop the stream out from under the still-registered room.
+    async def drop():
+        js = await nats_client.get_jetstream()
+        await js.delete_stream(nats_client.stream_name_for_room(room_id))
+    _run(drop())
+
+    # Any read of the room now raises CoordDataError rather than
+    # reporting a false empty page.
+    with pytest.raises(nats_client.CoordDataError):
+        _run(api.read_room("r", "agent", AGENT_A))
+
+    # Idempotent delete stays a no-op returning False.
+    async def redelete():
+        return await nats_client.delete_room_stream(room_id)
+    assert _run(redelete()) is False
+
+
 # ---------- 9. Ephemeral consumers are actually cleaned up ----------
 
 

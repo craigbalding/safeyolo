@@ -448,7 +448,9 @@ class TestMaliciousTarball:
                 pass
         monkeypatch.setattr(
             "urllib.request.urlopen",
-            lambda url: FakeResp(tarball_bytes),
+            # Accept **kwargs so runtime's `timeout=` (added round-5)
+            # doesn't break this mock next time we tweak the call.
+            lambda url, **_: FakeResp(tarball_bytes),
         )
         monkeypatch.setattr(
             nr, "_expected_archive_sha256",

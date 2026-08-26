@@ -466,11 +466,18 @@ def status() -> None:
             f"[yellow]unknown ({type(err).__name__})[/yellow]",
         )
     else:
-        if coord_status["healthy"]:
+        state = coord_status.get("state", "not-running")
+        if state == "healthy":
             table.add_row(
                 "Coord (nats-server)",
                 f"[green]healthy[/green]  ({coord_status['listen']} · "
                 f"pid {coord_status['pid']})",
+            )
+        elif state == "wedged":
+            table.add_row(
+                "Coord (nats-server)",
+                f"[red]wedged[/red]  (pid {coord_status['pid']} alive but "
+                f"/varz unverified) [dim]— see `safeyolo doctor`[/dim]",
             )
         else:
             table.add_row(
