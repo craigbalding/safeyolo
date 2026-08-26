@@ -237,3 +237,148 @@ def test_revoke_during_blocked_wait_returns_empty(coord_env):
     page = asyncio.run(scenario())
     assert page["messages"] == [], \
         "revoked caller must not receive messages sent after revoke"
+
+
+# ---------- 7. NatsUnavailable is truly consistent across ops ----------
+
+
+@pytest.mark.timeout(45)
+def test_send_read_wait_all_fail_with_nats_unavailable_when_nats_down(coord_env):
+    """Reviewer round-3 point 1: NatsUnavailable must be the SINGLE
+    boundary across every NATS-touching op. Killing NATS mid-flight
+    then invoking send/read/wait must raise NatsUnavailable, not a raw
+    nats-py exception that would escape as a proxy 500 and take a
+    healthy request path down with it."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+
+    nr.stop_server()
+    nats_client.reset_for_tests()
+
+    with pytest.raises(nats_client.NatsUnavailable):
+        _run(api.send("r", "agent", AGENT_A, "into the void"))
+
+    with pytest.raises(nats_client.NatsUnavailable):
+        _run(api.read_room("r", "agent", AGENT_A))
+
+    with pytest.raises(nats_client.NatsUnavailable):
+        _run(api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=1, poll_interval_seconds=0.05,
+        ))
+
+
+# ---------- 8. Max-sized body survives (envelope headroom) ----------
+
+
+@pytest.mark.timeout(30)
+def test_body_at_api_max_survives_jetstream(coord_env):
+    """Reviewer round-3 point 2: a body exactly at the API cap must
+    make it through JetStream. If MaxMsgSize == MAX_BODY_BYTES the
+    envelope overhead pushes the total past the limit and a valid
+    max-sized body is rejected. Pin the headroom with this test."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    big = "x" * api.MAX_BODY_BYTES
+    r = _run(api.send("r", "agent", AGENT_A, big, sender_agent_name="alice"))
+    assert r["sequence"] > 0
+
+    page = _run(api.read_room("r", "agent", AGENT_B))
+    assert len(page["messages"]) == 1
+    assert page["messages"][0]["body"] == big
+
+
+# ---------- 9. Ephemeral consumers are actually cleaned up ----------
+
+
+@pytest.mark.timeout(45)
+def test_repeated_read_and_wait_do_not_grow_consumer_count(coord_env):
+    """Reviewer round-3 point 3: nats-py's PullSubscription.unsubscribe
+    only tears down the client-side inbox; the server-side consumer
+    lingers until an inactivity threshold fires. Verify that the
+    explicit delete_consumer we do after every fetch keeps the
+    consumer_count from creeping up under /messages+/wait traffic."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    _run(api.send("r", "agent", AGENT_B, "seed"))
+
+    room_id = next(r["room_id"] for r in api.list_rooms() if r["name"] == "r")
+
+    # Twenty read+wait cycles should not accumulate consumers.
+    async def hammer():
+        for _ in range(20):
+            await api.read_room("r", "agent", AGENT_A)
+            await api.wait_for_message(
+                "r", "agent", AGENT_A, since_sequence=0,
+                timeout_seconds=0.05, poll_interval_seconds=0.02,
+            )
+        return await nats_client.consumer_count(room_id)
+
+    remaining = asyncio.run(hammer())
+    assert remaining == 0, (
+        f"ephemeral consumers leaked; server still has {remaining} on the stream"
+    )
+
+
+# ---------- 10. Corrupt persisted envelope surfaces as CoordDataError ----------
+
+
+@pytest.mark.timeout(30)
+def test_corrupt_persisted_envelope_raises_coord_data_error(coord_env):
+    """Reviewer round-3 point 4: SafeYolo is the sole writer of these
+    subjects, so a payload that is not a JSON envelope is a storage
+    integrity failure. It must surface as CoordDataError (→ addon 500)
+    rather than being ACKed and silently skipped, which would produce
+    an unexplained hole in room history."""
+    _run(api.create_room("r"))
+    api.grant("r", "agent", AGENT_A)
+    room_id = next(r["room_id"] for r in api.list_rooms() if r["name"] == "r")
+
+    # Publish a non-JSON payload directly onto the room's subject,
+    # bypassing api.send (which enforces envelope shape).
+    async def poison():
+        js = await nats_client.get_jetstream()
+        await js.publish(
+            nats_client.subject_for_room(room_id),
+            b"not a valid json envelope",
+            stream=nats_client.stream_name_for_room(room_id),
+            headers={"Nats-Msg-Id": "poisoned-1"},
+        )
+    _run(poison())
+
+    with pytest.raises(nats_client.CoordDataError):
+        _run(api.read_room("r", "agent", AGENT_A))
+
+
+# ---------- 11. Stream config drift fails loud ----------
+
+
+@pytest.mark.timeout(30)
+def test_existing_stream_with_different_config_fails_loud(coord_env):
+    """Reviewer round-3 point 5: `ensure_room_stream` used to accept
+    any existing ROOM_* as good enough. A future bump of MaxAge /
+    MaxBytes / dedup would silently miss all pre-existing streams.
+    Now: config drift raises StreamConfigDrift so the operator has
+    to explicitly reconcile."""
+    _run(api.create_room("r"))
+    room_id = next(r["room_id"] for r in api.list_rooms() if r["name"] == "r")
+
+    async def bend():
+        js = await nats_client.get_jetstream()
+        # Cut max_bytes to something obviously not our contract.
+        await js.update_stream(
+            name=nats_client.stream_name_for_room(room_id),
+            subjects=[nats_client.subject_for_room(room_id)],
+            max_bytes=1024,
+        )
+    _run(bend())
+
+    # A subsequent ensure_room_stream on the same room_id must refuse
+    # rather than silently continuing with the shrunk cap.
+    async def check():
+        await nats_client.ensure_room_stream(room_id)
+    with pytest.raises(nats_client.StreamConfigDrift):
+        _run(check())

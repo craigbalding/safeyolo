@@ -664,3 +664,100 @@ class TestCoordSenderAgentName:
         assert env["sender_agent_name"] == "alice"  # not "bob"
 
 
+class TestCoordNatsUnavailableIsolation:
+    """Reviewer round-3 point 1: killing NATS mid-flight must surface
+    as coord 503, NOT a proxy-breaking 500. Health endpoint (which does
+    not touch NATS) must keep answering 200 through the outage."""
+
+    def test_send_returns_503_when_nats_down(self, api, isolated_state):
+        from safeyolo.coord import nats_client as ncli
+        from safeyolo.coord import nats_runtime as nr
+
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+
+        # Kill the server that isolated_state started.
+        nr.stop_server()
+        ncli.reset_for_tests()
+
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/send", method="POST",
+                              body={"body": "into the void"})
+            _run(api, flow)
+        assert flow.response.status_code == 503
+        assert "unavailable" in json.loads(flow.response.content)["error"]
+
+    def test_read_and_wait_return_503_when_nats_down(self, api, isolated_state):
+        from safeyolo.coord import nats_client as ncli
+        from safeyolo.coord import nats_runtime as nr
+
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        nr.stop_server()
+        ncli.reset_for_tests()
+
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/messages?since=0", method="GET")
+            _run(api, flow)
+        assert flow.response.status_code == 503
+
+        with _as_agent("alice"):
+            flow = _make_flow(
+                "/api/coord/rooms/r/wait?since=0&timeout=0.5", method="GET",
+            )
+            _run(api, flow)
+        assert flow.response.status_code == 503
+
+    def test_non_coord_health_endpoint_survives_nats_outage(self, api, isolated_state):
+        """The proxy's /health path must keep answering even when the
+        coord message plane is unreachable — coord is best-effort infra
+        on top of the proxy, never a dependency of it."""
+        from safeyolo.coord import nats_client as ncli
+        from safeyolo.coord import nats_runtime as nr
+
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        nr.stop_server()
+        ncli.reset_for_tests()
+
+        flow = _make_flow("/health", method="GET")
+        _run(api, flow)
+        assert flow.response is not None
+        assert flow.response.status_code == 200
+
+
+class TestCoordCorruptEnvelopeIsolation:
+    """Reviewer round-3 point 4: corrupt persisted envelopes surface as
+    coord 500 at the addon boundary — the addon does not paper them
+    over as an empty page (which would hide the storage-integrity gap)."""
+
+    def test_corrupt_envelope_returns_500(self, api, isolated_state):
+        import asyncio as _asyncio
+
+        from safeyolo.coord import api as coord_api
+        from safeyolo.coord import nats_client as ncli
+
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+        room_id = next(
+            r["room_id"] for r in coord_api.list_rooms() if r["name"] == "r"
+        )
+
+        async def poison():
+            js = await ncli.get_jetstream()
+            await js.publish(
+                ncli.subject_for_room(room_id),
+                b"not a valid json envelope",
+                stream=ncli.stream_name_for_room(room_id),
+                headers={"Nats-Msg-Id": "poisoned-e2e"},
+            )
+        _asyncio.run(poison())
+
+        with _as_agent("alice"):
+            flow = _make_flow("/api/coord/rooms/r/messages?since=0", method="GET")
+            _run(api, flow)
+        # Not a silent [] page — the addon boundary sees the coord data
+        # error and surfaces it as a generic 500.
+        assert flow.response.status_code == 500
+
+
