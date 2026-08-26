@@ -177,6 +177,26 @@ export MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-$HOME/.mise}"
 export MISE_CACHE_DIR="${MISE_CACHE_DIR:-$HOME/.mise/cache}"
 export PATH="$HOME/.local/bin:$MISE_DATA_DIR/shims:${PATH}"
 
+# --- version policy ---------------------------------------------------------
+# Delayed deployment: do not pick up a release published minutes ago. Newer
+# mise applies min_release_age to transitive npm dependencies too, which is
+# the protection we want. Older mise does not have the setting at all, so
+# verify that it took rather than assuming the default is there.
+: "${SAFEYOLO_MIN_RELEASE_AGE:=24h}"
+if mise settings get min_release_age >/dev/null 2>&1; then
+    export MISE_MIN_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE"
+else
+    echo "claude-host-setup: mise has no min_release_age setting;" \
+         "no delayed-deployment protection on this build" >&2
+fi
+
+# `mise use -g <tool>@latest` is NOT a remote upgrade -- mise resolves
+# `latest` against what is already installed, so on the repair path it can
+# decide a broken install already satisfies the spec and do nothing.
+# Resolve the remote version explicitly and install that exact value.
+sy_remote_version() { mise latest "$1" 2>/dev/null | tail -1; }
+sy_local_version()  { mise latest --installed "$1" 2>/dev/null | tail -1; }
+
 # First-boot install. Tool installs live under persistent /home/agent. Validate
 # an existing command as well: mise 2026.7.12+ downloads npm optional
 # dependencies but denies lifecycle scripts by default, so Claude's placeholder
@@ -190,7 +210,17 @@ if ! command -v claude >/dev/null 2>&1 || ! claude --version >/dev/null 2>&1; th
         npm install --global --prefix /home/agent/.local "$SAFEYOLO_CLAUDE_NPM_PACKAGE" >&2
     else
         mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC" >&2
-        mise use -g "$SAFEYOLO_CLAUDE_NPM_SPEC" >&2
+        sy_tool="${SAFEYOLO_CLAUDE_NPM_SPEC%@*}"
+        sy_target="$(sy_remote_version "$sy_tool")"
+        if [ -n "$sy_target" ]; then
+            sy_spec="${sy_tool}@${sy_target}"
+            mise use -g --force "$sy_spec" >&2
+        else
+            echo "claude-host-setup: could not resolve a remote version for" \
+                 "$sy_tool; falling back to $SAFEYOLO_CLAUDE_NPM_SPEC" >&2
+            sy_spec="$SAFEYOLO_CLAUDE_NPM_SPEC"
+            mise use -g "$sy_spec" >&2
+        fi
 
         # Claude Code 2.1.235+ ships a small npm wrapper and a platform-native
         # optional dependency. New mise releases intentionally skip npm
@@ -199,7 +229,7 @@ if ! command -v claude >/dev/null 2>&1 || ! claude --version >/dev/null 2>&1; th
         # the placeholder. This also repairs installs left broken by an earlier
         # SafeYolo run.
         if ! claude --version >/dev/null 2>&1; then
-            claude_install_dir="$(mise where "$SAFEYOLO_CLAUDE_NPM_SPEC")"
+            claude_install_dir="$(mise where "$sy_spec")"
             claude_package="${SAFEYOLO_CLAUDE_NPM_PACKAGE%@*}"
             claude_postinstall=""
             for candidate in \
@@ -224,6 +254,20 @@ fi
 if ! command -v claude >/dev/null 2>&1 || ! claude --version >/dev/null 2>&1; then
     echo "claude-host-setup: Claude Code installation is incomplete" >&2
     exit 1
+fi
+
+# Report the version actually about to run, and say when a newer one exists
+# without silently taking it. A pinned artifact ageing in place is fine; one
+# ageing invisibly is what left an agent dead for months.
+sy_tool="${SAFEYOLO_CLAUDE_NPM_SPEC%@*}"
+sy_running="$(sy_local_version "$sy_tool")"
+if [ -n "$sy_running" ]; then
+    echo "claude-host-setup: claude $sy_running" >&2
+    sy_available="$(sy_remote_version "$sy_tool")"
+    if [ -n "$sy_available" ] && [ "$sy_available" != "$sy_running" ]; then
+        echo "claude-host-setup: claude $sy_available is available; not upgrading" \
+             "automatically (run: mise use -g ${sy_tool}@${sy_available})" >&2
+    fi
 fi
 
 # Inject SafeYolo agent guide as system context (non-fatal if missing).

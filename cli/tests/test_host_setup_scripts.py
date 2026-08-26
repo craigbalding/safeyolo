@@ -459,6 +459,9 @@ def _codex_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dict
         "TEST_CODEX_SHIM": str(fake_bin / "codex"),
         "TEST_EXEC_LOG": str(tmp_path / "codex-exec-args.bin"),
         "TEST_MISE_LOG": str(tmp_path / "codex-mise.log"),
+        "TEST_INSTALLED_STATE": str(tmp_path / "installed-version"),
+        "TEST_HEALTHY_CODEX": _HEALTHY_CODEX,
+        "TEST_REMOTE_VERSION": "9.9.9",
     })
     return env
 
@@ -484,9 +487,27 @@ _FAKE_MISE = (
     "#!/usr/bin/env python3\n"
     "import os, sys\n"
     "from pathlib import Path\n"
+    "argv = sys.argv[1:]\n"
     "with Path(os.environ['TEST_MISE_LOG']).open('a') as f:\n"
-    "    f.write(' '.join(sys.argv[1:]) + '\\n')\n"
-    "if sys.argv[1:3] == ['use', '-g'] and 'codex' in sys.argv[-1]:\n"
+    "    f.write(' '.join(argv) + '\\n')\n"
+    "state = Path(os.environ['TEST_INSTALLED_STATE'])\n"
+    "def installed():\n"
+    "    return state.read_text().strip() if state.exists() else ''\n"
+    "if argv[:2] == ['settings', 'get']:\n"
+    "    if os.environ.get('TEST_MISE_HAS_MIN_AGE') == '1':\n"
+    "        print('24h'); sys.exit(0)\n"
+    "    print('Unknown setting', file=sys.stderr); sys.exit(1)\n"
+    "if argv[:1] == ['latest']:\n"
+    "    if '--installed' in argv:\n"
+    "        v = installed()\n"
+    "        print(v) if v else None\n"
+    "        sys.exit(0)\n"
+    "    remote = os.environ.get('TEST_REMOTE_VERSION', '')\n"
+    "    if not remote:\n"
+    "        sys.exit(1)\n"
+    "    print(remote); sys.exit(0)\n"
+    "if argv[:2] == ['use', '-g'] and 'codex' in argv[-1]:\n"
+    "    state.write_text(argv[-1].split('@')[-1])\n"
     "    shim = Path(os.environ['TEST_CODEX_SHIM'])\n"
     "    shim.write_text(os.environ['TEST_HEALTHY_CODEX'])\n"
     "    shim.chmod(0o755)\n"
@@ -531,7 +552,8 @@ def test_codex_bootstrap_repairs_a_wrapper_whose_native_binary_is_gone(
 
     assert result.returncode == 0, result.stderr
     mise_calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
-    assert any("npm:@openai/codex@latest" in c for c in mise_calls), (
+    assert any(c.startswith("use ") and "npm:@openai/codex@" in c
+               for c in mise_calls), (
         f"install was skipped for a broken wrapper; mise calls were {mise_calls}"
     )
     args = Path(env["TEST_EXEC_LOG"]).read_bytes().decode().split("\0")
@@ -566,8 +588,145 @@ def test_codex_bootstrap_does_not_reinstall_a_healthy_wrapper(
     )
 
     assert result.returncode == 0, result.stderr
-    log = Path(env["TEST_MISE_LOG"])
-    assert not log.exists() or log.read_text().strip() == "", (
-        "healthy wrapper triggered an install"
+    # Version queries are expected; an *install* is not.
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert not any(c.startswith("use ") for c in calls), (
+        f"healthy wrapper triggered an install: {calls}"
     )
     assert "--probe" in Path(env["TEST_EXEC_LOG"]).read_bytes().decode().split("\0")
+
+
+def test_codex_repair_installs_an_explicitly_resolved_remote_version(
+    tmp_path: Path,
+) -> None:
+    """Repair must not lean on `@latest`.
+
+    mise resolves `latest` against what is already installed, so on the repair
+    path it can decide the broken install already satisfies the spec and do
+    nothing. The remote version has to be resolved explicitly and installed by
+    exact value.
+    """
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    (fake_bin / "codex").write_text(_BROKEN_CODEX)
+    (fake_bin / "codex").chmod(0o755)
+    (fake_bin / "mise").write_text(_FAKE_MISE)
+    (fake_bin / "mise").chmod(0o755)
+
+    env = _codex_command_env(agent_home, fake_bin, tmp_path)
+    Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")   # the stale build
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--probe"],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert any(c.startswith("latest npm:@openai/codex") and "--installed" not in c
+               for c in calls), f"never resolved a remote version: {calls}"
+    assert any("use -g --force npm:@openai/codex@9.9.9" in c for c in calls), (
+        f"did not install the resolved version by exact value: {calls}"
+    )
+    assert not any(c.endswith("npm:@openai/codex@latest") and "use" in c
+                   for c in calls), f"fell back to @latest: {calls}"
+
+
+def test_codex_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> None:
+    """A healthy install is pinned; the operator is told, not upgraded."""
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    (fake_bin / "codex").write_text(_HEALTHY_CODEX)
+    (fake_bin / "codex").chmod(0o755)
+    (fake_bin / "mise").write_text(_FAKE_MISE)
+    (fake_bin / "mise").chmod(0o755)
+
+    env = _codex_command_env(agent_home, fake_bin, tmp_path)
+    Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--probe"],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "codex 0.130.0" in result.stderr, result.stderr
+    assert "9.9.9 is available" in result.stderr, result.stderr
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert not any(c.startswith("use ") for c in calls), (
+        f"a healthy install was upgraded: {calls}"
+    )
+
+
+def test_codex_still_launches_when_remote_resolution_fails(tmp_path: Path) -> None:
+    """Offline, or a registry outage, must not stop a broken agent repairing."""
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    (fake_bin / "codex").write_text(_BROKEN_CODEX)
+    (fake_bin / "codex").chmod(0o755)
+    (fake_bin / "mise").write_text(_FAKE_MISE)
+    (fake_bin / "mise").chmod(0o755)
+
+    env = _codex_command_env(agent_home, fake_bin, tmp_path)
+    env["TEST_REMOTE_VERSION"] = ""          # remote lookup fails
+    Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--probe"],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "could not resolve a remote version" in result.stderr
+    calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
+    assert any("npm:@openai/codex@latest" in c and c.startswith("use") for c in calls)
+
+
+def test_codex_warns_when_mise_lacks_min_release_age(tmp_path: Path) -> None:
+    """Don't assume delayed-deployment protection that isn't there.
+
+    mise only grew min_release_age recently; sandboxes provisioned with an
+    older mise silently have no delay at all, so it has to be verified rather
+    than exported and hoped for.
+    """
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    (fake_bin / "codex").write_text(_HEALTHY_CODEX)
+    (fake_bin / "codex").chmod(0o755)
+    (fake_bin / "mise").write_text(_FAKE_MISE)
+    (fake_bin / "mise").chmod(0o755)
+
+    env = _codex_command_env(agent_home, fake_bin, tmp_path)
+    Path(env["TEST_INSTALLED_STATE"]).write_text("9.9.9")
+
+    unsupported = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--probe"],
+        env=env, capture_output=True, text=True,
+    )
+    assert unsupported.returncode == 0, unsupported.stderr
+    assert "no delayed-deployment protection" in unsupported.stderr
+
+    supported = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--probe"],
+        env={**env, "TEST_MISE_HAS_MIN_AGE": "1"}, capture_output=True, text=True,
+    )
+    assert supported.returncode == 0, supported.stderr
+    assert "no delayed-deployment protection" not in supported.stderr
