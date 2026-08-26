@@ -183,6 +183,13 @@ product bootstrap plan for prerequisites, and then delegates to
 
 ## Running an already-prepared checkout
 
+Use `run-tests.sh` directly when the host is already installed and bootstrapped
+and the live installation must remain untouched. It creates a separate
+`~/.safeyolo-test` instance, generates test certificates beneath that instance,
+uses distinct ports, and borrows the live `share/` and `bin/` artifacts without
+rebuilding them. The harness refuses to proceed if the test and source config
+paths resolve to the same directory.
+
 ```bash
 # All suites
 ./run-tests.sh
@@ -198,7 +205,13 @@ product bootstrap plan for prerequisites, and then delegates to
 
 # Fail unless the requested isolation mechanism is selected
 ./run-tests.sh --expect-platform kvm --verbose
+
+# Full physical Apple Silicon Mac run without reinstall/bootstrap
+./run-tests.sh --expect-platform vz --verbose
 ```
+
+Do not use `run-lane.sh` for this case: acceptance lanes deliberately exercise
+`install.sh`, bootstrap, and (for VZ) host-helper installation.
 
 ## Adding Tests
 

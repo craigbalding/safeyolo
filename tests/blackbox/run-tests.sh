@@ -48,6 +48,11 @@ export SAFEYOLO_SUBNET_BASE=75
 # Logs + flow store scoped to the test instance so blackbox runs
 # don't pollute production logs/flows.sqlite3.
 export SAFEYOLO_LOGS_DIR="${SAFEYOLO_CONFIG_DIR}/logs"
+# Generated public certificates and private keys also belong to the test
+# instance. Keeping both outside the checkout and the source instance makes
+# --force regeneration harmless to production state and the worktree.
+export SAFEYOLO_TEST_CERT_DIR="${SAFEYOLO_TEST_CERT_DIR:-$SAFEYOLO_CONFIG_DIR/test-certs/public}"
+export SAFEYOLO_TEST_KEY_DIR="${SAFEYOLO_TEST_KEY_DIR:-$SAFEYOLO_CONFIG_DIR/test-certs/private}"
 
 # Test instance ports (different from production 8080/9090)
 TEST_PROXY_PORT=8180
@@ -114,6 +119,19 @@ if ! command -v safeyolo &>/dev/null; then
     exit 2
 fi
 
+# This script removes and recreates agent state beneath the test instance.
+# Refuse ambiguous or aliased targets before performing any mutation.
+SOURCE_CONFIG_REAL="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$SAFEYOLO_SOURCE_CONFIG_DIR")"
+TEST_CONFIG_REAL="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$SAFEYOLO_CONFIG_DIR")"
+HOME_REAL="$(python3 -c 'import pathlib; print(pathlib.Path.home().resolve())')"
+if [ "$TEST_CONFIG_REAL" = "$SOURCE_CONFIG_REAL" ] || \
+   [ "$TEST_CONFIG_REAL" = "$HOME_REAL" ] || \
+   [ "$TEST_CONFIG_REAL" = "/" ]; then
+    echo "ERROR: blackbox test config is not isolated: $TEST_CONFIG_REAL" >&2
+    echo "       Source/live config resolves to: $SOURCE_CONFIG_REAL" >&2
+    exit 2
+fi
+
 if [ -n "$EXPECTED_PLATFORM" ] && [ "$RUN_ISOLATION" != true ]; then
     echo "ERROR: --expect-platform requires the isolation suite" >&2
     exit 2
@@ -135,7 +153,7 @@ config = yaml.safe_load(config_path.read_text())
 config['proxy']['port'] = $TEST_PROXY_PORT
 config['proxy']['admin_port'] = $TEST_ADMIN_PORT
 config['test']['sinkhole_router'] = '$SCRIPT_DIR/harness/sinkhole_router.py'
-config['test']['ca_cert'] = '$SCRIPT_DIR/certs/ca.crt'
+config['test']['ca_cert'] = '$SAFEYOLO_TEST_CERT_DIR/ca.crt'
 config_path.write_text(yaml.dump(config, default_flow_style=False))
 "
 
@@ -266,16 +284,16 @@ else
         --http-port 18080 \
         --https-port 18443 \
         --control-port 19999 \
-        --cert "$SCRIPT_DIR/certs/sinkhole.crt" \
-        --key "$HOME/.safeyolo/test-certs/sinkhole.key" \
-        --extra-cert "ecc-chain:18444:$SCRIPT_DIR/certs/ecc_chain.pem:$HOME/.safeyolo/test-certs/ecc_chain.key" \
-        --extra-cert "rsa-deep:18445:$SCRIPT_DIR/certs/rsa_deep_chain.pem:$HOME/.safeyolo/test-certs/rsa_deep_chain.key" \
-        --extra-cert "nc-constrained:18446:$SCRIPT_DIR/certs/nc_chain.pem:$HOME/.safeyolo/test-certs/nc_chain.key" \
-        --extra-cert "extra-ints:18447:$SCRIPT_DIR/certs/extra_chain.pem:$HOME/.safeyolo/test-certs/extra_chain.key" \
-        --extra-cert "expired:18448:$SCRIPT_DIR/certs/expired_chain.pem:$HOME/.safeyolo/test-certs/expired_chain.key" \
-        --extra-cert "wrong-san:18449:$SCRIPT_DIR/certs/wrong_san_chain.pem:$HOME/.safeyolo/test-certs/wrong_san_chain.key" \
-        --extra-cert "self-signed:18450:$SCRIPT_DIR/certs/self_signed_chain.pem:$HOME/.safeyolo/test-certs/self_signed_chain.key" \
-        --extra-cert "aia-only:18451:$SCRIPT_DIR/certs/aia_chain.pem:$HOME/.safeyolo/test-certs/aia_chain.key" \
+        --cert "$SAFEYOLO_TEST_CERT_DIR/sinkhole.crt" \
+        --key "$SAFEYOLO_TEST_KEY_DIR/sinkhole.key" \
+        --extra-cert "ecc-chain:18444:$SAFEYOLO_TEST_CERT_DIR/ecc_chain.pem:$SAFEYOLO_TEST_KEY_DIR/ecc_chain.key" \
+        --extra-cert "rsa-deep:18445:$SAFEYOLO_TEST_CERT_DIR/rsa_deep_chain.pem:$SAFEYOLO_TEST_KEY_DIR/rsa_deep_chain.key" \
+        --extra-cert "nc-constrained:18446:$SAFEYOLO_TEST_CERT_DIR/nc_chain.pem:$SAFEYOLO_TEST_KEY_DIR/nc_chain.key" \
+        --extra-cert "extra-ints:18447:$SAFEYOLO_TEST_CERT_DIR/extra_chain.pem:$SAFEYOLO_TEST_KEY_DIR/extra_chain.key" \
+        --extra-cert "expired:18448:$SAFEYOLO_TEST_CERT_DIR/expired_chain.pem:$SAFEYOLO_TEST_KEY_DIR/expired_chain.key" \
+        --extra-cert "wrong-san:18449:$SAFEYOLO_TEST_CERT_DIR/wrong_san_chain.pem:$SAFEYOLO_TEST_KEY_DIR/wrong_san_chain.key" \
+        --extra-cert "self-signed:18450:$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem:$SAFEYOLO_TEST_KEY_DIR/self_signed_chain.key" \
+        --extra-cert "aia-only:18451:$SAFEYOLO_TEST_CERT_DIR/aia_chain.pem:$SAFEYOLO_TEST_KEY_DIR/aia_chain.key" \
         &
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true
