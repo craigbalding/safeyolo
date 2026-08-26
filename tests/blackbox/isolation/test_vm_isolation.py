@@ -871,6 +871,7 @@ class TestSandboxExposure:
             "shm",
         }
         gvisor_character_devices = set()
+        gvisor_unmaterialized_aliases = set()
         if _is_microvm():
             # VZ microVMs run a real Linux kernel — standard VM devices
             # are expected. The VM boundary IS the isolation layer. vda is
@@ -888,15 +889,18 @@ class TestSandboxExposure:
             # /dev/char/<major>:<minor> symlinks for each character device.
             # The directory is an index, not an additional device surface;
             # its entries are validated below against this same allowlist.
-            # /dev/fuse and /dev/net/tun are sentry implementations operating
-            # entirely inside gVisor, not host-device passthrough. The root
-            # egress probes separately prove that a guest-created TUN cannot
-            # escape the sandbox netstack.
-            whitelist |= {"char", "fuse", "net"}
+            whitelist.add("char")
             gvisor_character_devices = {
                 "/dev/null", "/dev/zero", "/dev/full", "/dev/random",
-                "/dev/urandom", "/dev/tty", "/dev/console", "/dev/fuse",
-                "/dev/net/tun",
+                "/dev/urandom", "/dev/tty", "/dev/console",
+            }
+            # gVisor registers in-sentry FUSE and TUN implementations, but
+            # SafeYolo's OCI spec does not materialize their device nodes.
+            # Current runsc still indexes them in /dev/char as dangling
+            # aliases. Keep that distinction strict: if either target becomes
+            # openable in a future runtime, this test must fail for review.
+            gvisor_unmaterialized_aliases = {
+                "/dev/fuse", "/dev/net/tun",
             }
             prefix_allow = ("pts",)
 
@@ -915,10 +919,6 @@ class TestSandboxExposure:
         )
 
         if not _is_microvm() and os.path.isdir("/dev/char"):
-            assert set(os.listdir("/dev/net")) == {"tun"}, (
-                "gVisor /dev/net exposes entries other than the expected "
-                "in-sentry TUN device"
-            )
             unexpected_char_links = []
             for entry in os.listdir("/dev/char"):
                 link = os.path.join("/dev/char", entry)
@@ -926,11 +926,19 @@ class TestSandboxExposure:
                 try:
                     target_mode = os.stat(target).st_mode
                 except OSError:
-                    target_mode = 0
+                    target_mode = None
+                materialized_device = (
+                    target in gvisor_character_devices
+                    and target_mode is not None
+                    and stat.S_ISCHR(target_mode)
+                )
+                approved_dangling_alias = (
+                    target in gvisor_unmaterialized_aliases
+                    and target_mode is None
+                )
                 if (
                     not os.path.islink(link)
-                    or target not in gvisor_character_devices
-                    or not stat.S_ISCHR(target_mode)
+                    or not (materialized_device or approved_dangling_alias)
                 ):
                     unexpected_char_links.append((entry, target))
             assert not unexpected_char_links, (
