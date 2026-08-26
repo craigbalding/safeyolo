@@ -1948,6 +1948,12 @@ def test_pid_writer_defers_until_traffic_master_signals_ready(tmp_path, monkeypa
     assert pid_file.read_text().strip().isdigit()
 
 
+def test_missing_structured_startup_failure_is_reported_by_caller_context(tmp_path):
+    from safeyolo.proxy import _read_startup_failure
+
+    assert _read_startup_failure(tmp_path / "missing.jsonl", 0) is None
+
+
 # ---------------------------------------------------------------------------
 # TestWaitForHealthy
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ provisions to sandboxes.
 | mitmproxy version | Pinned in `pyproject.toml` | [pyproject.toml](../pyproject.toml) |
 | No root at runtime | Started by the operator, runs as the operator's uid | n/a |
 | Bind address | Loopback by default; listen host configurable | [cli/src/safeyolo/proxy.py](../cli/src/safeyolo/proxy.py) |
+| Admin API listener | Binds directly to `127.0.0.1` without hostname or reverse-DNS resolution, preserving the host-local boundary without making startup depend on the host resolver | [cli/src/safeyolo/mitm_addons/admin_api.py](../cli/src/safeyolo/mitm_addons/admin_api.py) |
 | Admin API gating | Bearer token in `~/.safeyolo/data/admin_token`, mode 0600 | [cli/src/safeyolo/mitm_addons/admin_api.py](../cli/src/safeyolo/mitm_addons/admin_api.py), [cli/src/safeyolo/mitm_addons/admin_shield.py](../cli/src/safeyolo/mitm_addons/admin_shield.py) |
 | Tokens never in argv | Tokens passed via file paths / env vars, not CLI args | [tests/blackbox/host/security/test_firewall_structural.py](../tests/blackbox/host/security/test_firewall_structural.py) |
 

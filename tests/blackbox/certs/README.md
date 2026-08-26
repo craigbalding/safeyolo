@@ -14,19 +14,22 @@ No shortcuts:
 
 ## File Layout
 
-Private keys are stored **outside the repo tree** so they are never visible inside agent VMs (the workspace is mounted via VirtioFS).
+Generated certificates and private keys are stored beneath the isolated test
+instance by `run-tests.sh`. They do not modify the checkout or the source/live
+SafeYolo instance, and private keys are never visible inside agent VMs (the
+workspace is mounted via VirtioFS).
 
 | File | Location | Purpose |
 |------|----------|---------|
-| `ca.crt` | `tests/blackbox/certs/` (repo) | Test CA certificate — trusted by proxy via `--test` mode |
-| `sinkhole.crt` | `tests/blackbox/certs/` (repo) | Sinkhole certificate — signed by test CA, multi-SAN |
-| `ca.key` | `~/.safeyolo/test-certs/` (host) | Test CA private key — used to sign sinkhole cert |
-| `sinkhole.key` | `~/.safeyolo/test-certs/` (host) | Sinkhole private key |
+| `ca.crt` | `~/.safeyolo-test/test-certs/public/` | Test CA certificate — trusted by proxy via `--test` mode |
+| `sinkhole.crt` | `~/.safeyolo-test/test-certs/public/` | Sinkhole certificate — signed by test CA, multi-SAN |
+| `ca.key` | `~/.safeyolo-test/test-certs/private/` | Test CA private key — used to sign sinkhole cert |
+| `sinkhole.key` | `~/.safeyolo-test/test-certs/private/` | Sinkhole private key |
 
 ## How It Works
 
 1. `run-tests.sh` calls `generate-certs.sh --force` on every run
-2. Keys are written to `~/.safeyolo/test-certs/`, public certs to `tests/blackbox/certs/`
+2. Keys and public certs are written to separate directories beneath the isolated test instance
 3. Any legacy `.key` files in the repo directory are deleted
 4. The proxy starts in test mode (`safeyolo start --test`), which trusts the test CA
 5. The sinkhole loads its cert and key from the respective locations

@@ -271,6 +271,20 @@ for keyfile in /etc/ssh/ssh_host_*_key; do
     chmod 600 "$keyfile" 2>/dev/null || true
 done
 
+# Refresh guest-root support at boot so existing base images gain the current
+# sudo shim and policy without requiring a rootfs rebuild. On gVisor the shim
+# uses the sandbox's namespace capabilities; on a hardware microVM it delegates
+# to the distro's setuid sudo binary. In both cases uid 0 remains guest-local.
+if [ -x /usr/bin/sudo ] && [ -r /safeyolo/guest-sudo ]; then
+    install -d -m 0755 /usr/local/bin /etc/sudoers.d
+    install -m 0755 /safeyolo/guest-sudo /usr/local/bin/sudo
+    cat > /etc/sudoers.d/safeyolo-agent <<'SUDOERS'
+agent ALL=(ALL) NOPASSWD:ALL
+Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
+SUDOERS
+    chmod 0440 /etc/sudoers.d/safeyolo-agent
+fi
+
 mkdir -p /run/sshd
 # -e routes syslog messages to stderr, which we capture in sshd.log.
 # Without it, auth failures go to syslog -- and custom rootfs images

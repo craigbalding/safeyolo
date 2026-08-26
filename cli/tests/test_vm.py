@@ -323,6 +323,22 @@ class TestPrepareConfigShare:
             assert path.exists(), f"{name} missing from config share"
             assert os.access(path, os.X_OK), f"{name} not executable"
 
+    def test_guest_sudo_helper_is_staged_for_runtime_migration(self, tmp_config_dir):
+        import safeyolo.vm as vm_mod
+
+        share = prepare_config_share("agent1", "/workspace")
+        helper = share / "guest-sudo"
+
+        assert helper.read_bytes() == vm_mod._guest_sudo_source().read_bytes()
+        assert os.access(helper, os.X_OK)
+
+    def test_guest_init_static_refreshes_sudo_policy(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-static").read_text()
+
+        assert "install -m 0755 /safeyolo/guest-sudo /usr/local/bin/sudo" in source
+        assert "agent ALL=(ALL) NOPASSWD:ALL" in source
+
     def test_guest_init_static_seeds_missing_skeleton_entries(self, tmp_config_dir):
         """Pre-seeded host config must not prevent distro skeleton defaults."""
         share = prepare_config_share("agent1", "/workspace")

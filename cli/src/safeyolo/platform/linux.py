@@ -56,6 +56,13 @@ USERNS_POLL_INTERVAL_SECONDS = 0.005
 EXPERIMENT_WORKSPACE_DCACHE_ENV = "SAFEYOLO_EXPERIMENT_WORKSPACE_DCACHE"
 EXPERIMENT_RUNSC_DCACHE_ENV = "SAFEYOLO_EXPERIMENT_RUNSC_DCACHE"
 EXPERIMENT_RUNSC_DIRECTFS_ENV = "SAFEYOLO_EXPERIMENT_RUNSC_DIRECTFS"
+RUNSC_PLATFORM_ENV = "SAFEYOLO_RUNSC_PLATFORM"
+
+# _start_userns maps these host subordinate-ID spans into every sandbox.
+# Keep this contract aligned with its newuidmap/newgidmap arguments. The host
+# may express the authorization as one conventional 100000:65536 allocation
+# or as multiple entries that cover both spans.
+REQUIRED_SUBID_RANGES = ((100000, 1000), (101001, 64534))
 
 
 class _SocketReader:
@@ -263,6 +270,28 @@ def _run(
     )
 
 
+def _apply_runsc_platform_override(info: dict) -> dict:
+    """Apply the explicit software-isolation selection used by operators/CI.
+
+    KVM remains auto-detected because claiming hardware isolation without
+    proving both operator and subordinate-uid access would produce false test
+    evidence. Selecting systrap makes its acceptance lane deterministic even
+    on a host which happens to expose /dev/kvm.
+    """
+    requested = os.environ.get(RUNSC_PLATFORM_ENV, "").strip().lower()
+    if requested in {"", "auto"}:
+        return info
+    if requested != "systrap":
+        raise RuntimeError(
+            f"{RUNSC_PLATFORM_ENV} must be 'auto' or 'systrap', got {requested!r}"
+        )
+
+    info["platform"] = "systrap"
+    info["forced"] = True
+    info["reason"] = f"forced by {RUNSC_PLATFORM_ENV}"
+    return info
+
+
 def detect_runsc_platform() -> dict:
     """Detect best runsc platform with diagnostic detail.
 
@@ -274,6 +303,7 @@ def detect_runsc_platform() -> dict:
       kvm_group: str  (group name owning /dev/kvm, or "" / gid str if unresolved)
       kvm_group_has_rw: bool  (group bits on /dev/kvm include rw)
       operator_in_kvm_group: bool  (current process is in the owning group)
+      forced: bool  (systrap was selected explicitly instead of auto-detected)
       reason: human-readable explanation
     """
     info: dict = {
@@ -284,11 +314,12 @@ def detect_runsc_platform() -> dict:
         "kvm_group": "",
         "kvm_group_has_rw": False,
         "operator_in_kvm_group": False,
+        "forced": False,
         "reason": "",
     }
     if not info["kvm_exists"]:
         info["reason"] = "/dev/kvm not found"
-        return info
+        return _apply_runsc_platform_override(info)
 
     # Group/mode facts are useful for targeted remediation even when the
     # operator does have rw access, so capture them unconditionally.
@@ -309,7 +340,7 @@ def detect_runsc_platform() -> dict:
     info["kvm_operator_access"] = os.access("/dev/kvm", os.R_OK | os.W_OK)
     if not info["kvm_operator_access"]:
         info["reason"] = "/dev/kvm exists but operator lacks rw access"
-        return info
+        return _apply_runsc_platform_override(info)
     try:
         result = subprocess.run(
             ["getfacl", "/dev/kvm"],
@@ -322,10 +353,10 @@ def detect_runsc_platform() -> dict:
         pass
     if not info["kvm_subordinate_access"]:
         info["reason"] = "subordinate uid 100000 lacks /dev/kvm ACL"
-        return info
+        return _apply_runsc_platform_override(info)
     info["platform"] = "kvm"
     info["reason"] = "KVM available with full access"
-    return info
+    return _apply_runsc_platform_override(info)
 
 
 def _detect_runsc_platform() -> str:
@@ -433,14 +464,36 @@ def needs_apparmor() -> bool:
         return False
 
 
+def _subid_ranges_cover_required(content: str, username: str) -> bool:
+    """Return whether ``username`` is authorized for every runtime span."""
+    authorized: list[tuple[int, int]] = []
+    for line in content.splitlines():
+        fields = line.strip().split(":")
+        if len(fields) != 3 or fields[0] != username:
+            continue
+        try:
+            start = int(fields[1])
+            count = int(fields[2])
+        except ValueError:
+            continue
+        if start >= 0 and count > 0:
+            authorized.append((start, start + count))
+
+    return all(
+        any(start <= required_start and end >= required_start + required_count
+            for start, end in authorized)
+        for required_start, required_count in REQUIRED_SUBID_RANGES
+    )
+
+
 def check_userns_prerequisites() -> dict:
     """Check user namespace prerequisites for rootless gVisor.
 
     Returns a dict with keys:
       newuidmap: bool -- newuidmap binary available
       newgidmap: bool -- newgidmap binary available
-      subuid: bool -- /etc/subuid has entry for current user
-      subgid: bool -- /etc/subgid has entry for current user
+      subuid: bool -- /etc/subuid authorizes SafeYolo's required ranges
+      subgid: bool -- /etc/subgid authorizes SafeYolo's required ranges
       setfacl: bool -- setfacl available (grants runsc state dir to uid 100000)
       apparmor_restricts: bool -- kernel restricts unprivileged userns
       apparmor_profile_loaded: bool -- safeyolo-runsc profile loaded
@@ -461,9 +514,7 @@ def check_userns_prerequisites() -> dict:
     for fname, key in [("/etc/subuid", "subuid"), ("/etc/subgid", "subgid")]:
         try:
             content = Path(fname).read_text()
-            info[key] = any(
-                line.startswith(f"{username}:") for line in content.splitlines()
-            )
+            info[key] = _subid_ranges_cover_required(content, username)
         except (FileNotFoundError, PermissionError):
             # subuid/subgid not provisioned or unreadable -- leave
             # info[key] False so doctor reports "not configured".
@@ -838,7 +889,13 @@ class LinuxPlatform(AgentPlatform):
                 f"Rebuild it with the current guest/install-guest-common.sh "
                 f"helper."
             )
-        return path
+        # gVisor's safe-mount validation compares the opened rootfs path with
+        # the OCI path. A config-scoped share may deliberately be a symlink to
+        # prepared guest artifacts (the isolated blackbox instance does this);
+        # passing that alias makes runsc reject valid bind destinations because
+        # openat resolves them beneath the real path. Canonicalize only after
+        # validating the selected tree so the OCI root and mount checks agree.
+        return path.resolve()
 
     # --- Sandbox lifecycle ---
 

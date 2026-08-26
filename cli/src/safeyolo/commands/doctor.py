@@ -1272,6 +1272,16 @@ def _check_isolation_platform() -> DiagResult:
     if system == "Linux":
         from ..platform.linux import detect_runsc_platform
         info = detect_runsc_platform()
+        if info.get("forced"):
+            return DiagResult(
+                name="Isolation platform",
+                status="pass",
+                message=(
+                    "systrap (software isolation) — forced by "
+                    "SAFEYOLO_RUNSC_PLATFORM"
+                ),
+                detail="KVM auto-detection was intentionally bypassed",
+            )
         if info["platform"] == "kvm":
             return DiagResult(
                 name="Isolation platform",
@@ -1341,9 +1351,9 @@ def _check_userns() -> DiagResult:
     if not info["newgidmap"]:
         issues.append("newgidmap not found")
     if not info["subuid"]:
-        issues.append("/etc/subuid: no entry for current user")
+        issues.append("/etc/subuid: required SafeYolo range unavailable")
     if not info["subgid"]:
-        issues.append("/etc/subgid: no entry for current user")
+        issues.append("/etc/subgid: required SafeYolo range unavailable")
     if not info["setfacl"]:
         issues.append("setfacl not found (install the `acl` package)")
     if info["apparmor_restricts"] and not info["apparmor_profile_loaded"]:

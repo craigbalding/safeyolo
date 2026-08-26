@@ -84,7 +84,7 @@ def web_tailnet_status_file() -> Path:
     return get_data_dir() / "web-tailnet-status.json"
 
 
-def _read_startup_failure(path: Path, offset: int) -> str:
+def _read_startup_failure(path: Path, offset: int) -> str | None:
     """Read this launch attempt's structured failure event, if present."""
     try:
         with path.open(encoding="utf-8") as event_file:
@@ -98,9 +98,9 @@ def _read_startup_failure(path: Path, offset: int) -> str:
                 if event.get("event") == "ops.proxy_start_failed":
                     candidates.append(event)
     except OSError:
-        return "Traffic master exited before recording a structured startup failure."
+        return None
     if not candidates:
-        return "Traffic master exited before recording a structured startup failure."
+        return None
     event = candidates[-1]
     return str(event.get("summary") or event.get("details", {}).get("error") or "Proxy startup failed")
 
@@ -841,14 +841,18 @@ def start_proxy(
             if pid_file.exists():
                 break
             if not session_process_alive():
-                failure = _read_startup_failure(event_log, event_offset)
+                failure = _read_startup_failure(event_log, event_offset) or (
+                    "Traffic master exited before recording a structured startup failure."
+                )
                 raise RuntimeError(
                     "shared traffic master exited during startup.\n"
                     f"{failure}"
                 )
             time.sleep(0.05)
         else:
-            failure = _read_startup_failure(event_log, event_offset)
+            failure = _read_startup_failure(event_log, event_offset) or (
+                "Traffic master remained alive but did not finish startup before the readiness deadline."
+            )
             raise RuntimeError(
                 f"Proxy did not signal ready within {startup_timeout:g}s.\n"
                 f"{failure}"

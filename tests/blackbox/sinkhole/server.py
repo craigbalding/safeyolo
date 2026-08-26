@@ -15,6 +15,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -28,7 +29,20 @@ logging.basicConfig(
 )
 
 
-class SSLSafeThreadingHTTPServer(ThreadingHTTPServer):
+class NoReverseDNSThreadingHTTPServer(ThreadingHTTPServer):
+    """Threading HTTP server that binds without reverse-DNS lookup."""
+
+    def server_bind(self):
+        # HTTPServer.server_bind() calls socket.getfqdn(host). The sinkhole
+        # binds several fixed local listeners, and a slow macOS resolver can
+        # otherwise consume the complete blackbox readiness window.
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
+class SSLSafeThreadingHTTPServer(NoReverseDNSThreadingHTTPServer):
     """ThreadingHTTPServer with graceful SSL error handling.
 
     SSL handshake errors (connection resets, protocol mismatches) are common
@@ -273,7 +287,7 @@ def run_servers(
         log.info(f"Sinkhole HTTPS server listening on port {spec['port']} (cert: {spec.get('name', '?')})")
 
     # Control API (threading for concurrent health checks during tests)
-    control = ThreadingHTTPServer(("0.0.0.0", control_port), ControlAPIHandler)
+    control = NoReverseDNSThreadingHTTPServer(("0.0.0.0", control_port), ControlAPIHandler)
     log.info(f"Control API listening on port {control_port}")
 
     # Run servers in background threads

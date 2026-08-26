@@ -1591,6 +1591,18 @@ class TestAdminAPIAddon:
         addon = AdminAPI()
         assert addon.name == "admin-api"
 
+    def test_loopback_server_bind_does_not_perform_reverse_dns(self):
+        from admin_api import AdminRequestHandler, LoopbackHTTPServer
+
+        with patch("socket.getfqdn", side_effect=AssertionError("reverse DNS lookup attempted")):
+            server = LoopbackHTTPServer(("127.0.0.1", 0), AdminRequestHandler)
+        try:
+            assert server.server_address[0] == "127.0.0.1"
+            assert server.server_name == "127.0.0.1"
+            assert server.server_port == server.server_address[1]
+        finally:
+            server.server_close()
+
     def test_mode_switchable_contains_expected_addons(self):
         from admin_api import AdminRequestHandler
 

@@ -8,19 +8,19 @@
 #   For tests, we create a test CA that SafeYolo trusts, and sinkhole presents
 #   certificates signed by this CA. No TLS shortcuts, no ssl_insecure flags.
 #
-# Generated files (public — in repo, visible to VM):
-#   certs/ca.crt          - Test CA certificate
-#   certs/sinkhole.crt    - Sinkhole certificate
+# Generated files (public — outside repo):
+#   $SAFEYOLO_TEST_CERT_DIR/ca.crt       - Test CA certificate
+#   $SAFEYOLO_TEST_CERT_DIR/sinkhole.crt - Sinkhole certificate
 #
 # Generated files (private — outside repo, NOT visible to VM):
-#   ~/.safeyolo/test-certs/ca.key          - Test CA private key
-#   ~/.safeyolo/test-certs/sinkhole.key    - Sinkhole private key
+#   $SAFEYOLO_TEST_KEY_DIR/ca.key       - Test CA private key
+#   $SAFEYOLO_TEST_KEY_DIR/sinkhole.key - Sinkhole private key
 #
 # Why the split:
 #   The workspace is mounted into agent VMs via VirtioFS. Private keys in
 #   the repo tree would be accessible to the agent — violating the security
-#   contract that blackbox tests verify. Keeping keys outside the repo
-#   ensures the key isolation test passes for the right reason.
+#   contract that blackbox tests verify. Keeping keys in the isolated test
+#   instance ensures the key isolation test passes for the right reason.
 #
 # Usage:
 #   ./generate-certs.sh           # Generate if missing
@@ -29,9 +29,11 @@
 
 set -e
 
-CERT_DIR="$(cd "$(dirname "$0")" && pwd)"
-KEY_DIR="$HOME/.safeyolo/test-certs"
-mkdir -p "$KEY_DIR"
+SCRIPT_CERT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEFAULT_CONFIG_DIR="${SAFEYOLO_CONFIG_DIR:-$HOME/.safeyolo}"
+CERT_DIR="${SAFEYOLO_TEST_CERT_DIR:-$SCRIPT_CERT_DIR}"
+KEY_DIR="${SAFEYOLO_TEST_KEY_DIR:-$DEFAULT_CONFIG_DIR/test-certs}"
+mkdir -p "$CERT_DIR" "$KEY_DIR"
 
 cd "$CERT_DIR"
 
@@ -87,7 +89,7 @@ openssl req -x509 -new -nodes \
     -out ca.crt \
     -subj "/CN=SafeYolo Blackbox Test CA/O=SafeYolo Test/C=US"
 
-echo "   Created: ca.crt (public), ~/.safeyolo/test-certs/ca.key (private)"
+echo "   Created: ca.crt (public), $KEY_DIR/ca.key (private)"
 
 # 2. Generate sinkhole certificate with SANs for all test hostnames
 echo "2. Generating sinkhole certificate..."
@@ -150,15 +152,15 @@ rm -f sinkhole.csr sinkhole-openssl.cnf ca.srl
 # Remove any legacy key files from the repo directory
 rm -f ca.key sinkhole.key
 
-echo "   Created: sinkhole.crt (public), ~/.safeyolo/test-certs/sinkhole.key (private)"
+echo "   Created: sinkhole.crt (public), $KEY_DIR/sinkhole.key (private)"
 echo ""
 echo "=== Certificate Generation Complete ==="
 echo ""
-echo "Public (in repo — visible to VM):"
+echo "Public (isolated test instance):"
 echo "  $CERT_DIR/ca.crt"
 echo "  $CERT_DIR/sinkhole.crt"
 echo ""
-echo "Private (outside repo — NOT visible to VM):"
+echo "Private (isolated test instance — NOT visible to VM):"
 echo "  $KEY_DIR/ca.key"
 echo "  $KEY_DIR/sinkhole.key"
 echo ""
@@ -287,7 +289,7 @@ EOF
     rm -f ca.srl test-ca-b.srl ecc_intermediate.srl
 
     echo "   Created: ecc_chain.pem (public, chain: leaf + intermediate + bridge)"
-    echo "            ~/.safeyolo/test-certs/ecc_chain.key (private leaf key)"
+    echo "            $KEY_DIR/ecc_chain.key (private leaf key)"
     echo "   Terminates at ca.crt via cross-signed bridge root."
 fi
 

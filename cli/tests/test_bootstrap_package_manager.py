@@ -400,6 +400,8 @@ class TestNeedsSetup:
         base = {
             "newuidmap": True,
             "newgidmap": True,
+            "subuid": True,
+            "subgid": True,
             "setfacl": True,
             "apparmor_restricts": False,
             "apparmor_profile_loaded": False,
@@ -448,6 +450,14 @@ class TestNeedsSetup:
 
         self._stub_platform(monkeypatch)
         self._stub_userns(monkeypatch, newuidmap=False)
+        assert _needs_setup() is True
+
+    @pytest.mark.parametrize("key", ["subuid", "subgid"])
+    def test_true_when_required_subid_range_missing(self, monkeypatch, key):
+        from safeyolo.commands.bootstrap import _needs_setup
+
+        self._stub_platform(monkeypatch)
+        self._stub_userns(monkeypatch, **{key: False})
         assert _needs_setup() is True
 
     def test_apparmor_check_ignores_hosts_without_apparmor(self, monkeypatch):
