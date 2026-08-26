@@ -565,14 +565,15 @@ read every .pem/.crt; assert none contain 'PRIVATE KEY'.
   - *Consequence if unasserted:* Catches the naming-convention dodge — even if the file
 is called .crt (public), it could carry private key content.
 Tests the content, not the name.
-- **`test_full_filesystem_scan_for_private_keys`** — Whole-filesystem scan finds no PRIVATE KEY content.
+- **`test_full_filesystem_scan_for_private_keys`** — Whole-filesystem scan finds no private key for SafeYolo's CA.
   - *Probe:* os.walk from / (skipping /proc, /sys, /dev, /run and
-third-party site-packages); read the first 1 KiB of each
-regular file; assert 'PRIVATE KEY' doesn't appear.
+third-party site-packages); inspect private-key candidates and
+assert none has the public key from safeyolo.crt.
   - *Consequence if unasserted:* The targeted tests above check known-critical paths.
-This is the catch-all: if the key leaked to a surprising
+This is the catch-all: if SafeYolo's CA key leaked to a surprising
 location (/tmp, /var/log, an agent workspace subdir), the
-targeted tests would miss it but this scan would catch it.
+targeted tests would miss it but this scan would catch it. Guest-local
+SSH host keys are expected and are not SafeYolo trust material.
 
 ### `tests/blackbox/isolation/test_root_containment.py`
 

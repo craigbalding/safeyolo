@@ -354,6 +354,14 @@ def _guest_src_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "guest"
 
 
+def _guest_sudo_source() -> Path:
+    """Return the sudo shim from the editable source checkout."""
+    source = _guest_src_dir() / "rootfs" / "safeyolo-sudo"
+    if source.is_file():
+        return source
+    raise VMError("SafeYolo guest sudo helper is missing from the source checkout")
+
+
 def build_custom_rootfs(name: str, script_path: Path) -> Path:
     """Invoke a user rootfs-script to produce a per-agent rootfs.
 
@@ -901,6 +909,13 @@ def prepare_config_share(
         dst = share_dir / dst_name
         shutil.copy2(str(src), str(dst))
         dst.chmod(0o755)
+
+    # Refresh the guest-root compatibility shim independently of the base
+    # image. guest-init-static installs it into the writable guest overlay,
+    # so existing images gain current sudo behavior without a rebuild.
+    guest_sudo = share_dir / "guest-sudo"
+    shutil.copy2(_guest_sudo_source(), guest_sudo)
+    guest_sudo.chmod(0o755)
 
     stage_guest_desktop_launcher(name, preferred_size=get_desktop_size())
 

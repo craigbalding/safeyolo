@@ -101,7 +101,6 @@ class TestGuestRootCapability:
             installed = subprocess.run(
                 [
                     "apt-get",
-                    "--no-download",
                     "install",
                     "-y",
                     "--no-install-recommends",
