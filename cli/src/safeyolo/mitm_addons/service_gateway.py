@@ -38,6 +38,7 @@ from mitmproxy import ctx, http
 
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from safeyolo.core.flow_cache import path_no_query
+from safeyolo.core.identity import IdentityStatus, resolve_agent_identity
 from safeyolo.core.service_loader import get_service_registry
 from safeyolo.core.trace import (
     REASON_ADDON_DISABLED,
@@ -46,7 +47,7 @@ from safeyolo.core.trace import (
     trace_bypassed,
     trace_evaluated,
 )
-from safeyolo.core.utils import make_block_response, matches_resource_pattern, sanitize_for_log, write_event
+from safeyolo.core.utils import find_addon, make_block_response, matches_resource_pattern, sanitize_for_log, write_event
 from safeyolo.core.vault import get_vault
 from safeyolo.detection.matching import normalize_path, reject_path_tricks
 
@@ -437,9 +438,33 @@ class ServiceGateway:
             self.stats.denied_token += 1
             return
 
-        # Validate agent matches (if service_discovery stamped flow.metadata["agent"])
-        agent = flow.metadata.get("agent")
-        if agent and agent != binding.agent:
+        # Gateway tokens are agent-bound credentials. Missing or conflicting
+        # caller identity must fail closed; otherwise an unstamped flow can use
+        # any valid token and silently skip the ownership check.
+        identity = resolve_agent_identity(flow, find_addon("service-discovery"))
+        if identity.status is IdentityStatus.CONFLICT:
+            self._deny(
+                flow,
+                403,
+                "Trusted agent identity sources disagree",
+                "AGENT_IDENTITY_CONFLICT",
+                reflection="The connection identity conflicts with another identity source. Start a fresh agent connection before retrying.",
+            )
+            self.stats.denied_token += 1
+            return
+        if not identity.is_resolved:
+            self._deny(
+                flow,
+                403,
+                "Could not establish agent identity",
+                "AGENT_IDENTITY_REQUIRED",
+                reflection="Gateway credentials require a trusted agent connection. Retry through the agent's SafeYolo socket.",
+            )
+            self.stats.denied_token += 1
+            return
+
+        agent = identity.agent
+        if agent != binding.agent:
             self._deny(
                 flow,
                 403,

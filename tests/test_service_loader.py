@@ -490,7 +490,7 @@ class TestServiceRegistryErrorHandling:
         """Invalid YAML should be skipped AND emit ops.config_error audit event."""
         (services_dir / "bad.yaml").write_text("not: a: valid: yaml: [")
         reg = ServiceRegistry(services_dir, builtin_dir=services_dir.parent / "nonexistent")
-        with patch("safeyolo.core.utils.write_event") as mock_write_event:
+        with patch("safeyolo.core.utils.write_event", autospec=True,) as mock_write_event:
             reg.load()
 
         # Service is skipped (fail-closed: absent from registry)
@@ -518,7 +518,7 @@ roles:
         path: "/v1/**"
 """)
         reg = ServiceRegistry(services_dir, builtin_dir=services_dir.parent / "nonexistent")
-        with patch("safeyolo.core.utils.write_event") as mock_write_event:
+        with patch("safeyolo.core.utils.write_event", autospec=True,) as mock_write_event:
             reg.load()
 
         # Service is absent from registry
@@ -536,7 +536,7 @@ roles:
         """Empty files are skipped via continue (not an error), no audit event emitted."""
         (services_dir / "empty.yaml").write_text("")
         reg = ServiceRegistry(services_dir, builtin_dir=services_dir.parent / "nonexistent")
-        with patch("safeyolo.core.utils.write_event") as mock_write_event:
+        with patch("safeyolo.core.utils.write_event", autospec=True,) as mock_write_event:
             reg.load()
 
         # Valid services still load
@@ -551,7 +551,7 @@ schema_version: 1
 description: "Missing the name field"
 """)
         reg = ServiceRegistry(services_dir, builtin_dir=services_dir.parent / "nonexistent")
-        with patch("safeyolo.core.utils.write_event") as mock_write_event:
+        with patch("safeyolo.core.utils.write_event", autospec=True,) as mock_write_event:
             reg.load()
 
         assert reg.get_service("gmail") is not None
@@ -564,7 +564,7 @@ description: "Missing the name field"
         """If write_event itself fails, the registry still loads valid services."""
         (services_dir / "bad.yaml").write_text("not: a: valid: yaml: [")
         reg = ServiceRegistry(services_dir, builtin_dir=services_dir.parent / "nonexistent")
-        with patch("safeyolo.core.utils.write_event", side_effect=RuntimeError("audit broken")):
+        with patch("safeyolo.core.utils.write_event", side_effect=RuntimeError("audit broken"), autospec=True,):
             reg.load()
 
         # Valid services still loaded despite audit failure

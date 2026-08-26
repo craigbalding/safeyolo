@@ -7,9 +7,19 @@ patterns via policy or enable builtin pattern sets.
 """
 
 import re
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import create_autospec, patch
 
 import pytest
+
+from pdp.client import PolicyClient
+
+pytestmark = pytest.mark.assurance_boundary
+
+
+def _ctx(**options):
+    """Concrete mitmproxy option state required by one test."""
+    return SimpleNamespace(options=SimpleNamespace(**options))
 
 
 class TestPatternRule:
@@ -450,8 +460,7 @@ class TestPatternScanner:
             url="https://api.example.com/projects/PROJ-12345/details",
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
 
         assert flow.metadata.get("pattern_matched") == "project-id"
@@ -473,8 +482,7 @@ class TestPatternScanner:
             headers={"X-Custom": "SECRET-abc123"},
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
 
         assert flow.metadata.get("pattern_matched") == "secret-header"
@@ -496,8 +504,7 @@ class TestPatternScanner:
             content='{"project": "PROJ-12345"}',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
 
         assert flow.metadata.get("pattern_matched") == "project-id"
@@ -515,8 +522,7 @@ class TestPatternScanner:
             content=f'{{"refresh_token": "{token}"}}',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
 
         assert flow.metadata.get("pattern_matched") == "anthropic-api-key"
@@ -539,8 +545,7 @@ class TestPatternScanner:
             content='{"project": "PROJ-12345"}',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
 
         # Should NOT match because pattern is in body but scope is url
@@ -562,8 +567,7 @@ class TestPatternScanner:
             content='{"project": "PROJ-12345"}',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = True
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=True)):
             scanner.request(flow)
 
         assert flow.response is not None
@@ -585,8 +589,7 @@ class TestPatternScanner:
             content='{"customer": "CUST-123456"}',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_response = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_response=False)):
             scanner.response(flow)
 
         assert flow.metadata.get("pattern_matched_response") == "customer-id"
@@ -607,8 +610,7 @@ class TestPatternScanner:
             content='{"customer": "CUST-123456"}',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_response = True
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_response=True)):
             scanner.response(flow)
 
         assert flow.response.status_code == 502
@@ -644,8 +646,7 @@ class TestResponseHeaderScanningWithEmptyBody:
             headers={"X-Debug": "SECRET-abcdefghij"},
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_response = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_response=False)):
             scanner.response(flow)
 
         assert flow.metadata.get("pattern_matched_response") == "leaked-token"
@@ -669,8 +670,7 @@ class TestResponseHeaderScanningWithEmptyBody:
             headers={"X-Debug": "SECRET-abcdefghij"},
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_response = True
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_response=True)):
             scanner.response(flow)
 
         assert flow.response.status_code == 502
@@ -700,8 +700,7 @@ class TestDirectionFiltering:
             content='{"id": "PROJ-12345"}',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_response = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_response=False)):
             scanner.response(flow)
 
         assert flow.metadata.get("pattern_matched_response") is None
@@ -721,8 +720,7 @@ class TestDirectionFiltering:
             content='{"id": "PROJ-12345"}',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
 
         assert flow.metadata.get("pattern_matched") is None
@@ -742,8 +740,7 @@ class TestDirectionFiltering:
             content='{"id": "PROJ-12345"}',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
 
         assert flow.metadata.get("pattern_matched") == "both-dir"
@@ -763,8 +760,7 @@ class TestDirectionFiltering:
             content='{"id": "PROJ-12345"}',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_response = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_response=False)):
             scanner.response(flow)
 
         assert flow.metadata.get("pattern_matched_response") == "both-dir"
@@ -795,8 +791,7 @@ class TestBlockResponseContent:
             content='PROJ-12345',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = True
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=True)):
             scanner.request(flow)
 
         import json
@@ -823,8 +818,7 @@ class TestBlockResponseContent:
             content='CUST-123456',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_response = True
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_response=True)):
             scanner.response(flow)
 
         import json
@@ -859,8 +853,7 @@ class TestLogOnlyPath:
             content='PROJ-12345',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = True  # blocking enabled globally
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=True)):
             scanner.request(flow)
 
         # Metadata is set (match happened)
@@ -885,8 +878,7 @@ class TestLogOnlyPath:
             content='CUST-123456',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_response = True  # blocking enabled globally
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_response=True)):
             scanner.response(flow)
 
         assert flow.metadata.get("pattern_matched_response") == "audit-resp"
@@ -918,8 +910,7 @@ class TestBlockRequiresBothRuleActionAndOption:
             content='PROJ-12345',
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
 
         assert flow.metadata.get("pattern_matched") == "block-rule"
@@ -937,7 +928,7 @@ class TestMaybeReloadPatterns:
 
     def test_reloads_when_policy_hash_changes(self, scanner):
         """When policy hash changes, rules are reloaded from config."""
-        mock_client = MagicMock()
+        mock_client = create_autospec(PolicyClient, instance=True, spec_set=True)
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "hash-v2",
             "scan_patterns": [
@@ -948,8 +939,8 @@ class TestMaybeReloadPatterns:
         scanner._last_policy_hash = "hash-v1"
         assert scanner.rules == []
 
-        with patch("pdp.get_policy_client", return_value=mock_client), \
-             patch("pdp.is_policy_client_configured", return_value=True):
+        with patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             scanner._maybe_reload_patterns()
 
         assert len(scanner.rules) == 1
@@ -965,7 +956,7 @@ class TestMaybeReloadPatterns:
         })
         scanner._last_policy_hash = "same-hash"
 
-        mock_client = MagicMock()
+        mock_client = create_autospec(PolicyClient, instance=True, spec_set=True)
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "same-hash",
             "scan_patterns": [
@@ -973,8 +964,8 @@ class TestMaybeReloadPatterns:
             ],
         }
 
-        with patch("pdp.get_policy_client", return_value=mock_client), \
-             patch("pdp.is_policy_client_configured", return_value=True):
+        with patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             scanner._maybe_reload_patterns()
 
         # Rules should not have changed
@@ -989,7 +980,7 @@ class TestMaybeReloadPatterns:
             ]
         })
 
-        with patch("pdp.is_policy_client_configured", return_value=False):
+        with patch("pdp.is_policy_client_configured", autospec=True, return_value=False):
             scanner._maybe_reload_patterns()
 
         # Rules unchanged, no exception raised
@@ -1021,8 +1012,7 @@ class TestRequestWithNoBody:
             content=b"",
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
 
         assert flow.metadata.get("pattern_matched") == "url-leak"
@@ -1045,8 +1035,7 @@ class TestRequestWithNoBody:
             headers={"X-Token": "SECRET-abcdefgh"},
         )
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_request = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
 
         assert flow.metadata.get("pattern_matched") == "header-leak"
@@ -1073,8 +1062,7 @@ class TestResponseSkippedWhenNone:
         flow = make_flow(url="https://api.example.com/data")
         flow.response = None
 
-        with patch("pattern_scanner.ctx") as mock_ctx:
-            mock_ctx.options.pattern_block_response = False
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_response=False)):
             scanner.response(flow)
 
         assert flow.metadata.get("pattern_matched_response") is None

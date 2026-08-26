@@ -107,7 +107,7 @@ def test_atomic_writer_replaces_file_with_no_newline(tmp_path):
     target.write_text("run=old;agent=old")
     value = "run=sec3;agent=logic;test=PAY-011-return"
 
-    with patch("safeyolo.test_context_contract.os.replace", wraps=os.replace) as replace:
+    with patch("safeyolo.test_context_contract.os.replace", wraps=os.replace, autospec=True,) as replace:
         atomic_write_test_context(target, value)
 
     assert target.read_text() == value
@@ -123,6 +123,7 @@ def test_atomic_writer_preserves_old_file_and_cleans_temp_on_failure(tmp_path):
         patch(
             "safeyolo.test_context_contract.os.replace",
             side_effect=OSError("replace failed"),
+        autospec=True,
         ),
         pytest.raises(OSError, match="replace failed"),
     ):

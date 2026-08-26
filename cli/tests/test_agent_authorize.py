@@ -715,7 +715,7 @@ class TestParseMountSecurity:
         # _parse_mount checks is_path_protected internally via get_protected_paths
         # We mock get_protected_paths to return our test path
         from unittest.mock import patch
-        with patch("safeyolo.commands.agent.is_path_protected", return_value=str(tmp_path)):
+        with patch("safeyolo.commands.agent.is_path_protected", return_value=str(tmp_path), autospec=True,):
             with pytest.raises(typer.Exit):
                 _parse_mount(f"{host_dir}:/container/refs")
 
@@ -724,7 +724,7 @@ class TestParseMountSecurity:
         host_dir = tmp_path / "refs"
         host_dir.mkdir()
         from unittest.mock import patch
-        with patch("safeyolo.commands.agent.is_path_protected", return_value=str(tmp_path)):
+        with patch("safeyolo.commands.agent.is_path_protected", return_value=str(tmp_path), autospec=True,):
             result = _parse_mount(f"{host_dir}:/container/refs:ro")
             assert result.endswith(":ro")
             assert "/container/refs" in result
@@ -734,7 +734,7 @@ class TestParseMountSecurity:
         host_dir = tmp_path / "project"
         host_dir.mkdir()
         from unittest.mock import patch
-        with patch("safeyolo.commands.agent.is_path_protected", return_value=None):
+        with patch("safeyolo.commands.agent.is_path_protected", return_value=None, autospec=True,):
             result = _parse_mount(f"{host_dir}:/container/project")
             assert ":ro" not in result
             assert "/container/project" in result
@@ -747,7 +747,7 @@ class TestParseMountSecurity:
         host_dir = tmp_path / "d"
         host_dir.mkdir()
         from unittest.mock import patch
-        with patch("safeyolo.commands.agent.is_path_protected", return_value=None):
+        with patch("safeyolo.commands.agent.is_path_protected", return_value=None, autospec=True,):
             with pytest.raises(typer.Exit):
                 _parse_mount(f"{host_dir}:/container/d:rw")
 

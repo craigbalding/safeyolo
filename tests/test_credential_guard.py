@@ -22,7 +22,67 @@ Structure:
 
 import json
 import logging
+from contextlib import contextmanager
 from unittest import mock
+
+import pytest
+from mitmproxy.test import taddons
+
+from pdp.client import PolicyClient
+from pdp.schemas import (
+    DecisionEventBlock,
+    Effect,
+    ImmediateResponseBlock,
+    PolicyDecision,
+)
+from safeyolo.proxy_modes.unix_listener import UnixMode
+
+pytestmark = pytest.mark.assurance_boundary
+
+
+def _decision(
+    effect: Effect,
+    *,
+    reason: str | None = None,
+    reason_codes: list[str] | None = None,
+    immediate_response: ImmediateResponseBlock | None = None,
+) -> PolicyDecision:
+    return PolicyDecision(
+        event=DecisionEventBlock(
+            event_id="evt-credential-test",
+            policy_hash="sha256:test",
+            engine_version="test",
+        ),
+        effect=effect,
+        reason=reason or effect.value,
+        reason_codes=reason_codes or [],
+        immediate_response=immediate_response,
+    )
+
+
+def _policy_client() -> PolicyClient:
+    return mock.create_autospec(PolicyClient, instance=True, spec_set=True)
+
+
+@contextmanager
+def _guard_runtime(guard, *, block: bool = True, enabled: bool = True):
+    """Run a real guard with concrete mitmproxy options and a specced PDP boundary."""
+    client = _policy_client()
+    client.is_addon_enabled.return_value = enabled
+    client.get_sensor_config.return_value = {"policy_hash": "stable-test-policy"}
+    guard._last_policy_hash = "stable-test-policy"
+    with (
+        taddons.context(guard) as tctx,
+        mock.patch(
+            "credential_guard.get_policy_client",
+            autospec=True,
+            return_value=client,
+        ),
+        mock.patch("pdp.get_policy_client", autospec=True, return_value=client),
+        mock.patch("pdp.is_policy_client_configured", autospec=True, return_value=True),
+    ):
+        tctx.options.credguard_block = block
+        yield client
 
 # =========================================================================
 # Helper tests (detection/utils) -- kept as-is from prior file
@@ -847,7 +907,7 @@ class TestEvaluateCredentialWithPDP:
             headers={"Authorization": "Bearer sk-test-abc"},
         )
 
-        with mock.patch("credential_guard.get_policy_client", side_effect=RuntimeError("not configured")):
+        with mock.patch("credential_guard.get_policy_client", autospec=True, side_effect=RuntimeError("not configured")):
             effect, context = evaluate_credential_with_pdp(
                 flow=flow,
                 credential="sk-test-abc123def456ghi789",
@@ -875,20 +935,19 @@ class TestEvaluateCredentialWithPDP:
             headers={"Authorization": "Bearer sk-test-abc"},
         )
 
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
         mock_client.evaluate.side_effect = ConnectionError("PDP unreachable")
 
-        with mock.patch("credential_guard.get_policy_client", return_value=mock_client):
-            with mock.patch("credential_guard.build_http_event_from_flow", return_value=mock.MagicMock()):
-                effect, context = evaluate_credential_with_pdp(
-                    flow=flow,
-                    credential="sk-test-abc123def456ghi789",
-                    rule_name="openai",
-                    confidence="high",
-                    rules=[],
-                    hmac_secret=b"test-secret",
-                    principal_id="project:default",
-                )
+        with mock.patch("credential_guard.get_policy_client", autospec=True, return_value=mock_client):
+            effect, context = evaluate_credential_with_pdp(
+                flow=flow,
+                credential="sk-test-abc123def456ghi789",
+                rule_name="openai",
+                confidence="high",
+                rules=[],
+                hmac_secret=b"test-secret",
+                principal_id="project:default",
+            )
 
         assert effect == Effect.ERROR
         assert context["reason_codes"] == ["PDP_EVALUATION_FAILED"]
@@ -907,25 +966,24 @@ class TestEvaluateCredentialWithPDP:
             headers={"Authorization": "Bearer sk-test-abc"},
         )
 
-        mock_decision = mock.MagicMock()
-        mock_decision.effect = Effect.ALLOW
-        mock_decision.reason_codes = ["ALLOWED"]
-        mock_decision.reason = "Allowed by policy"
-
-        mock_client = mock.MagicMock()
+        mock_decision = _decision(
+            Effect.ALLOW,
+            reason="Allowed by policy",
+            reason_codes=["ALLOWED"],
+        )
+        mock_client = _policy_client()
         mock_client.evaluate.return_value = mock_decision
 
-        with mock.patch("credential_guard.get_policy_client", return_value=mock_client):
-            with mock.patch("credential_guard.build_http_event_from_flow", return_value=mock.MagicMock()):
-                effect, context = evaluate_credential_with_pdp(
-                    flow=flow,
-                    credential="sk-test-abc123def456ghi789",
-                    rule_name="openai",
-                    confidence="high",
-                    rules=[],
-                    hmac_secret=b"test-secret",
-                    principal_id="project:default",
-                )
+        with mock.patch("credential_guard.get_policy_client", autospec=True, return_value=mock_client):
+            effect, context = evaluate_credential_with_pdp(
+                flow=flow,
+                credential="sk-test-abc123def456ghi789",
+                rule_name="openai",
+                confidence="high",
+                rules=[],
+                hmac_secret=b"test-secret",
+                principal_id="project:default",
+            )
 
         assert effect == Effect.ALLOW
         assert context["reason_codes"] == ["ALLOWED"]
@@ -945,12 +1003,12 @@ class TestEvaluateCredentialWithPDP:
             headers={"Authorization": "Bearer sk-test-abc"},
         )
 
-        mock_decision = mock.MagicMock()
-        mock_decision.effect = Effect.DENY
-        mock_decision.reason_codes = ["DESTINATION_MISMATCH"]
-        mock_decision.reason = "Credential not allowed for this host"
-
-        mock_client = mock.MagicMock()
+        mock_decision = _decision(
+            Effect.DENY,
+            reason="Credential not allowed for this host",
+            reason_codes=["DESTINATION_MISMATCH"],
+        )
+        mock_client = _policy_client()
         mock_client.evaluate.return_value = mock_decision
 
         rule = CredentialRule(
@@ -960,19 +1018,18 @@ class TestEvaluateCredentialWithPDP:
             suggested_url="https://api.openai.com/v1/chat",
         )
 
-        with mock.patch("credential_guard.get_policy_client", return_value=mock_client):
-            with mock.patch("credential_guard.build_http_event_from_flow", return_value=mock.MagicMock()):
-                # detect_credential_type returns "openai" for this credential
-                with mock.patch("credential_guard.detect_credential_type", return_value="openai"):
-                    effect, context = evaluate_credential_with_pdp(
-                        flow=flow,
-                        credential="sk-test-abc123def456ghi789",
-                        rule_name="openai",
-                        confidence="high",
-                        rules=[rule],
-                        hmac_secret=b"test-secret",
-                        principal_id="project:default",
-                    )
+        with mock.patch("credential_guard.get_policy_client", autospec=True, return_value=mock_client):
+            # detect_credential_type returns "openai" for this credential
+            with mock.patch("credential_guard.detect_credential_type", autospec=True, return_value="openai"):
+                effect, context = evaluate_credential_with_pdp(
+                    flow=flow,
+                    credential="sk-test-abc123def456ghi789",
+                    rule_name="openai",
+                    confidence="high",
+                    rules=[rule],
+                    hmac_secret=b"test-secret",
+                    principal_id="project:default",
+                )
 
         assert effect == Effect.DENY
         assert context["expected_hosts"] == ["api.openai.com"]
@@ -990,31 +1047,24 @@ class TestEvaluateCredentialWithPDP:
             headers={"X-Api-Key": "some-secret"},
         )
 
-        mock_decision = mock.MagicMock()
-        mock_decision.effect = Effect.ALLOW
-        mock_decision.reason_codes = ["ALLOWED"]
-        mock_decision.reason = "Allowed"
-
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
+        mock_decision = _decision(Effect.ALLOW, reason="Allowed", reason_codes=["ALLOWED"])
         mock_client.evaluate.return_value = mock_decision
 
-        with mock.patch("credential_guard.get_policy_client", return_value=mock_client):
-            with mock.patch("credential_guard.detect_credential_type", return_value=None):
-                with mock.patch("credential_guard.build_http_event_from_flow") as mock_build:
-                    mock_build.return_value = mock.MagicMock()
-                    evaluate_credential_with_pdp(
-                        flow=flow,
-                        credential="unknown-secret-value-here-long",
-                        rule_name="unknown_secret",
-                        confidence="low",
-                        rules=[],
-                        hmac_secret=b"test-secret",
-                        principal_id="project:default",
-                    )
+        with mock.patch("credential_guard.get_policy_client", autospec=True, return_value=mock_client):
+            with mock.patch("credential_guard.detect_credential_type", autospec=True, return_value=None):
+                evaluate_credential_with_pdp(
+                    flow=flow,
+                    credential="unknown-secret-value-here-long",
+                    rule_name="unknown_secret",
+                    confidence="low",
+                    rules=[],
+                    hmac_secret=b"test-secret",
+                    principal_id="project:default",
+                )
 
-                    # Verify the credential_type passed to build_http_event_from_flow was "unknown"
-                    call_kwargs = mock_build.call_args[1]
-                    assert call_kwargs["credential_type"] == "unknown"
+        event = mock_client.evaluate.call_args.args[0]
+        assert event.credential.type == "unknown"
 
 
 class TestResponseFromDecision:
@@ -1031,12 +1081,13 @@ class TestResponseFromDecision:
         """When PDP provides immediate_response, use it directly."""
         from credential_guard import response_from_decision
 
-        ir = mock.MagicMock()
-        ir.status_code = 428
-        ir.body_json = {"error": "custom PDP response", "type": "test"}
-
-        decision = mock.MagicMock()
-        decision.immediate_response = ir
+        decision = _decision(
+            Effect.REQUIRE_APPROVAL,
+            immediate_response=ImmediateResponseBlock(
+                status_code=428,
+                body_json={"error": "custom PDP response", "type": "test"},
+            ),
+        )
 
         resp = response_from_decision(decision)
 
@@ -1051,11 +1102,11 @@ class TestResponseFromDecision:
 
         from pdp import Effect
 
-        decision = mock.MagicMock()
-        decision.immediate_response = None
-        decision.effect = Effect.DENY
-        decision.reason = "Destination mismatch"
-        decision.reason_codes = ["DEST_MISMATCH"]
+        decision = _decision(
+            Effect.DENY,
+            reason="Destination mismatch",
+            reason_codes=["DEST_MISMATCH"],
+        )
 
         resp = response_from_decision(decision)
 
@@ -1071,11 +1122,11 @@ class TestResponseFromDecision:
 
         from pdp import Effect
 
-        decision = mock.MagicMock()
-        decision.immediate_response = None
-        decision.effect = Effect.REQUIRE_APPROVAL
-        decision.reason = "Needs approval"
-        decision.reason_codes = ["REQUIRE_APPROVAL"]
+        decision = _decision(
+            Effect.REQUIRE_APPROVAL,
+            reason="Needs approval",
+            reason_codes=["REQUIRE_APPROVAL"],
+        )
 
         resp = response_from_decision(decision)
 
@@ -1089,11 +1140,11 @@ class TestResponseFromDecision:
 
         from pdp import Effect
 
-        decision = mock.MagicMock()
-        decision.immediate_response = None
-        decision.effect = Effect.BUDGET_EXCEEDED
-        decision.reason = "Rate limit"
-        decision.reason_codes = ["BUDGET_EXCEEDED"]
+        decision = _decision(
+            Effect.BUDGET_EXCEEDED,
+            reason="Rate limit",
+            reason_codes=["BUDGET_EXCEEDED"],
+        )
 
         resp = response_from_decision(decision)
 
@@ -1107,11 +1158,11 @@ class TestResponseFromDecision:
 
         from pdp import Effect
 
-        decision = mock.MagicMock()
-        decision.immediate_response = None
-        decision.effect = Effect.ERROR
-        decision.reason = "PDP internal error"
-        decision.reason_codes = ["PDP_ERROR"]
+        decision = _decision(
+            Effect.ERROR,
+            reason="PDP internal error",
+            reason_codes=["PDP_ERROR"],
+        )
 
         resp = response_from_decision(decision)
 
@@ -1127,11 +1178,11 @@ class TestResponseFromDecision:
 
         # ALLOW is not in the fallback status_map (only DENY, REQUIRE_APPROVAL,
         # BUDGET_EXCEEDED, ERROR are mapped). This exercises the .get() default.
-        decision = mock.MagicMock()
-        decision.immediate_response = None
-        decision.effect = Effect.ALLOW
-        decision.reason = "Allowed but no immediate_response"
-        decision.reason_codes = ["ALLOWED"]
+        decision = _decision(
+            Effect.ALLOW,
+            reason="Allowed but no immediate_response",
+            reason_codes=["ALLOWED"],
+        )
 
         resp = response_from_decision(decision)
 
@@ -1143,11 +1194,7 @@ class TestResponseFromDecision:
 
         from pdp import Effect
 
-        decision = mock.MagicMock()
-        decision.immediate_response = None
-        decision.effect = Effect.DENY
-        decision.reason = "denied"
-        decision.reason_codes = ["DENIED"]
+        decision = _decision(Effect.DENY, reason="denied", reason_codes=["DENIED"])
 
         resp = response_from_decision(decision, addon_name="credential-guard")
 
@@ -1185,7 +1232,7 @@ class TestMaybeReloadRules:
         guard = self._make_guard()
         guard._last_policy_hash = "old-hash"
 
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "new-hash",
             "credential_rules": [
@@ -1194,8 +1241,8 @@ class TestMaybeReloadRules:
             "addons": {},
         }
 
-        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             guard._maybe_reload_rules()
 
         assert guard._last_policy_hash == "new-hash"
@@ -1218,15 +1265,15 @@ class TestMaybeReloadRules:
         guard = self._make_guard()
         guard._last_policy_hash = "old"
 
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "new",
             "credential_rules": [],
             "addons": {},
         }
 
-        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             guard._maybe_reload_rules()
 
         assert [r.name for r in guard.rules] == [r.name for r in DEFAULT_RULES]
@@ -1239,15 +1286,15 @@ class TestMaybeReloadRules:
         guard = self._make_guard()
         guard._last_policy_hash = "old"
 
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "new",
             # credential_rules key not present
             "addons": {},
         }
 
-        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             guard._maybe_reload_rules()
 
         assert len(guard.rules) == len(DEFAULT_RULES)
@@ -1258,7 +1305,7 @@ class TestMaybeReloadRules:
         guard = self._make_guard()
         guard._last_policy_hash = "old"
 
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "new",
             "credential_rules": [
@@ -1269,8 +1316,8 @@ class TestMaybeReloadRules:
             },
         }
 
-        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             guard._maybe_reload_rules()
 
         assert len(guard.rules) == 1
@@ -1282,7 +1329,7 @@ class TestMaybeReloadRules:
         guard = self._make_guard()
         guard._last_policy_hash = "old"
 
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "new",
             "credential_rules": [],
@@ -1291,8 +1338,8 @@ class TestMaybeReloadRules:
             },
         }
 
-        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             guard._maybe_reload_rules()
 
         assert guard.rules == []
@@ -1303,13 +1350,13 @@ class TestMaybeReloadRules:
         guard._last_policy_hash = "same-hash"
         guard.rules = ["sentinel"]  # Should not be overwritten
 
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "same-hash",
         }
 
-        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             guard._maybe_reload_rules()
 
         assert guard._last_policy_hash == "same-hash"
@@ -1319,7 +1366,7 @@ class TestMaybeReloadRules:
         """RuntimeError from get_policy_client() is swallowed (PDP not ready)."""
         guard = self._make_guard()
 
-        with mock.patch("pdp.is_policy_client_configured", return_value=False):
+        with mock.patch("pdp.is_policy_client_configured", autospec=True, return_value=False):
             # Should not raise
             guard._maybe_reload_rules()
 
@@ -1332,11 +1379,11 @@ class TestMaybeReloadRules:
         guard = self._make_guard()
         assert guard._last_policy_hash == ""
 
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.side_effect = ValueError("corrupted config")
 
-        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             with caplog.at_level(logging.ERROR, logger="safeyolo.credential-guard"):
                 guard._maybe_reload_rules()
 
@@ -1350,11 +1397,11 @@ class TestMaybeReloadRules:
         guard = self._make_guard()
         guard._last_policy_hash = "existing-hash"
 
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
         mock_client.get_sensor_config.side_effect = ValueError("corrupted config")
 
-        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
-             mock.patch("pdp.is_policy_client_configured", return_value=True):
+        with mock.patch("pdp.get_policy_client", autospec=True, return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
             with caplog.at_level(logging.WARNING, logger="safeyolo.credential-guard"):
                 guard._maybe_reload_rules()
 
@@ -1434,7 +1481,12 @@ class TestGetStats:
         guard = CredentialGuard()
         guard.violations_total = 5
         guard.violations_by_type = {"openai": 3, "github": 2}
-        guard.rules = [mock.MagicMock(), mock.MagicMock()]
+        from safeyolo.detection import CredentialRule
+
+        guard.rules = [
+            CredentialRule(name="one", patterns=[], allowed_hosts=[]),
+            CredentialRule(name="two", patterns=[], allowed_hosts=[]),
+        ]
 
         stats = guard.get_stats()
 
@@ -1481,6 +1533,22 @@ class TestCredentialGuardRequest:
         guard.rules = []
         return guard
 
+    def test_identity_conflict_fails_closed_before_detection(self, make_flow):
+        guard = self._make_guard()
+        flow = make_flow(method="GET", url="https://example.com/page")
+        flow.client_conn.proxy_mode = UnixMode.parse(
+            "unix:/tmp/10.0.0.5_alice/proxy.sock"
+        )
+        flow.metadata["agent"] = "bob"
+
+        with _guard_runtime(guard):
+            guard.request(flow)
+
+        assert flow.response.status_code == 403
+        assert json.loads(flow.response.content)["reason"] == "agent_identity_conflict"
+        assert flow.metadata["agent_identity_status"] == "conflict"
+        assert "agent" not in flow.metadata
+
     def test_early_exit_when_flow_has_response(self, make_flow):
         """If flow.response is already set, request() returns immediately."""
         from mitmproxy import http as mhttp
@@ -1495,11 +1563,7 @@ class TestCredentialGuardRequest:
         # Simulate another addon already setting a response
         flow.response = mhttp.Response.make(403, b"already blocked")
 
-        # Patch _maybe_reload_rules to verify it is NOT called
-        with mock.patch.object(guard, "_maybe_reload_rules") as mock_reload:
-            guard.request(flow)
-
-        mock_reload.assert_not_called()
+        guard.request(flow)
         assert flow.response.status_code == 403  # Original response preserved
 
     def test_returns_early_when_disabled(self, make_flow):
@@ -1512,9 +1576,8 @@ class TestCredentialGuardRequest:
             headers={"Authorization": "Bearer sk-proj-" + "a" * 80},
         )
 
-        with mock.patch.object(guard, "_is_enabled", return_value=False):
-            with mock.patch.object(guard, "_maybe_reload_rules"):
-                guard.request(flow)
+        with _guard_runtime(guard, enabled=False):
+            guard.request(flow)
 
         assert flow.response is None
         assert guard.violations_total == 0
@@ -1529,10 +1592,8 @@ class TestCredentialGuardRequest:
             headers={"Accept": "text/html"},
         )
 
-        with mock.patch.object(guard, "_maybe_reload_rules"):
-            with mock.patch.object(guard, "_is_enabled", return_value=True):
-                with mock.patch("credential_guard.analyze_headers", return_value=[]):
-                    guard.request(flow)
+        with _guard_runtime(guard):
+            guard.request(flow)
 
         assert flow.response is None
         assert guard.violations_total == 0
@@ -1542,8 +1603,6 @@ class TestCredentialGuardRequest:
         from pdp import Effect
 
         guard = self._make_guard()
-        guard.should_block = lambda: True
-
         flow = make_flow(
             method="POST",
             url="https://evil.com/api",
@@ -1558,23 +1617,25 @@ class TestCredentialGuardRequest:
             "tier": 1,
         }
 
-        mock_pdp_decision = mock.MagicMock()
-        mock_pdp_decision.effect = Effect.DENY
-        mock_pdp_decision.reason_codes = ["DESTINATION_MISMATCH"]
-        mock_pdp_decision.reason = "Mismatch"
-        mock_pdp_decision.immediate_response = None
-
-        with mock.patch.object(guard, "_maybe_reload_rules"):
-            with mock.patch.object(guard, "_is_enabled", return_value=True):
-                with mock.patch("credential_guard.analyze_headers", return_value=[detection]):
-                    with mock.patch("credential_guard.evaluate_credential_with_pdp",
-                                    return_value=(Effect.DENY, {
-                                        "fingerprint": "hmac:abc123",
-                                        "reason_codes": ["DESTINATION_MISMATCH"],
-                                        "expected_hosts": ["api.openai.com"],
-                                        "reason": "Mismatch",
-                                    })):
-                        guard.request(flow)
+        with (
+            _guard_runtime(guard, block=True),
+            mock.patch(
+                "credential_guard.analyze_headers",
+                autospec=True,
+                return_value=[detection],
+            ),
+            mock.patch(
+                "credential_guard.evaluate_credential_with_pdp",
+                autospec=True,
+                return_value=(Effect.DENY, {
+                    "fingerprint": "hmac:abc123",
+                    "reason_codes": ["DESTINATION_MISMATCH"],
+                    "expected_hosts": ["api.openai.com"],
+                    "reason": "Mismatch",
+                }),
+            ),
+        ):
+            guard.request(flow)
 
         assert flow.response is not None
         assert flow.metadata.get("blocked_by") == "credential-guard"
@@ -1587,8 +1648,6 @@ class TestCredentialGuardRequest:
         from pdp import Effect
 
         guard = self._make_guard()
-        guard.should_block = lambda: False
-
         flow = make_flow(
             method="POST",
             url="https://evil.com/api",
@@ -1603,17 +1662,25 @@ class TestCredentialGuardRequest:
             "tier": 1,
         }
 
-        with mock.patch.object(guard, "_maybe_reload_rules"):
-            with mock.patch.object(guard, "_is_enabled", return_value=True):
-                with mock.patch("credential_guard.analyze_headers", return_value=[detection]):
-                    with mock.patch("credential_guard.evaluate_credential_with_pdp",
-                                    return_value=(Effect.DENY, {
-                                        "fingerprint": "hmac:abc123",
-                                        "reason_codes": ["DESTINATION_MISMATCH"],
-                                        "expected_hosts": ["api.openai.com"],
-                                        "reason": "Mismatch",
-                                    })):
-                        guard.request(flow)
+        with (
+            _guard_runtime(guard, block=False),
+            mock.patch(
+                "credential_guard.analyze_headers",
+                autospec=True,
+                return_value=[detection],
+            ),
+            mock.patch(
+                "credential_guard.evaluate_credential_with_pdp",
+                autospec=True,
+                return_value=(Effect.DENY, {
+                    "fingerprint": "hmac:abc123",
+                    "reason_codes": ["DESTINATION_MISMATCH"],
+                    "expected_hosts": ["api.openai.com"],
+                    "reason": "Mismatch",
+                }),
+            ),
+        ):
+            guard.request(flow)
 
         assert flow.response is None
         assert guard.violations_total == 1
@@ -1623,8 +1690,6 @@ class TestCredentialGuardRequest:
         from pdp import Effect
 
         guard = self._make_guard()
-        guard.should_block = lambda: True
-
         flow = make_flow(
             method="POST",
             url="https://api.openai.com/v1/chat",
@@ -1639,16 +1704,24 @@ class TestCredentialGuardRequest:
             "tier": 1,
         }
 
-        with mock.patch.object(guard, "_maybe_reload_rules"):
-            with mock.patch.object(guard, "_is_enabled", return_value=True):
-                with mock.patch("credential_guard.analyze_headers", return_value=[detection]):
-                    with mock.patch("credential_guard.evaluate_credential_with_pdp",
-                                    return_value=(Effect.ALLOW, {
-                                        "fingerprint": "hmac:abc123",
-                                        "reason_codes": ["ALLOWED"],
-                                        "reason": "Allowed by policy",
-                                    })):
-                        guard.request(flow)
+        with (
+            _guard_runtime(guard, block=True),
+            mock.patch(
+                "credential_guard.analyze_headers",
+                autospec=True,
+                return_value=[detection],
+            ),
+            mock.patch(
+                "credential_guard.evaluate_credential_with_pdp",
+                autospec=True,
+                return_value=(Effect.ALLOW, {
+                    "fingerprint": "hmac:abc123",
+                    "reason_codes": ["ALLOWED"],
+                    "reason": "Allowed by policy",
+                }),
+            ),
+        ):
+            guard.request(flow)
 
         assert flow.response is None
         assert guard.violations_total == 0
@@ -1658,8 +1731,6 @@ class TestCredentialGuardRequest:
         from pdp import Effect
 
         guard = self._make_guard()
-        guard.should_block = lambda: True
-
         flow = make_flow(
             method="POST",
             url="https://evil.com/api",
@@ -1674,16 +1745,24 @@ class TestCredentialGuardRequest:
             "tier": 1,
         }
 
-        with mock.patch.object(guard, "_maybe_reload_rules"):
-            with mock.patch.object(guard, "_is_enabled", return_value=True):
-                with mock.patch("credential_guard.analyze_headers", return_value=[detection]):
-                    with mock.patch("credential_guard.evaluate_credential_with_pdp",
-                                    return_value=(Effect.ERROR, {
-                                        "fingerprint": "hmac:abc123",
-                                        "reason_codes": ["PDP_NOT_CONFIGURED"],
-                                        "reason": "Policy engine not configured",
-                                    })):
-                        guard.request(flow)
+        with (
+            _guard_runtime(guard, block=True),
+            mock.patch(
+                "credential_guard.analyze_headers",
+                autospec=True,
+                return_value=[detection],
+            ),
+            mock.patch(
+                "credential_guard.evaluate_credential_with_pdp",
+                autospec=True,
+                return_value=(Effect.ERROR, {
+                    "fingerprint": "hmac:abc123",
+                    "reason_codes": ["PDP_NOT_CONFIGURED"],
+                    "reason": "Policy engine not configured",
+                }),
+            ),
+        ):
+            guard.request(flow)
 
         assert flow.response is not None
         assert flow.metadata.get("blocked_by") == "credential-guard"
@@ -1694,7 +1773,6 @@ class TestCredentialGuardRequest:
         from pdp import Effect
 
         guard = self._make_guard()
-        guard.should_block = lambda: True
 
         flow = make_flow(
             method="POST",
@@ -1710,22 +1788,33 @@ class TestCredentialGuardRequest:
             "tier": 1,
         }
 
-        mock_decision = mock.MagicMock()
-        mock_decision.immediate_response = mock.MagicMock()
-        mock_decision.immediate_response.status_code = 428
-        mock_decision.immediate_response.body_json = {"error": "PDP says no", "type": "custom"}
+        mock_decision = _decision(
+            Effect.DENY,
+            immediate_response=ImmediateResponseBlock(
+                status_code=428,
+                body_json={"error": "PDP says no", "type": "custom"},
+            ),
+        )
 
-        with mock.patch.object(guard, "_maybe_reload_rules"):
-            with mock.patch.object(guard, "_is_enabled", return_value=True):
-                with mock.patch("credential_guard.analyze_headers", return_value=[detection]):
-                    with mock.patch("credential_guard.evaluate_credential_with_pdp",
-                                    return_value=(Effect.DENY, {
-                                        "fingerprint": "hmac:abc123",
-                                        "reason_codes": ["DESTINATION_MISMATCH"],
-                                        "reason": "Mismatch",
-                                        "decision": mock_decision,
-                                    })):
-                        guard.request(flow)
+        with (
+            _guard_runtime(guard, block=True),
+            mock.patch(
+                "credential_guard.analyze_headers",
+                autospec=True,
+                return_value=[detection],
+            ),
+            mock.patch(
+                "credential_guard.evaluate_credential_with_pdp",
+                autospec=True,
+                return_value=(Effect.DENY, {
+                    "fingerprint": "hmac:abc123",
+                    "reason_codes": ["DESTINATION_MISMATCH"],
+                    "reason": "Mismatch",
+                    "decision": mock_decision,
+                }),
+            ),
+        ):
+            guard.request(flow)
 
         assert flow.response is not None
         assert flow.response.status_code == 428
@@ -1737,7 +1826,6 @@ class TestCredentialGuardRequest:
         from pdp import Effect
 
         guard = self._make_guard()
-        guard.should_block = lambda: True
 
         flow = make_flow(
             method="POST",
@@ -1753,19 +1841,27 @@ class TestCredentialGuardRequest:
             "tier": 1,
         }
 
-        with mock.patch.object(guard, "_maybe_reload_rules"):
-            with mock.patch.object(guard, "_is_enabled", return_value=True):
-                with mock.patch("credential_guard.analyze_headers", return_value=[detection]):
-                    with mock.patch("credential_guard.evaluate_credential_with_pdp",
-                                    return_value=(Effect.DENY, {
-                                        "fingerprint": "hmac:abc123",
-                                        "reason_codes": ["DESTINATION_MISMATCH"],
-                                        "expected_hosts": ["api.openai.com"],
-                                        "suggested_url": "https://api.openai.com/v1/chat",
-                                        "reason": "Mismatch",
-                                        # No "decision" key => falls back to legacy
-                                    })):
-                        guard.request(flow)
+        with (
+            _guard_runtime(guard, block=True),
+            mock.patch(
+                "credential_guard.analyze_headers",
+                autospec=True,
+                return_value=[detection],
+            ),
+            mock.patch(
+                "credential_guard.evaluate_credential_with_pdp",
+                autospec=True,
+                return_value=(Effect.DENY, {
+                    "fingerprint": "hmac:abc123",
+                    "reason_codes": ["DESTINATION_MISMATCH"],
+                    "expected_hosts": ["api.openai.com"],
+                    "suggested_url": "https://api.openai.com/v1/chat",
+                    "reason": "Mismatch",
+                    # No "decision" key => falls back to legacy
+                }),
+            ),
+        ):
+            guard.request(flow)
 
         assert flow.response is not None
         assert flow.response.status_code == 428
@@ -1847,16 +1943,15 @@ class TestBlockingMode:
         guard.config = {}
         guard.safe_headers_config = {}
 
-        # Mock should_block to return False (warn-only mode)
-        guard.should_block = lambda: False
-
         flow = make_flow(
             method="POST",
             url="https://evil.com/steal",
             headers={"Authorization": "Bearer sk-proj-abc123xyz456def789ghijkghijklmno"},
         )
 
-        guard.request(flow)
+        with taddons.context(guard) as tctx:
+            tctx.options.credguard_block = False
+            guard.request(flow)
 
         # Should NOT block (no response set)
         assert flow.response is None
@@ -1875,16 +1970,15 @@ class TestBlockingMode:
         guard.config = {}
         guard.safe_headers_config = {}
 
-        # Mock should_block to return True (blocking mode)
-        guard.should_block = lambda: True
-
         flow = make_flow(
             method="POST",
             url="https://evil.com/steal",
             headers={"Authorization": "Bearer sk-proj-abc123xyz456def789ghijkghijklmno"},
         )
 
-        guard.request(flow)
+        with taddons.context(guard) as tctx:
+            tctx.options.credguard_block = True
+            guard.request(flow)
 
         # Should block
         assert flow.response is not None
@@ -1927,7 +2021,7 @@ class TestIsEnabled:
 
         flow = make_flow(url="https://example.com/api")
 
-        with mock.patch("credential_guard.get_policy_client", side_effect=RuntimeError("not configured")):
+        with mock.patch("credential_guard.get_policy_client", autospec=True, side_effect=RuntimeError("not configured")):
             result = guard._is_enabled(flow)
 
         assert result is True
@@ -1940,10 +2034,10 @@ class TestIsEnabled:
 
         flow = make_flow(url="https://example.com/api")
 
-        mock_client = mock.MagicMock()
+        mock_client = _policy_client()
         mock_client.is_addon_enabled.return_value = False
 
-        with mock.patch("credential_guard.get_policy_client", return_value=mock_client):
+        with mock.patch("credential_guard.get_policy_client", autospec=True, return_value=mock_client):
             result = guard._is_enabled(flow)
 
         assert result is False
@@ -2061,7 +2155,7 @@ class TestEnvVarPaths:
 
         guard = CredentialGuard()
         with taddons.context(guard) as tctx, \
-             mock.patch("credential_guard.load_hmac_secret", side_effect=capture_load_hmac):
+             mock.patch("credential_guard.load_hmac_secret", autospec=True, side_effect=capture_load_hmac):
             tctx.options.credguard_block = True
 
         assert captured_path == Path("/custom/data/hmac_secret")
@@ -2083,7 +2177,7 @@ class TestEnvVarPaths:
 
         guard = CredentialGuard()
         with taddons.context(guard) as tctx, \
-             mock.patch("credential_guard.load_hmac_secret", side_effect=capture_load_hmac):
+             mock.patch("credential_guard.load_hmac_secret", autospec=True, side_effect=capture_load_hmac):
             tctx.options.credguard_block = True
 
         assert captured_path == Path("/safeyolo/data/hmac_secret")
@@ -2103,7 +2197,7 @@ class TestEnvVarPaths:
 
         guard = CredentialGuard()
         with taddons.context(guard) as tctx, \
-             mock.patch("credential_guard.load_hmac_secret", side_effect=counting_load_hmac):
+             mock.patch("credential_guard.load_hmac_secret", autospec=True, side_effect=counting_load_hmac):
             # First configure call loads the secret
             tctx.options.credguard_block = True
             assert call_count == 1

@@ -9,7 +9,19 @@ Via is intentionally forwarded to upstreams — it's a standard proxy header
 and is required for loop detection to work.
 """
 
+from unittest.mock import patch
+
+import pytest
 from mitmproxy.test import tflow
+from service_discovery import ServiceDiscovery
+
+pytestmark = pytest.mark.assurance_boundary
+
+
+def _service_discovery(ip: str, agent: str) -> ServiceDiscovery:
+    discovery = ServiceDiscovery()
+    discovery._ip_to_name = {ip: agent}
+    return discovery
 
 
 class TestLoopDetection:
@@ -33,6 +45,7 @@ class TestLoopDetection:
         """Request with our Via token returns 508."""
         addon = self._addon()
         flow = tflow.tflow()
+        flow.client_conn.peername = ("10.0.0.42", 12345)
         flow.request.headers["via"] = "1.1 safeyolo"
 
         addon.requestheaders(flow)
@@ -112,15 +125,13 @@ class TestLoopDetectionAudit:
 
     def test_loop_detection_emits_audit_event(self):
         """Loop detection writes a security.loop_guard audit event with DENY decision."""
-        from unittest.mock import patch
-
         from safeyolo.core.audit_schema import Decision, EventKind, Severity
 
         addon = self._addon()
         flow = tflow.tflow()
         flow.request.headers["via"] = "1.1 safeyolo"
 
-        with patch("loop_guard.write_event") as mock_write:
+        with patch("loop_guard.write_event", autospec=True) as mock_write:
             addon.requestheaders(flow)
 
             mock_write.assert_called_once()
@@ -205,13 +216,11 @@ class TestLoopBlockCorrelationHeaders:
     def test_loop_audit_event_carries_request_id(self):
         """The security.loop_guard event must include the request_id so
         /explain can correlate — the fix threads it into write_event."""
-        from unittest.mock import patch
-
         addon = self._addon()
         flow = tflow.tflow()
         flow.request.headers["via"] = "1.1 safeyolo"
 
-        with patch("loop_guard.write_event") as mock_write:
+        with patch("loop_guard.write_event", autospec=True) as mock_write:
             addon.requestheaders(flow)
             kwargs = mock_write.call_args[1]
             assert kwargs.get("request_id") == flow.metadata["request_id"]
@@ -224,18 +233,15 @@ class TestLoopBlockCorrelationHeaders:
         the service-discovery addon's `get_client_for_ip()` (issue #213
         fifth-pass review).
         """
-        from unittest.mock import Mock, patch
-
         addon = self._addon()
         flow = tflow.tflow()
+        flow.client_conn.peername = ("10.0.0.42", 12345)
         flow.request.headers["via"] = "1.1 safeyolo"
 
-        mock_sd = Mock()
-        mock_sd.get_client_for_ip.return_value = "the-real-agent"
+        discovery = _service_discovery("10.0.0.42", "the-real-agent")
 
-        with patch("loop_guard.find_addon", return_value=mock_sd), \
-             patch("loop_guard.get_client_ip", return_value="10.0.0.42"), \
-             patch("loop_guard.write_event") as mock_write:
+        with patch("loop_guard.find_addon", autospec=True, return_value=discovery), \
+             patch("loop_guard.write_event", autospec=True) as mock_write:
             addon.requestheaders(flow)
 
         # Agent attribution on the audit event.
@@ -250,14 +256,13 @@ class TestLoopBlockCorrelationHeaders:
         `/explain` will drop it in that case (fail-closed), which is the
         right posture for an unattributable request.
         """
-        from unittest.mock import patch
-
         addon = self._addon()
         flow = tflow.tflow()
+        flow.client_conn.peername = ("10.0.0.42", 12345)
         flow.request.headers["via"] = "1.1 safeyolo"
 
-        with patch("loop_guard.find_addon", return_value=None), \
-             patch("loop_guard.write_event") as mock_write:
+        with patch("loop_guard.find_addon", autospec=True, return_value=None), \
+             patch("loop_guard.write_event", autospec=True) as mock_write:
             addon.requestheaders(flow)
 
         assert mock_write.call_args[1].get("agent") is None
@@ -280,7 +285,6 @@ class TestLoopFullCorrelationRoundTrip:
         """Round-trip: loop → 508 → event on disk → /explain returns it."""
         import asyncio
         import json
-        from unittest.mock import Mock, patch
 
         from agent_api import AgentAPI
         from loop_guard import LoopGuard
@@ -310,14 +314,13 @@ class TestLoopFullCorrelationRoundTrip:
 
         loop = LoopGuard()
         flow = tflow.tflow()
+        flow.client_conn.peername = ("10.0.0.42", 12345)
         flow.request.headers["via"] = "1.1 safeyolo"
 
-        mock_sd = Mock()
-        mock_sd.get_client_for_ip.return_value = agent_name
+        discovery = _service_discovery("10.0.0.42", agent_name)
 
-        with patch("loop_guard.find_addon", return_value=mock_sd), \
-             patch("loop_guard.get_client_ip", return_value="10.0.0.42"), \
-             patch("loop_guard.write_event", side_effect=fake_write_event):
+        with patch("loop_guard.find_addon", autospec=True, return_value=discovery), \
+             patch("loop_guard.write_event", autospec=True, side_effect=fake_write_event):
             loop.requestheaders(flow)
 
         assert flow.response.status_code == 508
@@ -338,15 +341,16 @@ class TestLoopFullCorrelationRoundTrip:
         api = AgentAPI()
         with taddons.context(api) as tctx:
             tctx.options.agent_api_enabled = True
-            with patch("pdp.tokens.read_active_token", return_value="tok"), \
-                 patch.object(api, "_find_addon", return_value=Mock(
-                     get_client_for_ip=Mock(return_value=agent_name))), \
+            with patch("pdp.tokens.read_active_token", autospec=True, return_value="tok"), \
+                 patch.object(api, "_find_addon", lambda _name: discovery), \
                  patch("safeyolo.core.audit_writer.get_writer",
+                       autospec=True,
                        return_value=_NoPending()):
                 url = f"https://_safeyolo.proxy.internal/explain?request_id={request_id}"
                 req_flow = tflow.tflow()
                 req_flow.request.url = url
                 req_flow.request.host = "_safeyolo.proxy.internal"
+                req_flow.client_conn.peername = ("10.0.0.42", 5555)
                 req_flow.request.headers["authorization"] = "Bearer tok"
                 asyncio.run(api.request(req_flow))
 

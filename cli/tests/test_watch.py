@@ -2,11 +2,12 @@
 
 import io
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 from rich.console import Console
 from rich.panel import Panel
+from safeyolo.api import AdminAPI
 
 from safeyolo.commands.watch import (
     DISPATCH,
@@ -29,6 +30,10 @@ from safeyolo.commands.watch import (
     parse_selection,
     scan_pending_approvals,
 )
+
+
+def _api() -> AdminAPI:
+    return create_autospec(AdminAPI, instance=True, spec_set=True)
 
 # ---------------------------------------------------------------------------
 # Sample events
@@ -245,7 +250,7 @@ class TestDispatchFormatRow:
 
 class TestDispatchApprove:
     def test_credential_approve(self):
-        api = MagicMock()
+        api = _api()
         api.add_approval.return_value = {"status": "added"}
         event = _credential_event()
         dispatch = DISPATCH["credential"]
@@ -256,7 +261,7 @@ class TestDispatchApprove:
         )
 
     def test_gateway_approve(self):
-        api = MagicMock()
+        api = _api()
         api.add_gateway_grant.return_value = {"grant_id": "g123"}
         event = _gateway_event()
         dispatch = DISPATCH["gateway_route"]
@@ -268,7 +273,7 @@ class TestDispatchApprove:
         )
 
     def test_credential_deny(self):
-        api = MagicMock()
+        api = _api()
         event = _credential_event()
         dispatch = DISPATCH["credential"]
         dispatch.deny(event, api)
@@ -278,7 +283,7 @@ class TestDispatchApprove:
         )
 
     def test_gateway_deny(self):
-        api = MagicMock()
+        api = _api()
         event = _gateway_event()
         dispatch = DISPATCH["gateway_route"]
         dispatch.deny(event, api)
@@ -288,14 +293,14 @@ class TestDispatchApprove:
         )
 
     def test_unknown_approve_raises(self):
-        api = MagicMock()
+        api = _api()
         event = _credential_event()
         event["approval"]["approval_type"] = "new_type"
         with pytest.raises(NotImplementedError, match="unknown approval_type"):
             FALLBACK_DISPATCH.approve(event, api)
 
     def test_unknown_deny_raises(self):
-        api = MagicMock()
+        api = _api()
         event = _credential_event()
         event["approval"]["approval_type"] = "new_type"
         with pytest.raises(NotImplementedError, match="unknown approval_type"):
@@ -308,7 +313,7 @@ class TestDispatchApprove:
 
 class TestHandleBatch:
     def _make_api(self):
-        api = MagicMock()
+        api = _api()
         api.add_approval.return_value = {"status": "added"}
         api.add_gateway_grant.return_value = {"grant_id": "g1"}
         return api
@@ -320,8 +325,8 @@ class TestHandleBatch:
         event = _credential_event()
         items = build_batch_items([event])
 
-        with patch("safeyolo.commands.watch.console"):
-            with patch("safeyolo.commands.watch.handle_approval", return_value=True) as mock_handler:
+        with patch("safeyolo.commands.watch.console", autospec=True,):
+            with patch("safeyolo.commands.watch.handle_approval", return_value=True, autospec=True,) as mock_handler:
                 handle_batch(items, api, stats)
 
         mock_handler.assert_called_once_with(event, api)
@@ -336,7 +341,7 @@ class TestHandleBatch:
         ]
         items = build_batch_items(events)
 
-        with patch("safeyolo.commands.watch.console") as mock_console:
+        with patch("safeyolo.commands.watch.console", autospec=True,) as mock_console:
             mock_console.input.return_value = "a"
             handle_batch(items, api, stats)
 
@@ -353,7 +358,7 @@ class TestHandleBatch:
         ]
         items = build_batch_items(events)
 
-        with patch("safeyolo.commands.watch.console") as mock_console:
+        with patch("safeyolo.commands.watch.console", autospec=True,) as mock_console:
             # First prompt: approve all. Second: confirm irreversible
             mock_console.input.side_effect = ["a", "yes"]
             handle_batch(items, api, stats)
@@ -371,7 +376,7 @@ class TestHandleBatch:
         ]
         items = build_batch_items(events)
 
-        with patch("safeyolo.commands.watch.console") as mock_console:
+        with patch("safeyolo.commands.watch.console", autospec=True,) as mock_console:
             mock_console.input.side_effect = ["a", "d"]
             handle_batch(items, api, stats)
 
@@ -389,7 +394,7 @@ class TestHandleBatch:
         ]
         items = build_batch_items(events)
 
-        with patch("safeyolo.commands.watch.console") as mock_console:
+        with patch("safeyolo.commands.watch.console", autospec=True,) as mock_console:
             mock_console.input.return_value = "d"
             handle_batch(items, api, stats)
 
@@ -406,7 +411,7 @@ class TestHandleBatch:
         ]
         items = build_batch_items(events)
 
-        with patch("safeyolo.commands.watch.console") as mock_console:
+        with patch("safeyolo.commands.watch.console", autospec=True,) as mock_console:
             mock_console.input.return_value = "l"
             handle_batch(items, api, stats)
 
@@ -426,9 +431,9 @@ class TestHandleBatch:
         ]
         items = build_batch_items(events)
 
-        with patch("safeyolo.commands.watch.console") as mock_console:
-            with patch("safeyolo.commands.watch.handle_approval", return_value=True) as mock_cred:
-                with patch("safeyolo.commands.watch.handle_risky_route_approval", return_value=False) as mock_gw:
+        with patch("safeyolo.commands.watch.console", autospec=True,) as mock_console:
+            with patch("safeyolo.commands.watch.handle_approval", return_value=True, autospec=True,) as mock_cred:
+                with patch("safeyolo.commands.watch.handle_risky_route_approval", return_value=False, autospec=True,) as mock_gw:
                     # Select items 1 and 2, then defer remaining item 3
                     mock_console.input.side_effect = ["1,2", "l"]
                     handle_batch(items, api, stats)
@@ -447,8 +452,8 @@ class TestHandleBatch:
         ]
         items = build_batch_items(events)
 
-        with patch("safeyolo.commands.watch.console") as mock_console:
-            with patch("safeyolo.commands.watch.handle_approval", return_value=True) as mock_handler:
+        with patch("safeyolo.commands.watch.console", autospec=True,) as mock_console:
+            with patch("safeyolo.commands.watch.handle_approval", return_value=True, autospec=True,) as mock_handler:
                 # Review item 1 (credential) → handled by handle_approval, then later for rest
                 mock_console.input.side_effect = ["r1", "l"]
                 handle_batch(items, api, stats)
@@ -466,8 +471,8 @@ class TestHandleBatch:
         ]
         items = build_batch_items(events)
 
-        with patch("safeyolo.commands.watch.console") as mock_console:
-            with patch("safeyolo.commands.watch.handle_approval", return_value=False):
+        with patch("safeyolo.commands.watch.console", autospec=True,) as mock_console:
+            with patch("safeyolo.commands.watch.handle_approval", return_value=False, autospec=True,):
                 # Review item 1 (denied/deferred), then approve all remaining
                 mock_console.input.side_effect = ["r1", "a"]
                 handle_batch(items, api, stats)
@@ -489,7 +494,7 @@ class TestHandleBatch:
         ]
         items = build_batch_items(events)
 
-        with patch("safeyolo.commands.watch.console") as mock_console:
+        with patch("safeyolo.commands.watch.console", autospec=True,) as mock_console:
             mock_console.input.return_value = "a"
             handle_batch(items, api, stats)
 
@@ -1036,7 +1041,7 @@ class TestServiceFormatRow:
 
 class TestNetworkEgressDispatch:
     def test_approve_calls_allow_host(self):
-        api = MagicMock()
+        api = _api()
         api.allow_host.return_value = {"status": "ok"}
         event = _network_egress_event(host="cdn.example.com")
         dispatch = DISPATCH["network_egress"]
@@ -1045,7 +1050,7 @@ class TestNetworkEgressDispatch:
         api.allow_host.assert_called_once_with(host="cdn.example.com", rate=600)
 
     def test_deny_calls_deny_host(self):
-        api = MagicMock()
+        api = _api()
         event = _network_egress_event(host="cdn.example.com")
         dispatch = DISPATCH["network_egress"]
         dispatch.deny(event, api)
@@ -1057,7 +1062,7 @@ class TestNetworkEgressDispatch:
 
 class TestContractBindingDispatch:
     def test_approve_calls_api(self):
-        api = MagicMock()
+        api = _api()
         api.approve_contract_binding.return_value = {"status": "bound"}
         event = _contract_binding_event(
             agent="boris", service="gmail", capability="mail",
@@ -1077,7 +1082,7 @@ class TestContractBindingDispatch:
         )
 
     def test_approve_missing_agent_raises(self):
-        api = MagicMock()
+        api = _api()
         event = _contract_binding_event()
         event["agent"] = ""
         dispatch = DISPATCH["contract_binding"]
@@ -1085,7 +1090,7 @@ class TestContractBindingDispatch:
             dispatch.approve(event, api)
 
     def test_deny_calls_log_denial(self):
-        api = MagicMock()
+        api = _api()
         event = _contract_binding_event(agent="boris", service="gmail")
         dispatch = DISPATCH["contract_binding"]
         dispatch.deny(event, api)
@@ -1098,7 +1103,7 @@ class TestContractBindingDispatch:
 
 class TestServiceDispatch:
     def test_deny_calls_log_denial(self):
-        api = MagicMock()
+        api = _api()
         event = _service_event(agent="boris", service="gmail")
         dispatch = DISPATCH["service"]
         dispatch.deny(event, api)

@@ -49,6 +49,7 @@ except ImportError:
 
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, Severity
 from safeyolo.core.base import SecurityAddon
+from safeyolo.core.identity import IdentityStatus
 from safeyolo.core.trace import REASON_ADDON_DISABLED, trace_addon_hook
 from safeyolo.core.utils import get_client_ip, sanitize_for_log
 
@@ -159,6 +160,17 @@ class NetworkGuard(SecurityAddon):
 
         self.stats.checks += 1
 
+        identity = self.resolve_agent_identity(flow)
+        if identity.status is IdentityStatus.CONFLICT:
+            self._handle_deny(
+                flow,
+                domain,
+                path,
+                method,
+                "Trusted agent identity sources disagree (fail-closed)",
+            )
+            return
+
         # 1. Check for homoglyph attacks first (before policy)
         if self._check_homoglyph():
             homoglyph = detect_homoglyph_attack(domain)
@@ -167,7 +179,7 @@ class NetworkGuard(SecurityAddon):
                 return
 
         # 2. Build HttpEvent and evaluate via PolicyClient
-        agent = flow.metadata.get("agent")
+        agent = identity.agent if identity.is_resolved else None
         event = build_http_event_from_flow(
             flow=flow,
             principal_id=self._get_principal_id(flow),

@@ -14,24 +14,23 @@ See [`blackbox/README.md`](blackbox/README.md) for architecture and running inst
 
 Unit and integration tests for native mitmproxy addons.
 
-## Test Files
+## Test Areas
 
-- `conftest.py` - Pytest fixtures using `mitmproxy.test.tflow`
-- `test_admin_api.py` - REST endpoints, mode switching, stats, allowlist API
-- `test_base.py` - SecurityAddon base class, stats, bypass logic
-- `test_budget_tracker.py` - GCRA rate limiting, burst capacity, state persistence
-- `test_circuit_breaker.py` - State transitions, failure detection, recovery
-- `test_credential_guard.py` - Credential detection, host authorization, blocking, allowlist
-- `test_integration.py` - Addon chain behavior, metadata sharing
-- `test_metrics.py` - Per-domain statistics, latency tracking, Prometheus output
-- `test_network_guard.py` - Access control + rate limiting, deny/budget effects, homoglyph detection
-- `test_pattern_scanner.py` - Regex patterns, secret detection, jailbreak detection
-- `test_policy.py` - Policy engine, domain/client rules, hot reload
-- `test_policy_loader.py` - YAML/JSON loading, file watching, hot reload
-- `test_prompt_injection.py` - ML classifiers (DeBERTa/Ollama), blocking, async verification
-- `test_request_logger.py` - JSONL logging, quiet hosts, log format
-- `test_service_discovery.py` - IP to project mapping, config loading
-- `test_sse_streaming.py` - SSE detection, stream recording, stats
+The suite covers addon enforcement, policy evaluation and mutation, agent and
+admin APIs, host CLI lifecycle, flow evidence, process startup, and blackbox
+isolation. The files and collected test count change frequently; use pytest as
+the source of truth:
+
+```bash
+uv run pytest --collect-only -q tests/ cli/tests/
+```
+
+## Assurance Boundaries
+
+All tests use real objects, concrete fakes, or signature-checked collaborators.
+The CI assurance check rejects direct generic mocks and mock-producing patches
+without `autospec=True`. Security-sensitive suites enrolled in `assurance.toml`
+also declare their real subjects, which may not be patched.
 
 ## Running Tests
 
@@ -46,27 +45,17 @@ Requires a C compiler (for aioquic crypto) and, on Linux, Rust +
 bpf-linker if you build mitmproxy's eBPF extras from source. `uv sync`
 handles the rest.
 
-## Test Coverage
+## Mock Audit Closure
 
-| Addon | Tests | Coverage |
-|-------|-------|----------|
-| admin_api | 19 | REST endpoints, mode switching, stats aggregation, allowlist management |
-| base | 13 | SecurityAddon stats, bypass logic, decision logging, blocking |
-| budget_tracker | 16 | GCRA algorithm, burst capacity, state persistence, thread safety |
-| circuit_breaker | 18 | State machine, blocking, exponential backoff, manual control, recovery |
-| credential_guard | 16 | Pattern matching, host auth, blocking, allowlist, temp allowlist, stats |
-| integration | 15 | Addon chain behavior, metadata sharing, realistic multi-addon scenarios |
-| metrics | 21 | Per-domain stats, latency tracking, Prometheus format, problem detection |
-| network_guard | 15 | Access control, rate limiting, deny/budget effects, homoglyph detection, warn mode |
-| pattern_scanner | 32 | Regex patterns, secret detection, jailbreak detection, redaction |
-| policy | 28 | Policy engine, domain/client rules, hot reload, bypass lists, wildcards |
-| policy_loader | 22 | YAML/JSON loading, file watching, hot reload, thread safety |
-| prompt_injection | 21 | DeBERTa/Ollama classifiers, blocking, confidence thresholds, async verification |
-| request_logger | 16 | JSONL format, quiet hosts filtering, event structure |
-| service_discovery | 13 | IP mapping, range matching, config loading, reload |
-| sse_streaming | 11 | SSE detection, streaming responses, stats tracking |
-
-**Total: 326 tests** across 15 test suites
+| Finding | Enforced resolution |
+|---|---|
+| Unspecced mocks hide signature drift | Repository-wide AST check in CI; real AdminAPI contracts cover grants and denials |
+| Network Guard patches its subject | Real addon, flows, decisions, policy paths, bypass, and fail-closed tests |
+| Real policy client underused | Real policy covers ordinary outcomes; autospec is reserved for unavailable/error boundaries |
+| Headers represented as dictionaries | Contract tests use mitmproxy `Headers` and exercise case-insensitive removal |
+| Real-process tests fail without evidence | Ten-second startup contract retained; failures capture process, console, logs, and timing data |
+| Mock-only assertions overcorrected | Interaction assertions remain where calls are the behavior, with signature-checked collaborators |
+| Blackbox suite is opt-in only | Nightly schedule plus trusted manual dispatch |
 
 ## Adding Tests
 

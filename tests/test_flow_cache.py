@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+
+from mitmproxy.test import tflow
 
 _ADDONS_DIR = Path(__file__).resolve().parent.parent / "addons"
 sys.path.insert(0, str(_ADDONS_DIR))
@@ -12,16 +13,12 @@ from safeyolo.core.flow_cache import headers_present_lower, path_no_query  # noq
 
 
 def _flow(path: str = "/api", headers: dict | None = None):
-    """Minimal stand-in for mitmproxy's HTTPFlow — only the attrs we read."""
-    flow = MagicMock()
-    flow.metadata = {}
+    """Real mitmproxy flow exercising Headers and metadata semantics."""
+    flow = tflow.tflow()
     flow.request.path = path
-    # mitmproxy's `headers.keys()` yields keys in insertion order,
-    # preserving original case. MagicMock's default return for
-    # `.headers.keys()` is another MagicMock; override with the list.
-    hdr_dict = dict(headers or {})
-    flow.request.headers.keys.return_value = list(hdr_dict.keys())
-    flow.request.headers.get.side_effect = hdr_dict.get
+    flow.request.headers.clear()
+    for name, value in (headers or {}).items():
+        flow.request.headers[name] = value
     return flow
 
 
@@ -37,9 +34,10 @@ class TestHeadersPresentLower:
     def test_cached_on_second_call(self):
         flow = _flow(headers={"A": "1", "B": "2"})
         first = headers_present_lower(flow)
-        # Mutate the underlying headers mock; the cache should still
+        # Mutate the real headers; the cache should still
         # return the first result because we store on flow.metadata.
-        flow.request.headers.keys.return_value = ["C"]
+        flow.request.headers.clear()
+        flow.request.headers["C"] = "3"
         second = headers_present_lower(flow)
         assert first is second  # same list object — cached
 

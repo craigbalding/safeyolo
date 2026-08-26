@@ -1,247 +1,140 @@
-"""
-Tests for sse_streaming.py - SSE/streaming response support.
+"""Assurance-boundary tests for response streaming decisions."""
+
+from __future__ import annotations
 
-Tests content-type detection and streaming enablement.
-"""
+from unittest.mock import create_autospec, patch
 
-from unittest.mock import Mock, patch
+import pytest
+from mitmproxy import http
+from mitmproxy.test import taddons, tflow
+from sse_streaming import SSE_CONTENT_TYPES, SSEStreaming
 
+from pdp.client import PolicyClient
 
-class TestSSEContentTypes:
-    """Tests for SSE content type constants."""
+pytestmark = pytest.mark.assurance_boundary
 
-    def test_sse_content_types_defined(self):
-        """Test SSE content types are properly defined."""
-        from sse_streaming import SSE_CONTENT_TYPES
 
-        assert "text/event-stream" in SSE_CONTENT_TYPES
-        assert "application/x-ndjson" in SSE_CONTENT_TYPES
+def _flow(content_type: str, host: str = "api.example.com") -> http.HTTPFlow:
+    flow = tflow.tflow(resp=False)
+    flow.request.host = host
+    flow.response = http.Response.make(200, b"payload", {"Content-Type": content_type})
+    return flow
+
 
+def _policy(enabled: bool = True) -> PolicyClient:
+    client = create_autospec(PolicyClient, instance=True, spec_set=True)
+    client.is_addon_enabled.return_value = enabled
+    return client
 
-class TestSSEStreamingAddon:
-    """Tests for SSEStreaming addon."""
 
-    def test_addon_name(self):
-        """Test addon has correct name."""
-        from sse_streaming import SSEStreaming
+def _run(addon: SSEStreaming, flow: http.HTTPFlow, client: PolicyClient, **options):
+    with taddons.context(addon) as context, patch(
+        "pdp.get_policy_client", new=lambda: client
+    ):
+        context.options.update(**options)
+        addon.responseheaders(flow)
 
-        addon = SSEStreaming()
-        assert addon.name == "sse_streaming"
 
-    def test_initial_stats_zero(self):
-        """Test stats start at zero."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-        assert addon.streams_enabled == 0
-        assert addon.streams_by_domain == {}
-        assert addon.streams_by_content_type == {}
-
-
-class TestSSEStreamingDetection:
-    """Tests for streaming detection logic."""
-
-    def test_detects_event_stream_content_type(self):
-        """Test detection of text/event-stream content type."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-
-        flow = Mock()
-        flow.response.headers.get.return_value = "text/event-stream"
-        flow.request.host = "api.example.com"
-        flow.metadata.get.return_value = None
-
-        # Mock ctx.options
-        with patch('sse_streaming.ctx') as mock_ctx:
-            mock_ctx.options.sse_streaming_enabled = True
-            addon.responseheaders(flow)
-
-        # Should enable streaming
-        assert flow.response.stream is True
-        assert addon.streams_enabled == 1
-        assert addon.streams_by_domain.get("api.example.com") == 1
-
-    def test_detects_ndjson_content_type(self):
-        """Test detection of application/x-ndjson content type."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-
-        flow = Mock()
-        flow.response.headers.get.return_value = "application/x-ndjson"
-        flow.request.host = "streaming.example.com"
-        flow.metadata.get.return_value = None
-
-        with patch('sse_streaming.ctx') as mock_ctx:
-            mock_ctx.options.sse_streaming_enabled = True
-            addon.responseheaders(flow)
-
-        assert flow.response.stream is True
-        assert addon.streams_enabled == 1
-
-    def test_ignores_non_streaming_content(self):
-        """Test non-streaming content types are ignored."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-
-        mock_client = Mock()
-        mock_client.is_addon_enabled.return_value = True
-
-        flow = Mock()
-        flow.response.headers.get.return_value = "application/json"
-        flow.request.host = "api.example.com"
-        # Reset stream attribute to ensure we're testing properly
-        flow.response.stream = False
-
-        with patch('sse_streaming.ctx') as mock_ctx, \
-             patch('pdp.get_policy_client', return_value=mock_client):
-            mock_ctx.options.sse_streaming_enabled = True
-            mock_ctx.options.sse_stream_json = False  # JSON streaming disabled
-            addon.responseheaders(flow)
-
-        # Should NOT enable streaming for plain JSON when sse_stream_json is False
-        assert flow.response.stream is False
-        assert addon.streams_enabled == 0
-
-    def test_content_type_with_charset_still_matches(self):
-        """Content-Type 'text/event-stream; charset=utf-8' matches because startswith is used."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-
-        flow = Mock()
-        flow.response.headers.get.return_value = "text/event-stream; charset=utf-8"
-        flow.request.host = "api.example.com"
-        flow.metadata.get.return_value = None
-
-        with patch('sse_streaming.ctx') as mock_ctx:
-            mock_ctx.options.sse_streaming_enabled = True
-            addon.responseheaders(flow)
-
-        assert flow.response.stream is True
-        assert addon.streams_enabled == 1
-
-    def test_disabled_when_option_false(self):
-        """Test streaming disabled when option is False."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-
-        flow = Mock()
-        flow.response.headers.get.return_value = "text/event-stream"
-
-        with patch('sse_streaming.ctx') as mock_ctx:
-            mock_ctx.options.sse_streaming_enabled = False
-            addon.responseheaders(flow)
-
-        # Should NOT have been called to set stream
-        assert addon.streams_enabled == 0
-
-
-class TestSSEStreamingWithPolicy:
-    """Tests for streaming with policy configuration."""
-
-    def test_respects_policy_disabled(self):
-        """Test addon respects policy disabling it via PolicyClient."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-
-        mock_client = Mock()
-        mock_client.is_addon_enabled.return_value = False
-
-        flow = Mock()
-        flow.response.headers.get.return_value = "text/event-stream"
-        flow.request.host = "api.example.com"
-
-        with patch('sse_streaming.ctx') as mock_ctx, \
-             patch('pdp.get_policy_client', return_value=mock_client):
-            mock_ctx.options.sse_streaming_enabled = True
-            addon.responseheaders(flow)
-
-        # Should NOT enable streaming when policy disables addon
-        assert addon.streams_enabled == 0
-        mock_client.is_addon_enabled.assert_called_with("sse_streaming", domain="api.example.com")
-
-    def test_pdp_unavailable_defaults_to_enabled(self):
-        """When PDP is unavailable (RuntimeError), addon defaults to enabled."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-
-        flow = Mock()
-        flow.response.headers.get.return_value = "text/event-stream"
-        flow.request.host = "api.example.com"
-        flow.metadata.get.return_value = None
-
-        with patch('sse_streaming.ctx') as mock_ctx, \
-             patch('pdp.get_policy_client', side_effect=RuntimeError("not configured")):
-            mock_ctx.options.sse_streaming_enabled = True
-            addon.responseheaders(flow)
-
-        # Should still enable streaming when PDP is down
-        assert flow.response.stream is True
-        assert addon.streams_enabled == 1
-
-    def test_streams_json_when_option_enabled(self):
-        """Test JSON streaming when sse_stream_json option is True."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-
-        mock_client = Mock()
-        mock_client.is_addon_enabled.return_value = True
-
-        flow = Mock()
-        flow.response.headers.get.return_value = "application/json"
-        flow.request.host = "ntfy.example.com"
-
-        with patch('sse_streaming.ctx') as mock_ctx, \
-             patch('pdp.get_policy_client', return_value=mock_client):
-            mock_ctx.options.sse_streaming_enabled = True
-            mock_ctx.options.sse_stream_json = True
-            addon.responseheaders(flow)
-
-        # Should enable streaming for JSON when option says so
-        assert flow.response.stream is True
-        assert addon.streams_enabled == 1
-
-
-class TestSSEStreamingStats:
-    """Tests for stats tracking."""
-
-    def test_get_stats_returns_dict(self):
-        """Test get_stats returns proper structure."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-        addon.streams_enabled = 5
-        addon.streams_by_domain = {"api.example.com": 3, "other.com": 2}
-        addon.streams_by_content_type = {"text/event-stream": 5}
-
-        with patch('sse_streaming.ctx') as mock_ctx:
-            mock_ctx.options.sse_streaming_enabled = True
-            stats = addon.get_stats()
-
-        assert stats["streams_enabled_total"] == 5
-        assert stats["streams_by_domain"]["api.example.com"] == 3
-        assert stats["streams_by_content_type"]["text/event-stream"] == 5
-        assert "enabled" in stats
-
-    def test_record_stream_increments_counters(self):
-        """Test _record_stream updates all counters."""
-        from sse_streaming import SSEStreaming
-
-        addon = SSEStreaming()
-
-        addon._record_stream("api.example.com", "text/event-stream")
-        addon._record_stream("api.example.com", "text/event-stream")
-        addon._record_stream("other.com", "application/x-ndjson")
-
-        assert addon.streams_enabled == 3
-        assert addon.streams_by_domain["api.example.com"] == 2
-        assert addon.streams_by_domain["other.com"] == 1
-        assert addon.streams_by_content_type["text/event-stream"] == 2
-        assert addon.streams_by_content_type["application/x-ndjson"] == 1
+def test_streaming_content_types_are_an_explicit_contract():
+    assert SSE_CONTENT_TYPES == ["text/event-stream", "application/x-ndjson"]
+
+
+@pytest.mark.parametrize(
+    "content_type, reason",
+    [
+        ("text/event-stream", "text/event-stream"),
+        ("text/event-stream; charset=utf-8", "text/event-stream"),
+        ("application/x-ndjson", "application/x-ndjson"),
+    ],
+)
+def test_matching_content_type_mutates_real_response_and_counts_exactly(
+    content_type: str, reason: str
+):
+    addon = SSEStreaming()
+    flow = _flow(content_type)
+    client = _policy()
+
+    _run(addon, flow, client)
+
+    assert flow.response.stream is True
+    assert addon.get_stats()["streams_enabled_total"] == 1
+    assert addon.streams_by_domain == {"api.example.com": 1}
+    assert addon.streams_by_content_type == {reason: 1}
+    client.is_addon_enabled.assert_called_once_with(
+        "sse_streaming", domain="api.example.com"
+    )
+
+
+@pytest.mark.parametrize("content_type", ["text/plain", "application/json", "text/eventful"])
+def test_non_matching_content_type_is_not_streamed(content_type: str):
+    addon = SSEStreaming()
+    flow = _flow(content_type)
+    _run(addon, flow, _policy())
+    assert flow.response.stream is False
+    assert addon.streams_enabled == 0
+
+
+def test_global_disablement_prevents_policy_lookup_and_mutation():
+    addon = SSEStreaming()
+    flow = _flow("text/event-stream")
+    client = _policy()
+    _run(addon, flow, client, sse_streaming_enabled=False)
+    assert flow.response.stream is False
+    assert addon.streams_enabled == 0
+    client.is_addon_enabled.assert_not_called()
+
+
+def test_policy_disablement_prevents_response_mutation_and_counting():
+    addon = SSEStreaming()
+    flow = _flow("text/event-stream")
+    client = _policy(enabled=False)
+    _run(addon, flow, client)
+    assert flow.response.stream is False
+    assert addon.streams_enabled == 0
+    client.is_addon_enabled.assert_called_once_with(
+        "sse_streaming", domain="api.example.com"
+    )
+
+
+def test_unconfigured_policy_defaults_to_streaming():
+    addon = SSEStreaming()
+    flow = _flow("text/event-stream")
+
+    def unavailable() -> PolicyClient:
+        raise RuntimeError("not configured")
+
+    with taddons.context(addon), patch("pdp.get_policy_client", new=unavailable):
+        addon.responseheaders(flow)
+    assert flow.response.stream is True
+    assert addon.streams_enabled == 1
+
+
+def test_json_streaming_requires_explicit_option():
+    addon = SSEStreaming()
+    ordinary = _flow("application/json; charset=utf-8", "ntfy.example.com")
+    _run(addon, ordinary, _policy())
+    assert ordinary.response.stream is False
+
+    opted_in = _flow("application/json; charset=utf-8", "ntfy.example.com")
+    _run(addon, opted_in, _policy(), sse_stream_json=True)
+    assert opted_in.response.stream is True
+    assert addon.streams_by_content_type == {"application/json (option)": 1}
+
+
+def test_stats_snapshot_is_independent_and_preserves_exact_totals():
+    addon = SSEStreaming()
+    addon._record_stream("api.example.com", "text/event-stream")
+    addon._record_stream("api.example.com", "text/event-stream")
+    addon._record_stream("other.example", "application/x-ndjson")
+
+    with taddons.context(addon):
+        stats = addon.get_stats()
+    stats["streams_by_domain"]["api.example.com"] = 999
+
+    assert stats["enabled"] is True
+    assert stats["streams_enabled_total"] == 3
+    assert addon.streams_by_domain == {"api.example.com": 2, "other.example": 1}
+    assert addon.streams_by_content_type == {
+        "text/event-stream": 2,
+        "application/x-ndjson": 1,
+    }

@@ -19,11 +19,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from mitmproxy import http as mitm_http
 from mitmproxy.test import taddons, tflow
 
 from safeyolo.core.probe import PROBE_HOST
 from safeyolo.core.trace import get_store, reset_store_for_tests
+
+pytestmark = pytest.mark.assurance_boundary
 
 
 def _addon():

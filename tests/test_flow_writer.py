@@ -5,22 +5,23 @@ import sys
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import create_autospec
 
 _ADDONS_DIR = Path(__file__).resolve().parent.parent / "addons"
 sys.path.insert(0, str(_ADDONS_DIR))
 
 from safeyolo.core.flow_writer import _FlowWriter  # noqa: E402
+from safeyolo.storage.flow_store import FlowStore  # noqa: E402
 
 
-def _make_store() -> MagicMock:
+def _make_store() -> FlowStore:
     """Stub FlowStore with a record_flow that succeeds by default."""
-    store = MagicMock()
+    store = create_autospec(FlowStore, instance=True, spec_set=True)
     store.record_flow.return_value = 1
     return store
 
 
-def _wait_for_records(store: MagicMock, expected: int, timeout_s: float = 2.0) -> None:
+def _wait_for_records(store: FlowStore, expected: int, timeout_s: float = 2.0) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if store.record_flow.call_count >= expected:

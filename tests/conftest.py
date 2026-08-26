@@ -227,7 +227,15 @@ def credential_guard(policy_engine_initialized):
 
 @pytest.fixture
 def network_guard(tmp_path):
-    """Create a fresh NetworkGuard instance with blocking enabled and default policy."""
+    """Create a real NetworkGuard in a mitmproxy context with a real PDP.
+
+    The baseline deliberately exercises the three ordinary network outcomes:
+    deny, require approval, and allow.  ``*.internal`` also verifies the
+    domain-level addon bypass path without patching ``NetworkGuard`` itself.
+    Tests that need synthetic PDP failures may replace only the PolicyClient
+    boundary with an autospecced collaborator.
+    """
+    from mitmproxy.test import taddons
     from network_guard import NetworkGuard
 
     from pdp import PolicyClientConfig, configure_policy_client, reset_policy_client
@@ -242,12 +250,23 @@ metadata:
   version: "1.0"
 permissions:
   - action: network:request
+    resource: "evil.com/*"
+    effect: deny
+  - action: network:request
+    resource: "unknown-host.com/*"
+    effect: prompt
+  - action: network:request
     resource: "*"
     effect: allow
 budgets: {}
 required: []
-addons: {}
-domains: {}
+addons:
+  network_guard:
+    enabled: true
+domains:
+  "*.internal":
+    bypass:
+      - network_guard
 """)
 
     # Initialize PolicyClient with baseline
@@ -255,10 +274,11 @@ domains: {}
     configure_policy_client(config)
 
     addon = NetworkGuard()
-    # Default to blocking mode for tests
-    addon.should_block = lambda: True
-
-    yield addon
+    with taddons.context(addon) as tctx:
+        tctx.options.network_guard_enabled = True
+        tctx.options.network_guard_block = True
+        tctx.options.network_guard_homoglyph = True
+        yield addon
 
     # Cleanup
     reset_policy_client()

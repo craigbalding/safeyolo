@@ -1,11 +1,21 @@
 """Tests for API client module."""
 
-from unittest.mock import MagicMock
+from unittest.mock import create_autospec
 
 import httpx
 import pytest
 
 from safeyolo.api import AdminAPI, APIError, get_api
+
+
+def _failing_http_client(exc: Exception):
+    client = create_autospec(httpx.Client, instance=True, spec_set=True)
+    client.__enter__.return_value = client
+    client.__exit__.return_value = False
+    client.request.side_effect = exc
+    client_factory = create_autospec(httpx.Client, spec_set=True)
+    client_factory.return_value = client
+    return client_factory
 
 
 class TestAdminAPIInit:
@@ -68,11 +78,10 @@ class TestAdminAPIHealth:
 
     def test_handles_connection_error(self, tmp_config_dir, monkeypatch):
         """Raises APIError on connection failure."""
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.request.side_effect = httpx.ConnectError("Connection refused")
-        monkeypatch.setattr("httpx.Client", MagicMock(return_value=mock_client))
+        monkeypatch.setattr(
+            "httpx.Client",
+            _failing_http_client(httpx.ConnectError("Connection refused")),
+        )
 
         api = AdminAPI()
         with pytest.raises(APIError, match="Cannot connect"):
@@ -168,6 +177,67 @@ class TestAdminAPIApproval:
         assert payload["destination"] == "example.com"
         assert payload["cred_id"] == "hmac:xyz789"
         assert payload["tier"] == "explicit"
+
+    def test_add_gateway_grant_contract(self, tmp_config_dir, mock_httpx):
+        mock_httpx["response"].json.return_value = {"grant_id": "grant-1"}
+
+        result = AdminAPI(token="test").add_gateway_grant(
+            agent="boris",
+            service="gmail",
+            method="POST",
+            path="/messages/send",
+            lifetime="once",
+        )
+
+        assert result == {"grant_id": "grant-1"}
+        mock_httpx["client"].request.assert_called_once_with(
+            "POST",
+            "http://localhost:9090/admin/gateway/grant",
+            headers={"Authorization": "Bearer test"},
+            json={
+                "agent": "boris",
+                "service": "gmail",
+                "method": "POST",
+                "path": "/messages/send",
+                "lifetime": "once",
+            },
+        )
+
+    def test_log_denial_contract(self, tmp_config_dir, mock_httpx):
+        AdminAPI(token="test").log_denial(
+            destination="api.example.com",
+            cred_id="hmac:abc",
+        )
+
+        mock_httpx["client"].request.assert_called_once_with(
+            "POST",
+            "http://localhost:9090/admin/policy/baseline/deny",
+            headers={"Authorization": "Bearer test"},
+            json={
+                "destination": "api.example.com",
+                "cred_id": "hmac:abc",
+                "reason": "user_denied",
+            },
+        )
+
+    def test_log_gateway_denial_contract(self, tmp_config_dir, mock_httpx):
+        AdminAPI(token="test").log_gateway_denial(
+            agent="boris",
+            service="gmail",
+            method="POST",
+            path="/messages/send",
+        )
+
+        mock_httpx["client"].request.assert_called_once_with(
+            "POST",
+            "http://localhost:9090/admin/policy/baseline/deny",
+            headers={"Authorization": "Bearer test"},
+            json={
+                "destination": "gateway:gmail",
+                "cred_id": "boris:POST:/messages/send",
+                "reason": "user_denied",
+            },
+        )
 
 
 class TestAdminAPIAllowlist:
@@ -304,11 +374,10 @@ class TestAdminAPIRequestErrors:
 
     def test_request_timeout_raises_api_error(self, tmp_config_dir, monkeypatch):
         """Request timeout raises APIError with actionable message."""
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.request.side_effect = httpx.TimeoutException("timed out")
-        monkeypatch.setattr("httpx.Client", MagicMock(return_value=mock_client))
+        monkeypatch.setattr(
+            "httpx.Client",
+            _failing_http_client(httpx.TimeoutException("timed out")),
+        )
 
         api = AdminAPI(timeout=5.0)
         with pytest.raises(APIError, match="timed out after 5.0s"):
@@ -316,11 +385,10 @@ class TestAdminAPIRequestErrors:
 
     def test_request_read_error_raises_api_error(self, tmp_config_dir, monkeypatch):
         """ReadError raises APIError with connection-lost message."""
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.request.side_effect = httpx.ReadError("connection reset")
-        monkeypatch.setattr("httpx.Client", MagicMock(return_value=mock_client))
+        monkeypatch.setattr(
+            "httpx.Client",
+            _failing_http_client(httpx.ReadError("connection reset")),
+        )
 
         api = AdminAPI()
         with pytest.raises(APIError, match="Connection lost"):

@@ -366,7 +366,7 @@ class TestConfigureFileLogging:
         log_path = tmp_path / "nonexistent" / "mitmproxy.log"
 
         with patch("safeyolo.core.utils.MITMPROXY_LOG_PATH", log_path):
-            with patch("pathlib.Path.mkdir", side_effect=PermissionError("denied")):
+            with patch("pathlib.Path.mkdir", side_effect=PermissionError("denied"), autospec=True,):
                 import logging
                 logger = logging.getLogger("safeyolo")
                 logger.handlers = []
@@ -383,7 +383,7 @@ class TestFileLoggingAddon:
 
         addon = FileLoggingAddon()
 
-        with patch("safeyolo.core.utils.configure_file_logging") as mock_configure:
+        with patch("safeyolo.core.utils.configure_file_logging", autospec=True,) as mock_configure:
             addon.running()
 
         mock_configure.assert_called_once()

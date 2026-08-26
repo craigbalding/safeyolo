@@ -1,11 +1,12 @@
 """Tests for the optional outer-tmux traffic-console adapter."""
 
 import subprocess
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import call, create_autospec, patch
 
 from typer.testing import CliRunner
 
 from safeyolo.cli import app
+from safeyolo.api import AdminAPI
 from safeyolo.commands.tmux import (
     TMUX_CONFIG_SNIPPET,
     associate_agent_pane,
@@ -21,7 +22,7 @@ def test_agent_pane_association_is_noop_outside_tmux(monkeypatch):
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("TMUX_PANE", raising=False)
 
-    with patch("safeyolo.commands.tmux.tmux_cmd") as command:
+    with patch("safeyolo.commands.tmux.tmux_cmd", autospec=True,) as command:
         assert associate_agent_pane("alice") is False
 
     command.assert_not_called()
@@ -31,7 +32,7 @@ def test_agent_pane_association_uses_pane_local_option(monkeypatch):
     monkeypatch.setenv("TMUX", "/tmp/tmux/default,1,0")
     monkeypatch.setenv("TMUX_PANE", "%7")
 
-    with patch("safeyolo.commands.tmux.tmux_cmd") as command:
+    with patch("safeyolo.commands.tmux.tmux_cmd", autospec=True,) as command:
         assert associate_agent_pane("alice") is True
 
     command.assert_called_once_with(
@@ -47,8 +48,9 @@ def test_unassociated_pane_does_not_open_unscoped_traffic(monkeypatch):
         patch(
             "safeyolo.commands.tmux.tmux_cmd",
             return_value=completed([], stdout="\n"),
+        autospec=True,
         ),
-        patch("safeyolo.commands.tmux.get_api") as api,
+        patch("safeyolo.commands.tmux.get_api", autospec=True,) as api,
     ):
         result = CliRunner().invoke(app, ["tmux", "traffic"])
 
@@ -60,7 +62,7 @@ def test_unassociated_pane_does_not_open_unscoped_traffic(monkeypatch):
 def test_seven_agents_reuse_one_owned_traffic_window(monkeypatch):
     monkeypatch.setenv("TMUX", "/tmp/tmux/default,1,0")
     monkeypatch.setenv("TMUX_PANE", "%2")
-    api = MagicMock()
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
     state = {"agent": "agent-0", "window": None}
     calls = []
 
@@ -80,8 +82,8 @@ def test_seven_agents_reuse_one_owned_traffic_window(monkeypatch):
         return completed(args)
 
     with (
-        patch("safeyolo.commands.tmux.tmux_cmd", side_effect=command),
-        patch("safeyolo.commands.tmux.get_api", return_value=api),
+        patch("safeyolo.commands.tmux.tmux_cmd", side_effect=command, autospec=True,),
+        patch("safeyolo.commands.tmux.get_api", return_value=api, autospec=True,),
     ):
         for number in range(7):
             state["agent"] = f"agent-{number}"
@@ -115,7 +117,7 @@ def test_return_command_selects_recorded_origin(monkeypatch):
             return completed(args, stdout="%2\n")
         return completed(args)
 
-    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=command) as command_mock:
+    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=command, autospec=True,) as command_mock:
         result = CliRunner().invoke(app, ["tmux", "return-to-agent"])
 
     assert result.exit_code == 0
@@ -168,7 +170,7 @@ def test_rename_is_noop_outside_tmux(monkeypatch):
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("TMUX_PANE", raising=False)
 
-    with patch("safeyolo.commands.tmux.tmux_cmd") as command:
+    with patch("safeyolo.commands.tmux.tmux_cmd", autospec=True,) as command:
         assert rename_window_for_agent("alice") is False
 
     command.assert_not_called()
@@ -179,7 +181,7 @@ def test_rename_when_automatic_rename_local_unset(monkeypatch):
     monkeypatch.setenv("TMUX_PANE", "%3")
     cmd, calls = _rename_recorder({"automatic_rename": ""})
 
-    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd):
+    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd, autospec=True,):
         assert rename_window_for_agent("alice") is True
 
     assert _rename_calls(calls) == [["rename-window", "-t", "%3", "alice"]]
@@ -193,7 +195,7 @@ def test_rename_when_automatic_rename_local_on(monkeypatch):
     monkeypatch.setenv("TMUX_PANE", "%3")
     cmd, calls = _rename_recorder({"automatic_rename": "on"})
 
-    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd):
+    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd, autospec=True,):
         assert rename_window_for_agent("alice") is True
 
     assert _rename_calls(calls) == [["rename-window", "-t", "%3", "alice"]]
@@ -208,7 +210,7 @@ def test_rename_when_marker_matches_current_name(monkeypatch):
         {"automatic_rename": "off", "window_name": "alice", "marker": "alice"}
     )
 
-    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd):
+    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd, autospec=True,):
         assert rename_window_for_agent("bob") is True
 
     assert _rename_calls(calls) == [["rename-window", "-t", "%3", "bob"]]
@@ -226,7 +228,7 @@ def test_preserve_when_marker_differs_from_current_name(monkeypatch):
         {"automatic_rename": "off", "window_name": "my-work", "marker": "alice"}
     )
 
-    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd):
+    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd, autospec=True,):
         assert rename_window_for_agent("bob") is False
 
     assert _rename_calls(calls) == []
@@ -242,7 +244,7 @@ def test_preserve_when_marker_unset_but_automatic_rename_off(monkeypatch):
         {"automatic_rename": "off", "window_name": "my-work", "marker": ""}
     )
 
-    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd):
+    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd, autospec=True,):
         assert rename_window_for_agent("bob") is False
 
     assert _rename_calls(calls) == []
@@ -255,7 +257,7 @@ def test_rename_when_global_off_but_local_unset(monkeypatch):
     monkeypatch.setenv("TMUX_PANE", "%3")
     cmd, calls = _rename_recorder({"automatic_rename": ""})
 
-    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd):
+    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd, autospec=True,):
         assert rename_window_for_agent("alice") is True
 
     assert _rename_calls(calls) == [["rename-window", "-t", "%3", "alice"]]
@@ -272,7 +274,7 @@ def test_rename_window_failure_warns_and_is_nonfatal(monkeypatch, capsys):
             raise subprocess.CalledProcessError(1, args, stderr="tmux boom")
         return completed(args)
 
-    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd):
+    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd, autospec=True,):
         assert rename_window_for_agent("alice") is False
 
     assert "could not rename tmux window" in capsys.readouterr().out
@@ -292,7 +294,7 @@ def test_marker_write_failure_leaves_rename_in_place(monkeypatch, capsys):
             raise subprocess.CalledProcessError(1, args)
         return completed(args)
 
-    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd):
+    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd, autospec=True,):
         assert rename_window_for_agent("alice") is True
 
     assert "could not record SafeYolo marker" in capsys.readouterr().out
@@ -307,7 +309,7 @@ def test_show_options_failure_bails_out(monkeypatch, capsys):
             raise subprocess.CalledProcessError(1, args, stderr="unknown option")
         return completed(args)
 
-    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd):
+    with patch("safeyolo.commands.tmux.tmux_cmd", side_effect=cmd, autospec=True,):
         assert rename_window_for_agent("alice") is False
 
     assert "could not query tmux automatic-rename" in capsys.readouterr().out

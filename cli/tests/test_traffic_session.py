@@ -2,7 +2,7 @@
 
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import call, patch
 
 import pytest
 
@@ -25,17 +25,17 @@ def test_config_local_private_tmux_precedes_system(tmp_path, monkeypatch):
     binary.write_text("binary")
     binary.chmod(0o700)
 
-    with patch("safeyolo.traffic_session.shutil.which", return_value="/usr/bin/tmux"):
+    with patch("safeyolo.traffic_session.shutil.which", return_value="/usr/bin/tmux", autospec=True,):
         assert find_private_tmux() == binary
 
 
 def test_start_uses_private_socket_and_shell_quotes_command(tmp_path, monkeypatch):
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
     tmux = Path("/opt/safeyolo/tmux")
-    completed = MagicMock(returncode=0, stdout="", stderr="")
+    completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
     with (
-        patch("safeyolo.traffic_session.session_exists", return_value=False),
-        patch("safeyolo.traffic_session.subprocess.run", return_value=completed) as run,
+        patch("safeyolo.traffic_session.session_exists", return_value=False, autospec=True,),
+        patch("safeyolo.traffic_session.subprocess.run", return_value=completed, autospec=True,) as run,
     ):
         start_session(["python", "-m", "module", "value with spaces"], tmux=tmux)
 
@@ -55,12 +55,13 @@ def test_start_cleans_up_session_after_configuration_failure(tmp_path, monkeypat
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
     tmux = Path("/opt/safeyolo/tmux")
     with (
-        patch("safeyolo.traffic_session.session_exists", return_value=False),
+        patch("safeyolo.traffic_session.session_exists", return_value=False, autospec=True,),
         patch(
             "safeyolo.traffic_session.subprocess.run",
-            side_effect=[MagicMock(returncode=0), subprocess.CalledProcessError(1, "tmux")],
+            side_effect=[subprocess.CompletedProcess([], 0), subprocess.CalledProcessError(1, "tmux")],
+        autospec=True,
         ),
-        patch("safeyolo.traffic_session.stop_session") as stop,
+        patch("safeyolo.traffic_session.stop_session", autospec=True,) as stop,
     ):
         with pytest.raises(subprocess.CalledProcessError):
             start_session(["command"], tmux=tmux)
@@ -72,10 +73,10 @@ def test_start_reaps_dead_retained_session_before_recreating(tmp_path, monkeypat
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
     tmux = Path("/opt/safeyolo/tmux")
     with (
-        patch("safeyolo.traffic_session.session_exists", return_value=True),
-        patch("safeyolo.traffic_session.session_process_alive", return_value=False),
-        patch("safeyolo.traffic_session.stop_session") as stop,
-        patch("safeyolo.traffic_session.subprocess.run", return_value=MagicMock(returncode=0)),
+        patch("safeyolo.traffic_session.session_exists", return_value=True, autospec=True,),
+        patch("safeyolo.traffic_session.session_process_alive", return_value=False, autospec=True,),
+        patch("safeyolo.traffic_session.stop_session", autospec=True,) as stop,
+        patch("safeyolo.traffic_session.subprocess.run", return_value=subprocess.CompletedProcess([], 0), autospec=True,),
     ):
         start_session(["command"], tmux=tmux)
 
@@ -86,8 +87,8 @@ def test_start_refuses_live_session(tmp_path, monkeypatch):
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
     tmux = Path("/opt/safeyolo/tmux")
     with (
-        patch("safeyolo.traffic_session.session_exists", return_value=True),
-        patch("safeyolo.traffic_session.session_process_alive", return_value=True),
+        patch("safeyolo.traffic_session.session_exists", return_value=True, autospec=True,),
+        patch("safeyolo.traffic_session.session_process_alive", return_value=True, autospec=True,),
         pytest.raises(RuntimeError, match="already running"),
     ):
         start_session(["command"], tmux=tmux)

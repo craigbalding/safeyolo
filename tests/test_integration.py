@@ -620,7 +620,7 @@ domains: {}
 clients:
   "admin-*":
     bypass:
-      - pattern-scanner
+      - pattern_scanner
 """
         with policy_context(tmp_path, policy_yaml):
             scanner = PatternScanner()
@@ -668,7 +668,7 @@ domains: {}
 clients:
   "test-*":
     addons:
-      network-guard:
+      network_guard:
         enabled: false
 """
         with policy_context(tmp_path, policy_yaml):

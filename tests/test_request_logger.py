@@ -1,629 +1,281 @@
-"""Tests for request_logger — structured traffic.* logging and quiet hosts.
+"""Assurance-boundary tests for structured traffic evidence."""
 
-Organised by contract area:
-- _should_quiet matcher
-- Request event shape (including host/addon invariants)
-- Response event shape
-- Paired-flow invariants (catches host divergence bugs)
-- URL edge cases (userinfo, port, missing response)
-- Hot reload (PDP sensor config refresh)
-- PDP config parsing (malformed input fail-closed)
-- Counter semantics
-"""
+from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
-from unittest import mock
-from unittest.mock import Mock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
+from mitmproxy import http
+from mitmproxy.test import tflow
+from request_logger import RequestLogger
 
-import safeyolo.core.utils as utils  # imported for AUDIT_LOG_PATH patching
+from pdp.client import PolicyClient
+from safeyolo.core import utils
+from safeyolo.proxy_modes.unix_listener import UnixMode
 
-# =========================================================================
-# Helpers
-# =========================================================================
+pytestmark = pytest.mark.assurance_boundary
 
 
-def _make_flow(url="https://api.example.com/v1/data", *,
-               method="GET", content=b"", metadata=None,
-               status=200, response_content=b"",
-               peername=("192.168.1.1", 12345)):
-    """Build a mock flow with the fields request_logger touches."""
-    flow = Mock()
-    flow.metadata = dict(metadata or {})
-    flow.request.pretty_url = url
+def _flow(
+    url: str = "https://api.example.com/v1/data",
+    *,
+    method: str = "GET",
+    request_content: bytes = b"",
+    status: int | None = 200,
+    response_content: bytes = b"",
+    agent: str | None = "agent-a",
+):
+    flow = tflow.tflow(resp=False)
     flow.request.method = method
-    flow.request.content = content
-    flow.client_conn.peername = peername
-    if status is None:
-        flow.response = None
-    else:
-        flow.response.status_code = status
-        flow.response.content = response_content
+    flow.request.url = url
+    flow.request.content = request_content
+    flow.client_conn.peername = ("192.0.2.10", 32100)
+    if agent:
+        flow.client_conn.proxy_mode = UnixMode.parse(
+            f"unix:/tmp/192.0.2.10_{agent}/proxy.sock"
+        )
+    if status is not None:
+        flow.response = http.Response.make(status, response_content)
     return flow
 
 
 @pytest.fixture
 def logger_with_log(tmp_path):
-    """Yield (RequestLogger, log_path) with AUDIT_LOG_PATH patched to tmp."""
-    from request_logger import RequestLogger
-    log_path = tmp_path / "test.jsonl"
-    with patch.object(utils, "AUDIT_LOG_PATH", log_path):
+    log_path = tmp_path / "audit.jsonl"
+    with patch.object(utils, "AUDIT_LOG_PATH", new=log_path):
         yield RequestLogger(), log_path
 
 
-def _read_events(log_path: Path) -> list[dict]:
-    """Read all JSONL entries from a log file.
-
-    `write_event` is now async (background writer thread). Drain the
-    queue before reading so assertions see events the addon actually
-    enqueued, not races with the writer thread.
-    """
+def _events(path: Path) -> list[dict]:
     from safeyolo.core.audit_writer import get_writer
-    assert get_writer().wait_for_drain(timeout_s=3.0), "audit writer failed to drain"
-    if not log_path.exists():
+
+    assert get_writer().wait_for_drain(timeout_s=3.0)
+    if not path.exists():
         return []
-    return [json.loads(line) for line in log_path.read_text().splitlines() if line]
+    return [json.loads(line) for line in path.read_text().splitlines()]
 
 
-# =========================================================================
-# _should_quiet matcher
-# =========================================================================
+def _policy(config: dict) -> PolicyClient:
+    client = create_autospec(PolicyClient, instance=True, spec_set=True)
+    client.get_sensor_config.return_value = config
+    return client
 
 
-class TestShouldQuiet:
-    def test_exact_host_match(self):
-        from request_logger import RequestLogger
-        addon = RequestLogger()
-        addon._quiet_hosts = {"statsig.anthropic.com"}
-
-        assert addon._should_quiet("statsig.anthropic.com", "/v1/rgstr") is True
-        assert addon._should_quiet("api.example.com", "/data") is False
-
-    def test_wildcard_host_pattern(self):
-        from request_logger import RequestLogger
-        addon = RequestLogger()
-        addon._quiet_host_patterns = ["*.telemetry.com"]
-
-        assert addon._should_quiet("app.telemetry.com", "/") is True
-        assert addon._should_quiet("api.telemetry.com", "/") is True
-        assert addon._should_quiet("telemetry.com.evil.com", "/") is False
-
-    def test_host_path_pattern(self):
-        from request_logger import RequestLogger
-        addon = RequestLogger()
-        addon._quiet_paths = {"api.example.com": ["/health", "/metrics/*"]}
-
-        assert addon._should_quiet("api.example.com", "/health") is True
-        assert addon._should_quiet("api.example.com", "/metrics/cpu") is True
-        assert addon._should_quiet("api.example.com", "/v1/data") is False
-
-    def test_case_insensitive_host(self):
-        from request_logger import RequestLogger
-        addon = RequestLogger()
-        addon._quiet_hosts = {"example.com"}
-
-        assert addon._should_quiet("EXAMPLE.COM", "/") is True
-        assert addon._should_quiet("Example.Com", "/") is True
-
-
-# =========================================================================
-# Request event shape
-# =========================================================================
-
-
-class TestRequestEventShape:
-    def test_full_request_event_shape(self, logger_with_log):
-        addon, log_path = logger_with_log
-        flow = _make_flow(
-            url="https://api.example.com/v1/data",
-            method="GET",
-            content=b"hello",
-            metadata={"request_id": "req-abc", "agent": "boris"},
-        )
-
-        addon.request(flow)
-
-        events = _read_events(log_path)
-        assert len(events) == 1
-        ev = events[0]
-        assert ev["event"] == "traffic.request"
-        assert ev["kind"] == "traffic"
-        assert ev["severity"] == "low"
-        assert ev["summary"] == "GET api.example.com/v1/data"
-        assert ev["host"] == "api.example.com"
-        assert ev["request_id"] == "req-abc"
-        assert ev["agent"] == "boris"
-        assert ev["addon"] == "request-logger"
-        assert ev["details"] == {
-            "method": "GET",
-            "path": "/v1/data",
-            "size": 5,
-            "client": "192.168.1.1",
-        }
-
-    def test_request_without_client_conn_peername(self, logger_with_log):
-        addon, log_path = logger_with_log
-        flow = _make_flow(peername=None)
-
-        addon.request(flow)
-
-        events = _read_events(log_path)
-        assert events[0]["details"]["client"] is None
-
-    def test_request_event_carries_addon_field(self, logger_with_log):
-        """Every traffic.* event must include addon=request-logger so operators
-        can filter the audit log by emitting addon."""
-        addon, log_path = logger_with_log
-        addon.request(_make_flow(metadata={"request_id": "req-1"}))
-
-        assert _read_events(log_path)[0]["addon"] == "request-logger"
-
-
-# =========================================================================
-# Response event shape
-# =========================================================================
-
-
-class TestResponseEventShape:
-    def test_full_response_event_shape(self, logger_with_log):
-        addon, log_path = logger_with_log
-        start = time.time() - 0.05  # ~50ms ago
-        flow = _make_flow(
-            url="https://api.example.com/v1/data",
-            metadata={"request_id": "req-xyz", "start_time": start},
-            status=200,
-            response_content=b"x" * 100,
-        )
-
-        addon.response(flow)
-
-        events = _read_events(log_path)
-        assert len(events) == 1
-        ev = events[0]
-        assert ev["event"] == "traffic.response"
-        assert ev["kind"] == "traffic"
-        assert ev["severity"] == "low"
-        assert ev["host"] == "api.example.com"
-        assert ev["summary"].startswith("200 api.example.com/v1/data")
-        assert ev["request_id"] == "req-xyz"
-        assert ev["addon"] == "request-logger"
-        assert ev["details"]["status"] == 200
-        assert ev["details"]["path"] == "/v1/data"
-        assert ev["details"]["size"] == 100
-        assert isinstance(ev["details"]["ms"], float)
-        assert ev["details"]["ms"] >= 0.0
-
-    def test_block_response_is_high_severity_with_suffix(self, logger_with_log):
-        addon, log_path = logger_with_log
-        flow = _make_flow(
-            url="https://evil.com/steal",
-            metadata={
-                "request_id": "req-blk",
-                "blocked_by": "credential-guard",
-                "credential_fingerprint": "hmac:abc123",
-                "start_time": time.time(),
-            },
-            status=428,
-        )
-
-        addon.response(flow)
-
-        ev = _read_events(log_path)[0]
-        assert ev["severity"] == "high"
-        assert ev["summary"].endswith("[blocked by credential-guard]")
-        assert ev["details"]["blocked_by"] == "credential-guard"
-        assert ev["details"]["credential_fingerprint"] == "hmac:abc123"
-        assert addon.blocks_total == 1
-
-    def test_block_reason_included_when_present(self, logger_with_log):
-        """When base.block() promoted body["reason"] to
-        flow.metadata["block_reason"], the traffic.response event carries it
-        alongside blocked_by so operators don't need to correlate a
-        separate security.* event by request_id (#337)."""
-        addon, log_path = logger_with_log
-        flow = _make_flow(
-            url="https://nodejs.org/dist/index.json",
-            metadata={
-                "request_id": "req-blk-reason",
-                "blocked_by": "network-guard",
-                "block_reason": "host not in allow list",
-                "start_time": time.time(),
-            },
-            status=403,
-        )
-
-        addon.response(flow)
-
-        ev = _read_events(log_path)[0]
-        assert ev["details"]["blocked_by"] == "network-guard"
-        assert ev["details"]["block_reason"] == "host not in allow list"
-
-    def test_block_reason_absent_when_metadata_missing(self, logger_with_log):
-        """No block_reason on the flow → no key on the event."""
-        addon, log_path = logger_with_log
-        flow = _make_flow(
-            url="https://evil.com/steal",
-            metadata={
-                "request_id": "req-blk-noreason",
-                "blocked_by": "credential-guard",
-                "start_time": time.time(),
-            },
-            status=428,
-        )
-
-        addon.response(flow)
-
-        ev = _read_events(log_path)[0]
-        assert ev["details"]["blocked_by"] == "credential-guard"
-        assert "block_reason" not in ev["details"]
-
-    def test_duration_ms_computed_from_start_time(self, logger_with_log):
-        """With a fixed start_time, duration_ms is computed from wall clock."""
-        addon, log_path = logger_with_log
-        # Use a patched time to make this deterministic
-        with mock.patch("request_logger.time.time", return_value=1000.075):
-            flow = _make_flow(metadata={"start_time": 1000.0})
-            addon.response(flow)
-
-        ev = _read_events(log_path)[0]
-        assert ev["details"]["ms"] == 75.0
-
-
-# =========================================================================
-# Paired-flow invariants — catches B1 (host vs netloc divergence)
-# =========================================================================
-
-
-class TestPairedFlowInvariants:
-    def test_request_and_response_use_same_host(self, logger_with_log):
-        """For the same flow, the request and response events MUST agree on host."""
-        addon, log_path = logger_with_log
-        flow = _make_flow(
-            url="https://api.example.com:8443/v1/data",
-            metadata={"request_id": "req-p1", "start_time": time.time()},
-        )
-
-        addon.request(flow)
-        addon.response(flow)
-
-        events = _read_events(log_path)
-        assert len(events) == 2
-        assert events[0]["host"] == events[1]["host"] == "api.example.com"
-
-    def test_request_id_matches_across_pair(self, logger_with_log):
-        addon, log_path = logger_with_log
-        flow = _make_flow(metadata={"request_id": "req-pair-xyz", "start_time": time.time()})
-
-        addon.request(flow)
-        addon.response(flow)
-
-        events = _read_events(log_path)
-        assert events[0]["request_id"] == events[1]["request_id"] == "req-pair-xyz"
-
-    def test_userinfo_does_not_leak_to_host_field(self, logger_with_log):
-        """urlparse.hostname strips userinfo; parsed.netloc would leak it.
-        This test pins the B1 fix."""
-        addon, log_path = logger_with_log
-        flow = _make_flow(
-            url="https://user:secret@api.example.com/path",
-            metadata={"request_id": "req-leak", "start_time": time.time()},
-        )
-
-        addon.request(flow)
-        addon.response(flow)
-
-        for ev in _read_events(log_path):
-            assert "user" not in ev["host"]
-            assert "secret" not in ev["host"]
-            assert ev["host"] == "api.example.com"
-
-    def test_non_default_port_does_not_appear_in_host_field(self, logger_with_log):
-        """The `host` field must be the bare hostname, not host:port."""
-        addon, log_path = logger_with_log
-        flow = _make_flow(
-            url="https://api.example.com:8443/v1/x",
-            metadata={"request_id": "req-port", "start_time": time.time()},
-        )
-
-        addon.request(flow)
-        addon.response(flow)
-
-        for ev in _read_events(log_path):
-            assert ev["host"] == "api.example.com"
-
-
-# =========================================================================
-# Missing-response edge case (B3)
-# =========================================================================
-
-
-class TestMissingResponse:
-    def test_none_response_emits_ops_response_missing(self, logger_with_log):
-        """When flow.response is None, emit ops.response_missing, not a fake traffic.response."""
-        addon, log_path = logger_with_log
-        flow = _make_flow(
-            url="https://api.example.com/v1/data",
-            metadata={"request_id": "req-noresp", "start_time": time.time()},
-            status=None,
-        )
-
-        addon.response(flow)
-
-        events = _read_events(log_path)
-        assert len(events) == 1
-        assert events[0]["event"] == "ops.response_missing"
-        assert events[0]["kind"] == "ops"
-        assert events[0]["host"] == "api.example.com"
-        assert events[0]["addon"] == "request-logger"
-        assert events[0]["request_id"] == "req-noresp"
-
-    def test_none_response_does_not_increment_response_counter(self, logger_with_log):
-        addon, log_path = logger_with_log
-        flow = _make_flow(status=None, metadata={"request_id": "x"})
-        addon.response(flow)
-
-        assert addon.responses_total == 0
-        assert addon.blocks_total == 0
-
-
-# =========================================================================
-# Quiet hosts
-# =========================================================================
-
-
-class TestQuietHosts:
-    def test_quieted_request_writes_no_event(self, logger_with_log):
-        addon, log_path = logger_with_log
-        addon._quiet_hosts = {"telemetry.example.com"}
-        flow = _make_flow(
-            url="https://telemetry.example.com/v1/track",
-            method="POST",
-            metadata={"request_id": "req-q"},
-        )
-
-        addon.request(flow)
-
-        assert _read_events(log_path) == []
-        assert addon.requests_quieted == 1
-        assert flow.metadata["quieted"] is True
-
-    def test_quieted_response_skipped(self, logger_with_log):
-        addon, log_path = logger_with_log
-        flow = _make_flow(metadata={"quieted": True})
-
-        addon.response(flow)
-
-        assert _read_events(log_path) == []
-
-    def test_block_overrides_quiet(self, logger_with_log):
-        """Security override: blocked responses are logged even on quieted hosts."""
-        addon, log_path = logger_with_log
-        flow = _make_flow(
-            url="https://telemetry.example.com/v1/track",
-            metadata={
-                "quieted": True,
-                "blocked_by": "network-guard",
-                "start_time": time.time(),
-            },
-            status=403,
-        )
-
-        addon.response(flow)
-
-        events = _read_events(log_path)
-        assert len(events) == 1
-        assert events[0]["details"]["blocked_by"] == "network-guard"
-        assert addon.blocks_total == 1
-
-
-# =========================================================================
-# Hot reload (B4)
-# =========================================================================
-
-
-class TestHotReload:
-    def test_runtime_error_on_unconfigured_client_is_silent(self, logger_with_log):
-        """Startup path: PolicyClient not yet configured; request still logs normally."""
-        addon, log_path = logger_with_log
-        with mock.patch("request_logger.get_policy_client", side_effect=RuntimeError("not ready")):
-            addon.request(_make_flow(metadata={"request_id": "req-s"}))
-
-        # Request event was still written (swallowed error didn't prevent the log)
-        events = _read_events(log_path)
-        assert len(events) == 1
-        assert events[0]["event"] == "traffic.request"
-
-    def test_reload_exception_emits_ops_config_error(self, logger_with_log):
-        """Non-RuntimeError reload failure surfaces as an ops.config_error audit event."""
-        addon, log_path = logger_with_log
-
-        # Simulate the client raising a non-RuntimeError
-        mock_client = Mock()
-        mock_client.get_sensor_config.side_effect = KeyError("missing key")
-        with mock.patch("request_logger.get_policy_client", return_value=mock_client):
-            addon.request(_make_flow(metadata={"request_id": "req-err"}))
-
-        events = _read_events(log_path)
-        event_types = [e["event"] for e in events]
-        assert "ops.config_error" in event_types
-        err_event = next(e for e in events if e["event"] == "ops.config_error")
-        assert err_event["addon"] == "request-logger"
-        assert err_event["details"]["error_type"] == "KeyError"
-
-    def test_reload_exception_preserves_last_known_quiet_hosts(self, logger_with_log):
-        addon, log_path = logger_with_log
-        addon._quiet_hosts = {"quiet.example.com"}
-
-        mock_client = Mock()
-        mock_client.get_sensor_config.side_effect = RuntimeError  # caught branch 1
-        with mock.patch("request_logger.get_policy_client", return_value=mock_client):
-            # A request to quiet.example.com should still be quieted
-            flow = _make_flow(url="https://quiet.example.com/x")
-            addon.request(flow)
-
-        assert flow.metadata["quieted"] is True
-
-    def test_unchanged_policy_hash_does_not_reload(self, logger_with_log):
-        addon, log_path = logger_with_log
-        addon._last_policy_hash = "h1"
-        addon._quiet_hosts = {"pinned.example.com"}
-
-        mock_client = Mock()
-        mock_client.get_sensor_config.return_value = {"policy_hash": "h1"}
-        with mock.patch("request_logger.get_policy_client", return_value=mock_client):
-            addon.request(_make_flow(metadata={"request_id": "req-u"}))
-
-        # _quiet_hosts is unchanged because the hash matched
-        assert addon._quiet_hosts == {"pinned.example.com"}
-
-    def test_changed_policy_hash_triggers_reload(self, logger_with_log):
-        addon, log_path = logger_with_log
-        addon._last_policy_hash = "old"
-
-        mock_client = Mock()
-        mock_client.get_sensor_config.return_value = {
-            "policy_hash": "new",
+def test_quiet_rule_parsing_and_matching_are_canonical_and_case_insensitive():
+    addon = RequestLogger()
+    addon._load_quiet_hosts_from_pdp(
+        {
             "addons": {
                 "request_logger": {
-                    "quiet_hosts": {"hosts": ["telemetry.example.com"]}
+                    "quiet_hosts": {
+                        "hosts": ["Exact.Example", "*.Telemetry.Example"],
+                        "paths": {"API.Example": ["/health", "/metrics/*"]},
+                    }
                 }
+            }
+        }
+    )
+
+    assert addon._should_quiet("exact.example", "/anything") is True
+    assert addon._should_quiet("APP.TELEMETRY.EXAMPLE", "/") is True
+    assert addon._should_quiet("api.example", "/metrics/cpu") is True
+    assert addon._should_quiet("telemetry.example.evil", "/") is False
+    assert addon._should_quiet("api.example", "/v1/data") is False
+
+
+@pytest.mark.parametrize(
+    "config, message",
+    [
+        ({"addons": {"request_logger": {"quiet_hosts": {"hosts": "bad"}}}}, "hosts must be a list"),
+        ({"addons": {"request_logger": {"quiet_hosts": {"paths": []}}}}, "paths must be a dict"),
+        (
+            {"addons": {"request_logger": {"quiet_hosts": {"paths": {"x": "bad"}}}}},
+            "must be a list of path patterns",
+        ),
+    ],
+)
+def test_malformed_quiet_rules_fail_loudly(config: dict, message: str):
+    with pytest.raises(ValueError, match=message):
+        RequestLogger()._load_quiet_hosts_from_pdp(config)
+
+
+def test_quiet_path_lists_are_copied_from_policy_input():
+    addon = RequestLogger()
+    paths = ["/health"]
+    addon._load_quiet_hosts_from_pdp(
+        {"addons": {"request_logger": {"quiet_hosts": {"paths": {"x": paths}}}}}
+    )
+    paths.append("/*")
+    assert addon._should_quiet("x", "/private") is False
+
+
+def test_request_writes_schema_valid_event_with_trusted_identity(logger_with_log):
+    addon, path = logger_with_log
+    flow = _flow(method="POST", request_content=b"hello")
+    flow.metadata["request_id"] = "req-1"
+
+    addon.request(flow)
+
+    assert _events(path) == [
+        {
+            "schema_version": 1,
+            "ts": _events(path)[0]["ts"],
+            "event": "traffic.request",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "POST api.example.com/v1/data",
+            "request_id": "req-1",
+            "agent": "agent-a",
+            "host": "api.example.com",
+            "addon": "request-logger",
+            "details": {
+                "method": "POST",
+                "path": "/v1/data",
+                "size": 5,
+                "client": "192.0.2.10",
             },
         }
-        with mock.patch("request_logger.get_policy_client", return_value=mock_client):
-            addon.request(_make_flow(metadata={"request_id": "req-r"}))
-
-        assert addon._quiet_hosts == {"telemetry.example.com"}
-        assert addon._last_policy_hash == "new"
+    ]
 
 
-# =========================================================================
-# PDP config parsing — fail-closed on malformed input (B5, B6)
-# =========================================================================
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:secret@api.example.com/v1/data",
+        "https://api.example.com:8443/v1/data",
+    ],
+)
+def test_canonical_host_excludes_userinfo_and_port(logger_with_log, url: str):
+    addon, path = logger_with_log
+    addon.request(_flow(url))
+    event = _events(path)[0]
+    assert event["host"] == "api.example.com"
+    assert "secret" not in json.dumps(event)
+    assert ":8443" not in json.dumps(event)
 
 
-class TestLoadQuietHostsFromPdp:
-    def _call(self, config):
-        from request_logger import RequestLogger
-        addon = RequestLogger()
-        addon._load_quiet_hosts_from_pdp(config)
-        return addon
+def test_untrusted_metadata_is_removed_from_audit_attribution(logger_with_log):
+    addon, path = logger_with_log
+    flow = _flow(agent=None)
+    flow.metadata["agent"] = "spoofed-agent"
+    addon.request(flow)
+    event = _events(path)[0]
+    assert "agent" not in event
+    assert "agent" not in flow.metadata
+    assert flow.metadata["agent_identity_status"] == "unavailable"
 
-    def test_hosts_wildcard_and_exact_split(self):
-        addon = self._call({
-            "addons": {"request_logger": {"quiet_hosts": {
-                "hosts": ["*.telemetry.com", "stats.example.com"]
-            }}}
-        })
-        assert addon._quiet_hosts == {"stats.example.com"}
-        assert addon._quiet_host_patterns == ["*.telemetry.com"]
 
-    def test_paths_host_keys_lowercased(self):
-        addon = self._call({
-            "addons": {"request_logger": {"quiet_hosts": {
-                "paths": {"API.EXAMPLE.COM": ["/health"]}
-            }}}
-        })
-        assert "api.example.com" in addon._quiet_paths
-        assert addon._quiet_paths["api.example.com"] == ["/health"]
+def test_missing_response_emits_ops_event_without_response_counter(logger_with_log):
+    addon, path = logger_with_log
+    flow = _flow(status=None)
+    flow.metadata["request_id"] = "req-missing"
+    addon.response(flow)
+    event = _events(path)[0]
+    assert event["event"] == "ops.response_missing"
+    assert event["kind"] == "ops"
+    assert event["severity"] == "medium"
+    assert event["agent"] == "agent-a"
+    assert addon.responses_total == 0
+    assert addon.blocks_total == 0
 
-    def test_missing_addons_key_is_noop(self):
-        addon = self._call({})
-        assert addon._quiet_hosts == set()
-        assert addon._quiet_host_patterns == []
-        assert addon._quiet_paths == {}
 
-    def test_missing_quiet_hosts_key_is_noop(self):
-        addon = self._call({"addons": {"request_logger": {}}})
-        assert addon._quiet_hosts == set()
+def test_response_duration_and_counter_are_exact(logger_with_log):
+    addon, path = logger_with_log
+    flow = _flow(response_content=b"abc")
+    flow.metadata.update(request_id="req-2", start_time=1000.0)
+    with patch("request_logger.time.time", autospec=True, return_value=1000.075):
+        addon.response(flow)
+    event = _events(path)[0]
+    assert event["details"] == {
+        "path": "/v1/data",
+        "status": 200,
+        "size": 3,
+        "ms": 75.0,
+    }
+    assert event["agent"] == "agent-a"
+    assert addon.responses_total == 1
 
-    def test_malformed_hosts_non_list_raises(self):
-        """A YAML typo like `hosts: "foo.com"` must not silently become single-char rules."""
-        with pytest.raises(ValueError, match="quiet_hosts.hosts must be a list"):
-            self._call({
-                "addons": {"request_logger": {"quiet_hosts": {"hosts": "foo.com"}}}
-            })
 
-    def test_malformed_paths_value_non_list_raises(self):
-        with pytest.raises(ValueError, match=r"quiet_hosts\.paths\['api\.example\.com'\]"):
-            self._call({
-                "addons": {"request_logger": {"quiet_hosts": {
-                    "paths": {"api.example.com": "/health"}
-                }}}
-            })
+def test_quiet_request_and_response_emit_nothing_but_count_request(logger_with_log):
+    addon, path = logger_with_log
+    addon._quiet_hosts.add("api.example.com")
+    flow = _flow()
+    addon.request(flow)
+    addon.response(flow)
+    assert _events(path) == []
+    assert flow.metadata["quieted"] is True
+    assert addon.get_stats() == {
+        "requests_total": 1,
+        "requests_quieted": 1,
+        "responses_total": 0,
+        "blocks_total": 0,
+    }
 
-    def test_malformed_paths_dict_raises(self):
-        with pytest.raises(ValueError, match="quiet_hosts.paths must be a dict"):
-            self._call({
-                "addons": {"request_logger": {"quiet_hosts": {"paths": ["bad"]}}}
-            })
 
-    def test_paths_list_is_copied_not_referenced(self):
-        """Mutating the sensor config after load must not affect our state."""
-        source_list = ["/health"]
-        config = {
-            "addons": {"request_logger": {"quiet_hosts": {
-                "paths": {"api.example.com": source_list}
-            }}}
+def test_block_overrides_quiet_and_preserves_reason_and_fingerprint(logger_with_log):
+    addon, path = logger_with_log
+    addon._quiet_hosts.add("api.example.com")
+    flow = _flow(status=403)
+    addon.request(flow)
+    flow.metadata.update(
+        blocked_by="credential-guard",
+        block_reason="credential destination denied",
+        credential_fingerprint="hmac:abc123",
+    )
+    addon.response(flow)
+    event = _events(path)[0]
+    assert event["event"] == "traffic.response"
+    assert event["severity"] == "high"
+    assert event["agent"] == "agent-a"
+    assert event["details"]["blocked_by"] == "credential-guard"
+    assert event["details"]["block_reason"] == "credential destination denied"
+    assert event["details"]["credential_fingerprint"] == "hmac:abc123"
+    assert addon.responses_total == 0
+    assert addon.blocks_total == 1
+
+
+def test_changed_policy_hash_reloads_once_and_preserves_last_good_rules(logger_with_log):
+    addon, path = logger_with_log
+    good = _policy(
+        {
+            "policy_hash": "one",
+            "addons": {"request_logger": {"quiet_hosts": {"hosts": ["quiet.example"]}}},
         }
-        addon = self._call(config)
-        source_list.append("/other")
+    )
+    with patch("request_logger.get_policy_client", new=lambda: good):
+        addon._maybe_reload_config()
+        addon._maybe_reload_config()
+    assert good.get_sensor_config.call_count == 2
+    assert addon._should_quiet("quiet.example", "/") is True
 
-        assert addon._quiet_paths["api.example.com"] == ["/health"]
-
-
-# =========================================================================
-# Counter semantics
-# =========================================================================
-
-
-class TestCounters:
-    def test_requests_total_includes_quieted(self, logger_with_log):
-        """Documented: requests_total counts EVERY incoming request, quieted or not."""
-        addon, log_path = logger_with_log
-        addon._quiet_hosts = {"quiet.example.com"}
-
-        addon.request(_make_flow(url="https://noisy.example.com/a"))
-        addon.request(_make_flow(url="https://quiet.example.com/b"))
-        addon.request(_make_flow(url="https://noisy.example.com/c"))
-
-        stats = addon.get_stats()
-        assert stats["requests_total"] == 3
-        assert stats["requests_quieted"] == 1
-
-    def test_block_increments_blocks_not_responses(self, logger_with_log):
-        addon, log_path = logger_with_log
-        addon.response(_make_flow(
-            metadata={"blocked_by": "x", "start_time": time.time()},
-            status=403,
-        ))
-        addon.response(_make_flow(
-            metadata={"start_time": time.time()},
-            status=200,
-        ))
-
-        stats = addon.get_stats()
-        assert stats["blocks_total"] == 1
-        assert stats["responses_total"] == 1
-
-    def test_stats_returns_fresh_snapshot(self, logger_with_log):
-        addon, _ = logger_with_log
-        s1 = addon.get_stats()
-        addon.requests_total = 5
-        s2 = addon.get_stats()
-
-        assert s1["requests_total"] == 0
-        assert s2["requests_total"] == 5
+    malformed = _policy(
+        {
+            "policy_hash": "two",
+            "addons": {"request_logger": {"quiet_hosts": {"hosts": "bad"}}},
+        }
+    )
+    with patch("request_logger.get_policy_client", new=lambda: malformed):
+        addon._maybe_reload_config()
+    assert addon._should_quiet("quiet.example", "/") is True
+    assert _events(path)[0]["event"] == "ops.config_error"
 
 
-# =========================================================================
-# Addon identity
-# =========================================================================
+def test_unconfigured_policy_is_silent_and_keeps_logging(logger_with_log):
+    addon, path = logger_with_log
+
+    def unavailable() -> PolicyClient:
+        raise RuntimeError("not ready")
+
+    with patch("request_logger.get_policy_client", new=unavailable):
+        addon.request(_flow())
+    assert _events(path)[0]["event"] == "traffic.request"
 
 
-class TestAddonIdentity:
-    def test_addon_name_is_request_logger(self):
-        from request_logger import RequestLogger
-        assert RequestLogger().name == "request-logger"
+def test_stats_returns_an_independent_snapshot():
+    addon = RequestLogger()
+    addon.requests_total = 3
+    snapshot = addon.get_stats()
+    snapshot["requests_total"] = 999
+    assert addon.get_stats()["requests_total"] == 3

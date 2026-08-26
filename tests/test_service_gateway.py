@@ -2,9 +2,11 @@
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import create_autospec, patch
 
 import pytest
+from mitmproxy import http
 from service_gateway import (
     SGW_TOKEN_PREFIX,
     GrantEntry,
@@ -13,6 +15,8 @@ from service_gateway import (
     mint_gateway_token,
 )
 
+from pdp.client import LocalPolicyClient, PolicyClient, PolicyClientConfig
+from pdp.schemas import DecisionEventBlock, Effect, PolicyDecision
 from safeyolo.core.service_loader import (
     Capability,
     CapabilityRoute,
@@ -20,6 +24,9 @@ from safeyolo.core.service_loader import (
     init_service_registry,
 )
 from safeyolo.core.vault import Vault, VaultCredential
+from safeyolo.proxy_modes.unix_listener import UnixMode
+
+pytestmark = pytest.mark.assurance_boundary
 
 # --- Fixtures ---
 
@@ -121,10 +128,46 @@ def configured_gateway(gateway, registry, vault_obj):
 
 
 def _mock_ctx():
-    """Create a mock ctx with gateway_enabled=True."""
-    mock = MagicMock()
-    mock.options.gateway_enabled = True
-    return mock
+    """Create the minimal concrete context state read by request hooks."""
+    return SimpleNamespace(options=SimpleNamespace(gateway_enabled=True))
+
+
+def _set_agent(flow, agent: str) -> None:
+    """Give a flow a real trusted connection identity for gateway tests."""
+    flow.client_conn.proxy_mode = UnixMode.parse(
+        f"unix:/tmp/10.0.0.5_{agent}/proxy.sock"
+    )
+    flow.metadata["agent"] = agent
+
+
+def _decision(effect: Effect) -> PolicyDecision:
+    """Build a schema-valid PDP decision, never an attribute-only fake."""
+    return PolicyDecision(
+        event=DecisionEventBlock(
+            event_id="evt-gateway-test",
+            policy_hash="sha256:test",
+            engine_version="test",
+        ),
+        effect=effect,
+        reason=f"test {effect.value}",
+    )
+
+
+def _policy_client(**method_results):
+    """Autospec the external PDP boundary and configure selected methods."""
+    client = create_autospec(PolicyClient, instance=True, spec_set=True)
+    for method, result in method_results.items():
+        getattr(client, method).return_value = result
+    return client
+
+
+def _vault_with(tmp_path, credential: VaultCredential | None = None) -> Vault:
+    """Create a real unlocked vault, optionally containing one credential."""
+    vault = Vault(tmp_path / "test-vault.enc")
+    vault.unlock("test-pass")
+    if credential is not None:
+        vault.store(credential)
+    return vault
 
 
 # --- Token Extraction Tests ---
@@ -278,11 +321,11 @@ class TestCredentialInjection:
             url="https://gmail.googleapis.com/gmail/v1/users/me/messages/123",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
                     gw.request(flow)
 
         assert flow.response is None
@@ -298,11 +341,11 @@ class TestCredentialInjection:
             url="https://api.minifuse.io/v1/feeds",
             headers={"x-api-key": token},
         )
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
                     gw.request(flow)
 
         assert flow.response is None
@@ -318,11 +361,11 @@ class TestCredentialInjection:
             url="http://gmail.googleapis.com/gmail/v1/users/me/messages/123",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
                     gw.request(flow)
 
         assert flow.response is not None
@@ -339,7 +382,7 @@ class TestCredentialInjection:
             url="https://api.minifuse.io/v1/feeds",
             headers={"x-api-key": token},
         )
-        flow.metadata["agent"] = "other-agent"
+        _set_agent(flow, "other-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
             gw.request(flow)
@@ -352,6 +395,42 @@ class TestCredentialInjection:
         assert body["action"] == "self_correct"
         assert "other-agent" in body["reflection"]
 
+    def test_missing_trusted_identity_denied(self, make_flow, configured_gateway):
+        gw, env, _registry, _vault_obj = configured_gateway
+        token = env["test-agent"]["minifuse"]
+        flow = make_flow(
+            url="https://api.minifuse.io/v1/feeds",
+            headers={"x-api-key": token},
+        )
+        # A caller-controlled metadata value is not an identity source.
+        flow.metadata["agent"] = "test-agent"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            gw.request(flow)
+
+        assert flow.response.status_code == 403
+        body = json.loads(flow.response.content)
+        assert body["reason_codes"] == ["AGENT_IDENTITY_REQUIRED"]
+        assert "agent" not in flow.metadata
+
+    def test_conflicting_trusted_identity_denied(self, make_flow, configured_gateway):
+        gw, env, _registry, _vault_obj = configured_gateway
+        token = env["test-agent"]["minifuse"]
+        flow = make_flow(
+            url="https://api.minifuse.io/v1/feeds",
+            headers={"x-api-key": token},
+        )
+        _set_agent(flow, "test-agent")
+        flow.metadata["agent"] = "other-agent"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            gw.request(flow)
+
+        assert flow.response.status_code == 403
+        body = json.loads(flow.response.content)
+        assert body["reason_codes"] == ["AGENT_IDENTITY_CONFLICT"]
+        assert flow.metadata["agent_identity_status"] == "conflict"
+
     def test_unknown_host_passes_through(self, make_flow, configured_gateway):
         """sgw_ token sent to unmapped host is not recognized — passes through as non-gateway traffic."""
         gw, env, registry, vault_obj = configured_gateway
@@ -360,10 +439,10 @@ class TestCredentialInjection:
             url="https://evil.example.com/v1/feeds",
             headers={"x-api-key": token},
         )
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gw.request(flow)
 
         # Not recognized as gateway request — no response set
@@ -378,7 +457,7 @@ class TestCredentialInjection:
         )
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gateway.request(flow)
 
         assert flow.response is not None
@@ -398,10 +477,10 @@ class TestCredentialInjection:
             url="https://api.minifuse.io/v1/feeds",
             headers={"x-api-key": token},
         )
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gw.request(flow)
 
         assert flow.response is not None
@@ -427,10 +506,10 @@ class TestCredentialInjection:
             url="https://api.minifuse.io/v1/feeds",
             headers={"x-api-key": token},
         )
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gateway.request(flow)
 
         assert flow.response is not None
@@ -451,10 +530,10 @@ class TestCredentialInjection:
             url="https://gmail.googleapis.com/gmail/v1/users/me/messages",
             headers={"authorization": f"Bearer {minifuse_token}"},
         )
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gw.request(flow)
 
         assert flow.response is not None
@@ -472,11 +551,11 @@ class TestCredentialInjection:
             url="https://api.minifuse.io/v1/feeds",
             headers={"x-api-key": token},
         )
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=None):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=None):
                     gw.request(flow)
 
         assert flow.response is not None
@@ -493,14 +572,13 @@ class TestCredentialInjection:
             url="https://api.minifuse.io/v1/feeds",
             headers={"x-api-key": token},
         )
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
-        empty_vault = MagicMock()
-        empty_vault.get.return_value = None
+        vault_obj.remove("minifuse-test")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=empty_vault):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
                     gw.request(flow)
 
         assert flow.response is not None
@@ -518,17 +596,10 @@ class TestRiskyRoutePDP:
         """Risky route that PDP allows → credential injected."""
         gw, env, registry, vault_obj = configured_gateway
 
-        from pdp.schemas import Effect
-
-        mock_route_decision = MagicMock()
-        mock_route_decision.effect = Effect.ALLOW
-
-        mock_decision = MagicMock()
-        mock_decision.effect = Effect.ALLOW
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = mock_decision
-        mock_client.evaluate_gateway_request.return_value = mock_route_decision
+        mock_client = _policy_client(
+            evaluate=_decision(Effect.ALLOW),
+            evaluate_gateway_request=_decision(Effect.ALLOW),
+        )
 
         # Create a service where risky routes overlap with capabilities
         svc_dir = registry._user_dir
@@ -566,14 +637,14 @@ risky_routes:
             url="https://api.testrisky.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
                     # Patch inside the _check_risky_route method's import scope
-                    with patch("pdp.is_policy_client_configured", return_value=True):
-                        with patch("pdp.get_policy_client", return_value=mock_client):
+                    with patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
+                        with patch("pdp.get_policy_client", autospec=True, return_value=mock_client):
                             gw.request(flow)
 
         assert flow.response is None  # Allowed through
@@ -604,11 +675,9 @@ risky_routes:
 """)
         registry = init_service_registry(svc_dir)
 
-        vault = MagicMock()
-        vault.get.return_value = VaultCredential(
-            name="test-cred",
-            type="bearer",
-            value="real-token",
+        vault = _vault_with(
+            tmp_path,
+            VaultCredential(name="test-cred", type="bearer", value="real-token"),
         )
 
         gateway._host_map = {"api.test.com": "test_risky"}
@@ -642,25 +711,23 @@ risky_routes:
         )
 
         # Route check must pass (ALLOW) so we reach the risky route check
-        mock_route_decision = MagicMock()
-        mock_route_decision.effect = Effect.ALLOW
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = mock_decision
-        mock_client.evaluate_gateway_request.return_value = mock_route_decision
+        mock_client = _policy_client(
+            evaluate=mock_decision,
+            evaluate_gateway_request=_decision(Effect.ALLOW),
+        )
 
         flow = make_flow(
             method="POST",
             url="https://api.test.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "agent-1"
+        _set_agent(flow, "agent-1")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
-                    with patch("pdp.is_policy_client_configured", return_value=True):
-                        with patch("pdp.get_policy_client", return_value=mock_client):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault):
+                    with patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
+                        with patch("pdp.get_policy_client", autospec=True, return_value=mock_client):
                             gateway.request(flow)
 
         assert flow.response is not None
@@ -698,11 +765,9 @@ risky_routes:
 """)
         registry = init_service_registry(svc_dir)
 
-        vault = MagicMock()
-        vault.get.return_value = VaultCredential(
-            name="test-cred",
-            type="bearer",
-            value="real-token",
+        vault = _vault_with(
+            tmp_path,
+            VaultCredential(name="test-cred", type="bearer", value="real-token"),
         )
 
         gw = ServiceGateway()
@@ -717,13 +782,13 @@ risky_routes:
             url="https://api.test.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "agent-1"
+        _set_agent(flow, "agent-1")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault):
                     # PDP not configured — risky route must fail closed
-                    with patch("pdp.is_policy_client_configured", return_value=False):
+                    with patch("pdp.is_policy_client_configured", autospec=True, return_value=False):
                         gw.request(flow)
 
         # Critical: credential must NOT have been injected
@@ -752,11 +817,9 @@ risky_routes:
 """)
         registry = init_service_registry(svc_dir)
 
-        vault = MagicMock()
-        vault.get.return_value = VaultCredential(
-            name="test-cred",
-            type="bearer",
-            value="real-token",
+        vault = _vault_with(
+            tmp_path,
+            VaultCredential(name="test-cred", type="bearer", value="real-token"),
         )
 
         gw = ServiceGateway()
@@ -766,25 +829,23 @@ risky_routes:
         )
         token = env["agent-1"]["test_risky"]
 
-        mock_client = MagicMock()
+        mock_client = _policy_client(
+            evaluate_gateway_request=_decision(Effect.ALLOW),
+        )
         mock_client.evaluate.side_effect = RuntimeError("PDP connection failed")
-        mock_route_decision = MagicMock()
-        from pdp.schemas import Effect
-        mock_route_decision.effect = Effect.ALLOW
-        mock_client.evaluate_gateway_request.return_value = mock_route_decision
 
         flow = make_flow(
             method="DELETE",
             url="https://api.test.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "agent-1"
+        _set_agent(flow, "agent-1")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
-                    with patch("pdp.is_policy_client_configured", return_value=True):
-                        with patch("pdp.get_policy_client", return_value=mock_client):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault):
+                    with patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
+                        with patch("pdp.get_policy_client", autospec=True, return_value=mock_client):
                             gw.request(flow)
 
         # Fail closed: must block, credential must not be injected
@@ -818,9 +879,9 @@ capabilities:
 """)
         registry = init_service_registry(svc_dir)
 
-        vault = MagicMock()
-        vault.get.return_value = VaultCredential(
-            name="test-cred", type="bearer", value="real-token",
+        vault = _vault_with(
+            tmp_path,
+            VaultCredential(name="test-cred", type="bearer", value="real-token"),
         )
 
         gateway._host_map = {"api.test.com": "test_svc"}
@@ -830,22 +891,21 @@ capabilities:
         token = env["agent-1"]["test_svc"]
 
         # PDP allows the route
-        mock_route_decision = MagicMock()
-        mock_route_decision.effect = Effect.ALLOW
-        mock_client = MagicMock()
-        mock_client.evaluate_gateway_request.return_value = mock_route_decision
+        mock_client = _policy_client(
+            evaluate_gateway_request=_decision(Effect.ALLOW),
+        )
 
         flow = make_flow(
             url="https://api.test.com/v1/feeds",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "agent-1"
+        _set_agent(flow, "agent-1")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
-                    with patch("pdp.is_policy_client_configured", return_value=True):
-                        with patch("pdp.get_policy_client", return_value=mock_client):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault):
+                    with patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
+                        with patch("pdp.get_policy_client", autospec=True, return_value=mock_client):
                             gateway.request(flow)
 
         # Route allowed → credential injected
@@ -882,22 +942,21 @@ capabilities:
         token = env["agent-1"]["test_svc"]
 
         # PDP denies the route
-        mock_route_decision = MagicMock()
-        mock_route_decision.effect = Effect.DENY
-        mock_client = MagicMock()
-        mock_client.evaluate_gateway_request.return_value = mock_route_decision
+        mock_client = _policy_client(
+            evaluate_gateway_request=_decision(Effect.DENY),
+        )
 
         flow = make_flow(
             method="DELETE",
             url="https://api.test.com/v1/feeds",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "agent-1"
+        _set_agent(flow, "agent-1")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("pdp.is_policy_client_configured", return_value=True):
-                    with patch("pdp.get_policy_client", return_value=mock_client):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
+                    with patch("pdp.get_policy_client", autospec=True, return_value=mock_client):
                         gateway.request(flow)
 
         assert flow.response is not None
@@ -1023,11 +1082,9 @@ class TestFullFlow:
         """Full flow: mint token -> request -> credential injected -> metadata stamped."""
         registry = init_service_registry(services_dir)
 
-        vault = MagicMock()
-        vault.get.return_value = VaultCredential(
-            name="minifuse-test",
-            type="api_key",
-            value="real-key-456",
+        vault = _vault_with(
+            services_dir,
+            VaultCredential(name="minifuse-test", type="api_key", value="real-key-456"),
         )
 
         gw = ServiceGateway()
@@ -1043,13 +1100,13 @@ class TestFullFlow:
             url="https://api.minifuse.io/v1/resources",
             headers={"x-api-key": token},
         )
-        flow.metadata["agent"] = "my-agent"
+        _set_agent(flow, "my-agent")
 
         # minifuse reader capability has /v1/** GET
         # /v1/resources should match /v1/**
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault):
                     gw.request(flow)
 
         assert flow.response is None
@@ -1214,11 +1271,9 @@ risky_routes:
 """)
         registry = init_service_registry(svc_dir)
 
-        vault = MagicMock()
-        vault.get.return_value = VaultCredential(
-            name="test-cred",
-            type="bearer",
-            value="real-token",
+        vault = _vault_with(
+            tmp_path,
+            VaultCredential(name="test-cred", type="bearer", value="real-token"),
         )
 
         gw = ServiceGateway()
@@ -1238,11 +1293,11 @@ risky_routes:
             url="https://api.test.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "agent-1"
+        _set_agent(flow, "agent-1")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault):
                     gw.request(flow)
 
         # Should pass through (grant bypassed PDP)
@@ -1275,11 +1330,9 @@ risky_routes:
 """)
         registry = init_service_registry(svc_dir)
 
-        vault = MagicMock()
-        vault.get.return_value = VaultCredential(
-            name="test-cred",
-            type="bearer",
-            value="real-token",
+        vault = _vault_with(
+            tmp_path,
+            VaultCredential(name="test-cred", type="bearer", value="real-token"),
         )
 
         gw = ServiceGateway()
@@ -1309,25 +1362,23 @@ risky_routes:
             ),
         )
         # Route check must pass (ALLOW) so we reach the risky route check
-        mock_route_decision = MagicMock()
-        mock_route_decision.effect = Effect.ALLOW
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = mock_decision
-        mock_client.evaluate_gateway_request.return_value = mock_route_decision
+        mock_client = _policy_client(
+            evaluate=mock_decision,
+            evaluate_gateway_request=_decision(Effect.ALLOW),
+        )
 
         flow = make_flow(
             method="DELETE",
             url="https://api.test.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "agent-1"
+        _set_agent(flow, "agent-1")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
-                    with patch("pdp.is_policy_client_configured", return_value=True):
-                        with patch("pdp.get_policy_client", return_value=mock_client):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault):
+                    with patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
+                        with patch("pdp.get_policy_client", autospec=True, return_value=mock_client):
                             gw.request(flow)
 
         assert flow.response is not None
@@ -1347,8 +1398,7 @@ class TestGrantConsumption:
         # Simulate response flow
         flow = tflow.tflow()
         flow.metadata["gateway_grant_id"] = grant.grant_id
-        flow.response = MagicMock()
-        flow.response.status_code = 200
+        flow.response = http.Response.make(200)
 
         with patch("service_gateway.ctx", _mock_ctx()):
             gateway.response(flow)
@@ -1363,8 +1413,7 @@ class TestGrantConsumption:
 
         flow = tflow.tflow()
         flow.metadata["gateway_grant_id"] = grant.grant_id
-        flow.response = MagicMock()
-        flow.response.status_code = 404
+        flow.response = http.Response.make(404)
 
         with patch("service_gateway.ctx", _mock_ctx()):
             gateway.response(flow)
@@ -1379,8 +1428,7 @@ class TestGrantConsumption:
 
         flow = tflow.tflow()
         flow.metadata["gateway_grant_id"] = grant.grant_id
-        flow.response = MagicMock()
-        flow.response.status_code = 200
+        flow.response = http.Response.make(200)
 
         with patch("service_gateway.ctx", _mock_ctx()):
             gateway.response(flow)
@@ -1395,8 +1443,7 @@ class TestGrantConsumption:
 
         flow = tflow.tflow()
         # No gateway_grant_id in metadata
-        flow.response = MagicMock()
-        flow.response.status_code = 200
+        flow.response = http.Response.make(200)
 
         with patch("service_gateway.ctx", _mock_ctx()):
             gateway.response(flow)
@@ -1513,11 +1560,9 @@ risky_routes:
 """)
         registry = init_service_registry(svc_dir)
 
-        vault = MagicMock()
-        vault.get.return_value = VaultCredential(
-            name="test-cred",
-            type="bearer",
-            value="real-token",
+        vault = _vault_with(
+            tmp_path,
+            VaultCredential(name="test-cred", type="bearer", value="real-token"),
         )
 
         gateway._host_map = {"api.test.com": "test_risky"}
@@ -1549,26 +1594,24 @@ risky_routes:
             ),
         )
         # Route check must pass (ALLOW) so we reach the risky route check
-        mock_route_decision = MagicMock()
-        mock_route_decision.effect = Effect.ALLOW
-
-        mock_client = MagicMock()
-        mock_client.evaluate.return_value = mock_decision
-        mock_client.evaluate_gateway_request.return_value = mock_route_decision
+        mock_client = _policy_client(
+            evaluate=mock_decision,
+            evaluate_gateway_request=_decision(Effect.ALLOW),
+        )
 
         flow = make_flow(
             method="POST",
             url="https://api.test.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
-        flow.metadata["agent"] = "agent-1"
+        _set_agent(flow, "agent-1")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
-                    with patch("pdp.is_policy_client_configured", return_value=True):
-                        with patch("pdp.get_policy_client", return_value=mock_client):
-                            with patch("service_gateway.write_event") as mock_write:
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault):
+                    with patch("pdp.is_policy_client_configured", autospec=True, return_value=True):
+                        with patch("pdp.get_policy_client", autospec=True, return_value=mock_client):
+                            with patch("service_gateway.write_event", autospec=True) as mock_write:
                                 gateway.request(flow)
 
         # Verify write_event was called with approval kwarg
@@ -1609,24 +1652,15 @@ class TestGrantPersistence:
 
     @pytest.fixture
     def mock_pdp(self, policy_toml):
-        """Mock PDP with correct client._pdp._engine._loader chain."""
-        mock_loader = MagicMock()
-        mock_loader._baseline_path = policy_toml
-
-        mock_engine = MagicMock()
-        mock_engine._loader = mock_loader
-
-        mock_pdp = MagicMock()
-        mock_pdp._engine = mock_engine
-
-        mock_client = MagicMock()
-        mock_client._pdp = mock_pdp
+        """Run persistence against a real local PDP and policy loader."""
+        client = LocalPolicyClient(PolicyClientConfig(baseline_path=policy_toml))
 
         with (
-            patch("pdp.get_policy_client", return_value=mock_client),
-            patch("pdp.is_policy_client_configured", return_value=True),
+            patch("pdp.get_policy_client", autospec=True, return_value=client),
+            patch("pdp.is_policy_client_configured", autospec=True, return_value=True),
         ):
             yield
+        client.shutdown()
 
     def test_persist_writes_grants(self, gateway, mock_pdp, policy_toml):
         """Grants are written to policy.toml."""
@@ -1981,7 +2015,7 @@ capabilities:
         for h in list(flow.request.headers.keys()):
             if h.lower() not in ("authorization", "accept", "host", "content-length"):
                 del flow.request.headers[h]
-        flow.metadata["agent"] = "testbot"
+        _set_agent(flow, "testbot")
         return flow
 
     def test_bound_contract_allows_matching_request(self, make_flow, gw_with_contract):
@@ -2000,8 +2034,8 @@ capabilities:
         )
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
                     gw.request(flow)
 
         if flow.response is not None:
@@ -2018,7 +2052,7 @@ capabilities:
         )
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gw.request(flow)
 
         assert flow.response is not None
@@ -2040,7 +2074,7 @@ capabilities:
         )
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gw.request(flow)
 
         assert flow.response is not None
@@ -2063,7 +2097,7 @@ capabilities:
         )
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gw.request(flow)
 
         assert flow.response is not None
@@ -2087,7 +2121,7 @@ capabilities:
         )
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gw.request(flow)
 
         assert flow.response is not None
@@ -2196,7 +2230,7 @@ capabilities:
         for h in list(flow.request.headers.keys()):
             if h.lower() not in ("authorization", "accept", "host", "content-length", "content-type"):
                 del flow.request.headers[h]
-        flow.metadata["agent"] = "testbot"
+        _set_agent(flow, "testbot")
         return flow
 
     def test_path_traversal_denied(self, make_flow, gw_with_contract):
@@ -2210,7 +2244,7 @@ capabilities:
             url="https://api.hygienesvc.com/api/v1/items/../items?category=A",
         )
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gw.request(flow)
         assert flow.response is not None
         body = json.loads(flow.response.content)
@@ -2228,10 +2262,10 @@ capabilities:
             (b"accept", b"text/html"),
             (b"accept", b"application/json"),
         ])
-        flow.metadata["agent"] = "testbot"
+        _set_agent(flow, "testbot")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gw.request(flow)
         assert flow.response is not None
         body = json.loads(flow.response.content)
@@ -2248,8 +2282,8 @@ capabilities:
         )
         flow.request.headers["content-type"] = "text/plain"
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
                     gw.request(flow)
         assert flow.response is not None
         body = json.loads(flow.response.content)
@@ -2263,8 +2297,8 @@ capabilities:
             url="https://api.hygienesvc.com/api/v1/items?category=A",
         )
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
                     gw.request(flow)
         if flow.response is not None:
             body = json.loads(flow.response.content)
@@ -2358,11 +2392,11 @@ capabilities:
         token = env["test-agent"]["denysvc"]
 
         flow = make_flow(url="http://api.denysvc.internal/v1/things", headers={"X-Auth-Token": token})
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
                     gw.request(flow)
 
         assert flow.response is not None
@@ -2376,11 +2410,11 @@ capabilities:
         token = env["test-agent"]["allowsvc"]
 
         flow = make_flow(url="http://api.allowsvc.internal/v1/things", headers={"X-Auth-Token": token})
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
                     gw.request(flow)
 
         assert flow.response is None, "expected credential swap to proceed, not a redirect"
@@ -2392,12 +2426,12 @@ capabilities:
         token = env["test-agent"]["allowsvc"]
 
         flow = make_flow(url="http://api.allowsvc.internal/v1/things", headers={"X-Auth-Token": token})
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
-                    with patch("service_gateway.write_event") as mock_write:
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
+                    with patch("service_gateway.write_event", autospec=True) as mock_write:
                         gw.request(flow)
 
         events = [c[0][0] for c in mock_write.call_args_list]
@@ -2409,12 +2443,12 @@ capabilities:
         token = env["test-agent"]["denysvc"]
 
         flow = make_flow(url="http://api.denysvc.internal/v1/things", headers={"X-Auth-Token": token})
-        flow.metadata["agent"] = "test-agent"
+        _set_agent(flow, "test-agent")
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
-                    with patch("service_gateway.write_event") as mock_write:
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                with patch("service_gateway.get_vault", autospec=True, return_value=vault_obj):
+                    with patch("service_gateway.write_event", autospec=True) as mock_write:
                         gw.request(flow)
 
         events = [c[0][0] for c in mock_write.call_args_list]

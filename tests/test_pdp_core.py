@@ -8,10 +8,13 @@ policy stack.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
+
+from safeyolo.policy.engine import PolicyEngine
 
 # =========================================================================
 # Helpers
@@ -26,6 +29,14 @@ class FakeLegacyDecision:
     permission: object = None
     reason: str = ""
     budget_remaining: int | None = None
+
+
+@dataclass
+class FakeBaseline:
+    payload: str
+
+    def model_dump_json(self) -> str:
+        return self.payload
 
 
 def _make_http_event(
@@ -82,10 +93,8 @@ def _make_http_event(
 @pytest.fixture
 def mock_engine():
     """Create a mock PolicyEngine with default allow behaviour."""
-    engine = MagicMock()
-    engine.get_baseline.return_value = MagicMock(
-        model_dump_json=MagicMock(return_value='{"test": "policy"}')
-    )
+    engine = create_autospec(PolicyEngine(), spec_set=True)
+    engine.get_baseline.return_value = FakeBaseline('{"test": "policy"}')
     engine.get_task_policy.return_value = None
     engine.evaluate_request.return_value = FakeLegacyDecision(
         effect="allow", reason="Allowed by policy", budget_remaining=100
@@ -105,7 +114,7 @@ def pdp_core(mock_engine):
     """Create a PDPCore with a mocked engine."""
     from pdp.core import PDPCore
 
-    with patch("pdp.core.PolicyEngine", return_value=mock_engine):
+    with patch("pdp.core.PolicyEngine", return_value=mock_engine, autospec=True,):
         core = PDPCore(baseline_path=Path("/fake/policy.yaml"))
     return core
 
@@ -551,8 +560,7 @@ class TestEffectToReasonCodes:
         assert codes == ["ALLOWED"]
 
     def test_allow_with_permission_includes_action(self, pdp_core):
-        perm = MagicMock()
-        perm.action = "network:request"
+        perm = SimpleNamespace(action="network:request")
         legacy = FakeLegacyDecision(effect="allow", reason="OK", permission=perm)
         codes = pdp_core._effect_to_reason_codes(legacy)
         assert "ALLOWED" in codes
@@ -650,7 +658,7 @@ class TestApplyTaskPolicy:
         pdp_core._task_policies[hostile] = policy_data
         caplog.set_level(logging.DEBUG, logger="safeyolo.pdp.core")
 
-        with patch("pdp.core.validate_task_id", return_value=hostile):
+        with patch("pdp.core.validate_task_id", return_value=hostile, autospec=True,):
             pdp_core._apply_task_policy(hostile)
 
         message = next(r.getMessage() for r in caplog.records if "Applied task policy" in r.getMessage())
@@ -664,7 +672,7 @@ class TestApplyTaskPolicy:
         pdp_core._task_policies[hostile] = {"permissions": "not-a-list"}
         caplog.set_level(logging.WARNING, logger="safeyolo.pdp.core")
 
-        with patch("pdp.core.validate_task_id", return_value=hostile):
+        with patch("pdp.core.validate_task_id", return_value=hostile, autospec=True,):
             pdp_core._apply_task_policy(hostile)
 
         message = next(r.getMessage() for r in caplog.records if "Failed to apply" in r.getMessage())
@@ -677,7 +685,7 @@ class TestApplyTaskPolicy:
         hostile = "task-1\nINFO security.audit forged=true"
         caplog.set_level(logging.WARNING, logger="safeyolo.pdp.core")
 
-        with patch("pdp.core.validate_task_id", return_value=hostile):
+        with patch("pdp.core.validate_task_id", return_value=hostile, autospec=True,):
             result = pdp_core.upsert_task_policy(hostile, {"permissions": "not-a-list"})
 
         assert result["status"] == "error"
@@ -714,8 +722,8 @@ class TestPolicyHash:
         h1 = pdp_core.policy_hash
 
         # Change the baseline content
-        mock_engine.get_baseline.return_value = MagicMock(
-            model_dump_json=MagicMock(return_value='{"test": "different_policy"}')
+        mock_engine.get_baseline.return_value = FakeBaseline(
+            '{"test": "different_policy"}'
         )
         h2 = pdp_core.policy_hash
         assert h1 != h2
@@ -741,8 +749,7 @@ class TestGetPdpSingleton:
 
         reset_pdp()
 
-        with patch("pdp.core.PolicyEngine") as MockEngine:
-            MockEngine.return_value = MagicMock()
+        with patch("pdp.core.PolicyEngine", autospec=True,) as MockEngine:
             MockEngine.return_value.get_baseline.return_value = None
             MockEngine.return_value.get_task_policy.return_value = None
             MockEngine.return_value.baseline_path = None
@@ -759,8 +766,7 @@ class TestGetPdpSingleton:
 
         reset_pdp()
 
-        with patch("pdp.core.PolicyEngine") as MockEngine:
-            MockEngine.return_value = MagicMock()
+        with patch("pdp.core.PolicyEngine", autospec=True,) as MockEngine:
             MockEngine.return_value.get_baseline.return_value = None
             MockEngine.return_value.get_task_policy.return_value = None
             MockEngine.return_value.baseline_path = None
@@ -776,8 +782,8 @@ class TestGetPdpSingleton:
 
         reset_pdp()
 
-        with patch("pdp.core.PolicyEngine") as MockEngine:
-            mock_inst = MagicMock()
+        with patch("pdp.core.PolicyEngine", autospec=True,) as MockEngine:
+            mock_inst = MockEngine.return_value
             mock_inst.get_baseline.return_value = None
             mock_inst.get_task_policy.return_value = None
             mock_inst.baseline_path = None

@@ -24,7 +24,7 @@ import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import create_autospec, patch
 
 # ---------------------------------------------------------------------------
 # Specificity score
@@ -1033,7 +1033,7 @@ class TestReloadCallbacks:
     def test_on_reload_called_on_initial_load(self):
         from safeyolo.policy.loader import PolicyLoader
 
-        callback = Mock()
+        callback = create_autospec(lambda: None, spec_set=True)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1045,7 +1045,7 @@ class TestReloadCallbacks:
     def test_add_reload_callback_called_on_reload(self):
         from safeyolo.policy.loader import PolicyLoader
 
-        callback = Mock()
+        callback = create_autospec(lambda: None, spec_set=True)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1209,7 +1209,7 @@ permissions:
             # Inject the filesystem error directly. Mode-000 is not a portable
             # proxy for read failure: gVisor DirectFS can permit the open even
             # when os.access() correctly reports it as unreadable.
-            with patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+            with patch.object(Path, "read_text", side_effect=PermissionError("denied"), autospec=True,):
                 loader = PolicyLoader(baseline_path=path)
                 assert len(loader.baseline.permissions) == 0
 
@@ -1260,7 +1260,7 @@ class TestAuditEvents:
             path = Path(tmpdir) / "policy.yaml"
             path.write_text("permissions: []")
 
-            with patch("safeyolo.policy.loader.write_event") as mock_write:
+            with patch("safeyolo.policy.loader.write_event", autospec=True,) as mock_write:
                 PolicyLoader(baseline_path=path)
 
             # Should have emitted ops.policy_reload
@@ -1270,7 +1270,7 @@ class TestAuditEvents:
     def test_missing_file_emits_policy_error_event(self):
         from safeyolo.policy.loader import PolicyLoader
 
-        with patch("safeyolo.policy.loader.write_event") as mock_write:
+        with patch("safeyolo.policy.loader.write_event", autospec=True,) as mock_write:
             PolicyLoader(baseline_path=Path("/nonexistent/policy.yaml"))
 
         event_names = [call.args[0] for call in mock_write.call_args_list]
@@ -1285,7 +1285,7 @@ class TestAuditEvents:
 permissions:
   - invalid_field: "should fail"
 """)
-            with patch("safeyolo.policy.loader.write_event") as mock_write:
+            with patch("safeyolo.policy.loader.write_event", autospec=True,) as mock_write:
                 PolicyLoader(baseline_path=path)
 
         event_names = [call.args[0] for call in mock_write.call_args_list]

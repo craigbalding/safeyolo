@@ -231,25 +231,25 @@ class TestPackageInstalledDispatch:
 
     def test_apt_calls_dpkg_query(self):
         calls, run = self._record_run()
-        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run):
+        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run, autospec=True,):
             assert _package_installed("apt", "skopeo") is True
         assert calls == [["dpkg-query", "-W", "-f=${Status}", "skopeo"]]
 
     def test_dnf_calls_rpm_q(self):
         calls, run = self._record_run()
-        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run):
+        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run, autospec=True,):
             assert _package_installed("dnf", "skopeo") is True
         assert calls == [["rpm", "-q", "skopeo"]]
 
     def test_apk_calls_apk_info(self):
         calls, run = self._record_run()
-        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run):
+        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run, autospec=True,):
             assert _package_installed("apk", "skopeo") is True
         assert calls == [["apk", "info", "-e", "skopeo"]]
 
     def test_pacman_calls_pacman_q(self):
         calls, run = self._record_run()
-        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run):
+        with patch("safeyolo.commands.bootstrap.subprocess.run", side_effect=run, autospec=True,):
             assert _package_installed("pacman", "skopeo") is True
         assert calls == [["pacman", "-Q", "skopeo"]]
 
