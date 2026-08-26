@@ -8,7 +8,6 @@ existing `safeyolo agent add` command; this module never mints agent IDs.
 from __future__ import annotations
 
 import json
-import sys
 import time
 from datetime import UTC, datetime
 
@@ -128,6 +127,30 @@ def grant(
 
 
 @coord_app.command()
+def revoke(
+    room: str = typer.Argument(..., help="Room name"),
+    agent_name: str = typer.Argument(..., help="Registered agent name"),
+) -> None:
+    """Revoke a registered agent's active grant on a room.
+
+    Room semantic per #371: agent loses access while revoked; retained
+    history is not erased. A subsequent `grant` re-exposes whatever is
+    still retained.
+    """
+    api.bootstrap()
+    agent_id = _resolve_agent_id(agent_name)
+    try:
+        changed = api.revoke_grant(room, "agent", agent_id)
+    except api.NotFoundError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+    if changed:
+        console.print(f"[green]revoked[/]  {agent_name} on {room}")
+    else:
+        console.print(f"[yellow]no active grant to revoke[/]  {agent_name} on {room}")
+
+
+@coord_app.command()
 def chat(
     room: str = typer.Argument(..., help="Room name"),
     observe: bool = typer.Option(
@@ -211,19 +234,47 @@ def _interactive_loop(room: str, cursor: int) -> None:
 
 @coord_app.command("mcp-config")
 def mcp_config() -> None:
-    """Print the MCP server config for Claude Code sessions.
+    """Print instructions and MCP config for wiring an agent to the coord API.
 
-    The same config works for every agent's sandbox: identity comes from the
-    per-agent proxy attribution (transport-derived per #371), not from any
-    env var. Drop this into each agent's `.mcp.json`.
+    The MCP server is a standalone one-file adapter shipped at
+    `contrib/safeyolo-coord-mcp.py`. It only depends on `mcp` and `httpx` and
+    calls the coord Agent API via `http://_safeyolo.proxy.internal`, so the
+    agent sandbox does NOT need SafeYolo (and mitmproxy) installed.
+
+    Identity is transport-derived: whichever sandbox the MCP server runs in
+    is attributed to that agent by the SafeYolo proxy. Same config works for
+    every agent.
     """
-    python = sys.executable
+    console.print("""[bold]1. Stage the standalone MCP server inside the agent sandbox[/]
+
+Copy `contrib/safeyolo-coord-mcp.py` from this checkout into the sandbox
+(via mount, host-script, or the agent's own tooling). Make it executable.
+
+[bold]2. Install its two dependencies inside the sandbox[/]
+
+  [dim]uv pip install --system 'mcp>=1.0' 'httpx>=0.25'[/]
+    (or your sandbox's usual python package tool)
+
+[bold]3. Add the MCP config to your agent's harness[/]
+
+Below is a minimal `.mcp.json` snippet. Adjust `command` to the path where
+you staged the script inside the sandbox.
+""")
     config = {
         "mcpServers": {
             "safeyolo-coord": {
-                "command": python,
-                "args": ["-m", "safeyolo.coord.mcp_server"],
+                "command": "python3",
+                "args": ["/path/to/safeyolo-coord-mcp.py"],
             }
         }
     }
     console.print(json.dumps(config, indent=2))
+    console.print("""
+[bold]Notes[/]
+
+- No agent_id env var needed. Identity comes from proxy attribution.
+- Bearer token is read fresh from /app/agent_token per call (rotation-safe).
+- Overrides (rarely needed):
+    SAFEYOLO_COORD_BASE_URL   default http://_safeyolo.proxy.internal
+    SAFEYOLO_COORD_TOKEN_PATH default /app/agent_token
+""")

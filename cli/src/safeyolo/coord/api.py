@@ -20,6 +20,7 @@ from .identity import (
 )
 
 READ_PAGE_MAX = 200
+MAX_BODY_BYTES = 256 * 1024
 
 
 class GrantError(PermissionError):
@@ -133,6 +134,43 @@ def _check_grant(
         )
 
 
+def revoke_grant(
+    room_name: str,
+    principal_kind: str,
+    principal_id: str,
+) -> bool:
+    """Revoke the caller-specified active grant on `room_name`.
+
+    Sets `revoked_at` on the most-recent grant record for the principal.
+    Idempotent — a no-op if there is no active grant. Returns True if a
+    grant was actually revoked, False if there was nothing to revoke.
+
+    Room-semantics per #371: revocation removes access but does NOT erase
+    history. A future re-grant exposes whatever is still retained.
+    """
+    if principal_kind not in {"agent", "operator"}:
+        raise ValueError(f"principal_kind must be 'agent' or 'operator', got {principal_kind!r}")
+    now = store.now_ms()
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+        row = conn.execute(
+            """SELECT granted_at FROM memberships
+               WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
+                 AND revoked_at IS NULL
+               ORDER BY granted_at DESC LIMIT 1""",
+            (room_id, principal_kind, principal_id),
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            """UPDATE memberships SET revoked_at = ?
+               WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
+                 AND granted_at = ?""",
+            (now, room_id, principal_kind, principal_id, row["granted_at"]),
+        )
+    return True
+
+
 # ---------- agent-facing operations ----------
 
 
@@ -179,6 +217,8 @@ def send(
         raise ValueError("sender_agent_id required when sender_kind='agent'")
     if sender_kind == "operator" and sender_agent_id is not None:
         raise ValueError("sender_agent_id must be None when sender_kind='operator'")
+    if len(body.encode("utf-8")) > MAX_BODY_BYTES:
+        raise ValueError(f"body too large ({len(body.encode('utf-8'))} > {MAX_BODY_BYTES} bytes)")
 
     content_type = validate_content_type(declared_content_type)
     instance_id = get_or_create_instance_id()
@@ -263,22 +303,46 @@ async def wait_for_message(
     since_sequence: int,
     timeout_seconds: float = 300.0,
     poll_interval_seconds: float = 0.5,
+    limit: int = 1,
+    exclude_self: bool = True,
 ) -> dict[str, Any]:
-    """Long-blocking read for the next message with sequence > since_sequence.
+    """Long-blocking read for the next message the caller has not sent.
 
-    Attention properties are harness-specific per #371: this blocks the
-    MCP tool call; Claude Code resumes the LLM when the call returns.
-    Returns immediately on first match or when timeout expires (empty page).
+    Semantics:
+    - Wake is an attention edge, not a bulk fetch. Default `limit=1` returns
+      the first message that qualifies; callers do their bulk catch-up via
+      `read_room` from their cursor.
+    - By default (`exclude_self=True`) the caller's own sends do NOT wake
+      it — otherwise an agent that mis-advances its cursor spins on its
+      own traffic. `read_room` remains inclusive for canonical history.
+    - Blocks the tool call; Claude Code resumes the LLM when it returns.
+      Returns an empty page on timeout so the caller can retry.
     """
+    limit = max(1, min(limit, READ_PAGE_MAX))
     deadline = asyncio.get_running_loop().time() + timeout_seconds
     while True:
+        # Read a wide window so filtering doesn't miss peer messages when
+        # the caller has posted recent traffic; then apply exclusion and
+        # trim to `limit`.
         page = read_room(
             room_name, principal_kind, principal_id,
             since_sequence=since_sequence, limit=READ_PAGE_MAX,
         )
-        if page["messages"]:
-            return page
+        candidates = page["messages"]
+        if exclude_self and principal_kind == "agent":
+            candidates = [m for m in candidates if m["sender_agent_id"] != principal_id]
+        elif exclude_self and principal_kind == "operator":
+            candidates = [m for m in candidates if m["sender_kind"] != "operator"]
+        if candidates:
+            trimmed = candidates[:limit]
+            return {
+                **page,
+                "messages": trimmed,
+                "next_cursor": trimmed[-1]["sequence"],
+                "has_more": len(candidates) > limit,
+            }
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
-            return page  # empty; caller sees `messages: []` and can retry
+            # Empty; preserve original next_cursor so caller can re-arm.
+            return {**page, "messages": []}
         await asyncio.sleep(min(poll_interval_seconds, remaining))

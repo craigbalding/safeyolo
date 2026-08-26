@@ -136,3 +136,121 @@ def test_wait_for_message_times_out_gracefully(coord_env):
 
     page = asyncio.run(scenario())
     assert page["messages"] == []
+
+
+@pytest.mark.timeout(5)
+def test_wait_excludes_self_by_default(coord_env):
+    """Reviewer point 4: an agent's own send does not wake it."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.send("r", "agent", AGENT_A, "my own message")
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=0.5, poll_interval_seconds=0.1,
+        )
+
+    page = asyncio.run(scenario())
+    assert page["messages"] == []
+
+
+@pytest.mark.timeout(5)
+def test_wait_includes_self_when_asked(coord_env):
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.send("r", "agent", AGENT_A, "my own message")
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=1, poll_interval_seconds=0.1,
+            exclude_self=False,
+        )
+
+    page = asyncio.run(scenario())
+    assert len(page["messages"]) == 1
+    assert page["messages"][0]["body"] == "my own message"
+
+
+def test_read_room_always_includes_self(coord_env):
+    """Canonical history is inclusive per reviewer point 4."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.send("r", "agent", AGENT_A, "my own message")
+
+    page = api.read_room("r", "agent", AGENT_A)
+    assert len(page["messages"]) == 1
+    assert page["messages"][0]["body"] == "my own message"
+
+
+@pytest.mark.timeout(5)
+def test_wait_default_limit_is_one(coord_env):
+    """Reviewer point 5: wake is an attention edge, not a bulk fetch."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+    for i in range(5):
+        api.send("r", "agent", AGENT_B, f"msg {i}")
+
+    async def scenario():
+        return await api.wait_for_message(
+            "r", "agent", AGENT_A, since_sequence=0,
+            timeout_seconds=1, poll_interval_seconds=0.05,
+        )
+
+    page = asyncio.run(scenario())
+    assert len(page["messages"]) == 1
+    assert page["has_more"] is True
+
+
+def test_revoke_grant_returns_true_when_active(coord_env):
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    assert api.revoke_grant("r", "agent", AGENT_A) is True
+
+
+def test_revoke_grant_idempotent(coord_env):
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.revoke_grant("r", "agent", AGENT_A)
+    assert api.revoke_grant("r", "agent", AGENT_A) is False
+
+
+def test_revoke_then_ops_fail(coord_env):
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.send("r", "agent", AGENT_A, "before")
+    api.revoke_grant("r", "agent", AGENT_A)
+
+    with pytest.raises(api.GrantError):
+        api.join_room("r", "agent", AGENT_A)
+    with pytest.raises(api.GrantError):
+        api.send("r", "agent", AGENT_A, "denied")
+    with pytest.raises(api.GrantError):
+        api.read_room("r", "agent", AGENT_A)
+
+
+def test_regrant_exposes_retained_history(coord_env):
+    """Room semantic per #371: re-grant sees retained history."""
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    api.grant("r", "agent", AGENT_B)
+
+    api.send("r", "agent", AGENT_B, "before revoke")
+    api.revoke_grant("r", "agent", AGENT_A)
+    api.send("r", "agent", AGENT_B, "during revoke")
+    api.grant("r", "agent", AGENT_A)
+
+    page = api.read_room("r", "agent", AGENT_A)
+    bodies = [m["body"] for m in page["messages"]]
+    assert "before revoke" in bodies
+    assert "during revoke" in bodies
+
+
+def test_body_over_max_rejected(coord_env):
+    api.create_room("r")
+    api.grant("r", "agent", AGENT_A)
+    big = "x" * (api.MAX_BODY_BYTES + 1024)
+    with pytest.raises(ValueError, match="body too large"):
+        api.send("r", "agent", AGENT_A, big)

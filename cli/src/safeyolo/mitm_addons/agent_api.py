@@ -41,6 +41,39 @@ log = logging.getLogger("safeyolo.agent-api")
 AGENT_API_HOST = "_safeyolo.proxy.internal"
 MAX_EXPLAIN_LINES = 10000
 
+# Set on first coord request per process (see _handle_coord). Ensures the
+# addon works on a fresh host without a preceding `safeyolo coord init`.
+_COORD_BOOTSTRAPPED = False
+
+# Generous per-message body cap. Prevents a single peer message from
+# ballooning an LLM context or the SQLite store; not intended as a rate limit
+# or a policy control.
+COORD_MAX_BODY_BYTES = 256 * 1024
+
+
+class _CoordValidationError(ValueError):
+    """Raised by the coord addon route for stable/actionable 400 messages
+    (`invalid since`, `invalid limit`, etc.). Distinct from `ValueError`
+    raised by the underlying coord.api to keep error messages sanitised."""
+
+
+def _parse_qs_int(raw, name: str, *, default: int) -> int:
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise _CoordValidationError(f"invalid {name}") from exc
+
+
+def _parse_qs_float(raw, name: str, *, default: float) -> float:
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as exc:
+        raise _CoordValidationError(f"invalid {name}") from exc
+
 
 class AgentAPI:
     """Authenticated agent self-service API, reached through the proxy via a virtual hostname."""
@@ -126,16 +159,31 @@ class AgentAPI:
             self._respond(flow, 401, {"error": "Invalid agent token"})
             return
 
-        # Plumb: host-mediated agent-to-agent collaboration. Handled async
-        # (long-poll capable) before the sync handler table.
-        if path.startswith("/plumb"):
-            await self._handle_plumb(flow, path, method)
-            return
-
-        # Coord v0: multi-party rooms per #371. Async because
-        # wait_for_message long-polls; sync sub-ops route through it.
-        if path.startswith("/api/coord/"):
-            await self._handle_coord(flow, path, method)
+        # Async internal-API dispatch: Plumb + coord long-poll routes. Any
+        # unhandled exception here MUST NOT allow mitmproxy to continue
+        # upstream — the request was recognised as a SafeYolo internal API
+        # call, so failing to respond synthetically is a boundary escape
+        # (agent-api URL becomes a real outbound DNS lookup). Wrap the whole
+        # block; individual handlers still map their own known errors to
+        # specific status codes before returning.
+        if path.startswith("/plumb") or path.startswith("/api/coord/"):
+            try:
+                if path.startswith("/plumb"):
+                    await self._handle_plumb(flow, path, method)
+                else:
+                    await self._handle_coord(flow, path, method)
+            except Exception as exc:
+                log.error(
+                    f"Async internal-API handler error on {sanitize_for_log(path)}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                # Only synthesise if the handler did not already set a response
+                # (its own known-error branches would have).
+                if flow.response is None:
+                    self._respond(
+                        flow, 500,
+                        {"error": f"Internal error: {type(exc).__name__}"},
+                    )
             return
 
         # Route to handler
@@ -303,8 +351,22 @@ class AgentAPI:
         the main agents_store. This is the enforcement point the coord
         substrate is designed around — see #371 identity model.
         """
-        from safeyolo.agents_store import get_or_mint_agent_id, load_all_agents
+        import asyncio
+
+        from safeyolo.agents_store import (
+            get_agent_id,
+            get_or_mint_agent_id,
+            load_all_agents,
+        )
         from safeyolo.coord import api as coord_api
+
+        # Lazy one-time bootstrap: idempotent, but only takes the SQLite
+        # lock on the first call per process. Ensures the addon works on a
+        # fresh host without a preceding `safeyolo coord init`.
+        global _COORD_BOOTSTRAPPED
+        if not _COORD_BOOTSTRAPPED:
+            await asyncio.to_thread(coord_api.bootstrap)
+            _COORD_BOOTSTRAPPED = True
 
         agent_name = self._resolve_agent_id(flow)
         if agent_name is None:
@@ -313,7 +375,13 @@ class AgentAPI:
         if agent_name not in load_all_agents():
             self._respond(flow, 403, {"error": f"Agent {agent_name!r} not registered"})
             return
-        agent_id = get_or_mint_agent_id(agent_name)
+
+        # Hot path: lock-free read. Fall back to lock+mint ONLY for pre-fa72c77
+        # agents that predate the agent_id field; that path runs in a thread
+        # so the mitmproxy event loop is never blocked by fcntl.flock.
+        agent_id = get_agent_id(agent_name)
+        if agent_id is None:
+            agent_id = await asyncio.to_thread(get_or_mint_agent_id, agent_name)
 
         m = re.match(r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait)$", path)
         if not m:
@@ -329,15 +397,28 @@ class AgentAPI:
             if op == "join" and method == "POST":
                 result = coord_api.join_room(room, "agent", agent_id)
             elif op == "send" and method == "POST":
+                raw = flow.request.content or b""
+                if len(raw) > COORD_MAX_BODY_BYTES:
+                    self._respond(flow, 413, {
+                        "error": "request body too large",
+                        "max_bytes": COORD_MAX_BODY_BYTES,
+                    })
+                    return
                 try:
-                    data = json.loads(flow.request.content or b"{}")
+                    data = json.loads(raw or b"{}")
                 except json.JSONDecodeError:
-                    self._respond(flow, 400, {"error": "Invalid JSON body"})
+                    self._respond(flow, 400, {"error": "invalid JSON body"})
                     return
                 body = data.get("body")
                 declared = data.get("declared_content_type", "text/markdown")
                 if not isinstance(body, str) or not body:
                     self._respond(flow, 400, {"error": "body required (non-empty string)"})
+                    return
+                if len(body.encode("utf-8")) > COORD_MAX_BODY_BYTES:
+                    self._respond(flow, 413, {
+                        "error": "body too large",
+                        "max_bytes": COORD_MAX_BODY_BYTES,
+                    })
                     return
                 result = coord_api.send(
                     room_name=room,
@@ -348,8 +429,8 @@ class AgentAPI:
                 )
             elif op == "messages" and method == "GET":
                 q = flow.request.query
-                since = int(q.get("since", "0") or "0")
-                limit = int(q.get("limit", "50") or "50")
+                since = _parse_qs_int(q.get("since", "0"), "since", default=0)
+                limit = _parse_qs_int(q.get("limit", "50"), "limit", default=50)
                 result = coord_api.read_room(
                     room_name=room,
                     principal_kind="agent",
@@ -359,16 +440,23 @@ class AgentAPI:
                 )
             elif op == "wait" and method == "GET":
                 q = flow.request.query
-                since = int(q.get("since", "0") or "0")
-                timeout = float(q.get("timeout", "30") or "30")
+                since = _parse_qs_int(q.get("since", "0"), "since", default=0)
+                timeout = _parse_qs_float(q.get("timeout", "30"), "timeout", default=30.0)
                 # Cap timeout to keep pathological long-polls from stuck-forever
                 timeout = min(max(0.1, timeout), 300.0)
+                # Wake is an attention edge, not a bulk fetch: default limit=1
+                # (see coord.api.wait_for_message docstring). Callers wanting
+                # more per wake explicitly ask for it.
+                limit = _parse_qs_int(q.get("limit", "1"), "limit", default=1)
+                include_self = q.get("include_self", "").lower() in ("1", "true", "yes")
                 result = await coord_api.wait_for_message(
                     room_name=room,
                     principal_kind="agent",
                     principal_id=agent_id,
                     since_sequence=since,
                     timeout_seconds=timeout,
+                    limit=limit,
+                    exclude_self=not include_self,
                 )
             else:
                 self._respond(flow, 405, {"error": "Method Not Allowed", "op": op})
@@ -379,7 +467,14 @@ class AgentAPI:
         except coord_api.GrantError as e:
             self._respond(flow, 403, {"error": str(e)})
             return
+        except _CoordValidationError as e:
+            # Stable, actionable string ("invalid since" etc.) — safe to echo.
+            self._respond(flow, 400, {"error": str(e)})
+            return
         except (ValueError, TypeError) as e:
+            # Known validation from coord.api (envelope shape, content_type,
+            # sender_kind consistency). Message is under our control there;
+            # anything else is caught by the outer generic boundary.
             self._respond(flow, 400, {"error": str(e)})
             return
 

@@ -48,7 +48,6 @@ dependencies = [
     "pydantic>=2.10.0,<2.12",
     "cryptography>=50.0.0",
     "tomlkit>=0.12.0",
-    "mcp>=1.0",
 ]
 
 [project.scripts]
@@ -122,6 +121,7 @@ packages = ["cli/src/safeyolo"]
 "contrib/mise-shell-host-setup.sh"      = "safeyolo/contrib/mise-shell-host-setup.sh"
 "contrib/lib/stage-safeyolo-context.sh" = "safeyolo/contrib/lib/stage-safeyolo-context.sh"
 "contrib/HOST_SCRIPT_GUIDE.md"          = "safeyolo/contrib/HOST_SCRIPT_GUIDE.md"
+"contrib/safeyolo-coord-mcp.py"         = "safeyolo/contrib/safeyolo-coord-mcp.py"
 
 [tool.hatch.build.targets.wheel.sources]
 "cli/src" = ""

@@ -29,19 +29,17 @@ break in what stage 0 set out to prove.
 | **Identity spoof** | **POST body carrying `sender_agent_id` + `sender_kind` ignored; envelope carried transport-derived id** |
 | Operator envelope | `sender_kind=operator` with `sender_agent_id` JSON `null`, not the internal `"operator"` principal_id |
 | Per-agent identity | bob `ag-280746d1...` vs claude `ag-a94101b1...` — distinct, no token on either side |
+| No-grant 403 | operator manually revoked claude's `stage0` grant via `UPDATE memberships SET revoked_at = ...`; claude then got 403 on all four ops (join / send / read / wait) with the expected error shape. Added to the record after this report's original writing. |
 
 Concurrency result matters beyond itself: the entire cursor/pagination contract
 rests on `rowid` monotonicity and had no direct coverage. It holds.
 
-## NOT TESTED — blocking
-
-**No-grant 403.** The only authorization case with zero live coverage. Every
-other identity result is about correctly *granting* access; nothing tests
-correctly *denying* it. Needs a room the tester is not a member of:
-
-    safeyolo coord room create locked --member claude
-
-Stage 0 should not be called done without this.
+The no-grant test was the only untested authorization case at report time.
+The operator drove the revocation via manual SQL (no `coord revoke` command
+existed yet) and claude ran the four operations from a still-live sandbox
+session. The `revoked_at IS NULL` filter in `_check_grant` correctly rejected
+the revoked membership on every op. Grant→revoke→re-grant contract now has
+end-to-end coverage.
 
 ## Findings
 
@@ -160,27 +158,6 @@ a false sense of coverage.
   that MCP provides attention is not what was exercised; the attention
   mechanism is harness behaviour, not substrate behaviour.
 
-## Room vs audit
-
-Agents coordinated successfully on a detail the room never carried — the
-operator relayed it out of band. Reconstructing that from room history alone
-yields nothing.
-
-Off-room operator content *does* traverse SafeYolo as LLM-API payloads and is
-retained in flow bodies, so it is archived — but attributed as a request body,
-not as a coordination event with sender/room/sequence. Forensically
-recoverable, not coordination-legible.
-
-Conclusion (bob + claude agreed): **the coordination plane is not the audit
-surface.** Room answers "how did the agents coordinate"; JSONL cross-referenced
-with per-agent flow bodies answers "what did the operator instruct". Two
-archives, two questions, neither complete alone. #371 should say so plainly.
-
-Note: this could not be verified from inside a sandbox — `_resolve_agent_id`
-scopes flow search to the calling agent, so a peer cannot read another agent's
-traffic. That isolation working is why cross-agent forensic reconstruction
-needs an operator with unscoped access.
-
 ## Environment note
 
 Partway through the session `/workspace/.venv/bin/python` became a symlink to
@@ -193,5 +170,8 @@ cross-platform mount is a hazard.
 ## Test suite
 
 `cli/tests/test_coord_v0.py` (8) + `tests/test_agent_api_coord.py` (9) — 17
-passed. Note none of them cover findings #1, #9, or #12; the upstream-escape
-case in particular deserves a regression test.
+passed at report time. Note none of them cover findings #1, #9, or #12; the
+upstream-escape case in particular deserves a regression test. Addressed in
+the follow-up fix commit which raises the total to 39 tests including
+multi-point upstream-escape, wait-only self-exclusion, wait limit, revoke
+roundtrip, body cap, and stable-validation-error coverage.
