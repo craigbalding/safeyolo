@@ -46,7 +46,7 @@ class IdentitySource(str, Enum):
 
 
 class CredentialType(str, Enum):
-    """Known credential types (extensible)."""
+    """Well-known credential types retained for API compatibility."""
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GITHUB = "github"
@@ -148,7 +148,10 @@ class CredentialBlock(BaseModel):
     detected: bool = Field(..., description="Whether any credential was detected")
 
     # Present only if detected=True
-    type: CredentialType | None = Field(None, description="Detected credential type")
+    # Catalogue and policy-defined credential families are intentionally open.
+    # Known values remain enums for backwards compatibility; sensors may send a
+    # stable custom string without requiring a PDP schema release first.
+    type: CredentialType | str | None = Field(None, description="Detected credential type")
     fingerprint: str | None = Field(None, description="HMAC fingerprint (e.g., a1b2c3d4...)")
     confidence: CredentialConfidence | None = Field(None, description="Detection confidence")
 
@@ -380,7 +383,7 @@ def create_http_event(
     path: str,
     headers_present: list[str],
     credential_detected: bool = False,
-    credential_type: CredentialType | None = None,
+    credential_type: CredentialType | str | None = None,
     credential_fingerprint: str | None = None,
     credential_confidence: CredentialConfidence | None = None,
     body_present: bool = False,

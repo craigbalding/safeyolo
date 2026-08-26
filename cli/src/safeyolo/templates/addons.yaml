@@ -26,6 +26,7 @@ addons:
     - api-key
     - x-auth-token
     - apikey
+    - x-goog-api-key
     safe_headers:
       exact_names:
       - host
@@ -98,10 +99,10 @@ addons:
     target_hosts: []
 
   # pattern_scanner — scans request/response bodies for secrets using regex.
-  # Add patterns to builtin_sets for custom scanning.
+  # The secrets builtin covers common credential formats in content and headers.
   pattern_scanner:
     enabled: true
-    builtin_sets: []
+    builtin_sets: [secrets]
 
   # request_logger — writes JSONL audit log. Add high-frequency hosts to
   # quiet_hosts to reduce log volume.
@@ -112,4 +113,4 @@ addons:
       - statsig.anthropic.com
       paths:
         api.anthropic.com:
-        - /api/event_logging/batch
+        - /api/event_logging/*batch

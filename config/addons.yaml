@@ -21,6 +21,7 @@ addons:
     - api-key
     - x-auth-token
     - apikey
+    - x-goog-api-key
     safe_headers:
       exact_names:
       - host
@@ -90,7 +91,7 @@ addons:
 
   pattern_scanner:
     enabled: true
-    builtin_sets: []
+    builtin_sets: [secrets]
 
   request_logger:
     enabled: true
@@ -99,4 +100,4 @@ addons:
       - statsig.anthropic.com
       paths:
         api.anthropic.com:
-        - /api/event_logging/batch
+        - /api/event_logging/*batch

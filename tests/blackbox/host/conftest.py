@@ -101,8 +101,8 @@ def _agent_map_mode_specs() -> list[str]:
 # OpenAI pattern: sk-proj-[a-zA-Z0-9_-]{80,}
 TEST_OPENAI_KEY = "sk-proj-" + "a1b2c3d4e5f6g7h8i9j0" * 4
 
-# Anthropic pattern: sk-ant-api[a-zA-Z0-9-]{90,}
-TEST_ANTHROPIC_KEY = "sk-ant-api03-" + "a1b2c3d4e5f6g7h8i9j0" * 5
+# Anthropic API key shape: versioned prefix + 93 base64url chars + AA.
+TEST_ANTHROPIC_KEY = "sk-ant-api03-" + "a1b2c3d4e5f6g7h8i9j0" * 4 + "a1b2c3d4e5f6g" + "AA"
 
 # GitHub pattern: gh[ps]_[a-zA-Z0-9]{36}
 TEST_GITHUB_TOKEN = "ghp_" + "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"

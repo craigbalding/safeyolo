@@ -306,8 +306,18 @@ class TestBuiltinPatternSets:
         openai_rules = [r for r in rules if r.name == "openai-api-key"]
         assert len(openai_rules) == 1
 
-        test_key = "sk-abcdefghij1234567890abcdefghij1234567890abcdefgh"
+        test_key = "sk-proj-abcdefghij1234567890abcdefghij1234567890"
         assert openai_rules[0].matches(test_key) is not None
+
+    def test_secrets_patterns_label_generic_sk_key_as_ambiguous(self):
+        """A generic sk- value must not be misattributed to OpenAI."""
+        from safeyolo.detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
+
+        rules = load_patterns_from_config(BUILTIN_PATTERN_SETS["secrets"])
+        ambiguous = [r for r in rules if r.name == "ambiguous-sk-api-key"]
+
+        assert len(ambiguous) == 1
+        assert ambiguous[0].matches("sk-deepseekCompatibleOpaqueValue123") is not None
 
     def test_secrets_patterns_detect_github_pat(self):
         """Test secrets set detects a GitHub PAT by name."""
@@ -319,6 +329,36 @@ class TestBuiltinPatternSets:
 
         test_token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
         assert github_rules[0].matches(test_token) is not None
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "sk-ant-api03-" + "A_b" * 32,
+            "sk-ant-admin01-" + "A_b" * 32,
+            "sk-ant-oat01-" + "A_b" * 32,
+            "sk-ant-ort01-" + "A_b" * 32,
+            "sk-ant-sid01-" + "A_b" * 32,
+            "sk-ant-ccsr-" + "eyJhbGciOiJIUzI1NiJ9.payload.signature",
+            "sk-ant-cc-" + "eyJhbGciOiJIUzI1NiJ9.payload.signature",
+            "sk-ant-si-" + "eyJhbGciOiJIUzI1NiJ9.payload.signature",
+        ],
+        ids=["api", "admin", "access", "refresh", "session", "sandbox", "cc", "ingress"],
+    )
+    def test_secrets_pattern_detects_anthropic_families(self, token):
+        from safeyolo.detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
+
+        rules = load_patterns_from_config(BUILTIN_PATTERN_SETS["secrets"])
+        anthropic_rule = next(rule for rule in rules if rule.name == "anthropic-api-key")
+
+        assert anthropic_rule.matches(token) is not None
+
+    def test_anthropic_pattern_requires_a_credential_body(self):
+        from safeyolo.detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
+
+        rules = load_patterns_from_config(BUILTIN_PATTERN_SETS["secrets"])
+        anthropic_rule = next(rule for rule in rules if rule.name == "anthropic-api-key")
+
+        assert anthropic_rule.matches("sk-ant-oat01-short") is None
 
 
 class TestPatternScanner:
@@ -461,6 +501,25 @@ class TestPatternScanner:
             scanner.request(flow)
 
         assert flow.metadata.get("pattern_matched") == "project-id"
+        assert flow.metadata.get("pattern_location") == "body"
+
+    def test_builtin_secrets_scan_refresh_token_in_json_body(self, scanner, make_flow):
+        """Refresh tokens travel in OAuth JSON bodies and must hit the DLP net."""
+        scanner.load_policy_config({
+            "addons": {"pattern_scanner": {"builtin_sets": ["secrets"]}}
+        })
+        token = "sk-ant-ort01-" + "A_b" * 32
+        flow = make_flow(
+            method="POST",
+            url="https://console.anthropic.com/v1/oauth/token",
+            content=f'{{"refresh_token": "{token}"}}',
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_request = False
+            scanner.request(flow)
+
+        assert flow.metadata.get("pattern_matched") == "anthropic-api-key"
         assert flow.metadata.get("pattern_location") == "body"
 
     def test_request_respects_scope(self, scanner, make_flow):

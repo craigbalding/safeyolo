@@ -155,6 +155,26 @@ class TestPDPCoreEvaluate:
         # Network evaluation should NOT have been called
         mock_engine.evaluate_request.assert_not_called()
 
+    def test_catalogue_credential_type_reaches_policy_engine(self, pdp_core, mock_engine):
+        from pdp.schemas import CredentialConfidence
+
+        event = _make_http_event(
+            host="openrouter.ai",
+            credential_detected=True,
+            credential_type="openrouter",
+            credential_confidence=CredentialConfidence.HIGH,
+            credential_fingerprint="abc123",
+        )
+
+        pdp_core.evaluate(event)
+
+        mock_engine.evaluate_credential.assert_called_once_with(
+            credential_type="openrouter",
+            destination="openrouter.ai",
+            path="/",
+            credential_hmac="abc123",
+        )
+
     def test_gateway_deny_short_circuits_before_network(self, pdp_core, mock_engine):
         from pdp.schemas import Effect
 

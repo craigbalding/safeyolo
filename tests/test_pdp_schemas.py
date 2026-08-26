@@ -71,6 +71,19 @@ class TestCredentialBlockDetectedTrue:
         assert block.fingerprint is None
         assert block.detected is True
 
+    def test_detected_true_accepts_catalogue_defined_type(self):
+        """New provider families do not require a PDP schema release."""
+        from pdp.schemas import CredentialBlock, CredentialConfidence
+
+        block = CredentialBlock(
+            detected=True,
+            type="openrouter",
+            fingerprint="abc123",
+            confidence=CredentialConfidence.HIGH,
+        )
+
+        assert block.type == "openrouter"
+
 
 class TestCredentialBlockDetectedFalse:
     """Contract: When detected=False, type/fingerprint/confidence must all be None."""
