@@ -1,20 +1,12 @@
-"""
-Test that all addons can be imported in standalone mode.
-
-This catches missing try/except ImportError fallbacks for relative imports.
-When mitmproxy loads addons via `-s addons/foo.py`, they run standalone
-(not as a package), so `from .utils import X` fails without a fallback.
-"""
+"""Test that all production addons import through their package paths."""
 
 import subprocess
 import sys
 from pathlib import Path
 
-# Post-#200-phase-5 layout: only the actual mitmproxy addon files live
-# in `cli/src/safeyolo/mitm_addons/`. Shared libraries moved to
-# `safeyolo.core`, `safeyolo.policy`, `safeyolo.storage` and are not
-# loaded via `-s`, so they're not expected to import standalone the
-# same way.
+# Post-#200-phase-5 layout: only actual mitmproxy addon files live in
+# `cli/src/safeyolo/mitm_addons/`. Issue #397 made these package modules the
+# production entrypoints instead of loading them as standalone `-s` scripts.
 ADDON_MODULES = [
     "admin_api",
     "admin_shield",
@@ -44,8 +36,7 @@ ADDON_MODULES = [
     "transport_guard",
 ]
 
-# Names that must be importable after the addon loads standalone.
-# Scoped to mitm_addons/ entries post-phase-5.
+# Names that must be available after the addon loads as a package module.
 REQUIRED_NAMES = {
     "circuit_breaker": ["SecurityAddon", "atomic_write_json", "BackgroundWorker", "make_block_response"],
     "pattern_scanner": ["SecurityAddon", "make_block_response"],
@@ -56,35 +47,29 @@ REQUIRED_NAMES = {
 }
 
 
-class TestStandaloneImports:
-    """Test addons import without package context."""
+class TestPackageImports:
+    """Test production addons import with their real package context."""
 
-    def test_all_addons_import_standalone(self):
-        """Each addon must be importable when not in a package.
-
-        Simulates: python -c "import sys; sys.path.insert(0, 'addons'); import foo"
-
-        This catches missing fallback imports like:
-            try:
-                from .utils import X
-            except ImportError:
-                from safeyolo.core.utils import X  # <-- This fallback must exist
-        """
+    def test_all_addons_import_as_package_modules(self):
+        """Each configured production module imports in a fresh process."""
         addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
         assert addons_dir.exists(), f"Addons dir not found: {addons_dir}"
+        project_root = addons_dir.parents[3]
+        cli_src = addons_dir.parents[1]
 
         failures = []
 
         for module in ADDON_MODULES:
-            # Import in subprocess with addons dir in path (standalone mode)
             result = subprocess.run(
                 [
                     sys.executable,
                     "-c",
-                    # Put cli/src on sys.path first so absolute `safeyolo.*`
-                    # imports resolve (subprocess inherits the runner venv
-                    # which doesn't always have safeyolo installed editable).
-                    f"import sys; sys.path.insert(0, '{addons_dir.parent.parent}'); sys.path.insert(0, '{addons_dir}'); import {module}",
+                    (
+                        "import importlib, sys; "
+                        f"sys.path.insert(0, {str(project_root)!r}); "
+                        f"sys.path.insert(0, {str(cli_src)!r}); "
+                        f"importlib.import_module('safeyolo.mitm_addons.{module}')"
+                    ),
                 ],
                 capture_output=True,
                 text=True,
@@ -98,24 +83,19 @@ class TestStandaloneImports:
                 failures.append(f"{module}: {error_line}")
 
         assert not failures, (
-            "Addons failed standalone import (missing fallback imports?):\n"
+            "Addons failed package import:\n"
             + "\n".join(f"  - {f}" for f in failures)
         )
 
-    def test_required_names_available_standalone(self):
-        """Verify required names are importable in standalone mode.
-
-        Catches bugs where fallback import exists but is missing a name:
-            try:
-                from .utils import X, Y, Z
-            except ImportError:
-                from safeyolo.core.utils import X, Y  # Z is missing!
-        """
+    def test_required_names_available_from_package_modules(self):
+        """Verify shared addon dependencies remain exposed after import."""
         addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
+        project_root = addons_dir.parents[3]
+        cli_src = addons_dir.parents[1]
         failures = []
 
         for module, required_names in REQUIRED_NAMES.items():
-            # Check each required name exists after standalone import
+            # Check each required name exists after package import.
             missing_expr = f"[n for n in {required_names!r} if not hasattr(m, n)]"
 
             result = subprocess.run(
@@ -124,9 +104,10 @@ class TestStandaloneImports:
                     "-c",
                     f"""
 import sys
-sys.path.insert(0, '{addons_dir.parent.parent}')
-sys.path.insert(0, '{addons_dir}')
-import {module} as m
+import importlib
+sys.path.insert(0, {str(project_root)!r})
+sys.path.insert(0, {str(cli_src)!r})
+m = importlib.import_module('safeyolo.mitm_addons.{module}')
 missing = {missing_expr}
 if missing:
     print(','.join(missing))
@@ -143,7 +124,7 @@ if missing:
                 failures.append(f"{module}: missing {missing}")
 
         assert not failures, (
-            "Addons missing required names in standalone mode:\n"
+            "Package addons missing required names:\n"
             + "\n".join(f"  - {f}" for f in failures)
         )
 
@@ -165,9 +146,9 @@ if missing:
         """Every file in `mitm_addons/` must define an `addons` list.
 
         Phase 6 guard from #200. mitm_addons/ is reserved for actual
-        mitmproxy entrypoints — the addon chain in
-        `safeyolo.proxy.ADDON_CHAIN` walks this directory and loads
-        each file with `-s`. A file here without an `addons = [...]`
+        mitmproxy entrypoints — `ProductionAddons` imports the modules named
+        by `safeyolo.proxy.ADDON_CHAIN` and directly registers each module's
+        list. A file here without an `addons = [...]`
         assignment is either a stray library (belongs in `core/`,
         `policy/`, etc.) or a half-written addon that will load
         silently without doing anything.
@@ -208,7 +189,7 @@ if missing:
             "list (the mitmproxy entrypoint). Offenders:\n"
             + "\n".join(f"  - {name}" for name in missing)
             + "\n\nEither add `addons = [YourAddon()]` (or `addons: list = []` "
-            "if the module is pure infrastructure loaded by path), or move "
+            "if the module is pure infrastructure), or move "
             "the file out of mitm_addons/ into the appropriate subpackage "
             "(core/, policy/, storage/, detection/)."
         )

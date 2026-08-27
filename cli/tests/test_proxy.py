@@ -32,40 +32,20 @@ class _HealthResponse:
 class TestAddonChain:
     """Tests for ADDON_CHAIN ordering and completeness."""
 
-    def test_all_addons_load_with_mitmproxy_script_loader(self, monkeypatch):
-        """Every packaged addon loads through mitmdump's real loader.
+    def test_all_addons_load_as_one_package_generation(self):
+        """The production container imports every configured package module."""
+        from importlib import import_module
 
-        A normal Python import is not equivalent: mitmproxy executes addon
-        scripts without first registering their transient module in
-        ``sys.modules``.  Exercising ``load_script`` here catches import-time
-        failures that ordinary unit tests cannot reproduce.
-        """
-        from mitmproxy.addons.script import load_script
+        from safeyolo.mitm_addons import ADDON_CHAIN, ProductionAddons
 
-        from safeyolo.proxy import ADDON_CHAIN, _find_addons_dir, _find_pdp_dir
+        production = ProductionAddons()
+        expected = []
+        for addon_file in ADDON_CHAIN:
+            module_name = addon_file.removesuffix(".py")
+            module = import_module(f"safeyolo.mitm_addons.{module_name}")
+            expected.extend(module.addons)
 
-        addons_dir = _find_addons_dir()
-        assert addons_dir is not None
-        pdp_dir = _find_pdp_dir()
-        assert pdp_dir is not None
-        monkeypatch.syspath_prepend(str(pdp_dir.parent))
-
-        addon_paths = {
-            path.name: path
-            for path in addons_dir.glob("*.py")
-            if path.name != "__init__.py"
-        }
-        missing = sorted(set(ADDON_CHAIN) - addon_paths.keys())
-        unconfigured = sorted(addon_paths.keys() - set(ADDON_CHAIN))
-        failures = [
-            name
-            for name, path in sorted(addon_paths.items())
-            if load_script(str(path)) is None
-        ]
-
-        assert missing == []
-        assert unconfigured == []
-        assert failures == []
+        assert production.addons == expected
 
     def test_addon_chain_has_expected_count(self):
         """ADDON_CHAIN contains the complete ordered addon set."""
@@ -754,42 +734,27 @@ class TestBuildCommand:
 
         assert "flow_pruner_max=4321" in cmd
 
-    def test_addons_loaded_in_chain_order(self, cmd_env):
-        """Addons appear as -s flags in ADDON_CHAIN order."""
-        from safeyolo.proxy import ADDON_CHAIN, _build_command
-
-        cmd = _build_command(
-            admin_token="tok",
-            **cmd_env,
-        )
-
-        # Extract addon paths in order
-        addon_paths = []
-        for i, arg in enumerate(cmd):
-            if arg == "-s":
-                addon_paths.append(cmd[i + 1])
-
-        # Should have all addons (all files exist)
-        assert len(addon_paths) == len(ADDON_CHAIN)
-
-        # Verify order matches ADDON_CHAIN
-        for path, expected_name in zip(addon_paths, ADDON_CHAIN):
-            assert path.endswith(expected_name)
-
-    def test_missing_addon_skipped(self, cmd_env):
-        """Addon file that doesn't exist on disk is not included in command."""
+    def test_production_addons_are_not_watched_scripts(self, cmd_env):
+        """The production command leaves mitmproxy's scripts option empty."""
         from safeyolo.proxy import _build_command
 
-        # Remove one addon file
-        (cmd_env["addons_dir"] / "metrics.py").unlink()
-
         cmd = _build_command(
             admin_token="tok",
             **cmd_env,
         )
 
-        addon_paths = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-s"]
-        assert not any(p.endswith("metrics.py") for p in addon_paths)
+        assert "-s" not in cmd
+        assert not any(arg.startswith("scripts=") for arg in cmd)
+
+    def test_addon_directory_contents_do_not_change_command(self, cmd_env):
+        """Source changes are consumed only by the next traffic process."""
+        from safeyolo.proxy import _build_command
+
+        before = _build_command(admin_token="tok", **cmd_env)
+        (cmd_env["addons_dir"] / "metrics.py").unlink()
+        after = _build_command(admin_token="tok", **cmd_env)
+
+        assert after == before
 
     def test_policy_toml_preferred_over_yaml(self, cmd_env):
         """When both policy.toml and policy.yaml exist, toml is used."""

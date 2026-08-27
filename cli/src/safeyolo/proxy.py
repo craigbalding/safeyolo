@@ -15,6 +15,7 @@ from .ignore_hosts import (
     build_ignore_patterns,
     normalize_ignore_hosts,
 )
+from .mitm_addons import ADDON_CHAIN as ADDON_CHAIN
 from .tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS, validate_tailnet_port
 from .timing import child_environment as _profile_child_environment
 from .timing import enter as _profile_enter
@@ -28,52 +29,6 @@ from .traffic_session import (
 log = logging.getLogger("safeyolo.proxy")
 
 DEFAULT_FLOW_CACHE = 5_000
-
-# Addon load order — mirrors scripts/start-safeyolo.sh exactly
-ADDON_CHAIN = [
-    # UDS ingress is imported by traffic_master before mitmproxy parses its
-    # options. Initial modes are supplied by the custom entry point, so no
-    # bootstrap addon or transient TCP listener is needed here.
-    # Layer 0: Infrastructure
-    "pid_writer.py",     # writes SAFEYOLO_PROXY_PID_FILE on `running`
-    "file_logging.py",
-    "memory_monitor.py",
-    "admin_shield.py",
-    "agent_api.py",
-    "loop_guard.py",
-    "request_id.py",
-    "operator_provenance.py",
-    "service_discovery.py",
-    "sse_streaming.py",
-    "policy_engine.py",
-    # Layer 0.5: Service Gateway
-    "service_gateway.py",
-    # Layer 1: Network Policy
-    "network_guard.py",
-    "circuit_breaker.py",
-    # Layer 2: Security Inspection
-    "credential_guard.py",
-    "pattern_scanner.py",
-    "test_context.py",
-    # Layer 3: Observability
-    "flow_recorder.py",
-    "request_logger.py",
-    "ignored_host_logger.py",
-    "metrics.py",
-    "traffic_scope.py",
-    "flow_pruner.py",
-    "admin_api.py",
-    # Layer 4: Reserved diagnostic destinations (issue #213 PR B).
-    # probe_sink is the normal terminator (early marker in requestheaders,
-    # local 200 in request). transport_guard is the correlated late
-    # request-hook failsafe (client-correlatable) + the structural
-    # server_connect no-egress backstop (audit-only for catastrophic
-    # chain failures). Load order matters: transport_guard's request
-    # hook must run AFTER probe_sink so a normally-terminated probe
-    # bypasses the failsafe entirely.
-    "probe_sink.py",
-    "transport_guard.py",
-]
 
 
 def _pid_file() -> Path:
@@ -500,13 +455,9 @@ def _build_command(
     # canonical View/Proxyserver. It must run inside the private tmux PTY.
     cmd = [sys.executable, "-m", "safeyolo.traffic_master"]
 
-    # UnixMode is registered directly by safeyolo.traffic_master before
-    # mitmproxy parses options. The remaining script addons provide policy,
-    # observability, and administrative behavior.
-    for addon_file in ADDON_CHAIN:
-        addon_path = addons_dir / addon_file
-        if addon_path.exists():
-            cmd.extend(["-s", str(addon_path)])
+    # UnixMode and the production addon chain are registered directly by
+    # safeyolo.traffic_master. Keeping the scripts option empty prevents
+    # mitmproxy's ScriptLoader from watching and partially reloading the chain.
 
     # Core options
     cmd.extend(["--set", f"confdir={cert_dir}"])

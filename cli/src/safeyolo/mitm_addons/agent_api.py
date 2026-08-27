@@ -29,12 +29,12 @@ import re
 import urllib.parse
 
 from mitmproxy import ctx, http
-from request_id import REQUEST_ID_PATTERN as _REQUEST_ID_PATTERN
 
 from safeyolo.coord.nats_client import NatsPublishOutcomeUnknown, NatsUnavailable
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from safeyolo.core.identity import resolve_agent_identity
 from safeyolo.core.utils import sanitize_for_log, write_event
+from safeyolo.mitm_addons.request_id import REQUEST_ID_PATTERN as _REQUEST_ID_PATTERN
 from safeyolo.storage.flow_store import is_text_like_content_type
 from safeyolo.test_context_contract import TestContextError, parse_test_context
 

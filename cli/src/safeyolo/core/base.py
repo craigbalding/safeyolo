@@ -31,7 +31,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from mitmproxy import http
-from service_discovery import get_service_discovery
 
 from pdp import get_policy_client
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
@@ -51,6 +50,7 @@ from safeyolo.core.utils import (
     make_block_response,
     write_event,
 )
+from safeyolo.mitm_addons.service_discovery import get_service_discovery
 
 
 @dataclass

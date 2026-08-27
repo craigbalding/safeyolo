@@ -22,11 +22,11 @@ Usage:
 import logging
 
 from mitmproxy import http
-from request_id import ensure_request_id
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.identity import resolve_agent_identity
 from safeyolo.core.utils import find_addon, make_block_response, sanitize_for_log, write_event
+from safeyolo.mitm_addons.request_id import ensure_request_id
 
 log = logging.getLogger("safeyolo.loop-guard")
 

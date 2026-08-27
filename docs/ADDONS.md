@@ -40,6 +40,15 @@ Complete documentation for SafeYolo's mitmproxy addons.
 
 Agent sandboxes have no direct internet access — structurally. All traffic routes through SafeYolo, where addons inspect, control, and log requests.
 
+Production addon lifecycle is owned by `safeyolo.traffic_master`. It imports
+the package modules in `mitm_addons.ADDON_CHAIN` and registers their `addons`
+lists directly with mitmproxy's addon manager. The production command does not
+use mitmproxy's watched `-s` script path: addon code and imported `safeyolo.*`
+modules remain on one process generation until the traffic process restarts.
+Configuration watchers described below are separate and continue to reload
+their data. A `safeyolo stop && safeyolo start` loads changed code together
+without restarting running agents.
+
 ## Overview
 
 Addons are loaded in this order (order matters for security):
