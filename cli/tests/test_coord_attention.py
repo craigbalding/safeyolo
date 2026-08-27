@@ -447,6 +447,21 @@ def test_puback_recovery_generation_concurrency_and_corruption(
                 (corrupt_room_id,),
             ).fetchone()[0] == baseline
 
+        # Feed delivery remains SQLite-only once an edge is materialized.
+        # Stopping NATS must not suppress the current-generation edges.
+        nr.stop_server()
+        nats_client.reset_for_tests()
+        without_nats = await api.wait_for_attention(
+            AGENTS["bob"],
+            since_sequence=recovered["next_cursor"],
+            timeout_seconds=0.1,
+            limit=20,
+        )
+        assert {
+            first["envelope"]["msg_id"],
+            second["envelope"]["msg_id"],
+        } <= {edge["object_id"] for edge in without_nats["edges"]}
+
     asyncio.run(scenario())
 
 
@@ -459,7 +474,7 @@ def test_wait_checks_ledger_again_after_subscribing(monkeypatch):
     def read(_agent_id, _since, _limit):
         nonlocal calls
         calls += 1
-        if calls == 1:
+        if calls <= 2:
             return {"edges": [], "next_cursor": 0}
         return {
             "edges": [
@@ -495,7 +510,35 @@ def test_wait_checks_ledger_again_after_subscribing(monkeypatch):
         )
     )
     assert page["next_cursor"] == 1
-    assert calls == 2
+    assert calls == 3
+
+
+def test_wait_returns_durable_ledger_edge_without_touching_nats(monkeypatch):
+    edge = {
+        "attention_id": "attn-" + "b" * 32,
+        "room_id": "rm-r",
+        "kind": "message",
+        "object_id": "msg-m",
+        "revision_or_sequence": 1,
+    }
+
+    def read(_agent_id, _since, _limit):
+        return {"edges": [edge], "next_cursor": 1}
+
+    async def forbidden_recovery(_agent_id):
+        raise AssertionError("durable ledger delivery must not depend on NATS")
+
+    monkeypatch.setattr(attention, "read_feed", read)
+    monkeypatch.setattr(
+        attention, "recover_attention_for_agent", forbidden_recovery
+    )
+
+    page = asyncio.run(
+        attention.wait_for_attention(
+            AGENTS["bob"], since_sequence=0, timeout_seconds=1, limit=1
+        )
+    )
+    assert page == {"edges": [edge], "next_cursor": 1}
 
 
 def test_hint_publish_crash_retries_without_new_logical_edge(tmp_path, monkeypatch):

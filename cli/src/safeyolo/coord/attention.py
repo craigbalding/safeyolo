@@ -607,6 +607,13 @@ async def wait_for_attention(
     fetch_window_seconds: float = WAIT_HINT_WINDOW_S,
 ) -> dict[str, Any]:
     """Wait on one identity-derived feed without consuming server-side state."""
+    page = read_feed(agent_id, since_sequence, limit)
+    if page["edges"] or page["next_cursor"] != since_sequence:
+        return page
+
+    # SQLite is authoritative: an available durable edge must be returnable
+    # even while JetStream/NATS is down. Only consult the recovery source when
+    # the ledger is empty, then read SQLite again before subscribing.
     await recover_attention_for_agent(agent_id)
     page = read_feed(agent_id, since_sequence, limit)
     if page["edges"] or page["next_cursor"] != since_sequence:
