@@ -108,6 +108,10 @@ _ATTENTION_STATEMENTS = (
        )""",
     """CREATE INDEX coord_attention_edges_room_object
        ON coord_attention_edges(room_id, kind, object_id)""",
+    """CREATE UNIQUE INDEX coord_attention_edges_message_logical
+       ON coord_attention_edges(
+           recipient_agent_id, object_id, membership_granted_at
+       ) WHERE kind = 'message'""",
     """CREATE TABLE coord_message_attention_projection (
            room_id TEXT PRIMARY KEY REFERENCES rooms(room_id),
            last_sequence INTEGER NOT NULL DEFAULT 0

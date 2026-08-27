@@ -331,6 +331,23 @@ def test_v2_attention_migration_preserves_state(kernel_env):
                     edge[4],
                 ),
             )
+        conn.execute(
+            """INSERT INTO coord_attention_edges
+               (recipient_agent_id, feed_sequence, attention_id, room_id,
+                kind, object_id, revision_or_sequence,
+                membership_granted_at, created_at)
+               VALUES (?, 3, ?, ?, 'message', 'msg-canonical', 10, ?, 1)""",
+            (edge[0], "attn-" + "c" * 32, edge[1], edge[4]),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO coord_attention_edges
+                   (recipient_agent_id, feed_sequence, attention_id, room_id,
+                    kind, object_id, revision_or_sequence,
+                    membership_granted_at, created_at)
+                   VALUES (?, 4, ?, ?, 'message', 'msg-canonical', 11, ?, 1)""",
+                (edge[0], "attn-" + "d" * 32, edge[1], edge[4]),
+            )
 
 
 def test_v2_attention_migration_failure_rolls_back_and_retries(kernel_env):
