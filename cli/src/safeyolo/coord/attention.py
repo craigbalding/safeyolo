@@ -614,34 +614,51 @@ async def wait_for_attention(
     # SQLite is authoritative: an available durable edge must be returnable
     # even while JetStream/NATS is down. Only consult the recovery source when
     # the ledger is empty, then read SQLite again before subscribing.
-    await recover_attention_for_agent(agent_id)
+    try:
+        await recover_attention_for_agent(agent_id)
+    except nats_client.NatsUnavailable:
+        # Recovery transport failed after the first ledger read. Close that
+        # race with one final authoritative read before surfacing the outage.
+        page = read_feed(agent_id, since_sequence, limit)
+        if page["edges"] or page["next_cursor"] != since_sequence:
+            return page
+        raise
     page = read_feed(agent_id, since_sequence, limit)
     if page["edges"] or page["next_cursor"] != since_sequence:
         return page
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_seconds
-    async with nats_client.attention_subscription(agent_id) as subscription:
-        # Ledger-after-subscribe closes the query/subscribe race.
+    try:
+        async with nats_client.attention_subscription(agent_id) as subscription:
+            # Ledger-after-subscribe closes the query/subscribe race.
+            page = read_feed(agent_id, since_sequence, limit)
+            if page["edges"] or page["next_cursor"] != since_sequence:
+                return page
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return page
+                await subscription.wait(min(fetch_window_seconds, remaining))
+                page = read_feed(agent_id, since_sequence, limit)
+                if page["edges"] or page["next_cursor"] != since_sequence:
+                    return page
+                # A PubAck can be followed by a failed SQLite projection, in
+                # which case no wake hint exists yet. Periodically replay the
+                # durable JetStream intent while the long-poll is outstanding,
+                # but only after checking the authoritative ledger again.
+                await recover_attention_for_agent(agent_id)
+                page = read_feed(agent_id, since_sequence, limit)
+                if page["edges"] or page["next_cursor"] != since_sequence:
+                    return page
+    except nats_client.NatsUnavailable:
+        # Core NATS is only a wake path. If subscribe/wait/recovery lost its
+        # transport after SQLite advanced, return the durable edge instead of
+        # replacing it with a transient hint-substrate error.
         page = read_feed(agent_id, since_sequence, limit)
         if page["edges"] or page["next_cursor"] != since_sequence:
             return page
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return page
-            await subscription.wait(min(fetch_window_seconds, remaining))
-            page = read_feed(agent_id, since_sequence, limit)
-            if page["edges"] or page["next_cursor"] != since_sequence:
-                return page
-            # A PubAck can be followed by a failed SQLite projection, in
-            # which case no wake hint exists yet. Periodically replay the
-            # durable JetStream intent while the long-poll is outstanding,
-            # but only after checking the authoritative ledger again.
-            await recover_attention_for_agent(agent_id)
-            page = read_feed(agent_id, since_sequence, limit)
-            if page["edges"] or page["next_cursor"] != since_sequence:
-                return page
+        raise
 
 
 def _public_message(envelope: dict) -> dict[str, Any]:

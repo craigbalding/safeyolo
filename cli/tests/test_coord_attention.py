@@ -590,6 +590,50 @@ def test_wait_reads_ledger_after_hint_before_retrying_recovery(monkeypatch):
     assert reads == 4
 
 
+def test_wait_closes_ledger_race_when_hint_subscription_fails(monkeypatch):
+    reads = 0
+    edge = {
+        "attention_id": "attn-" + "d" * 32,
+        "room_id": "rm-r",
+        "kind": "message",
+        "object_id": "msg-m",
+        "revision_or_sequence": 1,
+    }
+
+    def read(_agent_id, _since, _limit):
+        nonlocal reads
+        reads += 1
+        if reads < 3:
+            return {"edges": [], "next_cursor": 0}
+        return {"edges": [edge], "next_cursor": 1}
+
+    async def recover(_agent_id):
+        return None
+
+    class FailedContext:
+        async def __aenter__(self):
+            raise nats_client.NatsUnavailable("injected subscribe failure")
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(attention, "read_feed", read)
+    monkeypatch.setattr(attention, "recover_attention_for_agent", recover)
+    monkeypatch.setattr(
+        nats_client,
+        "attention_subscription",
+        lambda _agent: FailedContext(),
+    )
+
+    page = asyncio.run(
+        attention.wait_for_attention(
+            AGENTS["bob"], since_sequence=0, timeout_seconds=1, limit=1
+        )
+    )
+    assert page == {"edges": [edge], "next_cursor": 1}
+    assert reads == 3
+
+
 def test_hint_publish_crash_retries_without_new_logical_edge(tmp_path, monkeypatch):
     monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path / "coord"))
     monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
