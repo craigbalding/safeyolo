@@ -21,10 +21,21 @@ from nats.errors import NoServersError
 
 from safeyolo.coord import api, nats_client
 from safeyolo.coord import nats_runtime as nr
+from safeyolo.coord.identity import new_operation_id
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _grant(*args, **kwargs):
+    kwargs.setdefault("operation_id", new_operation_id())
+    return api.grant(*args, **kwargs)
+
+
+def _revoke_grant(*args, **kwargs):
+    kwargs.setdefault("operation_id", new_operation_id())
+    return api.revoke_grant(*args, **kwargs)
 
 
 @pytest.fixture
@@ -58,8 +69,8 @@ def test_publish_then_restart_message_survives(coord_env):
     nothing over stage-0's SQLite.
     """
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
-    api.grant("r", "agent", AGENT_B)
+    _grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_B)
 
     r = _run(api.send("r", "agent", AGENT_A, "durable"))
     seq_before = r["sequence"]
@@ -90,8 +101,8 @@ def test_safeyolo_stop_start_lifecycle_preserves_messages(coord_env):
     )
 
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
-    api.grant("r", "agent", AGENT_B)
+    _grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_B)
 
     r = _run(api.send("r", "agent", AGENT_A, "safeyolo restart survivor"))
     seq_before = r["sequence"]
@@ -154,7 +165,7 @@ def test_retention_truncation_surfaces_history_flags(coord_env):
     100 MiB per test.
     """
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_A)
 
     async def shrink():
         js = await nats_client.get_jetstream()
@@ -191,8 +202,8 @@ def test_cross_room_isolation_hyperactive_room_does_not_starve_peer(coord_env):
     """
     _run(api.create_room("hot"))
     _run(api.create_room("cold"))
-    api.grant("hot", "agent", AGENT_A)
-    api.grant("cold", "agent", AGENT_A)
+    _grant("hot", "agent", AGENT_A)
+    _grant("cold", "agent", AGENT_A)
 
     # Cap hot at 2 messages.
     async def cap_hot():
@@ -231,7 +242,7 @@ def test_nats_unavailable_surfaces_as_nats_unavailable_not_500(coord_env):
     proxy path down with a message-plane failure.
     """
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_A)
 
     # Kill NATS mid-flight.
     nr.stop_server()
@@ -279,13 +290,13 @@ def test_revoke_during_blocked_wait_returns_empty(coord_env):
     than deliver bob's message she now has no right to see.
     """
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
-    api.grant("r", "agent", AGENT_B)
+    _grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_B)
 
     async def scenario():
         async def revoke_then_send():
             await asyncio.sleep(0.3)
-            api.revoke_grant("r", "agent", AGENT_A)
+            _revoke_grant("r", "agent", AGENT_A)
             # After alice is revoked, bob sends. This must NOT wake alice.
             await api.send("r", "agent", AGENT_B, "not for alice")
 
@@ -314,7 +325,7 @@ def test_send_read_wait_all_fail_with_nats_unavailable_when_nats_down(coord_env)
     nats-py exception that would escape as a proxy 500 and take a
     healthy request path down with it."""
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_A)
 
     nr.stop_server()
     nats_client.reset_for_tests()
@@ -342,8 +353,8 @@ def test_body_at_api_max_survives_jetstream(coord_env):
     envelope overhead pushes the total past the limit and a valid
     max-sized body is rejected. Pin the headroom with this test."""
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
-    api.grant("r", "agent", AGENT_B)
+    _grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_B)
 
     big = "x" * api.MAX_BODY_BYTES
     r = _run(api.send("r", "agent", AGENT_A, big, sender_agent_name="alice"))
@@ -363,11 +374,11 @@ def test_body_at_api_max_survives_jetstream_non_ascii(coord_env):
     a tight stream ceiling. This test locks in the ensure_ascii=False
     fix + 2 MiB headroom."""
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
-    api.grant("r", "agent", AGENT_B)
+    _grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_B)
 
     # 128 KiB of `é` = 256 KiB UTF-8 = MAX_BODY_BYTES on the nose.
-    per_char_bytes = len("é".encode("utf-8"))
+    per_char_bytes = len("é".encode())
     assert per_char_bytes == 2
     big = "é" * (api.MAX_BODY_BYTES // per_char_bytes)
     assert len(big.encode("utf-8")) == api.MAX_BODY_BYTES
@@ -387,7 +398,7 @@ def test_missing_jetstream_stream_for_existing_room_raises_coord_data_error(coor
     hide the data loss. Must surface as CoordDataError (→ addon 500).
     delete_room_stream itself stays idempotent."""
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_A)
     room_id = next(r["room_id"] for r in api.list_rooms() if r["name"] == "r")
 
     # Directly drop the stream out from under the still-registered room.
@@ -426,8 +437,8 @@ def test_repeated_read_and_wait_do_not_grow_consumer_count(coord_env):
     explicit delete_consumer we do after every fetch keeps the
     consumer_count from creeping up under /messages+/wait traffic."""
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
-    api.grant("r", "agent", AGENT_B)
+    _grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_B)
     _run(api.send("r", "agent", AGENT_B, "seed"))
 
     room_id = next(r["room_id"] for r in api.list_rooms() if r["name"] == "r")
@@ -459,7 +470,7 @@ def test_corrupt_persisted_envelope_raises_coord_data_error(coord_env):
     rather than being ACKed and silently skipped, which would produce
     an unexplained hole in room history."""
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_A)
     room_id = next(r["room_id"] for r in api.list_rooms() if r["name"] == "r")
 
     # Publish a non-JSON payload directly onto the room's subject,
@@ -490,15 +501,15 @@ def test_revoke_during_blocked_read_raises_no_membership(coord_env):
     matches #20: post-revoke, all reads are 404.
     """
     _run(api.create_room("r"))
-    api.grant("r", "agent", AGENT_A)
-    api.grant("r", "agent", AGENT_B)
+    _grant("r", "agent", AGENT_A)
+    _grant("r", "agent", AGENT_B)
 
     async def scenario():
         async def revoke_then_send():
             # Let read_room's fetch start (~50ms), then revoke + publish
             # while the fetch is still waiting for a message.
             await asyncio.sleep(0.05)
-            api.revoke_grant("r", "agent", AGENT_A)
+            _revoke_grant("r", "agent", AGENT_A)
             await api.send("r", "agent", AGENT_B, "not for alice")
 
         read_task = asyncio.create_task(

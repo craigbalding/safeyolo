@@ -15,6 +15,18 @@ from .core.audit_schema import AuditEvent, EventKind, Severity  # noqa: F401 - r
 log = logging.getLogger("safeyolo.events")
 
 
+def append_event_strict(event: AuditEvent) -> None:
+    """Synchronously append a validated event or raise.
+
+    Coordination's transactional outbox needs a positive acknowledgement
+    before it can mark an edge delivered.  The legacy ``write_event`` helper
+    deliberately swallows write failures, so it cannot provide that contract.
+    """
+    log_path = get_logs_dir(create=True) / "safeyolo.jsonl"
+    with open(log_path, "a") as f:
+        f.write(json.dumps(event.to_jsonl()) + "\n")
+
+
 def write_event(
     event: str,
     *,

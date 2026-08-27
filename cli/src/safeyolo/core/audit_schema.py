@@ -85,6 +85,7 @@ class EventKind(StrEnum):
     ADMIN = "admin"
     AGENT = "agent"
     PLUMB = "plumb"
+    COORD = "coord"
 
 
 class Severity(StrEnum):
@@ -149,6 +150,9 @@ class AuditEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = SCHEMA_VERSION
+    event_id: str | None = Field(              # logical edge ID for deduplication
+        default=None, min_length=1, max_length=128
+    )
     ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
     event: str                              # taxonomy string e.g. "security.credential_guard"
     kind: EventKind                         # top-level category
