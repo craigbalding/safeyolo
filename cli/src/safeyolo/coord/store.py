@@ -146,6 +146,16 @@ def _user_tables(conn: sqlite3.Connection) -> set[str]:
     }
 
 
+def _user_schema_objects(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    return {
+        (row["type"], row["name"])
+        for row in conn.execute(
+            """SELECT type, name FROM sqlite_schema
+               WHERE name NOT LIKE 'sqlite_%'"""
+        )
+    }
+
+
 def _normalized_default(value: str | None) -> str | None:
     if value is None:
         return None
@@ -377,8 +387,7 @@ def _migrate_0_to_1(
     conn: sqlite3.Connection,
     after_statement: Callable[[str], None] | None,
 ) -> None:
-    tables = _user_tables(conn)
-    if not tables:
+    if not _user_schema_objects(conn):
         _run_statements(conn, _LEGACY_TABLE_STATEMENTS, after_statement)
     else:
         validate_legacy_schema(conn)

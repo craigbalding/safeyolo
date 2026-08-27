@@ -191,6 +191,28 @@ def test_malformed_unversioned_schema_is_not_blessed(kernel_env, malformation):
         }
 
 
+def test_view_only_unversioned_schema_is_not_classified_as_fresh(kernel_env):
+    path = store.db_path()
+    path.parent.mkdir(parents=True)
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE VIEW hostile AS SELECT 1 AS value")
+
+    with pytest.raises(store.LegacySchemaError):
+        store.init_schema()
+
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT type FROM sqlite_schema WHERE name = 'hostile'"
+        ).fetchone()[0] == "view"
+        assert "coord_outbox" not in {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table'"
+            )
+        }
+
+
 def test_semantically_equivalent_explicit_unique_index_is_admitted(kernel_env):
     _legacy_db(store.db_path(), room_unique=False)
     with sqlite3.connect(store.db_path()) as conn:
