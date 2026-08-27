@@ -290,6 +290,48 @@ def test_v2_attention_migration_preserves_state(kernel_env):
             "coord_message_attention_projection",
         } <= tables
 
+        edge = (
+            "ag-future",
+            "rm-v2",
+            "brief_changed",
+            "brief-room",
+            7,
+        )
+        for feed_sequence, revision in enumerate((1, 2), start=1):
+            conn.execute(
+                """INSERT INTO coord_attention_edges
+                   (recipient_agent_id, feed_sequence, attention_id, room_id,
+                    kind, object_id, revision_or_sequence,
+                    membership_granted_at, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                (
+                    edge[0],
+                    feed_sequence,
+                    f"attn-{'a' * 31}{feed_sequence}",
+                    edge[1],
+                    edge[2],
+                    edge[3],
+                    revision,
+                    edge[4],
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO coord_attention_edges
+                   (recipient_agent_id, feed_sequence, attention_id, room_id,
+                    kind, object_id, revision_or_sequence,
+                    membership_granted_at, created_at)
+                   VALUES (?, 3, ?, ?, ?, ?, 2, ?, 1)""",
+                (
+                    edge[0],
+                    "attn-" + "b" * 32,
+                    edge[1],
+                    edge[2],
+                    edge[3],
+                    edge[4],
+                ),
+            )
+
 
 def test_v2_attention_migration_failure_rolls_back_and_retries(kernel_env):
     _seed_v2_schema()

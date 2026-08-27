@@ -102,7 +102,8 @@ _ATTENTION_STATEMENTS = (
            created_at INTEGER NOT NULL,
            PRIMARY KEY (recipient_agent_id, feed_sequence),
            UNIQUE (
-               recipient_agent_id, kind, object_id, membership_granted_at
+               recipient_agent_id, kind, object_id, revision_or_sequence,
+               membership_granted_at
            )
        )""",
     """CREATE INDEX coord_attention_edges_room_object
