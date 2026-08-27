@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 
+from rich.console import Console
 from typer.testing import CliRunner
 
 from safeyolo.commands import coord, watch
@@ -71,6 +74,37 @@ def test_create_room_and_send_do_not_claim_operation_id_support():
 
     assert "operation_id" not in inspect.signature(coord.api.create_room).parameters
     assert "operation_id" not in inspect.signature(coord.api.send).parameters
+
+
+def test_interactive_send_reports_ambiguous_acceptance_without_safe_retry(
+    monkeypatch,
+):
+    output = io.StringIO()
+    monkeypatch.setattr(
+        coord,
+        "console",
+        Console(file=output, force_terminal=False, color_system=None),
+    )
+    inputs = iter(["possibly accepted", ":q"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+
+    async def ambiguous_send(*_args, **_kwargs):
+        raise coord.NatsPublishOutcomeUnknown("PubAck connection closed")
+
+    monkeypatch.setattr(coord.api, "send", ambiguous_send)
+
+    class Runtime:
+        def run(self, coroutine):
+            return asyncio.run(coroutine)
+
+    coord._interactive_loop(Runtime(), "r", 0)
+    rendered = output.getvalue()
+    normalized = " ".join(rendered.split())
+    assert "message acceptance is UNKNOWN" in normalized
+    assert "JetStream may have accepted it" in normalized
+    assert "no caller-visible send idempotency" in normalized
+    assert "NOT sent" not in rendered
+    assert "message was not accepted" not in rendered
 
 
 def test_watch_accepts_coord_event_and_deduplicates_event_id(capsys):

@@ -14,7 +14,7 @@ from .identity import coord_data_dir
 
 log = logging.getLogger("safeyolo.coord.store")
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 class SchemaError(RuntimeError):
@@ -81,6 +81,43 @@ _OPERATION_STATEMENTS = (
        )""",
     """CREATE INDEX coord_operations_created
        ON coord_operations(created_at)""",
+)
+
+_ATTENTION_STATEMENTS = (
+    """CREATE TABLE coord_attention_feeds (
+           recipient_agent_id TEXT PRIMARY KEY,
+           last_sequence INTEGER NOT NULL DEFAULT 0
+               CHECK(last_sequence >= 0)
+       )""",
+    """CREATE TABLE coord_attention_edges (
+           recipient_agent_id TEXT NOT NULL,
+           feed_sequence INTEGER NOT NULL CHECK(feed_sequence > 0),
+           attention_id TEXT NOT NULL UNIQUE,
+           room_id TEXT NOT NULL REFERENCES rooms(room_id),
+           kind TEXT NOT NULL,
+           object_id TEXT NOT NULL,
+           revision_or_sequence INTEGER NOT NULL
+               CHECK(revision_or_sequence >= 0),
+           membership_granted_at INTEGER NOT NULL,
+           created_at INTEGER NOT NULL,
+           PRIMARY KEY (recipient_agent_id, feed_sequence),
+           UNIQUE (
+               recipient_agent_id, kind, object_id, revision_or_sequence,
+               membership_granted_at
+           )
+       )""",
+    """CREATE INDEX coord_attention_edges_room_object
+       ON coord_attention_edges(room_id, kind, object_id)""",
+    """CREATE UNIQUE INDEX coord_attention_edges_message_logical
+       ON coord_attention_edges(
+           recipient_agent_id, object_id, membership_granted_at
+       ) WHERE kind = 'message'""",
+    """CREATE TABLE coord_message_attention_projection (
+           room_id TEXT PRIMARY KEY REFERENCES rooms(room_id),
+           last_sequence INTEGER NOT NULL DEFAULT 0
+               CHECK(last_sequence >= 0),
+           updated_at INTEGER NOT NULL
+       )""",
 )
 
 
@@ -415,7 +452,21 @@ def _migrate_1_to_2(
     )
 
 
-_MIGRATIONS = {1: _migrate_0_to_1, 2: _migrate_1_to_2}
+def _migrate_2_to_3(
+    conn: sqlite3.Connection,
+    after_statement: Callable[[str], None] | None,
+) -> None:
+    _run_statements(conn, _ATTENTION_STATEMENTS, after_statement)
+    from .outbox import enqueue_coord_event
+
+    enqueue_coord_event(
+        conn,
+        "coord.schema_migrated",
+        {"from_version": 2, "to_version": 3},
+    )
+
+
+_MIGRATIONS = {1: _migrate_0_to_1, 2: _migrate_1_to_2, 3: _migrate_2_to_3}
 
 
 def _enqueue_migration_failure(

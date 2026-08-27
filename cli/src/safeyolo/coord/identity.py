@@ -25,6 +25,11 @@ def new_msg_id() -> str:
     return f"msg-{uuid.uuid4().hex}"
 
 
+def new_attention_id() -> str:
+    """Mint one stable logical attention-edge identifier."""
+    return f"attn-{uuid.uuid4().hex}"
+
+
 def new_operation_id() -> str:
     """Mint a SafeYolo-generated mutation retry handle."""
     return f"op-{uuid.uuid4().hex}"

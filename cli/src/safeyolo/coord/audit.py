@@ -17,6 +17,7 @@ _SUMMARIES = {
     "coord.grant_changed": "Coord room grant changed",
     "coord.grant_revoked": "Coord room grant revoked",
     "coord.operation_conflict": "Coord operation ID conflict",
+    "coord.attention_projection_lost": "Coord attention projection lost to retention",
 }
 
 # This is deliberately an allow-list.  AuditEvent.details is generic, while
@@ -26,6 +27,7 @@ _ALLOWED_DETAIL_KEYS = frozenset(
         "actor",
         "content_hash",
         "error_class",
+        "from_sequence",
         "from_version",
         "object_id",
         "operation_id",
@@ -35,6 +37,7 @@ _ALLOWED_DETAIL_KEYS = frozenset(
         "request_hash",
         "revision",
         "room_id",
+        "to_sequence",
         "to_version",
         "transition",
     }
@@ -64,7 +67,12 @@ def build_coord_event(
         kind=EventKind.COORD,
         severity=(
             Severity.MEDIUM
-            if event_type in {"coord.migration_failed", "coord.operation_conflict"}
+            if event_type
+            in {
+                "coord.migration_failed",
+                "coord.operation_conflict",
+                "coord.attention_projection_lost",
+            }
             else Severity.LOW
         ),
         summary=summary,

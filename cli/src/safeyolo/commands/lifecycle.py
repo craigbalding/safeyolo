@@ -1,5 +1,6 @@
 """Proxy lifecycle commands: start, stop, status, build."""
 
+import asyncio
 import platform
 import secrets
 import shutil
@@ -103,6 +104,21 @@ def _start_coord_best_effort() -> None:
             kind=EventKind.OPS,
             severity=Severity.LOW,
             summary="coord bootstrap failed at start (will retry lazily on first request)",
+            addon="cli.lifecycle",
+            details={"error_type": type(err).__name__, "error": str(err)[:500]},
+        )
+        return
+
+    try:
+        asyncio.run(coord_api.recover_attention())
+    except Exception as err:  # noqa: BLE001
+        # Accepted manifests remain in JetStream. A later send or attention
+        # wait retries the same idempotent contiguous projection.
+        write_event(
+            "ops.coord_attention_recovery_failed",
+            kind=EventKind.OPS,
+            severity=Severity.LOW,
+            summary="coord attention recovery is pending",
             addon="cli.lifecycle",
             details={"error_type": type(err).__name__, "error": str(err)[:500]},
         )

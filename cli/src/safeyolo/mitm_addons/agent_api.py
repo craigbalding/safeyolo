@@ -31,7 +31,7 @@ import urllib.parse
 from mitmproxy import ctx, http
 from request_id import REQUEST_ID_PATTERN as _REQUEST_ID_PATTERN
 
-from safeyolo.coord.nats_client import NatsUnavailable
+from safeyolo.coord.nats_client import NatsPublishOutcomeUnknown, NatsUnavailable
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from safeyolo.core.identity import resolve_agent_identity
 from safeyolo.core.utils import sanitize_for_log, write_event
@@ -360,7 +360,7 @@ class AgentAPI:
         return identity.agent if identity.is_resolved else None
 
     async def _handle_coord(self, flow: http.HTTPFlow, path: str, method: str):
-        """Coord v0 routes: room join/send/read plus long-poll wait.
+        """Coord routes: room history plus identity-derived attention.
 
         Identity is resolved from per-agent transport attribution (never
         supplied by the caller), then translated to durable `agent_id` via
@@ -398,19 +398,48 @@ class AgentAPI:
         if agent_id is None:
             agent_id = await asyncio.to_thread(get_or_mint_agent_id, agent_name)
 
-        m = re.match(r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait|members)$", path)
-        if not m:
+        attention_object = re.match(
+            r"^/api/coord/attention/(attn-[0-9a-f]{32})/object$", path
+        )
+        attention_wait = path == "/api/coord/attention/wait"
+        room_route = re.match(
+            r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait|members)$",
+            path,
+        )
+        if not attention_wait and attention_object is None and room_route is None:
             # Per #20: 404 body must not confirm room existence, so no
             # "hint" that echoes what a caller probed for.
-            self._respond(flow, 404, {"error": "room not found or not accessible"})
+            self._respond(flow, 404, {"error": "coord resource not found or not accessible"})
             return
-        room = m.group(1)
-        op = m.group(2)
+        room = room_route.group(1) if room_route is not None else None
+        op = room_route.group(2) if room_route is not None else None
 
         try:
-            if op == "join" and method == "POST":
+            if attention_wait and method == "GET":
+                q = flow.request.query
+                since = _parse_qs_int(q.get("since", "0"), "since", default=0)
+                timeout = _parse_qs_float(
+                    q.get("timeout", "30"), "timeout", default=30.0
+                )
+                timeout = min(max(0.1, timeout), 300.0)
+                limit = _parse_qs_int(
+                    q.get("limit", "1"), "limit", default=1, min_val=1
+                )
+                result = await coord_api.wait_for_attention(
+                    agent_id,
+                    since_sequence=since,
+                    timeout_seconds=timeout,
+                    limit=limit,
+                )
+            elif attention_object is not None and method == "GET":
+                result = await coord_api.read_attention(
+                    agent_id, attention_object.group(1)
+                )
+            elif op == "join" and method == "POST":
+                assert room is not None
                 result = coord_api.join_room(room, "agent", agent_id)
             elif op == "send" and method == "POST":
+                assert room is not None
                 raw = flow.request.content or b""
                 # The raw HTTP body carries the JSON envelope wrapping the
                 # user body, so it must be allowed to grow above the body
@@ -426,6 +455,9 @@ class AgentAPI:
                     data = json.loads(raw or b"{}")
                 except json.JSONDecodeError:
                     self._respond(flow, 400, {"error": "invalid JSON body"})
+                    return
+                if not isinstance(data, dict):
+                    self._respond(flow, 400, {"error": "JSON body must be an object"})
                     return
                 body = data.get("body")
                 declared = data.get("declared_content_type", "text/markdown")
@@ -445,15 +477,19 @@ class AgentAPI:
                         "max_bytes": COORD_MAX_BODY_BYTES,
                     })
                     return
-                result = await coord_api.send(
-                    room_name=room,
-                    sender_kind="agent",
-                    sender_agent_id=agent_id,
-                    sender_agent_name=agent_name,  # #22: display metadata
-                    body=body,
-                    declared_content_type=declared,
-                )
+                send_args = {
+                    "room_name": room,
+                    "sender_kind": "agent",
+                    "sender_agent_id": agent_id,
+                    "sender_agent_name": agent_name,  # #22: display metadata
+                    "body": body,
+                    "declared_content_type": declared,
+                }
+                if "notify" in data:
+                    send_args["notify"] = data["notify"]
+                result = await coord_api.send(**send_args)
             elif op == "messages" and method == "GET":
+                assert room is not None
                 q = flow.request.query
                 since = _parse_qs_int(q.get("since", "0"), "since", default=0)
                 # min_val=1: zero means "no messages" which then gets
@@ -468,6 +504,7 @@ class AgentAPI:
                     limit=limit,
                 )
             elif op == "members" and method == "GET":
+                assert room is not None
                 # #22: roster discovery. Requires caller has active
                 # membership — join_room raises NoMembershipError (404 per
                 # #20 rules) if not, indistinguishable from nonexistent
@@ -503,6 +540,7 @@ class AgentAPI:
                         members.append({"principal_kind": "operator"})
                 result = {"members": members}
             elif op == "wait" and method == "GET":
+                assert room is not None
                 q = flow.request.query
                 since = _parse_qs_int(q.get("since", "0"), "since", default=0)
                 timeout = _parse_qs_float(q.get("timeout", "30"), "timeout", default=30.0)
@@ -523,14 +561,32 @@ class AgentAPI:
                     exclude_self=not include_self,
                 )
             else:
-                self._respond(flow, 405, {"error": "Method Not Allowed", "op": op})
+                self._respond(flow, 405, {"error": "Method Not Allowed"})
                 return
         except coord_api.NotFoundError:
             # Includes NoMembershipError (subclass). #20: unauthorized
             # callers and callers probing nonexistent rooms MUST see the
             # same response — no room name echoed, no distinction between
             # "doesn't exist" and "you have no membership."
-            self._respond(flow, 404, {"error": "room not found or not accessible"})
+            error = (
+                "attention not found or not accessible"
+                if attention_object is not None
+                else "room not found or not accessible"
+            )
+            self._respond(flow, 404, {"error": error})
+            return
+        except NatsPublishOutcomeUnknown:
+            self._respond(
+                flow,
+                503,
+                {
+                    "error": (
+                        "message acceptance outcome unknown; JetStream may have "
+                        "accepted it; inspect retained room history before retrying"
+                    ),
+                    "send_outcome": "unknown",
+                },
+            )
             return
         except NatsUnavailable:
             # Task #36: NATS runtime unreachable → coord surfaces 503 but
