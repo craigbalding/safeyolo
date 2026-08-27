@@ -51,7 +51,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           # Stage-0 coord acceptance extracts the exact PR base revision and
-          # runs its real APIs against the same SQLite + JetStream stores.
+          # runs the exact candidate head (not GitHub's synthetic PR merge)
+          # against the same SQLite + JetStream stores.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - name: Install uv
