@@ -40,7 +40,8 @@ from safeyolo.core.audit_schema import (
 class TestEventKind:
     def test_value_set(self):
         assert {k.value for k in EventKind} == {
-            "security", "gateway", "traffic", "ops", "admin", "agent", "plumb"
+            "security", "gateway", "traffic", "ops", "admin", "agent", "plumb",
+            "coord",
         }
 
     def test_string_inheritance(self):
@@ -389,6 +390,17 @@ class TestAuditEventRoundTrip:
                 json.loads(json.dumps(original.to_jsonl()))
             )
             assert restored.kind == kind
+
+    def test_event_id_round_trips_when_present(self):
+        original = AuditEvent(
+            event_id="evt-123",
+            event="coord.test",
+            kind=EventKind.COORD,
+            severity=Severity.LOW,
+            summary="coord event",
+        )
+        restored = AuditEvent.model_validate(original.to_jsonl())
+        assert restored.event_id == "evt-123"
 
 
 # =========================================================================

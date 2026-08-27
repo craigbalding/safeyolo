@@ -25,6 +25,16 @@ def new_msg_id() -> str:
     return f"msg-{uuid.uuid4().hex}"
 
 
+def new_operation_id() -> str:
+    """Mint a SafeYolo-generated mutation retry handle."""
+    return f"op-{uuid.uuid4().hex}"
+
+
+def new_event_id() -> str:
+    """Mint a stable logical outbox/audit edge identifier."""
+    return f"evt-{uuid.uuid4().hex}"
+
+
 def coord_data_dir() -> Path:
     override = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
     if override:

@@ -25,6 +25,7 @@ from rich.text import Text
 
 from ..agents_store import get_or_mint_agent_id, load_all_agents
 from ..coord import api
+from ..coord.identity import new_operation_id
 from ..coord.nats_client import CoordDataError, NatsUnavailable
 
 # One-shot CLI commands (room create, grant, revoke) each spin up a
@@ -185,11 +186,21 @@ def room_create(
     granted = []
     for member_name in members:
         agent_id = _resolve_agent_id(member_name)
-        api.grant(name, "agent", agent_id)
+        api.grant(
+            name,
+            "agent",
+            agent_id,
+            operation_id=new_operation_id(),
+        )
         granted.append(member_name)
 
     if with_operator:
-        api.grant(name, "operator", "operator")
+        api.grant(
+            name,
+            "operator",
+            "operator",
+            operation_id=new_operation_id(),
+        )
 
     console.print(f"[green]room created[/]  name={name}  room_id={room_id}")
     if granted:
@@ -219,19 +230,43 @@ def grant(
     permissions: str = typer.Option(
         "send,receive", "--perm", help="Comma-separated permissions"
     ),
+    operation_id: str | None = typer.Option(
+        None,
+        "--operation-id",
+        help="Retry handle; generated when omitted.",
+    ),
 ) -> None:
     """Grant a registered agent permissions on a room."""
     api.bootstrap()
     agent_id = _resolve_agent_id(agent_name)
     perms = [p.strip() for p in permissions.split(",") if p.strip()]
-    api.grant(room, "agent", agent_id, permissions=perms)
-    console.print(f"[green]granted[/]  {agent_name} on {room}: {perms}")
+    operation_id = operation_id or new_operation_id()
+    try:
+        api.grant(
+            room,
+            "agent",
+            agent_id,
+            permissions=perms,
+            operation_id=operation_id,
+        )
+    except api.OperationConflictError as exc:
+        console.print(f"[red]{exc}[/]  operation_id={operation_id}")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]granted[/]  {agent_name} on {room}: {perms}  "
+        f"operation_id={operation_id}"
+    )
 
 
 @coord_app.command()
 def revoke(
     room: str = typer.Argument(..., help="Room name"),
     agent_name: str = typer.Argument(..., help="Registered agent name"),
+    operation_id: str | None = typer.Option(
+        None,
+        "--operation-id",
+        help="Retry handle; generated when omitted.",
+    ),
 ) -> None:
     """Revoke a registered agent's active grant on a room.
 
@@ -241,15 +276,30 @@ def revoke(
     """
     api.bootstrap()
     agent_id = _resolve_agent_id(agent_name)
+    operation_id = operation_id or new_operation_id()
     try:
-        changed = api.revoke_grant(room, "agent", agent_id)
+        changed = api.revoke_grant(
+            room,
+            "agent",
+            agent_id,
+            operation_id=operation_id,
+        )
+    except api.OperationConflictError as exc:
+        console.print(f"[red]{exc}[/]  operation_id={operation_id}")
+        raise typer.Exit(1)
     except api.NotFoundError as e:
         console.print(f"[red]{e}[/]")
         raise typer.Exit(1)
     if changed:
-        console.print(f"[green]revoked[/]  {agent_name} on {room}")
+        console.print(
+            f"[green]revoked[/]  {agent_name} on {room}  "
+            f"operation_id={operation_id}"
+        )
     else:
-        console.print(f"[yellow]no active grant to revoke[/]  {agent_name} on {room}")
+        console.print(
+            f"[yellow]no active grant to revoke[/]  {agent_name} on {room}  "
+            f"operation_id={operation_id}"
+        )
 
 
 class _ChatRuntime:

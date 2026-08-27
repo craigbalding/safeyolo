@@ -40,6 +40,9 @@ BATCH_WINDOW = 2.0  # seconds
 # Schema-drift warnings: track how many we've emitted to avoid log-spam.
 _drift_warnings_emitted = 0
 _MAX_DRIFT_WARNINGS = 10
+_SEEN_EVENT_IDS_MAX = 2048
+_seen_event_ids: deque[str] = deque()
+_seen_event_id_set: set[str] = set()
 
 
 def _parse_jsonl_line(line: str) -> dict | None:
@@ -66,6 +69,16 @@ def _parse_jsonl_line(line: str) -> dict | None:
                 console.print(
                     "[dim yellow]further schema-drift warnings suppressed[/dim yellow]"
                 )
+
+    event_id = event.get("event_id")
+    if isinstance(event_id, str) and event_id:
+        if event_id in _seen_event_id_set:
+            return None
+        _seen_event_ids.append(event_id)
+        _seen_event_id_set.add(event_id)
+        if len(_seen_event_ids) > _SEEN_EVENT_IDS_MAX:
+            expired = _seen_event_ids.popleft()
+            _seen_event_id_set.discard(expired)
 
     return event
 

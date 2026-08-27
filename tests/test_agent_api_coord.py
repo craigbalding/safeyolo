@@ -18,6 +18,22 @@ from mitmproxy.test import taddons, tflow
 AGENT_TOKEN = "a" * 64
 
 
+def _grant(*args, **kwargs):
+    from safeyolo.coord import api as coord_api
+    from safeyolo.coord.identity import new_operation_id
+
+    kwargs.setdefault("operation_id", new_operation_id())
+    return coord_api.grant(*args, **kwargs)
+
+
+def _revoke_grant(*args, **kwargs):
+    from safeyolo.coord import api as coord_api
+    from safeyolo.coord.identity import new_operation_id
+
+    kwargs.setdefault("operation_id", new_operation_id())
+    return coord_api.revoke_grant(*args, **kwargs)
+
+
 @pytest.fixture
 def isolated_state(tmp_path, monkeypatch, _binary_cache):
     """Isolated policy.toml + coord dir + running nats-server per test.
@@ -90,7 +106,7 @@ def _setup_room_with_grants(room, agents):
     coord_api.bootstrap()
     _await(coord_api.create_room(room))
     for name in agents:
-        coord_api.grant(room, "agent", get_or_mint_agent_id(name))
+        _grant(room, "agent", get_or_mint_agent_id(name))
 
 
 def _as_agent(name):
@@ -203,12 +219,13 @@ class TestCoordGrantEnforcement:
         auth signal), NOT 404. Non-member gets 404 (no membership)."""
         from safeyolo.agents_store import get_or_mint_agent_id
         from safeyolo.coord import api as coord_api
+
         _register_agent("alice")
         coord_api.bootstrap()
         _await(coord_api.create_room("r"))
         alice_id = get_or_mint_agent_id("alice")
         # alice has receive only, no send
-        coord_api.grant("r", "agent", alice_id, permissions=["receive"])
+        _grant("r", "agent", alice_id, permissions=["receive"])
         with _as_agent("alice"):
             flow = _make_flow("/api/coord/rooms/r/send", method="POST",
                               body={"body": "no send perm"})
@@ -287,8 +304,9 @@ class TestCoordEnvelope:
         assert flow.response.status_code == 400
 
     def test_nonexistent_room_404(self, api, isolated_state):
-        _register_agent("alice")
         from safeyolo.coord import api as coord_api
+
+        _register_agent("alice")
         coord_api.bootstrap()
         with _as_agent("alice"):
             flow = _make_flow(
@@ -476,7 +494,6 @@ class TestCoordRevokeRoundtrip:
 
     def test_grant_revoke_regrant_history_retained(self, api, isolated_state):
         from safeyolo.agents_store import get_or_mint_agent_id
-        from safeyolo.coord import api as coord_api
 
         _register_agent("alice")
         _register_agent("bob")
@@ -497,7 +514,7 @@ class TestCoordRevokeRoundtrip:
         assert len(json.loads(flow.response.content)["messages"]) == 1
 
         # revoke alice
-        assert coord_api.revoke_grant("r", "agent", alice_id) is True
+        assert _revoke_grant("r", "agent", alice_id) is True
 
         # bob sends during revoked interval
         with _as_agent("bob"):
@@ -519,7 +536,7 @@ class TestCoordRevokeRoundtrip:
             assert flow.response.status_code == 404, f"{path} should be 404"
 
         # re-grant: retained history becomes visible again (room semantic)
-        coord_api.grant("r", "agent", alice_id)
+        _grant("r", "agent", alice_id)
         with _as_agent("alice"):
             flow = _make_flow("/api/coord/rooms/r/messages?since=0", method="GET")
             _run(api, flow)
@@ -530,13 +547,12 @@ class TestCoordRevokeRoundtrip:
 
     def test_revoke_idempotent(self, isolated_state):
         from safeyolo.agents_store import get_or_mint_agent_id
-        from safeyolo.coord import api as coord_api
 
         _register_agent("alice")
         _setup_room_with_grants("r", ["alice"])
         alice_id = get_or_mint_agent_id("alice")
-        assert coord_api.revoke_grant("r", "agent", alice_id) is True
-        assert coord_api.revoke_grant("r", "agent", alice_id) is False
+        assert _revoke_grant("r", "agent", alice_id) is True
+        assert _revoke_grant("r", "agent", alice_id) is False
 
 
 class TestCoordBodyCap:
@@ -686,12 +702,12 @@ class TestCoordMembersEndpoint:
 
     def test_members_endpoint_dedups_multi_grant(self, api, isolated_state):
         from safeyolo.agents_store import get_or_mint_agent_id
-        from safeyolo.coord import api as coord_api
+
         _register_agent("alice")
         _setup_room_with_grants("r", ["alice"])
         # Grant alice a second time — multi-grant is valid
         alice_id = get_or_mint_agent_id("alice")
-        coord_api.grant("r", "agent", alice_id)
+        _grant("r", "agent", alice_id)
         with _as_agent("alice"):
             flow = _make_flow("/api/coord/rooms/r/members", method="GET")
             _run(api, flow)
@@ -712,13 +728,13 @@ class TestCoordMembersEndpoint:
 
     def test_members_endpoint_reflects_revocation(self, api, isolated_state):
         from safeyolo.agents_store import get_or_mint_agent_id
-        from safeyolo.coord import api as coord_api
+
         _register_agent("alice")
         _register_agent("bob")
         _setup_room_with_grants("r", ["alice", "bob"])
         # revoke bob
         bob_id = get_or_mint_agent_id("bob")
-        coord_api.revoke_grant("r", "agent", bob_id)
+        _revoke_grant("r", "agent", bob_id)
         with _as_agent("alice"):
             flow = _make_flow("/api/coord/rooms/r/members", method="GET")
             _run(api, flow)
@@ -862,4 +878,3 @@ class TestCoordCorruptEnvelopeIsolation:
         # Not a silent [] page — the addon boundary sees the coord data
         # error and surfaces it as a generic 500.
         assert flow.response.status_code == 500
-

@@ -19,6 +19,15 @@ from .identity import (
     new_msg_id,
     new_room_id,
 )
+from .kernel import (
+    LOCAL_OPERATOR_ID,
+    execute_mutation,
+)
+from .kernel import (
+    OperationConflictError as _OperationConflictError,
+)
+
+OperationConflictError = _OperationConflictError
 
 READ_PAGE_MAX = 200
 # How long one outstanding pull request may stay open while waiting. This is
@@ -70,6 +79,9 @@ def bootstrap() -> str:
     instance_id = get_or_create_instance_id()
     with store.connect() as conn:
         conn.execute("INSERT OR IGNORE INTO instance(id) VALUES (?)", (instance_id,))
+    from .outbox import project_pending
+
+    project_pending()
     return instance_id
 
 
@@ -134,27 +146,76 @@ def grant(
     principal_kind: str,
     principal_id: str,
     permissions: list[str] | None = None,
+    *,
+    operation_id: str,
 ) -> None:
     if principal_kind not in {"agent", "operator"}:
         raise ValueError(f"principal_kind must be 'agent' or 'operator', got {principal_kind!r}")
-    permissions = permissions or ["send", "receive"]
-    now = store.now_ms()
-    with store.connect() as conn:
+    permissions = sorted(set(permissions or ["send", "receive"]))
+    request = {
+        "room_name": room_name,
+        "principal_kind": principal_kind,
+        "principal_id": principal_id,
+        "permissions": permissions,
+    }
+
+    def _grant(conn: sqlite3.Connection) -> None:
         room_id = _resolve_room(conn, room_name)
-        try:
-            conn.execute(
-                """INSERT INTO memberships
-                   (room_id, principal_kind, principal_id, permissions, granted_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (room_id, principal_kind, principal_id, ",".join(permissions), now),
-            )
-        except sqlite3.IntegrityError:
-            # Two grants in the same millisecond collide on the PK
-            # (room_id, principal_kind, principal_id, granted_at). Absorb as
-            # a no-op: caller intent was "grant this principal", which the
-            # first insert already achieved. #371 room semantics do not need
-            # per-millisecond uniqueness.
-            pass
+        serialized_permissions = ",".join(permissions)
+        active = conn.execute(
+            """SELECT permissions FROM memberships
+               WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
+                 AND revoked_at IS NULL
+               ORDER BY granted_at DESC LIMIT 1""",
+            (room_id, principal_kind, principal_id),
+        ).fetchone()
+        if active is not None and active["permissions"] == serialized_permissions:
+            return
+
+        latest = conn.execute(
+            """SELECT MAX(granted_at) FROM memberships
+               WHERE room_id = ? AND principal_kind = ? AND principal_id = ?""",
+            (room_id, principal_kind, principal_id),
+        ).fetchone()[0]
+        granted_at = store.now_ms()
+        if latest is not None:
+            granted_at = max(granted_at, latest + 1)
+
+        conn.execute(
+            """INSERT INTO memberships
+               (room_id, principal_kind, principal_id, permissions, granted_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                room_id,
+                principal_kind,
+                principal_id,
+                serialized_permissions,
+                granted_at,
+            ),
+        )
+        from .outbox import enqueue_coord_event
+
+        enqueue_coord_event(
+            conn,
+            "coord.grant_changed",
+            {
+                "actor": LOCAL_OPERATOR_ID,
+                "room_id": room_id,
+                "object_id": room_id,
+                "principal_kind": principal_kind,
+                "principal_id": principal_id,
+                "operation_id": operation_id,
+                "operation_type": "coord.grant",
+                "transition": "granted",
+            },
+        )
+
+    return execute_mutation(
+        operation_id=operation_id,
+        operation_type="coord.grant",
+        request=request,
+        mutate=_grant,
+    )
 
 
 def _check_grant(
@@ -190,6 +251,8 @@ def revoke_grant(
     room_name: str,
     principal_kind: str,
     principal_id: str,
+    *,
+    operation_id: str,
 ) -> bool:
     """Revoke ALL active grants for the principal on `room_name`.
 
@@ -205,16 +268,46 @@ def revoke_grant(
     """
     if principal_kind not in {"agent", "operator"}:
         raise ValueError(f"principal_kind must be 'agent' or 'operator', got {principal_kind!r}")
-    now = store.now_ms()
-    with store.connect() as conn:
+    request = {
+        "room_name": room_name,
+        "principal_kind": principal_kind,
+        "principal_id": principal_id,
+    }
+
+    def _revoke(conn: sqlite3.Connection) -> bool:
         room_id = _resolve_room(conn, room_name)
         cur = conn.execute(
             """UPDATE memberships SET revoked_at = ?
                WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
                  AND revoked_at IS NULL""",
-            (now, room_id, principal_kind, principal_id),
+            (store.now_ms(), room_id, principal_kind, principal_id),
         )
-        return cur.rowcount > 0
+        changed = cur.rowcount > 0
+        if changed:
+            from .outbox import enqueue_coord_event
+
+            enqueue_coord_event(
+                conn,
+                "coord.grant_revoked",
+                {
+                    "actor": LOCAL_OPERATOR_ID,
+                    "room_id": room_id,
+                    "object_id": room_id,
+                    "principal_kind": principal_kind,
+                    "principal_id": principal_id,
+                    "operation_id": operation_id,
+                    "operation_type": "coord.revoke",
+                    "transition": "revoked",
+                },
+            )
+        return changed
+
+    return execute_mutation(
+        operation_id=operation_id,
+        operation_type="coord.revoke",
+        request=request,
+        mutate=_revoke,
+    )
 
 
 # ---------- agent-facing operations ----------
