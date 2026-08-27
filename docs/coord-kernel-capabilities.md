@@ -160,6 +160,58 @@ Compatibility is deliberate:
 * the updated MCP `send()` explicitly defaults to `notify=none`;
 * operator chat explicitly sends `notify=room`.
 
+Message attention has an explicit cross-store recovery contract. Before
+publishing, SafeYolo resolves the intended recipients and generates one
+stable `attention_id` for each exact `(msg_id, recipient agent_id, active
+membership/grant generation)` tuple. `notify=room` selects every active
+receive-capable agent membership except the sending agent; operator
+membership never creates an agent-feed edge. An explicit target list may
+include the sending agent. Targeting snapshots the exact active membership
+generation so revoke followed by re-grant cannot resurrect attention created
+for the revoked generation.
+
+JetStream remains the canonical message store and the recovery source for the
+message's generated attention intent. SafeYolo persists a versioned internal
+attention manifest in NATS headers or equivalent internal JetStream metadata;
+it is not part of the ordinary agent-visible message envelope and
+`read_room()` does not expose target metadata. Every message written by
+Stage-1 code has an internal manifest, including `notify=none` and raw omitted
+`notify`. A missing manifest therefore identifies pre-Stage-1 retained
+history, whose legacy room-wake semantics remain intact. Malformed or
+unsupported Stage-1 intent is a storage-integrity error and fails loud rather
+than being treated as no notification.
+
+After a definite JetStream PubAck, the message is accepted. SafeYolo
+materializes its manifest into the canonical SQLite attention feed and
+transactionally enqueues any NATS wake hints. If materialization is not yet
+complete, the send still returns success with explicit pending-attention
+status; it must never report that an accepted message was unsent. Recovery
+replays accepted manifests idempotently. This internal recovery does not add
+caller-visible `send` idempotency: separate caller retries that create
+distinct canonical messages may each create their own logical attention
+edges.
+
+A room projection watermark is the highest contiguous JetStream sequence that
+has been fully examined and, where required, fully materialized. Concurrent
+projectors may repeat work but must never advance a watermark past an
+unprocessed earlier message. SQLite enforces one logical edge per canonical
+`msg_id` and intended recipient membership generation.
+
+SQLite attention edges are authoritative. Per-agent NATS subjects are only
+low-latency wake hints. `wait_for_attention()` uses a caller-owned numeric
+cursor over a per-agent feed sequence; returning an edge never advances a
+server-side consumed cursor. Its wait path checks the SQLite ledger before
+subscribing, checks again after subscribing to close the race, and checks
+again after a hint or bounded wait window. Lost or duplicate hints therefore
+cannot lose or duplicate the logical delivery. Authorization is tied to the
+captured membership generation immediately before returning an edge, and
+canonical object reads independently enforce current authorization.
+
+The legacy per-room `wait_for_message()` remains available. It is
+target-aware for messages carrying Stage-1 intent, while pre-Stage-1 messages
+and raw sends whose `notify` field was omitted retain broadcast wake
+semantics.
+
 For durable state mutations, use a transactional outbox or equivalent recovery mechanism so "DB commit succeeded but process died before wake publication" eventually produces the wake. Do not make NATS delivery itself the source of truth.
 
 Key acceptance tests:
