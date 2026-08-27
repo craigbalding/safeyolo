@@ -573,7 +573,13 @@ def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
                 body = line
             if body is not None:
                 try:
-                    runtime.run(api.send(room, "operator", None, body))
+                    result = runtime.run(
+                        api.send(room, "operator", None, body, notify="room")
+                    )
+                    if result["attention_status"] == "pending":
+                        console.print(
+                            "[yellow]message accepted; attention delivery is pending[/]"
+                        )
                 except ValueError as e:
                     console.print(f"[red]{e}[/]")
                 except api.GrantError as e:

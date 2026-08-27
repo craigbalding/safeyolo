@@ -14,6 +14,10 @@ SenderKind = Literal["agent", "operator"]
 
 ALLOWED_CONTENT_TYPES = frozenset({"text/plain", "text/markdown"})
 
+# Persisted NATS-only routing metadata. It is deliberately not a field on
+# ``Envelope`` so ordinary room history retains the exact agent-visible shape.
+INTERNAL_ATTENTION_HEADER = "SafeYolo-Coord-Attention"
+
 
 @dataclass(frozen=True)
 class Envelope:

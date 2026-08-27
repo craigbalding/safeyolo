@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 from typing import Any
 
-from . import nats_client, store
+from . import attention, nats_client, store
 from .envelope import Envelope, validate_content_type
 from .identity import (
     get_or_create_instance_id,
@@ -28,6 +29,9 @@ from .kernel import (
 )
 
 OperationConflictError = _OperationConflictError
+NOTIFY_OMITTED = attention.NOTIFY_OMITTED
+
+log = logging.getLogger("safeyolo.coord.api")
 
 READ_PAGE_MAX = 200
 # How long one outstanding pull request may stay open while waiting. This is
@@ -368,6 +372,7 @@ async def send(
     body: str,
     declared_content_type: str = "text/markdown",
     sender_agent_name: str | None = None,
+    notify: Any = NOTIFY_OMITTED,
 ) -> dict[str, Any]:
     """Send a message via JetStream. Envelope fields SafeYolo-generated.
 
@@ -378,11 +383,13 @@ async def send(
     transcript. Persisting at send means retained history keeps naming
     even after the agent is removed from the registry.
 
-    v1: messages live in JetStream stream ROOM_<room_id>. `msg_id` is
+    Messages live in JetStream stream ROOM_<room_id>. `msg_id` is
     SafeYolo-generated and carried as `Nats-Msg-Id` header so an
     ambiguous PubAck can be retried inside the dedup window without
     duplicating (reviewer point 7). `sequence` returned is the
-    JetStream stream sequence.
+    JetStream stream sequence. Stage 1 stores attention intent only in an
+    internal NATS header and returns `attention_status=ready|pending` after
+    the definite PubAck; pending means the accepted intent will be replayed.
     """
     if sender_kind not in {"agent", "operator"}:
         raise ValueError(f"sender_kind must be 'agent' or 'operator', got {sender_kind!r}")
@@ -414,6 +421,22 @@ async def send(
         room_id = _resolve_room(conn, room_name)
         _check_grant(conn, room_id, principal_kind, principal_id, "send")
 
+    # Establish the pre-Stage-1 projection frontier before this process can
+    # publish a message carrying a Stage-1 manifest.
+    await attention.ensure_room_projection(room_id)
+
+    # Re-check sender authorization and snapshot exact recipient membership
+    # generations immediately before publication.
+    with store.connect() as conn:
+        _check_grant(conn, room_id, principal_kind, principal_id, "send")
+        manifest = attention.build_message_manifest(
+            conn,
+            room_id=room_id,
+            msg_id=msg_id,
+            sender_agent_id=sender_agent_id,
+            notify=notify,
+        )
+
     envelope = Envelope(
         msg_id=msg_id,
         sent_at=sent_at,
@@ -424,8 +447,44 @@ async def send(
         content_type=content_type,
         body=body,
     ).to_dict()
-    sequence = await nats_client.publish_envelope(room_id, envelope)
-    return {"envelope": envelope, "sequence": sequence}
+    sequence = await nats_client.publish_envelope(
+        room_id,
+        envelope,
+        attention_manifest=manifest.to_header(),
+    )
+
+    # PubAck is the canonical acceptance point. Projection failure after it
+    # must never be reported as "message unsent": the persisted manifest is
+    # the recovery source.
+    attention_status = "pending"
+    try:
+        watermark = await attention.materialize_room_attention(
+            room_id,
+            through_sequence=sequence,
+        )
+        if watermark >= sequence:
+            attention_status = "ready"
+    except Exception as exc:  # recovery remains durable in JetStream
+        log.warning(
+            "attention materialization pending for %s: %s",
+            msg_id,
+            type(exc).__name__,
+        )
+    try:
+        from .outbox import project_attention_hints
+
+        await project_attention_hints()
+    except Exception as exc:  # the SQLite feed is already authoritative
+        log.warning(
+            "attention wake hints remain pending after %s: %s",
+            msg_id,
+            type(exc).__name__,
+        )
+    return {
+        "envelope": envelope,
+        "sequence": sequence,
+        "attention_status": attention_status,
+    }
 
 
 def _trim_page_to_byte_bound(messages: list[dict]) -> list[dict]:
@@ -496,7 +555,7 @@ async def read_room(
     # callers see it as `sequence` (same shape as stage 0).
     messages = []
     for env in envelopes:
-        m = {k: v for k, v in env.items() if k != "_stream_seq"}
+        m = {k: v for k, v in env.items() if not k.startswith("_")}
         m["sequence"] = env["_stream_seq"]
         messages.append(m)
     messages = _trim_page_to_byte_bound(messages)
@@ -530,14 +589,58 @@ async def read_room(
 def _qualifies_as_wake(
     env: dict, principal_kind: str, principal_id: str, exclude_self: bool
 ) -> bool:
-    """Would this envelope end a wait, or is it the caller's own traffic?"""
-    if not exclude_self:
-        return True
-    if principal_kind == "agent":
-        return env.get("sender_agent_id") != principal_id
+    """Apply legacy self filtering plus Stage-1 target-aware wake semantics."""
+    base_legacy_wake = True
+    if exclude_self:
+        if principal_kind == "agent":
+            base_legacy_wake = env.get("sender_agent_id") != principal_id
+        elif principal_kind == "operator":
+            base_legacy_wake = env.get("sender_kind") != "operator"
+    # Operator chat observation is not an agent attention feed and preserves
+    # its existing room-tail behavior.
     if principal_kind == "operator":
-        return env.get("sender_kind") != "operator"
-    return True
+        return base_legacy_wake
+    manifest = attention.manifest_for_envelope(env)
+    if manifest is None or manifest.mode == "legacy_room":
+        return base_legacy_wake
+    if principal_kind == "agent":
+        # Explicit self-targeting is intentional and is not removed by the
+        # legacy exclude_self default.
+        return any(item.agent_id == principal_id for item in manifest.recipients)
+    return False
+
+
+async def wait_for_attention(
+    principal_id: str,
+    *,
+    since_sequence: int,
+    timeout_seconds: float = 300.0,
+    limit: int = 1,
+) -> dict[str, Any]:
+    return await attention.wait_for_attention(
+        principal_id,
+        since_sequence=since_sequence,
+        timeout_seconds=timeout_seconds,
+        limit=limit,
+    )
+
+
+async def read_attention(
+    principal_id: str,
+    attention_id: str,
+) -> dict[str, Any]:
+    try:
+        return await attention.read_attention_object(principal_id, attention_id)
+    except attention.AttentionObjectNotFound as exc:
+        raise NotFoundError("attention object not found or not accessible") from exc
+
+
+async def recover_attention() -> None:
+    """Project accepted message manifests and pending low-latency hints."""
+    await attention.recover_all_attention()
+    from .outbox import project_attention_hints
+
+    await project_attention_hints()
 
 
 async def wait_for_message(
@@ -704,6 +807,17 @@ async def _wait_loop(
             try:
                 with store.connect() as conn:
                     _check_grant(conn, room_id, principal_kind, principal_id, "receive")
+                    if principal_kind == "agent":
+                        candidates = [
+                            env
+                            for env in candidates
+                            if attention.message_wake_authorized(
+                                conn,
+                                room_id=room_id,
+                                envelope=env,
+                                agent_id=principal_id,
+                            )
+                        ]
             except (NoMembershipError, GrantError):
                 return {
                     "messages": [],
@@ -711,18 +825,19 @@ async def _wait_loop(
                     "history_truncated": False,
                     "oldest_available_at": None,
                 }
-            trimmed = candidates[:limit]
-            out = []
-            for env in trimmed:
-                m = {k: v for k, v in env.items() if k != "_stream_seq"}
-                m["sequence"] = env["_stream_seq"]
-                out.append(m)
-            return {
-                "messages": out,
-                "next_cursor": out[-1]["sequence"],
-                "history_truncated": False,
-                "oldest_available_at": None,
-            }
+            if candidates:
+                trimmed = candidates[:limit]
+                out = []
+                for env in trimmed:
+                    m = {k: v for k, v in env.items() if not k.startswith("_")}
+                    m["sequence"] = env["_stream_seq"]
+                    out.append(m)
+                return {
+                    "messages": out,
+                    "next_cursor": out[-1]["sequence"],
+                    "history_truncated": False,
+                    "oldest_available_at": None,
+                }
 
         # No peer messages in this window. If we saw any own-messages,
         # advance the cursor so we don't re-fetch them next iteration.

@@ -103,15 +103,52 @@ async def send(
     room_name: str,
     body: str,
     declared_content_type: str = "text/markdown",
+    notify: str | list[str] = "none",
 ) -> dict[str, Any]:
     """Send a message to the room. Envelope fields (msg_id, sent_at,
     sender_agent_id, origin_instance_id) are SafeYolo-generated; you supply
-    only body + declared_content_type.
+    body, declared_content_type, and attention intent. `notify` is `none`,
+    `room`, or a list of agent names; addressing affects interruption, not
+    room-history visibility.
     """
     return await _post(
         f"/api/coord/rooms/{room_name}/send",
-        {"body": body, "declared_content_type": declared_content_type},
+        {
+            "body": body,
+            "declared_content_type": declared_content_type,
+            "notify": notify,
+        },
     )
+
+
+@mcp.tool()
+async def wait_for_attention(
+    since_sequence: int,
+    timeout_seconds: float = 60.0,
+    limit: int = 1,
+) -> dict[str, Any]:
+    """Wait on your identity-derived attention feed across every authorized
+    room. The numeric cursor is caller-owned; returning edges does not consume
+    them server-side. Deduplicate repeated delivery by `attention_id`, read
+    each referenced object, then advance to the returned `next_cursor`.
+    """
+    return await _get(
+        "/api/coord/attention/wait",
+        {
+            "since": since_sequence,
+            "timeout": timeout_seconds,
+            "limit": limit,
+        },
+        timeout=timeout_seconds + 10.0,
+    )
+
+
+@mcp.tool()
+async def read_attention(attention_id: str) -> dict[str, Any]:
+    """Read the canonical object referenced by one attention edge. Current
+    authorization is checked independently from feed delivery.
+    """
+    return await _get(f"/api/coord/attention/{attention_id}/object")
 
 
 @mcp.tool()

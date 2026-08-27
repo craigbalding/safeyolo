@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,6 +65,7 @@ from nats.js.api import (
 from nats.js.errors import NoStreamResponseError, NotFoundError
 
 from . import nats_runtime
+from .envelope import INTERNAL_ATTENTION_HEADER
 
 # Per-room bounds. The global account cap from nats_runtime
 # (JETSTREAM_MAX_FILE_STORE) caps everything above; these caps stop
@@ -90,6 +92,7 @@ _DEDUP_WINDOW_S = 2 * 60                   # 2 minutes
 
 # Ephemeral fetch defaults; the API layer chooses timeouts explicitly.
 _DEFAULT_FETCH_TIMEOUT_S = 5.0
+_AGENT_ID_RE = re.compile(r"^ag-[A-Za-z0-9_-]+$")
 
 
 class NatsUnavailable(RuntimeError):
@@ -222,6 +225,13 @@ async def get_jetstream():
         return _connection.js
 
 
+async def get_client() -> nats.aio.client.Client:
+    """Return the live core NATS client used for ephemeral wake hints."""
+    await get_jetstream()
+    assert _connection.client is not None
+    return _connection.client
+
+
 async def close() -> None:
     """Best-effort teardown. Safe to call multiple times."""
     client = _connection.client
@@ -258,6 +268,12 @@ def stream_name_for_room(room_id: str) -> str:
 
 def subject_for_room(room_id: str) -> str:
     return f"rooms.{room_id}"
+
+
+def subject_for_attention(agent_id: str) -> str:
+    if not isinstance(agent_id, str) or not _AGENT_ID_RE.fullmatch(agent_id):
+        raise ValueError("invalid attention recipient agent_id")
+    return f"coord.attention.{agent_id}"
 
 
 # ---------- stream management ----------
@@ -413,7 +429,12 @@ async def oldest_message_ts(room_id: str, first_seq: int) -> str | None:
 # ---------- publish ----------
 
 
-async def publish_envelope(room_id: str, envelope: dict) -> int:
+async def publish_envelope(
+    room_id: str,
+    envelope: dict,
+    *,
+    attention_manifest: str,
+) -> int:
     """Publish one message envelope to a room and return its stream
     sequence.
 
@@ -432,7 +453,10 @@ async def publish_envelope(room_id: str, envelope: dict) -> int:
             subject_for_room(room_id),
             body,
             stream=stream_name_for_room(room_id),
-            headers={"Nats-Msg-Id": envelope["msg_id"]},
+            headers={
+                "Nats-Msg-Id": envelope["msg_id"],
+                INTERNAL_ATTENTION_HEADER: attention_manifest,
+            },
         )
     except NoStreamResponseError as e:
         # Caller only reaches publish_envelope after SQLite has resolved
@@ -448,6 +472,65 @@ async def publish_envelope(room_id: str, envelope: dict) -> int:
     except (NatsTimeout, *_UNAVAILABLE_EXCEPTIONS) as e:
         raise NatsUnavailable(f"publish failed: {e!s}") from e
     return ack.seq
+
+
+async def publish_attention_hint(agent_id: str, attention_id: str) -> None:
+    """Publish one ephemeral, metadata-only wake hint and flush it."""
+    client = await get_client()
+    payload = json.dumps(
+        {"attention_id": attention_id},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    try:
+        await client.publish(subject_for_attention(agent_id), payload)
+        await client.flush(timeout=2.0)
+    except _UNAVAILABLE_EXCEPTIONS as exc:
+        raise NatsUnavailable(f"attention hint publish failed: {exc!s}") from exc
+
+
+class AttentionSubscription:
+    """One core NATS subscription used only to shorten SQLite wait latency."""
+
+    def __init__(self, subscription) -> None:
+        self._subscription = subscription
+
+    async def wait(self, timeout: float) -> bool:
+        try:
+            await self._subscription.next_msg(timeout=timeout)
+            return True
+        except _TIMEOUT_EXCEPTIONS:
+            return False
+        except _UNAVAILABLE_EXCEPTIONS as exc:
+            raise NatsUnavailable(f"attention hint wait failed: {exc!s}") from exc
+
+    async def close(self) -> None:
+        # This is an ephemeral latency hint. Teardown failure must not replace
+        # a response already obtained from the authoritative SQLite ledger.
+        try:
+            await self._subscription.unsubscribe()
+        except _UNAVAILABLE_EXCEPTIONS:
+            pass
+
+
+@contextlib.asynccontextmanager
+async def attention_subscription(agent_id: str):
+    """Subscribe before the ledger recheck that closes the wake race."""
+    client = await get_client()
+    subscription = None
+    try:
+        subscription = await client.subscribe(subject_for_attention(agent_id))
+        await client.flush(timeout=2.0)
+    except _UNAVAILABLE_EXCEPTIONS as exc:
+        if subscription is not None:
+            with contextlib.suppress(Exception):
+                await subscription.unsubscribe()
+        raise NatsUnavailable(f"attention hint subscribe failed: {exc!s}") from exc
+    session = AttentionSubscription(subscription)
+    try:
+        yield session
+    finally:
+        await session.close()
 
 
 # ---------- fetch ----------
@@ -541,12 +624,56 @@ async def _drain(psub, stream: str, limit: int, timeout: float) -> list[dict]:
                 f"{m.metadata.sequence.stream}"
             )
         envelope["_stream_seq"] = m.metadata.sequence.stream
+        envelope["_attention_manifest_header"] = _header_value(
+            m.headers, INTERNAL_ATTENTION_HEADER
+        )
         out.append(envelope)
         try:
             await m.ack()
         except _UNAVAILABLE_EXCEPTIONS as e:
             raise NatsUnavailable(f"ack failed: {e!s}") from e
     return out
+
+
+def _header_value(headers: Any, name: str) -> str | None:
+    if not headers:
+        return None
+    for key, value in headers.items():
+        if str(key).lower() == name.lower():
+            return str(value)
+    return None
+
+
+async def get_envelope_at(room_id: str, sequence: int) -> dict:
+    """Fetch one exact canonical room message, including internal metadata."""
+    if type(sequence) is not int or sequence <= 0:
+        raise ValueError("message sequence must be a positive integer")
+    js = await get_jetstream()
+    stream = stream_name_for_room(room_id)
+    try:
+        raw = await js._jsm.get_msg(stream, seq=sequence)
+    except NotFoundError as exc:
+        raise CoordDataError(
+            f"canonical message at stream {stream!r} sequence {sequence} "
+            "is unavailable"
+        ) from exc
+    except _UNAVAILABLE_EXCEPTIONS as exc:
+        raise NatsUnavailable(f"get_msg failed: {exc!s}") from exc
+    try:
+        envelope = json.loads((raw.data or b"").decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise CoordDataError(
+            f"corrupt envelope at stream {stream} seq {sequence}: {exc!s}"
+        ) from exc
+    if not isinstance(envelope, dict) or "msg_id" not in envelope:
+        raise CoordDataError(
+            f"non-envelope payload at stream {stream} seq {sequence}"
+        )
+    envelope["_stream_seq"] = sequence
+    envelope["_attention_manifest_header"] = _header_value(
+        raw.headers, INTERNAL_ATTENTION_HEADER
+    )
+    return envelope
 
 
 class PullSession:
