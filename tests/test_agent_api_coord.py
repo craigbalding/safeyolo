@@ -881,6 +881,73 @@ class TestCoordCorruptEnvelopeIsolation:
 
 
 class TestCoordTargetedAttention:
+    def test_real_transport_attribution_preserves_target_isolation(
+        self, api, isolated_state
+    ):
+        from types import SimpleNamespace
+
+        from safeyolo.proxy_modes.unix_listener import UnixMode
+
+        for name in ("alice", "bob", "codey"):
+            _register_agent(name)
+        _setup_room_with_grants("transport", ["alice", "bob", "codey"])
+
+        addresses = {
+            "alice": "10.0.0.11",
+            "bob": "10.0.0.12",
+            "codey": "10.0.0.13",
+        }
+        by_address = {address: name for name, address in addresses.items()}
+        stub_sd = SimpleNamespace(
+            get_client_for_ip=lambda address: by_address.get(address)
+        )
+
+        def attributed_flow(name, path, *, method="GET", body=None):
+            flow = _make_flow(path, method=method, body=body)
+            address = addresses[name]
+            flow.client_conn.peername = (address, 12345)
+            flow.client_conn.proxy_mode = UnixMode.parse(
+                f"unix:/tmp/{address}_{name}/proxy.sock"
+            )
+            return flow
+
+        with patch.object(
+            AgentAPI,
+            "_find_addon",
+            autospec=True,
+            side_effect=lambda _self, name: (
+                stub_sd if name == "service-discovery" else None
+            ),
+        ):
+            sent = attributed_flow(
+                "alice",
+                "/api/coord/rooms/transport/send",
+                method="POST",
+                body={"body": "transport-targeted", "notify": ["bob"]},
+            )
+            _run(api, sent)
+            bob_wait = attributed_flow(
+                "bob",
+                "/api/coord/attention/wait?since=0&timeout=0.1",
+            )
+            _run(api, bob_wait)
+            codey_wait = attributed_flow(
+                "codey",
+                "/api/coord/attention/wait?since=0&timeout=0.05",
+            )
+            _run(api, codey_wait)
+
+        assert sent.response.status_code == 200
+        msg_id = json.loads(sent.response.content)["envelope"]["msg_id"]
+        assert msg_id in {
+            edge["object_id"]
+            for edge in json.loads(bob_wait.response.content)["edges"]
+        }
+        assert json.loads(codey_wait.response.content) == {
+            "edges": [],
+            "next_cursor": 0,
+        }
+
     def test_identity_derived_feed_target_isolation_and_object_read(
         self, api, isolated_state
     ):
