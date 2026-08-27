@@ -7,7 +7,7 @@ cli/.venv/
 data/
 logs/
 .claude/
-CLAUDE.md
+CLAUDE.local.md
 *.egg-info/
 .pytest_cache/
 .coverage
