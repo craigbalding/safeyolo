@@ -1,4 +1,4 @@
-"""Normative two-revision acceptance test for the Stage-0 coord upgrade."""
+"""Normative two-revision acceptance test for coord store upgrades."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ LEGACY_BASE_SHA = "c1bb9c2083f30f33c35ed86aadc6366994a3e8a6"
 
 _BASELINE_SETUP = r"""
 import asyncio
+import inspect
 import json
 import sqlite3
 
@@ -28,13 +29,16 @@ from safeyolo.coord import api, store
 async def main():
     instance_id = api.bootstrap()
     room_id = await api.create_room("upgrade-room")
-    api.grant("upgrade-room", "agent", "ag-upgrade-a")
-    api.grant("upgrade-room", "agent", "ag-upgrade-b")
+    grant_supports_operations = "operation_id" in inspect.signature(api.grant).parameters
+    grant_a_kwargs = {"operation_id": "op-baseline-grant-a"} if grant_supports_operations else {}
+    grant_b_kwargs = {"operation_id": "op-baseline-grant-b"} if grant_supports_operations else {}
+    api.grant("upgrade-room", "agent", "ag-upgrade-a", **grant_a_kwargs)
+    api.grant("upgrade-room", "agent", "ag-upgrade-b", **grant_b_kwargs)
     sent = await api.send(
         "upgrade-room",
         "agent",
         "ag-upgrade-a",
-        "retained across Stage 0",
+        "retained across coord upgrade",
         sender_agent_name="upgrade-a",
     )
     with sqlite3.connect(store.db_path()) as conn:
@@ -102,7 +106,7 @@ def test_current_master_state_upgrades_through_candidate(
     )
     assert completed.returncode == 0, completed.stderr
     baseline_result = json.loads(completed.stdout.strip().splitlines()[-1])
-    assert baseline_result["schema_version"] == 0
+    assert baseline_result["schema_version"] <= store.CURRENT_SCHEMA_VERSION
 
     # Prove JetStream persistence too: candidate code starts a new NATS process
     # against the exact same storage, not merely a new Python client.
@@ -122,7 +126,7 @@ def test_current_master_state_upgrades_through_candidate(
     assert [message["sequence"] for message in page["messages"]] == [
         baseline_result["sequence"]
     ]
-    assert page["messages"][0]["body"] == "retained across Stage 0"
+    assert page["messages"][0]["body"] == "retained across coord upgrade"
 
     api.grant(
         "upgrade-room",
@@ -166,7 +170,7 @@ def test_current_master_state_upgrades_through_candidate(
         "schema_before": baseline_result["schema_version"],
         "schema_after": migrated_version,
         "scenarios": {
-            "legacy_state_created_via_base_api": True,
+            "baseline_state_created_via_base_api": True,
             "sqlite_migrated": True,
             "authorization_preserved": True,
             "jetstream_retention_preserved": True,
