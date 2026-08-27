@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -352,9 +353,11 @@ async def ensure_room_projection(room_id: str) -> int:
     if row is not None:
         return int(row[0])
     state = await nats_client.room_stream_state(room_id)
-    # Anything already below the retained floor predates Stage 1: every
-    # Stage-1 sender calls this initializer before publishing its manifest.
-    baseline = max(0, state["first_seq"] - 1)
+    # Every Stage-1 sender calls this initializer before publishing its
+    # manifest. Therefore, while the row is absent, all currently retained
+    # messages predate Stage 1 and need not be scanned. INSERT OR IGNORE makes
+    # concurrent initializers use the first durably inserted baseline.
+    baseline = max(0, state["last_seq"])
     with store.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -371,6 +374,112 @@ async def ensure_room_projection(room_id: str) -> int:
     return int(row[0])
 
 
+def _projection_loss_event_id(room_id: str, first: int, last: int) -> str:
+    material = f"coord.attention_projection_lost\0{room_id}\0{first}\0{last}".encode()
+    return f"evt-{hashlib.sha256(material).hexdigest()[:32]}"
+
+
+def _advance_over_retention_gap(
+    room_id: str,
+    *,
+    watermark: int,
+    retained_floor: int,
+) -> int:
+    """Audit an irrecoverable interval and advance to the retained floor.
+
+    The audit edge and projection frontier commit in one SQLite transaction.
+    A concurrent projector that observed the same stale watermark finds the
+    frontier already moved and records nothing.
+    """
+    if retained_floor <= watermark + 1:
+        return watermark
+
+    lost_first = watermark + 1
+    lost_last = retained_floor - 1
+    recorded = False
+    with store.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT last_sequence
+                   FROM coord_message_attention_projection
+                   WHERE room_id = ?""",
+                (room_id,),
+            ).fetchone()
+            if row is None:
+                raise nats_client.CoordDataError(
+                    "message-attention projection row disappeared during recovery"
+                )
+            current = int(row[0])
+            if current != watermark:
+                conn.execute("ROLLBACK")
+                return current
+
+            from .outbox import enqueue_coord_event
+
+            enqueue_coord_event(
+                conn,
+                "coord.attention_projection_lost",
+                {
+                    "room_id": room_id,
+                    "from_sequence": lost_first,
+                    "to_sequence": lost_last,
+                },
+                event_id=_projection_loss_event_id(
+                    room_id,
+                    lost_first,
+                    lost_last,
+                ),
+            )
+            changed = conn.execute(
+                """UPDATE coord_message_attention_projection
+                   SET last_sequence = ?, updated_at = ?
+                   WHERE room_id = ? AND last_sequence = ?""",
+                (lost_last, store.now_ms(), room_id, watermark),
+            ).rowcount
+            if changed != 1:
+                raise nats_client.CoordDataError(
+                    "message-attention projection gap recovery lost its frontier"
+                )
+            conn.execute("COMMIT")
+            recorded = True
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+    if recorded:
+        log.error(
+            "message-attention projection lost room %s sequences %s-%s to retention",
+            room_id,
+            lost_first,
+            lost_last,
+        )
+        # The SQLite outbox row is already durable. JSONL projection is best
+        # effort here and remains retryable if the append fails.
+        from .outbox import project_pending
+
+        project_pending()
+    return lost_last
+
+
+def projection_sequence_was_lost(room_id: str, sequence: int) -> bool:
+    """Return whether durable projection-loss audit covers one sequence."""
+    with store.connect() as conn:
+        rows = conn.execute(
+            """SELECT payload_json FROM coord_outbox
+               WHERE event_type = 'coord.attention_projection_lost'"""
+        ).fetchall()
+    for row in rows:
+        details = json.loads(row["payload_json"])["details"]
+        if (
+            details["room_id"] == room_id
+            and details["from_sequence"] <= sequence <= details["to_sequence"]
+        ):
+            return True
+    return False
+
+
 async def materialize_room_attention(
     room_id: str,
     *,
@@ -381,15 +490,20 @@ async def materialize_room_attention(
     watermark = await ensure_room_projection(room_id)
     state = await nats_client.room_stream_state(room_id)
     target = state["last_seq"] if through_sequence is None else through_sequence
-    if target <= watermark:
-        return watermark
-    if state["first_seq"] > watermark + 1:
-        raise nats_client.CoordDataError(
-            "message-attention projection has a non-contiguous retention gap"
-        )
 
     processed = 0
     while watermark < target:
+        # Retention may advance before the first fetch or between any two
+        # pages. Lost canonical objects stay lost, but they cannot wedge later
+        # still-retained manifests.
+        state = await nats_client.room_stream_state(room_id)
+        if state["first_seq"] > watermark + 1:
+            watermark = _advance_over_retention_gap(
+                room_id,
+                watermark=watermark,
+                retained_floor=state["first_seq"],
+            )
+            continue
         if max_messages is not None and processed >= max_messages:
             break
         page_limit = min(RECOVERY_PAGE, target - watermark)
@@ -402,10 +516,30 @@ async def materialize_room_attention(
             timeout=0.5,
         )
         if not envelopes:
+            refreshed = await nats_client.room_stream_state(room_id)
+            if refreshed["first_seq"] > watermark + 1:
+                watermark = _advance_over_retention_gap(
+                    room_id,
+                    watermark=watermark,
+                    retained_floor=refreshed["first_seq"],
+                )
+                continue
             raise nats_client.CoordDataError(
                 "message-attention projection could not read its next sequence"
             )
         expected = watermark + 1
+        if envelopes[0].get("_stream_seq") != expected:
+            refreshed = await nats_client.room_stream_state(room_id)
+            if refreshed["first_seq"] > watermark + 1:
+                watermark = _advance_over_retention_gap(
+                    room_id,
+                    watermark=watermark,
+                    retained_floor=refreshed["first_seq"],
+                )
+                continue
+            raise nats_client.CoordDataError(
+                "message-attention projection encountered a sequence gap"
+            )
         manifests: list[AttentionManifest | None] = []
         for envelope in envelopes:
             if envelope.get("_stream_seq") != expected:
@@ -482,8 +616,7 @@ def _authorized_room_ids(agent_id: str) -> list[str]:
 
 
 async def recover_attention_for_agent(agent_id: str) -> None:
-    for room_id in _authorized_room_ids(agent_id):
-        await materialize_room_attention(room_id)
+    await _recover_rooms(_authorized_room_ids(agent_id))
 
 
 async def recover_all_attention() -> None:
@@ -491,8 +624,28 @@ async def recover_all_attention() -> None:
         room_ids = [
             row[0] for row in conn.execute("SELECT room_id FROM rooms ORDER BY room_id")
         ]
+    await _recover_rooms(room_ids)
+
+
+async def _recover_rooms(room_ids: list[str]) -> None:
+    failures: list[tuple[str, nats_client.CoordDataError]] = []
     for room_id in room_ids:
-        await materialize_room_attention(room_id)
+        try:
+            await materialize_room_attention(room_id)
+        except nats_client.CoordDataError as exc:
+            # Storage corruption is room-local. Finish healthy rooms before
+            # failing the recovery pass loudly with the damaged room IDs.
+            log.error(
+                "message-attention recovery failed for room %s: %s",
+                room_id,
+                exc,
+            )
+            failures.append((room_id, exc))
+    if failures:
+        rooms = ", ".join(room_id for room_id, _exc in failures)
+        raise nats_client.CoordDataError(
+            f"message-attention recovery failed for room(s): {rooms}"
+        ) from failures[0][1]
 
 
 def _edge_is_authorized(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
@@ -549,40 +702,50 @@ def read_feed(agent_id: str, since_sequence: int, limit: int) -> dict[str, Any]:
         raise ValueError("attention cursor must be a non-negative integer")
     limit = max(1, min(limit, MAX_FEED_PAGE))
     with store.connect() as conn:
-        highwater_row = conn.execute(
-            """SELECT last_sequence FROM coord_attention_feeds
-               WHERE recipient_agent_id = ?""",
-            (agent_id,),
-        ).fetchone()
-        highwater = int(highwater_row[0]) if highwater_row is not None else 0
-        rows = conn.execute(
-            """SELECT e.* FROM coord_attention_edges AS e
-               JOIN memberships AS m
-                 ON m.room_id = e.room_id
-                AND m.principal_kind = 'agent'
-                AND m.principal_id = e.recipient_agent_id
-                AND m.granted_at = e.membership_granted_at
-                AND m.revoked_at IS NULL
-               WHERE e.recipient_agent_id = ? AND e.feed_sequence > ?
-                 AND instr(',' || m.permissions || ',', ',receive,') > 0
-                 AND NOT EXISTS (
-                     SELECT 1 FROM memberships AS newer
-                     WHERE newer.room_id = m.room_id
-                       AND newer.principal_kind = 'agent'
-                       AND newer.principal_id = m.principal_id
-                       AND newer.revoked_at IS NULL
-                       AND newer.granted_at > m.granted_at
-                 )
-               ORDER BY e.feed_sequence LIMIT ?""",
-            (agent_id, since_sequence, limit),
-        ).fetchall()
-        returned = [row for row in rows if _edge_is_authorized(conn, row)]
-        if returned and len(returned) == limit:
-            next_cursor = int(returned[-1]["feed_sequence"])
-        else:
-            # A caller-owned cursor is monotonic even if the caller supplied
-            # a value ahead of the current allocator high-watermark.
-            next_cursor = max(since_sequence, highwater)
+        # Autocommit would give the allocator high-watermark and edge query
+        # different WAL snapshots. Pin both, plus the final grant recheck, to
+        # one read transaction so no returned edge can exceed next_cursor.
+        conn.execute("BEGIN")
+        try:
+            highwater_row = conn.execute(
+                """SELECT last_sequence FROM coord_attention_feeds
+                   WHERE recipient_agent_id = ?""",
+                (agent_id,),
+            ).fetchone()
+            highwater = int(highwater_row[0]) if highwater_row is not None else 0
+            rows = conn.execute(
+                """SELECT e.* FROM coord_attention_edges AS e
+                   JOIN memberships AS m
+                     ON m.room_id = e.room_id
+                    AND m.principal_kind = 'agent'
+                    AND m.principal_id = e.recipient_agent_id
+                    AND m.granted_at = e.membership_granted_at
+                    AND m.revoked_at IS NULL
+                   WHERE e.recipient_agent_id = ? AND e.feed_sequence > ?
+                     AND instr(',' || m.permissions || ',', ',receive,') > 0
+                     AND NOT EXISTS (
+                         SELECT 1 FROM memberships AS newer
+                         WHERE newer.room_id = m.room_id
+                           AND newer.principal_kind = 'agent'
+                           AND newer.principal_id = m.principal_id
+                           AND newer.revoked_at IS NULL
+                           AND newer.granted_at > m.granted_at
+                     )
+                   ORDER BY e.feed_sequence LIMIT ?""",
+                (agent_id, since_sequence, limit),
+            ).fetchall()
+            returned = [row for row in rows if _edge_is_authorized(conn, row)]
+            if returned and len(returned) == limit:
+                next_cursor = int(returned[-1]["feed_sequence"])
+            else:
+                # A caller-owned cursor is monotonic even if the caller supplied
+                # a value ahead of the current allocator high-watermark.
+                next_cursor = max(since_sequence, highwater)
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
     return {
         "edges": [
             {
@@ -616,7 +779,7 @@ async def wait_for_attention(
     # the ledger is empty, then read SQLite again before subscribing.
     try:
         await recover_attention_for_agent(agent_id)
-    except nats_client.NatsUnavailable:
+    except (nats_client.NatsUnavailable, nats_client.CoordDataError):
         # Recovery transport failed after the first ledger read. Close that
         # race with one final authoritative read before surfacing the outage.
         page = read_feed(agent_id, since_sequence, limit)
@@ -651,7 +814,7 @@ async def wait_for_attention(
                 page = read_feed(agent_id, since_sequence, limit)
                 if page["edges"] or page["next_cursor"] != since_sequence:
                     return page
-    except nats_client.NatsUnavailable:
+    except (nats_client.NatsUnavailable, nats_client.CoordDataError):
         # Core NATS is only a wake path. If subscribe/wait/recovery lost its
         # transport after SQLite advanced, return the durable edge instead of
         # replacing it with a transient hint-substrate error.

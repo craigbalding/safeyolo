@@ -806,6 +806,29 @@ class TestCoordNatsUnavailableIsolation:
         assert flow.response.status_code == 503
         assert "unavailable" in json.loads(flow.response.content)["error"]
 
+    def test_send_reports_unknown_when_puback_outcome_is_ambiguous(self, api, isolated_state, monkeypatch):
+        from safeyolo.coord import api as coord_api
+        from safeyolo.coord.nats_client import NatsPublishOutcomeUnknown
+
+        _register_agent("alice")
+
+        async def ambiguous_send(**_kwargs):
+            raise NatsPublishOutcomeUnknown("connection closed after dispatch")
+
+        monkeypatch.setattr(coord_api, "send", ambiguous_send)
+        with _as_agent("alice"):
+            flow = _make_flow(
+                "/api/coord/rooms/r/send",
+                method="POST",
+                body={"body": "possibly accepted"},
+            )
+            _run(api, flow)
+        assert flow.response.status_code == 503
+        payload = json.loads(flow.response.content)
+        assert payload["send_outcome"] == "unknown"
+        assert "JetStream may have accepted it" in payload["error"]
+        assert "before retrying" in payload["error"]
+
     def test_read_and_wait_return_503_when_nats_down(self, api, isolated_state):
         from safeyolo.coord import nats_client as ncli
         from safeyolo.coord import nats_runtime as nr

@@ -181,6 +181,16 @@ history, whose legacy room-wake semantics remain intact. Malformed or
 unsupported Stage-1 intent is a storage-integrity error and fails loud rather
 than being treated as no notification.
 
+Projection initialization relies on a narrow upgrade invariant: every Stage-1
+sender durably creates the room projection before it can publish a Stage-1
+manifest. Consequently, if no projection row exists, every message already in
+that stream is pre-Stage-1 history and the new projection baselines at the
+current `last_seq`; it does not scan retained legacy history. Concurrent
+initializers insert the baseline once before any of them publish. This
+classification assumes the supported upgrade/restart model preserves SQLite;
+restoring JetStream and SQLite from inconsistent points is not reclassified as
+a normal upgrade.
+
 After a definite JetStream PubAck, the message is accepted. SafeYolo
 materializes its manifest into the canonical SQLite attention feed and
 transactionally enqueues any NATS wake hints. If materialization is not yet
@@ -189,7 +199,15 @@ status; it must never report that an accepted message was unsent. Recovery
 replays accepted manifests idempotently. This internal recovery does not add
 caller-visible `send` idempotency: separate caller retries that create
 distinct canonical messages may each create their own logical attention
-edges.
+edges. A publish failure before dispatch is a definite non-acceptance. A
+failure after dispatch but without a PubAck has an unknown outcome and must be
+reported as such: JetStream may have accepted the message, and a caller retry
+may create a second canonical message.
+
+If retention removes the just-accepted canonical object before synchronous
+projection reaches it, send reports its attention status as `lost`, not
+`ready` or indefinitely `pending`. Canonical message acceptance remains a
+fact; the loss audit records that its attention was not materialized.
 
 A room projection watermark is the highest contiguous JetStream sequence that
 has been fully examined and, where required, fully materialized. Concurrent
@@ -197,15 +215,41 @@ projectors may repeat work but must never advance a watermark past an
 unprocessed earlier message. SQLite enforces one logical edge per canonical
 `msg_id` and intended recipient membership generation.
 
+Retention can overtake an interrupted projection. If the current retained
+floor is above `watermark + 1`, the missing interval is irrecoverable. SafeYolo
+atomically enqueues one stable `coord.attention_projection_lost` audit event
+for that interval and advances the projection frontier to immediately before
+the retained floor, then continues with retained messages. It creates no edges
+for lost canonical objects and does not describe the interval as successfully
+materialized. The frontier compare-and-swap and audit enqueue share one SQLite
+transaction, so repeated or concurrent recovery is idempotent. Multi-room
+recovery attempts every room before reporting room-local integrity failures;
+a corrupt retained Stage-1 manifest still fails loud for its room without
+preventing unrelated healthy rooms from being projected.
+
 SQLite attention edges are authoritative. Per-agent NATS subjects are only
 low-latency wake hints. `wait_for_attention()` uses a caller-owned numeric
 cursor over a per-agent feed sequence; returning an edge never advances a
-server-side consumed cursor. Its wait path checks the SQLite ledger before
-subscribing, checks again after subscribing to close the race, and checks
-again after a hint or bounded wait window. Lost or duplicate hints therefore
-cannot lose or duplicate the logical delivery. Authorization is tied to the
-captured membership generation immediately before returning an edge, and
-canonical object reads independently enforce current authorization.
+server-side consumed cursor. The feed allocator high-watermark, returned rows
+and authorization checks are read from one SQLite snapshot, so a page cannot
+return an edge above its `next_cursor`. Its wait path checks the SQLite ledger
+before subscribing, checks again after subscribing to close the race, and
+checks again after a hint or bounded wait window. Lost or duplicate hints
+therefore cannot lose or duplicate the logical delivery. Authorization is tied
+to the captured membership generation immediately before returning an edge,
+and canonical object reads independently enforce current authorization.
+
+The blocking MCP tool is a harness integration point, not a universal
+scheduler. Coord messages with matching attention can release the coord wait.
+While a blocking tool call owns a harness turn, unrelated UI, operator or
+control-channel messages may remain invisible to that model until the tool
+returns. The durable feed preserves coord attention across a dropped or
+unrearmed wait, but Stage 1 does not claim it can preempt a busy harness.
+
+Stage 1 does not garbage-collect durable edges, delivered hint-outbox rows or
+edges whose canonical message has expired. Cleanup must first define
+caller-owned cursor truncation and disclosure semantics; that lifecycle design
+is tracked separately in [#394](https://github.com/craigbalding/safeyolo/issues/394).
 
 The legacy per-room `wait_for_message()` remains available. It is
 target-aware for messages carrying Stage-1 intent, while pre-Stage-1 messages
@@ -224,6 +268,11 @@ Key acceptance tests:
 * Targeting a non-member is rejected without leaking otherwise-undiscoverable identities.
 * Revocation between notification creation and delivery cannot expose the message to the revoked recipient.
 * SafeYolo/NATS restart during notification delivery causes no lost canonical message or permanently lost state notification.
+* Process death after JetStream acceptance but before SQLite materialization is
+  recovered by a fresh process, including across NATS restart; repeated
+  recovery returns the same logical edge.
+* Retention loss of an unmaterialized canonical message is audited and does not
+  prevent later retained manifests from materializing.
 * Duplicate/retried wake delivery does not cause duplicate state mutation or
   duplicate agent handling after deduplication.
 * Operator broadcast retains the convenient "everyone pay attention" behaviour.

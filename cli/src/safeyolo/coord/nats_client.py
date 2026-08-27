@@ -100,6 +100,14 @@ class NatsUnavailable(RuntimeError):
     this as a coord 503 without failing the containing proxy."""
 
 
+class NatsPublishOutcomeUnknown(NatsUnavailable):
+    """A publish failed after it may have reached JetStream.
+
+    The caller did not receive a definite PubAck, but retrying as a new Stage-1
+    send may create a second canonical message.
+    """
+
+
 class CoordDataError(RuntimeError):
     """Persisted JetStream data is not shaped like a coord envelope.
 
@@ -438,9 +446,9 @@ async def publish_envelope(
     """Publish one message envelope to a room and return its stream
     sequence.
 
-    Uses `Nats-Msg-Id = envelope['msg_id']` so an ambiguous PubAck
-    (network partition, timeout) can be retried with the same msg_id
-    inside JetStream's duplicate window without producing a duplicate.
+    Uses `Nats-Msg-Id = envelope['msg_id']` for this internal publish attempt.
+    Stage 1 does not expose that ID as a caller retry key, so an ambiguous
+    outcome is reported rather than retried as a new send.
     """
     js = await get_jetstream()
     # ensure_ascii=False keeps UTF-8 body bytes as UTF-8 in the JSON
@@ -469,8 +477,17 @@ async def publish_envelope(
             f"room {room_id!r} registered in SQLite but JetStream stream "
             f"{stream_name_for_room(room_id)!r} did not respond — storage lost"
         ) from e
-    except (NatsTimeout, *_UNAVAILABLE_EXCEPTIONS) as e:
-        raise NatsUnavailable(f"publish failed: {e!s}") from e
+    except NatsTimeout as e:
+        raise NatsPublishOutcomeUnknown(
+            f"publish outcome unknown: {e!s}"
+        ) from e
+    except _UNAVAILABLE_EXCEPTIONS as e:
+        # get_jetstream() completed before entering this publish call. A
+        # transport failure here can happen after the server stored the message
+        # but before the PubAck reached us.
+        raise NatsPublishOutcomeUnknown(
+            f"publish outcome unknown: {e!s}"
+        ) from e
     return ack.seq
 
 

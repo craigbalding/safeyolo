@@ -384,12 +384,15 @@ async def send(
     even after the agent is removed from the registry.
 
     Messages live in JetStream stream ROOM_<room_id>. `msg_id` is
-    SafeYolo-generated and carried as `Nats-Msg-Id` header so an
-    ambiguous PubAck can be retried inside the dedup window without
-    duplicating (reviewer point 7). `sequence` returned is the
-    JetStream stream sequence. Stage 1 stores attention intent only in an
-    internal NATS header and returns `attention_status=ready|pending` after
-    the definite PubAck; pending means the accepted intent will be replayed.
+    SafeYolo-generated and carried as `Nats-Msg-Id`. `sequence` returned is
+    the JetStream stream sequence. Stage 1 stores attention intent only in an
+    internal NATS header and returns `attention_status=ready|pending|lost`
+    after the definite PubAck; pending means the accepted intent will be
+    replayed, while lost means retention irrecoverably removed the canonical
+    object before its attention could be projected.
+    If the publish call loses its outcome, the caller is told acceptance is
+    unknown: it cannot reuse the hidden msg_id, and a new send may duplicate
+    the canonical message because Stage 1 exposes no send idempotency.
     """
     if sender_kind not in {"agent", "operator"}:
         raise ValueError(f"sender_kind must be 'agent' or 'operator', got {sender_kind!r}")
@@ -463,7 +466,11 @@ async def send(
             through_sequence=sequence,
         )
         if watermark >= sequence:
-            attention_status = "ready"
+            attention_status = (
+                "lost"
+                if attention.projection_sequence_was_lost(room_id, sequence)
+                else "ready"
+            )
     except Exception as exc:  # recovery remains durable in JetStream
         log.warning(
             "attention materialization pending for %s: %s",

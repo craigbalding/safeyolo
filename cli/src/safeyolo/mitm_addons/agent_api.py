@@ -31,7 +31,7 @@ import urllib.parse
 from mitmproxy import ctx, http
 from request_id import REQUEST_ID_PATTERN as _REQUEST_ID_PATTERN
 
-from safeyolo.coord.nats_client import NatsUnavailable
+from safeyolo.coord.nats_client import NatsPublishOutcomeUnknown, NatsUnavailable
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from safeyolo.core.identity import resolve_agent_identity
 from safeyolo.core.utils import sanitize_for_log, write_event
@@ -574,6 +574,19 @@ class AgentAPI:
                 else "room not found or not accessible"
             )
             self._respond(flow, 404, {"error": error})
+            return
+        except NatsPublishOutcomeUnknown:
+            self._respond(
+                flow,
+                503,
+                {
+                    "error": (
+                        "message acceptance outcome unknown; JetStream may have "
+                        "accepted it; inspect retained room history before retrying"
+                    ),
+                    "send_outcome": "unknown",
+                },
+            )
             return
         except NatsUnavailable:
             # Task #36: NATS runtime unreachable → coord surfaces 503 but

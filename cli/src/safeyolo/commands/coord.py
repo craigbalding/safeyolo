@@ -26,7 +26,11 @@ from rich.text import Text
 from ..agents_store import get_or_mint_agent_id, load_all_agents
 from ..coord import api
 from ..coord.identity import new_operation_id
-from ..coord.nats_client import CoordDataError, NatsUnavailable
+from ..coord.nats_client import (
+    CoordDataError,
+    NatsPublishOutcomeUnknown,
+    NatsUnavailable,
+)
 
 # One-shot CLI commands (room create, grant, revoke) each spin up a
 # fresh event loop with `asyncio.run` — cheap and no lifetime issues.
@@ -580,17 +584,32 @@ def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
                         console.print(
                             "[yellow]message accepted; attention delivery is pending[/]"
                         )
+                    elif result["attention_status"] == "lost":
+                        console.print(
+                            "[red]message accepted, but retention removed it "
+                            "before attention materialization; its attention is lost[/]"
+                        )
+                    else:
+                        console.print("[dim]message accepted[/]")
                 except ValueError as e:
                     console.print(f"[red]{e}[/]")
                 except api.GrantError as e:
                     console.print(f"[red]{e}[/]")
                     break
+                except NatsPublishOutcomeUnknown as e:
+                    console.print(f"[yellow]{_explain_coord_failure(e)}[/]")
+                    console.print(
+                        "[yellow]message acceptance is UNKNOWN: JetStream may "
+                        "have accepted it. Stage 1 has no caller-visible send "
+                        "idempotency; inspect retained room history before "
+                        "deciding whether to send another message.[/]"
+                    )
+                    continue
                 except (NatsUnavailable, CoordDataError) as e:
-                    # The message was not sent. Say so plainly rather than
-                    # leaving the operator to guess from a traceback whether
-                    # it landed.
                     console.print(f"[red]{_explain_coord_failure(e)}[/]")
-                    console.print("[red]your message was NOT sent[/]")
+                    console.print(
+                        "[red]message was not accepted; it was not sent[/]"
+                    )
                     continue
             while True:
                 try:

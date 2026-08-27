@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
+from contextlib import contextmanager
 
 import pytest
 
@@ -518,6 +522,45 @@ def test_wait_checks_ledger_again_after_subscribing(monkeypatch):
     assert calls == 3
 
 
+def test_publish_classifies_post_dispatch_timeout_as_ambiguous(monkeypatch):
+    class JetStream:
+        async def publish(self, *_args, **_kwargs):
+            raise nats_client.NatsTimeout()
+
+    async def jetstream():
+        return JetStream()
+
+    monkeypatch.setattr(nats_client, "get_jetstream", jetstream)
+    with pytest.raises(nats_client.NatsPublishOutcomeUnknown):
+        asyncio.run(
+            nats_client.publish_envelope(
+                "rm-test",
+                {"msg_id": new_msg_id()},
+                attention_manifest="{}",
+            )
+        )
+
+
+def test_publish_preserves_known_pre_dispatch_unavailability(monkeypatch):
+    async def unavailable_before_dispatch():
+        raise nats_client.NatsUnavailable("no server connection")
+
+    monkeypatch.setattr(
+        nats_client,
+        "get_jetstream",
+        unavailable_before_dispatch,
+    )
+    with pytest.raises(nats_client.NatsUnavailable) as raised:
+        asyncio.run(
+            nats_client.publish_envelope(
+                "rm-test",
+                {"msg_id": new_msg_id()},
+                attention_manifest="{}",
+            )
+        )
+    assert type(raised.value) is nats_client.NatsUnavailable
+
+
 def test_wait_returns_durable_ledger_edge_without_touching_nats(monkeypatch):
     edge = {
         "attention_id": "attn-" + "b" * 32,
@@ -676,3 +719,585 @@ def test_hint_publish_crash_retries_without_new_logical_edge(tmp_path, monkeypat
         ).fetchone()
     assert row["delivered_at"] is not None
     assert row["attempt_count"] == 2
+
+
+def test_real_retention_gap_advances_with_one_audit_and_later_edge(attention_env, monkeypatch):
+    async def scenario() -> None:
+        room_id = await _room("retention-gap")
+        real_materialize = attention.materialize_room_attention
+
+        async def leave_unmaterialized(*_args, **_kwargs):
+            raise RuntimeError("simulate death before SQLite projection")
+
+        monkeypatch.setattr(
+            attention,
+            "materialize_room_attention",
+            leave_unmaterialized,
+        )
+        expired = await api.send(
+            "retention-gap",
+            "agent",
+            AGENTS["alice"],
+            "will expire before projection",
+            notify=["bob"],
+        )
+        assert expired["attention_status"] == "pending"
+
+        # Use JetStream's real LimitsPolicy/DiscardOld retention path. Reducing
+        # max_msgs to one makes the next accepted message advance first_seq
+        # across the unmaterialized canonical object.
+        js = await nats_client.get_jetstream()
+        info = await js.stream_info(nats_client.stream_name_for_room(room_id))
+        info.config.max_msgs = 1
+        await js.update_stream(config=info.config)
+        retained = await api.send(
+            "retention-gap",
+            "agent",
+            AGENTS["alice"],
+            "still retained",
+            notify=["bob"],
+        )
+        assert retained["attention_status"] == "pending"
+        state = await nats_client.room_stream_state(room_id)
+        assert state == {
+            "first_seq": retained["sequence"],
+            "last_seq": retained["sequence"],
+            "messages": 1,
+        }
+
+        monkeypatch.setattr(
+            attention,
+            "materialize_room_attention",
+            real_materialize,
+        )
+        # Competing projectors may observe the same old floor. Only one can
+        # durably record/advance it, and both finish on the retained message.
+        watermarks = await asyncio.gather(
+            real_materialize(room_id),
+            real_materialize(room_id),
+        )
+        assert watermarks == [retained["sequence"], retained["sequence"]]
+        assert await real_materialize(room_id) == retained["sequence"]
+
+        page = attention.read_feed(AGENTS["bob"], 0, 20)
+        assert _edge_for(page, expired["envelope"]["msg_id"]) is None
+        assert _edge_for(page, retained["envelope"]["msg_id"]) is not None
+        with store.connect() as conn:
+            assert (
+                conn.execute(
+                    """SELECT count(*) FROM coord_attention_edges
+                   WHERE recipient_agent_id = ? AND object_id = ?""",
+                    (AGENTS["bob"], retained["envelope"]["msg_id"]),
+                ).fetchone()[0]
+                == 1
+            )
+            losses = conn.execute(
+                """SELECT payload_json FROM coord_outbox
+                   WHERE event_type = 'coord.attention_projection_lost'"""
+            ).fetchall()
+            watermark = conn.execute(
+                """SELECT last_sequence
+                   FROM coord_message_attention_projection WHERE room_id = ?""",
+                (room_id,),
+            ).fetchone()[0]
+        assert watermark == retained["sequence"]
+        assert len(losses) == 1
+        details = json.loads(losses[0]["payload_json"])["details"]
+        assert details == {
+            "room_id": room_id,
+            "from_sequence": expired["sequence"],
+            "to_sequence": expired["sequence"],
+        }
+
+    asyncio.run(scenario())
+
+
+def test_send_reports_lost_when_retention_overtakes_its_projection(
+    attention_env, monkeypatch
+):
+    async def scenario() -> None:
+        room_id = await _room("send-loss")
+        assert await attention.ensure_room_projection(room_id) == 0
+        js = await nats_client.get_jetstream()
+        info = await js.stream_info(nats_client.stream_name_for_room(room_id))
+        info.config.max_msgs = 1
+        await js.update_stream(config=info.config)
+
+        real_publish = nats_client.publish_envelope
+
+        async def publish_then_evict(
+            publish_room_id: str,
+            envelope: dict,
+            *,
+            attention_manifest: str,
+        ) -> int:
+            sequence = await real_publish(
+                publish_room_id,
+                envelope,
+                attention_manifest=attention_manifest,
+            )
+            filler_id = new_msg_id()
+            filler = Envelope(
+                msg_id=filler_id,
+                sent_at=store.now_ms(),
+                sender_kind="operator",
+                sender_agent_id=None,
+                sender_agent_name=None,
+                origin_instance_id=get_or_create_instance_id(),
+                content_type="text/markdown",
+                body="retention filler",
+            ).to_dict()
+            filler_manifest = attention.AttentionManifest(
+                msg_id=filler_id,
+                mode="none",
+                recipients=(),
+            )
+            await js.publish(
+                nats_client.subject_for_room(publish_room_id),
+                json.dumps(filler).encode(),
+                stream=nats_client.stream_name_for_room(publish_room_id),
+                headers={
+                    "Nats-Msg-Id": filler_id,
+                    INTERNAL_ATTENTION_HEADER: filler_manifest.to_header(),
+                },
+            )
+            return sequence
+
+        monkeypatch.setattr(
+            nats_client,
+            "publish_envelope",
+            publish_then_evict,
+        )
+        accepted = await api.send(
+            "send-loss",
+            "agent",
+            AGENTS["alice"],
+            "accepted then immediately expired",
+            notify=["bob"],
+        )
+        assert accepted["attention_status"] == "lost"
+        assert attention.projection_sequence_was_lost(
+            room_id,
+            accepted["sequence"],
+        )
+        assert _edge_for(
+            attention.read_feed(AGENTS["bob"], 0, 20),
+            accepted["envelope"]["msg_id"],
+        ) is None
+
+    asyncio.run(scenario())
+
+
+def test_corrupt_room_does_not_stop_later_healthy_room_recovery(attention_env):
+    async def scenario() -> None:
+        room_ids = {
+            "left": await _room("left"),
+            "right": await _room("right"),
+        }
+        names_by_id = {room_id: name for name, room_id in room_ids.items()}
+        corrupt_id, healthy_id = sorted(names_by_id)
+        await attention.ensure_room_projection(corrupt_id)
+        await attention.ensure_room_projection(healthy_id)
+
+        corrupt_msg_id = new_msg_id()
+        corrupt_envelope = Envelope(
+            msg_id=corrupt_msg_id,
+            sent_at=store.now_ms(),
+            sender_kind="agent",
+            sender_agent_id=AGENTS["alice"],
+            sender_agent_name="alice",
+            origin_instance_id=get_or_create_instance_id(),
+            content_type="text/markdown",
+            body="corrupt first room",
+        ).to_dict()
+        js = await nats_client.get_jetstream()
+        await js.publish(
+            nats_client.subject_for_room(corrupt_id),
+            json.dumps(corrupt_envelope).encode(),
+            stream=nats_client.stream_name_for_room(corrupt_id),
+            headers={
+                "Nats-Msg-Id": corrupt_msg_id,
+                INTERNAL_ATTENTION_HEADER: "{broken",
+            },
+        )
+
+        healthy_msg_id = new_msg_id()
+        with store.connect() as conn:
+            healthy_manifest = attention.build_message_manifest(
+                conn,
+                room_id=healthy_id,
+                msg_id=healthy_msg_id,
+                sender_agent_id=AGENTS["alice"],
+                notify=["bob"],
+            )
+        healthy_envelope = Envelope(
+            msg_id=healthy_msg_id,
+            sent_at=store.now_ms(),
+            sender_kind="agent",
+            sender_agent_id=AGENTS["alice"],
+            sender_agent_name="alice",
+            origin_instance_id=get_or_create_instance_id(),
+            content_type="text/markdown",
+            body="healthy later room",
+        ).to_dict()
+        await nats_client.publish_envelope(
+            healthy_id,
+            healthy_envelope,
+            attention_manifest=healthy_manifest.to_header(),
+        )
+
+        # recover_all orders by room_id, so the corrupt room is guaranteed to
+        # be attempted first. Its loud failure is reported only after the
+        # unrelated retained manifest has materialized.
+        with pytest.raises(
+            nats_client.CoordDataError,
+            match=corrupt_id,
+        ):
+            await attention.recover_all_attention()
+        recovered = attention.read_feed(AGENTS["bob"], 0, 20)
+        edge = _edge_for(recovered, healthy_msg_id)
+        assert edge is not None
+
+        with pytest.raises(nats_client.CoordDataError, match=corrupt_id):
+            await attention.recover_all_attention()
+        replay = attention.read_feed(AGENTS["bob"], 0, 20)
+        assert replay["edges"] == recovered["edges"]
+        with store.connect() as conn:
+            assert (
+                conn.execute(
+                    """SELECT count(*) FROM coord_attention_edges
+                   WHERE recipient_agent_id = ? AND object_id = ?""",
+                    (AGENTS["bob"], healthy_msg_id),
+                ).fetchone()[0]
+                == 1
+            )
+
+    asyncio.run(scenario())
+
+
+def test_new_projection_baselines_all_retained_legacy_history(attention_env, monkeypatch):
+    async def scenario() -> None:
+        room_id = await _room("legacy-baseline")
+        js = await nats_client.get_jetstream()
+        for index in range(50):
+            msg_id = new_msg_id()
+            envelope = Envelope(
+                msg_id=msg_id,
+                sent_at=store.now_ms(),
+                sender_kind="agent",
+                sender_agent_id=AGENTS["alice"],
+                sender_agent_name="alice",
+                origin_instance_id=get_or_create_instance_id(),
+                content_type="text/markdown",
+                body=f"legacy {index}",
+            ).to_dict()
+            await js.publish(
+                nats_client.subject_for_room(room_id),
+                json.dumps(envelope).encode(),
+                stream=nats_client.stream_name_for_room(room_id),
+                headers={"Nats-Msg-Id": msg_id},
+            )
+
+        baselines = await asyncio.gather(
+            attention.ensure_room_projection(room_id),
+            attention.ensure_room_projection(room_id),
+        )
+        assert baselines == [50, 50]
+
+        async def forbidden_fetch(*_args, **_kwargs):
+            raise AssertionError("known legacy history must not be rescanned")
+
+        monkeypatch.setattr(nats_client, "fetch_since", forbidden_fetch)
+        assert await attention.materialize_room_attention(room_id) == 50
+        assert attention.read_feed(AGENTS["bob"], 0, 20) == {
+            "edges": [],
+            "next_cursor": 0,
+        }
+
+    asyncio.run(scenario())
+
+
+def test_feed_pagination_revocation_interleaving_and_ahead_cursor(attention_env):
+    async def scenario() -> None:
+        await _room("feed-one")
+        await _room("feed-two")
+        sent = []
+        for room_name, body in (
+            ("feed-one", "one"),
+            ("feed-two", "two"),
+            ("feed-one", "three"),
+            ("feed-two", "four"),
+        ):
+            sent.append(
+                await api.send(
+                    room_name,
+                    "agent",
+                    AGENTS["alice"],
+                    body,
+                    notify=["bob"],
+                )
+            )
+
+        first = attention.read_feed(AGENTS["bob"], 0, 2)
+        second = attention.read_feed(AGENTS["bob"], first["next_cursor"], 2)
+        assert [edge["object_id"] for edge in first["edges"]] == [
+            sent[0]["envelope"]["msg_id"],
+            sent[1]["envelope"]["msg_id"],
+        ]
+        assert first["next_cursor"] == 2
+        assert [edge["object_id"] for edge in second["edges"]] == [
+            sent[2]["envelope"]["msg_id"],
+            sent[3]["envelope"]["msg_id"],
+        ]
+        assert second["next_cursor"] == 4
+        assert attention.read_feed(AGENTS["bob"], 99, 20) == {
+            "edges": [],
+            "next_cursor": 99,
+        }
+
+        api.revoke_grant(
+            "feed-one",
+            "agent",
+            AGENTS["bob"],
+            operation_id=new_operation_id(),
+        )
+        after_skip = attention.read_feed(AGENTS["bob"], 0, 1)
+        assert [edge["object_id"] for edge in after_skip["edges"]] == [sent[1]["envelope"]["msg_id"]]
+        assert after_skip["next_cursor"] == 2
+        final = attention.read_feed(
+            AGENTS["bob"],
+            after_skip["next_cursor"],
+            1,
+        )
+        assert [edge["object_id"] for edge in final["edges"]] == [sent[3]["envelope"]["msg_id"]]
+        assert final["next_cursor"] == 4
+
+    asyncio.run(scenario())
+
+
+def test_feed_highwater_and_rows_share_one_sqlite_snapshot(attention_env, monkeypatch):
+    async def setup() -> tuple[str, str, int]:
+        room_id = await _room("snapshot")
+        first = await api.send(
+            "snapshot",
+            "agent",
+            AGENTS["alice"],
+            "already visible",
+            notify=["bob"],
+        )
+        with store.connect() as conn:
+            generation = conn.execute(
+                """SELECT granted_at FROM memberships
+                   WHERE room_id = ? AND principal_id = ? AND revoked_at IS NULL""",
+                (room_id, AGENTS["bob"]),
+            ).fetchone()[0]
+        return room_id, first["envelope"]["msg_id"], generation
+
+    room_id, first_msg_id, generation = asyncio.run(setup())
+    real_connect = store.connect
+    raced = False
+    second_msg_id = "msg-snapshot-race"
+
+    def insert_concurrent_edge() -> None:
+        with real_connect() as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute(
+                """UPDATE coord_attention_feeds SET last_sequence = 2
+                   WHERE recipient_agent_id = ?""",
+                (AGENTS["bob"],),
+            )
+            writer.execute(
+                """INSERT INTO coord_attention_edges
+                   (recipient_agent_id, feed_sequence, attention_id, room_id,
+                    kind, object_id, revision_or_sequence,
+                    membership_granted_at, created_at)
+                   VALUES (?, 2, ?, ?, 'message', ?, 2, ?, ?)""",
+                (
+                    AGENTS["bob"],
+                    "attn-" + "9" * 32,
+                    room_id,
+                    second_msg_id,
+                    generation,
+                    store.now_ms(),
+                ),
+            )
+            writer.execute("COMMIT")
+
+    class RacingConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, parameters=()):
+            nonlocal raced
+            if "SELECT e.* FROM coord_attention_edges" in sql and not raced:
+                raced = True
+                insert_concurrent_edge()
+            return self._connection.execute(sql, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    @contextmanager
+    def racing_connect():
+        with real_connect() as connection:
+            yield RacingConnection(connection)
+
+    monkeypatch.setattr(attention.store, "connect", racing_connect)
+    page = attention.read_feed(AGENTS["bob"], 0, 20)
+    assert raced
+    assert [edge["object_id"] for edge in page["edges"]] == [first_msg_id]
+    assert page["next_cursor"] == 1
+    next_page = attention.read_feed(AGENTS["bob"], page["next_cursor"], 20)
+    assert [edge["object_id"] for edge in next_page["edges"]] == [second_msg_id]
+    assert next_page["next_cursor"] == 2
+
+
+@pytest.mark.timeout(45)
+def test_real_broker_acceptance_with_ambiguous_puback_recovers_once(
+    attention_env,
+    monkeypatch,
+):
+    async def scenario() -> None:
+        room_id = await _room("ambiguous-puback")
+        real_publish = nats_client.publish_envelope
+        accepted_sequence = None
+
+        async def accept_then_hide_puback(
+            publish_room_id: str,
+            envelope: dict,
+            *,
+            attention_manifest: str,
+        ) -> int:
+            nonlocal accepted_sequence
+            accepted_sequence = await real_publish(
+                publish_room_id,
+                envelope,
+                attention_manifest=attention_manifest,
+            )
+            # The real broker has stored the canonical object, but the caller
+            # observes the same result it would see if the PubAck were lost in
+            # transit after acceptance.
+            raise nats_client.NatsPublishOutcomeUnknown(
+                "connection closed after broker acceptance"
+            )
+
+        monkeypatch.setattr(
+            nats_client,
+            "publish_envelope",
+            accept_then_hide_puback,
+        )
+        with pytest.raises(nats_client.NatsPublishOutcomeUnknown):
+            await api.send(
+                "ambiguous-puback",
+                "agent",
+                AGENTS["alice"],
+                "accepted without a caller-visible PubAck",
+                notify=["bob"],
+            )
+
+        assert accepted_sequence == 1
+        assert await nats_client.room_stream_state(room_id) == {
+            "first_seq": 1,
+            "last_seq": 1,
+            "messages": 1,
+        }
+        assert attention.read_feed(AGENTS["bob"], 0, 20)["edges"] == []
+
+        monkeypatch.setattr(nats_client, "publish_envelope", real_publish)
+        await api.recover_attention()
+        recovered = attention.read_feed(AGENTS["bob"], 0, 20)
+        await api.recover_attention()
+        replayed = attention.read_feed(AGENTS["bob"], 0, 20)
+        assert len(recovered["edges"]) == 1
+        assert recovered == replayed
+        assert recovered["edges"][0]["revision_or_sequence"] == accepted_sequence
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.timeout(45)
+def test_process_death_after_puback_recovers_in_fresh_process_after_nats_restart(
+    attention_env,
+):
+    async def setup() -> tuple[str, int]:
+        room_id = await _room("process-crash")
+        baseline = await attention.ensure_room_projection(room_id)
+        return room_id, baseline
+
+    room_id, baseline = asyncio.run(setup())
+    assert baseline == 0
+    child_env = dict(os.environ)
+    send_script = f"""
+import asyncio
+import os
+from safeyolo.coord import api, attention
+
+async def die_after_puback(*_args, **_kwargs):
+    os._exit(86)
+
+attention.materialize_room_attention = die_after_puback
+asyncio.run(api.send(
+    "process-crash",
+    "agent",
+    {AGENTS["alice"]!r},
+    "accepted but caller saw process death",
+    sender_agent_name="alice",
+    notify=["bob"],
+))
+raise SystemExit(99)
+"""
+    died = subprocess.run(
+        [sys.executable, "-c", send_script],
+        env=child_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert died.returncode == 86, died.stderr
+
+    state = asyncio.run(nats_client.room_stream_state(room_id))
+    assert state["last_seq"] == 1 and state["messages"] == 1
+    with store.connect() as conn:
+        assert conn.execute("SELECT count(*) FROM coord_attention_edges").fetchone()[0] == 0
+
+    nr.stop_server()
+    nats_client.reset_for_tests()
+    nr.start_server(ready_timeout=8.0)
+
+    recover_script = f"""
+import asyncio
+import json
+from safeyolo.coord import api, attention
+
+api.bootstrap()
+asyncio.run(api.recover_attention())
+print("RECOVERED=" + json.dumps(attention.read_feed({AGENTS["bob"]!r}, 0, 20), sort_keys=True))
+"""
+
+    def recover_in_fresh_process() -> dict:
+        completed = subprocess.run(
+            [sys.executable, "-c", recover_script],
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        line = next(value for value in completed.stdout.splitlines() if value.startswith("RECOVERED="))
+        return json.loads(line.removeprefix("RECOVERED="))
+
+    recovered = recover_in_fresh_process()
+    replayed = recover_in_fresh_process()
+    assert len(recovered["edges"]) == 1
+    assert replayed == recovered
+    with store.connect() as conn:
+        assert (
+            conn.execute(
+                """SELECT count(*) FROM coord_attention_edges
+               WHERE recipient_agent_id = ?""",
+                (AGENTS["bob"],),
+            ).fetchone()[0]
+            == 1
+        )
