@@ -541,6 +541,55 @@ def test_wait_returns_durable_ledger_edge_without_touching_nats(monkeypatch):
     assert page == {"edges": [edge], "next_cursor": 1}
 
 
+def test_wait_reads_ledger_after_hint_before_retrying_recovery(monkeypatch):
+    reads = 0
+    recoveries = 0
+    edge = {
+        "attention_id": "attn-" + "c" * 32,
+        "room_id": "rm-r",
+        "kind": "message",
+        "object_id": "msg-m",
+        "revision_or_sequence": 1,
+    }
+
+    def read(_agent_id, _since, _limit):
+        nonlocal reads
+        reads += 1
+        if reads < 4:
+            return {"edges": [], "next_cursor": 0}
+        return {"edges": [edge], "next_cursor": 1}
+
+    async def recover(_agent_id):
+        nonlocal recoveries
+        recoveries += 1
+        if recoveries > 1:
+            raise AssertionError("a hinted ledger edge must precede recovery")
+
+    class Subscription:
+        async def wait(self, _timeout):
+            return True
+
+    class Context:
+        async def __aenter__(self):
+            return Subscription()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(attention, "read_feed", read)
+    monkeypatch.setattr(attention, "recover_attention_for_agent", recover)
+    monkeypatch.setattr(nats_client, "attention_subscription", lambda _agent: Context())
+
+    page = asyncio.run(
+        attention.wait_for_attention(
+            AGENTS["bob"], since_sequence=0, timeout_seconds=1, limit=1
+        )
+    )
+    assert page == {"edges": [edge], "next_cursor": 1}
+    assert recoveries == 1
+    assert reads == 4
+
+
 def test_hint_publish_crash_retries_without_new_logical_edge(tmp_path, monkeypatch):
     monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path / "coord"))
     monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))

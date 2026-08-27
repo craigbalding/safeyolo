@@ -631,9 +631,13 @@ async def wait_for_attention(
             if remaining <= 0:
                 return page
             await subscription.wait(min(fetch_window_seconds, remaining))
+            page = read_feed(agent_id, since_sequence, limit)
+            if page["edges"] or page["next_cursor"] != since_sequence:
+                return page
             # A PubAck can be followed by a failed SQLite projection, in
             # which case no wake hint exists yet. Periodically replay the
-            # durable JetStream intent while the long-poll is outstanding.
+            # durable JetStream intent while the long-poll is outstanding,
+            # but only after checking the authoritative ledger again.
             await recover_attention_for_agent(agent_id)
             page = read_feed(agent_id, since_sequence, limit)
             if page["edges"] or page["next_cursor"] != since_sequence:
