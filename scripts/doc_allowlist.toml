@@ -2,8 +2,8 @@
 #
 # Two tiers reflect the two audiences:
 #
-# - `user_facing_docs`  → docs read by human operators/contributors on the
-#                          host. Explicit list, no globs — prevents
+# - `user_facing_docs`  → docs read by human operators/contributors and
+#                          repository agents. Explicit list, no globs — prevents
 #                          accidental coverage of design docs
 #                          (docs/*-design.md, docs/FUTURE.md), scratch
 #                          files at repo root, and already-covered
@@ -20,6 +20,8 @@
 # The audit_doc_coverage.py tool reports per-tier binding counts.
 
 user_facing_docs = [
+    "AGENTS.md",
+    "CLAUDE.md",
     "README.md",
     "SECURITY.md",
     "guest/README.md",
@@ -35,6 +37,8 @@ user_facing_docs = [
     "docs/SERVICE_DISCOVERY.md",
     "docs/TLS_CERTIFICATE.md",
     "docs/agent-debugging.md",
+    "docs/agent-roles/independent-reviewer.md",
+    "docs/agent-roles/issue-owner.md",
     "docs/security-verification.md",
 ]
 
