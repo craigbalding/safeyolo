@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import safeyolo.events as events
 from safeyolo.coord import api, outbox, store
 from safeyolo.coord.audit import build_coord_event
 from safeyolo.coord.kernel import (
@@ -29,22 +30,38 @@ def kernel_env(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _legacy_db(path: Path, *, room_unique: bool = True, foreign_key: bool = True):
+def _legacy_db(
+    path: Path,
+    *,
+    room_unique: bool = True,
+    foreign_key: bool = True,
+    room_name_collation: str | None = None,
+    room_name_conflict: str | None = None,
+    permissions_constraint: str = "",
+):
     """Create semantic current-master state with deliberately different SQL text."""
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    unique = "UNIQUE" if room_unique else ""
+    conflict = (
+        f" ON CONFLICT {room_name_conflict}"
+        if room_name_conflict is not None
+        else ""
+    )
+    unique = f"UNIQUE{conflict}" if room_unique else ""
     reference = "REFERENCES rooms(room_id)" if foreign_key else ""
+    collation = (
+        f"COLLATE {room_name_collation}" if room_name_collation is not None else ""
+    )
     conn.executescript(
         f"""
         CREATE TABLE instance(id TEXT PRIMARY KEY);
         CREATE TABLE rooms(
             created_at INTEGER NOT NULL,
-            name TEXT NOT NULL {unique},
+            name TEXT {collation} NOT NULL {unique},
             room_id TEXT PRIMARY KEY
         );
         CREATE TABLE memberships(
-            permissions TEXT NOT NULL,
+            permissions TEXT NOT NULL {permissions_constraint},
             principal_id TEXT NOT NULL,
             room_id TEXT NOT NULL {reference},
             history_visibility TEXT NOT NULL DEFAULT ('retained'),
@@ -102,7 +119,19 @@ def test_semantic_current_master_legacy_schema_upgrades_without_data_loss(kernel
 
 @pytest.mark.parametrize(
     "malformation",
-    ["missing_table", "extra_column", "room_not_unique", "missing_fk"],
+    [
+        "missing_table",
+        "extra_column",
+        "room_not_unique",
+        "missing_fk",
+        "unexpected_trigger",
+        "unexpected_view",
+        "unexpected_index",
+        "room_name_nocase",
+        "descending_name_index",
+        "unexpected_check",
+        "replace_conflict_policy",
+    ],
 )
 def test_malformed_unversioned_schema_is_not_blessed(kernel_env, malformation):
     if malformation == "missing_table":
@@ -112,6 +141,19 @@ def test_malformed_unversioned_schema_is_not_blessed(kernel_env, malformation):
         conn.execute("CREATE TABLE instance(id TEXT PRIMARY KEY)")
         conn.commit()
         conn.close()
+    elif malformation == "room_name_nocase":
+        _legacy_db(store.db_path(), room_name_collation="NOCASE")
+    elif malformation == "descending_name_index":
+        _legacy_db(store.db_path(), room_unique=False)
+        with sqlite3.connect(store.db_path()) as conn:
+            conn.execute("CREATE UNIQUE INDEX rooms_name_desc ON rooms(name DESC)")
+    elif malformation == "unexpected_check":
+        _legacy_db(
+            store.db_path(),
+            permissions_constraint="CHECK(permissions <> 'receive,send')",
+        )
+    elif malformation == "replace_conflict_policy":
+        _legacy_db(store.db_path(), room_name_conflict="REPLACE")
     else:
         _legacy_db(
             store.db_path(),
@@ -121,6 +163,22 @@ def test_malformed_unversioned_schema_is_not_blessed(kernel_env, malformation):
         if malformation == "extra_column":
             with sqlite3.connect(store.db_path()) as conn:
                 conn.execute("ALTER TABLE rooms ADD COLUMN accidental TEXT")
+        elif malformation == "unexpected_trigger":
+            with sqlite3.connect(store.db_path()) as conn:
+                conn.execute(
+                    """CREATE TRIGGER hostile AFTER INSERT ON rooms
+                       BEGIN
+                           DELETE FROM rooms WHERE room_id = NEW.room_id;
+                       END"""
+                )
+        elif malformation == "unexpected_view":
+            with sqlite3.connect(store.db_path()) as conn:
+                conn.execute("CREATE VIEW room_names AS SELECT name FROM rooms")
+        elif malformation == "unexpected_index":
+            with sqlite3.connect(store.db_path()) as conn:
+                conn.execute(
+                    "CREATE INDEX memberships_principal ON memberships(principal_id)"
+                )
     with pytest.raises(store.LegacySchemaError):
         store.init_schema()
     with sqlite3.connect(store.db_path()) as conn:
@@ -131,6 +189,18 @@ def test_malformed_unversioned_schema_is_not_blessed(kernel_env, malformation):
                 "SELECT name FROM sqlite_schema WHERE type='table'"
             )
         }
+
+
+def test_semantically_equivalent_explicit_unique_index_is_admitted(kernel_env):
+    _legacy_db(store.db_path(), room_unique=False)
+    with sqlite3.connect(store.db_path()) as conn:
+        conn.execute("CREATE UNIQUE INDEX rooms_name_unique ON rooms(name)")
+
+    store.init_schema()
+
+    with store.connect() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("SELECT name FROM rooms").fetchone()[0] == "legacy"
 
 
 def test_migrations_do_not_use_executescript():
@@ -294,6 +364,42 @@ def test_concurrent_same_operation_executes_grant_once(kernel_env):
         assert conn.execute(
             "SELECT count(*) FROM coord_outbox WHERE event_type='coord.grant_changed'"
         ).fetchone()[0] == 1
+
+
+def test_grant_revoke_regrant_survives_identical_timestamps(
+    kernel_env, monkeypatch
+):
+    monkeypatch.setattr(store, "now_ms", lambda: 7)
+    _seed_room()
+
+    api.grant("r", "agent", "ag-a", operation_id="op-grant-first")
+    api.grant("r", "agent", "ag-a", operation_id="op-grant-active-noop")
+    assert api.revoke_grant(
+        "r", "agent", "ag-a", operation_id="op-revoke-same-ms"
+    ) is True
+    api.grant("r", "agent", "ag-a", operation_id="op-grant-restored")
+
+    assert api.join_room("r", "agent", "ag-a")["permissions"] == [
+        "receive",
+        "send",
+    ]
+    with store.connect() as conn:
+        transitions = [
+            tuple(row)
+            for row in conn.execute(
+                """SELECT granted_at, revoked_at FROM memberships
+                   WHERE principal_id = 'ag-a' ORDER BY granted_at"""
+            )
+        ]
+        assert transitions == [(7, 7), (8, None)]
+        assert conn.execute(
+            """SELECT count(*) FROM coord_outbox
+               WHERE event_type = 'coord.grant_changed'"""
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            """SELECT count(*) FROM coord_operations
+               WHERE operation_type = 'coord.grant'"""
+        ).fetchone()[0] == 3
 
 
 def test_committed_event_remains_pending_until_projector_recovers(
@@ -484,7 +590,9 @@ def test_outbox_replays_same_event_id_after_append_mark_crash(kernel_env):
     assert [line["event_id"] for line in lines] == [event_id, event_id]
 
 
-def test_outbox_does_not_acknowledge_fsync_failure(kernel_env, monkeypatch):
+def test_outbox_does_not_acknowledge_directory_fsync_failure(
+    kernel_env, monkeypatch
+):
     api.bootstrap()
     with store.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -501,11 +609,11 @@ def test_outbox_does_not_acknowledge_fsync_failure(kernel_env, monkeypatch):
         )
         conn.execute("COMMIT")
 
-    real_append = outbox.append_event_strict
+    real_fsync_directory = events._fsync_directory
     monkeypatch.setattr(
-        outbox,
-        "append_event_strict",
-        lambda _event: (_ for _ in ()).throw(OSError("fsync failed")),
+        events,
+        "_fsync_directory",
+        lambda _path: (_ for _ in ()).throw(OSError("directory fsync failed")),
     )
 
     assert outbox.project_pending() == 0
@@ -517,7 +625,7 @@ def test_outbox_does_not_acknowledge_fsync_failure(kernel_env, monkeypatch):
         ).fetchone()
         assert tuple(row) == (None, 1, "OSError")
 
-    monkeypatch.setattr(outbox, "append_event_strict", real_append)
+    monkeypatch.setattr(events, "_fsync_directory", real_fsync_directory)
     assert outbox.project_pending() == 1
     with store.connect() as conn:
         row = conn.execute(
@@ -527,6 +635,11 @@ def test_outbox_does_not_acknowledge_fsync_failure(kernel_env, monkeypatch):
         assert row["delivered_at"] is not None
         assert row["attempt_count"] == 2
         assert row["last_error_class"] is None
+    projected = [
+        json.loads(line)["event_id"]
+        for line in (kernel_env / "logs" / "safeyolo.jsonl").read_text().splitlines()
+    ]
+    assert projected.count(event_id) == 2
 
 
 @pytest.mark.parametrize("key", ["body", "brief", "description", "content", "prose"])

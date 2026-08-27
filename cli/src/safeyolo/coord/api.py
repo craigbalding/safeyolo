@@ -161,35 +161,54 @@ def grant(
 
     def _grant(conn: sqlite3.Connection) -> None:
         room_id = _resolve_room(conn, room_name)
-        cursor = conn.execute(
-            """INSERT OR IGNORE INTO memberships
+        serialized_permissions = ",".join(permissions)
+        active = conn.execute(
+            """SELECT permissions FROM memberships
+               WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
+                 AND revoked_at IS NULL
+               ORDER BY granted_at DESC LIMIT 1""",
+            (room_id, principal_kind, principal_id),
+        ).fetchone()
+        if active is not None and active["permissions"] == serialized_permissions:
+            return
+
+        latest = conn.execute(
+            """SELECT MAX(granted_at) FROM memberships
+               WHERE room_id = ? AND principal_kind = ? AND principal_id = ?""",
+            (room_id, principal_kind, principal_id),
+        ).fetchone()[0]
+        granted_at = store.now_ms()
+        if latest is not None:
+            granted_at = max(granted_at, latest + 1)
+
+        conn.execute(
+            """INSERT INTO memberships
                (room_id, principal_kind, principal_id, permissions, granted_at)
                VALUES (?, ?, ?, ?, ?)""",
             (
                 room_id,
                 principal_kind,
                 principal_id,
-                ",".join(permissions),
-                store.now_ms(),
+                serialized_permissions,
+                granted_at,
             ),
         )
-        if cursor.rowcount:
-            from .outbox import enqueue_coord_event
+        from .outbox import enqueue_coord_event
 
-            enqueue_coord_event(
-                conn,
-                "coord.grant_changed",
-                {
-                    "actor": LOCAL_OPERATOR_ID,
-                    "room_id": room_id,
-                    "object_id": room_id,
-                    "principal_kind": principal_kind,
-                    "principal_id": principal_id,
-                    "operation_id": operation_id,
-                    "operation_type": "coord.grant",
-                    "transition": "granted",
-                },
-            )
+        enqueue_coord_event(
+            conn,
+            "coord.grant_changed",
+            {
+                "actor": LOCAL_OPERATOR_ID,
+                "room_id": room_id,
+                "object_id": room_id,
+                "principal_kind": principal_kind,
+                "principal_id": principal_id,
+                "operation_id": operation_id,
+                "operation_type": "coord.grant",
+                "transition": "granted",
+            },
+        )
 
     return execute_mutation(
         operation_id=operation_id,

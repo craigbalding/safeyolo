@@ -103,8 +103,7 @@ def test_operator_send_rejects_explicit_agent_name(coord_env):
 
 
 def test_list_members_dedups_and_is_ordered(coord_env):
-    """Per reviewer point on #22: multiple active grant rows for the same
-    principal must NOT appear multiple times in the roster."""
+    """Repeated effective grants are no-ops and roster output stays unique."""
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
     _grant("r", "agent", AGENT_A)  # duplicate
@@ -372,8 +371,24 @@ def test_revoke_cancels_all_active_grants(coord_env):
     Post-revoke, expect NoMembershipError (per #20 semantic split)."""
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
-    _grant("r", "agent", AGENT_A)  # second grant, still active
-    _grant("r", "agent", AGENT_A)  # third
+    with api.store.connect() as conn:
+        row = conn.execute(
+            """SELECT room_id, permissions, granted_at FROM memberships
+               WHERE principal_id = ?""",
+            (AGENT_A,),
+        ).fetchone()
+        conn.execute(
+            """INSERT INTO memberships
+               (room_id, principal_kind, principal_id, permissions, granted_at)
+               VALUES (?, 'agent', ?, ?, ?)""",
+            (row["room_id"], AGENT_A, row["permissions"], row["granted_at"] + 1),
+        )
+        conn.execute(
+            """INSERT INTO memberships
+               (room_id, principal_kind, principal_id, permissions, granted_at)
+               VALUES (?, 'agent', ?, ?, ?)""",
+            (row["room_id"], AGENT_A, row["permissions"], row["granted_at"] + 2),
+        )
     assert _revoke_grant("r", "agent", AGENT_A) is True
     # After revoke, NO active grant should exist — access must fail.
     with pytest.raises(api.NoMembershipError):
@@ -400,6 +415,11 @@ def test_grant_absorbs_same_ms_collision(coord_env):
         # Should NOT raise IntegrityError
         _grant("r", "agent", AGENT_A)
         _grant("r", "agent", AGENT_A)
+    with api.store.connect() as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM memberships WHERE principal_id = ?",
+            (AGENT_A,),
+        ).fetchone()[0] == 1
 
 
 @pytest.mark.timeout(15)

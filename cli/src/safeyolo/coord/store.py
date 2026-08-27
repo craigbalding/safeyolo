@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from collections import Counter
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
@@ -87,6 +88,18 @@ def db_path() -> Path:
     return coord_data_dir() / "v0.db"
 
 
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
 @contextmanager
 def connect_unchecked():
     """Open the DB without requiring the candidate schema version.
@@ -101,7 +114,7 @@ def connect_unchecked():
     # simultaneous bootstraps can otherwise fail here before BEGIN IMMEDIATE
     # gets the chance to serialize them.
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA journal_mode=WAL")
+    _enable_wal(conn)
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     try:
@@ -154,41 +167,134 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> dict[str, tuple]:
             bool(row["notnull"]),
             row["pk"],
             _normalized_default(row["dflt_value"]),
+            row["hidden"],
         )
-        for row in conn.execute(f'PRAGMA table_info("{table}")')
+        for row in conn.execute(f'PRAGMA table_xinfo("{table}")')
     }
 
 
 _EXPECTED_LEGACY_COLUMNS = {
-    "instance": {"id": ("TEXT", False, 1, None)},
+    "instance": {"id": ("TEXT", False, 1, None, 0)},
     "rooms": {
-        "room_id": ("TEXT", False, 1, None),
-        "name": ("TEXT", True, 0, None),
-        "created_at": ("INTEGER", True, 0, None),
+        "room_id": ("TEXT", False, 1, None, 0),
+        "name": ("TEXT", True, 0, None, 0),
+        "created_at": ("INTEGER", True, 0, None, 0),
     },
     "memberships": {
-        "room_id": ("TEXT", True, 1, None),
-        "principal_kind": ("TEXT", True, 2, None),
-        "principal_id": ("TEXT", True, 3, None),
-        "permissions": ("TEXT", True, 0, None),
-        "history_visibility": ("TEXT", True, 0, "retained"),
-        "granted_at": ("INTEGER", True, 4, None),
-        "revoked_at": ("INTEGER", False, 0, None),
+        "room_id": ("TEXT", True, 1, None, 0),
+        "principal_kind": ("TEXT", True, 2, None, 0),
+        "principal_id": ("TEXT", True, 3, None, 0),
+        "permissions": ("TEXT", True, 0, None, 0),
+        "history_visibility": ("TEXT", True, 0, "retained", 0),
+        "granted_at": ("INTEGER", True, 4, None, 0),
+        "revoked_at": ("INTEGER", False, 0, None, 0),
     },
 }
 
 
-def _has_unique_room_name(conn: sqlite3.Connection) -> bool:
-    for index in conn.execute('PRAGMA index_list("rooms")'):
-        if not index["unique"] or index["partial"]:
-            continue
-        columns = [
-            row["name"]
-            for row in conn.execute(f'PRAGMA index_info("{index["name"]}")')
-        ]
-        if columns == ["name"]:
-            return True
-    return False
+def _index_semantics(conn: sqlite3.Connection, table: str) -> Counter:
+    """Project indexes to the properties that affect legacy behaviour."""
+    indexes = Counter()
+    for index in conn.execute(f'PRAGMA index_list("{table}")'):
+        quoted_name = index["name"].replace('"', '""')
+        key_columns = tuple(
+            (
+                row["name"],
+                (row["coll"] or "BINARY").upper(),
+                bool(row["desc"]),
+            )
+            for row in conn.execute(f'PRAGMA index_xinfo("{quoted_name}")')
+            if row["key"]
+        )
+        indexes[(bool(index["unique"]), bool(index["partial"]), key_columns)] += 1
+    return indexes
+
+
+def _unique_index(*columns: str) -> tuple:
+    return (True, False, tuple((column, "BINARY", False) for column in columns))
+
+
+_EXPECTED_LEGACY_INDEXES = {
+    "instance": Counter({_unique_index("id"): 1}),
+    "rooms": Counter(
+        {
+            _unique_index("room_id"): 1,
+            _unique_index("name"): 1,
+        }
+    ),
+    "memberships": Counter(
+        {
+            _unique_index(
+                "room_id",
+                "principal_kind",
+                "principal_id",
+                "granted_at",
+            ): 1
+        }
+    ),
+}
+
+
+def _unquoted_sql_keywords(sql: str) -> list[str]:
+    """Extract SQL keywords while ignoring strings, identifiers and comments."""
+    keywords = []
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if sql.startswith("--", index):
+            newline = sql.find("\n", index + 2)
+            index = len(sql) if newline < 0 else newline + 1
+        elif sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            index = len(sql) if end < 0 else end + 2
+        elif char in {"'", '"', "`"}:
+            quote = char
+            index += 1
+            while index < len(sql):
+                if sql[index] == quote:
+                    if index + 1 < len(sql) and sql[index + 1] == quote:
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                index += 1
+        elif char == "[":
+            end = sql.find("]", index + 1)
+            index = len(sql) if end < 0 else end + 1
+        elif char.isalpha() or char == "_":
+            end = index + 1
+            while end < len(sql) and (sql[end].isalnum() or sql[end] == "_"):
+                end += 1
+            keywords.append(sql[index:end].upper())
+            index = end
+        else:
+            index += 1
+    return keywords
+
+
+def _validate_table_constraint_sql(conn: sqlite3.Connection, table: str) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    keywords = _unquoted_sql_keywords(row["sql"] or "")
+    if "CHECK" in keywords:
+        raise LegacySchemaError(
+            f"unversioned coord table {table!r} has an unexpected CHECK constraint"
+        )
+    for index, keyword in enumerate(keywords):
+        if keyword == "CONFLICT":
+            policy = keywords[index + 1] if index + 1 < len(keywords) else None
+            if policy != "ABORT":
+                raise LegacySchemaError(
+                    f"unversioned coord table {table!r} has incompatible conflict policy"
+                )
+        if keyword == "DEFERRABLE" and (
+            index == 0 or keywords[index - 1] != "NOT"
+        ):
+            raise LegacySchemaError(
+                f"unversioned coord table {table!r} has a deferred constraint"
+            )
 
 
 def validate_legacy_schema(conn: sqlite3.Connection) -> None:
@@ -200,15 +306,42 @@ def validate_legacy_schema(conn: sqlite3.Connection) -> None:
             "unversioned coord DB has incompatible tables: "
             f"expected {sorted(expected_tables)}, got {sorted(tables)}"
         )
+    unexpected_objects = [
+        (row["type"], row["name"])
+        for row in conn.execute(
+            """SELECT type, name FROM sqlite_schema
+               WHERE type IN ('trigger', 'view') AND name NOT LIKE 'sqlite_%'
+               ORDER BY type, name"""
+        )
+    ]
+    if unexpected_objects:
+        raise LegacySchemaError(
+            f"unversioned coord DB has unexpected schema objects: {unexpected_objects!r}"
+        )
+    table_properties = {
+        row["name"]: (bool(row["wr"]), bool(row["strict"]))
+        for row in conn.execute("PRAGMA table_list")
+        if row["schema"] == "main" and row["type"] == "table"
+    }
     for table, expected in _EXPECTED_LEGACY_COLUMNS.items():
+        if table_properties.get(table) != (False, False):
+            raise LegacySchemaError(
+                f"unversioned coord table {table!r} has incompatible table options"
+            )
         actual = _table_columns(conn, table)
         if actual != expected:
             raise LegacySchemaError(
                 f"unversioned coord table {table!r} is incompatible: "
                 f"expected {expected!r}, got {actual!r}"
             )
-    if not _has_unique_room_name(conn):
-        raise LegacySchemaError("unversioned rooms.name is not UNIQUE")
+        _validate_table_constraint_sql(conn, table)
+        actual_indexes = _index_semantics(conn, table)
+        expected_indexes = _EXPECTED_LEGACY_INDEXES[table]
+        if actual_indexes != expected_indexes:
+            raise LegacySchemaError(
+                f"unversioned coord table {table!r} has incompatible indexes: "
+                f"expected {expected_indexes!r}, got {actual_indexes!r}"
+            )
     foreign_keys = [
         (
             row["from"],
@@ -216,11 +349,12 @@ def validate_legacy_schema(conn: sqlite3.Connection) -> None:
             row["to"],
             row["on_update"].upper(),
             row["on_delete"].upper(),
+            row["match"].upper(),
         )
         for row in conn.execute('PRAGMA foreign_key_list("memberships")')
     ]
     expected_foreign_keys = [
-        ("room_id", "rooms", "room_id", "NO ACTION", "NO ACTION")
+        ("room_id", "rooms", "room_id", "NO ACTION", "NO ACTION", "NONE")
     ]
     if foreign_keys != expected_foreign_keys:
         raise LegacySchemaError(

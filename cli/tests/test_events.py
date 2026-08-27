@@ -32,6 +32,11 @@ def test_append_event_strict_fsyncs_before_success(tmp_path, monkeypatch):
     monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path))
     monkeypatch.setattr(events, "open", lambda *_args, **_kwargs: RecordingFile(), raising=False)
     monkeypatch.setattr(events.os, "fsync", lambda fd: calls.append(("fsync", fd)))
+    monkeypatch.setattr(
+        events,
+        "_fsync_directory",
+        lambda path: calls.append(("fsync_directory", path)),
+    )
 
     append_event_strict(
         AuditEvent(
@@ -42,7 +47,14 @@ def test_append_event_strict_fsyncs_before_success(tmp_path, monkeypatch):
         )
     )
 
-    assert calls == ["write", "flush", "fileno", ("fsync", 17), "close"]
+    assert calls == [
+        "write",
+        "flush",
+        "fileno",
+        ("fsync", 17),
+        "close",
+        ("fsync_directory", tmp_path),
+    ]
 
 
 def test_append_event_strict_propagates_fsync_failure(tmp_path, monkeypatch):
@@ -54,6 +66,45 @@ def test_append_event_strict_propagates_fsync_failure(tmp_path, monkeypatch):
     )
 
     with pytest.raises(OSError, match="fsync failed"):
+        append_event_strict(
+            AuditEvent(
+                event="coord.grant_changed",
+                kind=EventKind.COORD,
+                severity=Severity.LOW,
+                summary="Grant changed",
+            )
+        )
+
+
+def test_append_event_strict_syncs_new_directory_chain(tmp_path, monkeypatch):
+    logs_dir = tmp_path / "new-parent" / "logs"
+    synced = []
+    monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs_dir))
+    monkeypatch.setattr(events, "_fsync_directory", synced.append)
+
+    append_event_strict(
+        AuditEvent(
+            event="coord.grant_changed",
+            kind=EventKind.COORD,
+            severity=Severity.LOW,
+            summary="Grant changed",
+        )
+    )
+
+    assert synced == [logs_dir, logs_dir.parent, tmp_path]
+
+
+def test_append_event_strict_propagates_directory_fsync_failure(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        events,
+        "_fsync_directory",
+        lambda _path: (_ for _ in ()).throw(OSError("directory fsync failed")),
+    )
+
+    with pytest.raises(OSError, match="directory fsync failed"):
         append_event_strict(
             AuditEvent(
                 event="coord.grant_changed",

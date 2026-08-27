@@ -72,7 +72,8 @@ Stage 0 also introduces a generic transactional outbox with stable event IDs.
 Canonical state and its logical event commit together. JSONL is an
 at-least-once projection: a crash after append but before delivery marking may
 produce a duplicate with the same `event_id`. Each append is flushed and
-`fsync()`ed before the outbox records successful delivery; an `fsync()` failure
+`fsync()`ed, along with each newly created containing directory entry, before
+the outbox records successful delivery; any file or directory `fsync()` failure
 leaves the edge pending for retry. All `coord.*` JSONL events flow through this
 outbox. A failure before migration 0→1 creates the outbox is
 reported only through normal operational logging. Later migration failures
