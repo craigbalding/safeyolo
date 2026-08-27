@@ -325,6 +325,11 @@ def test_puback_recovery_generation_concurrency_and_corruption(
         history = await api.read_room("recovery", "agent", AGENTS["bob"])
         assert history["messages"][0]["body"] == "accepted before SQLite"
 
+        # Restart the persistent message substrate while the accepted intent
+        # is still absent from SQLite. Recovery must replay the NATS header.
+        nr.stop_server()
+        nats_client.reset_for_tests()
+        nr.start_server(ready_timeout=8.0)
         monkeypatch.setattr(attention, "materialize_room_attention", real_materialize)
 
         async def lose_hint(*_args, **_kwargs):
