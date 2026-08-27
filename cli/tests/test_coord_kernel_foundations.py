@@ -484,6 +484,51 @@ def test_outbox_replays_same_event_id_after_append_mark_crash(kernel_env):
     assert [line["event_id"] for line in lines] == [event_id, event_id]
 
 
+def test_outbox_does_not_acknowledge_fsync_failure(kernel_env, monkeypatch):
+    api.bootstrap()
+    with store.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        event_id = outbox.enqueue_coord_event(
+            conn,
+            "coord.grant_changed",
+            {
+                "actor": "operator",
+                "room_id": "rm-r",
+                "operation_id": "op-fsync",
+                "operation_type": "coord.grant",
+                "transition": "granted",
+            },
+        )
+        conn.execute("COMMIT")
+
+    real_append = outbox.append_event_strict
+    monkeypatch.setattr(
+        outbox,
+        "append_event_strict",
+        lambda _event: (_ for _ in ()).throw(OSError("fsync failed")),
+    )
+
+    assert outbox.project_pending() == 0
+    with store.connect() as conn:
+        row = conn.execute(
+            """SELECT delivered_at, attempt_count, last_error_class
+               FROM coord_outbox WHERE event_id = ?""",
+            (event_id,),
+        ).fetchone()
+        assert tuple(row) == (None, 1, "OSError")
+
+    monkeypatch.setattr(outbox, "append_event_strict", real_append)
+    assert outbox.project_pending() == 1
+    with store.connect() as conn:
+        row = conn.execute(
+            "SELECT delivered_at, attempt_count, last_error_class FROM coord_outbox WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        assert row["delivered_at"] is not None
+        assert row["attempt_count"] == 2
+        assert row["last_error_class"] is None
+
+
 @pytest.mark.parametrize("key", ["body", "brief", "description", "content", "prose"])
 def test_coord_audit_rejects_canonical_content_keys(key):
     with pytest.raises(ValueError, match="prohibited/unknown"):

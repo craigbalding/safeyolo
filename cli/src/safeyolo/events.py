@@ -6,6 +6,7 @@ matching the format used by the proxy addons.
 
 import json
 import logging
+import os
 import sys
 from datetime import UTC, datetime
 
@@ -25,6 +26,8 @@ def append_event_strict(event: AuditEvent) -> None:
     log_path = get_logs_dir(create=True) / "safeyolo.jsonl"
     with open(log_path, "a") as f:
         f.write(json.dumps(event.to_jsonl()) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def write_event(
