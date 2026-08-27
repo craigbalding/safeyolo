@@ -92,7 +92,9 @@ def test_fresh_and_repeated_bootstrap_reach_identical_current_schema(kernel_env)
             """SELECT type, name, tbl_name FROM sqlite_schema
                WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"""
         ).fetchall()
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            store.CURRENT_SCHEMA_VERSION
+        )
     assert api.bootstrap() == first
     with store.connect() as conn:
         schema_after = conn.execute(
@@ -106,7 +108,9 @@ def test_semantic_current_master_legacy_schema_upgrades_without_data_loss(kernel
     _legacy_db(store.db_path())
     api.bootstrap()
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            store.CURRENT_SCHEMA_VERSION
+        )
         assert dict(conn.execute("SELECT * FROM rooms").fetchone()) == {
             "room_id": "rm-legacy",
             "name": "legacy",
@@ -221,7 +225,9 @@ def test_semantically_equivalent_explicit_unique_index_is_admitted(kernel_env):
     store.init_schema()
 
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            store.CURRENT_SCHEMA_VERSION
+        )
         assert conn.execute("SELECT name FROM rooms").fetchone()[0] == "legacy"
 
 
@@ -241,11 +247,78 @@ def test_simultaneous_bootstraps_serialize_to_one_complete_schema(kernel_env):
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(lambda _index: bootstrap(), range(workers)))
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            store.CURRENT_SCHEMA_VERSION
+        )
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert conn.execute(
             "SELECT count(*) FROM coord_outbox WHERE event_type='coord.schema_migrated'"
-        ).fetchone()[0] == 2
+        ).fetchone()[0] == store.CURRENT_SCHEMA_VERSION
+
+
+def _seed_v2_schema() -> None:
+    with store.connect_unchecked() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        store._migrate_0_to_1(conn, None)
+        store._migrate_1_to_2(conn, None)
+        conn.execute("PRAGMA user_version = 2")
+        conn.execute(
+            "INSERT INTO rooms(room_id, name, created_at) VALUES ('rm-v2', 'v2', 1)"
+        )
+        conn.execute("COMMIT")
+
+
+def test_v2_attention_migration_preserves_state(kernel_env):
+    _seed_v2_schema()
+
+    store.init_schema()
+
+    with store.connect() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute(
+            "SELECT name FROM rooms WHERE room_id = 'rm-v2'"
+        ).fetchone()[0] == "v2"
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table'"
+            )
+        }
+        assert {
+            "coord_attention_feeds",
+            "coord_attention_edges",
+            "coord_message_attention_projection",
+        } <= tables
+
+
+def test_v2_attention_migration_failure_rolls_back_and_retries(kernel_env):
+    _seed_v2_schema()
+    statements = 0
+
+    def fail_after_first(_statement):
+        nonlocal statements
+        statements += 1
+        raise RuntimeError("injected stage-1 migration failure")
+
+    with pytest.raises(RuntimeError, match="injected stage-1"):
+        store.init_schema(_after_statement=fail_after_first)
+    assert statements == 1
+    with store.connect_unchecked() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert "coord_attention_feeds" not in {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table'"
+            )
+        }
+        assert conn.execute(
+            """SELECT count(*) FROM coord_outbox
+               WHERE event_type = 'coord.migration_failed'"""
+        ).fetchone()[0] == 1
+
+    store.init_schema()
+    with store.connect() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_pre_outbox_migration_failure_rolls_back_and_only_logs_operationally(

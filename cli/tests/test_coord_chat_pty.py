@@ -53,8 +53,10 @@ UTC = datetime.UTC
 datetime = datetime.datetime
 sent = []
 class GrantError(Exception): pass
-async def _send(room, kind, aid, body):
-    sent.append(body); print("SENT<<" + repr(body) + ">>", flush=True); return {}
+async def _send(room, kind, aid, body, **kwargs):
+    sent.append(body); print("SENT<<" + repr(body) + ">>", flush=True)
+    print("NOTIFY<<" + repr(kwargs.get("notify")) + ">>", flush=True)
+    return {"attention_status": "ready"}
 async def _read(*a, **k):
     return {"messages": [], "next_cursor": 0, "has_more": False}
 api = types.SimpleNamespace(MAX_BODY_BYTES=256*1024, GrantError=GrantError,
@@ -185,6 +187,7 @@ def test_cancelling_a_paste_sends_nothing(tmp_path, env):
 def test_typed_line_still_sends(env):
     out = _run_under_pty(_script(), b"an ordinary line\n:q\n", env)
     assert _sent(out) == ["an ordinary line"]
+    assert "NOTIFY<<'room'>>" in out
 
 
 def test_every_physical_line_is_guttered():
@@ -195,6 +198,7 @@ def test_every_physical_line_is_guttered():
     gutter. Found by live test, not by the in-process suite.
     """
     import io
+
     from rich.console import Console
     from rich.text import Text
 

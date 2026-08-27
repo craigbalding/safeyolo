@@ -878,3 +878,110 @@ class TestCoordCorruptEnvelopeIsolation:
         # Not a silent [] page — the addon boundary sees the coord data
         # error and surfaces it as a generic 500.
         assert flow.response.status_code == 500
+
+
+class TestCoordTargetedAttention:
+    def test_identity_derived_feed_target_isolation_and_object_read(
+        self, api, isolated_state
+    ):
+        from safeyolo.agents_store import get_agent_id
+
+        for name in ("alice", "bob", "codey", "mallory"):
+            _register_agent(name)
+        _setup_room_with_grants("r", ["alice", "bob", "codey"])
+
+        with _as_agent("alice"):
+            sent = _make_flow(
+                "/api/coord/rooms/r/send",
+                method="POST",
+                body={"body": "for bob", "notify": ["bob"]},
+            )
+            _run(api, sent)
+        assert sent.response.status_code == 200
+        accepted = json.loads(sent.response.content)
+        assert accepted["attention_status"] == "ready"
+        assert "notify" not in accepted["envelope"]
+
+        with _as_agent("bob"):
+            bob_wait = _make_flow(
+                "/api/coord/attention/wait?since=0&timeout=0.1", method="GET"
+            )
+            _run(api, bob_wait)
+        assert bob_wait.response.status_code == 200
+        bob_page = json.loads(bob_wait.response.content)
+        assert len(bob_page["edges"]) == 1
+        edge = bob_page["edges"][0]
+        assert edge["object_id"] == accepted["envelope"]["msg_id"]
+
+        with _as_agent("codey"):
+            codey_wait = _make_flow(
+                "/api/coord/attention/wait?since=0&timeout=0.05", method="GET"
+            )
+            _run(api, codey_wait)
+        assert json.loads(codey_wait.response.content) == {
+            "edges": [],
+            "next_cursor": 0,
+        }
+
+        # Codey did not wake but can still read the retained room message.
+        with _as_agent("codey"):
+            history = _make_flow("/api/coord/rooms/r/messages?since=0", method="GET")
+            _run(api, history)
+        message = json.loads(history.response.content)["messages"][0]
+        assert message["body"] == "for bob"
+        assert "notify" not in message
+
+        with _as_agent("bob"):
+            object_read = _make_flow(
+                f"/api/coord/attention/{edge['attention_id']}/object", method="GET"
+            )
+            _run(api, object_read)
+        assert json.loads(object_read.response.content)["object"]["body"] == "for bob"
+
+        with _as_agent("codey"):
+            denied = _make_flow(
+                f"/api/coord/attention/{edge['attention_id']}/object", method="GET"
+            )
+            _run(api, denied)
+        assert denied.response.status_code == 404
+        assert json.loads(denied.response.content)["error"] == (
+            "attention not found or not accessible"
+        )
+
+        # An omitted raw Agent API notify retains room-broadcast semantics.
+        with _as_agent("alice"):
+            omitted = _make_flow(
+                "/api/coord/rooms/r/send",
+                method="POST",
+                body={"body": "legacy omission"},
+            )
+            _run(api, omitted)
+        omitted_msg_id = json.loads(omitted.response.content)["envelope"]["msg_id"]
+        with _as_agent("codey"):
+            omitted_wait = _make_flow(
+                "/api/coord/attention/wait?since=0&timeout=0.1", method="GET"
+            )
+            _run(api, omitted_wait)
+        assert omitted_msg_id in {
+            item["object_id"]
+            for item in json.loads(omitted_wait.response.content)["edges"]
+        }
+
+        # Registered-but-not-a-member and unknown names are indistinguishable.
+        failures = []
+        for target in ("mallory", "unknown-agent"):
+            with _as_agent("alice"):
+                failed = _make_flow(
+                    "/api/coord/rooms/r/send",
+                    method="POST",
+                    body={"body": "invalid target", "notify": [target]},
+                )
+                _run(api, failed)
+            failures.append(
+                (failed.response.status_code, json.loads(failed.response.content))
+            )
+        assert failures[0] == failures[1] == (
+            400,
+            {"error": "one or more notify targets are not active room members"},
+        )
+        assert get_agent_id("alice") == accepted["envelope"]["sender_agent_id"]
