@@ -217,7 +217,10 @@ class SecurityAddon:
 
 ### Addon Chain
 
-Addons process requests in order (defined in `scripts/start-safeyolo.sh`):
+Addons process requests in the order defined by
+`cli/src/safeyolo/mitm_addons/__init__.py`. `safeyolo.traffic_master`
+registers that production chain directly for one process generation; it does
+not use mitmproxy's watched script loader.
 
 **Layer 0 - Infrastructure:**
 1. `file_logging` - Structured JSONL file logging setup

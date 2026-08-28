@@ -10,6 +10,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import mitm_addons as _mitm_addons
 from .config import get_config_dir, get_data_dir, get_logs_dir, load_config
 from .ignore_hosts import (
     build_ignore_patterns,
@@ -27,53 +28,8 @@ from .traffic_session import (
 
 log = logging.getLogger("safeyolo.proxy")
 
+ADDON_CHAIN = _mitm_addons.ADDON_CHAIN
 DEFAULT_FLOW_CACHE = 5_000
-
-# Addon load order — mirrors scripts/start-safeyolo.sh exactly
-ADDON_CHAIN = [
-    # UDS ingress is imported by traffic_master before mitmproxy parses its
-    # options. Initial modes are supplied by the custom entry point, so no
-    # bootstrap addon or transient TCP listener is needed here.
-    # Layer 0: Infrastructure
-    "pid_writer.py",     # writes SAFEYOLO_PROXY_PID_FILE on `running`
-    "file_logging.py",
-    "memory_monitor.py",
-    "admin_shield.py",
-    "agent_api.py",
-    "loop_guard.py",
-    "request_id.py",
-    "operator_provenance.py",
-    "service_discovery.py",
-    "sse_streaming.py",
-    "policy_engine.py",
-    # Layer 0.5: Service Gateway
-    "service_gateway.py",
-    # Layer 1: Network Policy
-    "network_guard.py",
-    "circuit_breaker.py",
-    # Layer 2: Security Inspection
-    "credential_guard.py",
-    "pattern_scanner.py",
-    "test_context.py",
-    # Layer 3: Observability
-    "flow_recorder.py",
-    "request_logger.py",
-    "ignored_host_logger.py",
-    "metrics.py",
-    "traffic_scope.py",
-    "flow_pruner.py",
-    "admin_api.py",
-    # Layer 4: Reserved diagnostic destinations (issue #213 PR B).
-    # probe_sink is the normal terminator (early marker in requestheaders,
-    # local 200 in request). transport_guard is the correlated late
-    # request-hook failsafe (client-correlatable) + the structural
-    # server_connect no-egress backstop (audit-only for catastrophic
-    # chain failures). Load order matters: transport_guard's request
-    # hook must run AFTER probe_sink so a normally-terminated probe
-    # bypasses the failsafe entirely.
-    "probe_sink.py",
-    "transport_guard.py",
-]
 
 
 def _pid_file() -> Path:
@@ -170,6 +126,32 @@ def resolve_flow_cache(cli_value: int | None, environ: dict[str, str] | None = N
     return value
 
 
+def _addons_package_root(addons_dir: Path) -> Path:
+    """Return the import root for an addon directory inside ``safeyolo``."""
+    resolved = addons_dir.resolve()
+    package_dir = resolved.parent
+    if (
+        resolved.name != "mitm_addons"
+        or package_dir.name != "safeyolo"
+        or not (resolved / "__init__.py").is_file()
+        or not (package_dir / "__init__.py").is_file()
+    ):
+        raise ValueError(
+            "the addons directory must be a safeyolo/mitm_addons package directory"
+        )
+    return package_dir.parent
+
+
+def _is_addons_package_dir(candidate: Path) -> bool:
+    if not candidate.is_dir() or not (candidate / "request_id.py").is_file():
+        return False
+    try:
+        _addons_package_root(candidate)
+    except ValueError:
+        return False
+    return True
+
+
 def _find_addons_dir() -> Path | None:
     """Find the mitmproxy addons directory.
 
@@ -178,19 +160,35 @@ def _find_addons_dir() -> Path | None:
     works for both editable (`uv tool install --editable .`) and
     non-editable installs, since the package layout itself is
     consistent. `SAFEYOLO_ADDONS_DIR` still overrides for testing or
-    custom deployments.
+    custom deployments. The override selects the containing ``safeyolo``
+    package for the fresh traffic process so addons and their package
+    dependencies always come from the same checkout.
     """
     env_override = os.environ.get("SAFEYOLO_ADDONS_DIR")
     if env_override:
         p = Path(env_override)
-        if p.is_dir() and (p / "request_id.py").exists():
+        if _is_addons_package_dir(p):
             return p
         return None
 
     sibling = Path(__file__).resolve().parent / "mitm_addons"
-    if sibling.is_dir() and (sibling / "request_id.py").exists():
+    if _is_addons_package_dir(sibling):
         return sibling
     return None
+
+
+def _child_pythonpath(
+    addons_dir: Path,
+    pdp_dir: Path | None,
+    existing: str = "",
+) -> str:
+    """Build import roots for one coherent traffic-process generation."""
+    python_paths = [str(_addons_package_root(addons_dir))]
+    if pdp_dir:
+        python_paths.append(str(pdp_dir.parent))  # Parent so `from pdp import ...` works
+    if existing:
+        python_paths.append(existing)
+    return os.pathsep.join(python_paths)
 
 
 def _find_pdp_dir() -> Path | None:
@@ -483,7 +481,6 @@ def sync_web_tailnet(
 
 
 def _build_command(
-    addons_dir: Path,
     cert_dir: Path,
     config_dir: Path,
     data_dir: Path,
@@ -500,13 +497,9 @@ def _build_command(
     # canonical View/Proxyserver. It must run inside the private tmux PTY.
     cmd = [sys.executable, "-m", "safeyolo.traffic_master"]
 
-    # UnixMode is registered directly by safeyolo.traffic_master before
-    # mitmproxy parses options. The remaining script addons provide policy,
-    # observability, and administrative behavior.
-    for addon_file in ADDON_CHAIN:
-        addon_path = addons_dir / addon_file
-        if addon_path.exists():
-            cmd.extend(["-s", str(addon_path)])
+    # UnixMode and the production addon chain are registered directly by
+    # safeyolo.traffic_master. Keeping the scripts option empty prevents
+    # mitmproxy's ScriptLoader from watching and partially reloading the chain.
 
     # Core options
     cmd.extend(["--set", f"confdir={cert_dir}"])
@@ -786,7 +779,6 @@ def start_proxy(
 
     # Build command
     cmd = _build_command(
-        addons_dir=addons_dir,
         cert_dir=cert_dir,
         config_dir=config_dir,
         data_dir=data_dir,
@@ -799,15 +791,18 @@ def start_proxy(
         proxy_config=full_config.get("proxy", {}),
     )
 
-    # Environment: set PYTHONPATH so addons can import pdp, models, etc.
+    # Select the entire package containing the chosen addons, not the flat
+    # addon directory. The fresh child then imports traffic_master, addons,
+    # and safeyolo.* dependencies from one checkout. Source edits take effect
+    # together on the next restart and never as a partial live generation.
     _profile_enter("proxy: construct child environment")
     env = os.environ.copy()
     env.update(_profile_child_environment("traffic-master"))
-    python_paths = [str(addons_dir)]
-    if pdp_dir:
-        python_paths.append(str(pdp_dir.parent))  # Parent so `from pdp import ...` works
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = ":".join(python_paths) + (":" + existing if existing else "")
+    env["PYTHONPATH"] = _child_pythonpath(
+        addons_dir,
+        pdp_dir,
+        env.get("PYTHONPATH", ""),
+    )
 
     # Addons hardcode /safeyolo and /app/logs as defaults for the guest
     # layout. When running the mitmproxy master on the host these env vars

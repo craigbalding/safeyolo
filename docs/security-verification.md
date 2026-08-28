@@ -173,6 +173,6 @@ All installed package versions verified clean against [OSV.dev](https://osv.dev)
 | Admin API auth | [admin_api.py](../cli/src/safeyolo/mitm_addons/admin_api.py) |
 | Request ID | [request_id.py](../cli/src/safeyolo/mitm_addons/request_id.py) |
 | Request logging | [request_logger.py](../cli/src/safeyolo/mitm_addons/request_logger.py) |
-| Startup verification | [start-safeyolo.sh](../scripts/start-safeyolo.sh) |
+| Production addon startup | [traffic_master.py](../cli/src/safeyolo/traffic_master.py) and [mitm_addons](../cli/src/safeyolo/mitm_addons/__init__.py) |
 | Blackbox tests | [tests/blackbox/](../tests/blackbox/) |
 | Policy assurance threat model | [policy-assurance-threat-model.md](policy-assurance-threat-model.md) |

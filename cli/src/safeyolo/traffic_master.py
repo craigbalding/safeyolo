@@ -27,6 +27,7 @@ from mitmproxy.tools.web import app, static_viewer, webaddons
 from mitmproxy.utils import human
 
 from .events import EventKind, Severity, write_event
+from .mitm_addons import ProductionAddons
 from .proxy_modes.unix_listener import ensure_registered as _ensure_unix_listener_registered
 from .tailnet import (
     TailnetServeSession,
@@ -622,7 +623,25 @@ class TrafficMaster(ConsoleMaster):
                 ],
             )
             self.addons.add(WebFrontend(self), WebTailnetShare(self))
+        self._register_production_addons()
         self._add_scope_keys()
+
+    def _register_production_addons(self) -> None:
+        """Register the one-shot chain at the former script hook position."""
+        with _profile_phase("traffic-master: register production addons"):
+            production = ProductionAddons()
+            self.addons.add(production)
+
+            # Script-loaded production addons previously ran immediately after
+            # ScriptLoader and before mitmproxy's later stock transformers.
+            # Preserve that hook position while leaving ScriptLoader itself
+            # dormant for ordinary mitmproxy CLI compatibility.
+            script_loader = self.addons.get("scriptloader")
+            if script_loader is None:
+                raise RuntimeError("mitmproxy ScriptLoader addon is unavailable")
+            self.addons.chain.remove(production)
+            script_loader_index = self.addons.chain.index(script_loader)
+            self.addons.chain.insert(script_loader_index + 1, production)
 
     def _add_scope_keys(self) -> None:
         # The stock binding edits view_filter, which includes SafeYolo's

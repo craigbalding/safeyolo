@@ -3,11 +3,19 @@
 import json
 import os
 import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import create_autospec
 
 import httpx
 import pytest
 from typer.testing import CliRunner
+
+# Production proxy startup puts the repository root on PYTHONPATH so the
+# package-external ``pdp`` module is available to directly registered addons.
+# Mirror that environment for TrafficMaster composition tests.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_PROJECT_ROOT))
 
 
 # ---------- NATS runtime fixtures ----------

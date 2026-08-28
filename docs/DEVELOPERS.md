@@ -301,15 +301,21 @@ class MyAddon:
         """Return stats for admin API."""
         return {"blocks": 0}
 
-# mitmproxy discovers this
+# TrafficMaster registers this list directly
 addons = [MyAddon()]
 ```
 
 **Add to startup:**
-```bash
-# In scripts/start-safeyolo.sh, add:
--s addons/my_addon.py
+```python
+# In cli/src/safeyolo/mitm_addons/__init__.py, add the filename to
+# ADDON_CHAIN at the required security hook position:
+"my_addon.py",
 ```
+
+Production addons are package imports, not mitmproxy `-s` scripts. The traffic
+process loads each addon and its imported `safeyolo.*` dependencies once; source
+edits take effect together on the next proxy restart rather than through an
+implicit partial hot reload.
 
 **Key patterns:**
 - Use `flow.metadata["blocked_by"]` when blocking (logger picks it up)
@@ -325,7 +331,8 @@ addons = [MyAddon()]
 # source pick up on the next start (no container image, no rebuild step).
 safeyolo start --dev
 
-# Edit addons/*.py or pdp/*.py, then restart to pick up changes:
+# Edit mitm_addons/*.py, safeyolo/*.py, or pdp/*.py, then restart the traffic
+# process to pick up one consistent code generation:
 safeyolo stop && safeyolo start --dev
 ```
 

@@ -2,6 +2,12 @@
 
 import asyncio
 import errno
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import create_autospec, patch
 
@@ -67,6 +73,130 @@ def test_hybrid_master_has_one_canonical_view_and_proxyserver(monkeypatch):
     assert master.addons.get("safeyolo-web-frontend") is not None
     assert master.addons.get("safeyolo-web-tailnet-share") is not None
     assert master.web_app.master is master
+
+
+def test_production_addons_keep_script_hook_order_without_watchers(monkeypatch):
+    """Direct registration preserves hook order without Script wrappers."""
+    from mitmproxy.addonmanager import traverse
+    from mitmproxy.addons.script import Script
+
+    monkeypatch.delenv("SAFEYOLO_WEB_PASSWORD_FILE", raising=False)
+    master = make_master()
+    chain = list(master.addons.chain)
+    script_loader = master.addons.get("scriptloader")
+    production = master.addons.get("safeyolo-production-addons")
+
+    assert production is not None
+    assert chain[chain.index(script_loader) + 1] is production
+    assert master.options.scripts == []
+    assert master.addons.get("agent-api") in production.addons
+    assert not any(isinstance(addon, Script) for addon in traverse(chain))
+
+
+def test_agent_api_and_coord_dependency_change_only_as_one_process_generation(
+    tmp_path,
+    monkeypatch,
+):
+    """The selected checkout changes only as one process generation."""
+    project_root = Path(__file__).resolve().parents[2]
+    copied_root = tmp_path / "repo"
+    copied_cli_src = copied_root / "cli" / "src"
+    copied_cli_src.mkdir(parents=True)
+    shutil.copytree(
+        project_root / "cli" / "src" / "safeyolo",
+        copied_cli_src / "safeyolo",
+    )
+    shutil.copytree(project_root / "pdp", copied_root / "pdp")
+
+    agent_api_path = copied_cli_src / "safeyolo" / "mitm_addons" / "agent_api.py"
+    coord_api_path = copied_cli_src / "safeyolo" / "coord" / "api.py"
+
+    def set_generation(path: Path, generation: str) -> None:
+        source = path.read_text()
+        marker = "\nISSUE_397_GENERATION = "
+        if marker in source:
+            source = source[: source.index(marker)]
+        path.write_text(f'{source}{marker}{generation!r}\n')
+
+    set_generation(agent_api_path, "generation-one")
+    set_generation(coord_api_path, "generation-one")
+
+    probe = """
+import json
+import sys
+from pathlib import Path
+
+from safeyolo.mitm_addons import ProductionAddons
+
+ProductionAddons()
+from safeyolo.coord import api as coord_api
+from safeyolo.mitm_addons import agent_api
+
+def snapshot():
+    return {
+        "agent_api": agent_api.ISSUE_397_GENERATION,
+        "coord_api": coord_api.ISSUE_397_GENERATION,
+        "agent_api_file": str(Path(agent_api.__file__).resolve()),
+        "coord_api_file": str(Path(coord_api.__file__).resolve()),
+    }
+
+print(json.dumps(snapshot()), flush=True)
+for _ in sys.stdin:
+    print(json.dumps(snapshot()), flush=True)
+"""
+    from safeyolo.proxy import _child_pythonpath, _find_addons_dir
+
+    monkeypatch.setenv("SAFEYOLO_ADDONS_DIR", str(agent_api_path.parent))
+    selected_addons = _find_addons_dir()
+    assert selected_addons == agent_api_path.parent
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _child_pythonpath(
+        selected_addons,
+        copied_root / "pdp",
+        env.get("PYTHONPATH", ""),
+    )
+
+    def start_probe() -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            [sys.executable, "-c", probe],
+            cwd=copied_root,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    process = start_probe()
+    assert process.stdout is not None
+    assert process.stdin is not None
+    first = json.loads(process.stdout.readline())
+
+    set_generation(agent_api_path, "generation-two-longer")
+    set_generation(coord_api_path, "generation-two-longer")
+    process.stdin.write("source changed\n")
+    process.stdin.flush()
+    after_edit = json.loads(process.stdout.readline())
+    process.stdin.close()
+    assert process.wait(timeout=10) == 0
+
+    restarted = start_probe()
+    assert restarted.stdout is not None
+    assert restarted.stdin is not None
+    after_restart = json.loads(restarted.stdout.readline())
+    restarted.stdin.close()
+    assert restarted.wait(timeout=10) == 0
+
+    assert first["agent_api"] == "generation-one"
+    assert first["coord_api"] == "generation-one"
+    assert first["agent_api_file"] == str(agent_api_path.resolve())
+    assert first["coord_api_file"] == str(coord_api_path.resolve())
+    assert after_edit == first
+    assert after_restart["agent_api"] == "generation-two-longer"
+    assert after_restart["coord_api"] == "generation-two-longer"
+    assert after_restart["agent_api_file"] == str(agent_api_path.resolve())
+    assert after_restart["coord_api_file"] == str(coord_api_path.resolve())
 
 
 def test_live_traffic_defaults_show_and_follow_newest_flows(monkeypatch):

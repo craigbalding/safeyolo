@@ -36,7 +36,6 @@ import logging
 
 from mitmproxy import http
 from mitmproxy.proxy.server_hooks import ServerConnectionHookData
-from request_id import ensure_request_id, ensure_trace_opt_in, recover_trusted_agent
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.probe import (
@@ -47,6 +46,11 @@ from safeyolo.core.probe import (
 )
 from safeyolo.core.trace import STATE_ERROR, record_step
 from safeyolo.core.utils import sanitize_for_log, write_event
+from safeyolo.mitm_addons.request_id import (
+    ensure_request_id,
+    ensure_trace_opt_in,
+    recover_trusted_agent,
+)
 
 log = logging.getLogger("safeyolo.transport-guard")
 
