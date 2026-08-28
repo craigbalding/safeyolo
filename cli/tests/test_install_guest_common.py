@@ -136,6 +136,7 @@ def test_mise_integration_keeps_ordinary_tools_global_and_has_explicit_opt_in(
     assert result.returncode == 0, result.stderr
 
     profile = rootfs / "etc/profile.d/mise.sh"
+    runtime_environment = rootfs / "etc/safeyolo-mise-environment"
     environment = (rootfs / "etc/environment").read_text()
     wrapper = rootfs / "usr/local/bin/mise-project"
     profile_text = profile.read_text()
@@ -144,6 +145,7 @@ def test_mise_integration_keeps_ordinary_tools_global_and_has_explicit_opt_in(
     assert f"MISE_OVERRIDE_CONFIG_FILENAMES={GLOBAL_ONLY_CONFIG}" in environment
     assert "MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none" in environment
     assert "BASH_ENV=/etc/mise-activate.sh" in environment
+    assert runtime_environment.read_text() in environment
     assert wrapper.stat().st_mode & 0o777 == 0o755
 
     agent_home = tmp_path / "agent-home"
@@ -228,6 +230,18 @@ def test_vsock_harness_starts_with_project_mise_discovery_disabled() -> None:
     assert 'setenv("MISE_OVERRIDE_CONFIG_FILENAMES",' in source
     assert '"/etc/safeyolo/mise-project-config-disabled.toml", 1);' in source
     assert 'setenv("MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES", "none", 1);' in source
+    assert 'setenv("BASH_ENV", "/etc/mise-activate.sh", 1);' in source
+
+
+def test_guest_init_reapplies_mise_after_rebuilding_environment() -> None:
+    """Cold boot and restore cannot discard the rootfs-owned mise baseline."""
+    for script_name in ("guest-init-static.sh", "guest-init-per-run.sh"):
+        source = (REPO_ROOT / "cli/src/safeyolo" / script_name).read_text()
+        rebuild = source.index("cp /safeyolo/proxy.env /etc/environment")
+        restore = source.index(
+            "cat /etc/safeyolo-mise-environment >> /etc/environment"
+        )
+        assert rebuild < restore, script_name
 
 
 def test_guest_installer_does_not_hide_agent_creation_failure() -> None:

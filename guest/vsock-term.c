@@ -203,6 +203,7 @@ int main(int argc, char *argv[]) {
         setenv("MISE_OVERRIDE_CONFIG_FILENAMES",
                "/etc/safeyolo/mise-project-config-disabled.toml", 1);
         setenv("MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES", "none", 1);
+        setenv("BASH_ENV", "/etc/mise-activate.sh", 1);
         setenv("PATH", "/home/agent/.mise/shims:/usr/local/bin:/usr/bin:/bin", 1);
 
         /* Source proxy/agent env if present */

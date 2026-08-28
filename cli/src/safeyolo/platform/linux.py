@@ -1456,6 +1456,7 @@ class LinuxPlatform(AgentPlatform):
                 "/etc/safeyolo/mise-project-config-disabled.toml"
             ),
             "MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none",
+            "BASH_ENV=/etc/mise-activate.sh",
             "PATH=/home/agent/.mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         ]
 

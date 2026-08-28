@@ -111,6 +111,20 @@ MISE_PROFILE
     chmod 0755 "$rootfs/etc/profile.d/mise.sh"
     cp "$rootfs/etc/profile.d/mise.sh" "$rootfs/etc/mise-activate.sh"
 
+    # guest-init rebuilds /etc/environment from per-run proxy and agent data.
+    # Keep the rootfs-owned mise baseline separate so both cold boot and
+    # snapshot restore can append it again after that replacement.
+    cat > "$rootfs/etc/safeyolo-mise-environment" <<'MISE_ENVIRONMENT'
+export MISE_DATA_DIR=/home/agent/.mise
+export MISE_CONFIG_DIR=/home/agent/.mise
+export MISE_CACHE_DIR=/home/agent/.mise/cache
+export MISE_OVERRIDE_CONFIG_FILENAMES=/etc/safeyolo/mise-project-config-disabled.toml
+export MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none
+export PATH=/home/agent/.mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export BASH_ENV=/etc/mise-activate.sh
+MISE_ENVIRONMENT
+    chmod 0644 "$rootfs/etc/safeyolo-mise-environment"
+
     # Deliberate project mise use is command-scoped. Unsetting the discovery
     # guards in a child process cannot make later ordinary commands ambiently
     # trust repository configuration.
@@ -123,19 +137,14 @@ MISE_PROJECT
     chmod 0755 "$rootfs/usr/local/bin/mise-project"
 
     [ -f "$rootfs/etc/environment" ] || : > "$rootfs/etc/environment"
-    local key value
-    while IFS='=' read -r key value; do
-        if grep -q "^${key}=" "$rootfs/etc/environment"; then
-            sed -i "s|^${key}=.*|${key}=${value}|" "$rootfs/etc/environment"
-        else
-            echo "${key}=${value}" >> "$rootfs/etc/environment"
-        fi
-    done <<'MISE_ENVIRONMENT'
-MISE_OVERRIDE_CONFIG_FILENAMES=/etc/safeyolo/mise-project-config-disabled.toml
-MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none
-MISE_ENVIRONMENT
-    grep -q '^BASH_ENV=' "$rootfs/etc/environment" 2>/dev/null \
-        || echo "BASH_ENV=/etc/mise-activate.sh" >> "$rootfs/etc/environment"
+    local key
+    for key in MISE_DATA_DIR MISE_CONFIG_DIR MISE_CACHE_DIR \
+        MISE_OVERRIDE_CONFIG_FILENAMES MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES \
+        PATH BASH_ENV
+    do
+        sed -i "/^\(export \)\?${key}=/d" "$rootfs/etc/environment"
+    done
+    cat "$rootfs/etc/safeyolo-mise-environment" >> "$rootfs/etc/environment"
 }
 
 install_safeyolo_runtime_mount_targets() {

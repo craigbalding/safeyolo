@@ -334,6 +334,9 @@ fi
 if [ -f /safeyolo/agent.env ]; then
     cat /safeyolo/agent.env >> /etc/environment
 fi
+if [ -f /etc/safeyolo-mise-environment ]; then
+    cat /etc/safeyolo-mise-environment >> /etc/environment
+fi
 echo 'export HOME=/home/agent' >> /etc/environment
 
 # Start the proxy forwarder. Per-run also starts it; duplicate launch

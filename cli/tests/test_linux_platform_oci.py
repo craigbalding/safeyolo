@@ -364,6 +364,7 @@ def test_oci_environment_pins_persistent_mise_paths(isolated_env):
         "/etc/safeyolo/mise-project-config-disabled.toml"
     )
     assert env["MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES"] == "none"
+    assert env["BASH_ENV"] == "/etc/mise-activate.sh"
     assert env["PATH"].startswith("/home/agent/.mise/shims:")
 
 
