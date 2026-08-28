@@ -58,6 +58,7 @@ import platform
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
@@ -102,6 +103,10 @@ _NATS_BINARY_SHA256: dict[str, str] = {
 NATS_LISTEN_HOST = "127.0.0.1"
 NATS_CLIENT_PORT = 4222
 NATS_MONITOR_PORT = 8222
+
+_STOP_TERM_TIMEOUT_S = 3.0
+_STOP_KILL_TIMEOUT_S = 1.0
+_STOP_POLL_INTERVAL_S = 0.05
 
 # 1 GB total JetStream on-disk. Prevents unlimited-room-creation storage
 # growth per #371 reviewer point 3. Individual per-room streams add their
@@ -491,6 +496,39 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _wait_for_pid_exit(pid: int, timeout: float) -> tuple[bool, bool]:
+    """Wait until ``pid`` exits; return ``(exited, waitable_child)``.
+
+    ``kill(pid, 0)`` continues to succeed for an exited child until its
+    parent reaps it. Prefer ``waitpid`` when this process is the parent so
+    successful observation also removes the zombie. A later SafeYolo CLI
+    process gets ``ChildProcessError`` and falls back to probing PID
+    existence instead.
+
+    The deadline only bounds the wait. Expiry returns ``False`` and must
+    never be interpreted by the caller as evidence that the process exited.
+    """
+    deadline = time.monotonic() + timeout
+    waitable_child = False
+    while True:
+        try:
+            reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            if not _pid_alive(pid):
+                return True, waitable_child
+        except InterruptedError:
+            pass
+        else:
+            waitable_child = True
+            if reaped_pid == pid:
+                return True, True
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, waitable_child
+        time.sleep(min(_STOP_POLL_INTERVAL_S, remaining))
+
+
 def _varz(timeout: float = 1.0) -> dict | None:
     """Ask the monitor endpoint for the running server's identity fields.
     Returns a dict with at least server_name + server_id on success, or
@@ -720,7 +758,9 @@ class WedgedNatsServer(RuntimeError):
     the monitor endpoint is unreachable, or a different nats-server has
     reused the PID. Never delete the pidfile in this state (reviewer
     round-4 unhealthy-stop edge): that turns a wedged owned NATS into
-    an unmanaged host process."""
+    an unmanaged host process. Also raised when a verified process cannot
+    be signalled or its exit cannot be proven; those paths preserve the
+    pidfile for the same reason."""
 
 
 def stop_server() -> bool:
@@ -729,8 +769,9 @@ def stop_server() -> bool:
     ownership verification (stale pidfile / PID reuse).
     Shares the lifecycle lock with start_server so concurrent start+stop
     cannot race on pidfile or process state. Raises WedgedNatsServer
-    when the pidfile PID is alive but ownership cannot be verified —
-    the operator has to intervene rather than us silently orphaning it.
+    when the pidfile PID is alive but ownership cannot be verified, a
+    signal fails, or exit cannot be proven — the operator has to
+    intervene rather than us silently orphaning it.
     """
     with _lifecycle_lock():
         return _stop_server_locked()
@@ -758,19 +799,48 @@ def _stop_server_locked() -> bool:
         nats_pid_path().unlink(missing_ok=True)
         return False
     pid = verified["pid"]
-    with contextlib.suppress(OSError):
-        os.kill(pid, 15)
-    for _ in range(60):
-        if not _pid_alive(pid):
-            break
-        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        exited = True
+        waitable_child = False
+    except OSError as exc:
+        raise WedgedNatsServer(
+            f"ownership-verified nats-server PID {pid} could not be sent "
+            f"SIGTERM ({type(exc).__name__}: {exc}). Preserving pidfile "
+            f"{nats_pid_path()} for investigation."
+        ) from exc
     else:
-        with contextlib.suppress(OSError):
-            os.kill(pid, 9)
-        for _ in range(20):
-            if not _pid_alive(pid):
-                break
-            time.sleep(0.05)
+        exited, waitable_child = _wait_for_pid_exit(pid, _STOP_TERM_TIMEOUT_S)
+
+    if not exited:
+        if not waitable_child:
+            still_verified = _verified_ownership()
+            if still_verified is None or still_verified["pid"] != pid:
+                raise WedgedNatsServer(
+                    f"nats-server PID {pid} did not exit after SIGTERM and "
+                    "ownership can no longer be verified. Refusing SIGKILL "
+                    f"and preserving pidfile {nats_pid_path()} for investigation."
+                )
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            exited = True
+        except OSError as exc:
+            raise WedgedNatsServer(
+                f"ownership-verified nats-server PID {pid} could not be sent "
+                f"SIGKILL ({type(exc).__name__}: {exc}). Preserving pidfile "
+                f"{nats_pid_path()} for investigation."
+            ) from exc
+        else:
+            exited, _ = _wait_for_pid_exit(pid, _STOP_KILL_TIMEOUT_S)
+
+    if not exited:  # SKILL: contributing-to-safeyolo.md#eventual-state-and-lifecycle-changes
+        raise WedgedNatsServer(
+            f"nats-server PID {pid} remains present after SIGKILL. Refusing "
+            f"to report success or remove pidfile {nats_pid_path()}; "
+            "investigate the process manually."
+        )
     nats_pid_path().unlink(missing_ok=True)
     return True
 

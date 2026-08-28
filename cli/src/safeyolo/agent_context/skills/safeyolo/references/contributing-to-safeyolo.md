@@ -43,6 +43,25 @@ whitespace, end-of-file, private-key detection, and the other
 pre-existing hooks. Every gate CI runs is in `.pre-commit-config.yaml`;
 run the whole set through `uv run`.
 
+## Eventual state and lifecycle changes
+
+When code waits for readiness, shutdown, propagation, or another eventual
+state, define the observable completion condition before implementing the
+wait.
+
+- A deadline bounds how long to wait; elapsed time is never evidence that the
+  transition completed.
+- `sleep` may pace polling or backoff, but every success path must observe the
+  authoritative state. On deadline expiry, fail explicitly and preserve
+  recovery evidence rather than performing success cleanup.
+- For processes, remember that `kill(pid, 0)` proves only that a PID exists: it
+  neither excludes zombies nor proves process identity. Prefer process handles,
+  `waitpid`, readiness markers, sockets, or authoritative runtime status.
+- Test immediate completion, delayed or escalated completion, and terminal
+  timeout. When lifecycle control can happen in the spawning process or a later
+  process, cover both. Timing assertions may guard performance, but must be
+  accompanied by state-based assertions.
+
 ## Adding a new claim to a shipped doc
 
 The shipped-docs allowlist lives in `scripts/doc_allowlist.toml`, with
