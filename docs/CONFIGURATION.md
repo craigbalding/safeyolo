@@ -307,6 +307,7 @@ The `safeyolo policy` command group manages policy.toml from the command line. A
 # Add or update a host entry
 safeyolo policy host add api.stripe.com  # global budget only
 safeyolo policy host add api.stripe.com --rate 600
+safeyolo policy host add api.stripe.com --service stripe
 safeyolo policy host add api.stripe.com --rate 600 --agent boris
 safeyolo policy host add temp-api.com --rate 100 --expires 1d
 
@@ -337,9 +338,16 @@ safeyolo policy host add-list known_bad --egress deny
 safeyolo policy host add-list package_registries --rate 1200
 ```
 
-The add command displays both the host rate and overall budget. If `--rate` is
-omitted, a global `budget` must be configured. A supplied rate equal to the
-global budget is valid; a higher value is rejected.
+When adding an egress/rate entry, the command displays both the host rate and
+overall budget. If both `--rate` and `--service` are omitted, a global `budget`
+must be configured. A supplied rate equal to the global budget is valid; a
+higher value is rejected.
+
+`--service` writes a proxy-wide host-to-service gateway mapping. Used on its
+own, it does not change the host's egress posture or require a global network
+budget; combine it with `--rate` to add an allow/rate entry at the same time.
+Because gateway host mappings are proxy-wide, `--service` cannot be combined
+with `--agent`.
 
 `policy addon-list` holds an exclusive lock, preserves unrelated YAML text and
 comments, validates the document before and after the narrow list mutation, and

@@ -498,7 +498,9 @@ class TestHostBindingCheck:
         assert result.exit_code == 0
         assert "Host binding found" in result.output
 
-    def test_host_exists_but_no_service_binding(self, cli_runner, tmp_config_dir):
+    def test_host_exists_but_no_service_binding_renders_cli_guidance(
+        self, cli_runner, tmp_config_dir
+    ):
         _create_agent(tmp_config_dir, "boris")
         _write_service(
             tmp_config_dir,
@@ -526,7 +528,12 @@ class TestHostBindingCheck:
         )
         assert result.exit_code == 0
         assert "Next step" in result.output
-        assert "service: svc" in result.output
+        # Assert rendered Rich output: an unescaped format string swallows [hosts].
+        assert "under [hosts]:" in result.output
+        assert (
+            "safeyolo policy host add api.example.com --service svc"
+            in result.output
+        )
 
     def test_missing_host_warns_with_suggestion(self, cli_runner, tmp_config_dir):
         _create_agent(tmp_config_dir, "boris")
@@ -552,7 +559,11 @@ class TestHostBindingCheck:
         assert result.exit_code == 0
         assert "Next step" in result.output
         assert "api.example.com" in result.output
-        assert "service: svc" in result.output
+        assert "under [hosts]:" in result.output
+        assert (
+            "safeyolo policy host add api.example.com --service svc"
+            in result.output
+        )
 
     def test_no_default_host_warns(self, cli_runner, tmp_config_dir):
         _create_agent(tmp_config_dir, "boris")
@@ -575,7 +586,9 @@ class TestHostBindingCheck:
         )
         assert result.exit_code == 0
         assert "next step" in result.output.lower()
+        assert "under [hosts]:" in result.output
         assert "<your-host>" in result.output.lower()
+        assert "--service svc" in result.output
 
 
 # ---------------------------------------------------------------------------

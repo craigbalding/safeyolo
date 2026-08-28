@@ -128,6 +128,83 @@ class TestPolicyHostAdd:
         doc = _read_toml(tmp_config_dir)
         assert "api.stripe.com" in doc["hosts"]
 
+    def test_add_host_with_service_only_writes_gateway_mapping(self, tmp_config_dir):
+        result = runner.invoke(
+            app,
+            [
+                "policy",
+                "host",
+                "add",
+                "my.heartbeat-it.com",
+                "--service",
+                "heartbeat",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "service: heartbeat" in result.output
+        entry = _read_toml(tmp_config_dir)["hosts"]["my.heartbeat-it.com"]
+        assert dict(entry) == {"service": "heartbeat"}
+
+    def test_add_host_service_only_preserves_existing_egress_and_rate(
+        self, tmp_config_dir
+    ):
+        runner.invoke(
+            app,
+            ["policy", "host", "add", "api.example.com", "--rate", "600"],
+        )
+
+        result = runner.invoke(
+            app,
+            ["policy", "host", "add", "api.example.com", "--service", "example"],
+        )
+
+        assert result.exit_code == 0
+        entry = _read_toml(tmp_config_dir)["hosts"]["api.example.com"]
+        assert entry["egress"] == "allow"
+        assert entry["rate"] == 600
+        assert entry["service"] == "example"
+
+    def test_add_host_with_service_and_rate_writes_both(self, tmp_config_dir):
+        result = runner.invoke(
+            app,
+            [
+                "policy",
+                "host",
+                "add",
+                "api.example.com",
+                "--service",
+                "example",
+                "--rate",
+                "600",
+            ],
+        )
+
+        assert result.exit_code == 0
+        entry = _read_toml(tmp_config_dir)["hosts"]["api.example.com"]
+        assert entry["egress"] == "allow"
+        assert entry["rate"] == 600
+        assert entry["service"] == "example"
+
+    def test_add_host_rejects_agent_scoped_service_mapping(self, tmp_config_dir):
+        result = runner.invoke(
+            app,
+            [
+                "policy",
+                "host",
+                "add",
+                "api.example.com",
+                "--service",
+                "example",
+                "--agent",
+                "boris",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "--service cannot be combined with --agent" in result.output
+        assert "proxy-wide" in result.output
+
     def test_add_host_agent_scoped(self, tmp_config_dir):
         # Create agent section first
         doc = _read_toml(tmp_config_dir)
