@@ -43,6 +43,7 @@ DEFAULT_GROUPS = (
 )
 SENTINEL = ".safeyolo-chaos-disposable"
 REPORT_VERSION = 1
+ORACLE_LIST_DIR = "list-snapshots"
 
 
 def _sha256(data: bytes) -> str:
@@ -176,15 +177,165 @@ def _safe_fault_paths(config_dir: Path, state_dir: Path, confirmed: bool) -> tup
     return policy_path, state_dir
 
 
+def _list_dependencies(
+    document: Any,
+    source_policy: Path,
+    label: str,
+) -> list[tuple[str, str, Path]]:
+    """Return referenced list names, declarations, and lexical source paths."""
+    raw = document.unwrap()
+    hosts = raw.get("hosts", {})
+    if not isinstance(hosts, dict):
+        return []
+    references = list(dict.fromkeys(str(host)[1:] for host in hosts if str(host).startswith("$")))
+    if not references:
+        return []
+
+    lists = raw.get("lists")
+    if not isinstance(lists, dict):
+        raise RuntimeError(f"oracle {label} list dependencies require a [lists] table")
+
+    dependencies: list[tuple[str, str, Path]] = []
+    base_dir = source_policy.absolute().parent
+    for name in references:
+        if name not in lists:
+            raise RuntimeError(f"oracle {label} list dependency ${name} has no [lists] path")
+        declared = lists[name]
+        if not isinstance(declared, str):
+            raise RuntimeError(
+                f"oracle {label} list dependency ${name} has invalid path {declared!r} (expected a string)"
+            )
+        try:
+            logical = Path(declared)
+            if not logical.is_absolute():
+                logical = base_dir / logical
+            logical = Path(os.path.abspath(logical))
+        except (OSError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"oracle {label} list dependency ${name} has invalid path {declared!r}: {exc}") from exc
+        dependencies.append((name, declared, logical))
+    return dependencies
+
+
+def _resolve_list_dependency(
+    name: str,
+    declared: str,
+    logical: Path,
+    label: str,
+) -> Path:
+    prefix = f"oracle {label} list dependency ${name} ({declared!r})"
+    try:
+        return logical.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{prefix} not found: {logical}") from exc
+    except PermissionError as exc:
+        raise RuntimeError(f"{prefix} is unreadable at {logical}: {type(exc).__name__}: {exc}") from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(f"{prefix} has invalid path {logical}: {type(exc).__name__}: {exc}") from exc
+
+
+def _read_list_dependency(
+    name: str,
+    declared: str,
+    source: Path,
+    label: str,
+) -> bytes:
+    prefix = f"oracle {label} list dependency ${name} ({declared!r})"
+    try:
+        data = source.read_bytes()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(f"{prefix} is unreadable at {source}: {type(exc).__name__}: {exc}") from exc
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"{prefix} is invalid UTF-8 at {source}: {exc}") from exc
+    return data
+
+
+def _rewrite_oracle_lists(
+    document: Any,
+    source_policy: Path,
+    snapshots: dict[Path, str],
+    label: str,
+) -> None:
+    for name, declared, logical in _list_dependencies(document, source_policy, label):
+        snapshot = snapshots.get(logical)
+        if snapshot is None:
+            raise RuntimeError(
+                f"oracle {label} list dependency ${name} ({declared!r}) "
+                "conflicts with the snapshotted source dependencies"
+            )
+        document["lists"][name] = snapshot
+
+
+def _snapshot_oracle_lists(
+    source_policy: Path,
+    document: Any,
+    oracle_dir: Path,
+) -> dict[Path, str]:
+    """Snapshot referenced lists and rewrite a policy to safe relative paths."""
+    dependencies = _list_dependencies(document, source_policy, "source")
+    if not dependencies:
+        return {}
+
+    # Read every live dependency before writing or evaluating any oracle file.
+    # Canonical aliases share one immutable snapshot, so a symlink or ``..``
+    # spelling cannot race a second read of the same target.
+    read_dependencies: list[tuple[str, str, Path, Path]] = []
+    canonical_data: dict[Path, bytes] = {}
+    for name, declared, logical in dependencies:
+        source = _resolve_list_dependency(name, declared, logical, "source")
+        if source not in canonical_data:
+            canonical_data[source] = _read_list_dependency(name, declared, source, "source")
+        read_dependencies.append((name, declared, logical, source))
+
+    snapshot_dir = oracle_dir / ORACLE_LIST_DIR
+    try:
+        snapshot_dir.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise RuntimeError(f"oracle list snapshot path conflicts with an existing entry: {snapshot_dir}") from exc
+
+    snapshots_by_source: dict[Path, str] = {}
+    for source, data in canonical_data.items():
+        index = len(snapshots_by_source)
+        filename = f"{index:04d}-{_sha256(data)}.txt"
+        destination = snapshot_dir / filename
+        try:
+            with destination.open("xb") as handle:
+                handle.write(data)
+        except FileExistsError as exc:
+            name, declared, *_rest = next(item for item in read_dependencies if item[3] == source)
+            raise RuntimeError(
+                f"oracle source list dependency ${name} ({declared!r}) conflicts with snapshot file {destination}"
+            ) from exc
+        snapshots_by_source[source] = destination.relative_to(oracle_dir).as_posix()
+
+    snapshots = {logical: snapshots_by_source[source] for _name, _declared, logical, source in read_dependencies}
+    _rewrite_oracle_lists(document, source_policy, snapshots, "source")
+    return snapshots
+
+
+def _validate_oracle_lists(path: Path) -> None:
+    try:
+        document = tomlkit.parse(path.read_text())
+    except Exception as exc:
+        raise RuntimeError(f"oracle policy is invalid at {path}: {type(exc).__name__}: {exc}") from exc
+    for name, declared, logical in _list_dependencies(document, path, "policy"):
+        source = _resolve_list_dependency(name, declared, logical, "policy")
+        _read_list_dependency(name, declared, source, "policy")
+
+
 def _decision(path: Path, host: str) -> str:
     from safeyolo.policy.engine import PolicyEngine
 
+    _validate_oracle_lists(path)
     # The engineering command has a JSON-only output contract. Policy loading
     # may log operational events, so keep those internal while still allowing
     # exceptions to reach the structured top-level error response.
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         engine = PolicyEngine(baseline_path=path)
         try:
+            if not engine._loader.reload():
+                raise RuntimeError(f"oracle policy failed to load: {path}")
             return engine.evaluate_request(host).effect
         finally:
             engine._loader.stop_watcher()
@@ -201,14 +352,21 @@ def _network_surface(path: Path, document: dict[str, Any], chaos_host: str) -> d
     return {host: _decision(path, host) for host in dict.fromkeys(probes)}
 
 
-def _expected_mutation(original: bytes, chaos_host: str) -> tuple[str, bytes, dict[str, str]]:
+def _expected_mutation(
+    original: bytes,
+    chaos_host: str,
+    source_policy: Path,
+) -> tuple[str, bytes, dict[str, str]]:
     from safeyolo.policy.toml_roundtrip import upsert_host
 
     document = tomlkit.parse(original.decode())
     with tempfile.TemporaryDirectory(prefix="policy-chaos-oracle-") as temporary:
+        oracle_dir = Path(temporary)
+        old_document = tomlkit.parse(original.decode())
+        snapshots = _snapshot_oracle_lists(source_policy, old_document, oracle_dir)
         old_path = Path(temporary) / "old.toml"
         new_path = Path(temporary) / "new.toml"
-        old_path.write_bytes(original)
+        old_path.write_text(tomlkit.dumps(old_document))
         before = _decision(old_path, chaos_host)
         if before == "allow":
             operation = "deny"
@@ -221,7 +379,9 @@ def _expected_mutation(original: bytes, chaos_host: str) -> tuple[str, bytes, di
             else:
                 upsert_host(document, chaos_host, {"rate": 1000})
         expected = tomlkit.dumps(document).encode()
-        new_path.write_bytes(expected)
+        new_document = tomlkit.parse(expected.decode())
+        _rewrite_oracle_lists(new_document, source_policy, snapshots, "mutated")
+        new_path.write_text(tomlkit.dumps(new_document))
         after = _decision(new_path, chaos_host)
         if before == after:
             raise RuntimeError("selected chaos mutation did not change effective behavior")
@@ -241,7 +401,7 @@ def prepare_power_cut(args: argparse.Namespace) -> int:
 
     original = policy_path.read_bytes()
     chaos_host = f"chaos-{run_id[:12]}.invalid"
-    operation, expected, before_surface = _expected_mutation(original, chaos_host)
+    operation, expected, before_surface = _expected_mutation(original, chaos_host, policy_path)
     state = {
         "report_version": REPORT_VERSION,
         "run_id": run_id,

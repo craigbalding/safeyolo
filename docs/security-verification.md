@@ -106,6 +106,14 @@ the separately guarded `fault prepare-power-cut` / `fault recover` protocol on
 disposable KVM VPS guests. Those results are evidence about guest VM death,
 not a claim about physical storage power-loss durability.
 
+Before its old/new policy oracle runs, fault mode snapshots every referenced
+`[lists]` file and rewrites only the disposable oracle copies to generated
+paths inside the temporary directory. Relative, nested, absolute, and symlinked
+source declarations keep their production lookup semantics without becoming
+oracle write targets. A missing, unreadable, invalid, or conflicting dependency
+ends the command with a named `INFRASTRUCTURE_ERROR`; the oracle never falls
+back to an all-deny policy or re-reads a live source list after snapshotting.
+
 **Host-side proxy tests** (`tests/blackbox/host/`):
 
 | Test | Verifies |
