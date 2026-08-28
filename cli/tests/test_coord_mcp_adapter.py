@@ -82,3 +82,24 @@ def test_attention_tools_use_identity_derived_routes(monkeypatch):
         ),
         ("/api/coord/attention/attn-" + "a" * 32 + "/object", None, 60.0),
     ]
+
+
+def test_tool_descriptions_guide_the_targeted_multi_room_workflow(monkeypatch):
+    module = _load_adapter(monkeypatch)
+    wait_for_message_doc = " ".join((module.wait_for_message.__doc__ or "").split())
+
+    assert "Primary identity-derived multiplexed coordination wait" in (
+        module.wait_for_attention.__doc__ or ""
+    )
+    assert "Normal next operation after an attention wake" in (
+        module.read_attention.__doc__ or ""
+    )
+    assert "Explicit retained room history, context, and catch-up" in (
+        module.read_room.__doc__ or ""
+    )
+    assert "Legacy per-room compatibility" in (
+        module.wait_for_message.__doc__ or ""
+    )
+    assert "not the normal targeted multi-room coordination workflow" in (
+        wait_for_message_doc
+    )
