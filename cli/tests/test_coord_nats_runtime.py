@@ -25,7 +25,9 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import signal
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
@@ -215,6 +217,128 @@ class TestReapChild:
         nr._reap_child(proc, term_timeout=0.3, kill_timeout=2.0)
         assert proc.poll() is not None
 
+    def test_wait_for_pid_exit_reaps_same_process_child(self, isolated_coord):
+        proc = subprocess.Popen(
+            ["sleep", "60"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        reaped = False
+        try:
+            assert nr._wait_for_pid_exit(proc.pid, 0) == (False, True)
+            proc.terminate()
+            assert nr._wait_for_pid_exit(proc.pid, 1.0) == (True, True)
+            reaped = True
+            assert not nr._pid_alive(proc.pid)
+            with pytest.raises(ChildProcessError):
+                os.waitpid(proc.pid, os.WNOHANG)
+        finally:
+            if not reaped:
+                nr._reap_child(proc, term_timeout=1.0, kill_timeout=1.0)
+
+    def test_stop_reaps_sigterm_ignoring_child(self, isolated_coord):
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal, time; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "print('ready', flush=True); time.sleep(60)",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        try:
+            assert proc.stdout is not None
+            assert proc.stdout.readline() == "ready\n"
+            nr._write_pidfile(proc.pid, "safeyolo-test", "NDTEST", "/test/nats-server")
+            verified = nr._read_pidfile()
+            assert verified is not None
+            real_kill = os.kill
+            with (
+                patch.object(
+                    nr, "_verified_ownership", autospec=True, return_value=verified
+                ),
+                patch.object(nr, "_STOP_TERM_TIMEOUT_S", 0.1),
+                patch.object(
+                    nr.os, "kill", autospec=True, wraps=real_kill
+                ) as kill,
+            ):
+                assert nr._stop_server_locked() is True
+            signals = [entry.args[1] for entry in kill.call_args_list]
+            assert signal.SIGTERM in signals
+            assert signal.SIGKILL in signals
+            assert not nr._pid_alive(proc.pid)
+            assert not nr.nats_pid_path().exists()
+            with pytest.raises(ChildProcessError):
+                os.waitpid(proc.pid, os.WNOHANG)
+        finally:
+            if nr._pid_alive(proc.pid):
+                nr._reap_child(proc, term_timeout=0.1, kill_timeout=1.0)
+
+    @pytest.mark.parametrize("alive,exited", [(True, False), (False, True)])
+    def test_wait_for_pid_exit_falls_back_for_non_child(
+        self, isolated_coord, alive, exited
+    ):
+        with (
+            patch.object(
+                nr.os, "waitpid", autospec=True, side_effect=ChildProcessError
+            ),
+            patch.object(
+                nr, "_pid_alive", autospec=True, return_value=alive
+            ) as pid_alive,
+        ):
+            assert nr._wait_for_pid_exit(12345, 0) == (exited, False)
+        pid_alive.assert_called_once_with(12345)
+
+    def test_stop_timeout_preserves_pidfile_and_raises(self, isolated_coord):
+        nr._write_pidfile(12345, "safeyolo-test", "NDTEST", "/test/nats-server")
+        verified = nr._read_pidfile()
+        assert verified is not None
+        with (
+            patch.object(
+                nr, "_verified_ownership", autospec=True, return_value=verified
+            ),
+            patch.object(
+                nr, "_wait_for_pid_exit", autospec=True, return_value=(False, True)
+            ),
+            patch.object(nr.os, "kill", autospec=True) as kill,
+            pytest.raises(nr.WedgedNatsServer, match="remains present after SIGKILL"),
+        ):
+            nr.stop_server()
+
+        assert [entry.args for entry in kill.call_args_list] == [
+            (12345, signal.SIGTERM),
+            (12345, signal.SIGKILL),
+        ]
+        assert nr.nats_pid_path().exists()
+
+    def test_stop_refuses_sigkill_after_non_child_ownership_loss(
+        self, isolated_coord
+    ):
+        nr._write_pidfile(12345, "safeyolo-test", "NDTEST", "/test/nats-server")
+        verified = nr._read_pidfile()
+        assert verified is not None
+        with (
+            patch.object(
+                nr,
+                "_verified_ownership",
+                autospec=True,
+                side_effect=[verified, None],
+            ),
+            patch.object(
+                nr, "_wait_for_pid_exit", autospec=True, return_value=(False, False)
+            ),
+            patch.object(nr.os, "kill", autospec=True) as kill,
+            pytest.raises(nr.WedgedNatsServer, match="can no longer be verified"),
+        ):
+            nr.stop_server()
+
+        assert [entry.args for entry in kill.call_args_list] == [
+            (12345, signal.SIGTERM),
+        ]
+        assert nr.nats_pid_path().exists()
+
 
 # ---------- integration (needs nats-server binary) ----------
 
@@ -230,8 +354,38 @@ class TestLifecycleHappyPath:
             assert s["healthy"] is True
             assert s["actual_version"] == nr.NATS_VERSION
         finally:
+            started = time.monotonic()
             assert nr.stop_server() is True
+            elapsed = time.monotonic() - started
+            assert elapsed < 2.0, f"same-process stop took {elapsed:.1f}s"
+        assert not nr._pid_alive(pid)
+        assert nr._varz() is None
+        with pytest.raises(ChildProcessError):
+            os.waitpid(pid, os.WNOHANG)
         assert not nr.is_healthy()
+
+    def test_stop_server_started_by_prior_process(self, nats_env):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from safeyolo.coord import nats_runtime as nr; "
+                "print(nr.start_server(ready_timeout=8.0))",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        pid = int(completed.stdout.strip())
+        assert nr._pid_alive(pid)
+        with pytest.raises(ChildProcessError):
+            os.waitpid(pid, os.WNOHANG)
+
+        assert nr.stop_server() is True
+        assert not nr._pid_alive(pid)
+        assert nr._varz() is None
+        with pytest.raises(ChildProcessError):
+            os.waitpid(pid, os.WNOHANG)
 
     def test_second_start_is_idempotent(self, nats_env):
         pid1 = nr.start_server(ready_timeout=8.0)
