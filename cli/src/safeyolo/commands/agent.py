@@ -2555,14 +2555,19 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
                     matching_bound_values = bound_values
                 break
 
-    condition_values = matching_bound_values or {}
     required_operator_bindings = []
     for name, binding in operator_binding_defs:
+        if matching_bound_values is None:
+            required_operator_bindings.append(name)
+            continue
         required_if = binding.get("required_if", {})
         if (
             not required_if
             or not isinstance(required_if, dict)
-            or all(condition_values.get(key) == value for key, value in required_if.items())
+            or all(
+                matching_bound_values.get(key) == value
+                for key, value in required_if.items()
+            )
         ):
             required_operator_bindings.append(name)
 

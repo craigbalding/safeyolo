@@ -705,6 +705,30 @@ class TestContractBindingGuidance:
         assert ("POST /gateway/submit-binding" in result.output) is expect_incomplete
         assert load_agent("boris")["contract_bindings"] == [existing_binding]
 
+    def test_unbound_conditional_operator_binding_reports_setup_incomplete(
+        self, cli_runner, tmp_config_dir
+    ):
+        _create_agent(tmp_config_dir, "boris")
+        _write_conditional_operator_contract_service(tmp_config_dir)
+
+        result = _invoke(
+            cli_runner,
+            [
+                "authorize",
+                "boris",
+                "heartbeat",
+                "--capability",
+                "vps_lifecycle",
+                "--token",
+                "x",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Setup incomplete" in result.output
+        assert "advanced_target_id" in result.output
+        assert "POST /gateway/submit-binding" in result.output
+
     def test_no_operator_bindings_preserves_authorized_output(
         self, cli_runner, tmp_config_dir
     ):
