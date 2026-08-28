@@ -34,7 +34,7 @@ def _shell_socket_path(name: str) -> Path:
 
 
 def _wrap_ssh_command(command: str) -> str:
-    """Load the per-run environment and global-only mise activation."""
+    """Load the per-run environment and export-only global mise setup."""
     return (
         ". /etc/environment 2>/dev/null; "
         "if [ -f /etc/mise-activate.sh ]; then "
@@ -172,7 +172,7 @@ class DarwinPlatform(AgentPlatform):
 
         stdin = None
         if command:
-            # Load proxy/CA state and the global-only mise activation. sshd's
+            # Load proxy/CA state and the export-only global mise setup. sshd's
             # non-login non-interactive shell does neither (and Alpine has no
             # PAM fallback), so shell -c must apply both explicitly.
             cmd.append(_wrap_ssh_command(command))

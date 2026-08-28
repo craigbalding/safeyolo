@@ -105,11 +105,7 @@ def test_mise_integration_keeps_ordinary_tools_global_and_has_explicit_opt_in(
     fake_mise = rootfs / "usr/local/bin/mise"
     fake_mise.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = activate ]; then\n"
-        f"  [ \"$MISE_OVERRIDE_CONFIG_FILENAMES\" = \"{GLOBAL_ONLY_CONFIG}\" ] || exit 91\n"
-        "  [ \"$MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES\" = none ] || exit 92\n"
-        "  printf 'export PATH=\"%s/.mise/global/bin:$PATH\"\\n' \"$HOME\"\n"
-        "elif [ \"$1\" = project-probe ]; then\n"
+        "if [ \"$1\" = project-probe ]; then\n"
         "  [ -z \"${MISE_OVERRIDE_CONFIG_FILENAMES+x}\" ] || exit 93\n"
         "  [ -z \"${MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES+x}\" ] || exit 94\n"
         "  [ -f ./mise.toml ] || exit 95\n"
@@ -142,6 +138,7 @@ def test_mise_integration_keeps_ordinary_tools_global_and_has_explicit_opt_in(
     profile_text = profile.read_text()
     assert f'MISE_OVERRIDE_CONFIG_FILENAMES="{GLOBAL_ONLY_CONFIG}"' in profile_text
     assert 'MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES="none"' in profile_text
+    assert "mise activate" not in profile_text
     assert f"MISE_OVERRIDE_CONFIG_FILENAMES={GLOBAL_ONLY_CONFIG}" in environment
     assert "MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none" in environment
     assert "BASH_ENV=/etc/mise-activate.sh" in environment
@@ -149,9 +146,14 @@ def test_mise_integration_keeps_ordinary_tools_global_and_has_explicit_opt_in(
     assert wrapper.stat().st_mode & 0o777 == 0o755
 
     agent_home = tmp_path / "agent-home"
-    global_tool = agent_home / ".mise/global/bin/uv"
+    global_tool = agent_home / ".mise/shims/uv"
     global_tool.parent.mkdir(parents=True)
-    global_tool.write_text("#!/bin/sh\nprintf 'global-tool\\n'\n")
+    global_tool.write_text(
+        "#!/bin/sh\n"
+        f"[ \"$MISE_OVERRIDE_CONFIG_FILENAMES\" = \"{GLOBAL_ONLY_CONFIG}\" ] || exit 91\n"
+        "[ \"$MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES\" = none ] || exit 92\n"
+        "printf 'global-tool\\n'\n"
+    )
     global_tool.chmod(0o755)
     workspace = tmp_path / "workspace"
     workspace.mkdir()

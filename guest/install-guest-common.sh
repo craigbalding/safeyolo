@@ -106,7 +106,6 @@ export MISE_CACHE_DIR="${HOME:-/home/agent}/.mise/cache"
 export MISE_OVERRIDE_CONFIG_FILENAMES="/etc/safeyolo/mise-project-config-disabled.toml"
 export MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES="none"
 export PATH="${HOME:-/home/agent}/.mise/shims:$PATH"
-eval "$(mise activate bash)" 2>/dev/null || true
 MISE_PROFILE
     chmod 0755 "$rootfs/etc/profile.d/mise.sh"
     cp "$rootfs/etc/profile.d/mise.sh" "$rootfs/etc/mise-activate.sh"

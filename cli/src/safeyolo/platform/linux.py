@@ -216,8 +216,8 @@ def _wrap_runsc_command(command: str) -> str:
 
     ``/etc/environment`` contains the proxy and CA variables required by
     commands launched through ``runsc exec``, but its base PATH intentionally
-    omits per-user tools. Source the mise activation file afterwards so its
-    persistent global toolset wins while repository config remains disabled.
+    omits per-user tools. Source the export-only mise environment file
+    afterwards so persistent global shims win without project-aware hooks.
     """
     return (
         ". /etc/environment 2>/dev/null; "
