@@ -100,6 +100,24 @@ EOF
 chmod +x "$SAFEYOLO_AGENT_HOME/.safeyolo-command"
 ```
 
+### Entrypoint contract
+
+`$SAFEYOLO_AGENT_HOME/.safeyolo-command` must be an **interactive foreground
+process**: a coding agent (`exec claude ...`), a shell (`exec bash -l`), or a
+TUI that owns stdin/stdout for the session. `safeyolo agent run <name>`
+(without `--detach`) attaches a terminal and expects the command to interact
+with it.
+
+Don't write `sleep infinity`, `wait`, `tail -f /dev/null`, or another
+non-interactive daemon as the command. To keep the sandbox alive in the
+background for a later `safeyolo agent shell <name>` connection, use
+`safeyolo agent run <name> --detach`; the guest's built-in keep-alive handles
+that cleanly, with no `.safeyolo-command` required.
+
+If you press Ctrl-C during the attached Linux session, SafeYolo detaches the
+terminal and leaves the sandbox running. Reconnect with `safeyolo agent shell
+<name>` or stop it explicitly with `safeyolo agent stop <name>`.
+
 For Alpine rootfs images, do not rely on `mise use -g node@...`: mise may
 try to build Node from source against musl. Use Alpine's native packages and
 a persistent home prefix instead:

@@ -608,6 +608,7 @@ def _start_userns(name: str, *, persist_pid: bool = True) -> int:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     _wait_for_userns_ready(proc)
 
