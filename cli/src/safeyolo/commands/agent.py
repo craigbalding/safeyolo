@@ -2525,6 +2525,11 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
         if isinstance(contract_config, dict)
         else {}
     )
+    contract_template = (
+        contract_config.get("template", "")
+        if isinstance(contract_config, dict)
+        else ""
+    )
     if not isinstance(bindings_config, dict):
         bindings_config = {}
     operator_bindings = [
@@ -2534,7 +2539,27 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
         and binding.get("source", "agent") == "operator"
     ]
 
-    if operator_bindings:
+    matching_binding_active = False
+    contract_bindings = metadata.get("contract_bindings", [])
+    if isinstance(contract_bindings, list):
+        for binding in contract_bindings:
+            if not isinstance(binding, dict):
+                continue
+            bound_values = binding.get("bound_values", {})
+            if (
+                binding.get("service") == service_name
+                and binding.get("capability") == selected_cap
+                and binding.get("template", "") == contract_template
+                and isinstance(bound_values, dict)
+                and all(
+                    name in bound_values and bound_values[name] is not None
+                    for name in operator_bindings
+                )
+            ):
+                matching_binding_active = True
+                break
+
+    if operator_bindings and not matching_binding_active:
         console.print(
             f"\n[yellow bold]Setup incomplete:[/yellow bold] {esc_svc}.{esc_cap} "
             "requires operator-sourced contract bindings:"
