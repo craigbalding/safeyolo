@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 import tomlkit
 import typer
@@ -131,6 +131,10 @@ def _scope_label(agent: str | None) -> str:
 def host_add(  # DOC: docs/CONFIGURATION.md
     host: str = typer.Argument(..., help="Host pattern (e.g., api.stripe.com)"),
     rate: Optional[int] = typer.Option(None, "--rate", "-r", help="Rate limit (requests/min)"),
+    service: Annotated[
+        Optional[str],
+        typer.Option(help="Map this proxy-wide host to a service gateway definition"),
+    ] = None,
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name (agent-scoped entry)"),
     expires: Optional[str] = typer.Option(None, "--expires", "-e", help="Expiry duration (1h/8h/1d/7d) or ISO datetime"),
 ) -> None:
@@ -138,27 +142,50 @@ def host_add(  # DOC: docs/CONFIGURATION.md
 
     Examples:
         safeyolo policy host add api.stripe.com --rate 600
+        safeyolo policy host add api.stripe.com --service stripe
         safeyolo policy host add api.stripe.com --rate 600 --agent boris
         safeyolo policy host add temp-api.com --rate 100 --expires 1d
     """
+    if service is not None:
+        service = service.strip()
+        if not service:
+            console.print("[red]Error:[/red] --service must not be empty")
+            raise typer.Exit(1)
+        if agent is not None:
+            console.print(
+                "[red]Error:[/red] --service cannot be combined with --agent; "
+                "service host mappings are proxy-wide"
+            )
+            raise typer.Exit(1)
+
     def mutate(doc):
-        budget = _validate_rate(doc, rate, require_global=rate is None)
+        budget = _validate_rate(
+            doc,
+            rate,
+            require_global=rate is None and service is None,
+        )
         hosts = _get_hosts_table(doc, agent)
         config = tomlkit.inline_table()
-        config.append("egress", "allow")
+        if service is None or rate is not None:
+            config.append("egress", "allow")
         if rate is not None:
             config.append("rate", rate)
+        if service is not None:
+            config.append("service", service)
         if expires is not None:
             config.append("expires", _parse_expires(expires))
 
         if host in hosts:
             existing = hosts[host]
             if isinstance(existing, (dict, tomlkit.items.InlineTable, tomlkit.items.Table)):
-                existing["egress"] = "allow"
-                if rate is None:
-                    existing.pop("rate", None)
-                else:
-                    existing["rate"] = rate
+                if service is None or rate is not None:
+                    existing["egress"] = "allow"
+                    if rate is None:
+                        existing.pop("rate", None)
+                    else:
+                        existing["rate"] = rate
+                if service is not None:
+                    existing["service"] = service
                 if expires is not None:
                     existing["expires"] = _parse_expires(expires)
             else:
@@ -168,15 +195,19 @@ def host_add(  # DOC: docs/CONFIGURATION.md
         return budget
 
     budget = _locked_mutate(mutate)
-    if rate is None:
-        rate_label = f"global budget ({budget:,} req/min)"
-    elif budget is None:
-        rate_label = f"{rate:,} req/min; global budget not configured"
-    else:
-        rate_label = f"{rate:,} req/min; global budget {budget:,} req/min"
+    details = []
+    if rate is None and service is None:
+        details.append(f"rate: global budget ({budget:,} req/min)")
+    elif rate is not None and budget is None:
+        details.append(f"rate: {rate:,} req/min; global budget not configured")
+    elif rate is not None:
+        details.append(f"rate: {rate:,} req/min; global budget {budget:,} req/min")
+    if service is not None:
+        details.append(f"service: {escape(service)}")
+    detail_label = "; ".join(details)
     console.print(
         f"[green]Added host:[/green] {escape(host)}{_scope_label(agent)} "
-        f"[dim](rate: {rate_label})[/dim]"
+        f"[dim]({detail_label})[/dim]"
     )
 
 
