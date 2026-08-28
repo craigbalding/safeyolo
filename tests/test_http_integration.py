@@ -70,11 +70,39 @@ def _load_admin_token() -> str:
 
 ADMIN_TOKEN = _load_admin_token()
 
-# Skip all tests if proxy is not available
-pytestmark = pytest.mark.skipif(
-    not ADMIN_TOKEN,
-    reason="ADMIN_API_TOKEN not set and /safeyolo/data/admin_token not found"
-)
+
+def _endpoint_is_listening(host: str, port: int) -> bool:
+    """Probe one configured integration endpoint without retrying."""
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _integration_runtime_skip_reason(
+    admin_token: str,
+    *,
+    proxy_host: str = PROXY_HOST,
+    proxy_port: int = PROXY_PORT,
+    admin_host: str = ADMIN_HOST,
+    admin_port: int = ADMIN_PORT,
+    endpoint_is_listening=_endpoint_is_listening,
+) -> str | None:
+    """Return why the configured live runtime is initially unavailable."""
+    if not admin_token:
+        return "ADMIN_API_TOKEN not set and no admin_token file was found"
+    if not endpoint_is_listening(proxy_host, proxy_port):
+        return (
+            "SafeYolo proxy is not listening at "
+            f"{proxy_host}:{proxy_port}; real HTTP integration runtime required"
+        )
+    if not endpoint_is_listening(admin_host, admin_port):
+        return (
+            "SafeYolo admin API is not listening at "
+            f"{admin_host}:{admin_port}; real HTTP integration runtime required"
+        )
+    return None
 
 
 # ==============================================================================
@@ -250,6 +278,18 @@ class UpstreamServer:
 # ==============================================================================
 # Fixtures
 # ==============================================================================
+
+@pytest.fixture(scope="session", autouse=True)
+def require_integration_runtime() -> None:
+    """Skip only when the configured runtime is absent at module startup.
+
+    This precondition is established once. If either endpoint becomes
+    unhealthy during the tests, the normal client request fails the test.
+    """
+    reason = _integration_runtime_skip_reason(ADMIN_TOKEN)
+    if reason:
+        pytest.skip(reason)
+
 
 @pytest.fixture(scope="session")
 def test_server() -> UpstreamServer:
