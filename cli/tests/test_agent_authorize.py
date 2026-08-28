@@ -464,6 +464,162 @@ class TestAgentsYamlWrites:
 
 
 # ---------------------------------------------------------------------------
+# Contract binding guidance
+# ---------------------------------------------------------------------------
+
+
+class TestContractBindingGuidance:
+    def test_multiple_mixed_bindings_mark_setup_incomplete(
+        self, cli_runner, tmp_config_dir
+    ):
+        _create_agent(tmp_config_dir, "boris")
+        _write_service(
+            tmp_config_dir,
+            "heartbeat",
+            {
+                "vps_lifecycle": {
+                    "description": "Manage a VPS",
+                    "routes": [],
+                    "contract": {
+                        "template": "heartbeat.vps_lifecycle",
+                        "bindings": {
+                            "acceptance_service_id": {
+                                "source": "operator",
+                                "type": "integer",
+                            },
+                            "discovered_region": {
+                                "source": "agent",
+                                "type": "string",
+                            },
+                            "acceptance_vm_id": {
+                                "source": "operator",
+                                "type": "integer",
+                            },
+                        },
+                    },
+                }
+            },
+        )
+
+        result = _invoke(
+            cli_runner,
+            [
+                "authorize",
+                "boris",
+                "heartbeat",
+                "--capability",
+                "vps_lifecycle",
+                "--token",
+                "x",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Setup incomplete" in result.output
+        assert "acceptance_service_id" in result.output
+        assert "acceptance_vm_id" in result.output
+        assert "discovered_region" not in result.output
+        assert "Have agent 'boris' submit" in result.output
+        assert "POST /gateway/submit-binding" in result.output
+        assert "service=heartbeat, capability=vps_lifecycle" in result.output
+        assert "safeyolo watch" in result.output
+
+    def test_no_operator_bindings_preserves_authorized_output(
+        self, cli_runner, tmp_config_dir
+    ):
+        _create_agent(tmp_config_dir, "boris")
+        _write_service(
+            tmp_config_dir,
+            "svc",
+            {
+                "reader": {
+                    "description": "Read data",
+                    "routes": [],
+                    "contract": {
+                        "template": "svc.reader",
+                        "bindings": {
+                            "query": {"source": "agent", "type": "string"},
+                            "limit": {"type": "integer"},
+                        },
+                    },
+                },
+                "writer": {
+                    "description": "Write data",
+                    "routes": [],
+                    "contract": {
+                        "template": "svc.writer",
+                        "bindings": {
+                            "write_target": {
+                                "source": "operator",
+                                "type": "string",
+                            }
+                        },
+                    },
+                },
+            },
+        )
+
+        result = _invoke(
+            cli_runner,
+            [
+                "authorize",
+                "boris",
+                "svc",
+                "--capability",
+                "reader",
+                "--token",
+                "x",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Authorized" in result.output
+        assert "Setup incomplete" not in result.output
+        assert "write_target" not in result.output
+        assert "/gateway/submit-binding" not in result.output
+
+    def test_binding_names_are_rendered_as_untrusted_text(
+        self, cli_runner, tmp_config_dir
+    ):
+        _create_agent(tmp_config_dir, "boris")
+        _write_service(
+            tmp_config_dir,
+            "svc",
+            {
+                "cap": {
+                    "description": "Capability",
+                    "routes": [],
+                    "contract": {
+                        "template": "svc.cap",
+                        "bindings": {
+                            "[red]operator_value[/red]": {
+                                "source": "operator",
+                                "type": "string",
+                            }
+                        },
+                    },
+                }
+            },
+        )
+
+        result = _invoke(
+            cli_runner,
+            [
+                "authorize",
+                "boris",
+                "svc",
+                "--capability",
+                "cap",
+                "--token",
+                "x",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "[red]operator_value[/red]" in result.output
+
+
+# ---------------------------------------------------------------------------
 # Host binding check
 # ---------------------------------------------------------------------------
 

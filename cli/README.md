@@ -234,6 +234,13 @@ safeyolo policy show --section hosts
 safeyolo agent revoke myproject github
 ```
 
+When the selected capability declares `source: operator` contract bindings,
+`agent authorize` records the service authorization but reports that setup is
+incomplete and lists the binding names. Have the named agent submit the
+operator-provided values to its Agent API at `POST /gateway/submit-binding`,
+then approve the system-authored contract prompt with `safeyolo watch`. There
+is no host-side binding submission command.
+
 ### Vault Management
 
 Store and manage credentials used by service gateway integrations.

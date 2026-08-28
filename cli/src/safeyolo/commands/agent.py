@@ -2349,7 +2349,8 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
     """Authorize an agent to use a service.
 
     Resolves the service, picks a capability, stores the credential, and updates
-    policy.toml. One command takes an agent from "no access" to "authorized."
+    policy.toml. Capabilities with operator-sourced contract bindings require a
+    separate agent-side binding submission and operator approval.
 
     Examples:
 
@@ -2512,6 +2513,44 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
     esc_cred = escape(cred_name)
 
     console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (capability={esc_cap}, credential={esc_cred})")
+
+    selected_cap_config = capabilities[selected_cap]
+    contract_config = (
+        selected_cap_config.get("contract", {})
+        if isinstance(selected_cap_config, dict)
+        else {}
+    )
+    bindings_config = (
+        contract_config.get("bindings", {})
+        if isinstance(contract_config, dict)
+        else {}
+    )
+    if not isinstance(bindings_config, dict):
+        bindings_config = {}
+    operator_bindings = [
+        str(name)
+        for name, binding in bindings_config.items()
+        if isinstance(binding, dict)
+        and binding.get("source", "agent") == "operator"
+    ]
+
+    if operator_bindings:
+        console.print(
+            f"\n[yellow bold]Setup incomplete:[/yellow bold] {esc_svc}.{esc_cap} "
+            "requires operator-sourced contract bindings:"
+        )
+        for binding_name in operator_bindings:
+            console.print(f"  - [bold]{escape(binding_name)}[/bold]")
+        console.print(
+            f"\n[yellow]Contract binding next step:[/yellow] Have agent "
+            f"'{esc_agent}' submit the operator-provided values to its Agent API:"
+        )
+        console.print("    [bold]POST /gateway/submit-binding[/bold]")
+        console.print(f"    [dim]service={esc_svc}, capability={esc_cap}[/dim]")
+        console.print(
+            "\n  Then approve the pending contract binding with "
+            "[bold]safeyolo watch[/bold]."
+        )
 
     # 7. Check policy.yaml for host binding
     default_host = svc.get("default_host", "")
