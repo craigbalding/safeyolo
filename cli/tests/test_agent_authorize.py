@@ -60,6 +60,34 @@ def _write_operator_contract_service(config_dir: Path) -> None:
     )
 
 
+def _write_conditional_operator_contract_service(config_dir: Path) -> None:
+    _write_service(
+        config_dir,
+        "heartbeat",
+        {
+            "vps_lifecycle": {
+                "description": "Manage a VPS",
+                "routes": [],
+                "contract": {
+                    "template": "heartbeat.vps_lifecycle",
+                    "bindings": {
+                        "mode": {
+                            "source": "agent",
+                            "type": "enum",
+                            "options": ["basic", "advanced"],
+                        },
+                        "advanced_target_id": {
+                            "source": "operator",
+                            "type": "integer",
+                            "required_if": {"mode": "advanced"},
+                        },
+                    },
+                },
+            }
+        },
+    )
+
+
 def _write_policy(config_dir: Path, hosts: dict | None = None) -> None:
     """Update policy.toml with optional hosts section."""
     import tomlkit
@@ -635,6 +663,47 @@ class TestContractBindingGuidance:
         assert "acceptance_service_id" in result.output
         assert "acceptance_vm_id" in result.output
         assert "POST /gateway/submit-binding" in result.output
+
+    @pytest.mark.parametrize(
+        ("mode", "expect_incomplete"),
+        [("basic", False), ("advanced", True)],
+    )
+    def test_conditional_operator_binding_uses_active_values(
+        self, cli_runner, tmp_config_dir, mode, expect_incomplete
+    ):
+        existing_binding = {
+            "binding_id": "cb-existing",
+            "service": "heartbeat",
+            "capability": "vps_lifecycle",
+            "template": "heartbeat.vps_lifecycle",
+            "bound_values": {"mode": mode},
+            "grantable_operations": ["restart_vm"],
+        }
+        _create_agent(
+            tmp_config_dir,
+            "boris",
+            extra={"contract_bindings": [existing_binding]},
+        )
+        _write_conditional_operator_contract_service(tmp_config_dir)
+
+        result = _invoke(
+            cli_runner,
+            [
+                "authorize",
+                "boris",
+                "heartbeat",
+                "--capability",
+                "vps_lifecycle",
+                "--token",
+                "x",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert ("Setup incomplete" in result.output) is expect_incomplete
+        assert ("advanced_target_id" in result.output) is expect_incomplete
+        assert ("POST /gateway/submit-binding" in result.output) is expect_incomplete
+        assert load_agent("boris")["contract_bindings"] == [existing_binding]
 
     def test_no_operator_bindings_preserves_authorized_output(
         self, cli_runner, tmp_config_dir

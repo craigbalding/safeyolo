@@ -2532,39 +2532,51 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
     )
     if not isinstance(bindings_config, dict):
         bindings_config = {}
-    operator_bindings = [
-        str(name)
+    operator_binding_defs = [
+        (str(name), binding)
         for name, binding in bindings_config.items()
         if isinstance(binding, dict)
         and binding.get("source", "agent") == "operator"
     ]
 
-    matching_binding_active = False
+    matching_bound_values = None
     contract_bindings = metadata.get("contract_bindings", [])
     if isinstance(contract_bindings, list):
         for binding in contract_bindings:
             if not isinstance(binding, dict):
                 continue
-            bound_values = binding.get("bound_values", {})
             if (
                 binding.get("service") == service_name
                 and binding.get("capability") == selected_cap
                 and binding.get("template", "") == contract_template
-                and isinstance(bound_values, dict)
-                and all(
-                    name in bound_values and bound_values[name] is not None
-                    for name in operator_bindings
-                )
             ):
-                matching_binding_active = True
+                bound_values = binding.get("bound_values", {})
+                if isinstance(bound_values, dict):
+                    matching_bound_values = bound_values
                 break
 
-    if operator_bindings and not matching_binding_active:
+    condition_values = matching_bound_values or {}
+    required_operator_bindings = []
+    for name, binding in operator_binding_defs:
+        required_if = binding.get("required_if", {})
+        if (
+            not required_if
+            or not isinstance(required_if, dict)
+            or all(condition_values.get(key) == value for key, value in required_if.items())
+        ):
+            required_operator_bindings.append(name)
+
+    matching_binding_active = matching_bound_values is not None and all(
+        name in matching_bound_values and matching_bound_values[name] is not None
+        for name in required_operator_bindings
+    )
+
+    if required_operator_bindings and not matching_binding_active:
         console.print(
             f"\n[yellow bold]Setup incomplete:[/yellow bold] {esc_svc}.{esc_cap} "
             "requires operator-sourced contract bindings:"
         )
-        for binding_name in operator_bindings:
+        for binding_name in required_operator_bindings:
             console.print(f"  - [bold]{escape(binding_name)}[/bold]")
         console.print(
             f"\n[yellow]Contract binding next step:[/yellow] Have agent "
