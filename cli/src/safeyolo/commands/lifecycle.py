@@ -188,7 +188,7 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
     dev: bool = typer.Option(
         False,
         "--dev",
-        help="Mount source code and auto-restart on changes (requires repo checkout)",
+        help="Run from checkout source; code changes require a proxy restart",
     ),
     test: bool = typer.Option(
         False,

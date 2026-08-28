@@ -124,10 +124,11 @@ class TestAddonChain:
 class TestFindAddonsDir:
     """Tests for _find_addons_dir() — locating addons directory."""
 
-    def test_returns_none_when_no_addons_dir_exists(self, tmp_path):
+    def test_returns_none_when_no_addons_dir_exists(self, tmp_path, monkeypatch):
         """When no candidate directory has request_id.py, returns None."""
         from safeyolo.proxy import _find_addons_dir
 
+        monkeypatch.delenv("SAFEYOLO_ADDONS_DIR", raising=False)
         # Patch __file__ to point to a location with no valid addons dir
         fake_file = tmp_path / "cli" / "src" / "safeyolo" / "proxy.py"
         fake_file.parent.mkdir(parents=True)
@@ -138,7 +139,7 @@ class TestFindAddonsDir:
 
         assert result is None
 
-    def test_returns_path_when_marker_file_exists(self, tmp_path):
+    def test_returns_path_when_marker_file_exists(self, tmp_path, monkeypatch):
         """When the sibling mitm_addons dir has request_id.py, returns it.
 
         Post-#200-phase-5: addons ship inside the safeyolo package, so
@@ -147,17 +148,40 @@ class TestFindAddonsDir:
         """
         from safeyolo.proxy import _find_addons_dir
 
-        proxy_file = tmp_path / "proxy.py"
+        monkeypatch.delenv("SAFEYOLO_ADDONS_DIR", raising=False)
+        package_dir = tmp_path / "cli" / "src" / "safeyolo"
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").touch()
+        proxy_file = package_dir / "proxy.py"
         proxy_file.touch()
 
-        mitm_addons = tmp_path / "mitm_addons"
+        mitm_addons = package_dir / "mitm_addons"
         mitm_addons.mkdir()
+        (mitm_addons / "__init__.py").touch()
         (mitm_addons / "request_id.py").touch()
 
         with patch("safeyolo.proxy.__file__", str(proxy_file)):
             result = _find_addons_dir()
 
         assert result == mitm_addons
+
+    def test_override_selects_containing_checkout_package(self, tmp_path, monkeypatch):
+        """The traffic child imports all safeyolo modules from the override checkout."""
+        from safeyolo.proxy import _child_pythonpath, _find_addons_dir
+
+        cli_src = tmp_path / "checkout" / "cli" / "src"
+        package_dir = cli_src / "safeyolo"
+        addons_dir = package_dir / "mitm_addons"
+        addons_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").touch()
+        (addons_dir / "__init__.py").touch()
+        (addons_dir / "request_id.py").touch()
+        monkeypatch.setenv("SAFEYOLO_ADDONS_DIR", str(addons_dir))
+
+        selected = _find_addons_dir()
+
+        assert selected == addons_dir
+        assert _child_pythonpath(selected, None).split(os.pathsep)[0] == str(cli_src)
 
 
 # ---------------------------------------------------------------------------
@@ -678,8 +702,6 @@ class TestBuildCommand:
     @pytest.fixture
     def cmd_env(self, tmp_path):
         """Set up minimal filesystem for _build_command."""
-        addons_dir = tmp_path / "addons"
-        addons_dir.mkdir()
         cert_dir = tmp_path / "certs"
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
@@ -688,16 +710,10 @@ class TestBuildCommand:
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
-        # Create all addon files so they get included
-        from safeyolo.proxy import ADDON_CHAIN
-        for addon in ADDON_CHAIN:
-            (addons_dir / addon).touch()
-
         # Create a policy file
         (config_dir / "policy.toml").touch()
 
         return {
-            "addons_dir": addons_dir,
             "cert_dir": cert_dir,
             "config_dir": config_dir,
             "data_dir": config_dir / "data",
@@ -745,16 +761,6 @@ class TestBuildCommand:
 
         assert "-s" not in cmd
         assert not any(arg.startswith("scripts=") for arg in cmd)
-
-    def test_addon_directory_contents_do_not_change_command(self, cmd_env):
-        """Source changes are consumed only by the next traffic process."""
-        from safeyolo.proxy import _build_command
-
-        before = _build_command(admin_token="tok", **cmd_env)
-        (cmd_env["addons_dir"] / "metrics.py").unlink()
-        after = _build_command(admin_token="tok", **cmd_env)
-
-        assert after == before
 
     def test_policy_toml_preferred_over_yaml(self, cmd_env):
         """When both policy.toml and policy.yaml exist, toml is used."""
@@ -945,8 +951,6 @@ class TestBlockingModes:
     @pytest.fixture
     def cmd_env(self, tmp_path):
         """Set up minimal filesystem for _build_command."""
-        addons_dir = tmp_path / "addons"
-        addons_dir.mkdir()
         cert_dir = tmp_path / "certs"
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
@@ -955,14 +959,9 @@ class TestBlockingModes:
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
-        from safeyolo.proxy import ADDON_CHAIN
-        for addon in ADDON_CHAIN:
-            (addons_dir / addon).touch()
-
         (config_dir / "policy.toml").touch()
 
         return {
-            "addons_dir": addons_dir,
             "cert_dir": cert_dir,
             "config_dir": config_dir,
             "data_dir": config_dir / "data",
@@ -1094,8 +1093,6 @@ class TestTlsPassthrough:
 
     @pytest.fixture
     def cmd_env(self, tmp_path):
-        addons_dir = tmp_path / "addons"
-        addons_dir.mkdir()
         cert_dir = tmp_path / "certs"
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
@@ -1103,11 +1100,8 @@ class TestTlsPassthrough:
         (config_dir / "data").mkdir()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
-        from safeyolo.proxy import ADDON_CHAIN
-        for addon in ADDON_CHAIN:
-            (addons_dir / addon).touch()
         (config_dir / "policy.toml").touch()
-        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "data_dir": config_dir / "data", "logs_dir": logs_dir}
+        return {"cert_dir": cert_dir, "config_dir": config_dir, "data_dir": config_dir / "data", "logs_dir": logs_dir}
 
     def test_ignore_hosts_always_present(self, cmd_env):
         """--ignore-hosts with the frp pattern is in every command."""
@@ -1213,8 +1207,6 @@ class TestIgnoreCidrsIntegration:
 
     @pytest.fixture
     def cmd_env(self, tmp_path):
-        addons_dir = tmp_path / "addons"
-        addons_dir.mkdir()
         cert_dir = tmp_path / "certs"
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
@@ -1222,11 +1214,8 @@ class TestIgnoreCidrsIntegration:
         (config_dir / "data").mkdir()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
-        from safeyolo.proxy import ADDON_CHAIN
-        for addon in ADDON_CHAIN:
-            (addons_dir / addon).touch()
         (config_dir / "policy.toml").touch()
-        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "data_dir": config_dir / "data", "logs_dir": logs_dir}
+        return {"cert_dir": cert_dir, "config_dir": config_dir, "data_dir": config_dir / "data", "logs_dir": logs_dir}
 
     def _ignore_hosts(self, cmd: list[str]) -> list[str]:
         """Extract every value passed to --ignore-hosts in order."""
@@ -1320,8 +1309,6 @@ class TestRateLimitConfig:
 
     @pytest.fixture
     def cmd_env(self, tmp_path):
-        addons_dir = tmp_path / "addons"
-        addons_dir.mkdir()
         cert_dir = tmp_path / "certs"
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
@@ -1329,11 +1316,8 @@ class TestRateLimitConfig:
         (config_dir / "data").mkdir()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
-        from safeyolo.proxy import ADDON_CHAIN
-        for addon in ADDON_CHAIN:
-            (addons_dir / addon).touch()
         (config_dir / "policy.toml").touch()
-        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "data_dir": config_dir / "data", "logs_dir": logs_dir}
+        return {"cert_dir": cert_dir, "config_dir": config_dir, "data_dir": config_dir / "data", "logs_dir": logs_dir}
 
     def test_ratelimit_config_loaded_when_file_exists(self, cmd_env):
         """rate_limits.json present -> ratelimit_config option in command."""
@@ -1372,8 +1356,6 @@ class TestSafeyoloCaCert:
 
     @pytest.fixture
     def cmd_env(self, tmp_path):
-        addons_dir = tmp_path / "addons"
-        addons_dir.mkdir()
         cert_dir = tmp_path / "certs"
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
@@ -1381,11 +1363,8 @@ class TestSafeyoloCaCert:
         (config_dir / "data").mkdir()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
-        from safeyolo.proxy import ADDON_CHAIN
-        for addon in ADDON_CHAIN:
-            (addons_dir / addon).touch()
         (config_dir / "policy.toml").touch()
-        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "data_dir": config_dir / "data", "logs_dir": logs_dir}
+        return {"cert_dir": cert_dir, "config_dir": config_dir, "data_dir": config_dir / "data", "logs_dir": logs_dir}
 
     def test_upstream_ca_set_when_env_var_and_file_exist(self, cmd_env, tmp_path, monkeypatch):
         """SAFEYOLO_CA_CERT points to existing file -> ssl_verify_upstream_trusted_ca in command,
@@ -1827,8 +1806,11 @@ class TestStartProxy:
         (tmp_path / "logs").mkdir(exist_ok=True)
         (tmp_path / "policy.toml").touch()
 
-        addons_dir = tmp_path / "addons"
-        addons_dir.mkdir()
+        package_dir = tmp_path / "checkout" / "cli" / "src" / "safeyolo"
+        addons_dir = package_dir / "mitm_addons"
+        addons_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").touch()
+        (addons_dir / "__init__.py").touch()
         pid_file = data_dir / "proxy.pid"
         launched = {}
 
@@ -1865,6 +1847,9 @@ class TestStartProxy:
         )
         assert json.loads(launched["env"]["SAFEYOLO_INITIAL_MODES"]) == []
         assert launched["env"]["SAFEYOLO_PROFILE_PROCESS"] == "traffic-master"
+        assert launched["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(
+            package_dir.parent
+        )
 
     def test_raises_when_mitmdump_dies_during_startup(self, tmp_path, monkeypatch):
         """start_proxy surfaces exit code + log tail when mitmdump dies early."""
@@ -1882,8 +1867,11 @@ class TestStartProxy:
             "ModuleNotFoundError: No module named 'yaml'\n"
         )
 
-        addons_dir = tmp_path / "addons"
-        addons_dir.mkdir()
+        package_dir = tmp_path / "checkout" / "cli" / "src" / "safeyolo"
+        addons_dir = package_dir / "mitm_addons"
+        addons_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").touch()
+        (addons_dir / "__init__.py").touch()
 
         def _write_structured_failure(*args, **kwargs):
             (logs_dir / "safeyolo.jsonl").write_text(json.dumps({

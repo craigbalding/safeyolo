@@ -49,6 +49,11 @@ Configuration watchers described below are separate and continue to reload
 their data. A `safeyolo stop && safeyolo start` loads changed code together
 without restarting running agents.
 
+`SAFEYOLO_ADDONS_DIR=/path/to/checkout/cli/src/safeyolo/mitm_addons` selects
+that checkout's containing `safeyolo` package for the traffic process. This
+keeps addons and their `safeyolo.*` dependencies on the same checkout; edits
+to the selected checkout take effect together on the next proxy restart.
+
 ## Overview
 
 Addons are loaded in this order (order matters for security):
