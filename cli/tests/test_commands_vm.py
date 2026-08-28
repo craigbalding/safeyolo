@@ -1545,6 +1545,98 @@ class TestRunAgent:
         assert prepare.call_args.kwargs["host_mounts"] == expected
         assert platform.start_sandbox.call_args.kwargs["extra_shares"] == expected
 
+    @pytest.mark.parametrize(
+        ("session_result", "expect_detach"),
+        [
+            (KeyboardInterrupt, True),
+            (-2, True),
+            (130, True),
+            (0, False),
+        ],
+        ids=[
+            "keyboard-interrupt",
+            "negative-sigint",
+            "shell-sigint",
+            "normal-exit",
+        ],
+    )
+    def test_linux_attached_session_exit_controls_sandbox_lifetime(
+        self, config_dir, tmp_path, capsys, session_result, expect_detach,
+    ):
+        """Only host Ctrl-C leaves the Linux/gVisor sandbox running."""
+        from safeyolo.commands.agent import _run_agent
+
+        name = "session-exit-agent"
+        project = tmp_path / "project"
+        project.mkdir()
+        agent_dir = config_dir / "agents" / name
+        status_dir = agent_dir / "status"
+        status_dir.mkdir(parents=True)
+        rootfs = agent_dir / "rootfs"
+        rootfs.mkdir()
+        pid_path = agent_dir / "vm.pid"
+        pid_path.write_text("1234")
+
+        running = False
+        platform = _platform()
+        platform.agent_rootfs_path.return_value = rootfs
+
+        def is_running(_name):
+            return running
+
+        def start_sandbox(**_kwargs):
+            nonlocal running
+            running = True
+            (status_dir / "per-run-started").write_text("")
+            return 1234
+
+        platform.is_sandbox_running.side_effect = is_running
+        platform.start_sandbox.side_effect = start_sandbox
+        platform.setup_networking.return_value = {
+            "host_ip": "127.0.0.1",
+            "guest_ip": "10.200.0.2",
+            "attribution_ip": "10.200.0.2",
+            "subnet": None,
+            "needs_bridge_socket": False,
+        }
+        if session_result is KeyboardInterrupt:
+            platform.exec_in_sandbox.side_effect = KeyboardInterrupt
+        else:
+            platform.exec_in_sandbox.return_value = session_result
+
+        with (
+            patch(
+                "safeyolo.commands.agent._load_agent_metadata",
+                return_value={"folder": str(project)},
+                autospec=True,
+            ),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=0, autospec=True,),
+            patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
+            patch("safeyolo.commands.agent.write_event", autospec=True,) as write_event,
+            patch("safeyolo.commands.agent.prepare_config_share", autospec=True,),
+            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True,),
+            patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock", autospec=True,),
+            patch("sys.platform", "linux"),
+        ):
+            result = _run_agent(name, no_snapshot=True)
+
+        assert result == 0
+        output = capsys.readouterr().out
+        event_names = [call.args[0] for call in write_event.call_args_list]
+        if expect_detach:
+            assert "Agent running (detached)" in output
+            assert f"safeyolo agent shell {name}" in output
+            platform.stop_sandbox.assert_not_called()
+            assert platform.is_sandbox_running(name)
+            assert pid_path.read_text() == "1234"
+            assert event_names == ["agent.started"]
+        else:
+            assert "Agent running (detached)" not in output
+            platform.stop_sandbox.assert_called_once_with(name)
+            assert not pid_path.exists()
+            assert event_names == ["agent.started", "agent.stopped"]
+
 
 # ---------------------------------------------------------------------------
 # init.py

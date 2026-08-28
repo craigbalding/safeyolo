@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -361,6 +362,13 @@ def _linux_interactive_command(
         # arguments, so preserve the existing explicit command override.
         return shlex.join(explicit_agent_args)
     return None
+
+
+def _print_detached_guidance(name: str) -> None:
+    """Print the canonical instructions for a sandbox left running."""
+    console.print("  Agent running (detached)")
+    console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
+    console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
 
 
 def _run_agent(
@@ -791,9 +799,7 @@ def _run_agent(
         # --- Post-boot (shared by restore and cold-boot success paths) ----
         if plat.is_sandbox_running(name):
             if detach:
-                console.print("  Agent running (detached)")
-                console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
-                console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
+                _print_detached_guidance(name)
                 _t("detach return")
                 _timing_emit()
                 return 0
@@ -815,7 +821,26 @@ def _run_agent(
                     effective_agent_args,
                     agent_args,
                 )
-                exit_code = plat.exec_in_sandbox(name, command=full_cmd, user="agent")
+                try:
+                    exit_code = plat.exec_in_sandbox(
+                        name,
+                        command=full_cmd,
+                        user="agent",
+                    )
+                except KeyboardInterrupt:
+                    _print_detached_guidance(name)
+                    _t("SIGINT detach return")
+                    _timing_emit()
+                    return 0
+                sigint_exit = exit_code in {
+                    -signal.SIGINT,
+                    128 + signal.SIGINT,
+                }  # DOC: contrib/HOST_SCRIPT_GUIDE.md
+                if sigint_exit:
+                    _print_detached_guidance(name)
+                    _t("SIGINT detach return")
+                    _timing_emit()
+                    return 0
                 plat.stop_sandbox(name)
             else:
                 # macOS: safeyolo-vm + vsock-term handle the interactive

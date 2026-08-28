@@ -687,6 +687,49 @@ def test_wait_for_userns_ready_reports_early_child_exit(monkeypatch):
         linux._wait_for_userns_ready(proc)
 
 
+def test_start_userns_holder_isolated_from_terminal_signals(
+    isolated_env, monkeypatch,
+):
+    """The namespace holder must survive Ctrl-C in an attached CLI session."""
+    from safeyolo.platform import linux
+
+    name = "sigint-holder"
+    (isolated_env / "agents" / name).mkdir(parents=True)
+
+    class Holder:
+        pid = 4242
+        killed = False
+
+        def kill(self):
+            self.killed = True
+
+    holder = Holder()
+    popen_calls = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append((command, kwargs))
+        return holder
+
+    monkeypatch.setattr(linux.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(linux, "_wait_for_userns_ready", lambda proc: None)
+    monkeypatch.setattr(
+        linux.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0),
+    )
+    monkeypatch.setattr(linux.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(linux.os, "getgid", lambda: 1000)
+
+    assert linux._start_userns(name) == 4242
+
+    assert len(popen_calls) == 1
+    command, kwargs = popen_calls[0]
+    assert command[-4:] == ["unshare", "-Un", "sleep", "86400"]
+    assert kwargs["start_new_session"] is True
+    assert not holder.killed
+    assert (isolated_env / "agents" / name / "userns.pid").read_text() == "4242"
+
+
 def test_wait_for_userns_ready_kills_holder_on_timeout(monkeypatch):
     from safeyolo.platform import linux
 
