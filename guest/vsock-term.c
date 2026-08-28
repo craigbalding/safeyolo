@@ -195,11 +195,15 @@ int main(int argc, char *argv[]) {
         setenv("SHELL", "/bin/bash", 1);
         setenv("LANG", "C.UTF-8", 1);
         /* mise paths -- must match /etc/profile.d/mise.sh. Under the
-         * agent's persistent $HOME (VirtioFS-bound from host) so mise
-         * installs survive restart. */
+         * agent's persistent $HOME (VirtioFS-bound from host) so global mise
+         * installs survive restart. Project config is an explicit opt-in. */
         setenv("MISE_DATA_DIR", "/home/agent/.mise", 1);
         setenv("MISE_CONFIG_DIR", "/home/agent/.mise", 1);
         setenv("MISE_CACHE_DIR", "/home/agent/.mise/cache", 1);
+        setenv("MISE_OVERRIDE_CONFIG_FILENAMES",
+               "/etc/safeyolo/mise-project-config-disabled.toml", 1);
+        setenv("MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES", "none", 1);
+        setenv("BASH_ENV", "/etc/mise-activate.sh", 1);
         setenv("PATH", "/home/agent/.mise/shims:/usr/local/bin:/usr/bin:/bin", 1);
 
         /* Source proxy/agent env if present */

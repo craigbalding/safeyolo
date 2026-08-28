@@ -131,6 +131,16 @@ mise use -g node@22
 mise use -g npm:typescript
 ```
 
+SafeYolo keeps ordinary commands on that persistent global toolset; repository
+`mise.toml` and `.tool-versions` files are not loaded implicitly. When you
+deliberately trust and want project mise configuration, opt in per command:
+
+```sh
+mise-project install
+mise-project exec -- COMMAND ARG...
+mise-project run TASK
+```
+
 Use the OS package manager only for native libraries, headers, daemons, and
 other system dependencies. SafeYolo provides passwordless **guest** sudo for
 that purpose; use `-n` so a broken configuration fails instead of waiting for

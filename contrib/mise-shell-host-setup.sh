@@ -56,6 +56,10 @@ Native guest packages:
 List available:
   mise ls-remote go
 
+Project mise config (explicit opt-in):
+  mise-project install
+  mise-project exec -- COMMAND
+
 Docs: https://mise.jdx.dev
 SafeYolo agent guide: ~/.safeyolo/AGENTS.md
 SafeYolo skill:       /safeyolo/skills/safeyolo/
@@ -64,8 +68,8 @@ EOF
 
 # Foreground command -- shows the MOTD once on first login of a session, then
 # drops to an interactive login shell. mise's profile.d is sourced
-# automatically by bash -l, so `mise`, installed runtimes, and shims
-# are all on PATH from the first prompt.
+# automatically by bash -l, so global tools are on PATH from the first prompt
+# without loading project config. `mise-project` is the deliberate opt-in.
 cat > "$AGENT_HOME/.safeyolo-command" <<'EOF'
 #!/usr/bin/env bash
 if [ -f /home/agent/.safeyolo-motd ]; then

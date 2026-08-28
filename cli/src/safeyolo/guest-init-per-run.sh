@@ -69,6 +69,10 @@ if [ -f /safeyolo/agent.env ]; then
     cat /safeyolo/agent.env >> /etc/profile.d/safeyolo-proxy.sh
 fi
 
+if [ -f /etc/safeyolo-mise-environment ]; then
+    cat /etc/safeyolo-mise-environment >> /etc/environment
+fi
+
 echo 'export HOME=/home/agent' >> /etc/environment
 echo 'export HOME=/home/agent' >> /etc/profile.d/safeyolo-proxy.sh
 

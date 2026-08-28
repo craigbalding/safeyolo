@@ -33,6 +33,17 @@ def _shell_socket_path(name: str) -> Path:
     return get_data_dir() / "shell-sockets" / f"{name}.sock"
 
 
+def _wrap_ssh_command(command: str) -> str:
+    """Load the per-run environment and export-only global mise setup."""
+    return (
+        ". /etc/environment 2>/dev/null; "
+        "if [ -f /etc/mise-activate.sh ]; then "
+        ". /etc/mise-activate.sh; "
+        "fi; "
+        f"{command}"
+    )
+
+
 class DarwinPlatform(AgentPlatform):
     """macOS agent isolation via Virtualization.framework microVMs."""
 
@@ -161,13 +172,10 @@ class DarwinPlatform(AgentPlatform):
 
         stdin = None
         if command:
-            # Source /etc/environment so HTTP_PROXY, SSL_CERT_FILE, and
-            # friends are visible to the user's command. sshd's non-login
-            # non-interactive shell doesn't source it (and Alpine's sshd
-            # has no PAM path that would); without this, a plain
-            # `safeyolo agent shell X -c 'curl ...'` bypasses the proxy.
-            # 2>/dev/null so rootfs without the file still runs fine.
-            cmd.append(f". /etc/environment 2>/dev/null; {command}")
+            # Load proxy/CA state and the export-only global mise setup. sshd's
+            # non-login non-interactive shell does neither (and Alpine has no
+            # PAM fallback), so shell -c must apply both explicitly.
+            cmd.append(_wrap_ssh_command(command))
             # Close stdin for non-interactive commands so nc's UDS
             # ProxyCommand exits when the remote command finishes.
             stdin = subprocess.DEVNULL
@@ -199,7 +207,7 @@ class DarwinPlatform(AgentPlatform):
             "-o", "LogLevel=ERROR",
             "-o", f"ProxyCommand=nc -U {shell_sock}",
             f"{ssh_user}@sandbox",
-            f". /etc/environment 2>/dev/null; {command}",
+            _wrap_ssh_command(command),
         ]
         return subprocess.Popen(
             cmd,
@@ -234,7 +242,7 @@ class DarwinPlatform(AgentPlatform):
             "-o", "LogLevel=ERROR",
             "-o", f"ProxyCommand=nc -U {shell_sock}",
             f"{ssh_user}@sandbox",
-            f". /etc/environment 2>/dev/null; {command}",
+            _wrap_ssh_command(command),
         ]
         return subprocess.Popen(
             cmd,
