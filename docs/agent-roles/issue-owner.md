@@ -47,6 +47,47 @@ clear evidence, not process for its own sake.
 evidence, not independent acceptance.** Produce strong evidence, but never
 claim that it substitutes for independent review.
 
+## Coord review loop
+
+This role specialises the generic SafeYolo
+[coord work protocol](../../cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md).
+Use coord only with the reviewer designated for this issue; room membership
+alone does not designate one.
+
+When the candidate is ready for independent review:
+
+1. Commit and push the complete intended change and ensure a reviewable PR
+   exists.
+2. Determine and independently verify the exact current PR HEAD SHA.
+3. Send one targeted handoff to the designated reviewer:
+
+   ```text
+   REVIEW_READY issue=#<issue> pr=#<pr> head=<full-head-sha>
+   ```
+
+`REVIEW_READY` identifies the review object. Do not fill it with persuasive
+implementation claims or test transcripts; the reviewer establishes
+correctness from primary evidence.
+
+After sending, enter the multiplexed attention wait. Resolve the canonical
+attention object, act, and re-arm after an empty bounded return. Accept only a
+`READY`, `CHANGES_REQUIRED`, or `BLOCKED` disposition that names the relevant
+PR and exact reviewed HEAD.
+
+- On `CHANGES_REQUIRED`, consume the complete actionable findings from that
+  targeted disposition, fix them, push a new candidate, independently verify
+  the new PR HEAD, send a fresh `REVIEW_READY`, and wait again. Mandatory
+  findings must not be hidden in preceding unnotified room history or another
+  channel.
+- On `READY`, verify that the reviewed SHA is still the current PR HEAD, then
+  report that exact candidate ready for operator merge. Any later push
+  invalidates the disposition and requires a fresh independent review.
+- On `BLOCKED`, act on the specific requested input or capability and send a
+  fresh `REVIEW_READY` only when an exact candidate is reviewable again.
+
+Work silently between these state transitions; do not send review-progress or
+acknowledgement chatter.
+
 ## Hand off a reviewable PR
 
 - Create or update a focused pull request that links or closes the issue and

@@ -7,7 +7,7 @@
 - [Diagnostics and policy](#diagnostics-and-policy)
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
-- [Agent collaboration with plumb](#agent-collaboration-with-plumb)
+- [Legacy agent collaboration with plumb](#legacy-agent-collaboration-with-plumb)
 
 ## Model
 
@@ -344,7 +344,12 @@ credential.
 
 Never print, persist, or send an `sgw_` token to another agent.
 
-## Agent collaboration with plumb
+## Legacy agent collaboration with plumb
+
+For current operational agent work coordination, use
+[Coord work coordination](coord.md). `plumb` remains an older approved
+conversation mechanism; do not mistake its conversation-oriented examples for
+the recommended coord task workflow.
 
 `plumb` provides durable, host-mediated agent-to-agent conversations. Sender
 identity comes from SafeYolo attribution, never request JSON. Conversation

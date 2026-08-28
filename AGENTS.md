@@ -22,3 +22,11 @@ criteria; the selected role contract defines how the agent works.
 Existing repository documentation, [security boundaries](SECURITY.md), operator
 instructions, and SafeYolo sandbox instructions still apply. Identify the exact
 branch and commit, and the PR when one exists, for work implemented or reviewed.
+
+## Coordination
+
+Repository agents using coord follow the SafeYolo
+[low-chatter work-coordination protocol](cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md):
+targeted handoffs are self-contained, and execution is silent between meaningful
+work-state transitions. The role contracts above specialise that generic
+protocol for the issue-owner / independent-reviewer loop.

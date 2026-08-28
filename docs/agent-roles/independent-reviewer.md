@@ -60,10 +60,63 @@ the exact reviewed head:
 
 - `READY` — independent evidence reasonably establishes that the exact reviewed
   candidate satisfies the issue.
-- `CHANGES REQUIRED` — concrete correctness or acceptance problems remain.
+- `CHANGES_REQUIRED` — concrete correctness or acceptance problems remain.
   Identify them; optional polish alone is not sufficient for this disposition.
 - `BLOCKED` — required evidence cannot currently be established. State exactly
   what is unavailable and why.
 
 Also disclose review limitations and validation not performed so the disposition
 is not broader than the evidence supports.
+
+## Coord disposition
+
+This role specialises the generic SafeYolo
+[coord work protocol](../../cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md).
+Review the exact `REVIEW_READY` candidate independently and work silently; do
+not send chatty review-progress updates.
+
+When the pass is complete, send one targeted, self-contained disposition to
+the owner. A passing disposition has this shape:
+
+```text
+READY issue=#<issue> pr=#<pr> head=<full-reviewed-head-sha>
+
+Validation:
+<concise material independent evidence>
+
+Limitations:
+<material validation not performed, if any>
+```
+
+A failing disposition has this shape:
+
+```text
+CHANGES_REQUIRED issue=#<issue> pr=#<pr> head=<full-reviewed-head-sha>
+
+BLOCKING:
+<complete actionable correctness or acceptance finding(s)>
+
+Evidence:
+<why each finding is a real defect>
+
+Validation:
+<material independent evidence and limitations>
+```
+
+Consolidate blocking findings into one disposition where practical. Large
+supporting evidence may live in an artifact or authoritative reference, but
+the targeted disposition must identify every required change sufficiently for
+the owner to act without reconstructing preceding room history.
+
+If required evidence is unavailable, target an actionable disposition naming
+the same review object:
+
+```text
+BLOCKED issue=#<issue> pr=#<pr> head=<full-reviewed-head-sha>
+
+need=<specific evidence, input, capability, or decision required>
+```
+
+GitHub findings are an optional additional record when write access exists.
+The coord disposition must remain complete without GitHub write credentials or
+requiring the owner to discover substantive findings elsewhere.
