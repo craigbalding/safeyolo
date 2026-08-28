@@ -17,6 +17,7 @@ from safeyolo.commands.doctor import (
     _check_baseline,
     _check_ca_cert,
     _check_config_dir,
+    _check_coord_message_plane,
     _check_crash_logs,
     _check_firewall,
     _check_flow_store,
@@ -87,6 +88,32 @@ class TestCheckProxyRunning:
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
         result = _check_proxy_process()
         assert result.status == "fail"
+
+
+class TestCheckCoordMessagePlane:
+    def test_not_running_result_is_stable_and_credential_free(
+        self, monkeypatch
+    ):
+        raw_secret = "credential-value-that-must-not-render"
+        monkeypatch.setattr(
+            "safeyolo.coord.nats_runtime.status",
+            lambda: {
+                "state": "not-running",
+                "binary": "/tmp/nats-server",
+                "listen": "127.0.0.1:4222",
+                "config": "/tmp/nats.conf",
+                "log_file": "/tmp/nats-server.log",
+                "credential": raw_secret,
+            },
+        )
+
+        result = _check_coord_message_plane()
+
+        assert result.name == "Coord message plane"
+        assert result.status == "warn"
+        assert result.message == "nats-server not running; coord API will 503"
+        if raw_secret in repr(result):
+            pytest.fail("coord doctor result rendered a raw NATS credential")
 
 
 class TestCheckVsockTerm:

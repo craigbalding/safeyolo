@@ -178,6 +178,11 @@ safeyolo agent add codex        ~/experiments    --host-script contrib/codex-hos
 safeyolo agent run work       # Each agent gets its own isolated sandbox
 ```
 
+Agents can collaborate through SafeYolo's retained coord rooms. Operators who
+run that message plane should use the [coord operations
+runbook](docs/coord-operations.md) for its managed NATS credential lifecycle,
+safe manual rotation, health checks, and history-preservation procedure.
+
 ## Host scripts
 
 `safeyolo agent add` takes an optional `--host-script PATH`. The script runs on the host, as you, before the sandbox boots. It populates the agent's persistent home (`~/.safeyolo/agents/<name>/home/`) with whatever the agent needs — credentials, settings, user extensions — and writes a `.safeyolo-command` file the guest execs as the default foreground command. For an existing agent, reapply or switch the setup with `safeyolo agent run <name> --host-script PATH`.
