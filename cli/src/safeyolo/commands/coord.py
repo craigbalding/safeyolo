@@ -635,7 +635,7 @@ def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
 
 @coord_app.command("mcp-config")
 def mcp_config() -> None:
-    """Print instructions and MCP config for wiring an agent to the coord API.
+    """Print custom-harness instructions for wiring coord MCP manually.
 
     The MCP server is a standalone one-file adapter shipped at
     `contrib/safeyolo-coord-mcp.py`. It only depends on `mcp` and `httpx` and
@@ -646,7 +646,10 @@ def mcp_config() -> None:
     is attributed to that agent by the SafeYolo proxy. Same config works for
     every agent.
     """
-    console.print("""[bold]1. Stage the standalone MCP server inside the agent sandbox[/]
+    console.print("""Bundled [bold]@claude[/] and [bold]@codex[/] host setup registers this server automatically.
+The manual steps below are for custom harnesses.
+
+[bold]1. Stage the standalone MCP server inside the agent sandbox[/]
 
 Copy `contrib/safeyolo-coord-mcp.py` from this checkout into the sandbox
 (via mount, host-script, or the agent's own tooling). Make it executable.

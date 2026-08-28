@@ -6,21 +6,10 @@
 # so the agent can hit the coord API as MCP tools with zero in-sandbox
 # manual setup. Idempotent — safe to re-run.
 #
-# Two invocation modes:
+# The bundled Claude Code and Codex host scripts invoke this helper
+# automatically. It also supports an explicit retrofit mode:
 #
-#   1. As a --host-script during `safeyolo agent add`. Compose with the
-#      base claude / codex host script by wrapping both from your own
-#      driver, e.g.:
-#
-#          #!/usr/bin/env bash
-#          set -euo pipefail
-#          "$(dirname "$0")/claude-host-setup.sh"
-#          "$(dirname "$0")/coord-mcp-bootstrap.sh"
-#
-#      SafeYolo sets SAFEYOLO_AGENT_HOME + SAFEYOLO_AGENT_NAME in the
-#      environment; this script picks them up automatically.
-#
-#   2. Retrofit for an already-running agent (no reprovision needed):
+#   Retrofit for an already-running agent (no reprovision needed):
 #
 #          contrib/coord-mcp-bootstrap.sh --home ~/.safeyolo/agents/<name>/home
 #          safeyolo agent stop <name> && safeyolo agent run <name>
@@ -76,9 +65,18 @@ fi
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 SHIM_SRC="$SCRIPT_DIR/safeyolo-coord-mcp.py"
+FG="$AGENT_HOME/.safeyolo-command"
 
 if [ ! -f "$SHIM_SRC" ]; then
     echo "coord-mcp-bootstrap: expected shim at $SHIM_SRC" >&2
+    exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "coord-mcp-bootstrap: python3 is required to preserve and update harness config" >&2
+    exit 1
+fi
+if [ ! -f "$FG" ]; then
+    echo "coord-mcp-bootstrap: $FG not found; run the Claude or Codex host setup first" >&2
     exit 1
 fi
 
@@ -130,10 +128,19 @@ if os.path.exists(path):
     try:
         with open(path) as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        # Corrupt config — write fresh rather than lose the MCP entry.
-        data = {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"coord-mcp-bootstrap: cannot update invalid Claude config {path}: {exc}"
+        )
+if not isinstance(data, dict):
+    raise SystemExit(
+        f"coord-mcp-bootstrap: cannot update non-object Claude config {path}"
+    )
 servers = data.setdefault("mcpServers", {})
+if not isinstance(servers, dict):
+    raise SystemExit(
+        f"coord-mcp-bootstrap: mcpServers is not an object in {path}"
+    )
 servers["safeyolo-coord"] = {
     "command": interp,
     "args": [shim],
@@ -146,7 +153,7 @@ PY
         # Codex reads MCP servers from ~/.codex/config.toml under an
         # [mcp_servers.<name>] table.
         python3 - "$AGENT_HOME/.codex/config.toml" "$SHIM_INSANDBOX" "$PY_INSANDBOX" <<'PY'
-import os, sys
+import os, sys, tomllib
 
 path, shim, interp = sys.argv[1], sys.argv[2], sys.argv[3]
 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -155,6 +162,12 @@ existing_lines = []
 if os.path.exists(path):
     with open(path) as f:
         existing_lines = f.readlines()
+    try:
+        tomllib.loads("".join(existing_lines))
+    except tomllib.TOMLDecodeError as exc:
+        raise SystemExit(
+            f"coord-mcp-bootstrap: cannot update invalid Codex config {path}: {exc}"
+        )
 
 # Strip any prior [mcp_servers.safeyolo-coord] table so re-runs stay
 # idempotent. Line-based rather than regex so `args = ["..."]` values
@@ -187,6 +200,12 @@ if body:
     combined = body + "\n\n" + new_block
 else:
     combined = new_block
+try:
+    tomllib.loads(combined)
+except tomllib.TOMLDecodeError as exc:
+    raise SystemExit(
+        f"coord-mcp-bootstrap: generated invalid Codex config for {path}: {exc}"
+    )
 with open(path, "w") as f:
     f.write(combined)
 PY
@@ -201,13 +220,12 @@ esac
 # We can't reliably install into the sandbox's user-site from the host (the
 # python versions may differ), so we inject a guarded install step into the
 # foreground command. Runs at most once per agent lifetime — the import
-# guard makes subsequent runs a no-op fast path.
-FG="$AGENT_HOME/.safeyolo-command"
+# guard makes subsequent runs a no-op fast path. A failed install aborts the
+# harness launch visibly instead of advertising an MCP server that cannot run.
 MARKER="# ---- coord-mcp-bootstrap: mcp+httpx install (guarded, idempotent) ----"
 
-if [ -f "$FG" ]; then
-    if ! grep -qxF "$MARKER" "$FG"; then
-        python3 - "$FG" "$MARKER" <<'PY'
+if ! grep -qxF "$MARKER" "$FG"; then
+    python3 - "$FG" "$MARKER" <<'PY'
 import sys
 path, marker = sys.argv[1], sys.argv[2]
 with open(path) as f:
@@ -226,12 +244,18 @@ if exec_i is None:
 inject = [
     marker + "\n",
     'SY_COORD_VENV="$HOME/.safeyolo/venv"\n',
-    'if ! "$SY_COORD_VENV/bin/python" -c \'import mcp, httpx\' >/dev/null 2>&1; then\n',
-    '    { python3 -m venv "$SY_COORD_VENV" \\\n',
-    '        && "$SY_COORD_VENV/bin/pip" install --quiet "mcp>=2.0" "httpx>=0.25"; } >&2 || true\n',
-    '    "$SY_COORD_VENV/bin/python" -c \'import mcp, httpx\' >/dev/null 2>&1 || \\\n',
+    'if ! "$SY_COORD_VENV/bin/python" -c \'import httpx; from mcp.server.mcpserver import MCPServer\' >/dev/null 2>&1; then\n',
+    '    if ! { python3 -m venv "$SY_COORD_VENV" \\\n',
+    '        && "$SY_COORD_VENV/bin/pip" install --quiet "mcp>=2.0" "httpx>=0.25"; } >&2; then\n',
     '        echo "coord-mcp: could not install mcp+httpx into $SY_COORD_VENV;'
-    ' the safeyolo-coord MCP server will not start" >&2\n',
+    ' refusing to start the harness without safeyolo-coord" >&2\n',
+    '        exit 1\n',
+    '    fi\n',
+    '    if ! "$SY_COORD_VENV/bin/python" -c \'import httpx; from mcp.server.mcpserver import MCPServer\' >/dev/null 2>&1; then\n',
+    '        echo "coord-mcp: dependency verification failed in $SY_COORD_VENV;'
+    ' refusing to start the harness without safeyolo-coord" >&2\n',
+    '        exit 1\n',
+    '    fi\n',
     "fi\n",
     "\n",
 ]
@@ -239,16 +263,6 @@ lines[exec_i:exec_i] = inject
 with open(path, "w") as f:
     f.writelines(lines)
 PY
-    fi
-else
-    # No foreground command yet — either the operator hasn't run the base
-    # host script, or they're using this script standalone. Not fatal:
-    # the agent's harness will still find the MCP server once someone
-    # installs the deps inside the sandbox.
-    echo "coord-mcp-bootstrap: $FG not found; skipped dep install injection" >&2
-    echo "  Install deps manually inside the sandbox:" >&2
-    echo "    python3 -m venv $VENV_INSANDBOX" >&2
-    echo "    $VENV_INSANDBOX/bin/pip install 'mcp>=2.0' 'httpx>=0.25'" >&2
 fi
 
 echo "coord-mcp-bootstrap: $HARNESS shim staged at $AGENT_HOME/.safeyolo/"

@@ -1,5 +1,6 @@
 """Executable regression tests for first-party agent host setup scripts."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -12,6 +13,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_SOURCE = REPO_ROOT / "docs" / "AGENTS.md"
 SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo"
+COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
+COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
 
@@ -36,14 +39,29 @@ def _run_setup(
     folder: Path,
     *,
     check: bool = True,
+    stage_coord_runtime: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    result = subprocess.run(
         [str(REPO_ROOT / "contrib" / script_name)],
         check=check,
         env=_setup_env(operator_home, agent_home, folder),
         capture_output=True,
         text=True,
     )
+    # Executing the generated harness command is outside host setup itself.
+    # Most tests provide fake harnesses and need a matching already-installed
+    # coord runtime so they do not install packages over the network. Dedicated
+    # bootstrap-failure coverage opts out below.
+    if (
+        result.returncode == 0
+        and stage_coord_runtime
+        and script_name in {"claude-host-setup.sh", "codex-host-setup.sh"}
+    ):
+        coord_python = agent_home / ".safeyolo/venv/bin/python"
+        coord_python.parent.mkdir(parents=True, exist_ok=True)
+        coord_python.write_text("#!/bin/sh\nexit 0\n")
+        coord_python.chmod(0o755)
+    return result
 
 
 def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
@@ -255,6 +273,153 @@ def test_context_staging_is_idempotent_and_preserves_user_files(
 
 
 @pytest.mark.parametrize(
+    "script_name",
+    ("codex-host-setup.sh", "claude-host-setup.sh"),
+)
+def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
+    tmp_path: Path,
+    script_name: str,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+
+    if script_name == "claude-host-setup.sh":
+        config_path = agent_home / ".claude.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            '{"custom": {"preserved": true}, "mcpServers": '
+            '{"unrelated": {"command": "other"}}}\n'
+        )
+    else:
+        config_path = agent_home / ".codex/config.toml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            'model = "preserved"\n\n'
+            '[mcp_servers.unrelated]\ncommand = "other"\n'
+        )
+
+    _run_setup(script_name, operator_home, agent_home, tmp_path)
+    _run_setup(script_name, operator_home, agent_home, tmp_path)
+
+    staged_shim = agent_home / ".safeyolo/safeyolo-coord-mcp.py"
+    assert staged_shim.read_bytes() == COORD_SHIM_SOURCE.read_bytes()
+    assert staged_shim.stat().st_mode & 0o111
+    command = (agent_home / ".safeyolo-command").read_text()
+    assert command.count(
+        "# ---- coord-mcp-bootstrap: mcp+httpx install (guarded, idempotent) ----"
+    ) == 1
+
+    if script_name == "claude-host-setup.sh":
+        data = json.loads(config_path.read_text())
+        assert data["custom"] == {"preserved": True}
+        assert data["mcpServers"]["unrelated"] == {"command": "other"}
+        managed = data["mcpServers"]["safeyolo-coord"]
+    else:
+        data = tomllib.loads(config_path.read_text())
+        assert data["model"] == "preserved"
+        assert data["mcp_servers"]["unrelated"] == {"command": "other"}
+        managed = data["mcp_servers"]["safeyolo-coord"]
+
+    assert managed == {
+        "command": "/home/agent/.safeyolo/venv/bin/python",
+        "args": ["/home/agent/.safeyolo/safeyolo-coord-mcp.py"],
+    }
+
+
+def test_coord_dependency_failure_stops_harness_with_diagnostic(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        stage_coord_runtime=False,
+    )
+
+    (fake_bin / "mise").write_text("#!/bin/sh\nexit 1\n")
+    (fake_bin / "python3").write_text("#!/bin/sh\nexit 1\n")
+    (fake_bin / "codex").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = --version ]; then exit 0; fi\n'
+        'touch "$TEST_HARNESS_STARTED"\n'
+    )
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o755)
+
+    started = tmp_path / "harness-started"
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command")],
+        env={
+            **os.environ,
+            "HOME": str(agent_home),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "TEST_HARNESS_STARTED": str(started),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "refusing to start the harness without safeyolo-coord" in result.stderr
+    assert not started.exists()
+
+
+@pytest.mark.parametrize(
+    ("script_name", "config_relative", "invalid"),
+    [
+        ("claude-host-setup.sh", ".claude.json", "{invalid json\n"),
+        ("codex-host-setup.sh", ".codex/config.toml", "[invalid\n"),
+    ],
+)
+def test_bundled_setup_reports_invalid_harness_config(
+    tmp_path: Path,
+    script_name: str,
+    config_relative: str,
+    invalid: str,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    config_path = agent_home / config_relative
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(invalid)
+
+    result = _run_setup(
+        script_name,
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+        stage_coord_runtime=False,
+    )
+
+    assert result.returncode != 0
+    assert "cannot update invalid" in result.stderr
+
+
+def test_wheel_manifest_includes_coord_bootstrap_and_shim() -> None:
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    force_include = project["tool"]["hatch"]["build"]["targets"]["wheel"][
+        "force-include"
+    ]
+
+    assert force_include["contrib/coord-mcp-bootstrap.sh"] == (
+        "safeyolo/contrib/coord-mcp-bootstrap.sh"
+    )
+    assert force_include["contrib/safeyolo-coord-mcp.py"] == (
+        "safeyolo/contrib/safeyolo-coord-mcp.py"
+    )
+    assert force_include["docs/AGENTS.md"] == "safeyolo/docs/AGENTS.md"
+    assert COORD_BOOTSTRAP_SOURCE.stat().st_mode & 0o111
+    assert COORD_SHIM_SOURCE.stat().st_mode & 0o111
+
+
+@pytest.mark.parametrize(
     ("script_name", "consumer_dir"),
     [
         ("codex-host-setup.sh", ".agents"),
@@ -434,6 +599,28 @@ def test_baseline_explains_guest_privilege_without_implying_host_root() -> None:
         "not a remedy for proxy policy, approval, or budget blocks",
     ):
         assert expected in guest_tools
+
+
+def test_coord_guidance_requires_a_harness_visible_foreground_wait() -> None:
+    baseline = BASELINE_SOURCE.read_text()
+    coord = (SKILL_SOURCE / "references/coord.md").read_text()
+
+    for expected in (
+        "foreground",
+        "wait_for_coord",
+        "Do not use a detached/background shell process",
+        "foreground/harness-visible",
+    ):
+        assert expected in baseline
+
+    for expected in (
+        "Primary foreground idle wait",
+        "without returning that cursor as adoptable",
+        "Do not use a detached or background shell process",
+        "foreground, harness-visible operation",
+        "retained context or deliberate catch-up",
+    ):
+        assert expected in coord
 
 
 @pytest.mark.parametrize(
