@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # SafeYolo coord MCP bootstrap for agent sandboxes.
 #
-# Stages the coord MCP shim (contrib/safeyolo-coord-mcp.py) into an agent's
-# home dir and registers it with the agent's harness (Claude Code or Codex)
-# so the agent can hit the coord API as MCP tools with zero in-sandbox
-# manual setup. Idempotent — safe to re-run.
+# Stages the coord MCP shim and SafeYolo-owned launcher into an agent's home
+# dir and registers the launcher with the agent's harness (Claude Code or
+# Codex) so the agent can hit the proxy-only coord API as MCP tools with zero
+# in-sandbox manual setup. Idempotent — safe to re-run.
 #
 # The bundled Claude Code and Codex host scripts invoke this helper
 # automatically. It also supports an explicit retrofit mode:
@@ -65,10 +65,15 @@ fi
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 SHIM_SRC="$SCRIPT_DIR/safeyolo-coord-mcp.py"
+LAUNCHER_SRC="$SCRIPT_DIR/safeyolo-coord-mcp-launcher.sh"
 FG="$AGENT_HOME/.safeyolo-command"
 
 if [ ! -f "$SHIM_SRC" ]; then
     echo "coord-mcp-bootstrap: expected shim at $SHIM_SRC" >&2
+    exit 1
+fi
+if [ ! -f "$LAUNCHER_SRC" ]; then
+    echo "coord-mcp-bootstrap: expected launcher at $LAUNCHER_SRC" >&2
     exit 1
 fi
 if ! command -v python3 >/dev/null 2>&1; then
@@ -103,16 +108,15 @@ fi
 # or be deleted without breaking the running agent.
 mkdir -p "$AGENT_HOME/.safeyolo"
 install -m 0755 "$SHIM_SRC" "$AGENT_HOME/.safeyolo/safeyolo-coord-mcp.py"
+install -m 0755 "$LAUNCHER_SRC" "$AGENT_HOME/.safeyolo/safeyolo-coord-mcp-launcher"
 
-# The sandbox mounts $AGENT_HOME → /home/agent, so the shim's in-sandbox
+# The sandbox mounts $AGENT_HOME → /home/agent, so the launcher's in-sandbox
 # path is fixed.
-SHIM_INSANDBOX="/home/agent/.safeyolo/safeyolo-coord-mcp.py"
+LAUNCHER_INSANDBOX="/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
 # The shim needs mcp+httpx. Debian/Ubuntu rootfs images mark the system
 # interpreter externally-managed (PEP 668), so `pip install --user` is
 # refused there. Install into a dedicated venv instead and point the
-# harness at that interpreter rather than bare `python3`.
-VENV_INSANDBOX="/home/agent/.safeyolo/venv"
-PY_INSANDBOX="$VENV_INSANDBOX/bin/python"
+# launcher at that interpreter rather than bare `python3`.
 
 # --- 2. Register the MCP server with the harness ----------------------------
 case "$HARNESS" in
@@ -120,9 +124,9 @@ case "$HARNESS" in
         # Claude Code reads user-scope MCP servers from ~/.claude.json.
         # Merge into whatever the base host script already wrote — never
         # clobber unrelated keys.
-        python3 - "$AGENT_HOME/.claude.json" "$SHIM_INSANDBOX" "$PY_INSANDBOX" <<'PY'
+        python3 - "$AGENT_HOME/.claude.json" "$LAUNCHER_INSANDBOX" <<'PY'
 import json, os, sys
-path, shim, interp = sys.argv[1], sys.argv[2], sys.argv[3]
+path, launcher = sys.argv[1], sys.argv[2]
 data = {}
 if os.path.exists(path):
     try:
@@ -142,8 +146,8 @@ if not isinstance(servers, dict):
         f"coord-mcp-bootstrap: mcpServers is not an object in {path}"
     )
 servers["safeyolo-coord"] = {
-    "command": interp,
-    "args": [shim],
+    "command": launcher,
+    "args": [],
 }
 with open(path, "w") as f:
     json.dump(data, f, indent=2)
@@ -152,10 +156,10 @@ PY
     codex)
         # Codex reads MCP servers from ~/.codex/config.toml under an
         # [mcp_servers.<name>] table.
-        python3 - "$AGENT_HOME/.codex/config.toml" "$SHIM_INSANDBOX" "$PY_INSANDBOX" <<'PY'
+        python3 - "$AGENT_HOME/.codex/config.toml" "$LAUNCHER_INSANDBOX" <<'PY'
 import os, sys, tomllib
 
-path, shim, interp = sys.argv[1], sys.argv[2], sys.argv[3]
+path, launcher = sys.argv[1], sys.argv[2]
 os.makedirs(os.path.dirname(path), exist_ok=True)
 
 existing_lines = []
@@ -191,8 +195,8 @@ for line in existing_lines:
 
 new_block = (
     "[mcp_servers.safeyolo-coord]\n"
-    f'command = "{interp}"\n'
-    f'args = ["{shim}"]\n'
+    f'command = "{launcher}"\n'
+    'args = []\n'
 )
 
 body = "".join(out).rstrip()
@@ -265,4 +269,4 @@ with open(path, "w") as f:
 PY
 fi
 
-echo "coord-mcp-bootstrap: $HARNESS shim staged at $AGENT_HOME/.safeyolo/"
+echo "coord-mcp-bootstrap: $HARNESS runtime staged at $AGENT_HOME/.safeyolo/"

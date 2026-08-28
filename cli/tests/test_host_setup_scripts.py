@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_SOURCE = REPO_ROOT / "docs" / "AGENTS.md"
 SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo"
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
+COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
 COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
@@ -303,8 +304,11 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
     _run_setup(script_name, operator_home, agent_home, tmp_path)
 
     staged_shim = agent_home / ".safeyolo/safeyolo-coord-mcp.py"
+    staged_launcher = agent_home / ".safeyolo/safeyolo-coord-mcp-launcher"
     assert staged_shim.read_bytes() == COORD_SHIM_SOURCE.read_bytes()
     assert staged_shim.stat().st_mode & 0o111
+    assert staged_launcher.read_bytes() == COORD_LAUNCHER_SOURCE.read_bytes()
+    assert staged_launcher.stat().st_mode & 0o111
     command = (agent_home / ".safeyolo-command").read_text()
     assert command.count(
         "# ---- coord-mcp-bootstrap: mcp+httpx install (guarded, idempotent) ----"
@@ -322,9 +326,117 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
         managed = data["mcp_servers"]["safeyolo-coord"]
 
     assert managed == {
-        "command": "/home/agent/.safeyolo/venv/bin/python",
-        "args": ["/home/agent/.safeyolo/safeyolo-coord-mcp.py"],
+        "command": "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher",
+        "args": [],
     }
+
+
+@pytest.mark.parametrize(
+    ("script_name", "config_relative"),
+    [
+        ("codex-host-setup.sh", ".codex/config.toml"),
+        ("claude-host-setup.sh", ".claude.json"),
+    ],
+)
+def test_registered_coord_launcher_restores_safeyolo_environment(
+    tmp_path: Path,
+    script_name: str,
+    config_relative: str,
+) -> None:
+    """The registered command must work when its parent drops proxy/CA vars."""
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    _run_setup(script_name, operator_home, agent_home, tmp_path)
+
+    config_path = agent_home / config_relative
+    if script_name == "codex-host-setup.sh":
+        managed = tomllib.loads(config_path.read_text())["mcp_servers"][
+            "safeyolo-coord"
+        ]
+    else:
+        managed = json.loads(config_path.read_text())["mcpServers"][
+            "safeyolo-coord"
+        ]
+
+    assert managed["command"] == (
+        "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
+    )
+    assert managed["args"] == []
+    registered = Path(managed["command"])
+    launcher = agent_home / registered.relative_to("/home/agent")
+
+    proxy_values = {
+        "HTTP_PROXY": "http://proxy-upper.example:8080",
+        "HTTPS_PROXY": "http://proxy-upper.example:8080",
+        "http_proxy": "http://proxy-lower.example:8080",
+        "https_proxy": "http://proxy-lower.example:8080",
+        "NO_PROXY": "localhost,upper.example",
+        "no_proxy": "localhost,lower.example",
+        "SSL_CERT_FILE": "/safe yolo/ca.pem",
+        "REQUESTS_CA_BUNDLE": "/safe yolo/ca.pem",
+        "NODE_EXTRA_CA_CERTS": "/safe yolo/ca.pem",
+    }
+    proxy_env = tmp_path / "proxy.env"
+    proxy_env.write_text(
+        "".join(f"export {key}={value!r}\n" for key, value in proxy_values.items())
+        + "export HOME='/home/agent'\n"
+    )
+
+    fake_python = agent_home / ".safeyolo/venv/bin/python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "printf 'adapter=%s\\n' \"$1\"\n"
+        "env\n"
+    )
+    fake_python.chmod(0o755)
+
+    sanitized_env = {
+        "PATH": "/usr/bin:/bin",
+        "SAFEYOLO_PROXY_ENV_FILE": str(proxy_env),
+    }
+    assert not set(proxy_values) & set(sanitized_env)
+    result = subprocess.run(
+        [str(launcher)],
+        check=True,
+        env=sanitized_env,
+        capture_output=True,
+        text=True,
+    )
+
+    output_env = dict(
+        line.split("=", 1)
+        for line in result.stdout.splitlines()
+        if "=" in line
+    )
+    assert {key: output_env[key] for key in proxy_values} == proxy_values
+    assert output_env["adapter"] == str(
+        agent_home / ".safeyolo/safeyolo-coord-mcp.py"
+    )
+
+
+def test_coord_launcher_reports_missing_authoritative_environment(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    launcher = agent_home / ".safeyolo/safeyolo-coord-mcp-launcher"
+    result = subprocess.run(
+        [str(launcher)],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "SAFEYOLO_PROXY_ENV_FILE": str(tmp_path / "missing-proxy.env"),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "cannot read" in result.stderr
+    assert "missing-proxy.env" in result.stderr
 
 
 def test_coord_dependency_failure_stops_harness_with_diagnostic(tmp_path: Path) -> None:
@@ -402,7 +514,7 @@ def test_bundled_setup_reports_invalid_harness_config(
     assert "cannot update invalid" in result.stderr
 
 
-def test_wheel_manifest_includes_coord_bootstrap_and_shim() -> None:
+def test_wheel_manifest_includes_coord_runtime_files() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     force_include = project["tool"]["hatch"]["build"]["targets"]["wheel"][
         "force-include"
@@ -411,11 +523,15 @@ def test_wheel_manifest_includes_coord_bootstrap_and_shim() -> None:
     assert force_include["contrib/coord-mcp-bootstrap.sh"] == (
         "safeyolo/contrib/coord-mcp-bootstrap.sh"
     )
+    assert force_include["contrib/safeyolo-coord-mcp-launcher.sh"] == (
+        "safeyolo/contrib/safeyolo-coord-mcp-launcher.sh"
+    )
     assert force_include["contrib/safeyolo-coord-mcp.py"] == (
         "safeyolo/contrib/safeyolo-coord-mcp.py"
     )
     assert force_include["docs/AGENTS.md"] == "safeyolo/docs/AGENTS.md"
     assert COORD_BOOTSTRAP_SOURCE.stat().st_mode & 0o111
+    assert COORD_LAUNCHER_SOURCE.stat().st_mode & 0o111
     assert COORD_SHIM_SOURCE.stat().st_mode & 0o111
 
 
