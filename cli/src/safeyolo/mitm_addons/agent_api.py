@@ -55,6 +55,29 @@ MAX_EXPLAIN_LINES = 10000
 #     ceiling in nats_client + nats_runtime uses the same 2 MiB shape.
 COORD_MAX_BODY_BYTES = 256 * 1024
 COORD_MAX_REQUEST_BYTES = 2 * 1024 * 1024
+_COORD_REASON_MAX_LEN = 240
+_COORD_ROOM_ID_RE = re.compile(r"^rm-[0-9a-f]{32}$")
+_COORD_ROOM_OPERATIONS = {
+    "join": "room.join",
+    "send": "room.send",
+    "messages": "room.messages",
+    "wait": "room.wait",
+    "members": "room.members",
+}
+_COORD_URL_CREDENTIAL_RE = re.compile(
+    r"(?i)\b((?:https?|nats|tls|ws|wss)://)[^\s/@]+@"
+)
+_COORD_AUTH_SCHEME_RE = re.compile(
+    r"(?i)\b(basic|bearer)\s+[^\r\n]+"
+)
+_COORD_NAMED_SECRET_RE = re.compile(
+    r"(?i)\b(proxy[-_ ]authorization|authorization|password|passwd|pass|pwd|"
+    r"token|secret|credentials?|api[_-]?key|nkey|jwt|seed|bearer)\b"
+    r"(\s*(?::|=)\s*|\s+)[^\r\n]+"
+)
+_COORD_LONG_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])[A-Za-z0-9_+/=-]{32,}(?![A-Za-z0-9])"
+)
 
 
 class _CoordValidationError(ValueError):
@@ -90,6 +113,125 @@ def _parse_qs_float(raw, name: str, *, default: float) -> float:
         return float(raw)
     except (TypeError, ValueError) as exc:
         raise _CoordValidationError(f"invalid {name}") from exc
+
+
+def _coord_nats_cause(exc: NatsUnavailable) -> BaseException:
+    """Return the deepest explicit cause without trusting an unbounded chain."""
+    current: BaseException = exc
+    seen = {id(current)}
+    for _ in range(8):
+        cause = current.__cause__
+        if cause is None or id(cause) in seen:
+            break
+        current = cause
+        seen.add(id(current))
+    return current
+
+
+def _coord_nats_reason(exc: NatsUnavailable) -> tuple[str, str]:
+    """Build bounded cause attribution with credential-shaped text redacted."""
+    cause = _coord_nats_cause(exc)
+    error_class = sanitize_for_log(type(cause).__name__, max_len=77)
+    if cause is exc:
+        return error_class, error_class
+    try:
+        message = str(cause)
+    except Exception:
+        message = ""
+    message = _COORD_URL_CREDENTIAL_RE.sub(r"\1<redacted>@", message)
+    message = _COORD_AUTH_SCHEME_RE.sub(
+        lambda match: f"{match.group(1)} <redacted>", message
+    )
+    message = _COORD_NAMED_SECRET_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}<redacted>",
+        message,
+    )
+    message = _COORD_LONG_TOKEN_RE.sub("<redacted>", message)
+    reason = f"{error_class}: {message}" if message else error_class
+    return error_class, sanitize_for_log(
+        reason, max_len=_COORD_REASON_MAX_LEN - 3
+    )
+
+
+def _coord_room_id_for_audit(
+    *,
+    room_name: str | None,
+    attention_id: str | None,
+    agent_id: str,
+) -> str | None:
+    """Resolve only an immutable room ID through local SQLite metadata."""
+    try:
+        from safeyolo.coord import store
+
+        with store.connect() as conn:
+            if room_name is not None:
+                row = conn.execute(
+                    "SELECT room_id FROM rooms WHERE name = ?", (room_name,)
+                ).fetchone()
+            elif attention_id is not None:
+                row = conn.execute(
+                    """SELECT room_id FROM coord_attention_edges
+                       WHERE attention_id = ? AND recipient_agent_id = ?""",
+                    (attention_id, agent_id),
+                ).fetchone()
+            else:
+                return None
+    except Exception:
+        return None
+    room_id = row["room_id"] if row is not None else None
+    return room_id if isinstance(room_id, str) and _COORD_ROOM_ID_RE.fullmatch(room_id) else None
+
+
+def _write_coord_nats_audit(
+    flow: http.HTTPFlow,
+    *,
+    operation: str,
+    exc: NatsUnavailable,
+    ambiguous: bool,
+    room_name: str | None,
+    attention_id: str | None,
+    agent_id: str,
+    agent_name: str,
+) -> None:
+    """Best-effort addon-boundary audit; it must never change the response."""
+    try:
+        error_class, reason = _coord_nats_reason(exc)
+        details = {
+            "operation": operation,
+            "error_class": error_class,
+            "reason": reason,
+        }
+        room_id = _coord_room_id_for_audit(
+            room_name=room_name,
+            attention_id=attention_id,
+            agent_id=agent_id,
+        )
+        if room_id is not None:
+            details["room_id"] = room_id
+        write_event(
+            (
+                "coord.nats_publish_outcome_unknown"
+                if ambiguous
+                else "coord.nats_unavailable"
+            ),
+            kind=EventKind.COORD,
+            severity=Severity.HIGH if ambiguous else Severity.MEDIUM,
+            summary=(
+                "Coord NATS publish outcome unknown"
+                if ambiguous
+                else "Coord NATS operation unavailable"
+            ),
+            request_id=flow.metadata.get("request_id"),
+            agent=agent_name,
+            addon="agent-api",
+            details=details,
+        )
+    except Exception as audit_exc:
+        log.error(
+            "Coord NATS audit write failed for %s: %s",
+            operation,
+            type(audit_exc).__name__,
+        )
 
 
 class AgentAPI:
@@ -413,6 +555,16 @@ class AgentAPI:
             return
         room = room_route.group(1) if room_route is not None else None
         op = room_route.group(2) if room_route is not None else None
+        attention_id = (
+            attention_object.group(1) if attention_object is not None else None
+        )
+        if attention_wait:
+            audit_operation = "attention.wait"
+        elif attention_object is not None:
+            audit_operation = "attention.read"
+        else:
+            assert op is not None
+            audit_operation = _COORD_ROOM_OPERATIONS[op]
 
         try:
             if attention_wait and method == "GET":
@@ -575,7 +727,17 @@ class AgentAPI:
             )
             self._respond(flow, 404, {"error": error})
             return
-        except NatsPublishOutcomeUnknown:
+        except NatsPublishOutcomeUnknown as exc:
+            _write_coord_nats_audit(
+                flow,
+                operation=audit_operation,
+                exc=exc,
+                ambiguous=True,
+                room_name=room,
+                attention_id=attention_id,
+                agent_id=agent_id,
+                agent_name=agent_name,
+            )
             self._respond(
                 flow,
                 503,
@@ -588,11 +750,21 @@ class AgentAPI:
                 },
             )
             return
-        except NatsUnavailable:
+        except NatsUnavailable as exc:
             # Task #36: NATS runtime unreachable → coord surfaces 503 but
             # the outer proxy stays healthy. Handled BEFORE GrantError so
             # we don't accidentally paper over it as a client-side
             # permission error.
+            _write_coord_nats_audit(
+                flow,
+                operation=audit_operation,
+                exc=exc,
+                ambiguous=False,
+                room_name=room,
+                attention_id=attention_id,
+                agent_id=agent_id,
+                agent_name=agent_name,
+            )
             self._respond(flow, 503, {"error": "coordination substrate unavailable"})
             return
         except coord_api.GrantError as e:

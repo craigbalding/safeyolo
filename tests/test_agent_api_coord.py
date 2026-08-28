@@ -788,6 +788,229 @@ class TestCoordNatsUnavailableIsolation:
     as coord 503, NOT a proxy-breaking 500. Health endpoint (which does
     not touch NATS) must keep answering 200 through the outage."""
 
+    @pytest.mark.parametrize(
+        ("path", "api_name", "operation", "cause", "expected_class"),
+        (
+            (
+                "/api/coord/rooms/audit-room/messages?since=0",
+                "read_room",
+                "room.messages",
+                ConnectionRefusedError("connection refused"),
+                "ConnectionRefusedError",
+            ),
+            (
+                "/api/coord/rooms/audit-room/wait?since=0&timeout=0.1",
+                "wait_for_message",
+                "room.wait",
+                TimeoutError("consumer creation timed out"),
+                "TimeoutError",
+            ),
+        ),
+    )
+    def test_distinct_chained_causes_are_audited_with_room_operation(
+        self,
+        api,
+        isolated_state,
+        monkeypatch,
+        path,
+        api_name,
+        operation,
+        cause,
+        expected_class,
+    ):
+        from safeyolo.coord import api as coord_api
+        from safeyolo.coord.nats_client import NatsUnavailable
+
+        _register_agent("alice")
+        _setup_room_with_grants("audit-room", ["alice"])
+        room_id = next(
+            room["room_id"]
+            for room in coord_api.list_rooms()
+            if room["name"] == "audit-room"
+        )
+
+        async def unavailable_operation(**_kwargs):
+            raise NatsUnavailable("read failed") from cause
+
+        monkeypatch.setattr(coord_api, api_name, unavailable_operation)
+        with patch("agent_api.write_event", autospec=True) as audit:
+            with _as_agent("alice"):
+                flow = _make_flow(path, method="GET")
+                _run(api, flow)
+
+        assert flow.response.status_code == 503
+        assert flow.response.content == (
+            b'{"error": "coordination substrate unavailable"}'
+        )
+        assert audit.call_args.args == ("coord.nats_unavailable",)
+        event = audit.call_args.kwargs
+        assert event["kind"].value == "coord"
+        assert event["details"]["operation"] == operation
+        assert event["details"]["room_id"] == room_id
+        assert event["details"]["error_class"] == expected_class
+        assert event["details"]["reason"].startswith(f"{expected_class}:")
+
+    def test_no_cause_fallback_excludes_room_name_and_message_body(
+        self, api, isolated_state, monkeypatch
+    ):
+        from safeyolo.coord import api as coord_api
+        from safeyolo.coord.nats_client import NatsUnavailable
+
+        _register_agent("alice")
+        _setup_room_with_grants("untrusted-room-name", ["alice"])
+
+        async def unavailable_send(**_kwargs):
+            raise NatsUnavailable("password=must-not-appear")
+
+        monkeypatch.setattr(coord_api, "send", unavailable_send)
+        with patch("agent_api.write_event", autospec=True) as audit:
+            with _as_agent("alice"):
+                flow = _make_flow(
+                    "/api/coord/rooms/untrusted-room-name/send",
+                    method="POST",
+                    body={"body": "raw-room-message-must-not-appear"},
+                )
+                _run(api, flow)
+
+        assert flow.response.content == (
+            b'{"error": "coordination substrate unavailable"}'
+        )
+        event = audit.call_args.kwargs
+        assert event["details"]["operation"] == "room.send"
+        assert event["details"]["error_class"] == "NatsUnavailable"
+        assert event["details"]["reason"] == "NatsUnavailable"
+        rendered = repr(audit.call_args)
+        assert "untrusted-room-name" not in rendered
+        assert "raw-room-message-must-not-appear" not in rendered
+        assert "must-not-appear" not in rendered
+
+    @pytest.mark.parametrize(
+        ("path", "api_name", "operation"),
+        (
+            (
+                "/api/coord/attention/wait?since=0&timeout=0.1",
+                "wait_for_attention",
+                "attention.wait",
+            ),
+            (
+                f"/api/coord/attention/attn-{'a' * 32}/object",
+                "read_attention",
+                "attention.read",
+            ),
+        ),
+    )
+    def test_attention_failures_have_stable_operation_attribution(
+        self, api, isolated_state, monkeypatch, path, api_name, operation
+    ):
+        from safeyolo.coord import api as coord_api
+        from safeyolo.coord.nats_client import NatsUnavailable
+
+        _register_agent("alice")
+
+        async def unavailable_attention(*_args, **_kwargs):
+            try:
+                raise OSError("attention transport failed")
+            except OSError as cause:
+                raise NatsUnavailable("attention failed") from cause
+
+        monkeypatch.setattr(coord_api, api_name, unavailable_attention)
+        with patch("agent_api.write_event", autospec=True) as audit:
+            with _as_agent("alice"):
+                flow = _make_flow(path, method="GET")
+                _run(api, flow)
+
+        assert flow.response.content == (
+            b'{"error": "coordination substrate unavailable"}'
+        )
+        details = audit.call_args.kwargs["details"]
+        assert details["operation"] == operation
+        assert details["error_class"] == "OSError"
+        assert "room_id" not in details
+
+    def test_cause_reason_is_redacted_sanitized_and_bounded(
+        self, api, isolated_state, monkeypatch
+    ):
+        from safeyolo.coord import api as coord_api
+        from safeyolo.coord.nats_client import NatsUnavailable
+
+        _register_agent("alice")
+        secret = "x" * 64
+
+        async def unavailable_attention(*_args, **_kwargs):
+            try:
+                raise RuntimeError(
+                    "nats://user:nats-password@127.0.0.1 "
+                    "Authorization: Basic dXNlcjpzZWNyZXQ=, "
+                    "Bearer bearer-secret; pass=short-secret, "
+                    "nkey=short-nkey; jwt=short-jwt, seed=short-seed; "
+                    "credentials=short-credentials, password=plain-secret; "
+                    f"token={secret}\n" + "z" * 400
+                )
+            except RuntimeError as cause:
+                raise NatsUnavailable("attention failed") from cause
+
+        monkeypatch.setattr(
+            coord_api, "wait_for_attention", unavailable_attention
+        )
+        with patch("agent_api.write_event", autospec=True) as audit:
+            with _as_agent("alice"):
+                flow = _make_flow(
+                    "/api/coord/attention/wait?since=0&timeout=0.1",
+                    method="GET",
+                )
+                _run(api, flow)
+
+        reason = audit.call_args.kwargs["details"]["reason"]
+        assert len(reason) <= 240
+        assert "<redacted>" in reason
+        for raw_secret in (
+            "nats-password",
+            "dXNlcjpzZWNyZXQ=",
+            "bearer-secret",
+            "short-secret",
+            "short-nkey",
+            "short-jwt",
+            "short-seed",
+            "short-credentials",
+            "plain-secret",
+            secret,
+            "\n",
+        ):
+            assert raw_secret not in reason
+
+    @pytest.mark.parametrize(
+        ("message", "expected_reason"),
+        (
+            (
+                'password="sec,ret" connection refused',
+                "RuntimeError: password=<redacted>",
+            ),
+            (
+                "pass='sec;ret' connection refused",
+                "RuntimeError: pass=<redacted>",
+            ),
+            (
+                'token="alpha,beta;gamma" connection refused',
+                "RuntimeError: token=<redacted>",
+            ),
+        ),
+    )
+    def test_quoted_named_secret_values_use_only_a_trusted_safe_shape(
+        self, message, expected_reason
+    ):
+        from agent_api import _coord_nats_reason
+
+        from safeyolo.coord.nats_client import NatsUnavailable
+
+        cause = RuntimeError(message)
+        unavailable = NatsUnavailable("attention failed")
+        unavailable.__cause__ = cause
+
+        error_class, reason = _coord_nats_reason(unavailable)
+
+        assert error_class == "RuntimeError"
+        assert reason == expected_reason
+
     def test_send_returns_503_when_nats_down(self, api, isolated_state):
         from safeyolo.coord import nats_client as ncli
         from safeyolo.coord import nats_runtime as nr
@@ -811,23 +1034,90 @@ class TestCoordNatsUnavailableIsolation:
         from safeyolo.coord.nats_client import NatsPublishOutcomeUnknown
 
         _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
 
         async def ambiguous_send(**_kwargs):
-            raise NatsPublishOutcomeUnknown("connection closed after dispatch")
+            try:
+                raise TimeoutError("PubAck timed out")
+            except TimeoutError as cause:
+                raise NatsPublishOutcomeUnknown(
+                    "connection closed after dispatch"
+                ) from cause
 
         monkeypatch.setattr(coord_api, "send", ambiguous_send)
-        with _as_agent("alice"):
-            flow = _make_flow(
-                "/api/coord/rooms/r/send",
-                method="POST",
-                body={"body": "possibly accepted"},
-            )
-            _run(api, flow)
+        with patch("agent_api.write_event", autospec=True) as audit:
+            with _as_agent("alice"):
+                flow = _make_flow(
+                    "/api/coord/rooms/r/send",
+                    method="POST",
+                    body={"body": "possibly accepted"},
+                )
+                _run(api, flow)
         assert flow.response.status_code == 503
         payload = json.loads(flow.response.content)
         assert payload["send_outcome"] == "unknown"
         assert "JetStream may have accepted it" in payload["error"]
         assert "before retrying" in payload["error"]
+        assert audit.call_args.args == ("coord.nats_publish_outcome_unknown",)
+        details = audit.call_args.kwargs["details"]
+        assert details["operation"] == "room.send"
+        assert details["error_class"] == "TimeoutError"
+        assert details["room_id"].startswith("rm-")
+
+    def test_audit_write_failure_does_not_change_unavailable_response(
+        self, api, isolated_state, monkeypatch
+    ):
+        from safeyolo.coord import api as coord_api
+        from safeyolo.coord.nats_client import NatsUnavailable
+
+        _register_agent("alice")
+
+        async def unavailable_attention(*_args, **_kwargs):
+            raise NatsUnavailable("no cause")
+
+        monkeypatch.setattr(
+            coord_api, "wait_for_attention", unavailable_attention
+        )
+        with patch(
+            "agent_api.write_event",
+            autospec=True,
+            side_effect=RuntimeError("audit writer unavailable"),
+        ):
+            with _as_agent("alice"):
+                flow = _make_flow(
+                    "/api/coord/attention/wait?since=0&timeout=0.1",
+                    method="GET",
+                )
+                _run(api, flow)
+
+        assert flow.response.status_code == 503
+        assert flow.response.content == (
+            b'{"error": "coordination substrate unavailable"}'
+        )
+
+    def test_empty_long_polls_do_not_emit_nats_failure_audit(
+        self, api, isolated_state
+    ):
+        _register_agent("alice")
+        _setup_room_with_grants("r", ["alice"])
+
+        with patch("agent_api.write_event", autospec=True) as audit:
+            with _as_agent("alice"):
+                room_wait = _make_flow(
+                    "/api/coord/rooms/r/wait?since=0&timeout=0.05",
+                    method="GET",
+                )
+                _run(api, room_wait)
+            with _as_agent("alice"):
+                attention_wait = _make_flow(
+                    "/api/coord/attention/wait?since=0&timeout=0.05",
+                    method="GET",
+                )
+                _run(api, attention_wait)
+
+        assert room_wait.response.status_code == 200
+        assert attention_wait.response.status_code == 200
+        assert audit.call_count == 0
 
     def test_read_and_wait_return_503_when_nats_down(self, api, isolated_state):
         from safeyolo.coord import nats_client as ncli
