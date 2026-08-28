@@ -124,6 +124,7 @@ packages = ["cli/src/safeyolo"]
 "contrib/lib/stage-safeyolo-context.sh" = "safeyolo/contrib/lib/stage-safeyolo-context.sh"
 "contrib/HOST_SCRIPT_GUIDE.md"          = "safeyolo/contrib/HOST_SCRIPT_GUIDE.md"
 "contrib/coord-mcp-bootstrap.sh"        = "safeyolo/contrib/coord-mcp-bootstrap.sh"
+"contrib/safeyolo-coord-mcp-launcher.sh" = "safeyolo/contrib/safeyolo-coord-mcp-launcher.sh"
 "contrib/safeyolo-coord-mcp.py"         = "safeyolo/contrib/safeyolo-coord-mcp.py"
 "docs/AGENTS.md"                        = "safeyolo/docs/AGENTS.md"
 
