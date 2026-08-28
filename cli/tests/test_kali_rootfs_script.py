@@ -1,11 +1,32 @@
 """Regression tests for the bundled Kali custom-rootfs builder."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 KALI_BUILDER = REPO_ROOT / "contrib" / "kali-pentest" / "build-kali-rootfs.sh"
+KALI_BUILDER_TEST_HOST_TOOLS = (
+    "curl",
+    "unzip",
+    "tar",
+    "sha256sum",
+    "mount",
+    "umount",
+)
+
+
+def _missing_kali_builder_test_tools(which=shutil.which) -> tuple[str, ...]:
+    """Return builder preflight tools not supplied by the test doubles."""
+    return tuple(tool for tool in KALI_BUILDER_TEST_HOST_TOOLS if which(tool) is None)
+
+
+# Establish the host precondition once at collection. If a present tool later
+# disappears or fails, the builder regression stays red rather than re-skipping.
+MISSING_KALI_BUILDER_TEST_TOOLS = _missing_kali_builder_test_tools()
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -13,6 +34,13 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+@pytest.mark.skipif(
+    bool(MISSING_KALI_BUILDER_TEST_TOOLS),
+    reason=(
+        "Kali rootfs builder regression requires host tools: "
+        + ", ".join(MISSING_KALI_BUILDER_TEST_TOOLS)
+    ),
+)
 def test_linux_builder_keeps_pull_unprivileged_and_elevates_unpack(
     tmp_path: Path,
 ) -> None:
@@ -79,6 +107,21 @@ def test_linux_builder_keeps_pull_unprivileged_and_elevates_unpack(
     )
     assert pull_index < unpack_index
     assert not any(call.startswith("sudo|skopeo|") for call in calls)
+
+
+def test_kali_builder_precondition_reports_absent_unzip() -> None:
+    available = set(KALI_BUILDER_TEST_HOST_TOOLS) - {"unzip"}
+
+    assert _missing_kali_builder_test_tools(
+        lambda tool: f"/test/bin/{tool}" if tool in available else None
+    ) == ("unzip",)
+
+
+def test_kali_builder_precondition_accepts_complete_toolset() -> None:
+    assert not _missing_kali_builder_test_tools(
+        lambda tool: f"/test/bin/{tool}"
+    )
+
 
 def test_kali_apt_phase_restores_container_runtime_environment() -> None:
     """Protect the shared fix for systemd/dbus package configuration."""
