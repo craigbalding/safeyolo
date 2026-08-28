@@ -8,6 +8,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 class _MCPServer:
     def __init__(self, _name):
@@ -84,14 +86,80 @@ def test_attention_tools_use_identity_derived_routes(monkeypatch):
     ]
 
 
+def test_wait_for_coord_resolves_the_whole_page_before_returning_cursor(monkeypatch):
+    module = _load_adapter(monkeypatch)
+    calls = []
+    attention_ids = ["attn-" + "a" * 32, "attn-" + "b" * 32]
+
+    async def get(path, params=None, *, timeout=60.0):
+        calls.append((path, params, timeout))
+        if path == "/api/coord/attention/wait":
+            return {
+                "edges": [
+                    {"attention_id": attention_ids[0]},
+                    {"attention_id": attention_ids[1]},
+                ],
+                "next_cursor": 9,
+            }
+        return {"object": {"attention_id": path.split("/")[-2]}}
+
+    monkeypatch.setattr(module, "_get", get)
+    result = asyncio.run(
+        module.wait_for_coord(since_sequence=7, timeout_seconds=12.0, limit=2)
+    )
+
+    assert result == {
+        "objects": [
+            {"object": {"attention_id": attention_ids[0]}},
+            {"object": {"attention_id": attention_ids[1]}},
+        ],
+        "next_cursor": 9,
+    }
+    assert calls == [
+        (
+            "/api/coord/attention/wait",
+            {"since": 7, "timeout": 12.0, "limit": 2},
+            22.0,
+        ),
+        (f"/api/coord/attention/{attention_ids[0]}/object", None, 60.0),
+        (f"/api/coord/attention/{attention_ids[1]}/object", None, 60.0),
+    ]
+
+
+def test_wait_for_coord_does_not_return_cursor_after_partial_resolution(monkeypatch):
+    module = _load_adapter(monkeypatch)
+    attention_ids = ["attn-" + "a" * 32, "attn-" + "b" * 32]
+    resolved = []
+
+    async def get(path, params=None, *, timeout=60.0):
+        if path == "/api/coord/attention/wait":
+            return {
+                "edges": [{"attention_id": item} for item in attention_ids],
+                "next_cursor": 9,
+            }
+        if attention_ids[1] in path:
+            raise RuntimeError("canonical object unavailable")
+        resolved.append(path)
+        return {"object": {"ok": True}}
+
+    monkeypatch.setattr(module, "_get", get)
+
+    with pytest.raises(RuntimeError, match="canonical object unavailable"):
+        asyncio.run(module.wait_for_coord(since_sequence=7, limit=2))
+
+    assert resolved == [f"/api/coord/attention/{attention_ids[0]}/object"]
+
+
 def test_tool_descriptions_guide_the_targeted_multi_room_workflow(monkeypatch):
     module = _load_adapter(monkeypatch)
     wait_for_message_doc = " ".join((module.wait_for_message.__doc__ or "").split())
 
-    assert "Primary identity-derived multiplexed coordination wait" in (
+    assert "Lower-level identity-derived multiplexed attention wait" in (
         module.wait_for_attention.__doc__ or ""
     )
-    assert "Normal next operation after an attention wake" in (
+    assert "Primary foreground idle wait" in (module.wait_for_coord.__doc__ or "")
+    assert "resolution failure fails" in (module.wait_for_coord.__doc__ or "")
+    assert "Lower-level resolution operation" in (
         module.read_attention.__doc__ or ""
     )
     assert "Explicit retained room history, context, and catch-up" in (

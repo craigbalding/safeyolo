@@ -24,11 +24,19 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 # --- Stage host codex state --------------------------------------------------
 # Codex stores auth + config under ~/.codex/. Copy the whole dir if present.
+# Preserve an existing agent-side config.toml on reapply so harness and MCP
+# configuration created inside the persistent agent home is not clobbered.
 # Session transcripts etc. are inside the same tree -- we're choosing to stage
 # the lot because codex doesn't have the same scale of transcript state as
 # Claude Code. If that stops being true, narrow this to specific files.
 if [ -d "$HOME/.codex" ]; then
-    cp -R "$HOME/.codex/." "$AGENT_HOME/.codex/" 2>/dev/null || true
+    while IFS= read -r -d '' host_entry; do
+        if [ "$(basename "$host_entry")" = "config.toml" ] \
+            && [ -f "$AGENT_HOME/.codex/config.toml" ]; then
+            continue
+        fi
+        cp -R "$host_entry" "$AGENT_HOME/.codex/" 2>/dev/null || true
+    done < <(find "$HOME/.codex" -mindepth 1 -maxdepth 1 -print0)
 fi
 
 # --- Stage SafeYolo baseline + shared skill ---------------------------------
@@ -142,5 +150,10 @@ fi
 exec codex "${args[@]}" "$@"
 EOF
 chmod +x "$AGENT_HOME/.safeyolo-command"
+
+# --- Stage and register the coord MCP server ---------------------------------
+# This runs after the foreground command is written so the shared bootstrap can
+# inject its guarded dependency setup immediately before the harness exec.
+"$SCRIPT_DIR/coord-mcp-bootstrap.sh" --home "$AGENT_HOME" --harness codex
 
 echo "codex-host-setup: $SAFEYOLO_AGENT_NAME ready at $AGENT_HOME"

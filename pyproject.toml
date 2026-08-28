@@ -113,7 +113,7 @@ members = [
 [tool.hatch.build.targets.wheel]
 packages = ["cli/src/safeyolo"]
 
-# Bundle the three curated host scripts + their shared lib as package data,
+# Bundle the three curated host scripts + their shared helpers as package data,
 # so `--host-script @claude` (etc.) resolves from a wheel install without
 # requiring a repo checkout. Kept in sync with commands/agent.py
 # _HOST_SCRIPT_ALIASES.
@@ -123,7 +123,9 @@ packages = ["cli/src/safeyolo"]
 "contrib/mise-shell-host-setup.sh"      = "safeyolo/contrib/mise-shell-host-setup.sh"
 "contrib/lib/stage-safeyolo-context.sh" = "safeyolo/contrib/lib/stage-safeyolo-context.sh"
 "contrib/HOST_SCRIPT_GUIDE.md"          = "safeyolo/contrib/HOST_SCRIPT_GUIDE.md"
+"contrib/coord-mcp-bootstrap.sh"        = "safeyolo/contrib/coord-mcp-bootstrap.sh"
 "contrib/safeyolo-coord-mcp.py"         = "safeyolo/contrib/safeyolo-coord-mcp.py"
+"docs/AGENTS.md"                        = "safeyolo/docs/AGENTS.md"
 
 [tool.hatch.build.targets.wheel.sources]
 "cli/src" = ""

@@ -13,10 +13,10 @@ per-agent multiplexed attention feed in SQLite; NATS hints only shorten the
 wait. This runbook separately checks that **Claude Code** resumes when the
 blocking tool returns:
 
-1. Claude calls `wait_for_attention` and is otherwise idle
+1. Claude calls foreground `wait_for_coord` and is otherwise idle
 2. A peer / operator sends
 3. The tool call returns
-4. Claude resumes reasoning and calls `read_attention`
+4. Claude resumes reasoning with every canonical object already resolved
 5. Claude responds
 6. Claude advances its caller-owned feed cursor and re-arms
 
@@ -27,12 +27,14 @@ collaboration.
 ## Prerequisites
 
 - SafeYolo running (`safeyolo start`).
-- One agent registered: `safeyolo agent add wake-test-bob <folder>`.
+- One agent registered with the bundled harness setup, for example:
+  `safeyolo agent add wake-test-bob <folder> --host-script @claude`.
 - Coord initialized: `safeyolo coord init`.
 - A room with wake-test-bob granted:
   `safeyolo coord room create wake-loop --member wake-test-bob`.
-- MCP config staged in the agent's sandbox: `safeyolo coord mcp-config`
-  → paste into wake-test-bob's `.mcp.json`.
+- For an existing bundled agent, reapply its normal setup with
+  `safeyolo agent run wake-test-bob --host-script @claude`. The setup stages
+  and registers `safeyolo-coord`; no manual MCP config edit is needed.
 
 ## Setup — Claude's system prompt
 
@@ -41,11 +43,11 @@ Give wake-test-bob a short, explicit system prompt (via Claude Code's
 
 > You are in a chat room called `wake-loop`. Your job is to:
 >
-> 1. Set an attention cursor to 0 and call `safeyolo-coord.wait_for_attention(since_sequence=cursor, timeout_seconds=60)`.
-> 2. For every returned edge, call `safeyolo-coord.read_attention(attention_id=edge.attention_id)`.
-> 3. If the canonical message body is `:done`, stop. Otherwise call `safeyolo-coord.send(room_name="wake-loop", body="ack: <one-line summary>", notify="none")`.
-> 4. After processing the full page, set the cursor to `next_cursor` and call `wait_for_attention` again.
-> 5. Repeat without operator prompting.
+> 1. Set an attention cursor to 0 and call `safeyolo-coord.wait_for_coord(since_sequence=cursor, timeout_seconds=60)` in the foreground.
+> 2. Process every canonical object in the returned `objects` list.
+> 3. If a canonical message body is `:done`, stop. Otherwise call `safeyolo-coord.send(room_name="wake-loop", body="ack: <one-line summary>", notify="none")`.
+> 4. Only after processing the complete page, set the cursor to `next_cursor` and call `wait_for_coord` again.
+> 5. Repeat without operator prompting. Never start a detached/background coord waiter.
 >
 > Do not ask the operator questions. Do not summarise progress at the end
 > of a turn. Just keep the loop running.
@@ -56,7 +58,7 @@ In one terminal:
 
 ```sh
 safeyolo agent run wake-test-bob
-# Claude Code should start, load the system prompt, and call wait_for_attention
+# Claude Code should start, load the system prompt, and call wait_for_coord
 ```
 
 In another terminal, attach as operator:
@@ -81,7 +83,7 @@ third message with slightly more content
   within a few seconds of you sending.
 - Bob's messages carry `sender_agent_id` = bob's `agent_id` (verify in the
   transcript header or via `safeyolo coord chat wake-loop --observe`).
-- After each ack, bob re-arms `wait_for_attention` without you doing
+- After each ack, bob re-arms `wait_for_coord` without you doing
   anything.
 - On `:done`, bob stops.
 
@@ -90,9 +92,12 @@ third message with slightly more content
 - **One-shot**: bob acks the first message and then goes idle / ends
   its turn. You send message 2, nothing happens. → Attention loop is
   broken; system prompt or Claude Code behaviour prevents re-arming.
-- **Timeout-panic**: bob's `wait_for_attention` times out at 60s and it
+- **Timeout-panic**: bob's `wait_for_coord` times out at 60s and it
   gives up rather than looping. → System prompt needs to make the
   "call again" step explicit.
+- **Background-buffered wake**: a detached shell waiter receives an edge but
+  Claude never resumes to inspect its output. → Stop the background waiter;
+  the ordinary wait must be the foreground MCP tool call.
 - **Poll spam**: bob calls the feed or `read_room` in a tight loop instead of
   using the bounded long-poll. → System prompt needs to prefer the wait tool.
 - **Identity mismatch**: bob's messages show up as `operator` or blank.
@@ -110,7 +115,7 @@ got stuck otherwise.
 ## Harness limitation and durable recovery
 
 A long blocking MCP call can own the harness's current turn. Matching coord
-attention releases `wait_for_attention`, but an unrelated harness UI,
+attention releases `wait_for_coord`, but an unrelated harness UI,
 operator or control-channel message may not be processed until that tool call
 returns. That is a harness scheduling limitation, not evidence that the coord
 API lost an edge.
@@ -131,6 +136,7 @@ caller-owned; the server does not maintain a consumed position.
 
 For an N-agent behavioural dogfood, record each participant's feed cursor and
 replay from it afterward. Prove non-delivery from the durable feed state, not
-from model testimony or merely because a wait did not wake. A separate poller
-may keep a harness continuously listening, but it is an adapter pattern rather
-than part of the Stage-1 API contract.
+from model testimony or merely because a wait did not wake. A detached raw
+poller may prove that the API delivered an edge, but it does not prove the
+coding harness resumed. The foreground MCP tool return is the acceptance
+boundary for ordinary coordination.

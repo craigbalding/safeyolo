@@ -106,9 +106,16 @@ of the above, stop and invoke the skill first.
 - A targeted handoff must contain or directly identify everything needed to
   act; required meaning must not depend on preceding unnotified room messages.
   Seeing another agent's task in retained history does not assign it to you.
-- When idle, use the identity-derived multiplexed attention feed, resolve the
-  referenced canonical object, act, and re-arm the wait. An empty bounded wait
-  means nothing arrived yet. Do not busy-poll room history.
+- When idle and the `safeyolo-coord` MCP server is available, use its foreground
+  `wait_for_coord` tool. It resolves every returned attention edge before
+  exposing the caller-owned next cursor. Act on all returned objects, adopt the
+  cursor, and re-arm; an empty bounded return means nothing arrived yet.
+- Do not use a detached/background shell process or polling loop as the
+  ordinary coord waiter. It may receive durable attention without returning a
+  result through the coding harness, so the model never resumes to inspect it.
+  For diagnostics or manual fallback, a raw Agent API wait must itself remain
+  foreground/harness-visible; immediately resolve its returned edges before
+  advancing the cursor.
 - Attention controls interruption, not visibility. Retained room history is
   available for deliberate context and catch-up, not as a mandatory second
   half of a notification. Use the installed `safeyolo` skill for details.

@@ -26,14 +26,19 @@ operator-authorized coordinator/worker relationship.
 
 ## Agent operations
 
-The current public agent operations are available through the raw Agent API;
-the optional coord MCP adapter exposes the same workflow as named tools.
+The current public agent operations are available through the raw Agent API.
+The bundled Claude Code and Codex host setups stage and register the coord MCP
+adapter by default so ordinary idle waits return through the coding harness.
+Existing agents receive it by reapplying their normal `@claude` or `@codex`
+host setup on a subsequent run. The harness must start after that config is
+staged; no coord server, proxy, or addon restart is required.
 
 | Operation | Purpose |
 |---|---|
 | `join_room` | Attach to an existing operator-granted membership and obtain room metadata. Knowing a room name grants nothing. |
 | `send` | Append a canonical retained message and choose attention intent with `notify=none`, `notify=room`, or an explicit agent-name list. |
-| `wait_for_attention` | Primary idle wait on the identity-derived, multiplexed feed across all authorized rooms. The cursor is caller-owned. |
+| `wait_for_coord` | Primary foreground idle wait. It waits on the multiplexed feed and resolves the complete returned page before exposing its caller-owned `next_cursor`. |
+| `wait_for_attention` | Lower-level multiplexed feed wait for diagnostics and specialised use. The cursor is caller-owned. |
 | `read_attention` | Resolve and read the canonical object referenced by an attention edge. Authorization is checked again at read time. |
 | `read_room` | Read bounded retained history for deliberate context, catch-up, or audit. It is not the normal second half of a targeted notification. |
 
@@ -57,22 +62,36 @@ convenient but optional; raw Agent API access remains valid.
 
 ## Recommended workflow
 
-The normal lifecycle is:
+When `safeyolo-coord` MCP is available, the normal lifecycle is:
 
 ```text
 join room
 → send or receive concise targeted work-state messages
-→ wait_for_attention
-→ read_attention for every returned edge
-→ act
+→ wait_for_coord in the foreground
+→ act on every returned canonical object
 → respond only when another work state must change
-→ advance the caller-owned cursor and re-arm wait_for_attention
+→ adopt next_cursor and re-arm wait_for_coord
 ```
 
-Deduplicate repeated feed delivery by `attention_id`. Process the returned
-page, advance to its `next_cursor`, and re-arm. A bounded wait returning no
-attention means "nothing yet", not that the task or coordination session is
+`wait_for_coord` resolves every edge in a page before returning its
+`next_cursor`. If any canonical-object resolution fails, the tool call fails
+without returning that cursor as adoptable; retry from the existing cursor.
+Deduplicate repeated delivery by `attention_id`. A bounded wait returning no
+objects means "nothing yet", not that the task or coordination session is
 complete. Re-arm rather than busy-polling room history.
+
+Do not use a detached or background shell process, watcher, or polling loop as
+the ordinary coord waiter. A background process can receive and buffer a
+durable attention edge without producing a harness tool result, so the model
+does not resume to inspect it. Harness visibility, not merely network delivery,
+is required for the normal idle path.
+
+The raw Agent API and the lower-level MCP `wait_for_attention` plus
+`read_attention` operations remain useful for diagnostics and specialised
+adapters. When used as a manual fallback, the raw wait itself must remain a
+foreground, harness-visible operation. Immediately inspect a non-empty return,
+resolve every edge, and advance to `next_cursor` only after the whole page was
+resolved. Never busy-poll it in a detached loop.
 
 The legacy per-room `wait_for_message` remains available as a compatibility or
 special-purpose primitive. It has different cursor/catch-up rules and is not
@@ -86,9 +105,10 @@ still see that message in retained history. Seeing another worker's targeted
 task in history does not assign it to you.
 
 An attention edge identifies a canonical object rather than becoming a second
-copy of it. After waking, use `read_attention` to resolve that object and act
-on it. Current authorization is checked both when feed edges are returned and
-when their objects are read.
+copy of it. `wait_for_coord` performs the canonical read for each edge before
+returning. Lower-level callers use `read_attention` themselves. Current
+authorization is checked both when feed edges are returned and when their
+objects are read.
 
 A message intended to wake a peer and cause action must itself contain or
 directly identify the actionable handoff. Do not send substantive unnotified

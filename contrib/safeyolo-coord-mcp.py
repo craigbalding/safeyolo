@@ -11,7 +11,8 @@ Identity is transport-derived: this process makes HTTP calls to
 proxy. The proxy attributes the request to this agent by its UDS. The
 agent process cannot forge or override its own identity.
 
-Install inside a sandbox (once):
+The bundled `@claude` and `@codex` host setups stage, register, and provision
+this adapter automatically. For a custom harness, install inside a sandbox:
 
     uv pip install --system 'mcp>=2.0' 'httpx>=0.25'
     # copy safeyolo-coord-mcp.py somewhere on PATH, e.g.:
@@ -127,11 +128,11 @@ async def wait_for_attention(
     timeout_seconds: float = 60.0,
     limit: int = 1,
 ) -> dict[str, Any]:
-    """Primary identity-derived multiplexed coordination wait across every
-    authorized room. The numeric cursor is caller-owned; returning edges does
-    not consume them server-side. Deduplicate repeated delivery by
-    `attention_id`, use `read_attention` to resolve each referenced canonical
-    object, then advance to the returned `next_cursor` and re-arm.
+    """Lower-level identity-derived multiplexed attention wait for diagnostics
+    and specialised adapters. The numeric cursor is caller-owned; returning
+    edges does not consume them server-side. Prefer foreground
+    `wait_for_coord` for ordinary idle work. Lower-level callers must resolve
+    every edge with `read_attention` before adopting `next_cursor`.
     """
     return await _get(
         "/api/coord/attention/wait",
@@ -145,10 +146,55 @@ async def wait_for_attention(
 
 
 @mcp.tool()
+async def wait_for_coord(
+    since_sequence: int,
+    timeout_seconds: float = 60.0,
+    limit: int = 1,
+) -> dict[str, Any]:
+    """Primary foreground idle wait for ordinary coord work. Wait across all
+    authorized rooms and resolve every returned attention edge to its
+    canonical object before returning. Only after the whole page resolves is
+    `next_cursor` returned for the caller to adopt; a resolution failure fails
+    the tool call without exposing a later cursor. Act on every returned
+    object, update the caller-owned cursor, and re-arm this foreground tool.
+    """
+    page = await _get(
+        "/api/coord/attention/wait",
+        {
+            "since": since_sequence,
+            "timeout": timeout_seconds,
+            "limit": limit,
+        },
+        timeout=timeout_seconds + 10.0,
+    )
+
+    edges = page.get("edges")
+    next_cursor = page.get("next_cursor")
+    if (
+        not isinstance(edges, list)
+        or not isinstance(next_cursor, int)
+        or isinstance(next_cursor, bool)
+    ):
+        raise RuntimeError("coord attention wait returned an invalid page")
+
+    resolved = []
+    for edge in edges:
+        attention_id = edge.get("attention_id") if isinstance(edge, dict) else None
+        if not isinstance(attention_id, str) or not attention_id:
+            raise RuntimeError("coord attention wait returned an invalid edge")
+        resolved.append(
+            await _get(f"/api/coord/attention/{attention_id}/object")
+        )
+
+    return {"objects": resolved, "next_cursor": next_cursor}
+
+
+@mcp.tool()
 async def read_attention(attention_id: str) -> dict[str, Any]:
-    """Normal next operation after an attention wake: resolve and read the
+    """Lower-level resolution operation after `wait_for_attention`: read the
     canonical object referenced by one edge. Current authorization is checked
-    independently from feed delivery.
+    independently from feed delivery. Ordinary idle work uses
+    `wait_for_coord`, which resolves the whole page before returning.
     """
     return await _get(f"/api/coord/attention/{attention_id}/object")
 

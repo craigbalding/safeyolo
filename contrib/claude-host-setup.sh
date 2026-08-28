@@ -79,6 +79,13 @@ if command -v python3 >/dev/null 2>&1; then
 import json, os, sys
 path = sys.argv[1]
 data = {}
+# Preserve existing agent-side harness and MCP configuration on reapply.
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"claude-host-setup: cannot update invalid {path}: {exc}")
 # Preserve identity keys from host's ~/.claude.json if present.
 host_json = os.path.expanduser("~/.claude.json")
 if os.path.exists(host_json):
@@ -98,13 +105,22 @@ if os.path.exists(host_json):
         pass
 
 data["hasCompletedOnboarding"] = True
-data.setdefault("projects", {})
-data["projects"]["/workspace"] = {
-    "hasTrustDialogAccepted": True,
-    "hasCompletedProjectOnboarding": True,
-    "hasClaudeMdExternalIncludesApproved": True,
-    "hasClaudeMdExternalIncludesWarningShown": True,
-}
+projects = data.setdefault("projects", {})
+if not isinstance(projects, dict):
+    raise SystemExit(f"claude-host-setup: projects is not an object in {path}")
+workspace = projects.setdefault("/workspace", {})
+if not isinstance(workspace, dict):
+    raise SystemExit(
+        f"claude-host-setup: projects./workspace is not an object in {path}"
+    )
+workspace.update(
+    {
+        "hasTrustDialogAccepted": True,
+        "hasCompletedProjectOnboarding": True,
+        "hasClaudeMdExternalIncludesApproved": True,
+        "hasClaudeMdExternalIncludesWarningShown": True,
+    }
+)
 with open(path, "w") as f:
     json.dump(data, f, indent=2)
 PY
@@ -279,5 +295,10 @@ fi
 exec claude "${args[@]}" "$@"
 EOF
 chmod +x "$AGENT_HOME/.safeyolo-command"
+
+# --- 6. Stage and register the coord MCP server ------------------------------
+# This runs after the foreground command is written so the shared bootstrap can
+# inject its guarded dependency setup immediately before the harness exec.
+"$SCRIPT_DIR/coord-mcp-bootstrap.sh" --home "$AGENT_HOME" --harness claude
 
 echo "claude-host-setup: $SAFEYOLO_AGENT_NAME ready at $AGENT_HOME"
