@@ -3,6 +3,7 @@
 ## Contents
 
 - [Choose the installation path](#choose-the-installation-path)
+- [Opt into project mise configuration](#opt-into-project-mise-configuration)
 - [Use guest sudo](#use-guest-sudo)
 - [Understand setpriv](#understand-setpriv)
 - [Know what persists](#know-what-persists)
@@ -19,9 +20,44 @@ mise use -g node@22
 mise use -g npm:typescript
 ```
 
+SafeYolo exposes those global tools to login shells, non-interactive shells,
+harness commands, and Linux `runsc exec` without loading repository-local
+`mise.toml` or `.tool-versions` files. A plain tool invocation and a plain
+`mise` command therefore stay on the persistent global toolset even when the
+current workspace contains untrusted project mise configuration.
+
 Use the distro package manager for native libraries, headers, daemons, desktop
 programs, and other system dependencies. On Alpine, prefer its musl-native
 Node.js package over asking mise to compile Node from source.
+
+## Opt into project mise configuration
+
+Use `mise-project` when you deliberately want the current repository's mise
+configuration:
+
+```sh
+mise-project install
+mise-project exec -- COMMAND ARG...
+mise-project run TASK
+mise-project use TOOL@VERSION
+```
+
+The opt-in is command-scoped. `mise-project` clears SafeYolo's project-config
+discovery guards only for that child process, while preserving the proxy, CA,
+and persistent mise directory environment. Review and trust the repository
+configuration before opting in; later ordinary commands remain global-only.
+
+This behavior relies on the pinned mise release's early-init settings:
+
+```sh
+MISE_OVERRIDE_CONFIG_FILENAMES=/etc/safeyolo/mise-project-config-disabled.toml
+MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none
+```
+
+The first replaces normal local config discovery with an absent path under
+rootfs-owned `/etc`; the second disables `.tool-versions` discovery. Do not
+unset them for an ordinary command. Use `mise-project` as the tested opt-in
+path instead.
 
 ## Use guest sudo
 

@@ -360,6 +360,10 @@ def test_oci_environment_pins_persistent_mise_paths(isolated_env):
     assert env["MISE_DATA_DIR"] == "/home/agent/.mise"
     assert env["MISE_CONFIG_DIR"] == "/home/agent/.mise"
     assert env["MISE_CACHE_DIR"] == "/home/agent/.mise/cache"
+    assert env["MISE_OVERRIDE_CONFIG_FILENAMES"] == (
+        "/etc/safeyolo/mise-project-config-disabled.toml"
+    )
+    assert env["MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES"] == "none"
     assert env["PATH"].startswith("/home/agent/.mise/shims:")
 
 
@@ -449,7 +453,7 @@ def test_prepare_rootfs_canonicalizes_config_share_symlink(isolated_env, monkeyp
 
 
 def test_runsc_command_restores_mise_after_environment_path():
-    """runsc commands source mise activation after /etc/environment."""
+    """runsc commands source global-only mise after /etc/environment."""
     from safeyolo.platform.linux import _wrap_runsc_command
 
     wrapped = _wrap_runsc_command("codex --version")

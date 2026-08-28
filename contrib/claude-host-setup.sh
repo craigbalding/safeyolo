@@ -191,6 +191,8 @@ set -e
 export MISE_DATA_DIR="${MISE_DATA_DIR:-$HOME/.mise}"
 export MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-$HOME/.mise}"
 export MISE_CACHE_DIR="${MISE_CACHE_DIR:-$HOME/.mise/cache}"
+export MISE_OVERRIDE_CONFIG_FILENAMES="/etc/safeyolo/mise-project-config-disabled.toml"
+export MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES="none"
 export PATH="$HOME/.local/bin:$MISE_DATA_DIR/shims:${PATH}"
 
 # --- version policy ---------------------------------------------------------

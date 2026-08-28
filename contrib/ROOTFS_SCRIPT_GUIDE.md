@@ -120,7 +120,8 @@ This installs:
 - sshd pubkey-only config + host keys (for `safeyolo agent shell`)
 - `/etc/profile.d/00-path.sh` + `/etc/environment` PATH glue so `sshd` and
   other `sbin` tools are visible in non-login shells
-- mise profile glue at `/etc/profile.d/mise.sh` (if `mise` is in the tree)
+- global-only mise profile glue at `/etc/profile.d/mise.sh` plus the explicit
+  `mise-project` opt-in (if `mise` is in the tree)
 - BusyBox-backed `hexdump` / `nc` shims (if BusyBox is in the tree)
 - `/usr/local/bin/sudo` compatibility shim and passwordless guest-root policy
 - hostname = `safeyolo`

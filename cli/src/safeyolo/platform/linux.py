@@ -212,12 +212,12 @@ def _experiment_runsc_flags() -> list[str]:
 
 
 def _wrap_runsc_command(command: str) -> str:
-    """Load guest runtime environment without losing mise's shim path.
+    """Load guest runtime environment without losing global mise tools.
 
     ``/etc/environment`` contains the proxy and CA variables required by
     commands launched through ``runsc exec``, but its base PATH intentionally
     omits per-user tools. Source the mise activation file afterwards so its
-    persistent data directories and shims win.
+    persistent global toolset wins while repository config remains disabled.
     """
     return (
         ". /etc/environment 2>/dev/null; "
@@ -1451,6 +1451,11 @@ class LinuxPlatform(AgentPlatform):
             "MISE_DATA_DIR=/home/agent/.mise",
             "MISE_CONFIG_DIR=/home/agent/.mise",
             "MISE_CACHE_DIR=/home/agent/.mise/cache",
+            (
+                "MISE_OVERRIDE_CONFIG_FILENAMES="
+                "/etc/safeyolo/mise-project-config-disabled.toml"
+            ),
+            "MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none",
             "PATH=/home/agent/.mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         ]
 

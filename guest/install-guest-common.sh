@@ -77,6 +77,67 @@ install_safeyolo_mise() {
     rm -rf "$tmp_dir"
 }
 
+install_safeyolo_mise_integration() {
+    local rootfs="$1"
+
+    [ -n "$rootfs" ] || {
+        echo "install_safeyolo_mise_integration: rootfs arg required" >&2
+        return 1
+    }
+    [ -d "$rootfs" ] || {
+        echo "install_safeyolo_mise_integration: rootfs not a dir: $rootfs" >&2
+        return 1
+    }
+
+    # Custom rootfs authors may intentionally omit mise. Keep the rest of the
+    # shared guest setup usable in that case.
+    if [ ! -x "$rootfs/usr/local/bin/mise" ] && [ ! -x "$rootfs/usr/bin/mise" ]; then
+        return 0
+    fi
+
+    install -d -m 0755 "$rootfs/etc/profile.d" "$rootfs/usr/local/bin"
+    cat > "$rootfs/etc/profile.d/mise.sh" <<'MISE_PROFILE'
+export MISE_DATA_DIR="${HOME:-/home/agent}/.mise"
+export MISE_CONFIG_DIR="${HOME:-/home/agent}/.mise"
+export MISE_CACHE_DIR="${HOME:-/home/agent}/.mise/cache"
+# SafeYolo's pinned mise uses these early-init settings to keep ordinary
+# commands on the persistent global toolset. Repository mise.toml and
+# .tool-versions files are available only through the mise-project opt-in.
+export MISE_OVERRIDE_CONFIG_FILENAMES="/etc/safeyolo/mise-project-config-disabled.toml"
+export MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES="none"
+export PATH="${HOME:-/home/agent}/.mise/shims:$PATH"
+eval "$(mise activate bash)" 2>/dev/null || true
+MISE_PROFILE
+    chmod 0755 "$rootfs/etc/profile.d/mise.sh"
+    cp "$rootfs/etc/profile.d/mise.sh" "$rootfs/etc/mise-activate.sh"
+
+    # Deliberate project mise use is command-scoped. Unsetting the discovery
+    # guards in a child process cannot make later ordinary commands ambiently
+    # trust repository configuration.
+    cat > "$rootfs/usr/local/bin/mise-project" <<'MISE_PROJECT'
+#!/bin/sh
+unset MISE_OVERRIDE_CONFIG_FILENAMES
+unset MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES
+exec mise "$@"
+MISE_PROJECT
+    chmod 0755 "$rootfs/usr/local/bin/mise-project"
+
+    [ -f "$rootfs/etc/environment" ] || : > "$rootfs/etc/environment"
+    local key value
+    while IFS='=' read -r key value; do
+        if grep -q "^${key}=" "$rootfs/etc/environment"; then
+            sed -i "s|^${key}=.*|${key}=${value}|" "$rootfs/etc/environment"
+        else
+            echo "${key}=${value}" >> "$rootfs/etc/environment"
+        fi
+    done <<'MISE_ENVIRONMENT'
+MISE_OVERRIDE_CONFIG_FILENAMES=/etc/safeyolo/mise-project-config-disabled.toml
+MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none
+MISE_ENVIRONMENT
+    grep -q '^BASH_ENV=' "$rootfs/etc/environment" 2>/dev/null \
+        || echo "BASH_ENV=/etc/mise-activate.sh" >> "$rootfs/etc/environment"
+}
+
 install_safeyolo_runtime_mount_targets() {
     local rootfs="$1"
 
@@ -221,23 +282,9 @@ PATH_PROFILE
             "$rootfs/etc/environment"
     fi
 
-    # mise profile glue -- sources only if mise is present in the rootfs.
-    # Custom rootfs authors who don't want mise can skip -- guest-init
-    # tolerates its absence. See guest/rootfs-customize-hook.sh for the
-    # canonical version baked into the default base.
-    if [ -x "$rootfs/usr/local/bin/mise" ] || [ -x "$rootfs/usr/bin/mise" ]; then
-        cat > "$rootfs/etc/profile.d/mise.sh" <<'MISE_PROFILE'
-export MISE_DATA_DIR="${HOME:-/home/agent}/.mise"
-export MISE_CONFIG_DIR="${HOME:-/home/agent}/.mise"
-export MISE_CACHE_DIR="${HOME:-/home/agent}/.mise/cache"
-export PATH="${HOME:-/home/agent}/.mise/shims:$PATH"
-eval "$(mise activate bash)" 2>/dev/null || true
-MISE_PROFILE
-        chmod 0755 "$rootfs/etc/profile.d/mise.sh"
-        cp "$rootfs/etc/profile.d/mise.sh" "$rootfs/etc/mise-activate.sh"
-        grep -q '^BASH_ENV=' "$rootfs/etc/environment" 2>/dev/null \
-            || echo "BASH_ENV=/etc/mise-activate.sh" >> "$rootfs/etc/environment"
-    fi
+    # Keep persistent global tools on PATH without consulting repository mise
+    # configuration. The default rootfs builder calls the same helper.
+    install_safeyolo_mise_integration "$rootfs"
 
     # BusyBox applet shims (`hexdump`, `nc`) -- convenience only, installed
     # when the rootfs ships busybox. apt/yum/apk remain usable at runtime

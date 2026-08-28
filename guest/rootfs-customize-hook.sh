@@ -41,6 +41,8 @@ ROOTFS="$1"
     exit 1
 }
 
+source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
+
 echo "=== Customizing rootfs at $ROOTFS ==="
 
 # ---------------------------------------------------------------------------
@@ -72,20 +74,6 @@ cp "$ROOTFS/tmp/mise/bin/mise" "$ROOTFS/usr/local/bin/mise"
 chmod +x "$ROOTFS/usr/local/bin/mise"
 rm -rf "$ROOTFS/tmp/mise.tar.gz" "$ROOTFS/tmp/mise"
 
-# Per-agent mise data dir lives under the agent's persistent $HOME
-# (which vm.py bind-mounts from ~/.safeyolo/agents/<name>/home via
-# VirtioFS). Installs made through `mise use -g` land on the host and
-# survive rootfs snapshot/restore. Agents install their own runtimes
-# on first boot -- no shared /opt/mise preinstall any more.
-cat > "$ROOTFS/etc/profile.d/mise.sh" <<'MISE_PROFILE'
-export MISE_DATA_DIR="${HOME:-/home/agent}/.mise"
-export MISE_CONFIG_DIR="${HOME:-/home/agent}/.mise"
-export MISE_CACHE_DIR="${HOME:-/home/agent}/.mise/cache"
-export PATH="${HOME:-/home/agent}/.mise/shims:$PATH"
-eval "$(mise activate bash)" 2>/dev/null || true
-MISE_PROFILE
-chmod +x "$ROOTFS/etc/profile.d/mise.sh"
-cp "$ROOTFS/etc/profile.d/mise.sh" "$ROOTFS/etc/mise-activate.sh"
 cat > "$ROOTFS/etc/profile.d/00-path.sh" <<'PATH_PROFILE'
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 PATH_PROFILE
@@ -102,8 +90,11 @@ else
     echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > \
         "$ROOTFS/etc/environment"
 fi
-grep -q '^BASH_ENV=' "$ROOTFS/etc/environment" 2>/dev/null || \
-    echo "BASH_ENV=/etc/mise-activate.sh" >> "$ROOTFS/etc/environment"
+
+# Per-agent mise data lives under persistent $HOME. The shared integration
+# keeps global installs available while ordinary commands ignore repository
+# mise configuration; custom rootfs builders call this same helper.
+install_safeyolo_mise_integration "$ROOTFS"
 
 # ---------------------------------------------------------------------------
 # gh CLI
@@ -146,7 +137,6 @@ chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 # Pre-create the host bind-mount destinations.  Custom rootfs builders call
 # the same function through install_safeyolo_guest_common, keeping the two
 # image-build paths on one runtime contract.
-source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
 install_safeyolo_runtime_mount_targets "$ROOTFS"
 install_safeyolo_privilege_helper "$ROOTFS"
 
