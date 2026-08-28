@@ -23,6 +23,8 @@ Reviewer hardening pass regressions (per #371 comment):
 from __future__ import annotations
 
 import contextlib
+import hmac
+import io
 import json
 import os
 import signal
@@ -66,11 +68,56 @@ class TestPathsAndCredentials:
         assert nr.nats_creds_path().stat().st_mode & 0o777 == 0o600
         assert list(nr.nats_root().glob(".creds.*.tmp")) == []
 
+    def test_missing_credential_regenerates_without_leaking_it(
+        self, isolated_coord
+    ):
+        original = nr.ensure_credentials()
+        nr.nats_creds_path().unlink()
+
+        replacement = nr.ensure_credentials()
+
+        if hmac.compare_digest(original, replacement):
+            pytest.fail("missing NATS credential was not regenerated")
+        assert nr.read_credentials() == replacement
+        assert nr.nats_creds_path().stat().st_mode & 0o777 == 0o600
+
     def test_secure_dir_modes(self, isolated_coord):
         """Reviewer small fix: data dirs 0700, not default umask."""
         nr.write_config("safeyolo-test")
         assert nr.nats_root().stat().st_mode & 0o777 == 0o700
         assert nr.nats_data_path().stat().st_mode & 0o777 == 0o700
+
+    def test_wedged_stop_does_not_emit_runbook_success_signal(
+        self, isolated_coord
+    ):
+        """The manual-rotation guard must fail closed on a caught wedge."""
+        from rich.console import Console
+
+        from safeyolo.commands import lifecycle
+
+        credential = nr.ensure_credentials()
+        output = io.StringIO()
+        with (
+            patch.object(
+                nr,
+                "stop_server",
+                autospec=True,
+                side_effect=nr.WedgedNatsServer("simulated ownership wedge"),
+            ),
+            patch.object(
+                lifecycle,
+                "console",
+                Console(file=output, color_system=None),
+            ),
+        ):
+            lifecycle._stop_coord_best_effort()
+
+        rendered = output.getvalue()
+        assert "coord message plane stopped" not in rendered
+        assert "simulated ownership wedge" in rendered
+        assert nr.nats_creds_path().exists()
+        if credential in rendered:
+            pytest.fail("caught stop failure printed the raw NATS credential")
 
 
 class TestConfig:

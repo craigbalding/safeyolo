@@ -13,6 +13,8 @@ rather than sitting on the runner.
 from __future__ import annotations
 
 import asyncio
+import hmac
+import json
 
 import nats
 import pytest
@@ -118,6 +120,101 @@ def test_safeyolo_stop_start_lifecycle_preserves_messages(coord_env):
     assert len(page["messages"]) == 1
     assert page["messages"][0]["body"] == "safeyolo restart survivor"
     assert page["messages"][0]["sequence"] == seq_before
+
+
+@pytest.mark.timeout(45)
+def test_manual_credential_rotation_preserves_history_and_redacts_evidence(
+    coord_env, caplog, capsys
+):
+    """Exercise the operator runbook against a disposable real NATS server.
+
+    An ordinary lifecycle restart must reuse the credential. Removing only
+    the credential while stopped must replace it, reject the former password,
+    accept the replacement, and leave retained JetStream history readable.
+    Public lifecycle/status output plus generated config/log diagnostics must
+    not contain either raw value.
+    """
+    from safeyolo.commands.lifecycle import (
+        _start_coord_best_effort,
+        _stop_coord_best_effort,
+    )
+
+    _run(api.create_room("credential-rotation"))
+    _grant("credential-rotation", "agent", AGENT_A)
+    sent = _run(
+        api.send(
+            "credential-rotation",
+            "agent",
+            AGENT_A,
+            "retained before credential rotation",
+        )
+    )
+    original = nr.read_credentials()
+
+    # Ordinary stop/start reuses the credential and retained history.
+    _stop_coord_best_effort()
+    nats_client.reset_for_tests()
+    _start_coord_best_effort()
+    reused = nr.read_credentials()
+    if not hmac.compare_digest(original, reused):
+        pytest.fail("ordinary stop/start unexpectedly rotated NATS credential")
+    page = _run(
+        api.read_room("credential-rotation", "agent", AGENT_A)
+    )
+    assert page["messages"][0]["sequence"] == sent["sequence"]
+
+    # Follow the runbook: stop, remove exactly creds, then start.
+    _stop_coord_best_effort()
+    nats_client.reset_for_tests()
+    nr.nats_creds_path().unlink()
+    assert nr.nats_data_path().is_dir()
+    _start_coord_best_effort()
+    replacement = nr.read_credentials()
+    if hmac.compare_digest(original, replacement):
+        pytest.fail("delete-while-stopped did not rotate NATS credential")
+
+    async def auth_succeeds(password: str) -> bool:
+        try:
+            connection = await nats.connect(
+                nr.client_url(),
+                user=nr.client_user_credentials()[0],
+                password=password,
+                connect_timeout=2.0,
+                allow_reconnect=False,
+                max_reconnect_attempts=0,
+            )
+        except (NatsError, OSError, TimeoutError):
+            return False
+        await connection.close()
+        return True
+
+    assert not _run(auth_succeeds(original))
+    assert _run(auth_succeeds(replacement))
+
+    nats_client.reset_for_tests()
+    page = _run(
+        api.read_room("credential-rotation", "agent", AGENT_A)
+    )
+    assert [message["body"] for message in page["messages"]] == [
+        "retained before credential rotation"
+    ]
+    assert page["messages"][0]["sequence"] == sent["sequence"]
+
+    captured = capsys.readouterr()
+    evidence = "\n".join(
+        (
+            captured.out,
+            captured.err,
+            caplog.text,
+            json.dumps(nr.status(), sort_keys=True),
+            nr.nats_config_path().read_text(),
+            nr._tail_log(),
+        )
+    )
+    if any(secret in evidence for secret in (original, replacement)):
+        pytest.fail("raw NATS credential appeared in public or diagnostic evidence")
+    assert nr.nats_root().stat().st_mode & 0o777 == 0o700
+    assert nr.nats_creds_path().stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.timeout(30)
