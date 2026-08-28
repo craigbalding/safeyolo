@@ -2349,7 +2349,8 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
     """Authorize an agent to use a service.
 
     Resolves the service, picks a capability, stores the credential, and updates
-    policy.toml. One command takes an agent from "no access" to "authorized."
+    policy.toml. Capabilities with operator-sourced contract bindings require a
+    separate agent-side binding submission and operator approval.
 
     Examples:
 
@@ -2512,6 +2513,86 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
     esc_cred = escape(cred_name)
 
     console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (capability={esc_cap}, credential={esc_cred})")
+
+    selected_cap_config = capabilities[selected_cap]
+    contract_config = (
+        selected_cap_config.get("contract", {})
+        if isinstance(selected_cap_config, dict)
+        else {}
+    )
+    bindings_config = (
+        contract_config.get("bindings", {})
+        if isinstance(contract_config, dict)
+        else {}
+    )
+    contract_template = (
+        contract_config.get("template", "")
+        if isinstance(contract_config, dict)
+        else ""
+    )
+    if not isinstance(bindings_config, dict):
+        bindings_config = {}
+    operator_binding_defs = [
+        (str(name), binding)
+        for name, binding in bindings_config.items()
+        if isinstance(binding, dict)
+        and binding.get("source", "agent") == "operator"
+    ]
+
+    matching_bound_values = None
+    contract_bindings = metadata.get("contract_bindings", [])
+    if isinstance(contract_bindings, list):
+        for binding in contract_bindings:
+            if not isinstance(binding, dict):
+                continue
+            if (
+                binding.get("service") == service_name
+                and binding.get("capability") == selected_cap
+                and binding.get("template", "") == contract_template
+            ):
+                bound_values = binding.get("bound_values", {})
+                if isinstance(bound_values, dict):
+                    matching_bound_values = bound_values
+                break
+
+    required_operator_bindings = []
+    for name, binding in operator_binding_defs:
+        if matching_bound_values is None:
+            required_operator_bindings.append(name)
+            continue
+        required_if = binding.get("required_if", {})
+        if (
+            not required_if
+            or not isinstance(required_if, dict)
+            or all(
+                matching_bound_values.get(key) == value
+                for key, value in required_if.items()
+            )
+        ):
+            required_operator_bindings.append(name)
+
+    matching_binding_active = matching_bound_values is not None and all(
+        name in matching_bound_values and matching_bound_values[name] is not None
+        for name in required_operator_bindings
+    )
+
+    if required_operator_bindings and not matching_binding_active:
+        console.print(
+            f"\n[yellow bold]Setup incomplete:[/yellow bold] {esc_svc}.{esc_cap} "
+            "requires operator-sourced contract bindings:"
+        )
+        for binding_name in required_operator_bindings:
+            console.print(f"  - [bold]{escape(binding_name)}[/bold]")
+        console.print(
+            f"\n[yellow]Contract binding next step:[/yellow] Have agent "
+            f"'{esc_agent}' submit the operator-provided values to its Agent API:"
+        )
+        console.print("    [bold]POST /gateway/submit-binding[/bold]")
+        console.print(f"    [dim]service={esc_svc}, capability={esc_cap}[/dim]")
+        console.print(
+            "\n  Then approve the pending contract binding with "
+            "[bold]safeyolo watch[/bold]."
+        )
 
     # 7. Check policy.yaml for host binding
     default_host = svc.get("default_host", "")
