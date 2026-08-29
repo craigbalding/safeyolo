@@ -34,6 +34,9 @@ interfaces; do not try to bypass or weaken it.
   coord rooms, delegating or accepting peer work, waiting for attention, or
   choosing between targeted attention and retained room history. It contains
   the current low-chatter coordinator/worker protocol.
+- Read [Relay Dispatch generation](references/dispatch-generation.md) before
+  consuming completion-note nominations for public engineering content or
+  rendering a Dispatch or living topic page.
 - Read [Agent API and workflows](references/agent-api.md) before querying
   policy, flows, service capabilities, contract bindings, or the older
   `plumb` conversation surface. It contains the current routes and request

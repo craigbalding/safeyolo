@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "period": {
+    "kind": "daily",
+    "start": "2026-08-29",
+    "end": "2026-08-29"
+  },
+  "definitions": {
+    "coord": "SafeYolo's canonical coordination channel for attributed agent and operator messages."
+  },
+  "sections": [
+    {
+      "kind": "shipped",
+      "items": [
+        {
+          "theme": "Evidence before automation",
+          "title": "Structured completion notes keep attribution outside worker text",
+          "body": "Terminal coord messages can now carry bounded editorial nominations without changing their legacy delivery state. Parsing rejects malformed trailers and joins sender and sequence provenance only from the canonical message envelope.",
+          "attribution": "forge_implementation_discovery",
+          "evidence": [
+            {
+              "kind": "issue",
+              "label": "Issue #437",
+              "url": "https://github.com/craigbalding/safeyolo/issues/437"
+            },
+            {
+              "kind": "pr",
+              "label": "PR #445",
+              "url": "https://github.com/craigbalding/safeyolo/pull/445"
+            },
+            {
+              "kind": "test",
+              "label": "Completion-note regression tests",
+              "url": "https://github.com/craigbalding/safeyolo/blob/a75cebcd486961f1877c190b3ed71dabc276c8a3/cli/tests/test_coord_completion_notes.py#L1-L410"
+            }
+          ]
+        },
+        {
+          "theme": "Evidence before automation",
+          "title": "Factory improvements remain operator decisions",
+          "body": "SafeYolo's coordinator can correlate verified improvement nominations, suppress one-off friction, freeze one exact proposal revision, and detect existing issue coverage. The ledger never applies a recommendation or creates work on its own.",
+          "attribution": "forge_implementation_discovery",
+          "evidence": [
+            {
+              "kind": "issue",
+              "label": "Issue #438",
+              "url": "https://github.com/craigbalding/safeyolo/issues/438"
+            },
+            {
+              "kind": "pr",
+              "label": "PR #446",
+              "url": "https://github.com/craigbalding/safeyolo/pull/446"
+            }
+          ]
+        },
+        {
+          "theme": "Operator access without moving the trust boundary",
+          "title": "Mattermost projects coordination instead of replacing it",
+          "body": "The Mattermost adapter projects selected messages for a mobile operator while coord remains authoritative. Inbound replies become operator messages only after exact identity, channel, thread, and replay checks.",
+          "attribution": "forge_implementation_discovery",
+          "evidence": [
+            {
+              "kind": "issue",
+              "label": "Issue #442",
+              "url": "https://github.com/craigbalding/safeyolo/issues/442"
+            },
+            {
+              "kind": "pr",
+              "label": "Initial adapter PR #444",
+              "url": "https://github.com/craigbalding/safeyolo/pull/444"
+            },
+            {
+              "kind": "pr",
+              "label": "Live identity fix PR #447",
+              "url": "https://github.com/craigbalding/safeyolo/pull/447"
+            },
+            {
+              "kind": "pr",
+              "label": "macOS lease fix PR #448",
+              "url": "https://github.com/craigbalding/safeyolo/pull/448"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "lens_caught",
+      "items": [
+        {
+          "title": "Freeze the proposal body with its semantic revision",
+          "body": "Independent review found that non-material metadata arriving after a proposal became ready could change its presentation without changing the semantic revision. The final ledger preserves the selected body until material evidence creates a new revision.",
+          "attribution": "lens_review_finding",
+          "snippet": {
+            "language": "python",
+            "code": "if current.status is ProposalStatus.PROPOSAL_READY and updated.revision == current.revision:\n    updated = replace(current, first_seen=min(current.first_seen, seen_at), last_seen=max(current.last_seen, seen_at))"
+          },
+          "lesson": "A deduplication key and the bytes selected for presentation must advance together; otherwise replay protection can still emit contradictory copy.",
+          "evidence": [
+            {
+              "kind": "pr",
+              "label": "Reviewed implementation in PR #446",
+              "url": "https://github.com/craigbalding/safeyolo/pull/446"
+            },
+            {
+              "kind": "test",
+              "label": "Frozen-body and replay regressions",
+              "url": "https://github.com/craigbalding/safeyolo/blob/dd5201b92f8d9b6b4708f4750b8f3cc3d81f5142/cli/tests/test_coord_factory_proposals.py#L309-L452"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "worth_knowing",
+      "items": [
+        {
+          "title": "Put process locks beside SQLite, not on it",
+          "body": "A live macOS trial exposed that taking a process-level flock on the SQLite database itself can conflict with SQLite's own file locking. The adapter now leases a private sibling .lock file and leaves the database inode to SQLite.",
+          "attribution": "infrastructure_environment_problem",
+          "evidence": [
+            {
+              "kind": "runtime",
+              "label": "Live-trial report on issue #442",
+              "url": "https://github.com/craigbalding/safeyolo/issues/442#issuecomment-5462519079"
+            },
+            {
+              "kind": "pr",
+              "label": "Corrective PR #448",
+              "url": "https://github.com/craigbalding/safeyolo/pull/448"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "topic_updates": [
+    {
+      "slug": "coord",
+      "title": "Coord and operator collaboration",
+      "state_key": "coord-evidence-operator-v1",
+      "material_change": "Structured nominations, evidence-backed factory proposals, and authenticated Mattermost operator projection materially changed the coord surface.",
+      "summary": "Coord is SafeYolo's canonical attributed channel between agents and the operator. Public summaries are derived from evidence; raw coordination text is not a publication source.",
+      "current_state": [
+        "Terminal delivery messages may carry bounded optional nominations, but canonical envelope metadata supplies provenance and malformed trailers yield no trusted candidates.",
+        "Relay, SafeYolo's coordinator, verifies factory observations, suppresses one-off friction, checks existing issue coverage, and presents recommendations without applying them.",
+        "Mattermost is a projection for the configured operator. Exact user, channel, thread, and replay checks preserve coord as the authority."
+      ],
+      "evidence": [
+        {
+          "kind": "issue",
+          "label": "Structured completion notes: issue #437",
+          "url": "https://github.com/craigbalding/safeyolo/issues/437"
+        },
+        {
+          "kind": "pr",
+          "label": "Completion-note implementation: PR #445",
+          "url": "https://github.com/craigbalding/safeyolo/pull/445"
+        },
+        {
+          "kind": "issue",
+          "label": "Factory proposal workflow: issue #438",
+          "url": "https://github.com/craigbalding/safeyolo/issues/438"
+        },
+        {
+          "kind": "pr",
+          "label": "Factory proposal implementation: PR #446",
+          "url": "https://github.com/craigbalding/safeyolo/pull/446"
+        },
+        {
+          "kind": "issue",
+          "label": "Mattermost operator adapter: issue #442",
+          "url": "https://github.com/craigbalding/safeyolo/issues/442"
+        },
+        {
+          "kind": "pr",
+          "label": "Latest adapter correction: PR #448",
+          "url": "https://github.com/craigbalding/safeyolo/pull/448"
+        }
+      ]
+    }
+  ]
+}

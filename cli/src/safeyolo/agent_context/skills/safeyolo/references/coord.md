@@ -226,6 +226,11 @@ evidence, check existing issue coverage, correlate by distinct tasks, and send
 only proposal-ready text through an attributed Relay coord envelope. The
 operator decides; Relay never applies the recommendation automatically.
 
+Relay uses valid dispatch candidates under the
+[Dispatch generation contract](dispatch-generation.md). Candidate text is a
+private nomination, not public copy; Relay verifies public evidence, authors the
+digest, and keeps canonical coord provenance out of publication.
+
 ### `BLOCKED`
 
 Use only when progress genuinely cannot continue without an external fact,
