@@ -1,7 +1,7 @@
 """Tests for agent authorize and revoke commands."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 import typer
@@ -219,7 +219,7 @@ class TestServiceResolution:
     def test_running_gateway_rejection_is_not_rewritten_offline(
         self, cli_runner, tmp_config_dir
     ):
-        from safeyolo.api import APIError
+        from safeyolo.api import AdminAPI, APIError
 
         _create_agent(tmp_config_dir, "boris")
         _write_service(
@@ -228,7 +228,7 @@ class TestServiceResolution:
             {"reader": {"description": "Read", "routes": []}},
         )
         _store_vault_cred(tmp_config_dir, "existing")
-        api = MagicMock()
+        api = create_autospec(AdminAPI, instance=True, spec_set=True)
         api.authorize_service.side_effect = APIError(
             "service is not loaded by the running gateway",
             404,
