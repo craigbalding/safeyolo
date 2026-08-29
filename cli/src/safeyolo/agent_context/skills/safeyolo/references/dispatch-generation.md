@@ -19,6 +19,9 @@ schedules, changes policy, creates an issue, or approves publication.
    message IDs, coord sequences, envelopes, and transcripts never become
    publication copy.
 
+Duplicate retained envelopes are harmless only when their canonical identity
+and bytes agree. A conflicting reuse of one message ID fails closed.
+
 ## Editorial contract
 
 - Group `shipped` items by theme.

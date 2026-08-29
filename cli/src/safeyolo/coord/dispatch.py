@@ -11,7 +11,8 @@ import hashlib
 import json
 import os
 import re
-import tempfile
+import secrets
+import stat
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -57,8 +58,11 @@ _SECRET_PATTERNS = (  # DOC: docs/dispatch-generation.md, cli/src/safeyolo/agent
     re.compile(r"\b(?:sk|xox[baprs])-[A-Za-z0-9-]{16,}\b"),
 )
 _PRIVATE_PATTERNS = (
-    re.compile(r"\bmsg-[0-9a-f]{32}\b"),
-    re.compile(r"\b(?:coord_)?sequence\s*[:=]?\s*\d+\b", re.I),
+    re.compile(r"\b(?:msg|ag|sy|rm|attn)-[0-9a-f]{32}\b", re.I),
+    re.compile(
+        r"\b(?:coord(?:ination)?[\s_-]*)?(?:seq(?:uence)?)[\s:=#_-]*\d+\b",
+        re.I,
+    ),
     re.compile(r"\b(?:sender_agent_id|origin_instance_id|mattermost_channel_id|adapter_id)\b", re.I),
     re.compile(r"SAFEYOLO_COMPLETION_NOTES|DISPATCH_CANDIDATE|FACTORY_CANDIDATE"),
     re.compile(r"\b(?:chain[- ]of[- ]thought|private reasoning|raw reasoning|scratchpad)\b", re.I),
@@ -511,14 +515,22 @@ def _manifest_public_texts(manifest: DispatchManifest) -> tuple[str, ...]:
     result = [explanation for _term, explanation in manifest.definitions]
     for section in manifest.sections:
         for item in section.items:
-            result.extend([item.title, item.body])
+            result.extend([item.title, item.body, *(evidence.label for evidence in item.evidence)])
             for optional in (item.theme, item.lesson, item.qualification):
                 if optional is not None:
                     result.append(optional)
             if item.snippet is not None:
                 result.append(item.snippet.code)
     for topic in manifest.topic_updates:
-        result.extend([topic.title, topic.material_change, topic.summary, *topic.current_state])
+        result.extend(
+            [
+                topic.title,
+                topic.material_change,
+                topic.summary,
+                *topic.current_state,
+                *(evidence.label for evidence in topic.evidence),
+            ]
+        )
     return tuple(result)
 
 
@@ -627,19 +639,37 @@ def collect_verified_nominations(
     """Verify valid #437 Dispatch nominations without copying authored text."""
 
     collected: dict[str, VerifiedNomination] = {}
-    sources: set[tuple[str, int]] = set()
+    envelope_signatures: dict[str, tuple[Any, ...]] = {}
+    parsed_envelopes: list[completion_notes.CompletionParseResult] = []
     for envelope in canonical_envelopes:
         parsed = completion_notes.parse_completion_envelope(envelope)
+        msg_id = envelope["msg_id"]
+        signature = (
+            envelope["sequence"],
+            envelope["sent_at"],
+            envelope["sender_kind"],
+            envelope.get("sender_agent_id"),
+            envelope.get("sender_agent_name"),
+            envelope["origin_instance_id"],
+            envelope["content_type"],
+            envelope["body"],
+        )
+        existing_signature = envelope_signatures.get(msg_id)
+        if existing_signature is not None:
+            if existing_signature != signature:
+                raise DispatchError("one canonical message ID has conflicting envelopes")
+            continue
+        envelope_signatures[msg_id] = signature
+        parsed_envelopes.append(parsed)
+
+    for parsed in parsed_envelopes:
         if parsed.trailer_status != "valid":
             continue
-        for candidate_index, candidate in enumerate(parsed.candidates):
+        for candidate in parsed.candidates:
             if candidate.candidate_type is not completion_notes.CandidateType.DISPATCH:
                 continue
             provenance = candidate.provenance
             if provenance.sender_kind != "agent" or provenance.sender_agent_name is None:
-                continue
-            source = (provenance.msg_id, candidate_index)
-            if source in sources:
                 continue
             draft = verifier(candidate)
             if draft is None:
@@ -701,7 +731,6 @@ def collect_verified_nominations(
                 existing.provenance.msg_id,
             ):
                 collected[key] = replace(existing, provenance=verified.provenance)
-            sources.add(source)
     return tuple(
         sorted(
             collected.values(),
@@ -771,11 +800,19 @@ def _code_fence(snippet: Snippet) -> str:
 
 
 def _used_definitions(texts: Sequence[str], definitions: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
-    return tuple(
-        (term, definitions[term])
-        for term, pattern in _INTERNAL_TERMS.items()
-        if term in definitions and any(pattern.search(text) for text in texts)
-    )
+    expanded_texts = list(texts)
+    used: set[str] = set()
+    while True:
+        newly_used = {
+            term
+            for term, pattern in _INTERNAL_TERMS.items()
+            if term in definitions and term not in used and any(pattern.search(text) for text in expanded_texts)
+        }
+        if not newly_used:
+            break
+        used.update(newly_used)
+        expanded_texts.extend(definitions[term] for term in newly_used)
+    return tuple((term, definitions[term]) for term in _INTERNAL_TERMS if term in used)
 
 
 def _render_definitions(definitions: Sequence[tuple[str, str]]) -> list[str]:
@@ -793,7 +830,7 @@ def render_dispatch(manifest: DispatchManifest) -> str | None:
     texts: list[str] = []
     for section in manifest.sections:
         for item in section.items:
-            texts.extend([item.title, item.body])
+            texts.extend([item.title, item.body, *(evidence.label for evidence in item.evidence)])
             texts.extend(value for value in (item.theme, item.lesson, item.qualification) if value is not None)
             if item.snippet is not None:
                 texts.append(item.snippet.code)
@@ -859,7 +896,12 @@ def _render_item(item: ContentItem, *, heading_level: int) -> list[str]:
 
 def render_topic(topic: TopicUpdate, manifest: DispatchManifest) -> str:
     definitions = dict(manifest.definitions)
-    texts = [topic.title, topic.summary, *topic.current_state]
+    texts = [
+        topic.title,
+        topic.summary,
+        *topic.current_state,
+        *(evidence.label for evidence in topic.evidence),
+    ]
     lines = [
         f"<!-- safeyolo-topic-state: {topic.state_key} -->",
         f"# {_markdown_text(topic.title)}",
@@ -913,38 +955,100 @@ def generate_files(
     return tuple(files)
 
 
-def _ensure_output_directory(root: Path, relative_parent: Path, *, create: bool) -> Path:
-    if root.exists():
-        if root.is_symlink() or not root.is_dir():
-            raise DispatchError("output root must be a real directory")
-    elif create:
-        root.mkdir(parents=True, mode=0o755)
-    else:
-        raise DispatchError("generated output root is missing")
-    current = root
-    for part in relative_parent.parts:
-        current = current / part
-        if current.exists():
-            if current.is_symlink() or not current.is_dir():
-                raise DispatchError("output path contains a symlink or non-directory")
-        elif create:
-            current.mkdir(mode=0o755)
-        else:
-            raise DispatchError("generated output directory is missing")
-    return current
+def _directory_open_flags() -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory is None:
+        raise DispatchError("this platform cannot enforce no-follow output writes")
+    return os.O_RDONLY | no_follow | directory | getattr(os, "O_CLOEXEC", 0)
 
 
-def _existing_output(path: Path) -> str | None:
-    if not path.exists() and not path.is_symlink():
-        return None
-    if path.is_symlink() or not path.is_file():
-        raise DispatchError("generated output must be a regular non-symlink file")
-    if path.stat().st_size > MAX_OUTPUT_BYTES:
-        raise DispatchError("existing generated output exceeds the size bound")
+def _open_output_directory(root: Path, relative_parent: Path, *, create: bool) -> int:
+    """Open the target directory by held descriptors, never by a rechecked path."""
+
+    flags = _directory_open_flags()
     try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise DispatchError(f"cannot read generated output: {type(exc).__name__}") from exc
+        current_fd = os.open(root, flags)
+    except FileNotFoundError:
+        if not create:
+            raise DispatchError("generated output root or directory is missing") from None
+        try:
+            root.mkdir(parents=True, mode=0o755)
+        except FileExistsError:
+            pass
+        try:
+            current_fd = os.open(root, flags)
+        except OSError as exc:
+            raise DispatchError("output root must be a real non-symlink directory") from exc
+    except OSError as exc:
+        raise DispatchError("output root must be a real non-symlink directory") from exc
+    try:
+        for part in relative_parent.parts:
+            try:
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                if not create:
+                    raise DispatchError("generated output root or directory is missing") from None
+                try:
+                    os.mkdir(part, mode=0o755, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+                try:
+                    next_fd = os.open(part, flags, dir_fd=current_fd)
+                except OSError as exc:
+                    raise DispatchError("output root or path contains a symlink or non-directory") from exc
+            except OSError as exc:
+                raise DispatchError("output root or path contains a symlink or non-directory") from exc
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+def _existing_output(parent_fd: int, name: str) -> str | None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise DispatchError("generated output must be a regular non-symlink file") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise DispatchError("generated output must be a regular non-symlink file")
+        if metadata.st_size > MAX_OUTPUT_BYTES:
+            raise DispatchError("existing generated output exceeds the size bound")
+        chunks: list[bytes] = []
+        remaining = MAX_OUTPUT_BYTES + 1
+        while remaining:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        if len(content) > MAX_OUTPUT_BYTES:
+            raise DispatchError("existing generated output exceeds the size bound")
+        try:
+            return content.decode("utf-8")
+        except UnicodeError as exc:
+            raise DispatchError("cannot read generated output: UnicodeError") from exc
+    finally:
+        os.close(fd)
+
+
+def _create_temporary_output(parent_fd: int, target_name: str) -> tuple[int, str]:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    for _attempt in range(32):
+        name = f".{target_name}.{secrets.token_hex(12)}.tmp"
+        try:
+            return os.open(name, flags, 0o600, dir_fd=parent_fd), name
+        except FileExistsError:
+            continue
+    raise DispatchError("cannot allocate a temporary generated output")
 
 
 def write_generated_files(
@@ -975,34 +1079,37 @@ def write_generated_files(
         if len(generated.content.encode("utf-8")) > MAX_OUTPUT_BYTES:
             raise DispatchError("generated output exceeds the size bound")
         seen.add(relative)
-        parent = _ensure_output_directory(output_root, relative.parent, create=not check)
-        target = parent / relative.name
-        existing = _existing_output(target)
-        if existing == generated.content:
-            continue
-        if check:
-            raise DispatchError(f"generated output is missing or stale: {relative.as_posix()}")
-        fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=parent)
+        parent_fd = _open_output_directory(output_root, relative.parent, create=not check)
         try:
-            os.fchmod(fd, 0o644)
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                fd = -1
-                handle.write(generated.content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, target)
-            directory_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            existing = _existing_output(parent_fd, relative.name)
+            if existing == generated.content:
+                continue
+            if check:
+                raise DispatchError(f"generated output is missing or stale: {relative.as_posix()}")
+            fd, temporary = _create_temporary_output(parent_fd, relative.name)
             try:
-                os.fsync(directory_fd)
+                os.fchmod(fd, 0o644)
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                    fd = -1
+                    handle.write(generated.content)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(
+                    temporary,
+                    relative.name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                os.fsync(parent_fd)
             finally:
-                os.close(directory_fd)
+                if fd >= 0:
+                    os.close(fd)
+                try:
+                    os.unlink(temporary, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
         finally:
-            if fd >= 0:
-                os.close(fd)
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
+            os.close(parent_fd)
         changed.append(relative)
     return tuple(changed)
 

@@ -38,7 +38,9 @@ Dates and content are explicit inputs; generation never reads the clock or
 network. The same source and existing material topic state produce identical
 bytes. Writes are atomic and limited to fixed `dispatch/`, `snapshots/`, and
 `topics/` descendants. Symlinked inputs, output roots, directories, and files
-fail closed. The command neither deletes stale pages nor performs a publish.
+fail closed. Final reads, temporary-file creation, replacement, and directory
+sync use held no-follow directory descriptors so a concurrent path swap cannot
+redirect output. The command neither deletes stale pages nor performs a publish.
 
 The exercised source at
 [`site/_sources/dispatch/2026-08-29.json`](../site/_sources/dispatch/2026-08-29.json)
@@ -114,6 +116,11 @@ obvious credential/token/private-key patterns, private coord identifiers or
 sequences, raw completion trailers, host-private paths, and chain-of-thought or
 raw-reasoning labels. These checks are a final obvious-leakage guard, not a
 substitute for Relay verifying and editing every public claim.
+
+Repeated canonical envelopes are accepted only when the same message ID has the
+same canonical identity and bytes. Conflicting uses of one message ID fail
+before any candidate is verified, keeping candidate selection independent of
+input order.
 
 ## Material topic updates
 

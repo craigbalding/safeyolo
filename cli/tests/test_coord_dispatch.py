@@ -180,6 +180,27 @@ def test_nomination_order_and_multiple_candidates_are_deterministic() -> None:
     assert collected[0].provenance.coord_sequence == 20
 
 
+def test_conflicting_canonical_message_identity_fails_order_independently() -> None:
+    first = canonical_envelope([dispatch_candidate("first")], sequence=20)
+    second = canonical_envelope([dispatch_candidate("second")], sequence=21)
+    second["msg_id"] = first["msg_id"]
+
+    def verifier(
+        candidate: completion_notes.ParsedCandidate,
+    ) -> dispatch.VerifiedNominationDraft:
+        return dispatch.VerifiedNominationDraft(
+            key=f"candidate-{candidate.summary}",
+            attribution=dispatch.PublicAttribution.FORGE_IMPLEMENTATION_DISCOVERY,
+            evidence=verified_evidence(),
+        )
+
+    for envelopes in ([first, second], [second, first]):
+        with pytest.raises(dispatch.DispatchError, match="conflicting envelopes"):
+            dispatch.collect_verified_nominations(envelopes, verifier)
+
+    assert len(dispatch.collect_verified_nominations([first, dict(first)], verifier)) == 1
+
+
 def test_conflicting_verified_results_for_one_key_fail_closed() -> None:
     calls = 0
 
@@ -287,7 +308,13 @@ def test_quiet_input_produces_no_file_or_filler() -> None:
         "github_pat_abcdefghijklmnopqrstuvwxyz",
         "sgw_abcdefghijklmnopqrstuvwxyz",
         "msg-" + "a" * 32,
+        "ag-" + "a" * 32,
+        "sy-" + "a" * 32,
+        "rm-" + "a" * 32,
+        "attn-" + "a" * 32,
         "coord sequence=240",
+        "coord seq 296",
+        "coord sequence #296",
         "private chain-of-thought follows",
         "read /app/agent_token",
         "-----BEGIN " + "PRIVATE KEY-----",
@@ -295,8 +322,13 @@ def test_quiet_input_produces_no_file_or_filler() -> None:
 )
 def test_public_fields_reject_secrets_private_coord_and_raw_reasoning(unsafe: str) -> None:
     source = manifest_data()
+    if "coord" in unsafe:
+        source["definitions"] = {"coord": "SafeYolo's canonical attributed coordination channel."}
     source["sections"][0]["items"][0]["body"] = unsafe
-    with pytest.raises(dispatch.DispatchError):
+    with pytest.raises(
+        dispatch.DispatchError,
+        match="credential|private coordination|reasoning material",
+    ):
         parse(source)
 
 
@@ -311,9 +343,40 @@ def test_safe_yolo_specific_terms_require_expansion_without_unused_filler() -> N
     assert rendered is not None
     assert "`coord` — SafeYolo's canonical attributed coordination channel." in rendered
 
+    source["definitions"] = {
+        "coord": "The channel associates every message with a run_id.",
+        "run_id": "SafeYolo's identifier for one sandbox run.",
+    }
+    rendered = dispatch.render_dispatch(parse(source))
+    assert rendered is not None
+    assert "`run_id` — SafeYolo's identifier for one sandbox run." in rendered
+
     source["sections"][0]["items"][0]["body"] = "The boundary stayed canonical."
+    source["definitions"] = {"coord": "SafeYolo's canonical attributed coordination channel."}
     with pytest.raises(dispatch.DispatchError, match="unused"):
         parse(source)
+
+
+def test_evidence_labels_require_and_render_safe_yolo_term_definitions() -> None:
+    source = manifest_data()
+    source["sections"][0]["items"][0]["evidence"][0]["label"] = "Coord generation issue"
+    with pytest.raises(dispatch.DispatchError, match="require public definitions"):
+        parse(source)
+
+    source["definitions"] = {"coord": "SafeYolo's canonical attributed coordination channel."}
+    rendered = dispatch.render_dispatch(parse(source))
+    assert rendered is not None
+    assert "`coord` — SafeYolo's canonical attributed coordination channel." in rendered
+
+    source["sections"][0]["items"][0]["evidence"][0]["label"] = "Issue #437"
+    source["topic_updates"] = [topic_source()]
+    source["topic_updates"][0]["evidence"][0]["label"] = "Coord topic issue"
+    topic = next(
+        generated
+        for generated in dispatch.generate_files(parse(source))
+        if generated.relative_path == Path("topics/coord.md")
+    )
+    assert "`coord` — SafeYolo's canonical attributed coordination channel." in topic.content
 
 
 @pytest.mark.parametrize(
@@ -495,7 +558,7 @@ def test_writer_rejects_symlinks_and_path_escape(tmp_path: Path) -> None:
     real.mkdir()
     root_link = tmp_path / "site-link"
     root_link.symlink_to(real, target_is_directory=True)
-    with pytest.raises(dispatch.DispatchError, match="real directory"):
+    with pytest.raises(dispatch.DispatchError, match="symlink|real directory"):
         dispatch.write_generated_files(root_link, files)
 
     root = tmp_path / "site"
@@ -513,6 +576,36 @@ def test_writer_rejects_symlinks_and_path_escape(tmp_path: Path) -> None:
         dispatch.write_generated_files(root, [nested])
 
 
+def test_directory_swap_cannot_redirect_final_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    files = dispatch.generate_files(parse(manifest_data()))
+    root = tmp_path / "site"
+    dispatch.write_generated_files(root, files)
+    publication_directory = root / "dispatch"
+    held_directory = root / "dispatch-held"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_existing = dispatch._existing_output
+    swapped = False
+
+    def swap_after_read(parent_fd: int, name: str) -> str | None:
+        nonlocal swapped
+        result = original_existing(parent_fd, name)
+        if not swapped:
+            publication_directory.rename(held_directory)
+            publication_directory.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(dispatch, "_existing_output", swap_after_read)
+    changed = dispatch.GeneratedFile(
+        files[0].relative_path,
+        files[0].content + "race-safe\n",
+    )
+    dispatch.write_generated_files(root, [changed])
+    assert not (outside / files[0].relative_path.name).exists()
+    assert (held_directory / files[0].relative_path.name).read_text(encoding="utf-8") == changed.content
+
+
 def test_failed_atomic_replace_preserves_existing_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     files = dispatch.generate_files(parse(manifest_data()))
     root = tmp_path / "site"
@@ -521,7 +614,7 @@ def test_failed_atomic_replace_preserves_existing_output(tmp_path: Path, monkeyp
     original = target.read_bytes()
     changed = dispatch.GeneratedFile(files[0].relative_path, files[0].content + "changed\n")
 
-    def fail_replace(_source: str, _target: Path) -> None:
+    def fail_replace(_source: str, _target: str, **_kwargs: Any) -> None:
         raise OSError("simulated replace failure")
 
     monkeypatch.setattr(dispatch.os, "replace", fail_replace)
