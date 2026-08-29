@@ -273,6 +273,7 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
             proxy_port=proxy_port,
             admin_port=admin_port,
             flow_cache=flow_cache,
+            dev=dev,
         )
     except Exception as err:
         write_event(

@@ -30,6 +30,7 @@ from safeyolo.core.audit_schema import EventKind, Severity
 from safeyolo.core.plumb_service import get_plumb_service
 from safeyolo.core.utils import sanitize_for_log, write_event
 from safeyolo.ignore_hosts import build_ignore_patterns, normalize_ignore_hosts
+from safeyolo.runtime_identity import get_runtime_identity
 from safeyolo.tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS
 
 log = logging.getLogger("safeyolo.admin")
@@ -244,6 +245,21 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         """GET /health - Health check (no auth required)."""
         self._send_json({"status": "ok"})
 
+    def _handle_get_runtime_identity(self) -> None:
+        """GET /admin/runtime-identity - Captured traffic generation."""
+        identity = get_runtime_identity()
+        if identity is None:
+            self._send_json(
+                {
+                    "schema_version": 1,
+                    "state": "unknown",
+                    "error": "runtime identity was not initialised",
+                },
+                503,
+            )
+            return
+        self._send_json(identity.to_dict())
+
     def _handle_get_stats(self) -> None:
         """GET /stats - Aggregate stats from all addons."""
         stats = {"proxy": "safeyolo"}
@@ -366,6 +382,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/admin/policy/baseline": self._handle_get_policy_baseline,
             "/admin/budgets": self._handle_get_budgets,
             "/admin/traffic/scope": self._handle_get_traffic_scope,
+            "/admin/runtime-identity": self._handle_get_runtime_identity,
             "/admin/gateway/grants": self._handle_get_gateway_grants,
             "/admin/plumb/pending": self._handle_get_plumb_pending,
             "/admin/plumb/conversations": self._handle_get_plumb_conversations,

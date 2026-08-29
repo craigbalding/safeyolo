@@ -25,6 +25,7 @@ from safeyolo.commands.doctor import (
     _check_log_health,
     _check_pipeline_probe,
     _check_proxy_process,
+    _check_runtime_identity,
     _check_tokens,
     _check_upstream_ca_cert,
     _check_vault,
@@ -33,6 +34,12 @@ from safeyolo.commands.doctor import (
 )
 from safeyolo.commands.vault import _load_vault
 from safeyolo.core.vault import Vault
+from safeyolo.runtime_identity import (
+    DevSourceIdentity,
+    EvidenceState,
+    SourceFingerprint,
+    WorkingTreeState,
+)
 
 
 class _OpenSocket:
@@ -88,6 +95,210 @@ class TestCheckProxyRunning:
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
         result = _check_proxy_process()
         assert result.status == "fail"
+
+
+def _runtime_identity_document(
+    *,
+    mode: str = "production",
+    revision: str | None = "a" * 40,
+    digest: str = "b" * 64,
+    build_state: str = "known",
+    start_token: str = "linux:boot:42",
+) -> dict:
+    source = None
+    if mode == "dev":
+        source = {
+            "roots": {"safeyolo": "/checkout/safeyolo", "pdp": "/checkout/pdp"},
+            "revision": revision,
+            "revision_state": "known" if revision else "unknown",
+            "working_tree": "clean",
+            "fingerprint": {
+                "state": "known",
+                "digest": digest,
+                "file_count": 12,
+                "error": None,
+            },
+        }
+    return {
+        "schema_version": 1,
+        "mode": mode,
+        "build": {
+            "package_version": "1.2.3",
+            "source_revision": revision,
+            "build_identifier": "release-7",
+            "provenance": "dev-checkout" if mode == "dev" else "build-environment",
+            "state": build_state,
+        },
+        "process": {
+            "pid": 12345,
+            "started_at": "2026-08-29T12:00:00+00:00",
+            "start_token": start_token,
+            "start_token_state": "known",
+        },
+        "source": source,
+    }
+
+
+class TestCheckRuntimeIdentity:
+    @pytest.fixture(autouse=True)
+    def _live_proxy_identity(self, tmp_config_dir, monkeypatch):
+        (tmp_config_dir / "data" / "proxy.pid").write_text("12345\n")
+        monkeypatch.setattr(
+            "safeyolo.config.get_admin_token", lambda: "test-admin-token"
+        )
+        monkeypatch.setattr(
+            "safeyolo.commands.doctor.process_start_token",
+            lambda pid: "linux:boot:42",
+        )
+
+    def test_production_uses_stamp_without_scanning_checkout(self, monkeypatch):
+        monkeypatch.setattr(
+            httpx,
+            "get",
+            lambda *args, **kwargs: httpx.Response(200, json=_runtime_identity_document()),
+        )
+        monkeypatch.setattr(
+            "safeyolo.commands.doctor.capture_dev_source_identity",
+            lambda roots: pytest.fail("production doctor scanned source"),
+        )
+
+        result = _check_runtime_identity()
+
+        assert result.status == "pass"
+        assert "1.2.3" in result.message
+
+    def test_unknown_production_stamp_is_limited_evidence(self, monkeypatch):
+        document = _runtime_identity_document(revision=None, build_state="unknown")
+        monkeypatch.setattr(
+            httpx,
+            "get",
+            lambda *args, **kwargs: httpx.Response(200, json=document),
+        )
+
+        result = _check_runtime_identity()
+
+        assert result.status == "warn"
+        assert "source revision is unknown" in result.message
+
+    @pytest.mark.parametrize(
+        ("current_revision", "current_digest", "working_tree", "message"),
+        [
+            ("a" * 40, "b" * 64, WorkingTreeState.CLEAN, "matches current"),
+            ("a" * 40, "c" * 64, WorkingTreeState.DIRTY, "dirty same-commit"),
+            ("d" * 40, "b" * 64, WorkingTreeState.CLEAN, "revision drift"),
+        ],
+    )
+    def test_dev_comparison_classifies_generation_state(
+        self,
+        monkeypatch,
+        current_revision,
+        current_digest,
+        working_tree,
+        message,
+    ):
+        monkeypatch.setattr(
+            httpx,
+            "get",
+            lambda *args, **kwargs: httpx.Response(200, json=_runtime_identity_document(mode="dev")),
+        )
+        current = DevSourceIdentity(
+            roots={"safeyolo": "/checkout/safeyolo", "pdp": "/checkout/pdp"},
+            revision=current_revision,
+            revision_state=EvidenceState.KNOWN,
+            working_tree=working_tree,
+            fingerprint=SourceFingerprint(
+                state=EvidenceState.KNOWN,
+                digest=current_digest,
+                file_count=12,
+            ),
+        )
+        monkeypatch.setattr(
+            "safeyolo.commands.doctor.capture_dev_source_identity",
+            lambda roots: current,
+        )
+
+        result = _check_runtime_identity()
+
+        assert message in result.message
+        if current_digest == "b" * 64 and current_revision == "a" * 40:
+            assert result.status == "pass"
+            assert result.remediation == ""
+        else:
+            assert result.status == "warn"
+            assert "restart required" in result.message
+            assert result.remediation == "safeyolo stop && safeyolo start --dev"
+
+    def test_missing_current_source_is_explicitly_unknown(self, monkeypatch):
+        monkeypatch.setattr(
+            httpx,
+            "get",
+            lambda *args, **kwargs: httpx.Response(200, json=_runtime_identity_document(mode="dev")),
+        )
+        current = DevSourceIdentity(
+            roots={},
+            revision=None,
+            revision_state=EvidenceState.UNKNOWN,
+            working_tree=WorkingTreeState.UNKNOWN,
+            fingerprint=SourceFingerprint(
+                state=EvidenceState.UNKNOWN,
+                digest=None,
+                file_count=0,
+                error="source-root-unreadable:safeyolo",
+            ),
+        )
+        monkeypatch.setattr(
+            "safeyolo.commands.doctor.capture_dev_source_identity",
+            lambda roots: current,
+        )
+
+        result = _check_runtime_identity()
+
+        assert result.status == "warn"
+        assert "unknown" in result.message
+        assert "source-root-unreadable" in result.detail
+
+    def test_lost_git_evidence_does_not_report_a_clean_match(self, monkeypatch):
+        monkeypatch.setattr(
+            httpx,
+            "get",
+            lambda *args, **kwargs: httpx.Response(
+                200, json=_runtime_identity_document(mode="dev")
+            ),
+        )
+        current = DevSourceIdentity(
+            roots={"safeyolo": "/checkout/safeyolo", "pdp": "/checkout/pdp"},
+            revision=None,
+            revision_state=EvidenceState.UNKNOWN,
+            working_tree=WorkingTreeState.UNKNOWN,
+            fingerprint=SourceFingerprint(
+                state=EvidenceState.KNOWN,
+                digest="b" * 64,
+                file_count=12,
+            ),
+        )
+        monkeypatch.setattr(
+            "safeyolo.commands.doctor.capture_dev_source_identity",
+            lambda roots: current,
+        )
+
+        result = _check_runtime_identity()
+
+        assert result.status == "warn"
+        assert "checkout comparison is unknown" in result.message
+
+    def test_pid_reuse_is_rejected_before_source_comparison(self, monkeypatch):
+        tokens = iter(["linux:boot:old", "linux:boot:new"])
+        monkeypatch.setattr("safeyolo.commands.doctor.process_start_token", lambda pid: next(tokens))
+        monkeypatch.setattr(
+            httpx,
+            "get",
+            lambda *args, **kwargs: httpx.Response(200, json=_runtime_identity_document()),
+        )
+
+        result = _check_runtime_identity()
+
+        assert result.status == "warn"
+        assert "reused or restarted" in result.message
 
 
 class TestCheckCoordMessagePlane:

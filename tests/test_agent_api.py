@@ -237,6 +237,16 @@ class TestEndpoints:
             body = json.loads(flow.response.content)
             assert "endpoints" in body
 
+    def test_runtime_identity_is_not_exposed_to_agents(self, api, agent_token):
+        with _patch_active_token(agent_token):
+            flow = _make_api_flow("/admin/runtime-identity", token=agent_token)
+            asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 404
+        assert "/admin/runtime-identity" not in json.loads(
+            flow.response.content
+        )["endpoints"]
+
     def test_unknown_endpoint_lists_all_routes(self, api, agent_token):
         """404 body includes the full list of available endpoints for discoverability."""
         with _patch_active_token(agent_token):
