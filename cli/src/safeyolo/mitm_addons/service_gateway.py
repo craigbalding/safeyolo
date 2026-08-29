@@ -1522,6 +1522,14 @@ class ServiceGateway:
             "proxy-connection",
         }
     )
+    # Ordinary client metadata allowed only when allow_headers is omitted.
+    _DEFAULT_CLIENT_HEADERS = frozenset(
+        {
+            "accept",
+            "user-agent",
+            "accept-encoding",
+        }
+    )
 
     def _enforce_contract(self, flow, binding_state, service, capability, method, path) -> bool:
         """Enforce contract constraints. Returns True if allowed, False if denied.
@@ -1734,7 +1742,7 @@ class ServiceGateway:
             )
             return False
 
-        # Transport: header allowlist (always runs — absent allow_headers = restrictive)
+        # Transport: header allowlist (always runs; omission has safe defaults)
         if not self._enforce_header_allowlist(flow, op, canonical, auth_header):
             return False
 
@@ -1794,13 +1802,16 @@ class ServiceGateway:
         return None
 
     def _enforce_header_allowlist(self, flow, op, canonical, service_auth_header) -> bool:
-        """Enforce header allowlist. Always runs — absent allow_headers = restrictive."""
+        """Enforce omitted, explicitly empty, and explicit header policies."""
         implicit = self._IMPLICIT_HEADERS
         if service_auth_header:
             implicit = implicit | {service_auth_header}
 
         allowed_set = implicit.copy()
-        if op.transport and op.transport.allow_headers:
+        allow_headers = op.transport.allow_headers if op.transport else None
+        if allow_headers is None:
+            allowed_set |= self._DEFAULT_CLIENT_HEADERS
+        elif allow_headers:
             allowed_set |= {h.lower() for h in op.transport.allow_headers}
 
         for header_name in canonical.headers:

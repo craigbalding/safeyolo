@@ -112,7 +112,6 @@ capabilities:
             path: /gmail/v1/users/me/messages
             transport:
               require_no_body: true
-              allow_headers: [Accept, User-Agent]
               deny_ambiguous_encoding: true
             query:
               allow:
@@ -135,7 +134,6 @@ capabilities:
             path: "/gmail/v1/users/me/messages/{id}"
             transport:
               require_no_body: true
-              allow_headers: [Accept, User-Agent]
               deny_ambiguous_encoding: true
             path_params:
               id:
