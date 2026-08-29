@@ -274,7 +274,9 @@ def test_v2_attention_migration_preserves_state(kernel_env):
     store.init_schema()
 
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            store.CURRENT_SCHEMA_VERSION
+        )
         assert conn.execute(
             "SELECT name FROM rooms WHERE room_id = 'rm-v2'"
         ).fetchone()[0] == "v2"
@@ -377,7 +379,9 @@ def test_v2_attention_migration_failure_rolls_back_and_retries(kernel_env):
 
     store.init_schema()
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            store.CURRENT_SCHEMA_VERSION
+        )
 
 
 def test_pre_outbox_migration_failure_rolls_back_and_only_logs_operationally(

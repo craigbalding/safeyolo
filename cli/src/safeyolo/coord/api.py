@@ -13,7 +13,7 @@ import logging
 import sqlite3
 from typing import Any
 
-from . import attention, nats_client, store
+from . import attention, brief, nats_client, store
 from .envelope import Envelope, validate_content_type
 from .identity import (
     get_or_create_instance_id,
@@ -27,8 +27,10 @@ from .kernel import (
 from .kernel import (
     OperationConflictError as _OperationConflictError,
 )
+from .kernel import RevisionConflictError as _RevisionConflictError
 
 OperationConflictError = _OperationConflictError
+RevisionConflictError = _RevisionConflictError
 NOTIFY_OMITTED = attention.NOTIFY_OMITTED
 
 log = logging.getLogger("safeyolo.coord.api")
@@ -142,6 +144,87 @@ def _resolve_room(conn: sqlite3.Connection, name: str) -> str:
     return row["room_id"]
 
 
+# ---------- trusted operator brief ----------
+
+
+async def set_brief(
+    room_name: str,
+    markdown: str,
+    *,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Set trusted room intent through the local operator-only surface."""
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+    result = brief.set_brief(
+        room_id,
+        markdown,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+    try:
+        from .outbox import project_attention_hints
+
+        await project_attention_hints()
+    except Exception as exc:  # SQLite edges remain authoritative and pending
+        log.warning(
+            "brief attention wake hints remain pending for %s revision %s: %s",
+            room_id,
+            result["revision"],
+            type(exc).__name__,
+        )
+    return result
+
+
+def show_brief(
+    room_name: str,
+    *,
+    revision: int | None = None,
+) -> dict[str, Any]:
+    """Read current or immutable brief state from the local operator surface."""
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+        if revision is None:
+            return brief.read_current(conn, room_id)
+        try:
+            return brief.read_revision(conn, room_id, revision)
+        except brief.BriefRevisionNotFound as exc:
+            raise NotFoundError("brief revision not found") from exc
+
+
+def list_brief_history(
+    room_name: str,
+    *,
+    since_revision: int = 0,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """List metadata for immutable brief revisions as local operator."""
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+        return brief.list_history(
+            conn,
+            room_id,
+            since_revision=since_revision,
+            limit=limit,
+        )
+
+
+def read_brief(
+    room_name: str,
+    principal_kind: str,
+    principal_id: str,
+) -> dict[str, Any]:
+    """Read current trusted intent after a same-snapshot membership check."""
+    with store.connect() as conn:
+        conn.execute("BEGIN")
+        room_id = _resolve_room(conn, room_name)
+        _check_grant(conn, room_id, principal_kind, principal_id, "receive")
+        result = brief.read_current(conn, room_id)
+        conn.execute("COMMIT")
+        return result
+
+
 # ---------- grants ----------
 
 
@@ -229,6 +312,22 @@ def _check_grant(
     principal_id: str,
     required_perm: str,
 ) -> None:
+    perms = _active_permissions(conn, room_id, principal_kind, principal_id)
+    if required_perm not in perms:
+        # Caller IS a member but lacks this specific permission —
+        # 403 semantic. Legitimate signal to a member; not a leak.
+        raise GrantError(
+            f"permission {required_perm!r} denied; grant permits {perms}"
+        )
+
+
+def _active_permissions(
+    conn: sqlite3.Connection,
+    room_id: str,
+    principal_kind: str,
+    principal_id: str,
+) -> list[str]:
+    """Return the latest active grant's permissions or the 404-family error."""
     row = conn.execute(
         """SELECT permissions FROM memberships
            WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
@@ -242,13 +341,7 @@ def _check_grant(
         raise NoMembershipError(
             f"no active membership for {principal_kind}:{principal_id}"
         )
-    perms = row["permissions"].split(",")
-    if required_perm not in perms:
-        # Caller IS a member but lacks this specific permission —
-        # 403 semantic. Legitimate signal to a member; not a leak.
-        raise GrantError(
-            f"permission {required_perm!r} denied; grant permits {perms}"
-        )
+    return row["permissions"].split(",")
 
 
 def revoke_grant(
@@ -340,29 +433,33 @@ def join_room(room_name: str, principal_kind: str, principal_id: str) -> dict[st
     """Attach to an existing membership. Does not grant anything.
 
     A room ID is not a capability; this call verifies a valid membership
-    exists for the caller and returns room metadata. Missing membership
-    raises NoMembershipError (404 semantic per #20); nonexistent room
-    raises NotFoundError (also 404).
+    exists for the caller and returns room metadata. The trusted brief is
+    present only when that active grant includes ``receive``; send-only
+    members receive a null brief. Missing membership raises NoMembershipError
+    (404 semantic per #20); nonexistent room raises NotFoundError (also 404).
     """
     with store.connect() as conn:
+        conn.execute("BEGIN")
         room_id = _resolve_room(conn, room_name)
-        row = conn.execute(
-            """SELECT permissions FROM memberships
-               WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
-                 AND revoked_at IS NULL
-               ORDER BY granted_at DESC LIMIT 1""",
-            (room_id, principal_kind, principal_id),
-        ).fetchone()
-        if not row:
-            raise NoMembershipError(
-                f"no active membership for {principal_kind}:{principal_id}"
-            )
-        return {
+        permissions = _active_permissions(
+            conn,
+            room_id,
+            principal_kind,
+            principal_id,
+        )
+        result = {
             "room_id": room_id,
             "room_name": room_name,
-            "permissions": row["permissions"].split(","),
+            "permissions": permissions,
             "history_visibility": "retained",
+            "brief": (
+                brief.read_current(conn, room_id)
+                if "receive" in permissions
+                else None
+            ),
         }
+        conn.execute("COMMIT")
+        return result
 
 
 async def send(
