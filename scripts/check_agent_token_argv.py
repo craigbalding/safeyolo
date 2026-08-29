@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Reject Agent API curl examples that put bearer tokens in process argv.
 
-The check binds a finding to three facts: an established Agent API token
-source, a curl header argument, and the Agent API virtual host. This keeps the
-rule focused on the shipped risk without rejecting admin/service credentials
-or in-process header fixtures.
+A finding requires all three parts of the risk: a value read from the Agent API
+token file, a curl header argument, and the Agent API endpoint. The ordered
+shell pass and small Python AST pass track simple aliases so unrelated
+admin/service credentials and in-process header fixtures remain valid.
 """
 
 from __future__ import annotations
@@ -25,6 +25,11 @@ _EXCLUDED = frozenset({
 })
 
 _AGENT_HOST = "_safeyolo.proxy.internal"
+_PATH = "path"
+_TOKEN = "token"
+_ENDPOINT = "endpoint"
+_FILE = "file"
+
 _AUTH_RE = re.compile(r"authorization\s*:\s*bearer", re.IGNORECASE)
 _AGENT_TOKEN_PATH_RE = re.compile(
     r"(?:^|[/])agent_token(?:$|[\s\"'])",
@@ -41,6 +46,10 @@ _ASSIGNMENT_RE = re.compile(
     r"(?P<name>[a-z_][a-z0-9_]*)\s*=\s*(?P<value>[^;\n]+)",
 )
 _HEADER_FLAG_RE = re.compile(r"(?:-H\s*|--header(?:\s+|=))", re.IGNORECASE)
+_FENCE_RE = re.compile(r"(?m)^\s*```[^\n]*\n?")
+
+_Provenance = set[str]
+_Arg = tuple[str, frozenset[str]]
 
 
 def _line_number(text: str, offset: int) -> int:
@@ -51,44 +60,33 @@ def _contains_agent_token_path(value: str) -> bool:
     return _AGENT_TOKEN_PATH_RE.search(value.strip()) is not None
 
 
-def _referenced_names(value: str) -> set[str]:
+def _shell_names(value: str) -> set[str]:
     return {match.group(1).lower() for match in _VARIABLE_RE.finditer(value)}
 
 
-def _read_uses_agent_source(body: str, path_aliases: set[str]) -> bool:
+def _substitution_uses_path(body: str, state: dict[str, _Provenance]) -> bool:
     if _contains_agent_token_path(body):
         return True
-    return bool(_referenced_names(body) & path_aliases)
+    return any(_PATH in state.get(name, set()) for name in _shell_names(body))
 
 
-def _shell_aliases(text: str) -> tuple[set[str], set[str]]:
-    """Return (token-path aliases, token-value aliases) for shell-like text."""
-    assignments = [
-        (match.group("name").lower(), match.group("value").strip())
-        for match in _ASSIGNMENT_RE.finditer(text)
-    ]
-
-    path_aliases: set[str] = set()
-    changed = True
-    while changed:
-        changed = False
-        for name, value in assignments:
-            if _SUBSTITUTION_RE.search(value):
-                continue
-            refs = _referenced_names(value)
-            if _contains_agent_token_path(value) or refs & path_aliases:
-                if name not in path_aliases:
-                    path_aliases.add(name)
-                    changed = True
-
-    token_aliases: set[str] = set()
-    for name, value in assignments:
-        for substitution in _SUBSTITUTION_RE.finditer(value):
-            body = substitution.group("dollar") or substitution.group("backtick")
-            if _read_uses_agent_source(body, path_aliases):
-                token_aliases.add(name)
-                break
-    return path_aliases, token_aliases
+def _shell_value_provenance(
+    value: str,
+    state: dict[str, _Provenance],
+) -> _Provenance:
+    provenance: _Provenance = set()
+    references = _shell_names(value)
+    for name in references:
+        provenance.update(state.get(name, set()) & {_PATH, _TOKEN, _ENDPOINT})
+    if _contains_agent_token_path(value) and not _SUBSTITUTION_RE.search(value):
+        provenance.add(_PATH)
+    if _AGENT_HOST in value.lower():
+        provenance.add(_ENDPOINT)
+    for substitution in _SUBSTITUTION_RE.finditer(value):
+        body = substitution.group("dollar") or substitution.group("backtick")
+        if _substitution_uses_path(body, state):
+            provenance.add(_TOKEN)
+    return provenance
 
 
 def _logical_shell(text: str) -> str:
@@ -96,51 +94,70 @@ def _logical_shell(text: str) -> str:
     return re.sub(r"\\\r?\n", lambda match: " " * len(match.group()), text)
 
 
+def _shell_segments(text: str) -> Iterator[tuple[str, int]]:
+    """Split Markdown fences so aliases cannot leak between examples."""
+    start = 0
+    for fence in _FENCE_RE.finditer(text):
+        if fence.start() > start:
+            yield text[start:fence.start()], _line_number(text, start) - 1
+        start = fence.end()
+    if start < len(text):
+        yield text[start:], _line_number(text, start) - 1
+
+
 def _shell_findings(text: str) -> list[tuple[int, str]]:
-    path_aliases, token_aliases = _shell_aliases(text)
-    logical = _logical_shell(text)
     findings: list[tuple[int, str]] = []
+    for segment, base_line in _shell_segments(text):
+        logical = _logical_shell(segment)
+        state: dict[str, _Provenance] = {}
+        events: list[tuple[int, str, re.Match[str]]] = [
+            (match.start(), "assign", match)
+            for match in _ASSIGNMENT_RE.finditer(logical)
+        ]
+        events.extend(
+            (match.start(), "curl", match)
+            for match in re.finditer(r"\bcurl\b", logical, re.IGNORECASE)
+        )
 
-    for curl in re.finditer(r"\bcurl\b", logical, re.IGNORECASE):
-        line_end = logical.find("\n", curl.start())
-        command = logical[curl.start():line_end if line_end >= 0 else len(logical)]
-        if _AGENT_HOST not in command.lower():
-            continue
-
-        for header_flag in _HEADER_FLAG_RE.finditer(command):
-            header_tail = command[header_flag.end():]
-            auth = _AUTH_RE.search(header_tail)
-            if auth is None:
+        for _offset, kind, match in sorted(events, key=lambda event: event[0]):
+            if kind == "assign":
+                name = match.group("name").lower()
+                state[name] = _shell_value_provenance(match.group("value"), state)
                 continue
-            bearer_tail = header_tail[auth.end():]
 
-            unsafe = False
-            for substitution in _SUBSTITUTION_RE.finditer(bearer_tail):
-                body = substitution.group("dollar") or substitution.group("backtick")
-                if _read_uses_agent_source(body, path_aliases):
-                    unsafe = True
+            line_end = logical.find("\n", match.start())
+            command = logical[match.start():line_end if line_end >= 0 else len(logical)]
+            command_names = _shell_names(command)
+            is_agent_endpoint = (
+                _AGENT_HOST in command.lower()
+                or any(_ENDPOINT in state.get(name, set()) for name in command_names)
+            )
+            if not is_agent_endpoint:
+                continue
+
+            for header_flag in _HEADER_FLAG_RE.finditer(command):
+                header_tail = command[header_flag.end():]
+                auth = _AUTH_RE.search(header_tail)
+                if auth is None:
+                    continue
+                bearer_tail = header_tail[auth.end():]
+                unsafe = any(
+                    _TOKEN in state.get(name, set())
+                    for name in _shell_names(bearer_tail)
+                )
+                if not unsafe:
+                    for substitution in _SUBSTITUTION_RE.finditer(bearer_tail):
+                        body = substitution.group("dollar") or substitution.group("backtick")
+                        if _substitution_uses_path(body, state):
+                            unsafe = True
+                            break
+                if unsafe:
+                    findings.append((
+                        base_line + _line_number(logical, match.start()),
+                        "Agent API token is interpolated into a curl header argument",
+                    ))
                     break
-            if not unsafe and _referenced_names(bearer_tail) & token_aliases:
-                unsafe = True
-            if unsafe:
-                findings.append((
-                    _line_number(logical, curl.start()),
-                    "Agent API token is interpolated into a curl header argument",
-                ))
-                break
-
     return findings
-
-
-def _scope_nodes(scope: ast.AST) -> Iterator[ast.AST]:
-    """Walk one Python scope without leaking assignments from nested scopes."""
-    stack = list(reversed(list(ast.iter_child_nodes(scope))))
-    while stack:
-        node = stack.pop()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-            continue
-        yield node
-        stack.extend(reversed(list(ast.iter_child_nodes(node))))
 
 
 def _string_parts(expr: ast.AST) -> str:
@@ -151,144 +168,116 @@ def _string_parts(expr: ast.AST) -> str:
     )
 
 
-def _expr_names(expr: ast.AST) -> set[str]:
+def _python_names(expr: ast.AST) -> set[str]:
     return {node.id.lower() for node in ast.walk(expr) if isinstance(node, ast.Name)}
 
 
-def _expr_has_agent_path(expr: ast.AST, path_vars: set[str]) -> bool:
-    if _contains_agent_token_path(_string_parts(expr)):
-        return True
-    return bool(_expr_names(expr) & path_vars)
-
-
-def _expr_is_token_read(
+def _expr_provenance(
     expr: ast.AST,
-    path_vars: set[str],
-    token_vars: set[str],
-    source_functions: set[str],
-) -> bool:
+    state: dict[str, _Provenance],
+    function_returns: dict[str, _Provenance],
+) -> _Provenance:
     if isinstance(expr, ast.Name):
-        return expr.id.lower() in token_vars
-    if not isinstance(expr, ast.Call):
-        return False
-    if isinstance(expr.func, ast.Name) and expr.func.id.lower() in source_functions:
-        return True
-    if isinstance(expr.func, ast.Attribute):
-        method = expr.func.attr.lower()
-        receiver = expr.func.value
-        if method in {"strip", "rstrip", "decode"}:
-            return _expr_is_token_read(
-                receiver, path_vars, token_vars, source_functions,
-            )
-        if method in {"read_text", "read_bytes"}:
-            return _expr_has_agent_path(receiver, path_vars)
-        if method == "read" and isinstance(receiver, ast.Call):
-            if isinstance(receiver.func, ast.Name) and receiver.func.id == "open":
-                return bool(receiver.args) and _expr_has_agent_path(
-                    receiver.args[0], path_vars,
-                )
-    return False
+        return set(state.get(expr.id.lower(), set()))
+    if isinstance(expr, ast.Constant):
+        if isinstance(expr.value, str):
+            provenance: _Provenance = set()
+            if _contains_agent_token_path(expr.value):
+                provenance.add(_PATH)
+            if _AGENT_HOST in expr.value.lower():
+                provenance.add(_ENDPOINT)
+            return provenance
+        return set()
+    if isinstance(expr, ast.Call):
+        if isinstance(expr.func, ast.Name):
+            name = expr.func.id.lower()
+            if name in function_returns:
+                return set(function_returns[name])
+            if name == "open" and expr.args:
+                if _PATH in _expr_provenance(expr.args[0], state, function_returns):
+                    return {_FILE}
+        if isinstance(expr.func, ast.Attribute):
+            method = expr.func.attr.lower()
+            receiver = _expr_provenance(expr.func.value, state, function_returns)
+            if method in {"strip", "rstrip", "decode"}:
+                return receiver
+            if method in {"read_text", "read_bytes"} and _PATH in receiver:
+                return {_TOKEN}
+            if method == "read" and _FILE in receiver:
+                return {_TOKEN}
+        provenance: _Provenance = set()
+        for argument in [*expr.args, *(keyword.value for keyword in expr.keywords)]:
+            provenance.update(_expr_provenance(argument, state, function_returns))
+        return provenance
+
+    provenance: _Provenance = set()
+    for child in ast.iter_child_nodes(expr):
+        provenance.update(_expr_provenance(child, state, function_returns))
+    static = _string_parts(expr)
+    if _AGENT_HOST in static.lower():
+        provenance.add(_ENDPOINT)
+    return provenance
 
 
-def _assigned_name(node: ast.AST) -> str | None:
-    if isinstance(node, (ast.Assign, ast.AnnAssign)):
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        if len(targets) == 1 and isinstance(targets[0], ast.Name):
-            return targets[0].id.lower()
-    return None
+def _arg(expr: ast.AST, state: dict[str, _Provenance], returns: dict[str, _Provenance]) -> _Arg:
+    return _string_parts(expr), frozenset(_expr_provenance(expr, state, returns))
 
 
-def _assigned_value(node: ast.AST) -> ast.AST | None:
-    if isinstance(node, (ast.Assign, ast.AnnAssign)):
-        return node.value
-    return None
-
-
-def _python_scopes(tree: ast.Module) -> list[ast.AST]:
-    return [tree, *[
-        node for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]]
-
-
-def _python_token_sources(
-    tree: ast.Module,
-) -> tuple[dict[ast.AST, set[str]], set[str], dict[str, ast.AST]]:
-    scopes = _python_scopes(tree)
-    functions = {
-        node.name.lower(): node
-        for node in scopes
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    source_functions = {
-        name for name, node in functions.items()
-        if _contains_agent_token_path(_string_parts(node))
-        and any(isinstance(child, ast.Return) for child in ast.walk(node))
-    }
-
-    path_vars: dict[ast.AST, set[str]] = {scope: set() for scope in scopes}
-    token_vars: dict[ast.AST, set[str]] = {scope: set() for scope in scopes}
-    for scope in scopes:
-        nodes = list(_scope_nodes(scope))
-        changed = True
-        while changed:
-            changed = False
-            for node in nodes:
-                name = _assigned_name(node)
-                value = _assigned_value(node)
-                if name is None or value is None:
-                    continue
-                if _expr_has_agent_path(value, path_vars[scope]):
-                    if name not in path_vars[scope]:
-                        path_vars[scope].add(name)
-                        changed = True
-                if _expr_is_token_read(
-                    value,
-                    path_vars[scope],
-                    token_vars[scope],
-                    source_functions,
-                ) and name not in token_vars[scope]:
-                    token_vars[scope].add(name)
-                    changed = True
-
-    # Propagate established token arguments into helper parameters, e.g.
-    # ``_curl_agent_api(token=_agent_token())``.
-    changed = True
-    while changed:
-        changed = False
-        for scope in scopes:
-            for call in (node for node in _scope_nodes(scope) if isinstance(node, ast.Call)):
-                if not isinstance(call.func, ast.Name):
-                    continue
-                callee = functions.get(call.func.id.lower())
-                if not isinstance(callee, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
-                params = [arg.arg.lower() for arg in callee.args.args]
-                bindings: list[tuple[str, ast.AST]] = list(zip(params, call.args))
-                bindings.extend(
-                    (keyword.arg.lower(), keyword.value)
-                    for keyword in call.keywords
-                    if keyword.arg is not None
-                )
-                for parameter, value in bindings:
-                    if _expr_is_token_read(
-                        value,
-                        path_vars[scope],
-                        token_vars[scope],
-                        source_functions,
-                    ) and parameter not in token_vars[callee]:
-                        token_vars[callee].add(parameter)
-                        changed = True
-    return token_vars, source_functions, functions
-
-
-def _container_elements(expr: ast.AST) -> list[ast.AST] | None:
+def _container(
+    expr: ast.AST,
+    state: dict[str, _Provenance],
+    containers: dict[str, list[_Arg]],
+    returns: dict[str, _Provenance],
+) -> list[_Arg] | None:
+    if isinstance(expr, ast.Name):
+        value = containers.get(expr.id.lower())
+        return list(value) if value is not None else None
     if isinstance(expr, (ast.List, ast.Tuple)):
-        return list(expr.elts)
+        return [_arg(element, state, returns) for element in expr.elts]
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+        left = _container(expr.left, state, containers, returns)
+        right = _container(expr.right, state, containers, returns)
+        if left is not None and right is not None:
+            return [*left, *right]
     return None
 
 
-def _subprocess_command_expr(call: ast.Call) -> ast.AST | None:
+def _assigned_names(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Assign):
+        return [target.id.lower() for target in node.targets if isinstance(target, ast.Name)]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return [node.target.id.lower()]
+    return []
+
+
+def _statements(scope: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.stmt]:
+    def walk(statement: ast.stmt) -> Iterator[ast.stmt]:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return
+        yield statement
+        for field in ("body", "orelse", "finalbody"):
+            for child in getattr(statement, field, []):
+                yield from walk(child)
+        for handler in getattr(statement, "handlers", []):
+            for child in handler.body:
+                yield from walk(child)
+
+    for statement in scope.body:
+        yield from walk(statement)
+
+
+def _calls_in_statement(statement: ast.stmt) -> Iterator[ast.Call]:
+    stack = list(ast.iter_child_nodes(statement))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.stmt):
+            continue
+        if isinstance(node, ast.Call):
+            yield node
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _subprocess_command(call: ast.Call) -> ast.AST | None:
     if not isinstance(call.func, ast.Attribute):
         return None
     if call.func.attr.lower() not in {"run", "popen", "call", "check_call"}:
@@ -297,7 +286,125 @@ def _subprocess_command_expr(call: ast.Call) -> ast.AST | None:
         return None
     if call.args:
         return call.args[0]
-    return next((kw.value for kw in call.keywords if kw.arg == "args"), None)
+    return next((keyword.value for keyword in call.keywords if keyword.arg == "args"), None)
+
+
+def _command_is_unsafe(elements: list[_Arg]) -> bool:
+    if not any(text.strip().lower() == "curl" for text, _prov in elements):
+        return False
+    if not any(
+        _ENDPOINT in provenance or _AGENT_HOST in text.lower()
+        for text, provenance in elements
+    ):
+        return False
+    if not any(
+        text.strip() in {"-H", "--header"}
+        or text.strip().lower().startswith(("-hauthorization", "--header="))
+        for text, _provenance in elements
+    ):
+        return False
+    return any(
+        _AUTH_RE.search(text) and _TOKEN in provenance
+        for text, provenance in elements
+    )
+
+
+def _function_parameters(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[str]:
+    return [argument.arg.lower() for argument in function.args.args]
+
+
+def _analyze_scope(
+    scope: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
+    initial_state: dict[str, _Provenance],
+    initial_containers: dict[str, list[_Arg]],
+    function_returns: dict[str, _Provenance],
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    parameter_provenance: dict[ast.AST, dict[str, _Provenance]],
+    *,
+    collect_findings: bool,
+) -> tuple[dict[str, _Provenance], dict[str, list[_Arg]], _Provenance, list[tuple[int, str]], bool]:
+    state = {name: set(value) for name, value in initial_state.items()}
+    containers = {name: list(value) for name, value in initial_containers.items()}
+    returned: _Provenance = set()
+    findings: list[tuple[int, str]] = []
+    parameter_changed = False
+
+    for statement in _statements(scope):
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            value = statement.value
+            if value is not None:
+                container = _container(value, state, containers, function_returns)
+                provenance = _expr_provenance(value, state, function_returns)
+                for name in _assigned_names(statement):
+                    state[name] = set(provenance)
+                    if container is None:
+                        containers.pop(name, None)
+                    else:
+                        containers[name] = list(container)
+        elif isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name):
+            name = statement.target.id.lower()
+            if isinstance(statement.op, ast.Add):
+                extension = _container(statement.value, state, containers, function_returns)
+                if extension is not None and name in containers:
+                    containers[name].extend(extension)
+                else:
+                    state[name] = _expr_provenance(statement.value, state, function_returns)
+                    containers.pop(name, None)
+        elif isinstance(statement, ast.With):
+            for item in statement.items:
+                if isinstance(item.optional_vars, ast.Name):
+                    state[item.optional_vars.id.lower()] = _expr_provenance(
+                        item.context_expr, state, function_returns,
+                    )
+        elif isinstance(statement, ast.Return) and statement.value is not None:
+            returned.update(_expr_provenance(statement.value, state, function_returns))
+
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+            call = statement.value
+            if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
+                name = call.func.value.id.lower()
+                if name in containers and call.args:
+                    if call.func.attr == "append":
+                        containers[name].append(_arg(call.args[0], state, function_returns))
+                    elif call.func.attr == "extend":
+                        extension = _container(
+                            call.args[0], state, containers, function_returns,
+                        )
+                        if extension is not None:
+                            containers[name].extend(extension)
+
+        for call in _calls_in_statement(statement):
+            command_expr = _subprocess_command(call)
+            if command_expr is not None:
+                elements = _container(command_expr, state, containers, function_returns)
+                if collect_findings and elements and _command_is_unsafe(elements):
+                    findings.append((
+                        call.lineno,
+                        "Agent API token is constructed inside a curl argv container",
+                    ))
+
+            if not isinstance(call.func, ast.Name):
+                continue
+            callee = functions.get(call.func.id.lower())
+            if callee is None:
+                continue
+            params = _function_parameters(callee)
+            bindings: list[tuple[str, ast.AST]] = list(zip(params, call.args))
+            bindings.extend(
+                (keyword.arg.lower(), keyword.value)
+                for keyword in call.keywords
+                if keyword.arg is not None
+            )
+            for parameter, value in bindings:
+                provenance = _expr_provenance(value, state, function_returns)
+                current = parameter_provenance[callee].setdefault(parameter, set())
+                before = len(current)
+                current.update(provenance)
+                parameter_changed |= len(current) != before
+
+    return state, containers, returned, findings, parameter_changed
 
 
 def _python_findings(text: str) -> list[tuple[int, str]]:
@@ -306,88 +413,108 @@ def _python_findings(text: str) -> list[tuple[int, str]]:
     except SyntaxError:
         return []
 
-    token_vars, source_functions, _functions = _python_token_sources(tree)
-    findings: list[tuple[int, str]] = []
+    function_nodes = [
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    functions = {node.name.lower(): node for node in function_nodes}
+    parameter_provenance: dict[ast.AST, dict[str, _Provenance]] = {
+        node: {name: set() for name in _function_parameters(node)}
+        for node in function_nodes
+    }
+    function_returns: dict[str, _Provenance] = {name: set() for name in functions}
 
-    for scope in _python_scopes(tree):
-        commands: dict[str, list[ast.AST]] = {}
-        nodes = sorted(_scope_nodes(scope), key=lambda node: getattr(node, "lineno", 0))
-        for node in nodes:
-            name = _assigned_name(node)
-            value = _assigned_value(node)
-            elements = _container_elements(value) if value is not None else None
-            if name is not None and elements is not None:
-                commands[name] = elements
-                continue
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            if not isinstance(node.func.value, ast.Name):
-                continue
-            command = commands.get(node.func.value.id.lower())
-            if command is None or not node.args:
-                continue
-            if node.func.attr == "extend":
-                extension = _container_elements(node.args[0])
-                if extension is not None:
-                    command.extend(extension)
-            elif node.func.attr == "append":
-                command.append(node.args[0])
+    empty_params: dict[ast.AST, dict[str, _Provenance]] = {
+        node: {} for node in function_nodes
+    }
+    global_state, global_containers, _returned, _findings, _changed = _analyze_scope(
+        tree, {}, {}, function_returns, functions, empty_params, collect_findings=False,
+    )
 
-        for node in nodes:
-            if not isinstance(node, ast.Call):
-                continue
-            command_expr = _subprocess_command_expr(node)
-            if command_expr is None:
-                continue
-            if isinstance(command_expr, ast.Name):
-                elements = commands.get(command_expr.id.lower())
-            else:
-                elements = _container_elements(command_expr)
-            if not elements:
-                continue
-
-            strings = [_string_parts(element) for element in elements]
-            if not any(value.strip().lower() == "curl" for value in strings):
-                continue
-            if not any(_AGENT_HOST in value.lower() for value in strings):
-                continue
-            if not any(
-                value.strip() in {"-H", "--header"}
-                or value.strip().lower().startswith(("-hauthorization", "--header="))
-                for value in strings
-            ):
-                continue
-
-            unsafe_header = any(
-                _AUTH_RE.search(_string_parts(element))
-                and (
-                    bool(_expr_names(element) & token_vars[scope])
-                    or _expr_is_token_read(
-                        element,
-                        set(),
-                        token_vars[scope],
-                        source_functions,
-                    )
-                )
-                for element in elements
+    # Resolve return provenance from actual return expressions. Returning the
+    # token-file Path remains PATH; only read_text/read_bytes/open(...).read()
+    # becomes TOKEN.
+    changed = True
+    while changed:
+        changed = False
+        for name, function in functions.items():
+            initial = {
+                **global_state,
+                **parameter_provenance[function],
+            }
+            _state, _containers, returned, _findings, _param_changed = _analyze_scope(
+                function,
+                initial,
+                global_containers,
+                function_returns,
+                functions,
+                parameter_provenance,
+                collect_findings=False,
             )
-            if unsafe_header:
-                findings.append((
-                    node.lineno,
-                    "Agent API token is constructed inside a curl argv container",
-                ))
+            before = len(function_returns[name])
+            function_returns[name].update(returned)
+            changed |= len(function_returns[name]) != before
 
-    # Python tests sometimes embed a complete shell command in one string
-    # argument. Python's AST has already joined adjacent string literals, so
-    # scan those values as shell without confusing surrounding Python syntax.
+    # Propagate token/path/endpoint arguments into helper parameters.
+    changed = True
+    while changed:
+        changed = False
+        _state, _containers, _returned, _findings, param_changed = _analyze_scope(
+            tree,
+            {},
+            {},
+            function_returns,
+            functions,
+            parameter_provenance,
+            collect_findings=False,
+        )
+        changed |= param_changed
+        for function in function_nodes:
+            initial = {**global_state, **parameter_provenance[function]}
+            _state, _containers, _returned, _findings, param_changed = _analyze_scope(
+                function,
+                initial,
+                global_containers,
+                function_returns,
+                functions,
+                parameter_provenance,
+                collect_findings=False,
+            )
+            changed |= param_changed
+
+    findings: list[tuple[int, str]] = []
+    _state, _containers, _returned, module_findings, _changed = _analyze_scope(
+        tree,
+        {},
+        {},
+        function_returns,
+        functions,
+        parameter_provenance,
+        collect_findings=True,
+    )
+    findings.extend(module_findings)
+    for function in function_nodes:
+        initial = {**global_state, **parameter_provenance[function]}
+        _state, _containers, _returned, scoped_findings, _changed = _analyze_scope(
+            function,
+            initial,
+            global_containers,
+            function_returns,
+            functions,
+            parameter_provenance,
+            collect_findings=True,
+        )
+        findings.extend(scoped_findings)
+
+    # Python tests can embed a complete shell command in one string argument;
+    # AST constants join adjacent literals before this scan.
     for node in ast.walk(tree):
         if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
             continue
-        if "curl" not in node.value.lower() or _AGENT_HOST not in node.value.lower():
+        if "curl" not in node.value.lower():
             continue
         for _line, reason in _shell_findings(node.value):
             findings.append((node.lineno, reason))
-
     return findings
 
 

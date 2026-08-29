@@ -119,6 +119,75 @@ literal_fixture = "Authorization: Bearer $(cat /app/agent_token)"
     assert mod.find_unsafe_token_argv(text) == []
 
 
+def test_rejects_shell_agent_api_url_alias():
+    text = '''```sh
+AGENT_API=http://_safeyolo.proxy.internal/health
+token=$(cat /app/agent_token)
+curl -H "Authorization: Bearer $token" "$AGENT_API"
+```
+'''
+    assert mod.find_unsafe_token_argv(text)
+
+
+def test_rejects_python_agent_api_url_alias():
+    text = '''import subprocess
+from pathlib import Path
+
+token = Path("/app/agent_token").read_text().strip()
+url = "http://_safeyolo.proxy.internal/health"
+subprocess.run(["curl", "-H", f"Authorization: Bearer {token}", url])
+'''
+    assert mod.find_unsafe_token_argv(text)
+
+
+def test_rejects_python_list_add_and_augmented_add_assembly():
+    text = '''import subprocess
+from pathlib import Path
+
+AGENT_API_URL = "http://_safeyolo.proxy.internal/health"
+token = Path("/app/agent_token").read_text().strip()
+cmd = ["curl"] + ["-H", f"Authorization: Bearer {token}", AGENT_API_URL]
+subprocess.run(cmd)
+
+literal_agent_url = "http://_safeyolo.proxy.internal/health"
+cmd = ["curl"]
+cmd += ["-H", f"Authorization: Bearer {token}", literal_agent_url]
+subprocess.run(cmd)
+'''
+    assert len(mod.find_unsafe_token_argv(text)) == 2
+
+
+def test_shell_reassignment_in_separate_block_kills_token_path_provenance():
+    text = '''```sh
+TOKEN_FILE=/app/agent_token
+```
+
+```sh
+TOKEN_FILE=/run/admin_token
+admin_token=$(cat "$TOKEN_FILE")
+curl -H "Authorization: Bearer $admin_token" \\
+  http://_safeyolo.proxy.internal/health
+```
+'''
+    assert mod.find_unsafe_token_argv(text) == []
+
+
+def test_python_function_returning_token_path_is_not_token_value():
+    text = '''import subprocess
+from pathlib import Path
+
+def token_path():
+    return Path("/app/agent_token")
+
+path_text = token_path()
+subprocess.run([
+    "curl", "-H", f"Authorization: Bearer {path_text}",
+    "http://_safeyolo.proxy.internal/health",
+])
+'''
+    assert mod.find_unsafe_token_argv(text) == []
+
+
 def test_accepts_stdin_header_pattern_on_one_or_many_lines():
     multiline = """(
   agent_token=$(cat /app/agent_token) || exit
