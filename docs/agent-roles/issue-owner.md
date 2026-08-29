@@ -22,6 +22,10 @@ clear evidence, not process for its own sake.
 
 - Prefer the smallest solution consistent with the requested behaviour and the
   repository's current design.
+- Do not turn an implementation choice into a requirement. If a design adds a
+  guarantee that the issue, current architecture, or a real security need does
+  not require, justify why it matters or choose the simpler design.
+- Do not build machinery for a path this change does not actually use.
 - Reuse existing abstractions where they fit. Challenge or adjust them when they
   prevent the required behaviour rather than building a parallel mechanism.
 - Avoid opportunistic refactors, speculative architecture, and cleanup unrelated
