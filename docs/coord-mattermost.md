@@ -253,8 +253,9 @@ For gates 8–9, create a private test config interactively. The helper prompts
 for exactly six values: the Mattermost HTTPS origin, private bot-token file
 path, dedicated bot user ID, operator user ID, dedicated coord room, and
 dedicated Mattermost channel ID. It never prints the token contents or IDs. It
-writes mode `0600`, exactly one room with `backfill = false`, and a deliberately
-unused sibling state path:
+writes a portable private bundle: mode-`0600` config and token copy referenced
+by relative sibling name, exactly one room with `backfill = false`, and a
+relative sibling state path that deliberately does not exist:
 
 ```sh
 install -d -m 700 "$HOME/.safeyolo/macos-acceptance"
@@ -267,7 +268,10 @@ uv run python scripts/prepare_mattermost_macos_test_config.py \
 The helper and integration script both refuse the live default config. The
 integration script also refuses an existing source state file, reads the test
 config without editing it, and writes a second private config with a new state
-DB under its own temporary root:
+DB under its own temporary root. If the bundle moves to another machine or
+absolute directory, copy its containing directory as a unit and keep the
+relative sibling names unchanged; validation proves the relocated bundle before
+any networked gate:
 
 ```sh
 uv run python scripts/accept_mattermost_macos_integration.py \

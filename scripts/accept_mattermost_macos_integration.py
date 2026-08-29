@@ -19,7 +19,7 @@ import tempfile
 import traceback
 from pathlib import Path
 
-from safeyolo.coord.mattermost import MattermostAdapterError, MattermostConfig, load_config
+from safeyolo.coord.mattermost import MattermostAdapterError, MattermostConfig, load_config, read_bot_token
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _SOURCE_STATE_SUFFIX = ".integration-source-state.sqlite3"
@@ -95,16 +95,27 @@ def _private_regular_config(path: Path) -> Path:
     resolved = expanded.resolve(strict=True)
     if resolved == Path("~/.safeyolo/coord-mattermost.toml").expanduser().resolve():
         raise AcceptanceError("live default config is forbidden; provide a separate test-only copy")
+    parent = resolved.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or stat.S_IMODE(parent.st_mode) & 0o077:
+        raise AcceptanceError("test config parent must be a private regular directory")
+    if hasattr(os, "getuid") and parent.st_uid != os.getuid():
+        raise AcceptanceError("test config parent must be owned by the current user")
     return resolved
 
 
 def _validate_test_source(path: Path, config: MattermostConfig) -> None:
     if len(config.rooms) != 1 or config.rooms[0].backfill:
         raise AcceptanceError("test config copy must contain one room with backfill=false")
-    if config.state_file.parent != path.parent or not config.state_file.name.endswith(_SOURCE_STATE_SUFFIX):
+    expected_token = path.with_name(f".{path.stem}.bot-token")
+    expected_state = path.with_name(f".{path.stem}{_SOURCE_STATE_SUFFIX}")
+    if config.bot_token_file != expected_token:
+        raise AcceptanceError("test config must use its portable sibling bot-token path")
+    if config.state_file != expected_state:
         raise AcceptanceError("test config must use its private sibling integration-source-state path")
     if config.state_file.exists() or config.state_file.is_symlink():
         raise AcceptanceError("test config integration-source-state path must not already exist")
+    token = read_bot_token(config.bot_token_file)
+    del token
 
 
 def _available_loopback_port(host: str) -> int:

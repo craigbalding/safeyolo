@@ -60,13 +60,18 @@ def _private_config(path: Path) -> Path:
     resolved = expanded.resolve(strict=True)
     if resolved == _LIVE_CONFIG.resolve():
         raise PreparationError("live default config path is forbidden")
+    _private_parent(resolved)
     return resolved
 
 
 def _validate_loaded(path: Path, config: MattermostConfig) -> None:
     if len(config.rooms) != 1 or config.rooms[0].backfill:
         raise PreparationError("test config must contain exactly one room with backfill=false")
-    if config.state_file.parent != path.parent or not config.state_file.name.endswith(_STATE_SUFFIX):
+    expected_token = path.with_name(f".{path.stem}.bot-token")
+    expected_state = path.with_name(f".{path.stem}{_STATE_SUFFIX}")
+    if config.bot_token_file != expected_token:
+        raise PreparationError("test config must use its portable sibling bot-token path")
+    if config.state_file != expected_state:
         raise PreparationError("test config must use its private sibling integration-source-state path")
     if config.state_file.exists() or config.state_file.is_symlink():
         raise PreparationError("integration-source-state path must not already exist")
@@ -92,15 +97,23 @@ def create_config(
     channel_id: str,
 ) -> Path:
     output = _output_path(output_arg)
-    token_path = Path(bot_token_file).expanduser().resolve(strict=True)
+    source_token_path = Path(bot_token_file).expanduser().resolve(strict=True)
+    token_value = read_bot_token(source_token_path)
+    token_path = output.with_name(f".{output.stem}.bot-token")
     state_path = output.with_name(f".{output.stem}{_STATE_SUFFIX}")
+    for reserved in (token_path, state_path):
+        try:
+            reserved.lstat()
+        except FileNotFoundError:
+            continue
+        raise PreparationError("portable bundle token/state target already exists; refusing to overwrite it")
     lines = [
         "version = 1",
         f"server_url = {_quoted(server_url)}",
-        f"bot_token_file = {_quoted(token_path)}",
+        f"bot_token_file = {_quoted(token_path.name)}",
         f"bot_user_id = {_quoted(bot_user_id)}",
         f"operator_user_id = {_quoted(operator_user_id)}",
-        f"state_file = {_quoted(state_path)}",
+        f"state_file = {_quoted(state_path.name)}",
         "poll_interval_seconds = 1.0",
         "",
         "[[rooms]]",
@@ -108,18 +121,37 @@ def create_config(
         f"channel_id = {_quoted(channel_id)}",
         "backfill = false",
     ]
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent)
-    temporary = Path(temporary_name)
+    token_fd = -1
+    config_fd = -1
+    temporary: Path | None = None
+    token_identity: tuple[int, int] | None = None
+    output_identity: tuple[int, int] | None = None
+    succeeded = False
     try:
-        os.fchmod(fd, 0o600)
+        token_fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        token_st = os.fstat(token_fd)
+        token_identity = token_st.st_dev, token_st.st_ino
+        token_bytes = f"{token_value}\n".encode()
+        token_view = memoryview(token_bytes)
+        while token_view:
+            token_written = os.write(token_fd, token_view)
+            token_view = token_view[token_written:]
+        os.fsync(token_fd)
+        os.close(token_fd)
+        token_fd = -1
+        config_fd, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent)
+        temporary = Path(temporary_name)
+        os.fchmod(config_fd, 0o600)
         encoded = ("\n".join(lines) + "\n").encode("utf-8")
         view = memoryview(encoded)
         while view:
-            written = os.write(fd, view)
+            written = os.write(config_fd, view)
             view = view[written:]
-        os.fsync(fd)
-        os.close(fd)
-        fd = -1
+        os.fsync(config_fd)
+        config_st = os.fstat(config_fd)
+        output_identity = config_st.st_dev, config_st.st_ino
+        os.close(config_fd)
+        config_fd = -1
         loaded = load_config(temporary)
         _validate_loaded(output, loaded)
         os.link(temporary, output)
@@ -129,14 +161,30 @@ def create_config(
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
+        validate_config(output)
+        succeeded = True
     finally:
-        if fd >= 0:
-            os.close(fd)
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-    return validate_config(output)
+        del token_value
+        if token_fd >= 0:
+            os.close(token_fd)
+        if config_fd >= 0:
+            os.close(config_fd)
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+        if not succeeded:
+            for created, identity in ((output, output_identity), (token_path, token_identity)):
+                if identity is None:
+                    continue
+                try:
+                    linked = created.lstat()
+                    if (linked.st_dev, linked.st_ino) == identity:
+                        created.unlink()
+                except FileNotFoundError:
+                    pass
+    return output
 
 
 def _required(prompt: str) -> str:
@@ -155,7 +203,11 @@ def main() -> int:
     try:
         if args.validate is not None:
             path = validate_config(args.validate)
-            print(f"VALIDATION PASS config={path} mode=0600 rooms=1 backfill=false state=disposable", flush=True)
+            print(
+                f"VALIDATION PASS bundle_dir={path.parent} config={path.name} "
+                "mode=0700/0600 rooms=1 backfill=false token=sibling state=disposable",
+                flush=True,
+            )
             return 0
         print(
             "Enter the six dedicated-test values. Input is used only to write the private config; "
@@ -171,7 +223,11 @@ def main() -> int:
             coord_room=_required("Dedicated coord room"),
             channel_id=_required("Dedicated Mattermost channel ID"),
         )
-        print(f"CREATED config={path} mode=0600 rooms=1 backfill=false state=disposable", flush=True)
+        print(
+            f"CREATED bundle_dir={path.parent} config={path.name} "
+            "mode=0700/0600 rooms=1 backfill=false token=sibling state=disposable",
+            flush=True,
+        )
         return 0
     except (EOFError, MattermostAdapterError, OSError, PreparationError) as exc:
         print(f"PREPARATION FAIL ({type(exc).__name__}): {exc}", file=sys.stderr, flush=True)

@@ -84,14 +84,81 @@ def test_preparer_creates_validated_private_single_channel_config_without_touchi
     assert preparer.validate_config(output) == output
     config = mattermost.load_config(output)
     assert config.rooms == (mattermost.RoomMapping("dedicated-test", "c" * 26, False),)
+    assert config.bot_token_file == private / ".dedicated-test.bot-token"
     assert config.state_file.parent == private
     assert config.state_file.name.endswith(".integration-source-state.sqlite3")
     assert not config.state_file.exists()
+    raw = output.read_text(encoding="utf-8")
+    assert 'bot_token_file = ".dedicated-test.bot-token"' in raw
+    assert 'state_file = ".dedicated-test.integration-source-state.sqlite3"' in raw
+    assert str(private) not in raw
     integration._validate_test_source(output, config)
     assert live_state.read_text(encoding="utf-8") == "untouched"
     captured = capsys.readouterr()
     assert secret not in captured.out
     assert secret not in captured.err
+
+
+def test_prepared_bundle_validates_after_relocation(tmp_path: Path) -> None:
+    preparer = load_script("prepare_mattermost_macos_test_config.py")
+    integration = load_script("accept_mattermost_macos_integration.py")
+    source = tmp_path / "source"
+    source.mkdir(mode=0o700)
+    source_token = source / "source-token"
+    source_token.write_text("portable-token\n", encoding="utf-8")
+    source_token.chmod(0o600)
+    original_bundle = tmp_path / "original-bundle"
+    original_bundle.mkdir(mode=0o700)
+    preparer.create_config(
+        original_bundle / "dedicated-test.toml",
+        server_url="https://mattermost.example",
+        bot_token_file=str(source_token),
+        bot_user_id="b" * 26,
+        operator_user_id="o" * 26,
+        coord_room="dedicated-test",
+        channel_id="c" * 26,
+    )
+
+    relocated_bundle = tmp_path / "different-absolute-bundle"
+    original_bundle.rename(relocated_bundle)
+    relocated_config = relocated_bundle / "dedicated-test.toml"
+    assert preparer.validate_config(relocated_config) == relocated_config
+    config = mattermost.load_config(relocated_config)
+    assert config.bot_token_file == relocated_bundle / ".dedicated-test.bot-token"
+    assert config.state_file == relocated_bundle / ".dedicated-test.integration-source-state.sqlite3"
+    integration._validate_test_source(relocated_config, config)
+    assert source_token.read_text(encoding="utf-8") == "portable-token\n"
+
+    relocated_bundle.chmod(0o755)
+    with pytest.raises(preparer.PreparationError, match="must not be accessible"):
+        preparer.validate_config(relocated_config)
+    with pytest.raises(integration.AcceptanceError, match="private regular directory"):
+        integration._private_regular_config(relocated_config)
+
+
+def test_preparer_never_overwrites_reserved_bundle_token(tmp_path: Path) -> None:
+    preparer = load_script("prepare_mattermost_macos_test_config.py")
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    source_token = private / "source-token"
+    source_token.write_text("source\n", encoding="utf-8")
+    source_token.chmod(0o600)
+    reserved = private / ".dedicated-test.bot-token"
+    reserved.write_text("untouched\n", encoding="utf-8")
+    reserved.chmod(0o600)
+
+    with pytest.raises(preparer.PreparationError, match="refusing to overwrite"):
+        preparer.create_config(
+            private / "dedicated-test.toml",
+            server_url="https://mattermost.example",
+            bot_token_file=str(source_token),
+            bot_user_id="b" * 26,
+            operator_user_id="o" * 26,
+            coord_room="dedicated-test",
+            channel_id="c" * 26,
+        )
+    assert reserved.read_text(encoding="utf-8") == "untouched\n"
+    assert not (private / "dedicated-test.toml").exists()
 
 
 def test_preparer_refuses_live_default_config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
