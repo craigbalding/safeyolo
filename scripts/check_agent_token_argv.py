@@ -442,6 +442,7 @@ def _python_findings(text: str) -> list[tuple[int, str]]:
             parameter_provenance,
             collect_findings=False,
         )
+        changed |= _param_changed
         if (
             next_global_state != global_state
             or next_global_containers != global_containers
@@ -463,6 +464,7 @@ def _python_findings(text: str) -> list[tuple[int, str]]:
                 parameter_provenance,
                 collect_findings=False,
             )
+            changed |= _param_changed
             before = len(function_returns[name])
             function_returns[name].update(returned)
             changed |= len(function_returns[name]) != before

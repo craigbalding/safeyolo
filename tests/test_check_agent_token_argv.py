@@ -204,6 +204,24 @@ def request():
     assert mod.find_unsafe_token_argv(text)
 
 
+def test_nested_reader_parameter_and_return_provenance_converge():
+    text = '''import subprocess
+from pathlib import Path
+
+def read_text(path):
+    return Path(path).read_text().strip()
+
+def read_agent_token():
+    return read_text("/app/agent_token")
+
+subprocess.run([
+    "curl", "-H", f"Authorization: Bearer {read_agent_token()}",
+    "http://_safeyolo.proxy.internal/health",
+])
+'''
+    assert mod.find_unsafe_token_argv(text)
+
+
 def test_accepts_stdin_header_pattern_on_one_or_many_lines():
     multiline = """(
   agent_token=$(cat /app/agent_token) || exit
