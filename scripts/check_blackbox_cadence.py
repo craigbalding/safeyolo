@@ -31,6 +31,16 @@ RUN_LANE_RE = re.compile(
 )
 
 
+def _condition_is_always(value: object) -> bool:
+    """True only for GitHub's unconditional pass-or-fail step expression."""
+    if not isinstance(value, str):
+        return False
+    condition = value.strip()
+    if condition.startswith("${{") and condition.endswith("}}"):
+        condition = condition[3:-2].strip()
+    return condition == "always()"
+
+
 def scheduled_lanes_from_workflow(path: Path = WORKFLOW_PATH) -> dict[str, bool]:
     """Return scheduled full lanes mapped to artifact-publication presence."""
     data = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
@@ -54,27 +64,46 @@ def scheduled_lanes_from_workflow(path: Path = WORKFLOW_PATH) -> dict[str, bool]
             raise ValueError(f"{path}: job {job_name!r} steps must be a list")
 
         lanes: set[str] = set()
-        artifact_specs: list[tuple[str, str]] = []
+        artifact_specs: list[tuple[str, str, object]] = []
         for step in steps:
             if not isinstance(step, dict):
                 continue
             run = step.get("run", "")
             if isinstance(run, str):
-                lanes.update(match.group("lane") for match in RUN_LANE_RE.finditer(run))
+                step_lanes = {
+                    match.group("lane") for match in RUN_LANE_RE.finditer(run)
+                }
+                if step_lanes and step.get("if") is not None:
+                    raise ValueError(
+                        f"{path}: scheduled lane run in job {job_name!r} has an "
+                        "unsupported step-level if condition"
+                    )
+                lanes.update(step_lanes)
             uses = step.get("uses", "")
             if isinstance(uses, str) and uses.startswith("actions/upload-artifact@"):
                 options = step.get("with", {})
                 if isinstance(options, dict):
                     artifact_specs.append(
-                        (str(options.get("name", "")), str(options.get("path", "")))
+                        (
+                            str(options.get("name", "")),
+                            str(options.get("path", "")),
+                            step.get("if"),
+                        )
                     )
 
+        if lanes and job.get("if") is not None:
+            raise ValueError(
+                f"{path}: scheduled lane job {job_name!r} has an unsupported "
+                "job-level if condition"
+            )
         for lane in lanes:
             if lane in scheduled:
                 raise ValueError(f"{path}: scheduled lane {lane!r} appears in multiple jobs")
             scheduled[lane] = any(
-                lane in name and "tests/blackbox/artifacts/" in artifact_path
-                for name, artifact_path in artifact_specs
+                lane in name
+                and "tests/blackbox/artifacts/" in artifact_path
+                and _condition_is_always(condition)
+                for name, artifact_path, condition in artifact_specs
             )
 
     return scheduled
