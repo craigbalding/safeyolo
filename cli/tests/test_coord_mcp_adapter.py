@@ -103,6 +103,36 @@ def test_read_brief_uses_authorized_canonical_route(monkeypatch):
     ]
 
 
+def test_inventory_tools_use_authorized_identity_derived_routes(monkeypatch):
+    module = _load_adapter(monkeypatch)
+    calls = []
+
+    async def get(path, params=None, *, timeout=60.0):
+        calls.append(("GET", path, params, timeout))
+        return {"members": []}
+
+    async def post(path, body):
+        calls.append(("POST", path, body, 60.0))
+        return {"count": len(body["capabilities"])}
+
+    monkeypatch.setattr(module, "_get", get)
+    monkeypatch.setattr(module, "_post", post)
+
+    assert asyncio.run(module.get_room_state("huddle")) == {"members": []}
+    assert asyncio.run(
+        module.declare_capabilities("huddle", ["skill:python"], 120)
+    ) == {"count": 1}
+    assert calls == [
+        ("GET", "/api/coord/rooms/huddle/state", None, 60.0),
+        (
+            "POST",
+            "/api/coord/rooms/huddle/declarations",
+            {"capabilities": ["skill:python"], "ttl_seconds": 120},
+            60.0,
+        ),
+    ]
+
+
 def test_wait_for_coord_resolves_the_whole_page_before_returning_cursor(monkeypatch):
     module = _load_adapter(monkeypatch)
     calls = []
@@ -180,6 +210,12 @@ def test_tool_descriptions_guide_the_targeted_multi_room_workflow(monkeypatch):
     )
     assert "canonical trusted operator brief" in (
         module.read_brief.__doc__ or ""
+    )
+    assert "current authoritative room identity" in (
+        module.get_room_state.__doc__ or ""
+    )
+    assert "attributed but untrusted" in (
+        module.declare_capabilities.__doc__ or ""
     )
     assert "resolution failure fails" in (module.wait_for_coord.__doc__ or "")
     assert "Lower-level resolution operation" in (

@@ -71,7 +71,9 @@ def test_v3_migration_adds_brief_projection_history_and_immutability(
     store.init_schema()
 
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            store.CURRENT_SCHEMA_VERSION
+        )
         objects = {
             (row["type"], row["name"])
             for row in conn.execute(
@@ -117,7 +119,9 @@ def test_v3_brief_migration_failure_rolls_back_and_retries(isolated_coord):
 
     store.init_schema()
     with store.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (
+            store.CURRENT_SCHEMA_VERSION
+        )
         assert conn.execute(
             "SELECT count(*) FROM coord_brief_revisions"
         ).fetchone()[0] == 0

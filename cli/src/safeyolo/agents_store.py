@@ -1,5 +1,6 @@
 """Centralized read/write for agent config in policy.toml [agents] section."""
 
+import fcntl
 import ipaddress
 import json
 import logging
@@ -107,6 +108,25 @@ def load_all_agents() -> dict[str, dict]:
     """Read all agent entries from policy.toml [agents]. Returns {} if missing."""
     doc = _load_doc()
     return _get_agents(doc)
+
+
+def load_all_agents_snapshot() -> dict[str, dict]:
+    """Read all agents while excluding SafeYolo policy mutations.
+
+    Coordination inventory uses this as the authoritative configured-agent
+    linearization point. Writers already take the sibling policy lock, so a
+    shared read lock cannot observe a half-completed SafeYolo mutation.
+    """
+    path = _policy_toml_path()
+    lock_path = path.parent / ".policy.toml.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.touch()
+    with open(lock_path) as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_SH)
+        try:
+            return _get_agents(_load_doc())
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def load_agent(name: str) -> dict:

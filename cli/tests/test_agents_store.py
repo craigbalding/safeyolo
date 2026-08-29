@@ -7,6 +7,7 @@ from safeyolo.agents_store import (
     _load_doc,
     load_agent,
     load_all_agents,
+    load_all_agents_snapshot,
     remove_agent,
     reserve_agent_network_slot,
     reserve_agent_tailnet_port,
@@ -45,6 +46,13 @@ class TestLoadAllAgents:
     def test_empty_when_file_missing(self, tmp_config_dir):
         """Returns {} when policy.toml doesn't exist."""
         assert load_all_agents() == {}
+
+    def test_locked_snapshot_returns_current_stable_identity(self, tmp_config_dir):
+        _write_policy(tmp_config_dir)
+        save_agent("alice", {"agent_id": "ag-" + "a" * 32})
+        assert load_all_agents_snapshot() == {
+            "alice": {"agent_id": "ag-" + "a" * 32}
+        }
 
 
 class TestSaveAndLoadAgent:

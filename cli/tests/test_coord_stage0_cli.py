@@ -166,6 +166,94 @@ def test_brief_show_json_exposes_current_trusted_state(monkeypatch):
     assert json.loads(result.output)["markdown"] == "# trusted"
 
 
+def test_room_state_json_calls_operator_inventory_surface(monkeypatch):
+    monkeypatch.setattr(coord.api, "bootstrap", lambda: "sy-test")
+    monkeypatch.setattr(coord, "_run", lambda result: result)
+    state = {
+        "room_id": "rm-r",
+        "room_name": "r",
+        "origin_instance_id": "sy-test",
+        "generated_at": 1,
+        "brief": {"revision": 0},
+        "members": [],
+        "resource_leases": [],
+    }
+    monkeypatch.setattr(coord.api, "get_room_state", lambda room: state)
+
+    result = CliRunner().invoke(coord.coord_app, ["state", "r", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == state
+
+
+def test_inventory_capability_advertisement_passes_stable_agent_id_and_operation(
+    monkeypatch,
+):
+    seen = {}
+    monkeypatch.setattr(coord.api, "bootstrap", lambda: "sy-test")
+    monkeypatch.setattr(
+        coord,
+        "_resolve_agent_id",
+        lambda name: "ag-" + "a" * 32,
+    )
+
+    def advertise(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return {"changed": True}
+
+    monkeypatch.setattr(coord.api, "advertise_capability", advertise)
+    result = CliRunner().invoke(
+        coord.coord_app,
+        [
+            "inventory",
+            "advertise-capability",
+            "r",
+            "alice",
+            "rundeck:acceptance_runner",
+            "--operation-id",
+            "op-ad",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == {
+        "args": ("r", "ag-" + "a" * 32, "rundeck:acceptance_runner"),
+        "kwargs": {"advertised": True, "operation_id": "op-ad"},
+    }
+    assert "operation_id=op-ad" in result.output
+
+
+def test_inventory_resource_unadvertisement_uses_operator_surface(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(coord.api, "bootstrap", lambda: "sy-test")
+
+    def advertise(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return {"changed": True}
+
+    monkeypatch.setattr(coord.api, "advertise_resource", advertise)
+    result = CliRunner().invoke(
+        coord.coord_app,
+        [
+            "inventory",
+            "unadvertise-resource",
+            "r",
+            "rundeck",
+            "devstack",
+            "--operation-id",
+            "op-resource",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == {
+        "args": ("r", "rundeck", "devstack"),
+        "kwargs": {"advertised": False, "operation_id": "op-resource"},
+    }
+
+
 def test_interactive_send_reports_ambiguous_acceptance_without_safe_retry(
     monkeypatch,
 ):

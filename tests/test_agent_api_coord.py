@@ -985,6 +985,241 @@ class TestCoordOperatorBrief:
         assert json.loads(history.response.content)["messages"] == []
 
 
+class TestCoordRoomInventory:
+    def test_state_join_and_declarations_use_transport_identity(
+        self, api, isolated_state
+    ):
+        from safeyolo.agents_store import get_or_mint_agent_id, save_agent
+        from safeyolo.coord import api as coord_api
+
+        _register_agent("alice")
+        _register_agent("bob")
+        _register_agent("codey")
+        alice_id = get_or_mint_agent_id("alice")
+        bob_id = get_or_mint_agent_id("bob")
+        save_agent(
+            "alice",
+            {
+                "agent_id": alice_id,
+                "services": {
+                    "github": {
+                        "capability": "write_pr",
+                        "token": "credential-must-not-leak",
+                    }
+                },
+            },
+        )
+        coord_api.bootstrap()
+        _await(coord_api.create_room("inventory-api"))
+        _grant("inventory-api", "agent", alice_id)
+        _grant("inventory-api", "agent", bob_id, permissions=["send"])
+        coord_api.advertise_capability(
+            "inventory-api",
+            alice_id,
+            "github:write_pr",
+            advertised=True,
+            operation_id="op-inventory-api-ad",
+        )
+
+        with _as_agent("alice"):
+            declared = _make_flow(
+                "/api/coord/rooms/inventory-api/declarations",
+                method="POST",
+                body={"capabilities": ["skill:python"], "ttl_seconds": 60},
+            )
+            _run(api, declared)
+            state = _make_flow(
+                "/api/coord/rooms/inventory-api/state", method="GET"
+            )
+            _run(api, state)
+            joined = _make_flow(
+                "/api/coord/rooms/inventory-api/join", method="POST"
+            )
+            _run(api, joined)
+        assert declared.response.status_code == 200
+        assert state.response.status_code == 200
+        public_state = json.loads(state.response.content)
+        alice = next(
+            member
+            for member in public_state["members"]
+            if member["agent_id"] == alice_id
+        )
+        assert alice["verified"][0]["capability"] == "github:write_pr"
+        assert alice["declared"][0]["capability"] == "skill:python"
+        assert b"credential-must-not-leak" not in state.response.content
+        assert json.loads(joined.response.content)["state"]["members"] == (
+            public_state["members"]
+        )
+
+        with _as_agent("bob"):
+            denied = _make_flow(
+                "/api/coord/rooms/inventory-api/state", method="GET"
+            )
+            _run(api, denied)
+            send_only_join = _make_flow(
+                "/api/coord/rooms/inventory-api/join", method="POST"
+            )
+            _run(api, send_only_join)
+        assert denied.response.status_code == 403
+        assert send_only_join.response.status_code == 200
+        assert json.loads(send_only_join.response.content)["state"] is None
+
+        with _as_agent("codey"):
+            nonmember = _make_flow(
+                "/api/coord/rooms/inventory-api/state", method="GET"
+            )
+            _run(api, nonmember)
+            nonexistent = _make_flow(
+                "/api/coord/rooms/missing-inventory-room/state", method="GET"
+            )
+            _run(api, nonexistent)
+            cannot_mutate_state = _make_flow(
+                "/api/coord/rooms/inventory-api/state",
+                method="POST",
+                body={"verified": [{"capability": "github:admin"}]},
+            )
+            _run(api, cannot_mutate_state)
+        assert nonmember.response.status_code == 404
+        assert nonmember.response.content == nonexistent.response.content
+        assert cannot_mutate_state.response.status_code == 405
+
+        _revoke_grant("inventory-api", "agent", alice_id)
+        with _as_agent("alice"):
+            revoked = _make_flow(
+                "/api/coord/rooms/inventory-api/state", method="GET"
+            )
+            _run(api, revoked)
+        assert revoked.response.status_code == 404
+
+    @pytest.mark.timeout(45)
+    def test_real_agent_api_nats_three_agent_inventory_dogfood(
+        self, api, isolated_state
+    ):
+        """Three peers discover current capability/lease state with no chat."""
+        from safeyolo.agents_store import get_or_mint_agent_id, save_agent
+        from safeyolo.coord import api as coord_api
+        from safeyolo.coord import inventory, nats_client
+        from safeyolo.coord import nats_runtime as nr
+
+        class Provider:
+            def __init__(self):
+                self.observed_at = coord_api.store.now_ms()
+
+            async def observe(self, request):
+                now = self.observed_at
+                return {
+                    "capabilities": [
+                        {
+                            "agent_id": agent_id,
+                            "capability": capability,
+                            "availability": "available",
+                            "observed_at": now,
+                            "valid_until": now + 30_000,
+                            "token": "provider-token-must-not-leak",
+                        }
+                        for agent_id, capability in request.capabilities
+                    ],
+                    "leases": [
+                        {
+                            "resource": resource,
+                            "state": "held",
+                            "holder_agent_id": get_or_mint_agent_id("bob"),
+                            "observed_at": now,
+                            "valid_until": now + 30_000,
+                            "account": "provider-account-must-not-leak",
+                        }
+                        for resource in request.resources
+                    ],
+                }
+
+        inventory.clear_provider_adapters()
+        inventory.register_provider_adapter("rundeck", Provider())
+        try:
+            for name in ("alice", "bob", "codey"):
+                _register_agent(name)
+            agent_ids = {
+                name: get_or_mint_agent_id(name)
+                for name in ("alice", "bob", "codey")
+            }
+            for name, agent_id in agent_ids.items():
+                save_agent(
+                    name,
+                    {
+                        "agent_id": agent_id,
+                        "services": {
+                            "rundeck": {
+                                "capability": f"{name}_runner",
+                                "token": f"credential-{name}-must-not-leak",
+                            }
+                        },
+                    },
+                )
+            coord_api.bootstrap()
+            _await(coord_api.create_room("inventory-dogfood"))
+            for name, agent_id in agent_ids.items():
+                _grant("inventory-dogfood", "agent", agent_id)
+                coord_api.advertise_capability(
+                    "inventory-dogfood",
+                    agent_id,
+                    f"rundeck:{name}_runner",
+                    advertised=True,
+                    operation_id=f"op-inventory-dogfood-{name}",
+                )
+            coord_api.advertise_resource(
+                "inventory-dogfood",
+                "rundeck",
+                "acceptance_runner",
+                advertised=True,
+                operation_id="op-inventory-dogfood-resource",
+            )
+
+            useful_state_reads = 0
+            canonical_members = None
+            for name in ("alice", "bob", "codey"):
+                with _as_agent(name):
+                    flow = _make_flow(
+                        "/api/coord/rooms/inventory-dogfood/state",
+                        method="GET",
+                    )
+                    _run(api, flow)
+                assert flow.response.status_code == 200
+                assert b"must-not-leak" not in flow.response.content
+                state = json.loads(flow.response.content)
+                assert all(
+                    member["verified"][0]["availability"] == "available"
+                    for member in state["members"]
+                )
+                assert state["resource_leases"][0]["holder_agent_id"] == agent_ids[
+                    "bob"
+                ]
+                canonical_members = canonical_members or state["members"]
+                assert state["members"] == canonical_members
+                useful_state_reads += 1
+            assert useful_state_reads == 3
+
+            with _as_agent("alice"):
+                history = _make_flow(
+                    "/api/coord/rooms/inventory-dogfood/messages?since=0",
+                    method="GET",
+                )
+                _run(api, history)
+            assert json.loads(history.response.content)["messages"] == []
+
+            nr.stop_server()
+            nats_client.reset_for_tests()
+            nr.start_server(ready_timeout=8.0)
+            with _as_agent("codey"):
+                restarted = _make_flow(
+                    "/api/coord/rooms/inventory-dogfood/state",
+                    method="GET",
+                )
+                _run(api, restarted)
+            assert restarted.response.status_code == 200
+            assert len(json.loads(restarted.response.content)["members"]) == 3
+        finally:
+            inventory.clear_provider_adapters()
+
+
 class TestCoordSenderAgentName:
     """Per #22: envelope carries SafeYolo-generated sender_agent_name so
     peers don't need to lookup /members for every message."""

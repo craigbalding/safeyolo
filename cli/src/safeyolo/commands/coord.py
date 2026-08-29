@@ -174,6 +174,13 @@ brief_app = typer.Typer(
 )
 coord_app.add_typer(brief_app, name="brief")
 
+inventory_app = typer.Typer(
+    name="inventory",
+    help="Room-visible capability and provider-resource advertisements.",
+    no_args_is_help=True,
+)
+coord_app.add_typer(inventory_app, name="inventory")
+
 
 @room_app.command("create")
 def room_create(
@@ -378,6 +385,191 @@ def brief_set(
         f"[green]operator brief updated[/]  room={room}  "
         f"revision={result['revision']}  hash={result['content_hash']}  "
         f"operation_id={operation_id}"
+    )
+
+
+@coord_app.command("state")
+def room_state(
+    room: str = typer.Argument(..., help="Room name"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show current authoritative room identity/capability/resource state."""
+    api.bootstrap()
+    try:
+        state = _run(api.get_room_state(room))
+    except (api.NotFoundError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1)
+    if json_output:
+        console.print_json(json.dumps(state, ensure_ascii=False))
+        return
+
+    console.print(
+        f"[bold]room state[/bold]  room={room}  "
+        f"brief_revision={state['brief']['revision']}"
+    )
+    members = Table(
+        "name",
+        "agent_id",
+        "configured",
+        "room permissions",
+        "verified",
+        "declared",
+    )
+    for member in state["members"]:
+        verified = "\n".join(
+            f"{item['capability']} [{item['availability']}]"
+            for item in member["verified"]
+        )
+        declared = "\n".join(
+            item["capability"] for item in member["declared"]
+        )
+        members.add_row(
+            member["display_name"] or "-",
+            member["agent_id"],
+            "yes" if member["configured"] else "no",
+            ",".join(member["room_permissions"]),
+            verified or "-",
+            declared or "-",
+        )
+    console.print(members)
+    if state["resource_leases"]:
+        leases = Table("provider", "resource", "state", "holder", "freshness")
+        for lease in state["resource_leases"]:
+            leases.add_row(
+                lease["provider"],
+                lease["resource"],
+                lease["state"],
+                lease["holder_display_name"] or lease["holder_agent_id"] or "-",
+                lease["freshness"],
+            )
+        console.print(leases)
+
+
+def _inventory_capability_change(
+    room: str,
+    agent_name: str,
+    capability: str,
+    *,
+    advertised: bool,
+    operation_id: str | None,
+) -> None:
+    api.bootstrap()
+    agent_id = _resolve_agent_id(agent_name)
+    operation_id = operation_id or new_operation_id()
+    try:
+        result = api.advertise_capability(
+            room,
+            agent_id,
+            capability,
+            advertised=advertised,
+            operation_id=operation_id,
+        )
+    except (api.NotFoundError, api.OperationConflictError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]  operation_id={operation_id}")
+        raise typer.Exit(1)
+    transition = "advertised" if advertised else "unadvertised"
+    console.print(
+        f"[green]{transition}[/]  room={room}  agent={agent_name}  "
+        f"capability={capability}  changed={result['changed']}  "
+        f"operation_id={operation_id}"
+    )
+
+
+@inventory_app.command("advertise-capability")
+def inventory_advertise_capability(
+    room: str,
+    agent_name: str,
+    capability: str,
+    operation_id: str | None = typer.Option(None, "--operation-id"),
+) -> None:
+    """Advertise one current SafeYolo grant as a room-visible label."""
+    _inventory_capability_change(
+        room,
+        agent_name,
+        capability,
+        advertised=True,
+        operation_id=operation_id,
+    )
+
+
+@inventory_app.command("unadvertise-capability")
+def inventory_unadvertise_capability(
+    room: str,
+    agent_name: str,
+    capability: str,
+    operation_id: str | None = typer.Option(None, "--operation-id"),
+) -> None:
+    """Remove one room-visible capability label."""
+    _inventory_capability_change(
+        room,
+        agent_name,
+        capability,
+        advertised=False,
+        operation_id=operation_id,
+    )
+
+
+def _inventory_resource_change(
+    room: str,
+    provider: str,
+    resource: str,
+    *,
+    advertised: bool,
+    operation_id: str | None,
+) -> None:
+    api.bootstrap()
+    operation_id = operation_id or new_operation_id()
+    try:
+        result = api.advertise_resource(
+            room,
+            provider,
+            resource,
+            advertised=advertised,
+            operation_id=operation_id,
+        )
+    except (api.NotFoundError, api.OperationConflictError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]  operation_id={operation_id}")
+        raise typer.Exit(1)
+    transition = "advertised" if advertised else "unadvertised"
+    console.print(
+        f"[green]{transition}[/]  room={room}  provider={provider}  "
+        f"resource={resource}  changed={result['changed']}  "
+        f"operation_id={operation_id}"
+    )
+
+
+@inventory_app.command("advertise-resource")
+def inventory_advertise_resource(
+    room: str,
+    provider: str,
+    resource: str,
+    operation_id: str | None = typer.Option(None, "--operation-id"),
+) -> None:
+    """Advertise one provider-owned resource label to the room."""
+    _inventory_resource_change(
+        room,
+        provider,
+        resource,
+        advertised=True,
+        operation_id=operation_id,
+    )
+
+
+@inventory_app.command("unadvertise-resource")
+def inventory_unadvertise_resource(
+    room: str,
+    provider: str,
+    resource: str,
+    operation_id: str | None = typer.Option(None, "--operation-id"),
+) -> None:
+    """Remove one room-visible provider resource label."""
+    _inventory_resource_change(
+        room,
+        provider,
+        resource,
+        advertised=False,
+        operation_id=operation_id,
     )
 
 

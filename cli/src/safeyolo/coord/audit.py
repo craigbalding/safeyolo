@@ -19,6 +19,9 @@ _SUMMARIES = {
     "coord.operation_conflict": "Coord operation ID conflict",
     "coord.attention_projection_lost": "Coord attention projection lost to retention",
     "coord.brief_updated": "Coord operator brief updated",
+    "coord.inventory_advertisement_changed": (
+        "Coord room inventory advertisement changed"
+    ),
 }
 
 # This is deliberately an allow-list.  AuditEvent.details is generic, while
@@ -26,15 +29,19 @@ _SUMMARIES = {
 _ALLOWED_DETAIL_KEYS = frozenset(
     {
         "actor",
+        "advertisement_kind",
+        "agent_id",
         "content_hash",
         "error_class",
         "from_sequence",
         "from_version",
+        "label",
         "object_id",
         "operation_id",
         "operation_type",
         "principal_id",
         "principal_kind",
+        "provider",
         "request_hash",
         "revision",
         "room_id",

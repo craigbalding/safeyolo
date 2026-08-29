@@ -340,6 +340,21 @@ bob
       asserted_at: ...
 ```
 
+The operator surface is explicit and room-scoped:
+
+```text
+coord state huddle
+coord inventory advertise-capability huddle bob rundeck:acceptance_runner
+coord inventory unadvertise-capability huddle bob rundeck:acceptance_runner
+coord inventory advertise-resource huddle rundeck acceptance_runner
+```
+
+Provider adapters receive only room ID, stable member IDs, advertised granted
+labels and advertised resource labels. Their raw payloads and errors never
+enter room state: coord allow-lists availability/lease fields, bounds the call
+and output, and changes missing, failed, malformed or stale evidence to
+`unknown`.
+
 Keep provenance explicit:
 
 * `verified`: SafeYolo-derived. `authorized` is a current platform grant.
