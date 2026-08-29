@@ -213,6 +213,13 @@ Return what the coordinator needs to consume the result. Do not include a
 diary of commands, reasoning, intermediate discoveries, elapsed effort, or
 test transcripts unless the task explicitly requests that evidence.
 
+An existing terminal completion or review disposition may carry genuine
+structured candidate material under the optional
+[completion-note contract](completion-notes.md). Keep the ordinary leading
+transition and required result self-contained. Zero candidates is normal and
+adds no bytes. Authors never supply provenance; a trusted coordinator derives
+it from the canonical retained envelope and ignores invalid trailers.
+
 ### `BLOCKED`
 
 Use only when progress genuinely cannot continue without an external fact,

@@ -88,6 +88,13 @@ PR and exact reviewed HEAD.
 Work silently between these state transitions; do not send review-progress or
 acknowledgement chatter.
 
+On the final terminal `DONE`, an owner may append a genuine
+`DISPATCH_CANDIDATE` using the optional
+[completion-note contract](../coord-completion-notes.md). Leave an ordinary
+completion byte-for-byte unchanged when there is no candidate. Never author
+sender or coord provenance; trusted ingestion derives it from the canonical
+envelope.
+
 ## Hand off a reviewable PR
 
 - Create or update a focused pull request that links or closes the issue and
