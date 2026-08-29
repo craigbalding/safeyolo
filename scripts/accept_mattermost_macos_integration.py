@@ -116,8 +116,7 @@ def _validate_test_source(path: Path, config: MattermostConfig) -> None:
         raise AcceptanceError("test config bot_token_file must be a relative sibling filename")
     if config.bot_token_file != path.with_name(token_reference.name):
         raise AcceptanceError("test config bot_token_file must resolve to its relative sibling")
-    token = read_bot_token(config.bot_token_file)
-    del token
+    read_bot_token(config.bot_token_file)
 
 
 def _available_loopback_port(host: str) -> int:
