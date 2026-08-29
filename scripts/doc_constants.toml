@@ -17,6 +17,46 @@ must_contain = "{size_mb} MiB"
 forbidden = ["20% + 50MB headroom", "20%+50MB headroom"]
 
 [[assertion]]
+name = "coord-completion-trailer-size-kib"
+source = "cli/src/safeyolo/coord/completion_notes.py"
+pattern = 'MAX_TRAILER_BYTES = (?P<size_kib>\d+) \* 1024'
+docs = [
+    "docs/coord-completion-notes.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo/references/completion-notes.md",
+]
+must_contain = "{size_kib} KiB"
+
+[[assertion]]
+name = "coord-completion-candidate-count"
+source = "cli/src/safeyolo/coord/completion_notes.py"
+pattern = 'MAX_CANDIDATES = (?P<count>\d+)'
+docs = [
+    "docs/coord-completion-notes.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo/references/completion-notes.md",
+]
+must_contain = "{count} candidates"
+
+[[assertion]]
+name = "coord-completion-evidence-count"
+source = "cli/src/safeyolo/coord/completion_notes.py"
+pattern = 'MAX_EVIDENCE = (?P<count>\d+)'
+docs = [
+    "docs/coord-completion-notes.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo/references/completion-notes.md",
+]
+must_contain = "{count} evidence"
+
+[[assertion]]
+name = "coord-completion-trailer-marker"
+source = "cli/src/safeyolo/coord/completion_notes.py"
+pattern = 'TRAILER_START = "(?P<marker><<<SAFEYOLO_COMPLETION_NOTES_V\d+>>>)"'
+docs = [
+    "docs/coord-completion-notes.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo/references/completion-notes.md",
+]
+must_contain = "{marker}"
+
+[[assertion]]
 name = "mise-version-pin"
 source = "guest/build-rootfs.sh"
 pattern = 'MISE_VERSION="\$\{MISE_VERSION:-(?P<mise_version>[0-9.]+)\}"'

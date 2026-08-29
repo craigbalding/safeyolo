@@ -305,6 +305,7 @@ SafeYolo is **pre-v1**. Sandbox runtime is hardware-backed microVMs on macOS and
 - [Agent Networking (vsock/UDS)](docs/networking-vsock-uds.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Mattermost Coord Adapter](docs/coord-mattermost.md)
+- [Coord Completion Notes](docs/coord-completion-notes.md)
 - [Architecture & Addons](docs/ADDONS.md)
 - [Security & Threat Model](SECURITY.md)
 - [Contributing](docs/DEVELOPERS.md)

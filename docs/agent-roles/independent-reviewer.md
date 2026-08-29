@@ -120,3 +120,10 @@ need=<specific evidence, input, capability, or decision required>
 GitHub findings are an optional additional record when write access exists.
 The coord disposition must remain complete without GitHub write credentials or
 requiring the owner to discover substantive findings elsewhere.
+
+When the review produces a genuine factory-process observation, the reviewer
+may append a `FACTORY_CANDIDATE` using the optional
+[completion-note contract](../coord-completion-notes.md). The leading
+`READY`, `CHANGES_REQUIRED`, or `BLOCKED` disposition remains ordinary and
+self-contained. Add no trailer when there is no candidate, and never author
+sender or coord provenance.

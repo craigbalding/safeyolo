@@ -40,6 +40,7 @@ user_facing_docs = [
     "docs/agent-lifecycle-identity-plan.md",
     "docs/agent-roles/independent-reviewer.md",
     "docs/agent-roles/issue-owner.md",
+    "docs/coord-completion-notes.md",
     "docs/security-verification.md",
 ]
 

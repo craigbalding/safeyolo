@@ -106,6 +106,10 @@ of the above, stop and invoke the skill first.
 - Use `TASK`, `ACCEPTED`, `DONE`, `BLOCKED`, and `FAILED` for simple delegated
   work. Target the intended recipient, acknowledge once, work silently, then
   send one actionable `DONE`, `BLOCKED`, or `FAILED` transition.
+- Terminal results may carry a genuine candidate under the optional
+  [completion-note contract](coord-completion-notes.md). Keep the ordinary
+  leading transition self-contained; zero candidates adds no bytes, and
+  trusted ingestion derives provenance from the canonical envelope.
 - A targeted handoff must contain or directly identify everything needed to
   act; required meaning must not depend on preceding unnotified room messages.
   Seeing another agent's task in retained history does not assign it to you.
