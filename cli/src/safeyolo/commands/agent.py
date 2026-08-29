@@ -1592,9 +1592,25 @@ def run(  # DOC: README.md, docs/AGENTS.md
             host_script_path=host_script_path,
             folder_str=str(folder_path),
         )
-        updated_metadata = dict(metadata)
-        updated_metadata["host_script"] = str(host_script_path)
-        save_agent(name, updated_metadata)
+
+        # The setup script can take arbitrarily long. Persist only its selected
+        # path against the latest authoritative record so a concurrent config,
+        # reservation, grant, or identity update cannot be overwritten by the
+        # metadata snapshot loaded before the script ran.
+        def persist_host_script(current):
+            current["host_script"] = str(host_script_path)
+
+        try:
+            mutate_agent(name, persist_host_script)
+        except KeyError:
+            console.print(
+                f"[red]Agent '{name}' was removed while its host script was running.[/red]"
+            )
+            console.print(
+                "The setup script completed, but SafeYolo did not recreate the "
+                "deleted configuration."
+            )
+            raise typer.Exit(1)
 
     associate_agent_pane(name)
     exit_code = _run_agent(

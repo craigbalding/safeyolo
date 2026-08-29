@@ -3,7 +3,12 @@
 import os
 from unittest.mock import MagicMock, patch
 
-from safeyolo.agents_store import load_agent, save_agent
+from safeyolo.agents_store import (
+    load_agent,
+    mutate_agent,
+    remove_agent,
+    save_agent,
+)
 from safeyolo.cli import app
 
 
@@ -284,3 +289,77 @@ class TestAgentConfigFolder:
         assert run_agent.call_args_list[0].kwargs["folder_override"] is None
         assert run_agent.call_args_list[1].kwargs["folder_override"] == str(transient)
         assert load_agent("worker")["folder"] == str(persistent.resolve())
+
+    def test_run_host_script_cannot_restore_stale_concurrent_folder(
+        self, cli_runner, tmp_config_dir, tmp_path
+    ):
+        """The supported long-running writer must update only host_script."""
+        old = tmp_path / "old"
+        new = tmp_path / "new"
+        old.mkdir()
+        new.mkdir()
+        script = tmp_path / "new-setup.sh"
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o755)
+        before = _setup_agent(
+            tmp_config_dir,
+            old,
+            network_slot=23,
+            tailnet_port=10443,
+            grants=[{"id": "grant-1", "scope": {"repo": "safe/yolo"}}],
+        )
+
+        def interleaved_config(**_kwargs):
+            def set_folder(current):
+                current["folder"] = str(new.resolve())
+
+            changed, _ = mutate_agent("worker", set_folder)
+            assert changed
+
+        with (
+            patch(
+                "safeyolo.commands.agent._run_host_script_for_agent",
+                side_effect=interleaved_config,
+            ),
+            patch("safeyolo.commands.agent._run_agent", return_value=0),
+            patch("safeyolo.commands.agent.associate_agent_pane"),
+        ):
+            result = cli_runner.invoke(
+                app,
+                ["agent", "run", "worker", "--host-script", str(script)],
+            )
+
+        assert result.exit_code == 0, result.output
+        after = load_agent("worker")
+        assert after == {
+            **before,
+            "folder": str(new.resolve()),
+            "host_script": str(script.resolve()),
+        }
+
+    def test_run_host_script_does_not_recreate_concurrently_removed_agent(
+        self, cli_runner, tmp_config_dir, tmp_path
+    ):
+        folder = tmp_path / "project"
+        folder.mkdir()
+        script = tmp_path / "setup.sh"
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o755)
+        _setup_agent(tmp_config_dir, folder)
+
+        with (
+            patch(
+                "safeyolo.commands.agent._run_host_script_for_agent",
+                side_effect=lambda **_kwargs: remove_agent("worker"),
+            ),
+            patch("safeyolo.commands.agent._run_agent", return_value=0) as run_agent,
+        ):
+            result = cli_runner.invoke(
+                app,
+                ["agent", "run", "worker", "--host-script", str(script)],
+            )
+
+        assert result.exit_code == 1
+        assert "was removed while its host script was running" in result.output
+        assert load_agent("worker") == {}
+        run_agent.assert_not_called()
