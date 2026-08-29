@@ -18,6 +18,8 @@ import re
 import secrets
 import sqlite3
 import stat
+import sys
+import threading
 import time
 import tomllib
 import weakref
@@ -59,6 +61,14 @@ _CAPABILITY_TTL_MIN = 5 * 60
 _CAPABILITY_TTL_MAX = 7 * 24 * 60 * 60
 
 logger = logging.getLogger(__name__)
+
+_DARWIN_F_GETPATH = getattr(fcntl, "F_GETPATH", 50)
+_DARWIN_PATH_BUFFER_BYTES = 1024
+_SQLITE_FD_DISCOVERY_LOCK = threading.Lock()
+
+
+def _is_darwin() -> bool:
+    return sys.platform == "darwin"
 
 
 class MattermostAdapterError(RuntimeError):
@@ -416,7 +426,138 @@ def _close_fds(fds: tuple[int, ...]) -> None:
             pass
 
 
-def _open_state_anchors(path: Path) -> tuple[int, int, str]:
+def _fd_alias_matches(candidate: str, identity: tuple[int, int]) -> bool:
+    """Verify an fd pseudo-path by opening it, not by trusting pseudo-fs stat."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    try:
+        duplicate_fd = os.open(candidate, flags)
+    except OSError:
+        return False
+    try:
+        duplicate = os.fstat(duplicate_fd)
+        return stat.S_ISREG(duplicate.st_mode) and (duplicate.st_dev, duplicate.st_ino) == identity
+    except OSError:
+        return False
+    finally:
+        os.close(duplicate_fd)
+
+
+def _fd_alias_stat_identity(candidate: str) -> tuple[int, int] | None:
+    try:
+        linked = os.stat(candidate)
+    except OSError:
+        return None
+    return linked.st_dev, linked.st_ino
+
+
+def _darwin_path_from_fd(fd: int) -> Path:
+    """Return Darwin's filesystem pathname for an already validated fd."""
+
+    try:
+        raw = fcntl.fcntl(fd, _DARWIN_F_GETPATH, b"\0" * _DARWIN_PATH_BUFFER_BYTES)
+        if not isinstance(raw, bytes):
+            raise OSError("F_GETPATH returned no path")
+        encoded = raw.split(b"\0", 1)[0]
+        if not encoded:
+            raise OSError("F_GETPATH returned an empty path")
+        result = Path(os.fsdecode(encoded))
+    except (OSError, ValueError) as exc:
+        raise MattermostAdapterError(
+            f"cannot resolve validated state_file path on Darwin: {type(exc).__name__}"
+        ) from exc
+    if not result.is_absolute():
+        raise MattermostAdapterError("validated Darwin state_file path must be absolute")
+    return result
+
+
+def _sqlite_path_for_state(path: Path, state_fd: int, state_opened: os.stat_result) -> tuple[str, bool]:
+    """Choose a WAL-safe SQLite path while retaining full fd identity."""
+
+    identity = (state_opened.st_dev, state_opened.st_ino)
+    for root in ("/proc/self/fd", "/dev/fd"):
+        candidate = f"{root}/{state_fd}"
+        if not _fd_alias_matches(candidate, identity):
+            continue
+        if _fd_alias_stat_identity(candidate) == identity:
+            return candidate, False
+        if _is_darwin() and root == "/dev/fd":
+            resolved = _darwin_path_from_fd(state_fd)
+            try:
+                resolved_st = resolved.lstat()
+                resolved_parent_st = resolved.parent.stat()
+                configured_parent_st = path.parent.stat()
+            except OSError as exc:
+                raise MattermostAdapterError(
+                    f"cannot validate resolved Darwin state_file: {type(exc).__name__}"
+                ) from exc
+            if not stat.S_ISREG(resolved_st.st_mode) or (resolved_st.st_dev, resolved_st.st_ino) != identity:
+                raise MattermostAdapterError("resolved Darwin state_file identity does not match validated file")
+            if (resolved_parent_st.st_dev, resolved_parent_st.st_ino) != (
+                configured_parent_st.st_dev,
+                configured_parent_st.st_ino,
+            ):
+                raise MattermostAdapterError("resolved Darwin state_file parent differs from validated parent")
+            return str(resolved), True
+    raise MattermostAdapterError("platform cannot bind SQLite to the validated state_file")
+
+
+def _active_fd_numbers() -> set[int]:
+    """List descriptors that remain open after pseudo-directory enumeration."""
+
+    for root in ("/proc/self/fd", "/dev/fd"):
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        result: set[int] = set()
+        for name in names:
+            if not name.isdigit():
+                continue
+            fd = int(name)
+            try:
+                os.fstat(fd)
+            except OSError:
+                continue
+            result.add(fd)
+        return result
+    raise MattermostAdapterError("platform cannot enumerate SQLite descriptors")
+
+
+def _new_fd_for_identity(previous: set[int], identity: tuple[int, int]) -> int:
+    matches: list[int] = []
+    for fd in _active_fd_numbers() - previous:
+        try:
+            opened = os.fstat(fd)
+        except OSError:
+            continue
+        if stat.S_ISREG(opened.st_mode) and (opened.st_dev, opened.st_ino) == identity:
+            matches.append(fd)
+    if len(matches) != 1:
+        raise MattermostAdapterError("SQLite did not open exactly the validated state_file identity")
+    return matches[0]
+
+
+def _open_sqlite_connection(
+    path: str,
+    *,
+    verify_fd: bool,
+    identity: tuple[int, int],
+) -> tuple[sqlite3.Connection, int | None]:
+    if not verify_fd:
+        return sqlite3.connect(path, isolation_level=None, timeout=10), None
+    with _SQLITE_FD_DISCOVERY_LOCK:
+        previous_fds = _active_fd_numbers()
+        conn = sqlite3.connect(path, isolation_level=None, timeout=10)
+        try:
+            sqlite_fd = _new_fd_for_identity(previous_fds, identity)
+        except (MattermostAdapterError, OSError):
+            conn.close()
+            raise
+    return conn, sqlite_fd
+
+
+def _open_state_anchors(path: Path) -> tuple[int, int, str, bool]:
     """Open stable parent/file identities before SQLite sees a pathname."""
 
     try:
@@ -466,21 +607,7 @@ def _open_state_anchors(path: Path) -> tuple[int, int, str]:
                 raise MattermostAdapterError("state_file must be owned by the current user")
             if stat.S_IMODE(state_opened.st_mode) & 0o077:
                 raise MattermostAdapterError("state_file permissions must be 0600 or stricter")
-            fd_path = ""
-            for root in ("/proc/self/fd", "/dev/fd"):
-                candidate = f"{root}/{state_fd}"
-                try:
-                    candidate_st = os.stat(candidate)
-                except OSError:
-                    continue
-                if (candidate_st.st_dev, candidate_st.st_ino) == (
-                    state_opened.st_dev,
-                    state_opened.st_ino,
-                ):
-                    fd_path = candidate
-                    break
-            if not fd_path:
-                raise MattermostAdapterError("platform cannot bind SQLite to the validated state_file")
+            sqlite_path, verify_sqlite_fd = _sqlite_path_for_state(path, state_fd, state_opened)
         except (MattermostAdapterError, OSError):
             os.close(state_fd)
             raise
@@ -490,7 +617,7 @@ def _open_state_anchors(path: Path) -> tuple[int, int, str]:
     except OSError as exc:
         os.close(parent_fd)
         raise MattermostAdapterError(f"cannot validate state_file: {type(exc).__name__}") from exc
-    return parent_fd, state_fd, fd_path
+    return parent_fd, state_fd, sqlite_path, verify_sqlite_fd
 
 
 def _open_lease_anchor(parent_fd: int, name: str) -> int:
@@ -529,7 +656,7 @@ class MattermostState:
     def __init__(self, config: MattermostConfig):
         self.path = config.state_file
         self.lease_path = self.path.with_name(f"{self.path.name}.lock")
-        self._parent_fd, self._state_fd, self._state_fd_path = _open_state_anchors(self.path)
+        self._parent_fd, self._state_fd, self._state_fd_path, self._verify_sqlite_fd = _open_state_anchors(self.path)
         try:
             self._lease_fd = _open_lease_anchor(self._parent_fd, self.lease_path.name)
             parent_st = os.fstat(self._parent_fd)
@@ -708,18 +835,39 @@ class MattermostState:
     def _connect(self):
         self._validate_state_path()
         try:
-            conn = sqlite3.connect(self._state_fd_path, isolation_level=None, timeout=10)
+            conn, sqlite_fd = _open_sqlite_connection(
+                self._state_fd_path,
+                verify_fd=self._verify_sqlite_fd,
+                identity=self._state_identity,
+            )
             try:
                 self._validate_state_path()
+                if sqlite_fd is not None:
+                    self._validate_sqlite_fd(sqlite_fd)
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA foreign_keys=ON")
                 with conn:
                     yield conn
                     self._validate_state_path()
+                    if sqlite_fd is not None:
+                        self._validate_sqlite_fd(sqlite_fd)
             finally:
                 conn.close()
         except sqlite3.Error as exc:
             raise MattermostAdapterError(f"Mattermost state database operation failed: {type(exc).__name__}") from exc
+
+    def _validate_sqlite_fd(self, fd: int) -> None:
+        try:
+            opened = os.fstat(fd)
+        except OSError as exc:
+            raise MattermostAdapterError(f"SQLite state_file descriptor changed: {type(exc).__name__}") from exc
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != self._state_identity:
+            raise MattermostAdapterError("SQLite state_file descriptor identity changed after validation")
+
+    def close(self) -> None:
+        """Release retained state, lease, and parent identity descriptors."""
+
+        self._fd_finalizer()
 
     def _open_lease_file(self) -> int:
         self._validate_state_path()

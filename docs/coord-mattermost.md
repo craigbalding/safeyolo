@@ -231,6 +231,25 @@ projection/reply diagnostic. It intentionally does not expose a callback
 listener or issue buttons; do not use it to consume an intended interactive
 acceptance request.
 
+### Real-macOS state acceptance
+
+After changing action configuration on macOS, point `state_file` at a new empty
+path and run the repository's bounded acceptance before starting the daemon:
+
+```sh
+uv run python scripts/accept_mattermost_macos.py \
+  --config ~/.safeyolo/coord-mattermost.toml
+```
+
+The script verifies all nine deployment gates: initialization, WAL and its real
+`-wal`/`-shm` sidecars, schema, read/write, close/reopen plus abrupt recovery,
+the separate process lease, fail-closed state/lease replacement, the real
+`mattermost check`, and the real `mattermost run --once`. It suppresses child
+command output and prints only numbered pass/fail labels; it never prints the
+bot token, capabilities, config contents, Mattermost responses, or coord
+messages. It refuses a non-empty state path so a prior deployment is not used
+as acceptance scratch space.
+
 ## Delivery and failure semantics
 
 SQLite suppresses inbound replay across retries/restarts and marks outbound
