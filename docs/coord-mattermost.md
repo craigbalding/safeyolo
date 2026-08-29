@@ -98,11 +98,18 @@ each mapped room. Every coord room and channel ID may appear only once.
 history; use `true` only when intentionally projecting all retained coord
 history.
 
-The adapter creates the `state_file` itself with mode `0600`. It stores only
-mapping cursors and correlation/idempotency records, not the bot token. Once a
-state file is bound to a server, operator, and room mapping, configuration
-drift fails closed. Use a new empty state path for an intentional remapping
-after the old adapter process is stopped and its pending records are checked.
+The adapter creates the `state_file` itself with mode `0600`. It also creates a
+mode-`0600` sibling process-lease file by appending `.lock` to that path (the
+example becomes `~/.safeyolo/data/coord-mattermost.sqlite3.lock`). Do not
+pre-create, edit, or replace either file. The separate lease file prevents one
+adapter process from competing with another without interfering with SQLite's
+own database locks, including on macOS.
+
+The database stores only mapping cursors and correlation/idempotency records,
+not the bot token. Once a state file is bound to a server, operator, and room
+mapping, configuration drift fails closed. Use a new empty state path for an
+intentional remapping after the old adapter process is stopped and its pending
+records are checked.
 
 Validate the exact setup without relaying messages:
 

@@ -3,12 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
+import stat
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from typer.testing import CliRunner
 
+from safeyolo.commands import coord as coord_commands
 from safeyolo.coord import mattermost
 
 BOT_ID = "b" * 26
@@ -782,6 +788,102 @@ def test_state_file_binds_server_operator_and_mapping(tmp_path: Path) -> None:
     with pytest.raises(mattermost.MattermostAdapterError, match="different server"):
         mattermost.MattermostState(drifted)
     assert os.stat(config.state_file).st_mode & 0o777 == 0o600
+
+
+def test_state_lease_is_private_sibling_and_does_not_lock_sqlite(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    state = mattermost.MattermostState(config)
+    competing_process = """
+import sys
+from pathlib import Path
+from safeyolo.coord import mattermost
+
+config = mattermost.MattermostConfig(
+    server_url="https://mattermost.example",
+    bot_token_file=Path(sys.argv[1]).with_name("bot-token"),
+    bot_user_id="b" * 26,
+    operator_user_id="o" * 26,
+    state_file=Path(sys.argv[1]),
+    poll_interval_seconds=1.0,
+    rooms=(mattermost.RoomMapping("backlog", "c" * 26, True),),
+)
+state = mattermost.MattermostState(config)
+try:
+    with state.lease():
+        print("acquired")
+except mattermost.MattermostAdapterError as exc:
+    print(str(exc))
+"""
+
+    with state.lease():
+        assert state.lease_path == Path(f"{config.state_file}.lock")
+        assert stat.S_ISREG(state.lease_path.stat().st_mode)
+        assert stat.S_IMODE(state.lease_path.stat().st_mode) == 0o600
+        state.set_coord_cursor("backlog", 7)
+        assert state.room_state("backlog")["coord_cursor"] == 7
+        result = subprocess.run(
+            [sys.executable, "-c", competing_process, str(config.state_file)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.stdout.strip() == (
+            "another Mattermost adapter process owns this state_file"
+        )
+
+    assert state.room_state("backlog")["coord_cursor"] == 7
+
+
+def test_state_lease_rejects_symlink_and_non_private_file(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    state = mattermost.MattermostState(config)
+    other = tmp_path / "unrelated"
+    other.write_text("unchanged", encoding="utf-8")
+    other.chmod(0o600)
+    state.lease_path.symlink_to(other)
+    with pytest.raises(mattermost.MattermostAdapterError, match="non-symlink"):
+        with state.lease():
+            pass
+    assert other.read_text(encoding="utf-8") == "unchanged"
+
+    state.lease_path.unlink()
+    state.lease_path.write_text("", encoding="utf-8")
+    state.lease_path.chmod(0o640)
+    with pytest.raises(mattermost.MattermostAdapterError, match="0600"):
+        with state.lease():
+            pass
+
+
+def test_sqlite_operational_error_is_sanitized_for_state_and_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = write_config(tmp_path)
+    token_path = tmp_path / "bot-token"
+    token_path.write_text("live-secret-token\n", encoding="utf-8")
+    token_path.chmod(0o600)
+
+    def fail_connect(*_args: Any, **_kwargs: Any) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("sensitive backend detail")
+
+    monkeypatch.setattr(mattermost.sqlite3, "connect", fail_connect)
+    with pytest.raises(mattermost.MattermostAdapterError) as exc_info:
+        mattermost.MattermostState(mattermost.load_config(config_path))
+    assert str(exc_info.value) == (
+        "Mattermost state database operation failed: OperationalError"
+    )
+    assert "sensitive" not in str(exc_info.value)
+
+    result = CliRunner().invoke(
+        coord_commands.coord_app,
+        ["mattermost", "run", "--config", str(config_path), "--once"],
+    )
+    assert result.exit_code == 1
+    normalized_output = " ".join(result.output.split())
+    assert "Mattermost adapter stopped:" in normalized_output
+    assert "state database operation failed: OperationalError" in normalized_output
+    assert "Traceback" not in normalized_output
+    assert "sensitive" not in normalized_output
 
 
 @pytest.mark.asyncio
