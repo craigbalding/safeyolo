@@ -34,6 +34,7 @@ _AUTHORED_LINK_RE = re.compile(
     r"(?:\b(?:https?|mailto):|\bwww\.|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b)",
     re.I,
 )
+_UNSAFE_EVIDENCE_URL_RE = re.compile(r'[\s<>()\[\]{}\\"]')
 _GITHUB_REPOSITORY_PATH = r"/[^/]+/[^/]+"
 _GITHUB_KIND_PATHS = {
     "issue": re.compile(rf"^{_GITHUB_REPOSITORY_PATH}/issues/\d+/?$"),
@@ -276,14 +277,27 @@ def _list(value: Any, field: str, maximum: int) -> Sequence[Any]:
     return value
 
 
-def _is_public_hostname(hostname: str) -> bool:
-    host = hostname.rstrip(".").lower()
+def _normalized_hostname(hostname: str) -> str | None:
+    try:
+        return hostname.encode("idna").decode("ascii").rstrip(".").lower()
+    except UnicodeError:
+        return None
+
+
+def _is_public_hostname(host: str) -> bool:
     if not host or host == "localhost":
         return False
     try:
         return ipaddress.ip_address(host).is_global
     except ValueError:
-        return "." in host and not host.endswith(
+        if host[0].isdigit() and re.fullmatch(r"[0-9a-fx.]+", host, re.I):
+            return False
+        labels = host.split(".")
+        if len(labels) < 2 or any(
+            not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label, re.I) for label in labels
+        ):
+            return False
+        return not host.endswith(
             (
                 ".internal",
                 ".local",
@@ -314,22 +328,24 @@ def _public_evidence(value: Any, field: str) -> PublicEvidence:
     label = _text(obj["label"], f"{field}.label", maximum=256)
     url = _text(obj["url"], f"{field}.url", maximum=512)
     parsed = urlsplit(url)
+    hostname = _normalized_hostname(parsed.hostname) if parsed.hostname is not None else None
     try:
         port = parsed.port
     except ValueError as exc:
         raise DispatchError(f"{field}.url has an invalid port") from exc
     if (
         parsed.scheme != "https"
-        or parsed.hostname is None
-        or not _is_public_hostname(parsed.hostname)
+        or hostname is None
+        or not _is_public_hostname(hostname)
         or parsed.username is not None
         or parsed.password is not None
         or port is not None
         or parsed.query
+        or _UNSAFE_EVIDENCE_URL_RE.search(url)
     ):
         raise DispatchError(f"{field}.url must be public HTTPS evidence without credentials or query data")
     github_pattern = _GITHUB_KIND_PATHS.get(kind.value)
-    if parsed.hostname.lower() == "github.com" and github_pattern is not None and not github_pattern.fullmatch(parsed.path):
+    if hostname == "github.com" and github_pattern is not None and not github_pattern.fullmatch(parsed.path):
         raise DispatchError(f"{field}.kind does not match its GitHub URL")
     return PublicEvidence(kind=kind, label=label, url=url)
 

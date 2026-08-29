@@ -105,11 +105,12 @@ provenance are not generator inputs and never become publication copy.
 ## Evidence and hygiene
 
 Material claims accept public HTTPS evidence, including authoritative upstream
-sources. Credentials, query data, private IP addresses, and internal hostnames
-are rejected. On GitHub, issue, pull-request, commit, document, and test
-evidence kinds must match their URL shape. Relay remains responsible for
-establishing that each public source is authoritative for its claim. Internal
-coord sequences may be retained privately but are not public citations.
+sources. Credentials, query data, malformed Markdown-breaking destinations,
+private or noncanonical numeric addresses, and internal hostnames are rejected.
+On GitHub, issue, pull-request, commit, document, and test evidence kinds must
+match their URL shape. Relay remains responsible for establishing that each
+public source is authoritative for its claim. Internal coord sequences may be
+retained privately but are not public citations.
 
 Generation rejects bounded-input violations, duplicate or unknown JSON keys,
 malformed periods and section shapes, obvious credential/token/private-key
