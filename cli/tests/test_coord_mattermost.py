@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -430,7 +431,13 @@ async def test_uncertain_coord_append_is_not_replayed_after_restart(
         await adapter.run_once()
     assert state.inbound(reply["id"])["status"] == "pending"
 
-    await mattermost.MattermostAdapter(config, mattermost.MattermostState(config), remote).run_once()
+    # Pending state is authoritative even when Mattermost's bounded since feed
+    # no longer returns the original post.
+    remote.posts = [post for post in remote.posts if post["id"] != reply["id"]]
+    with pytest.raises(mattermost.MattermostAdapterError, match="refusing an automatic replay"):
+        await mattermost.MattermostAdapter(
+            config, mattermost.MattermostState(config), remote
+        ).run_once()
     assert attempts == 1
 
 
@@ -462,6 +469,9 @@ async def test_backfill_false_skips_existing_history_only(
         {"id": OPERATOR_ID, "is_bot": True, "delete_at": 0},
         {"id": BOT_ID, "is_bot": False, "delete_at": 0},
         {"id": BOT_ID, "is_bot": True, "delete_at": 1},
+        {"id": BOT_ID, "is_bot": True},
+        {"id": BOT_ID, "delete_at": 0},
+        {"id": BOT_ID, "is_bot": True, "delete_at": False},
     ],
 )
 async def test_bot_identity_mismatch_fails_closed(
@@ -518,6 +528,116 @@ async def test_operator_channel_and_local_grant_must_all_match(
     monkeypatch.setattr(mattermost.api, "join_room", receive_only)
     with pytest.raises(mattermost.MattermostAdapterError, match=r"send\+receive"):
         await mattermost.MattermostAdapter(config, state, remote).verify()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operator",
+    [
+        {"id": OPERATOR_ID, "delete_at": 0},
+        {"id": OPERATOR_ID, "is_bot": False},
+        {"id": OPERATOR_ID, "is_bot": 0, "delete_at": 0},
+        {"id": OPERATOR_ID, "is_bot": False, "delete_at": False},
+    ],
+)
+async def test_malformed_operator_identity_shape_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operator: dict[str, Any],
+) -> None:
+    config = make_config(tmp_path)
+    remote = FakeMattermost()
+    coord = CoordHarness()
+    install_coord(monkeypatch, coord)
+
+    async def get_user(_user_id: str) -> dict[str, Any]:
+        return operator
+
+    monkeypatch.setattr(remote, "get_user", get_user)
+    with pytest.raises(mattermost.MattermostAdapterError, match="active human"):
+        await mattermost.MattermostAdapter(
+            config, mattermost.MattermostState(config), remote
+        ).verify()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "channel",
+    [
+        {"id": CHANNEL_ID},
+        {"id": CHANNEL_ID, "delete_at": False},
+    ],
+)
+async def test_malformed_channel_identity_shape_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    channel: dict[str, Any],
+) -> None:
+    config = make_config(tmp_path)
+    remote = FakeMattermost()
+    coord = CoordHarness()
+    install_coord(monkeypatch, coord)
+
+    async def get_channel(_channel_id: str) -> dict[str, Any]:
+        return channel
+
+    monkeypatch.setattr(remote, "get_channel", get_channel)
+    with pytest.raises(mattermost.MattermostAdapterError, match="unavailable"):
+        await mattermost.MattermostAdapter(
+            config, mattermost.MattermostState(config), remote
+        ).verify()
+
+
+@pytest.mark.asyncio
+async def test_operator_deactivation_after_startup_stops_inbound_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = make_config(tmp_path)
+    state = mattermost.MattermostState(config)
+    remote = FakeMattermost()
+    coord = CoordHarness([coord_envelope(1)])
+    install_coord(monkeypatch, coord)
+    adapter = mattermost.MattermostAdapter(config, state, remote)
+    await adapter.run_once(verify=True)
+    remote.operator_reply(remote.posts[0]["id"], "must not become operator")
+
+    async def deactivated(_user_id: str) -> dict[str, Any]:
+        return {"id": OPERATOR_ID, "is_bot": False, "delete_at": 1}
+
+    monkeypatch.setattr(remote, "get_user", deactivated)
+    with pytest.raises(mattermost.MattermostAdapterError, match="active human"):
+        await adapter.run_once()
+    assert coord.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_daemon_holds_state_lease_during_sleep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = make_config(tmp_path)
+    state = mattermost.MattermostState(config)
+    remote = FakeMattermost()
+    coord = CoordHarness()
+    install_coord(monkeypatch, coord)
+    sleeping = asyncio.Event()
+    release = asyncio.Event()
+
+    async def controlled_sleep(_seconds: float) -> None:
+        sleeping.set()
+        await release.wait()
+
+    monkeypatch.setattr(mattermost.asyncio, "sleep", controlled_sleep)
+    task = asyncio.create_task(mattermost.MattermostAdapter(config, state, remote).run_forever())
+    await sleeping.wait()
+    try:
+        with pytest.raises(mattermost.MattermostAdapterError, match="another Mattermost"):
+            with state.lease():
+                pass
+    finally:
+        release.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 def write_config(tmp_path: Path, extra: str = "") -> Path:

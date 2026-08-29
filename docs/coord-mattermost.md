@@ -34,7 +34,9 @@ Inbound text is accepted only when all of these facts agree:
 Accepted text is appended with the same local trusted operator call used by
 `safeyolo coord chat`. The resulting coord envelope has canonical
 `sender_kind=operator`. Mattermost usernames and body text are never used as
-attribution. The body is a small structured `text/plain` document containing
+attribution. The active non-bot operator identity is revalidated on every
+bounded sync cycle, so deactivation after daemon startup fails closed before
+another trusted append. The body is a small structured `text/plain` document containing
 the external post/root IDs and target coord message ID; those correlations are
 context, not coord authority.
 
@@ -118,8 +120,10 @@ outbound projection pending before calling Mattermost. Each outbound post also
 carries a deterministic correlation property. After an interrupted request,
 the adapter reconciles a visible matching post; it refuses to retry when the
 remote outcome cannot be established. Likewise, an interrupted coord append
-is not replayed automatically. This deliberately prefers an operator-visible
-gap over duplicate trusted operator messages.
+is not replayed automatically: the unresolved inbound pending record stops the
+adapter until the operator reconciles it. The daemon holds its state-file lease
+for its complete lifetime, including quiet sleeps. This deliberately prefers
+an operator-visible gap over duplicate trusted operator messages.
 
 An authentication, identity, mapping, malformed-response, ambiguous
 correlation, or unresolved-pending error stops the foreground process with a

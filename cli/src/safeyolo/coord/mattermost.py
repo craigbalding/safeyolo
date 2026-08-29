@@ -592,6 +592,13 @@ class MattermostState:
                 (coord_msg_id, post_id),
             )
 
+    def pending_inbound(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM inbound_post WHERE status = 'pending' ORDER BY created_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
 
 def _safe_json(value: Any, *, indent: int | None = None) -> str:
     rendered = json.dumps(value, ensure_ascii=True, sort_keys=True, indent=indent)
@@ -663,6 +670,10 @@ def _post_timestamp(post: dict[str, Any]) -> int:
     return value
 
 
+def _is_active_timestamp(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == 0
+
+
 def _validate_created_post(
     post: dict[str, Any], *, config: MattermostConfig, channel_id: str,
     projection_key: str,
@@ -703,33 +714,39 @@ class MattermostAdapter:
             not isinstance(me, dict)
             or me.get("id") != self.config.bot_user_id
             or me.get("is_bot") is not True
-            or me.get("delete_at", 0) != 0
+            or not _is_active_timestamp(me.get("delete_at"))
         ):
             raise MattermostAdapterError("bot token does not identify the configured active bot")
-        operator = await self.client.get_user(self.config.operator_user_id)
-        if (
-            not isinstance(operator, dict)
-            or operator.get("id") != self.config.operator_user_id
-            or operator.get("is_bot") is True
-            or operator.get("delete_at", 0) != 0
-        ):
-            raise MattermostAdapterError("configured Mattermost operator is not one active human user")
+        await self._verify_operator()
         for mapping in self.config.rooms:
             channel = await self.client.get_channel(mapping.channel_id)
             if (
                 not isinstance(channel, dict)
                 or channel.get("id") != mapping.channel_id
-                or channel.get("delete_at", 0) != 0
+                or not _is_active_timestamp(channel.get("delete_at"))
             ):
                 raise MattermostAdapterError(
                     f"configured channel for coord room {mapping.coord_room!r} is unavailable"
                 )
+            # A read proves the bot token can observe the mapped channel without
+            # creating trial traffic. --once exercises create permission.
+            await self.client.get_posts(mapping.channel_id, per_page=1)
             membership = api.join_room(mapping.coord_room, "operator", "operator")
             permissions = membership.get("permissions", [])
             if not isinstance(permissions, list) or not {"send", "receive"}.issubset(permissions):
                 raise MattermostAdapterError(
                     f"local coord operator lacks send+receive on {mapping.coord_room!r}"
                 )
+
+    async def _verify_operator(self) -> None:
+        operator = await self.client.get_user(self.config.operator_user_id)
+        if (
+            not isinstance(operator, dict)
+            or operator.get("id") != self.config.operator_user_id
+            or operator.get("is_bot") is not False
+            or not _is_active_timestamp(operator.get("delete_at"))
+        ):
+            raise MattermostAdapterError("configured Mattermost operator is not one active human user")
 
     async def _bootstrap_room(self, mapping: RoomMapping) -> None:
         current = self.state.room_state(mapping.coord_room)
@@ -800,7 +817,12 @@ class MattermostAdapter:
         self, mapping: RoomMapping, post: dict[str, Any]
     ) -> None:
         post_id = _post_id(post)
-        if self.state.inbound(post_id) is not None:
+        existing = self.state.inbound(post_id)
+        if existing is not None and existing["status"] == "pending":
+            raise MattermostAdapterError(
+                "uncertain coord append remains pending; refusing an automatic replay"
+            )
+        if existing is not None:
             return
         if post.get("channel_id") != mapping.channel_id:
             self.state.ignore_inbound(post_id, mapping.coord_room, "channel_mismatch")
@@ -850,6 +872,10 @@ class MattermostAdapter:
         self.state.finish_inbound(post_id, envelope["msg_id"])
 
     async def _poll_inbound(self, mapping: RoomMapping) -> None:
+        # Re-establish the remote identity boundary on every bounded cycle.
+        # A user deactivated after daemon startup must never retain the right
+        # to produce new canonical coord operator envelopes.
+        await self._verify_operator()
         current = self.state.room_state(mapping.coord_room)
         since = max(1, int(current["inbound_since"]) - 5_000)
         posts = await self.client.get_posts(mapping.channel_id, since=since)
@@ -928,19 +954,29 @@ class MattermostAdapter:
             if not page["has_more"]:
                 break
 
+    async def _run_cycle(self) -> None:
+        if self.state.pending_inbound():
+            raise MattermostAdapterError(
+                "uncertain coord append remains pending; refusing an automatic replay"
+            )
+        for mapping in self.config.rooms:
+            await self._bootstrap_room(mapping)
+        await self._reconcile_pending()
+        for mapping in self.config.rooms:
+            await self._poll_inbound(mapping)
+            await self._project_outbound(mapping)
+
     async def run_once(self, *, verify: bool = False) -> None:
         with self.state.lease():
             if verify:
                 await self.verify()
-            for mapping in self.config.rooms:
-                await self._bootstrap_room(mapping)
-            await self._reconcile_pending()
-            for mapping in self.config.rooms:
-                await self._poll_inbound(mapping)
-                await self._project_outbound(mapping)
+            await self._run_cycle()
 
     async def run_forever(self) -> None:
-        await self.verify()
-        while True:
-            await self.run_once()
-            await asyncio.sleep(self.config.poll_interval_seconds)
+        # The daemon owns one state file continuously, including quiet sleep.
+        # A second process cannot interleave cycles and race pending records.
+        with self.state.lease():
+            await self.verify()
+            while True:
+                await self._run_cycle()
+                await asyncio.sleep(self.config.poll_interval_seconds)
