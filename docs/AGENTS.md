@@ -110,6 +110,10 @@ of the above, stop and invoke the skill first.
   [completion-note contract](coord-completion-notes.md). Keep the ordinary
   leading transition self-contained; zero candidates adds no bytes, and
   trusted ingestion derives provenance from the canonical envelope.
+- A designated coordinator may correlate verified factory candidates under the
+  [Relay factory-proposal workflow](factory-proposals.md). One task-local
+  observation stays quiet; proposals remain Relay-authored recommendations and
+  never apply a change without a separate operator decision.
 - A targeted handoff must contain or directly identify everything needed to
   act; required meaning must not depend on preceding unnotified room messages.
   Seeing another agent's task in retained history does not assign it to you.
