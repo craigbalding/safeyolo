@@ -131,6 +131,9 @@ packages = ["cli/src/safeyolo"]
 [tool.hatch.build.targets.wheel.sources]
 "cli/src" = ""
 
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
 [tool.hatch.build]
 include = [
     "cli/src/safeyolo/**/*.py",

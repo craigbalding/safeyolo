@@ -16,6 +16,7 @@ from .ignore_hosts import (
     build_ignore_patterns,
     normalize_ignore_hosts,
 )
+from .runtime_identity import DEV_MODE_ENV, DEV_SOURCE_ROOTS_ENV
 from .tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS, validate_tailnet_port
 from .timing import child_environment as _profile_child_environment
 from .timing import enter as _profile_enter
@@ -747,6 +748,7 @@ def start_proxy(
     proxy_port: int = 8080,
     admin_port: int = 9090,
     flow_cache: int | None = None,
+    dev: bool = False,
 ) -> None:
     """Start mitmproxy as a host background process."""
     if is_proxy_running():
@@ -776,6 +778,11 @@ def start_proxy(
         )
 
     pdp_dir = _find_pdp_dir()
+    if dev and pdp_dir is None:
+        raise RuntimeError(
+            "--dev requires the selected PDP checkout source; set "
+            "SAFEYOLO_PDP_DIR to its pdp package directory"
+        )
 
     # Ensure certs, tokens, log dirs
     _profile_enter("proxy: ensure certificates, tokens, and logs")
@@ -824,6 +831,17 @@ def start_proxy(
         pdp_dir,
         env.get("PYTHONPATH", ""),
     )
+    env[DEV_MODE_ENV] = "1" if dev else "0"
+    if dev:
+        env[DEV_SOURCE_ROOTS_ENV] = json.dumps(
+            {
+                "pdp": str(pdp_dir.resolve()),
+                "safeyolo": str(addons_dir.resolve().parent),
+            },
+            sort_keys=True,
+        )
+    else:
+        env.pop(DEV_SOURCE_ROOTS_ENV, None)
 
     # Addons hardcode /safeyolo and /app/logs as defaults for the guest
     # layout. When running the mitmproxy master on the host these env vars

@@ -29,6 +29,7 @@ from mitmproxy.utils import human
 from .events import EventKind, Severity, write_event
 from .mitm_addons import ProductionAddons
 from .proxy_modes.unix_listener import ensure_registered as _ensure_unix_listener_registered
+from .runtime_identity import initialize_runtime_identity_from_environment
 from .tailnet import (
     TailnetServeSession,
     start_tailnet_serve,
@@ -693,6 +694,7 @@ class TrafficMaster(ConsoleMaster):
 
 def main_entry(arguments: list[str] | None = None) -> None:
     """Run the hybrid master using mitmproxy's native CLI processing."""
+    initialize_runtime_identity_from_environment()
     _record_process_imports("traffic-master: Python and module imports")
     _install_addon_profiling()
     main.run(

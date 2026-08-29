@@ -1787,6 +1787,22 @@ class TestProxyStartupSmoke:
 
             import httpx
 
+            admin_headers = {"Authorization": f"Bearer {token}"}
+            runtime_response = httpx.get(
+                f"http://127.0.0.1:{admin_port}/admin/runtime-identity",
+                headers=admin_headers,
+            )
+            assert runtime_response.status_code == 200
+            runtime_identity = runtime_response.json()
+            assert runtime_identity["mode"] == "production"
+            assert runtime_identity["process"]["pid"] == proxy_pid
+            assert runtime_identity["process"]["started_at"]
+            assert runtime_identity["process"]["start_token_state"] == "known"
+            health_response = httpx.get(
+                f"http://127.0.0.1:{admin_port}/health"
+            )
+            assert health_response.json() == {"status": "ok"}
+
             with httpx.Client(
                 base_url=f"http://127.0.0.1:{web_port}",
                 headers={"Authorization": f"Bearer {token}"},
@@ -1847,7 +1863,8 @@ class TestStartProxy:
             with pytest.raises(RuntimeError, match="Cannot find the SafeYolo addons directory"):
                 start_proxy()
 
-    def test_success_when_pid_file_appears(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("dev", [False, True])
+    def test_success_when_pid_file_appears(self, tmp_path, monkeypatch, dev):
         """start_proxy returns when addons/pid_writer.py writes the pid file.
 
         The CLI no longer writes the pid file itself -- it polls for the
@@ -1869,6 +1886,9 @@ class TestStartProxy:
         addons_dir.mkdir(parents=True)
         (package_dir / "__init__.py").touch()
         (addons_dir / "__init__.py").touch()
+        pdp_dir = tmp_path / "checkout" / "pdp"
+        pdp_dir.mkdir(parents=True)
+        (pdp_dir / "__init__.py").touch()
         pid_file = data_dir / "proxy.pid"
         launched = {}
 
@@ -1880,7 +1900,7 @@ class TestStartProxy:
 
         with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,), \
              patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir, autospec=True,), \
-             patch("safeyolo.proxy._find_pdp_dir", return_value=None, autospec=True,), \
+             patch("safeyolo.proxy._find_pdp_dir", return_value=pdp_dir if dev else None, autospec=True,), \
              patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem", autospec=True,), \
              patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent"), autospec=True,), \
              patch("safeyolo.proxy._build_command", return_value=["traffic-master"], autospec=True,), \
@@ -1894,7 +1914,7 @@ class TestStartProxy:
              autospec=True,
              ), \
              patch("safeyolo.proxy.start_session", side_effect=_start_simulate_addon, autospec=True,):
-            start_proxy()
+            start_proxy(dev=dev)
 
         assert pid_file.exists()
         assert pid_file.read_text().strip() == "42"
@@ -1908,6 +1928,14 @@ class TestStartProxy:
         assert launched["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(
             package_dir.parent
         )
+        assert launched["env"]["SAFEYOLO_DEV_MODE"] == ("1" if dev else "0")
+        if dev:
+            assert json.loads(launched["env"]["SAFEYOLO_DEV_SOURCE_ROOTS"]) == {
+                "pdp": str(pdp_dir.resolve()),
+                "safeyolo": str(package_dir.resolve()),
+            }
+        else:
+            assert "SAFEYOLO_DEV_SOURCE_ROOTS" not in launched["env"]
 
     def test_raises_when_mitmdump_dies_during_startup(self, tmp_path, monkeypatch):
         """start_proxy surfaces exit code + log tail when mitmdump dies early."""

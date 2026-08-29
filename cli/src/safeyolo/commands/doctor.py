@@ -28,6 +28,7 @@ from ..config import (
     load_config,
 )
 from ..proxy import is_proxy_running, resolve_upstream_ca_cert
+from ..runtime_identity import capture_dev_source_identity, process_start_token
 
 console = Console()
 
@@ -227,6 +228,230 @@ def _check_admin_api() -> DiagResult:
         status="pass",
         message=f"127.0.0.1:{admin_port} accepting connections",
         detail="No admin token available to verify health endpoint",
+    )
+
+
+def _check_runtime_identity() -> DiagResult:
+    """Compare the captured traffic generation with authoritative dev source."""
+    config = load_config()
+    admin_port = config.get("proxy", {}).get("admin_port", 9090)
+    from ..config import get_admin_token
+
+    token = get_admin_token()
+    if not token:
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Admin token unavailable; runtime identity evidence is limited",
+        )
+
+    pid_path = get_data_dir() / "proxy.pid"
+
+    def read_pid() -> int | None:
+        try:
+            return int(pid_path.read_text().strip())
+        except (FileNotFoundError, OSError, ValueError):
+            return None
+
+    pid_before = read_pid()
+    start_token_before = process_start_token(pid_before) if pid_before is not None else None
+    try:
+        import httpx
+
+        response = httpx.get(
+            f"http://127.0.0.1:{admin_port}/admin/runtime-identity",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5.0,
+        )
+    except Exception as exc:
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message=f"Runtime identity request failed: {type(exc).__name__}",
+        )
+    pid_after = read_pid()
+    if pid_before is None or pid_after is None or pid_before != pid_after:
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Proxy PID state changed or became unreadable during identity check",
+            detail=f"pid before={pid_before!r}, pid after={pid_after!r}",
+        )
+    start_token_after = process_start_token(pid_after)
+    if start_token_before is None or start_token_after is None:
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Proxy process-start evidence is unavailable; identity is limited",
+            detail=f"pid={pid_after}",
+        )
+    if start_token_before != start_token_after:
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Proxy PID was reused or restarted during identity check",
+            detail=f"pid={pid_after}",
+        )
+    if response.status_code != 200:
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message=f"Identity endpoint returned {response.status_code}; evidence is limited",
+        )
+    try:
+        identity = response.json()
+        process = identity["process"]
+        build = identity["build"]
+        mode = identity["mode"]
+    except (KeyError, TypeError, ValueError):
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Identity endpoint returned an invalid contract",
+        )
+    if (
+        not isinstance(identity, dict)
+        or not isinstance(process, dict)
+        or not isinstance(build, dict)
+        or not isinstance(mode, str)
+    ):
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Identity endpoint returned an invalid contract",
+        )
+    if process.get("pid") != pid_after:
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Admin response and proxy PID file describe different processes",
+            detail=(
+                f"admin pid={process.get('pid')!r}, pidfile pid={pid_after!r}; "
+                "state may be stale or the PID may have been reused"
+            ),
+        )
+    if process.get("start_token_state") != "known" or process.get("start_token") != start_token_after:
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Admin response does not match the live proxy process start",
+            detail=(f"pid={pid_after}; process-start evidence prevents stale PID reuse"),
+        )
+
+    version = build.get("package_version", "unknown")
+    running_revision = build.get("source_revision")
+    started_at = process.get("started_at", "unknown")
+    base_detail = (
+        f"version={version} provenance={build.get('provenance', 'unknown')} "
+        f"running revision={running_revision or 'unknown'} started={started_at}"
+    )
+    if mode == "production":
+        if build.get("state") == "known" and running_revision:
+            return DiagResult(
+                name="Runtime identity",
+                status="pass",
+                message=f"Production build {version} ({running_revision[:12]})",
+                detail=base_detail,
+            )
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message=f"Production build {version}; source revision is unknown",
+            detail=base_detail,
+        )
+    if mode != "dev":
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message=f"Unknown runtime mode {mode!r}",
+            detail=base_detail,
+        )
+
+    source = identity.get("source")
+    roots = source.get("roots") if isinstance(source, dict) else None
+    running_fingerprint = source.get("fingerprint") if isinstance(source, dict) else None
+    if not isinstance(roots, dict) or not isinstance(running_fingerprint, dict):
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Dev runtime did not record authoritative source roots",
+            detail=base_detail,
+        )
+    running_source_revision = source.get("revision")
+    if running_source_revision != running_revision:
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Dev runtime returned inconsistent revision evidence",
+            detail=base_detail,
+        )
+    current = capture_dev_source_identity(roots)
+    current_fingerprint = current.fingerprint
+    running_digest = running_fingerprint.get("digest")
+    detail = (
+        f"{base_detail}\n"
+        f"running fingerprint={running_digest or 'unknown'}\n"
+        f"current revision={current.revision or 'unknown'} "
+        f"working tree={current.working_tree}\n"
+        f"current fingerprint={current_fingerprint.digest or 'unknown'}"
+    )
+    if (
+        running_fingerprint.get("state") != "known"
+        or not running_digest
+        or current_fingerprint.state != "known"
+        or not current_fingerprint.digest
+    ):
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Dev source comparison is unknown; evidence is limited",
+            detail=(
+                f"{detail}\n"
+                f"running error={running_fingerprint.get('error') or 'none'} "
+                f"current error={current_fingerprint.error or 'none'}"
+            ),
+        )
+
+    restart = "safeyolo stop && safeyolo start --dev"
+    revision_evidence_known = (
+        source.get("revision_state") == "known"
+        and current.revision_state == "known"
+        and running_revision
+        and current.revision
+    )
+    if revision_evidence_known and running_revision != current.revision:
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Dev checkout revision drift detected; proxy restart required",
+            detail=detail,
+            remediation=restart,
+        )
+    if running_digest != current_fingerprint.digest:
+        drift = (
+            "dirty same-commit source drift"
+            if running_revision and running_revision == current.revision
+            else "dev source content drift"
+        )
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message=f"{drift} detected; proxy restart required",
+            detail=detail,
+            remediation=restart,
+        )
+    if not revision_evidence_known or current.working_tree == "unknown":
+        return DiagResult(
+            name="Runtime identity",
+            status="warn",
+            message="Dev checkout comparison is unknown; evidence is limited",
+            detail=detail,
+        )
+    return DiagResult(
+        name="Runtime identity",
+        status="pass",
+        message=(f"Running dev source matches current source ({current.working_tree} working tree)"),
+        detail=detail,
     )
 
 
@@ -1606,6 +1831,7 @@ _DEPENDS_ON = {
     "Isolation platform": ["Sandbox runtime"],
     "User namespaces": ["Sandbox runtime"],
     "Admin API": ["Proxy running"],
+    "Runtime identity": ["Admin API"],
     "Addon loading": ["Admin API"],
     "Pipeline probe": ["Proxy running"],
 }
@@ -1633,6 +1859,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
             ("Guest images", _check_guest_images),
             ("Proxy running", _check_proxy_process),
             ("Admin API", _check_admin_api),
+            ("Runtime identity", _check_runtime_identity),
             ("Addon loading", _check_addon_loading),
             ("Pipeline probe", _check_pipeline_probe),
             ("Pipeline probe (traced)", _check_pipeline_probe_traced),

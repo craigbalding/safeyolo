@@ -16,6 +16,14 @@ import pytest
 from pdp.client import PolicyClient
 from safeyolo.mitm_addons.circuit_breaker import CircuitBreaker
 from safeyolo.mitm_addons.service_gateway import GrantEntry, ServiceGateway
+from safeyolo.runtime_identity import (
+    BuildIdentity,
+    EvidenceState,
+    IdentityProvenance,
+    ProcessIdentity,
+    RuntimeIdentity,
+    RuntimeMode,
+)
 
 pytestmark = pytest.mark.assurance_boundary
 
@@ -190,6 +198,68 @@ class TestGetHealth:
 
         assert handler._status == 200
         assert _parse_response(handler)["status"] == "ok"
+
+
+class TestGetRuntimeIdentity:
+    """Runtime identity is host-admin evidence, separate from public health."""
+
+    def test_requires_admin_authentication(self, handler_class):
+        handler = _make_handler(
+            handler_class,
+            "GET",
+            "/admin/runtime-identity",
+            include_auth=False,
+        )
+        handler.do_GET()
+
+        assert handler._status == 401
+
+    def test_returns_the_captured_process_snapshot(self, handler_class):
+        identity = RuntimeIdentity(
+            schema_version=1,
+            mode=RuntimeMode.PRODUCTION,
+            build=BuildIdentity(
+                package_version="1.2.3",
+                source_revision="a" * 40,
+                build_identifier="release-7",
+                provenance=IdentityProvenance.BUILD_ENVIRONMENT,
+                state=EvidenceState.KNOWN,
+            ),
+            process=ProcessIdentity(
+                pid=123,
+                started_at="2026-08-29T12:00:00+00:00",
+                start_token="linux:boot:42",
+                start_token_state=EvidenceState.KNOWN,
+            ),
+            source=None,
+        )
+        with patch(
+            "admin_api.get_runtime_identity",
+            return_value=identity,
+            autospec=True,
+        ):
+            handler = _make_handler(handler_class, "GET", "/admin/runtime-identity")
+            handler.do_GET()
+
+        assert handler._status == 200
+        response = _parse_response(handler)
+        assert response["process"] == {
+            "pid": 123,
+            "started_at": "2026-08-29T12:00:00+00:00",
+            "start_token": "linux:boot:42",
+            "start_token_state": "known",
+        }
+        assert response["build"]["source_revision"] == "a" * 40
+
+    def test_uninitialised_snapshot_is_explicitly_unknown(self, handler_class):
+        with patch(
+            "admin_api.get_runtime_identity", return_value=None, autospec=True
+        ):
+            handler = _make_handler(handler_class, "GET", "/admin/runtime-identity")
+            handler.do_GET()
+
+        assert handler._status == 503
+        assert _parse_response(handler)["state"] == "unknown"
 
 
 class TestGetStats:
