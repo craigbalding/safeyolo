@@ -1,5 +1,6 @@
 """Centralized read/write for agent config in policy.toml [agents] section."""
 
+import copy
 import fcntl
 import ipaddress
 import json
@@ -45,12 +46,19 @@ def _save_doc(doc: tomlkit.TOMLDocument) -> None:
     save_roundtrip(_policy_toml_path(), doc)
 
 
-def _locked_mutate(mutate_fn: Callable[[tomlkit.TOMLDocument], Any]) -> Any:
+def _locked_mutate(
+    mutate_fn: Callable[[tomlkit.TOMLDocument], Any],
+    *,
+    save_if_unchanged: bool = True,
+) -> Any:
     """Read-modify-write policy.toml under exclusive file lock."""
     from .policy.toml_roundtrip import locked_policy_mutate
 
     return locked_policy_mutate(
-        _policy_toml_path(), mutate_fn, create_if_missing=True
+        _policy_toml_path(),
+        mutate_fn,
+        create_if_missing=True,
+        save_if_unchanged=save_if_unchanged,
     )
 
 
@@ -192,6 +200,39 @@ def save_agent(name: str, metadata: dict) -> None:
         agents.add(name, _dict_to_toml_table(metadata))
 
     _locked_mutate(mutate)
+
+
+def mutate_agent(
+    name: str,
+    mutate_fn: Callable[[dict], Any],
+) -> tuple[bool, Any]:
+    """Atomically mutate one agent using its latest authoritative metadata.
+
+    ``save_agent`` is appropriate when the caller owns a complete new agent
+    record.  Configuration updates instead need a locked read-modify-write:
+    rebuilding a record from a stale pre-lock read could discard an unrelated
+    concurrent reservation or grant update.
+
+    Returns ``(changed, result)`` where ``result`` is the callback result.
+    Raises ``KeyError`` when the agent no longer exists at the linearization
+    point.
+    """
+
+    def mutate(doc):
+        agents = _ensure_agents_table(doc)
+        if name not in agents:
+            raise KeyError(name)
+
+        # Mutate the live TOML table rather than deleting and rebuilding the
+        # whole record. This preserves unknown fields, nested policy tables,
+        # comments, and ordering byte-for-byte outside the selected keys.
+        metadata = agents[name]
+        before = copy.deepcopy(metadata.unwrap())
+        result = mutate_fn(metadata)
+        changed = metadata.unwrap() != before
+        return changed, result
+
+    return _locked_mutate(mutate, save_if_unchanged=False)
 
 
 def _active_network_slots() -> dict[str, int]:

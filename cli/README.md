@@ -132,7 +132,7 @@ Runs AI agents in isolated sandboxes (Apple VZ microVMs on macOS, rootless gViso
 | `safeyolo agent list` | List configured agents |
 | `safeyolo agent shell <name>` | Open shell in running agent |
 | `safeyolo agent desktop <name> [--open]` | Start and securely preview an optional graphical desktop |
-| `safeyolo agent config <name>` | View or update agent configuration |
+| `safeyolo agent config <name> [--folder PATH]` | View or update agent configuration, including the persistent `/workspace` folder |
 | `safeyolo agent remove <name>` | Remove an agent |
 
 **Quick start:**
@@ -155,6 +155,9 @@ safeyolo agent run myproject --host-script contrib/codex-host-setup.sh
 
 # Or run with a different folder
 safeyolo agent run myproject -f ~/other-project
+
+# Persist a new /workspace folder for ordinary future runs
+safeyolo agent config myproject --folder ~/other-project
 
 # Override the default command (the host script's .safeyolo-command)
 safeyolo agent run myproject -- bash -l

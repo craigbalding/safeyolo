@@ -382,6 +382,7 @@ def locked_policy_mutate(
     mutate_fn: Callable[[tomlkit.TOMLDocument], Any],
     *,
     create_if_missing: bool = False,
+    save_if_unchanged: bool = True,
 ) -> Any:
     """Read-modify-write policy.toml under an exclusive file lock.
 
@@ -392,6 +393,9 @@ def locked_policy_mutate(
         policy_path: Path to policy.toml
         mutate_fn: Called with the loaded TOMLDocument. May modify it in place.
                    Return value is passed through to the caller.
+        create_if_missing: Start from an empty document when no policy exists.
+        save_if_unchanged: Rewrite the policy even when the callback left its
+            serialized document unchanged. Disable for semantic no-op APIs.
 
     Returns:
         Whatever mutate_fn returns.
@@ -408,8 +412,10 @@ def locked_policy_mutate(
                 doc = tomlkit.document()
             else:
                 doc = load_roundtrip(policy_path)
+            original = tomlkit.dumps(doc)
             result = mutate_fn(doc)
-            save_roundtrip(policy_path, doc)
+            if save_if_unchanged or tomlkit.dumps(doc) != original:
+                save_roundtrip(policy_path, doc)
             return result
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)

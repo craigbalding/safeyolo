@@ -8,6 +8,7 @@ from safeyolo.agents_store import (
     load_agent,
     load_all_agents,
     load_all_agents_snapshot,
+    mutate_agent,
     remove_agent,
     reserve_agent_network_slot,
     reserve_agent_tailnet_port,
@@ -92,6 +93,38 @@ class TestSaveAndLoadAgent:
         loaded = load_agent("boris")
         assert loaded["services"]["gmail"]["capability"] == "read_and_send"
         assert loaded["services"]["gmail"]["token"] == "gmail-oauth2"
+
+    def test_mutate_agent_preserves_latest_unrelated_fields(self, tmp_config_dir):
+        _write_policy(tmp_config_dir)
+        save_agent(
+            "boris",
+            {"folder": "/old", "agent_id": "ag-1", "network_slot": 7},
+        )
+
+        changed, result = mutate_agent(
+            "boris",
+            lambda metadata: (metadata.__setitem__("folder", "/new"), "ok")[1],
+        )
+
+        assert changed is True
+        assert result == "ok"
+        assert load_agent("boris") == {
+            "folder": "/new",
+            "agent_id": "ag-1",
+            "network_slot": 7,
+        }
+
+    def test_mutate_agent_reports_noop_without_rewriting_policy(self, tmp_config_dir):
+        _write_policy(tmp_config_dir)
+        save_agent("boris", {"folder": "/same"})
+        policy_path = tmp_config_dir / "policy.toml"
+        before_stat = policy_path.stat()
+
+        changed, result = mutate_agent("boris", lambda _metadata: "same")
+
+        assert changed is False
+        assert result == "same"
+        assert policy_path.stat().st_mtime_ns == before_stat.st_mtime_ns
 
 
 class TestLoadDoc:

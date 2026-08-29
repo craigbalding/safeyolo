@@ -19,6 +19,7 @@ from rich.table import Table
 from ..agents_store import load_agent as _store_load_agent
 from ..agents_store import (
     load_all_agents,
+    mutate_agent,
     reserve_agent_network_slot,
     reserve_agent_tailnet_port_change,
     restore_agent_tailnet_port,
@@ -568,6 +569,7 @@ def _run_agent(
             cpus=cpus_for_run,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
+            workspace_path=workspace_path,
             extra_shares=extra_shares,
         )
         if is_snapshot_valid(name, snapshot_version):
@@ -1590,9 +1592,25 @@ def run(  # DOC: README.md, docs/AGENTS.md
             host_script_path=host_script_path,
             folder_str=str(folder_path),
         )
-        updated_metadata = dict(metadata)
-        updated_metadata["host_script"] = str(host_script_path)
-        save_agent(name, updated_metadata)
+
+        # The setup script can take arbitrarily long. Persist only its selected
+        # path against the latest authoritative record so a concurrent config,
+        # reservation, grant, or identity update cannot be overwritten by the
+        # metadata snapshot loaded before the script ran.
+        def persist_host_script(current):
+            current["host_script"] = str(host_script_path)
+
+        try:
+            mutate_agent(name, persist_host_script)
+        except KeyError:
+            console.print(
+                f"[red]Agent '{name}' was removed while its host script was running.[/red]"
+            )
+            console.print(
+                "The setup script completed, but SafeYolo did not recreate the "
+                "deleted configuration."
+            )
+            raise typer.Exit(1)
 
     associate_agent_pane(name)
     exit_code = _run_agent(
@@ -2072,6 +2090,17 @@ def rebuild_snapshot(
 @agent_app.command()
 def config(
     name: str = typer.Argument(..., help="Agent instance name"),
+    folder: str = typer.Option(
+        None,
+        "--folder",
+        "-f",
+        help="Set the persistent host folder mounted at /workspace on future runs",
+    ),
+    dangerously_allow_unowned: bool = typer.Option(
+        False,
+        "--dangerously-allow-unowned",
+        help="Allow a --folder not owned by the current user",
+    ),
     user_default_args: str = typer.Option(
         None,
         "--user-default-args",
@@ -2118,6 +2147,7 @@ def config(
     Examples:
 
         safeyolo agent config boris --show
+        safeyolo agent config boris --folder ~/code/boris
         safeyolo agent config boris --user-default-args="--continue"
         safeyolo agent config boris --add-mount ~/data:/data
         safeyolo agent config boris --add-mount ~/refs:/refs:ro
@@ -2135,7 +2165,8 @@ def config(
         raise typer.Exit(1)
 
     has_updates = (
-        user_default_args is not None
+        folder is not None
+        or user_default_args is not None
         or add_mount
         or remove_mount
         or clear_mounts
@@ -2182,89 +2213,154 @@ def config(
         console.print(table)
         return
 
-    # Update user_default_args
-    if user_default_args is not None:
-        if user_default_args == "":
-            if "user_default_args" in metadata:
-                del metadata["user_default_args"]
-            console.print(f"[green]Cleared user_default_args for {name}[/green]")
-        else:
-            parsed_args = _parse_user_default_args(user_default_args)
+    # Normalize and validate every input before taking the policy mutation
+    # lock. In particular this reuses the exact ownership boundary enforced by
+    # `agent add` and `agent run`.
+    normalized_folder: str | None = None
+    if folder is not None:
+        folder_path = Path(folder).expanduser().resolve()
+        if not folder_path.is_dir():
+            console.print(f"[red]Folder not found: {folder_path}[/red]")
+            raise typer.Exit(1)
+        _check_project_ownership(folder_path, dangerously_allow_unowned)
+        normalized_folder = str(folder_path)
+
+    parsed_args = (
+        _parse_user_default_args(user_default_args)
+        if user_default_args is not None
+        else None
+    )
+    parsed_mounts = [_parse_mount(spec) for spec in add_mount]
+    parsed_ports = [_parse_port(spec) for spec in add_port]
+
+    folder_sandbox_running: bool | None = None
+    if normalized_folder is not None and metadata.get("folder") != normalized_folder:
+        # Check before committing so a broken platform installation cannot
+        # leave a successfully persisted folder paired with a failed command
+        # and missing audit record.
+        from ..platform import get_platform
+
+        folder_sandbox_running = get_platform().is_sandbox_running(name)
+
+    def apply_updates(current) -> tuple[list[str], list[tuple[str, str]]]:
+        changes: list[str] = []
+        messages: list[tuple[str, str]] = []
+
+        if normalized_folder is not None:
+            if current.get("folder") != normalized_folder:
+                current["folder"] = normalized_folder
+                changes.append("folder")
+            else:
+                messages.append(("dim", f"Folder unchanged for {name}"))
+
+        if user_default_args is not None:
+            old_args = current.get("user_default_args")
             if parsed_args:
-                metadata["user_default_args"] = parsed_args
-                console.print(f"[green]Set user_default_args for {name}:[/green] {' '.join(parsed_args)}")
+                if old_args != parsed_args:
+                    current["user_default_args"] = parsed_args
+                    changes.append("user_default_args")
+                    messages.append(("green", f"Set user_default_args for {name}: {' '.join(parsed_args)}"))
+            elif "user_default_args" in current:
+                del current["user_default_args"]
+                changes.append("user_default_args")
+                messages.append(("green", f"Cleared user_default_args for {name}"))
 
-    # Handle mount updates
-    current_mounts = list(metadata.get("mounts", []))
+        old_mounts = list(current.get("mounts", []))
+        new_mounts = list(old_mounts)
+        if clear_mounts:
+            new_mounts = []
+            messages.append(("green", f"Cleared all mounts for {name}"))
+        for spec in remove_mount:
+            before = len(new_mounts)
+            new_mounts = [
+                mount
+                for mount in new_mounts
+                if mount.split(":")[1] != spec.rstrip("/")
+            ]
+            if before != len(new_mounts):
+                messages.append(("green", f"Removed mount for {spec}"))
+            else:
+                messages.append(("yellow", f"No mount found for container path: {spec}"))
+        for parsed in parsed_mounts:
+            container_path = parsed.split(":")[1]
+            new_mounts = [
+                mount
+                for mount in new_mounts
+                if mount.split(":")[1] != container_path
+            ]
+            new_mounts.append(parsed)
+            messages.append(("green", f"Added mount: {parsed}"))
+        if new_mounts != old_mounts:
+            if new_mounts:
+                current["mounts"] = new_mounts
+            else:
+                current.pop("mounts", None)
+            changes.append("mounts")
 
-    if clear_mounts:
-        current_mounts = []
-        console.print(f"[green]Cleared all mounts for {name}[/green]")
+        old_ports = list(current.get("ports", []))
+        new_ports = list(old_ports)
+        if clear_ports:
+            new_ports = []
+            messages.append(("green", f"Cleared all ports for {name}"))
+        for spec in remove_port:
+            before = len(new_ports)
+            new_ports = [
+                port
+                for port in new_ports
+                if port.rsplit(":", 1)[-1] != spec
+            ]
+            if before != len(new_ports):
+                messages.append(("green", f"Removed port mapping for container port {spec}"))
+            else:
+                messages.append(("yellow", f"No port mapping found for container port: {spec}"))
+        for parsed in parsed_ports:
+            container_port = parsed.rsplit(":", 1)[-1]
+            new_ports = [
+                port
+                for port in new_ports
+                if port.rsplit(":", 1)[-1] != container_port
+            ]
+            new_ports.append(parsed)
+            messages.append(("green", f"Added port: {parsed}"))
+        if new_ports != old_ports:
+            if new_ports:
+                current["ports"] = new_ports
+            else:
+                current.pop("ports", None)
+            changes.append("ports")
 
-    for spec in remove_mount:
-        # Match by container path (the part after the first colon)
-        before = len(current_mounts)
-        current_mounts = [m for m in current_mounts if m.split(":")[1] != spec.rstrip("/")]
-        removed = before - len(current_mounts)
-        if removed:
-            console.print(f"[green]Removed mount for {spec}[/green]")
+        return changes, messages
+
+    try:
+        changed, (changes, messages) = mutate_agent(name, apply_updates)
+    except KeyError:
+        console.print(f"[red]Agent not found: {escape(name)}[/red]")
+        raise typer.Exit(1)
+
+    for style, message in messages:
+        console.print(f"[{style}]{escape(message)}[/{style}]")
+
+    if "folder" in changes:
+        console.print(f"[green]Set persistent folder for {name}:[/green] {normalized_folder}")
+        if folder_sandbox_running:
+            console.print(
+                "[yellow]The running sandbox is unchanged:[/yellow] its current "
+                "/workspace stays mounted until you stop and run the agent again."
+            )
         else:
-            console.print(f"[yellow]No mount found for container path: {spec}[/yellow]")
+            console.print("The new folder will be mounted at /workspace on the next run.")
 
-    for spec in add_mount:
-        parsed = _parse_mount(spec)
-        # Check for duplicate container path
-        container_path = parsed.split(":")[1]
-        current_mounts = [m for m in current_mounts if m.split(":")[1] != container_path]
-        current_mounts.append(parsed)
-        console.print(f"[green]Added mount: {parsed}[/green]")
+    if not changed:
+        return
 
-    if current_mounts:
-        metadata["mounts"] = current_mounts
-    elif "mounts" in metadata:
-        del metadata["mounts"]
-
-    # Handle port updates
-    current_ports = list(metadata.get("ports", []))
-
-    if clear_ports:
-        current_ports = []
-        console.print(f"[green]Cleared all ports for {name}[/green]")
-
-    for spec in remove_port:
-        # Match by container port (last colon-separated part)
-        before = len(current_ports)
-        current_ports = [p for p in current_ports if p.rsplit(":", 1)[-1] != spec]
-        removed = before - len(current_ports)
-        if removed:
-            console.print(f"[green]Removed port mapping for container port {spec}[/green]")
-        else:
-            console.print(f"[yellow]No port mapping found for container port: {spec}[/yellow]")
-
-    for spec in add_port:
-        parsed = _parse_port(spec)
-        # Dedup by container port (last colon-separated part)
-        container_port = parsed.rsplit(":", 1)[-1]
-        current_ports = [p for p in current_ports if p.rsplit(":", 1)[-1] != container_port]
-        current_ports.append(parsed)
-        console.print(f"[green]Added port: {parsed}[/green]")
-
-    if current_ports:
-        metadata["ports"] = current_ports
-    elif "ports" in metadata:
-        del metadata["ports"]
-
-    save_agent(name, metadata)
-
-    # Build list of what changed for the event
-    changes = []
-    if user_default_args is not None:
-        changes.append("user_default_args")
-    if add_mount or remove_mount or clear_mounts:
-        changes.append("mounts")
-    if add_port or remove_port or clear_ports:
-        changes.append("ports")
-    write_event("agent.config_changed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} config changed: {', '.join(changes)}", agent=name, details={"changes": changes})
+    write_event(
+        "agent.config_changed",
+        kind=EventKind.AGENT,
+        severity=Severity.LOW,
+        summary=f"Agent {name} config changed: {', '.join(changes)}",
+        agent=name,
+        details={"changes": changes},
+    )
 
 
 def _load_vault():

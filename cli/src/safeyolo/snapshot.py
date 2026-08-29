@@ -23,6 +23,10 @@ Schema 2 (exp/erofs-vz-phase-a): paired clone moved from `.bin.rootfs`
 to `.bin.overlay` when the rootfs became a shared read-only erofs.
 Pre-schema-2 snapshots are invalidated by the schema bump.
 
+Schema 3 adds the resolved primary `/workspace` host folder to the strict
+fingerprint. A snapshot contains a live VirtioFS mount, so restoring it over a
+different host folder would resume the guest with stale mount state.
+
 PR 5 extends this to Linux via runsc checkpoint images.
 """
 
@@ -49,7 +53,9 @@ from .vm import (
 #
 # 2 (exp/erofs-vz-phase-a): paired disk clone moved from snapshot.bin.rootfs
 # to snapshot.bin.overlay. Pre-2 snapshots are structurally incompatible.
-SNAPSHOT_SCHEMA = 2
+# 3: fingerprint the resolved primary /workspace host folder. Pre-3 metadata
+# cannot prove that it was captured against the current workspace.
+SNAPSHOT_SCHEMA = 3
 
 # A snapshot.bin smaller than this is almost certainly a partial write or
 # early-failure stub, not a real memory image. Default memory is 4 GiB so
@@ -228,6 +234,7 @@ def compute_snapshot_version(
     cpus: int,
     gateway_ip: str,
     guest_ip: str,
+    workspace_path: str | Path = "/workspace",
     extra_shares: list[tuple[str, str, bool]] | None = None,
 ) -> dict:
     """Hash everything that must match for a snapshot to be restorable.
@@ -256,6 +263,10 @@ def compute_snapshot_version(
         "cpus": cpus,
         "network_gateway_ip": gateway_ip,
         "network_guest_ip": guest_ip,
+        # The primary VirtioFS device is just as restore-sensitive as the
+        # additional shares below. Resolve here as a second line of defence so
+        # equivalent relative, tilde, and symlink-free spellings compare equal.
+        "primary_workspace": str(Path(workspace_path).expanduser().resolve()),
         # VZ restore requires the same VirtioFS devices and the guest memory
         # already contains their mount destinations. Any persistent or one-off
         # mount change must therefore invalidate and recapture the snapshot.
