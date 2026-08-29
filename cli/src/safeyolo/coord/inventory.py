@@ -10,6 +10,7 @@ import os
 import re
 import sqlite3
 import stat
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ MAX_PROVIDER_COUNT = 16
 MAX_PROVIDER_RESULT_ENTRIES = 1024
 MAX_PROVIDER_DIRECTORY_ENTRIES = 128
 MAX_PROVIDER_SNAPSHOT_BYTES = 512 * 1024
+MAX_PROVIDER_INFLIGHT_PER_PROVIDER = 2
 MAX_PROVIDER_TTL_MS = 5 * 60 * 1000
 PROVIDER_TIMEOUT_SECONDS = 1.0
 MAX_STATE_BYTES = 512 * 1024
@@ -90,9 +92,10 @@ class ProviderAdapter(Protocol):
 
     Implementations return a mapping with ``capabilities`` and ``leases``
     lists. Coord allow-lists individual fields and never serializes raw output
-    or exception text. ``observe`` runs on an isolated worker event loop, so an
-    adapter must create any event-loop-bound client inside the call rather than
-    retain a client from the Agent API loop.
+    or exception text. ``observe`` runs on an isolated daemon-worker event loop
+    with bounded global/per-provider in-flight work, so an adapter must create
+    any event-loop-bound client inside the call rather than retain a client
+    from the Agent API loop.
     """
 
     async def observe(self, request: ProviderRequest) -> Mapping[str, Any]: ...
@@ -121,6 +124,8 @@ class ProviderEvidence:
 
 _PROVIDER_ADAPTERS: dict[str, ProviderAdapter] = {}
 _DISCOVERED_PROVIDER_ADAPTERS: dict[str, ProviderAdapter] = {}
+_PROVIDER_INFLIGHT: dict[str, set[object]] = {}
+_PROVIDER_INFLIGHT_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -659,22 +664,10 @@ async def query_providers(
         if adapter is None:
             return provider, ProviderEvidence({}, {})
         try:
-            def observe_and_normalize() -> ProviderEvidence:
-                async def observe() -> Any:
-                    pending = adapter.observe(request)
-                    if not inspect.isawaitable(pending):
-                        raise TypeError("provider observe result is not awaitable")
-                    return await pending
-
-                # The complete adapter call runs on a worker event loop. Even
-                # an incorrectly blocking async implementation cannot freeze
-                # the Agent API loop past the wait_for boundary below.
-                payload = asyncio.run(observe())
-                return _normalize_provider_payload(payload, request)
-
-            evidence = await asyncio.wait_for(
-                asyncio.to_thread(observe_and_normalize),
-                timeout=PROVIDER_TIMEOUT_SECONDS,
+            evidence = await _query_provider_adapter(
+                provider,
+                adapter,
+                request,
             )
             return provider, evidence
         except BaseException as exc:
@@ -692,6 +685,85 @@ async def query_providers(
             *(query_one(provider, request) for provider, request in requests.items())
         )
     )
+
+
+async def _query_provider_adapter(
+    provider: str,
+    adapter: ProviderAdapter,
+    request: ProviderRequest,
+) -> ProviderEvidence:
+    """Run one adapter on a bounded, isolated daemon-thread substrate."""
+    loop = asyncio.get_running_loop()
+    outcome = loop.create_future()
+    token = object()
+    with _PROVIDER_INFLIGHT_LOCK:
+        provider_tokens = _PROVIDER_INFLIGHT.setdefault(provider, set())
+        total_inflight = sum(len(tokens) for tokens in _PROVIDER_INFLIGHT.values())
+        if (
+            len(provider_tokens) >= MAX_PROVIDER_INFLIGHT_PER_PROVIDER
+            or total_inflight >= MAX_PROVIDER_COUNT
+        ):
+            if not provider_tokens:
+                _PROVIDER_INFLIGHT.pop(provider, None)
+            return ProviderEvidence({}, {})
+        provider_tokens.add(token)
+
+    def deliver(result: tuple[str, ProviderEvidence | str]) -> None:
+        if not outcome.done():
+            outcome.set_result(result)
+
+    def observe_and_normalize() -> None:
+        try:
+            async def observe() -> Any:
+                pending = adapter.observe(request)
+                if not inspect.isawaitable(pending):
+                    raise TypeError("provider observe result is not awaitable")
+                return await pending
+
+            payload = asyncio.run(observe())
+            result: tuple[str, ProviderEvidence | str] = (
+                "ok",
+                _normalize_provider_payload(payload, request),
+            )
+        except BaseException as exc:
+            result = ("error", type(exc).__name__)
+        finally:
+            with _PROVIDER_INFLIGHT_LOCK:
+                current_tokens = _PROVIDER_INFLIGHT.get(provider)
+                if current_tokens is not None:
+                    current_tokens.discard(token)
+                    if not current_tokens:
+                        _PROVIDER_INFLIGHT.pop(provider, None)
+        try:
+            loop.call_soon_threadsafe(deliver, result)
+        except RuntimeError:
+            # The request loop may have closed after a timeout. The bounded
+            # in-flight bookkeeping above has still been released.
+            pass
+
+    try:
+        threading.Thread(
+            target=observe_and_normalize,
+            name=f"safeyolo-coord-provider-{provider}",
+            daemon=True,
+        ).start()
+    except BaseException:
+        with _PROVIDER_INFLIGHT_LOCK:
+            provider_tokens = _PROVIDER_INFLIGHT.get(provider)
+            if provider_tokens is not None:
+                provider_tokens.discard(token)
+                if not provider_tokens:
+                    _PROVIDER_INFLIGHT.pop(provider, None)
+        raise
+
+    kind, value = await asyncio.wait_for(
+        outcome,
+        timeout=PROVIDER_TIMEOUT_SECONDS,
+    )
+    if kind == "error":
+        raise RuntimeError(value)
+    assert isinstance(value, ProviderEvidence)
+    return value
 
 
 def _normalize_provider_payload(

@@ -6,6 +6,7 @@ import asyncio
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -773,10 +774,15 @@ def test_malformed_oversized_and_concurrent_provider_reads_fail_closed(
     ][0]
     assert unknown["availability"] == "unknown"
 
+    slow_finished = threading.Event()
+
     class SlowProvider:
         async def observe(self, _request):
-            await asyncio.sleep(1)
-            return _capability_payload(40_000)
+            try:
+                await asyncio.sleep(0.05)
+                return _capability_payload(40_000)
+            finally:
+                slow_finished.set()
 
     inventory.register_provider_adapter("rundeck", SlowProvider())
     monkeypatch.setattr(inventory, "PROVIDER_TIMEOUT_SECONDS", 0.01)
@@ -785,11 +791,17 @@ def test_malformed_oversized_and_concurrent_provider_reads_fail_closed(
     ][0]
     assert timed_out["availability"] == "unknown"
     assert timed_out["freshness"] == "unknown"
+    assert slow_finished.wait(timeout=1)
+
+    blocking_finished = threading.Event()
 
     class BadBlockingProvider:
         async def observe(self, _request):
-            time.sleep(0.2)
-            return _capability_payload(40_000)
+            try:
+                time.sleep(0.2)
+                return _capability_payload(40_000)
+            finally:
+                blocking_finished.set()
 
     inventory.register_provider_adapter("rundeck", BadBlockingProvider())
 
@@ -803,6 +815,68 @@ def test_malformed_oversized_and_concurrent_provider_reads_fail_closed(
     blocked_capability = blocked["members"][0]["verified"][0]
     assert blocked_capability["availability"] == "unknown"
     assert blocked_capability["freshness"] == "unknown"
+    assert blocking_finished.wait(timeout=1)
+
+
+def test_max_blocking_providers_cannot_starve_authoritative_state_reads(
+    inventory_env, monkeypatch
+):
+    _run(api.create_room("provider-starvation"))
+    _grant("provider-starvation", AGENTS["alice"])
+    finished: list[threading.Event] = []
+    release = threading.Event()
+
+    for index in range(inventory.MAX_PROVIDER_COUNT):
+        provider = f"provider{index}"
+        api.advertise_resource(
+            "provider-starvation",
+            provider,
+            "runner",
+            advertised=True,
+            operation_id=f"op-starvation-{index}",
+        )
+        provider_finished = threading.Event()
+        finished.append(provider_finished)
+
+        class BlockingAdapter:
+            async def observe(self, _request, *, done=provider_finished):
+                try:
+                    release.wait(timeout=0.4)
+                    return {"leases": []}
+                finally:
+                    done.set()
+
+        inventory.register_provider_adapter(provider, BlockingAdapter())
+
+    monkeypatch.setattr(inventory, "PROVIDER_TIMEOUT_SECONDS", 0.01)
+
+    async def measured_read():
+        # Reproduce the shared-pool size that the previous implementation
+        # exhausted: all provider jobs occupied it, then the untimed final
+        # authoritative snapshot queued behind them.
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=inventory.MAX_PROVIDER_COUNT)
+        )
+        started = time.monotonic()
+        result = await api.get_room_state("provider-starvation")
+        return time.monotonic() - started, result
+
+    elapsed, state = _run(measured_read())
+    assert elapsed < 0.2
+    assert len(state["resource_leases"]) == inventory.MAX_PROVIDER_COUNT
+    assert {lease["state"] for lease in state["resource_leases"]} == {"unknown"}
+
+    # All 16 abandoned workers are still occupied. A repeated read must not
+    # spawn another wave or wait for them; the global cap returns unknown and
+    # leaves the authoritative executor available.
+    repeated_started = time.monotonic()
+    repeated = _run(api.get_room_state("provider-starvation"))
+    assert time.monotonic() - repeated_started < 0.2
+    assert {lease["state"] for lease in repeated["resource_leases"]} == {
+        "unknown"
+    }
+    release.set()
+    assert all(event.wait(timeout=1) for event in finished)
 
 
 def test_room_state_rejects_unbounded_canonical_input(inventory_env):

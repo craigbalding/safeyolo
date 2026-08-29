@@ -140,6 +140,9 @@ restart. The file uses the narrow `capabilities` and `leases` observation
 shape; it must contain public evidence only, never provider credentials or
 connection configuration. Missing, unreadable, oversized, malformed, stale,
 or removed snapshots render the affected observations `unknown`.
+Provider execution uses isolated daemon workers with global and per-provider
+in-flight caps; a timed-out or hung integration cannot occupy the Agent API's
+shared executor or spawn abandoned work without bound.
 
 A message intended to wake a peer and cause action must itself contain or
 directly identify the actionable handoff. Do not send substantive unnotified

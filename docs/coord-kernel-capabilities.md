@@ -364,7 +364,9 @@ contract and must not contain credentials or connection configuration. Coord
 never writes provider state. Missing, unreadable, oversized, malformed, stale,
 or removed snapshots produce `unknown`. The complete provider call, including
 incorrectly blocking implementations, runs outside the Agent API event loop
-behind its timeout.
+behind its timeout. Global and per-provider in-flight caps bound abandoned
+daemon workers, so a hung integration cannot consume the shared executor used
+for authoritative state reads or spawn new work indefinitely.
 
 Keep provenance explicit:
 
