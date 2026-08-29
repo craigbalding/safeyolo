@@ -1101,39 +1101,7 @@ class TestCoordRoomInventory:
         from safeyolo.coord import inventory, nats_client
         from safeyolo.coord import nats_runtime as nr
 
-        class Provider:
-            def __init__(self):
-                self.observed_at = coord_api.store.now_ms()
-
-            async def observe(self, request):
-                now = self.observed_at
-                return {
-                    "capabilities": [
-                        {
-                            "agent_id": agent_id,
-                            "capability": capability,
-                            "availability": "available",
-                            "observed_at": now,
-                            "valid_until": now + 30_000,
-                            "token": "provider-token-must-not-leak",
-                        }
-                        for agent_id, capability in request.capabilities
-                    ],
-                    "leases": [
-                        {
-                            "resource": resource,
-                            "state": "held",
-                            "holder_agent_id": get_or_mint_agent_id("bob"),
-                            "observed_at": now,
-                            "valid_until": now + 30_000,
-                            "account": "provider-account-must-not-leak",
-                        }
-                        for resource in request.resources
-                    ],
-                }
-
         inventory.clear_provider_adapters()
-        inventory.register_provider_adapter("rundeck", Provider())
         try:
             for name in ("alice", "bob", "codey"):
                 _register_agent(name)
@@ -1154,6 +1122,36 @@ class TestCoordRoomInventory:
                         },
                     },
                 )
+            now = coord_api.store.now_ms()
+            provider_dir = inventory.provider_snapshot_dir()
+            provider_dir.mkdir(parents=True)
+            (provider_dir / "rundeck.json").write_text(
+                json.dumps(
+                    {
+                        "capabilities": [
+                            {
+                                "agent_id": agent_id,
+                                "capability": f"rundeck:{name}_runner",
+                                "availability": "available",
+                                "observed_at": now,
+                                "valid_until": now + 30_000,
+                                "token": "provider-token-must-not-leak",
+                            }
+                            for name, agent_id in agent_ids.items()
+                        ],
+                        "leases": [
+                            {
+                                "resource": "acceptance_runner",
+                                "state": "held",
+                                "holder_agent_id": agent_ids["bob"],
+                                "observed_at": now,
+                                "valid_until": now + 30_000,
+                                "account": "provider-account-must-not-leak",
+                            }
+                        ],
+                    }
+                )
+            )
             coord_api.bootstrap()
             _await(coord_api.create_room("inventory-dogfood"))
             for name, agent_id in agent_ids.items():
@@ -1207,6 +1205,12 @@ class TestCoordRoomInventory:
 
             nr.stop_server()
             nats_client.reset_for_tests()
+            # Simulate process-local integration loss as well as substrate
+            # restart. Bootstrap reconstructs the production adapter from the
+            # provider-owned durable public snapshot; the test never calls the
+            # manual registration hook.
+            inventory.clear_provider_adapters()
+            coord_api.bootstrap()
             nr.start_server(ready_timeout=8.0)
             with _as_agent("codey"):
                 restarted = _make_flow(
@@ -1215,7 +1219,29 @@ class TestCoordRoomInventory:
                 )
                 _run(api, restarted)
             assert restarted.response.status_code == 200
-            assert len(json.loads(restarted.response.content)["members"]) == 3
+            restarted_state = json.loads(restarted.response.content)
+            assert len(restarted_state["members"]) == 3
+            assert all(
+                member["verified"][0]["availability"] == "available"
+                for member in restarted_state["members"]
+            )
+            assert restarted_state["resource_leases"][0][
+                "holder_agent_id"
+            ] == agent_ids["bob"]
+
+            (provider_dir / "rundeck.json").unlink()
+            with _as_agent("alice"):
+                removed = _make_flow(
+                    "/api/coord/rooms/inventory-dogfood/state",
+                    method="GET",
+                )
+                _run(api, removed)
+            removed_state = json.loads(removed.response.content)
+            assert all(
+                member["verified"][0]["availability"] == "unknown"
+                for member in removed_state["members"]
+            )
+            assert removed_state["resource_leases"][0]["state"] == "unknown"
         finally:
             inventory.clear_provider_adapters()
 

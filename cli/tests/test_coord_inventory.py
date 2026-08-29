@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 
 import pytest
 
@@ -421,12 +423,12 @@ def test_lease_holder_is_rechecked_after_provider_io(inventory_env, monkeypatch)
 
     class BlockingLeaseProvider:
         def __init__(self):
-            self.started = asyncio.Event()
-            self.release = asyncio.Event()
+            self.started = threading.Event()
+            self.release = threading.Event()
 
         async def observe(self, _request):
             self.started.set()
-            await self.release.wait()
+            self.release.wait()
             return {
                 "leases": [
                     {
@@ -446,7 +448,7 @@ def test_lease_holder_is_rechecked_after_provider_io(inventory_env, monkeypatch)
         pending = asyncio.create_task(
             api.get_room_state("lease-race", "agent", AGENTS["alice"])
         )
-        await provider.started.wait()
+        await asyncio.to_thread(provider.started.wait)
         api.revoke_grant(
             "lease-race",
             "agent",
@@ -497,12 +499,12 @@ def test_rename_preserves_identity_and_remove_readd_is_distinct(inventory_env):
 
 class BlockingProvider:
     def __init__(self):
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
+        self.started = threading.Event()
+        self.release = threading.Event()
 
     async def observe(self, _request):
         self.started.set()
-        await self.release.wait()
+        self.release.wait()
         return _capability_payload(store.now_ms())
 
 
@@ -535,7 +537,7 @@ def test_authorization_rechecked_after_provider_io_and_send_only_denied(
         pending = asyncio.create_task(
             api.get_room_state("auth", "agent", AGENTS["alice"])
         )
-        await provider.started.wait()
+        await asyncio.to_thread(provider.started.wait)
         api.revoke_grant(
             "auth",
             "agent",
@@ -595,6 +597,57 @@ def test_sqlite_authorization_and_inventory_inputs_share_one_snapshot(
     monkeypatch.setattr(inventory, "read_snapshot", real_read)
     with pytest.raises(api.NoMembershipError):
         api._inventory_snapshot("snapshot", "agent", AGENTS["alice"])
+
+
+def test_policy_grant_and_sqlite_advertisement_share_final_linearization(
+    inventory_env, monkeypatch
+):
+    _run(api.create_room("cross-store"))
+    _grant("cross-store", AGENTS["bob"])
+    save_agent(
+        "bob",
+        _agent_meta(AGENTS["bob"], capability="rundeck:acceptance_runner"),
+    )
+
+    real_snapshot = api._inventory_snapshot
+    snapshot_calls = 0
+    writer_started = threading.Event()
+    writer_done = threading.Event()
+    writer: threading.Thread | None = None
+
+    def interleaved_snapshot(*args, **kwargs):
+        nonlocal snapshot_calls, writer
+        snapshot_calls += 1
+        if snapshot_calls == 2:
+
+            def revoke_then_advertise():
+                writer_started.set()
+                save_agent("bob", _agent_meta(AGENTS["bob"]))
+                api.advertise_capability(
+                    "cross-store",
+                    AGENTS["bob"],
+                    "rundeck:acceptance_runner",
+                    advertised=True,
+                    operation_id="op-cross-store-ad",
+                )
+                writer_done.set()
+
+            writer = threading.Thread(target=revoke_then_advertise)
+            writer.start()
+            assert writer_started.wait(timeout=1)
+            # The final policy lock prevents the ordered revoke+advertise from
+            # completing before the SQLite snapshot. Without it, the response
+            # manufactures an intersection that never existed.
+            writer_done.wait(timeout=0.2)
+        return real_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(api, "_inventory_snapshot", interleaved_snapshot)
+    state = _run(api.get_room_state("cross-store"))
+    assert writer is not None
+    writer.join(timeout=2)
+    assert writer_done.is_set()
+    assert state["members"][0]["verified"] == []
+    assert _run(api.get_room_state("cross-store"))["members"][0]["verified"] == []
 
 
 def test_advertisement_operation_replay_validation_and_restart(inventory_env):
@@ -732,6 +785,24 @@ def test_malformed_oversized_and_concurrent_provider_reads_fail_closed(
     ][0]
     assert timed_out["availability"] == "unknown"
     assert timed_out["freshness"] == "unknown"
+
+    class BadBlockingProvider:
+        async def observe(self, _request):
+            time.sleep(0.2)
+            return _capability_payload(40_000)
+
+    inventory.register_provider_adapter("rundeck", BadBlockingProvider())
+
+    async def measured_read():
+        started = time.monotonic()
+        result = await api.get_room_state("provider-races")
+        return time.monotonic() - started, result
+
+    elapsed, blocked = _run(measured_read())
+    assert elapsed < 0.1
+    blocked_capability = blocked["members"][0]["verified"][0]
+    assert blocked_capability["availability"] == "unknown"
+    assert blocked_capability["freshness"] == "unknown"
 
 
 def test_room_state_rejects_unbounded_canonical_input(inventory_env):

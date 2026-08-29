@@ -6,11 +6,16 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import re
 import sqlite3
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
+
+from safeyolo.config import get_config_dir
 
 from . import store
 from .kernel import LOCAL_OPERATOR_ID, execute_mutation
@@ -22,6 +27,8 @@ MAX_DECLARATIONS_PER_AGENT = 32
 MAX_DECLARATION_TTL_SECONDS = 3600
 MAX_PROVIDER_COUNT = 16
 MAX_PROVIDER_RESULT_ENTRIES = 1024
+MAX_PROVIDER_DIRECTORY_ENTRIES = 128
+MAX_PROVIDER_SNAPSHOT_BYTES = 512 * 1024
 MAX_PROVIDER_TTL_MS = 5 * 60 * 1000
 PROVIDER_TIMEOUT_SECONDS = 1.0
 MAX_STATE_BYTES = 512 * 1024
@@ -83,7 +90,9 @@ class ProviderAdapter(Protocol):
 
     Implementations return a mapping with ``capabilities`` and ``leases``
     lists. Coord allow-lists individual fields and never serializes raw output
-    or exception text.
+    or exception text. ``observe`` runs on an isolated worker event loop, so an
+    adapter must create any event-loop-bound client inside the call rather than
+    retain a client from the Agent API loop.
     """
 
     async def observe(self, request: ProviderRequest) -> Mapping[str, Any]: ...
@@ -111,6 +120,32 @@ class ProviderEvidence:
 
 
 _PROVIDER_ADAPTERS: dict[str, ProviderAdapter] = {}
+_DISCOVERED_PROVIDER_ADAPTERS: dict[str, ProviderAdapter] = {}
+
+
+@dataclass(frozen=True)
+class SnapshotFileProvider:
+    """Generic production adapter for a provider-owned public snapshot."""
+
+    path: Path
+
+    async def observe(self, _request: ProviderRequest) -> Mapping[str, Any]:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(self.path, flags)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("provider snapshot is not a regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                encoded = handle.read(MAX_PROVIDER_SNAPSHOT_BYTES + 1)
+        finally:
+            os.close(descriptor)
+        if len(encoded) > MAX_PROVIDER_SNAPSHOT_BYTES:
+            raise InventoryBoundsError("provider snapshot exceeds byte bound")
+        payload = json.loads(encoded)
+        if not isinstance(payload, Mapping):
+            raise ValueError("provider snapshot must contain a JSON object")
+        return payload
 
 
 def register_provider_adapter(provider: str, adapter: ProviderAdapter) -> None:
@@ -122,9 +157,70 @@ def register_provider_adapter(provider: str, adapter: ProviderAdapter) -> None:
     _PROVIDER_ADAPTERS[provider] = adapter
 
 
+def provider_snapshot_dir() -> Path:
+    """Operator/provider integration directory for public observation files."""
+    return get_config_dir() / "coord-providers"
+
+
+def discover_provider_adapters() -> tuple[str, ...]:
+    """Reconstruct generic provider adapters from durable public snapshots.
+
+    Each ``<provider>.json`` file is provider-owned and uses the narrow
+    ``capabilities``/``leases`` observation shape. Coord only reads it. No
+    token, endpoint, route, or provider-specific integration enters coord.
+    """
+    directory = provider_snapshot_dir()
+    discovered: dict[str, ProviderAdapter] = {}
+    if directory.is_dir() and not directory.is_symlink():
+        try:
+            with os.scandir(directory) as entries:
+                for entry_index, entry in enumerate(entries, start=1):
+                    if entry_index > MAX_PROVIDER_DIRECTORY_ENTRIES:
+                        log.warning(
+                            "coord provider discovery returned unknown "
+                            "(directory entry bound)"
+                        )
+                        discovered.clear()
+                        break
+                    try:
+                        regular_file = entry.is_file(follow_symlinks=False)
+                    except OSError as exc:
+                        log.warning(
+                            "ignored unreadable coord provider directory entry (%s)",
+                            type(exc).__name__,
+                        )
+                        continue
+                    if not entry.name.endswith(".json") or not regular_file:
+                        continue
+                    provider = entry.name.removesuffix(".json")
+                    try:
+                        validate_public_name(provider, field="provider")
+                    except ValueError:
+                        log.warning("ignored invalid coord provider snapshot filename")
+                        continue
+                    discovered[provider] = SnapshotFileProvider(Path(entry.path))
+                    if len(discovered) > MAX_PROVIDER_COUNT:
+                        log.warning(
+                            "coord provider discovery returned unknown "
+                            "(provider count bound)"
+                        )
+                        discovered.clear()
+                        break
+        except OSError as exc:
+            log.warning(
+                "coord provider discovery returned unknown (%s)",
+                type(exc).__name__,
+            )
+            discovered.clear()
+    _DISCOVERED_PROVIDER_ADAPTERS.clear()
+    _DISCOVERED_PROVIDER_ADAPTERS.update(discovered)
+    return tuple(sorted(discovered))
+
+
 def clear_provider_adapters() -> None:
     """Clear process-local adapters (primarily lifecycle/test teardown)."""
     _PROVIDER_ADAPTERS.clear()
+    _DISCOVERED_PROVIDER_ADAPTERS.clear()
 
 
 def validate_public_name(value: str, *, field: str) -> str:
@@ -556,23 +652,28 @@ async def query_providers(
     async def query_one(
         provider: str, request: ProviderRequest
     ) -> tuple[str, ProviderEvidence]:
-        adapter = _PROVIDER_ADAPTERS.get(provider)
+        adapter = _PROVIDER_ADAPTERS.get(
+            provider,
+            _DISCOVERED_PROVIDER_ADAPTERS.get(provider),
+        )
         if adapter is None:
             return provider, ProviderEvidence({}, {})
         try:
-            async def observe_and_normalize() -> ProviderEvidence:
-                pending = adapter.observe(request)
-                if not inspect.isawaitable(pending):
-                    raise TypeError("provider observe result is not awaitable")
-                payload = await pending
-                return await asyncio.to_thread(
-                    _normalize_provider_payload,
-                    payload,
-                    request,
-                )
+            def observe_and_normalize() -> ProviderEvidence:
+                async def observe() -> Any:
+                    pending = adapter.observe(request)
+                    if not inspect.isawaitable(pending):
+                        raise TypeError("provider observe result is not awaitable")
+                    return await pending
+
+                # The complete adapter call runs on a worker event loop. Even
+                # an incorrectly blocking async implementation cannot freeze
+                # the Agent API loop past the wait_for boundary below.
+                payload = asyncio.run(observe())
+                return _normalize_provider_payload(payload, request)
 
             evidence = await asyncio.wait_for(
-                observe_and_normalize(),
+                asyncio.to_thread(observe_and_normalize),
                 timeout=PROVIDER_TIMEOUT_SECONDS,
             )
             return provider, evidence

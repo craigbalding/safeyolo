@@ -132,6 +132,15 @@ provider-owned resource lease. Inventory output never includes complete grant
 configuration, credentials, tokens, account/persona data, bindings, routes,
 paths, or provider error payloads.
 
+Production provider integrations publish an atomically replaced, bounded
+public observation snapshot at
+`~/.safeyolo/coord-providers/<provider>.json`. SafeYolo discovers these generic
+adapters at coord/Agent-API process bootstrap and reconstructs them after a
+restart. The file uses the narrow `capabilities` and `leases` observation
+shape; it must contain public evidence only, never provider credentials or
+connection configuration. Missing, unreadable, oversized, malformed, stale,
+or removed snapshots render the affected observations `unknown`.
+
 A message intended to wake a peer and cause action must itself contain or
 directly identify the actionable handoff. Do not send substantive unnotified
 messages followed by a targeted "go look above", terse disposition, or other

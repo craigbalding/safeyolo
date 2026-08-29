@@ -13,7 +13,10 @@ import logging
 import sqlite3
 from typing import Any
 
-from safeyolo.agents_store import load_all_agents_snapshot
+from safeyolo.agents_store import (
+    load_all_agents_snapshot,
+    locked_all_agents_snapshot,
+)
 
 from . import attention, brief, inventory, nats_client, store
 from .envelope import Envelope, validate_content_type
@@ -90,6 +93,7 @@ def bootstrap() -> str:
     from .outbox import project_pending
 
     project_pending()
+    inventory.discover_provider_adapters()
     return instance_id
 
 
@@ -284,15 +288,22 @@ async def get_room_state(
     )
     provider_evidence = await inventory.query_providers(requests)
 
-    # Reload platform grants after provider I/O, then perform the final
-    # authorization/state read. This is the response's linearization point.
-    final_agents = inventory.configured_agents(
-        await asyncio.to_thread(load_all_agents_snapshot)
-    )
-    final_room_id, final_snapshot, final_brief = _inventory_snapshot(
-        room_name,
-        principal_kind,
-        principal_id,
+    # Hold the policy snapshot lock across the final SQLite authorization and
+    # state snapshot. Otherwise a policy revoke followed by a room
+    # advertisement can straddle the two reads and manufacture an intersection
+    # that never existed at any instant.
+    def final_authoritative_snapshot():
+        with locked_all_agents_snapshot() as raw_agents:
+            final_agents = inventory.configured_agents(raw_agents)
+            final_room_id, final_snapshot, final_brief = _inventory_snapshot(
+                room_name,
+                principal_kind,
+                principal_id,
+            )
+            return final_agents, final_room_id, final_snapshot, final_brief
+
+    final_agents, final_room_id, final_snapshot, final_brief = (
+        await asyncio.to_thread(final_authoritative_snapshot)
     )
     if final_room_id != room_id:
         raise RuntimeError("room identity changed during inventory read")

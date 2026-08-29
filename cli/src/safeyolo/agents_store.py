@@ -5,7 +5,8 @@ import ipaddress
 import json
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -110,12 +111,14 @@ def load_all_agents() -> dict[str, dict]:
     return _get_agents(doc)
 
 
-def load_all_agents_snapshot() -> dict[str, dict]:
-    """Read all agents while excluding SafeYolo policy mutations.
+@contextmanager
+def locked_all_agents_snapshot() -> Iterator[dict[str, dict]]:
+    """Hold a stable agents snapshot against SafeYolo policy mutations.
 
     Coordination inventory uses this as the authoritative configured-agent
     linearization point. Writers already take the sibling policy lock, so a
-    shared read lock cannot observe a half-completed SafeYolo mutation.
+    shared read lock cannot observe a half-completed mutation. The caller may
+    read its other authoritative store while this context remains active.
     """
     path = _policy_toml_path()
     lock_path = path.parent / ".policy.toml.lock"
@@ -124,9 +127,15 @@ def load_all_agents_snapshot() -> dict[str, dict]:
     with open(lock_path) as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_SH)
         try:
-            return _get_agents(_load_doc())
+            yield _get_agents(_load_doc())
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def load_all_agents_snapshot() -> dict[str, dict]:
+    """Read one locked snapshot without retaining the policy lock."""
+    with locked_all_agents_snapshot() as agents:
+        return agents
 
 
 def load_agent(name: str) -> dict:
