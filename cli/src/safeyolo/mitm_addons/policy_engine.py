@@ -25,7 +25,6 @@ class PolicyClientConfigurator:
     def __init__(self):
         self._configured_baseline: str | None = None
         self._configured_budget: str | None = None
-        self._configured_services_dir: str | None = None
 
     def load(self, loader):
         """Register mitmproxy options."""
@@ -45,10 +44,8 @@ class PolicyClientConfigurator:
     def configure(self, updates):
         """Configure PolicyClient when options change.
 
-        Reconfigures on policy_file, policy_budget_state, or gateway_services_dir
-        changes. The gateway_services_dir option is registered by ServiceGateway
-        (loaded after us), so it may not be available on the first configure() call.
-        When it becomes available, we reconfigure to pick up the services dir.
+        Service-definition reloads are owned by ServiceRegistry. Its successful
+        reload callback recompiles policy against that same live registry.
         """
         from mitmproxy import ctx
 
@@ -57,27 +54,10 @@ class PolicyClientConfigurator:
         baseline_path = ctx.options.policy_file
         budget_path = ctx.options.policy_budget_state
 
-        # Derive services_dir: prefer gateway_services_dir option, fall back to
-        # sibling "services" directory next to policy file
-        services_dir = None
-        try:
-            gw_svc_dir = ctx.options.gateway_services_dir
-            if gw_svc_dir and Path(gw_svc_dir).is_dir():
-                services_dir = Path(gw_svc_dir)
-        except (AttributeError, KeyError):
-            pass  # Option not registered yet (gateway addon loads after us)
-        if services_dir is None and baseline_path:
-            candidate = Path(baseline_path).parent / "services"
-            if candidate.is_dir():
-                services_dir = candidate
-
-        services_dir_str = str(services_dir) if services_dir else None
-
         # Skip if nothing changed (smart reconfigure)
         if (
             baseline_path == self._configured_baseline
             and budget_path == self._configured_budget
-            and services_dir_str == self._configured_services_dir
         ):
             return
 
@@ -86,14 +66,13 @@ class PolicyClientConfigurator:
             mode="local",
             baseline_path=Path(baseline_path) if baseline_path else None,
             budget_state_path=Path(budget_path) if budget_path else None,
-            services_dir=services_dir,
+            services_dir=None,
         )
 
         configure_policy_client(config)
 
         self._configured_baseline = baseline_path
         self._configured_budget = budget_path
-        self._configured_services_dir = services_dir_str
 
         log.info(
             "PolicyClient configured",

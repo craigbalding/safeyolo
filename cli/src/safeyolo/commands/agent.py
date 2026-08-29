@@ -55,7 +55,7 @@ from ..vm import (
     prepare_config_share,
     stage_guest_desktop_launcher,
 )
-from ._service_discovery import find_service
+from ._service_discovery import ServiceDiscoveryError, find_service
 from .mount import is_path_protected
 from .tmux import associate_agent_pane, rename_window_for_agent
 
@@ -2464,7 +2464,11 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
         raise typer.Exit(1)
 
     # 2. Resolve service
-    svc = find_service(service_name)
+    try:
+        svc = find_service(service_name)
+    except ServiceDiscoveryError as error:
+        console.print(f"[red]Service definitions failed to load:[/red] {escape(str(error))}")
+        raise typer.Exit(1) from error
     if not svc:
         console.print(f"[red]Error:[/red] Service '{escape(service_name)}' not found")
         raise typer.Exit(1)
@@ -2598,7 +2602,15 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
             capability=selected_cap,
             credential=cred_name,
         )
-    except (APIError, OSError) as exc:
+    except APIError as exc:
+        if exc.status_code is not None:
+            console.print(f"[red]Authorization refused by running gateway:[/red] {escape(str(exc))}")
+            raise typer.Exit(1) from exc
+        log.warning("Admin API unavailable (%s), falling back to local write", exc)
+        services = metadata.setdefault("services", {})
+        services[service_name] = {"capability": selected_cap, "token": cred_name}
+        save_agent(agent_name, metadata)
+    except OSError as exc:
         log.warning("Admin API unavailable (%s), falling back to local write", exc)
         services = metadata.setdefault("services", {})
         services[service_name] = {"capability": selected_cap, "token": cred_name}

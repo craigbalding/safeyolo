@@ -82,7 +82,7 @@ scan_patterns: []
 # =============================================================================
 # SERVICE GATEWAY — expose curated API surfaces to agents
 # =============================================================================
-# Services reference definitions in config/services/*.yaml
+# Services reference packaged definitions plus user overrides in ~/.safeyolo/services/*.yaml
 # Agents get gateway tokens (sgw_) that map to vault credentials.
 #
 # agents:

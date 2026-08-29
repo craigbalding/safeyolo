@@ -180,10 +180,13 @@ class PolicyLoader:
         Args:
             baseline_path: Path to baseline policy file
             on_reload: Optional callback when policies are reloaded
-            services_dir: Path to service definitions directory (for capability route compilation)
+            services_dir: Deprecated compatibility argument. ServiceRegistry is
+                the authoritative capability source and owns reload callbacks.
         """
         self._baseline_path = baseline_path
-        self._services_dir = services_dir
+        # Keep the argument source-compatible, but never watch or parse a
+        # second service path here. ServiceRegistry reloads the policy only
+        # after its complete builtin+user candidate has committed.
         self._on_reload_callbacks: list[Callable[[], None]] = []
         if on_reload:
             self._on_reload_callbacks.append(on_reload)
@@ -206,7 +209,6 @@ class PolicyLoader:
         self._last_baseline_mtime: float = 0
         self._last_addons_mtime: float = 0
         self._last_lists_mtime: float = 0
-        self._last_services_mtime: float = 0
         self._last_task_mtime: float = 0
 
         # File watcher
@@ -307,20 +309,6 @@ class PolicyLoader:
                 # Referenced list file missing or unreadable — skip it
                 # for mtime purposes; the loader handles the actual load.
                 pass
-        return max_mtime
-
-    def _services_max_mtime(self) -> float:
-        """Get the max mtime across all YAML files in the services directory."""
-        if not self._services_dir or not self._services_dir.is_dir():
-            return 0
-        max_mtime = 0.0
-        for p in self._services_dir.glob("*.yaml"):
-            try:
-                mt = p.stat().st_mtime
-                if mt > max_mtime:
-                    max_mtime = mt
-            except OSError:
-                pass  # Skip files that vanish between glob and stat
         return max_mtime
 
     def _prune_expired_hosts(self, raw: dict) -> dict:
@@ -450,8 +438,6 @@ class PolicyLoader:
                 if addons_path:
                     self._last_addons_mtime = addons_path.stat().st_mtime
                 self._last_lists_mtime = self._lists_max_mtime()
-                if self._services_dir:
-                    self._last_services_mtime = self._services_max_mtime()
 
                 # Sort permissions by specificity (most specific first)
                 self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource, p.condition is not None), reverse=True)
@@ -586,12 +572,6 @@ class PolicyLoader:
                     lists_mtime = self._lists_max_mtime()
                     if lists_mtime > self._last_lists_mtime:
                         reload_baseline = True
-
-                    # Check services dir (triggers baseline reload for capability routes)
-                    if self._services_dir and self._services_dir.is_dir():
-                        svc_mtime = self._services_max_mtime()
-                        if svc_mtime > self._last_services_mtime:
-                            reload_baseline = True
 
                     if reload_baseline:
                         log.info("Policy changed, reloading...")

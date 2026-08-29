@@ -677,6 +677,29 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "missing required fields: service, capability, credential"}, 400)
             return
 
+        # Authorization must validate against the exact live registry used by
+        # the request path and policy compiler. A CLI-only definition must
+        # never be written into policy as if the running gateway could use it.
+        from safeyolo.core.service_loader import get_service_registry
+
+        registry = get_service_registry()
+        if registry is None:
+            self._send_json({"error": "service registry is not available"}, 503)
+            return
+        service_definition = registry.get_service(service)
+        if service_definition is None:
+            self._send_json(
+                {"error": f"service '{service}' is not loaded by the running gateway"},
+                404,
+            )
+            return
+        if capability not in service_definition.capabilities:
+            self._send_json(
+                {"error": f"capability '{capability}' is not loaded for service '{service}'"},
+                404,
+            )
+            return
+
         def mutate(raw):
             if agent_name not in raw:
                 raise KeyError(agent_name)

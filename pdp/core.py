@@ -73,7 +73,8 @@ class PDPCore:
         Args:
             baseline_path: Path to baseline policy YAML (enables file watching)
             budget_state_path: Path to budget state JSON (enables persistence)
-            services_dir: Path to service definitions directory (for capability routes)
+            services_dir: Deprecated compatibility argument; the live
+                ServiceRegistry owns capability definitions and reloads.
         """
         # Ensure paths are Path objects
         if baseline_path is not None and not isinstance(baseline_path, Path):

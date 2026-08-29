@@ -677,11 +677,11 @@ Fast regex scanning for secrets and suspicious patterns.
 4. **Once-grants** are consumed after a successful (2xx) response. Non-2xx responses (4xx, 5xx) do not consume the grant, allowing retry. Grant TTL defaults to 1 hour, configurable via `gateway.grant_ttl_seconds` in the policy file.
 5. Flow store redacts injected credentials as `[GATEWAY:...last4]`
 
-**Service definitions** describe external APIs using v2 format: auth methods, capabilities (named sets of allowed routes), and risky routes (tagged with ATT&CK tactics). Builtins ship for common APIs (gmail, slack, github). Users can add custom service YAMLs in `~/.safeyolo/services/`.
+**Service definitions** describe external APIs using v2 format: auth methods, capabilities (named sets of allowed routes), and risky routes (tagged with ATT&CK tactics). Builtins ship inside the installed `safeyolo/services/` package directory. Users add definitions in `~/.safeyolo/services/`; user service names override builtins, and the CLI, gateway, policy compiler, and reload watcher all use that same precedence.
 
 **Vault** stores encrypted credentials referenced by policy.toml agent service bindings. Auto-refreshes OAuth2 tokens when `refresh_on_401: true`.
 
-**Hot-reload:** Service definitions are watched for changes (2s poll). Vault requires proxy restart.
+**Hot-reload:** Both packaged and user service directories are watched for changes (2s poll). A complete valid reload updates the registry and recompiles policy; an invalid reload keeps the previous pair active and logs the offending file. Vault requires proxy restart.
 
 **Related CLI:**
 - `safeyolo agent authorize <agent> <service> --capability <name>` -- wire an agent to a service

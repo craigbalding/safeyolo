@@ -1,6 +1,7 @@
 """Tests for agent authorize and revoke commands."""
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
@@ -153,7 +154,7 @@ class TestServiceResolution:
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
 
-    def test_builtin_service_resolved(self, cli_runner, tmp_config_dir):
+    def test_user_only_service_resolved(self, cli_runner, tmp_config_dir):
         """A service in the user services dir is found."""
         _create_agent(tmp_config_dir, "boris")
         _write_service(
@@ -175,6 +176,81 @@ class TestServiceResolution:
         )
         assert result.exit_code == 0
         assert "Authorized" in result.output
+
+    def test_packaged_builtin_service_authorizes_without_user_copy(
+        self, cli_runner, tmp_config_dir
+    ):
+        _create_agent(tmp_config_dir, "boris")
+
+        result = _invoke(
+            cli_runner,
+            [
+                "authorize",
+                "boris",
+                "gmail",
+                "--capability",
+                "search_headers",
+                "--token",
+                "oauth-token",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Authorized" in result.output
+        assert load_agent("boris")["services"]["gmail"]["capability"] == "search_headers"
+
+    def test_malformed_user_service_refuses_authorization(
+        self, cli_runner, tmp_config_dir
+    ):
+        _create_agent(tmp_config_dir, "boris")
+        services = tmp_config_dir / "services"
+        services.mkdir()
+        (services / "broken.yaml").write_text("not: valid: yaml: [")
+
+        result = _invoke(
+            cli_runner,
+            ["authorize", "boris", "gmail", "--capability", "search_headers", "--token", "x"],
+        )
+
+        assert result.exit_code != 0
+        assert "service definitions failed to load" in result.output.lower()
+        assert "broken.yaml" in result.output
+
+    def test_running_gateway_rejection_is_not_rewritten_offline(
+        self, cli_runner, tmp_config_dir
+    ):
+        from safeyolo.api import APIError
+
+        _create_agent(tmp_config_dir, "boris")
+        _write_service(
+            tmp_config_dir,
+            "runtime-missing",
+            {"reader": {"description": "Read", "routes": []}},
+        )
+        _store_vault_cred(tmp_config_dir, "existing")
+        api = MagicMock()
+        api.authorize_service.side_effect = APIError(
+            "service is not loaded by the running gateway",
+            404,
+        )
+
+        with patch("safeyolo.api.get_api", return_value=api, autospec=True):
+            result = _invoke(
+                cli_runner,
+                [
+                    "authorize",
+                    "boris",
+                    "runtime-missing",
+                    "--capability",
+                    "reader",
+                    "--credential-name",
+                    "existing",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "Authorization refused by running gateway" in result.output
+        assert "services" not in load_agent("boris")
 
 
 # ---------------------------------------------------------------------------

@@ -1752,6 +1752,70 @@ capabilities:
         assert gw_perms[0]["condition"]["capability"] == "reader"
         assert gw_perms[0]["condition"]["method"] == ["GET"]
 
+    def test_policy_compiler_uses_same_user_override_as_live_registry(self, tmp_path):
+        from safeyolo.core.service_loader import (
+            _swap_service_registry,
+            init_service_registry,
+        )
+        from safeyolo.policy.compiler import compile_gateway
+
+        builtin = tmp_path / "builtin"
+        user = tmp_path / "user"
+        builtin.mkdir()
+        user.mkdir()
+        (builtin / "shared.yaml").write_text(
+            """
+schema_version: 1
+name: shared
+capabilities:
+  reader:
+    routes:
+      - methods: [GET]
+        path: /builtin
+"""
+        )
+        (user / "shared.yaml").write_text(
+            """
+schema_version: 1
+name: shared
+capabilities:
+  reader:
+    routes:
+      - methods: [GET]
+        path: /user-override
+"""
+        )
+        previous = _swap_service_registry(None, stop_previous=False)
+        try:
+            registry = init_service_registry(user, builtin_dir=builtin, strict=True)
+            permissions = []
+            compile_gateway(
+                {
+                    "agents": {
+                        "agent": {
+                            "services": {
+                                "shared": {
+                                    "capability": "reader",
+                                    "token": "credential",
+                                }
+                            }
+                        }
+                    }
+                },
+                permissions=permissions,
+            )
+
+            assert registry.get_service("shared").capabilities["reader"].routes[
+                0
+            ].path == "/user-override"
+            assert [
+                permission["resource"]
+                for permission in permissions
+                if permission["action"] == "gateway:request"
+            ] == ["shared:/user-override"]
+        finally:
+            _swap_service_registry(previous, stop_previous=True)
+
     def test_compile_resolved_operations_with_binding(self, tmp_path):
         """Capability with contract + binding resolves operations."""
         from safeyolo.policy.compiler import compile_gateway

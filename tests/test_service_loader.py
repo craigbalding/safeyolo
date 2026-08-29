@@ -1,6 +1,7 @@
 """Tests for addons/service_loader.py — Service definition loader (v2 schema)."""
 
 import copy
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -17,6 +18,7 @@ from safeyolo.core.service_loader import (
     RiskyRouteGroup,
     ServiceDefinition,
     ServiceRegistry,
+    ServiceRegistryError,
     _path_match_specificity,
     get_service_registry,
     init_service_registry,
@@ -426,7 +428,11 @@ class TestServiceRegistry:
     def test_nonexistent_directory(self, tmp_path):
         reg = ServiceRegistry(tmp_path / "nope")
         reg.load()
-        assert reg.list_services() == []
+        assert {service.name for service in reg.list_services()} == {
+            "gmail",
+            "minifuse",
+            "slack",
+        }
 
     def test_hot_reload_detects_modified_file(self, registry, services_dir):
         assert not registry._has_changes()
@@ -532,8 +538,8 @@ roles:
         assert calls[0][0][0] == "ops.config_error"
         assert calls[0][1]["details"]["error_type"] == "ValueError"
 
-    def test_empty_file_skipped_without_audit_event(self, services_dir):
-        """Empty files are skipped via continue (not an error), no audit event emitted."""
+    def test_empty_file_is_diagnosed_and_skipped_in_non_strict_mode(self, services_dir):
+        """Even empty definitions are deterministic configuration errors."""
         (services_dir / "empty.yaml").write_text("")
         reg = ServiceRegistry(services_dir, builtin_dir=services_dir.parent / "nonexistent")
         with patch("safeyolo.core.utils.write_event", autospec=True,) as mock_write_event:
@@ -541,8 +547,8 @@ roles:
 
         # Valid services still load
         assert reg.get_service("gmail") is not None
-        # No audit event: empty file hits the `not raw` continue path, not the except block
-        mock_write_event.assert_not_called()
+        mock_write_event.assert_called_once()
+        assert mock_write_event.call_args.kwargs["details"]["file"] == "empty.yaml"
 
     def test_missing_name_field_emits_audit_event(self, services_dir):
         """Service YAML missing required 'name' field emits audit event."""
@@ -559,6 +565,20 @@ description: "Missing the name field"
                  if c[1]["details"]["file"] == "noname.yaml"]
         assert len(calls) == 1
         assert calls[0][1]["details"]["error_type"] == "KeyError"
+
+    def test_wrong_nested_schema_type_is_diagnosed(self, services_dir):
+        (services_dir / "wrong-type.yaml").write_text(
+            "schema_version: 1\nname: wrong-type\ncapabilities: []\n"
+        )
+        registry = ServiceRegistry(
+            services_dir,
+            builtin_dir=services_dir.parent / "nonexistent",
+        )
+
+        with pytest.raises(ServiceRegistryError, match="wrong-type.yaml"):
+            registry.load(strict=True)
+
+        assert registry.last_errors[0].error_type == "AttributeError"
 
     def test_audit_event_failure_does_not_break_registry_load(self, services_dir):
         """If write_event itself fails, the registry still loads valid services."""
@@ -644,6 +664,141 @@ description: "User Gmail"
         services = reg.list_services()
         names = sorted(s.name for s in services)
         assert names == ["gmail", "slack"]
+
+
+class TestStrictRegistryReload:
+    """Registry reload is the transaction boundary shared with policy."""
+
+    @staticmethod
+    def _write(path, name, description):
+        path.write_text(
+            f"""
+schema_version: 1
+name: {name}
+description: {description}
+"""
+        )
+
+    def test_user_add_change_remove_uses_one_precedence_and_callback(self, tmp_path):
+        builtin = tmp_path / "builtin"
+        user = tmp_path / "user"
+        builtin.mkdir()
+        user.mkdir()
+        self._write(builtin / "shared.yaml", "shared", "builtin")
+
+        registry = ServiceRegistry(user, builtin_dir=builtin)
+        registry.load(strict=True)
+        observed = []
+        registry.add_reload_callback(
+            lambda: observed.append(
+                {
+                    service.name: service.description
+                    for service in registry.list_services()
+                }
+            )
+        )
+
+        self._write(user / "shared.yaml", "shared", "user-v1")
+        assert registry.reload_if_changed()
+        self._write(user / "shared.yaml", "shared", "user-v2-longer")
+        assert registry.reload_if_changed()
+        (user / "shared.yaml").unlink()
+        assert registry.reload_if_changed()
+        self._write(user / "only-user.yaml", "only-user", "added")
+        assert registry.reload_if_changed()
+
+        assert observed == [
+            {"shared": "user-v1"},
+            {"shared": "user-v2-longer"},
+            {"shared": "builtin"},
+            {"shared": "builtin", "only-user": "added"},
+        ]
+
+    def test_malformed_reload_keeps_previous_registry_and_skips_callback(self, tmp_path):
+        user = tmp_path / "user"
+        user.mkdir()
+        self._write(user / "service.yaml", "service", "valid")
+        registry = ServiceRegistry(user, builtin_dir=tmp_path / "no-builtins")
+        registry.load(strict=True)
+        callbacks = []
+        registry.add_reload_callback(lambda: callbacks.append(True))
+
+        (user / "service.yaml").write_text("not: valid: yaml: [")
+        with pytest.raises(ServiceRegistryError, match="service.yaml"):
+            registry.reload_if_changed()
+
+        assert registry.get_service("service").description == "valid"
+        assert callbacks == []
+
+    def test_policy_callback_failure_rolls_registry_back(self, tmp_path):
+        user = tmp_path / "user"
+        user.mkdir()
+        self._write(user / "service.yaml", "service", "old")
+        registry = ServiceRegistry(user, builtin_dir=tmp_path / "no-builtins")
+        registry.load(strict=True)
+        observed = []
+
+        def synchronize_policy():
+            description = registry.get_service("service").description
+            observed.append(description)
+            if description == "new-value":
+                raise RuntimeError("policy rejected candidate")
+
+        registry.add_reload_callback(synchronize_policy)
+        self._write(user / "service.yaml", "service", "new-value")
+
+        with pytest.raises(RuntimeError, match="policy rejected candidate"):
+            registry.reload_if_changed()
+
+        assert observed == ["new-value", "old"]
+        assert registry.get_service("service").description == "old"
+
+    def test_registry_readers_wait_for_policy_callback_commit(self, tmp_path):
+        user = tmp_path / "user"
+        user.mkdir()
+        self._write(user / "service.yaml", "service", "old")
+        registry = ServiceRegistry(user, builtin_dir=tmp_path / "no-builtins")
+        registry.load(strict=True)
+        callback_started = threading.Event()
+        allow_commit = threading.Event()
+        reader_finished = threading.Event()
+        observed = []
+
+        def synchronize_policy():
+            assert registry.get_service("service").description == "new-value"
+            callback_started.set()
+            assert allow_commit.wait(timeout=2)
+
+        def read_registry():
+            observed.append(registry.get_service("service").description)
+            reader_finished.set()
+
+        registry.add_reload_callback(synchronize_policy)
+        self._write(user / "service.yaml", "service", "new-value")
+        reload_thread = threading.Thread(target=registry.reload_if_changed)
+        reload_thread.start()
+        assert callback_started.wait(timeout=2)
+
+        reader_thread = threading.Thread(target=read_registry)
+        reader_thread.start()
+        assert not reader_finished.wait(timeout=0.05)
+
+        allow_commit.set()
+        reload_thread.join(timeout=2)
+        reader_thread.join(timeout=2)
+        assert not reload_thread.is_alive()
+        assert not reader_thread.is_alive()
+        assert observed == ["new-value"]
+
+    def test_duplicate_names_within_user_source_fail_deterministically(self, tmp_path):
+        user = tmp_path / "user"
+        user.mkdir()
+        self._write(user / "a.yaml", "duplicate", "first")
+        self._write(user / "b.yaml", "duplicate", "second")
+        registry = ServiceRegistry(user, builtin_dir=tmp_path / "no-builtins")
+
+        with pytest.raises(ServiceRegistryError, match="a.yaml and b.yaml"):
+            registry.load(strict=True)
 
 
 # =========================================================================

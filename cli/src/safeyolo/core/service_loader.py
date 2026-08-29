@@ -16,8 +16,10 @@ Usage:
     service = registry.get_service("gmail")
 """
 
+import copy
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,6 +28,27 @@ import yaml
 from safeyolo.core.utils import sanitize_for_log
 
 log = logging.getLogger("safeyolo.service-loader")
+
+
+@dataclass(frozen=True)
+class ServiceLoadProblem:
+    """One deterministic service-definition load failure."""
+
+    path: Path
+    error_type: str
+    message: str
+
+
+class ServiceRegistryError(RuntimeError):
+    """One or more service files could not be loaded consistently."""
+
+    def __init__(self, problems: list[ServiceLoadProblem]):
+        self.problems = tuple(problems)
+        detail = "; ".join(
+            f"{problem.path}: {problem.error_type}: {problem.message}"
+            for problem in problems
+        )
+        super().__init__(f"service definitions are invalid: {detail}")
 
 
 @dataclass
@@ -508,6 +531,7 @@ class ServiceDefinition:
     capabilities: dict[str, Capability] = field(default_factory=dict)
     risky_routes: list[RiskyRoute] = field(default_factory=list)
     risky_route_groups: list[RiskyRouteGroup] = field(default_factory=list)
+    raw: dict = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
     def from_dict(cls, d: dict) -> "ServiceDefinition":
@@ -536,80 +560,199 @@ class ServiceDefinition:
             capabilities=capabilities,
             risky_routes=risky_routes,
             risky_route_groups=risky_route_groups,
+            raw=copy.deepcopy(d),
         )
+
+    def to_dict(self) -> dict:
+        """Return the schema document validated to create this definition."""
+        return copy.deepcopy(self.raw)
 
 
 class ServiceRegistry:
     """Registry of service definitions loaded from YAML files."""
 
-    def __init__(self, user_dir: Path, builtin_dir: Path | None = None):
-        self._user_dir = user_dir
-        self._builtin_dir = builtin_dir or Path("/app/services")
+    def __init__(
+        self,
+        user_dir: Path,
+        builtin_dir: Path | None = None,
+        *,
+        require_builtin: bool = False,
+    ):
+        from safeyolo.core.service_paths import resolve_service_directories
+
+        directories = resolve_service_directories(user_dir, builtin_dir)
+        self._user_dir = directories.user
+        self._builtin_dir = directories.builtin
+        self._require_builtin = require_builtin
         self._lock = threading.RLock()
         self._services: dict[str, ServiceDefinition] = {}
         self._last_file_state: dict[str, tuple[int, int]] = {}
+        self._last_errors: tuple[ServiceLoadProblem, ...] = ()
+        self._reload_callbacks: list[Callable[[], None]] = []
         self._watcher_thread: threading.Thread | None = None
         self._watcher_stop = threading.Event()
 
-    def load(self) -> None:
-        """Load all service definitions from user and builtin directories."""
+    @property
+    def directories(self) -> tuple[Path, Path]:
+        """Return builtin and user directories in effective precedence order."""
+        return (self._builtin_dir, self._user_dir)
+
+    @property
+    def last_errors(self) -> tuple[ServiceLoadProblem, ...]:
+        """Return errors from the most recent attempted load."""
         with self._lock:
-            self._services.clear()
-            self._last_file_state.clear()
+            return self._last_errors
 
-            # Load builtin first, then user (user overrides builtin)
-            for directory in [self._builtin_dir, self._user_dir]:
-                if not directory.exists():
+    def _audit_problem(self, problem: ServiceLoadProblem) -> None:
+        try:
+            from safeyolo.core.audit_schema import EventKind, Severity
+            from safeyolo.core.utils import write_event
+
+            write_event(
+                "ops.config_error",
+                kind=EventKind.OPS,
+                severity=Severity.MEDIUM,
+                summary=f"Service definition {problem.path.name} failed to load",
+                addon="service-loader",
+                details={
+                    "file": problem.path.name,
+                    "error_type": problem.error_type,
+                    "error": sanitize_for_log(problem.message),
+                },
+            )
+        except Exception as audit_error:
+            # Audit failure must not hide the original configuration problem.
+            log.debug(
+                "Config-error audit event failed (%s)",
+                type(audit_error).__name__,
+            )
+
+    def _scan_file_state(self) -> dict[str, tuple[int, int]]:
+        state: dict[str, tuple[int, int]] = {}
+        for directory in self.directories:
+            if not directory.is_dir():
+                continue
+            for yaml_file in sorted(directory.glob("*.yaml")):
+                try:
+                    stat = yaml_file.stat()
+                except OSError:
                     continue
-                for yaml_file in sorted(directory.glob("*.yaml")):
-                    try:
-                        raw = yaml.safe_load(yaml_file.read_text())
-                        if not raw or not isinstance(raw, dict):
-                            continue
-                        service = ServiceDefinition.from_dict(raw)
-                        self._services[service.name] = service
-                        stat = yaml_file.stat()
-                        self._last_file_state[str(yaml_file)] = (stat.st_mtime_ns, stat.st_size)
-                        log.info("Loaded service: %s", sanitize_for_log(service.name))
-                    except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError) as e:
-                        log.warning("Skipping %s: %s", yaml_file.name, sanitize_for_log(str(e)))
-                        try:
-                            from safeyolo.core.audit_schema import EventKind, Severity
-                            from safeyolo.core.utils import write_event
-                            write_event(
-                                "ops.config_error",
-                                kind=EventKind.OPS,
-                                severity=Severity.MEDIUM,
-                                summary=f"Service definition {yaml_file.name} failed to load",
-                                addon="service-loader",
-                                details={
-                                    "file": yaml_file.name,
-                                    "error_type": type(e).__name__,
-                                    "error": sanitize_for_log(str(e)),
-                                },
-                            )
-                        except Exception as audit_error:
-                            # Do not let audit-event failure break registry load, and
-                            # do not log the exception message because it may contain
-                            # untrusted service-definition content.
-                            log.debug(
-                                "Config-error audit event failed (%s)",
-                                type(audit_error).__name__,
-                            )
+                state[str(yaml_file)] = (stat.st_mtime_ns, stat.st_size)
+        return state
 
-            log.info(f"Service registry: {len(self._services)} services loaded")
+    def load(self, *, strict: bool = False) -> None:
+        """Atomically load builtin then user definitions.
+
+        In strict mode any malformed or duplicate definition rejects the whole
+        candidate set. The previous live registry remains intact, so the policy
+        compiler and request path can never observe a half-reloaded schema.
+        """
+        services: dict[str, ServiceDefinition] = {}
+        problems: list[ServiceLoadProblem] = []
+        file_state = self._scan_file_state()
+
+        if self._require_builtin and not self._builtin_dir.is_dir():
+            problems.append(
+                ServiceLoadProblem(
+                    self._builtin_dir,
+                    "FileNotFoundError",
+                    "packaged builtin service directory is missing",
+                )
+            )
+
+        for directory in self.directories:
+            if directory.exists() and not directory.is_dir():
+                problems.append(
+                    ServiceLoadProblem(
+                        directory,
+                        "NotADirectoryError",
+                        "service source is not a directory",
+                    )
+                )
+                continue
+
+            names_in_source: dict[str, Path] = {}
+            if not directory.is_dir():
+                continue
+            for yaml_file in sorted(directory.glob("*.yaml")):
+                try:
+                    raw = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
+                    if raw is None:
+                        raise ValueError("service definition is empty")
+                    if not isinstance(raw, dict):
+                        raise TypeError("service definition must be a YAML mapping")
+                    service = ServiceDefinition.from_dict(raw)
+                    previous = names_in_source.get(service.name)
+                    if previous is not None:
+                        raise ValueError(
+                            f"duplicate service name {service.name!r} in "
+                            f"{previous.name} and {yaml_file.name}"
+                        )
+                    names_in_source[service.name] = yaml_file
+                    services[service.name] = service
+                    log.info("Loaded service: %s", sanitize_for_log(service.name))
+                except (
+                    OSError,
+                    yaml.YAMLError,
+                    AttributeError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                ) as error:
+                    problem = ServiceLoadProblem(
+                        yaml_file,
+                        type(error).__name__,
+                        str(error),
+                    )
+                    problems.append(problem)
+                    log.error(
+                        "Service definition failed: %s: %s",
+                        yaml_file,
+                        sanitize_for_log(str(error)),
+                    )
+                    self._audit_problem(problem)
+
+        with self._lock:
+            self._last_file_state = file_state
+            self._last_errors = tuple(problems)
+            if strict and problems:
+                raise ServiceRegistryError(problems)
+            self._services = services
+
+        log.info("Service registry: %d services loaded", len(services))
 
     def _has_changes(self) -> bool:
         """Check if any service file has been added, removed, or modified."""
-        current_files: dict[str, tuple[int, int]] = {}
-        for directory in [self._builtin_dir, self._user_dir]:
-            if not directory.exists():
-                continue
-            for yaml_file in directory.glob("*.yaml"):
-                stat = yaml_file.stat()
-                current_files[str(yaml_file)] = (stat.st_mtime_ns, stat.st_size)
+        return self._scan_file_state() != self._last_file_state
 
-        return current_files != self._last_file_state
+    def add_reload_callback(self, callback: Callable[[], None]) -> None:
+        """Run ``callback`` only after a complete strict reload succeeds."""
+        self._reload_callbacks.append(callback)
+
+    def reload_if_changed(self) -> bool:
+        """Atomically reload definitions and their policy consumer if changed."""
+        if not self._has_changes():
+            return False
+
+        with self._lock:
+            previous_services = self._services
+            # Keep registry readers behind this re-entrant lock until every
+            # consumer has committed the same candidate. Compiler callbacks
+            # can still resolve services from this thread through the RLock.
+            self.load(strict=True)
+            callbacks = tuple(self._reload_callbacks)
+            try:
+                for callback in callbacks:
+                    callback()
+            except Exception:
+                # Registry and compiled policy are one transaction. Restore
+                # the previous definitions, then recompile against them before
+                # the failed candidate is reported.
+                self._services = previous_services
+                for callback in callbacks:
+                    callback()
+                raise
+        return True
 
     def start_watcher(self) -> None:
         """Start background file watcher for service definitions."""
@@ -621,9 +764,14 @@ class ServiceRegistry:
                 try:
                     if self._has_changes():
                         log.info("Service definitions changed, reloading...")
-                        self.load()
-                except (OSError, yaml.YAMLError) as e:
-                    log.warning("Service watcher error: %s", sanitize_for_log(str(e)))
+                        self.reload_if_changed()
+                except (OSError, yaml.YAMLError, ServiceRegistryError) as e:
+                    log.error("Service watcher reload failed: %s", sanitize_for_log(str(e)))
+                except Exception as e:
+                    log.error(
+                        "Service watcher policy synchronization failed: %s",
+                        sanitize_for_log(str(e)),
+                    )
                 self._watcher_stop.wait(timeout=2.0)
 
         self._watcher_thread = threading.Thread(target=watch_loop, daemon=True, name="service-watcher")
@@ -654,16 +802,37 @@ _registry: ServiceRegistry | None = None
 _registry_lock = threading.Lock()
 
 
+def _swap_service_registry(
+    candidate: ServiceRegistry | None,
+    *,
+    stop_previous: bool,
+) -> ServiceRegistry | None:
+    """Install ``candidate`` and return the prior process registry."""
+    global _registry
+    with _registry_lock:
+        previous = _registry
+        _registry = candidate
+    if stop_previous and previous is not None and previous is not candidate:
+        previous.stop_watcher()
+    return previous
+
+
 def init_service_registry(
     user_dir: Path,
     builtin_dir: Path | None = None,
+    *,
+    strict: bool = True,
+    require_builtin: bool = False,
 ) -> ServiceRegistry:
     """Initialize and load the module-level service registry singleton."""
-    global _registry
-    with _registry_lock:
-        _registry = ServiceRegistry(user_dir, builtin_dir)
-        _registry.load()
-        return _registry
+    candidate = ServiceRegistry(
+        user_dir,
+        builtin_dir,
+        require_builtin=require_builtin,
+    )
+    candidate.load(strict=strict)
+    _swap_service_registry(candidate, stop_previous=True)
+    return candidate
 
 
 def get_service_registry() -> ServiceRegistry | None:

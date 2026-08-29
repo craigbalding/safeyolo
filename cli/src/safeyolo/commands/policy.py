@@ -399,9 +399,13 @@ def _show_agent_authorizations(result: dict) -> None:
         return
 
     # Load service definitions from builtin + user directories
-    from ._service_discovery import _load_service_files
+    from ._service_discovery import ServiceDiscoveryError, _load_service_files
 
-    service_defs = {svc["name"]: svc for svc in _load_service_files()}
+    try:
+        service_defs = {svc["name"]: svc for svc in _load_service_files()}
+    except ServiceDiscoveryError as error:
+        console.print(f"[red]Service definitions failed to load:[/red] {escape(str(error))}")
+        return
     if not service_defs:
         return
 

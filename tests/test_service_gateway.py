@@ -21,8 +21,11 @@ from safeyolo.core.service_loader import (
     Capability,
     CapabilityRoute,
     RiskyRoute,
+    ServiceRegistry,
     init_service_registry,
 )
+from safeyolo.core.service_paths import builtin_services_dir
+from safeyolo.core.trace import get_store, reset_store_for_tests
 from safeyolo.core.vault import Vault, VaultCredential
 from safeyolo.proxy_modes.unix_listener import UnixMode
 
@@ -170,6 +173,91 @@ def _vault_with(tmp_path, credential: VaultCredential | None = None) -> Vault:
     return vault
 
 
+class TestServiceSourceConfiguration:
+    def test_addon_default_builtin_is_the_packaged_source(self, gateway):
+        class Loader:
+            def __init__(self):
+                self.options = {}
+
+            def add_option(self, **option):
+                self.options[option["name"]] = option
+
+        loader = Loader()
+        gateway.load(loader)
+
+        assert loader.options["gateway_builtin_services_dir"]["default"] == str(
+            builtin_services_dir()
+        )
+        assert loader.options["gateway_services_dir"]["default"] == "/safeyolo/services"
+
+    def test_malformed_runtime_source_fails_with_actionable_options_error(
+        self, gateway, tmp_path
+    ):
+        from mitmproxy.exceptions import OptionsError
+
+        builtin = tmp_path / "builtin"
+        user = tmp_path / "user"
+        builtin.mkdir()
+        user.mkdir()
+        (builtin / "valid.yaml").write_text(
+            "schema_version: 1\nname: valid\n"
+        )
+        (user / "broken.yaml").write_text("not: valid: yaml: [")
+        options = SimpleNamespace(
+            gateway_services_dir=str(user),
+            gateway_builtin_services_dir=str(builtin),
+        )
+
+        with patch("service_gateway.ctx", SimpleNamespace(options=options)):
+            with pytest.raises(OptionsError, match="broken.yaml"):
+                gateway._init_services()
+
+    def test_policy_activation_failure_restores_previous_live_registry(
+        self, gateway, tmp_path
+    ):
+        from mitmproxy.exceptions import OptionsError
+
+        from safeyolo.core.service_loader import (
+            _swap_service_registry,
+            get_service_registry,
+        )
+
+        def registry_for(label):
+            directory = tmp_path / label
+            directory.mkdir()
+            (directory / "service.yaml").write_text(
+                f"schema_version: 1\nname: {label}\n"
+            )
+            result = ServiceRegistry(
+                directory,
+                builtin_dir=tmp_path / f"no-{label}-builtins",
+            )
+            result.load(strict=True)
+            return result
+
+        previous = registry_for("previous")
+        candidate = registry_for("candidate")
+        original = _swap_service_registry(previous, stop_previous=False)
+        observed = []
+
+        def synchronize_policy():
+            live = get_service_registry()
+            names = [service.name for service in live.list_services()]
+            observed.append(names)
+            if names == ["candidate"]:
+                raise RuntimeError("candidate policy compile failed")
+
+        gateway._trigger_policy_reload = synchronize_policy
+        try:
+            with pytest.raises(OptionsError, match="candidate policy compile failed"):
+                gateway._activate_service_registry(candidate)
+
+            assert get_service_registry() is previous
+            assert observed == [["candidate"], ["previous"]]
+        finally:
+            _swap_service_registry(original, stop_previous=False)
+
+
 # --- Token Extraction Tests ---
 
 
@@ -314,6 +402,76 @@ class TestRiskyRouteMatching:
 
 
 class TestCredentialInjection:
+    def test_packaged_builtin_authorization_swaps_real_credential_and_traces(
+        self,
+        make_flow,
+        gateway,
+        tmp_path,
+    ):
+        user_dir = tmp_path / "services"
+        user_dir.mkdir()
+        registry = ServiceRegistry(
+            user_dir,
+            builtin_dir=builtin_services_dir(),
+            require_builtin=True,
+        )
+        registry.load(strict=True)
+        vault = _vault_with(
+            tmp_path,
+            VaultCredential(
+                name="minifuse-live",
+                type="api_key",
+                value="real-upstream-api-key",
+            ),
+        )
+        gateway._host_map = {"api.minifuse.example": "minifuse"}
+        token = gateway.mint_tokens(
+            {
+                "test-agent": {
+                    "minifuse": {
+                        "capability": "reader",
+                        "token": "minifuse-live",
+                    }
+                }
+            }
+        )["test-agent"]["minifuse"]
+        flow = make_flow(
+            url="https://api.minifuse.example/v1/feeds",
+            headers={"x-auth-token": token},
+        )
+        _set_agent(flow, "test-agent")
+        flow.metadata.update(
+            {
+                "trace": True,
+                "request_id": "req-packaged-builtin",
+            }
+        )
+        reset_store_for_tests()
+
+        with (
+            patch("service_gateway.ctx", _mock_ctx()),
+            patch(
+                "service_gateway.get_service_registry",
+                autospec=True,
+                return_value=registry,
+            ),
+            patch("service_gateway.get_vault", autospec=True, return_value=vault),
+            patch("pdp.is_policy_client_configured", autospec=True, return_value=False),
+        ):
+            gateway.request(flow)
+
+        assert flow.response is None
+        assert flow.request.headers["x-auth-token"] == "real-upstream-api-key"
+        assert token not in str(flow.request.headers)
+        record = get_store().get("req-packaged-builtin", "test-agent")
+        assert record is not None
+        step = next(item for item in record.steps if item.addon == "service-gateway")
+        assert step.outcome == "injected"
+        assert step.details == {
+            "service": "minifuse",
+            "capability": "reader",
+        }
+
     def test_bearer_injection(self, make_flow, configured_gateway):
         gw, env, registry, vault_obj = configured_gateway
         token = env["test-agent"]["gmail"]
@@ -431,8 +589,8 @@ class TestCredentialInjection:
         assert body["reason_codes"] == ["AGENT_IDENTITY_CONFLICT"]
         assert flow.metadata["agent_identity_status"] == "conflict"
 
-    def test_unknown_host_passes_through(self, make_flow, configured_gateway):
-        """sgw_ token sent to unmapped host is not recognized — passes through as non-gateway traffic."""
+    def test_unknown_host_gateway_token_fails_closed(self, make_flow, configured_gateway):
+        """An sgw_ token never passes upstream because host metadata is missing."""
         gw, env, registry, vault_obj = configured_gateway
         token = env["test-agent"]["minifuse"]
         flow = make_flow(
@@ -445,9 +603,51 @@ class TestCredentialInjection:
             with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
                 gw.request(flow)
 
-        # Not recognized as gateway request — no response set
+        assert flow.response.status_code == 503
+        body = json.loads(flow.response.content)
+        assert body["reason_codes"] == ["GATEWAY_CONFIGURATION_ERROR"]
+        assert token not in str(flow.request.headers)
+
+    def test_unknown_host_ordinary_credential_still_passes_through(
+        self, make_flow, configured_gateway
+    ):
+        gw, _env, registry, _vault_obj = configured_gateway
+        flow = make_flow(
+            url="https://evil.example.com/v1/feeds",
+            headers={"authorization": "Bearer ordinary-upstream-token"},
+        )
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", autospec=True, return_value=registry):
+                gw.request(flow)
+
         assert flow.response is None
-        assert "gateway_service" not in flow.metadata
+        assert flow.request.headers["authorization"] == "Bearer ordinary-upstream-token"
+
+    def test_missing_registry_gateway_token_fails_closed_and_is_stripped(
+        self, make_flow, gateway
+    ):
+        gateway._host_map = {"api.example.com": "missing-service"}
+        token = f"sgw_{'d' * 64}"
+        flow = make_flow(
+            url="https://api.example.com/v1/data",
+            headers={"authorization": f"Bearer {token}"},
+        )
+
+        with (
+            patch("service_gateway.ctx", _mock_ctx()),
+            patch(
+                "service_gateway.get_service_registry",
+                autospec=True,
+                return_value=None,
+            ),
+        ):
+            gateway.request(flow)
+
+        assert flow.response.status_code == 503
+        assert token not in str(flow.request.headers)
+        body = json.loads(flow.response.content)
+        assert body["reason_codes"] == ["GATEWAY_CONFIGURATION_ERROR"]
 
     def test_invalid_token_denied(self, make_flow, gateway, registry):
         gateway._host_map = {"api.minifuse.io": "minifuse"}

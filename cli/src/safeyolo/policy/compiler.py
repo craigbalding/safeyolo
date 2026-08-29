@@ -559,7 +559,8 @@ def compile_gateway(
 
     Args:
         raw: Parsed policy YAML dict
-        services_dir: Path to service definitions directory
+        services_dir: Deprecated compatibility argument. Capability routes are
+            resolved exclusively through the live ServiceRegistry.
         host_map: Host-to-service binding map
         permissions: If provided, gateway:request permissions are appended here
 
