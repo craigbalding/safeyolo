@@ -42,8 +42,11 @@ asking for policy changes.
 Check the internal route first:
 
 ```sh
-curl -sS http://_safeyolo.proxy.internal/health \
-  -H "Authorization: Bearer $(cat /app/agent_token)"
+(
+  agent_token=$(cat /app/agent_token) || exit
+  printf 'Authorization: Bearer %s\n' "$agent_token" |
+    curl -sS --header @- http://_safeyolo.proxy.internal/health
+)
 ```
 
 Then inspect the environment without printing token values:

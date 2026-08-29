@@ -64,10 +64,10 @@ class TestLiveAgentLifecycle:
         """Hit agent API /health from inside the sandbox, return HTTP status."""
         result = self._safeyolo(
             "agent", "shell", agent_name, "-c",
-            'curl -s -o /dev/null -w "%{http_code}" '
-            '-H "Authorization: Bearer $(cat /app/agent_token)" '
-            '--max-time 5 '
-            'http://_safeyolo.proxy.internal/health',
+            '(agent_token=$(cat /app/agent_token) || exit; '
+            'printf \'Authorization: Bearer %s\\n\' "$agent_token" | '
+            'curl -s -o /dev/null -w "%{http_code}" --header @- '
+            '--max-time 5 http://_safeyolo.proxy.internal/health)',
             timeout=15,
         )
         try:

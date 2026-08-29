@@ -49,13 +49,21 @@ def _curl_agent_api(path: str, method: str = "GET",
         "-w", "%{http_code}",
         "--max-time", "5",
     ]
+    header_input = None
     if token is not None:
-        cmd.extend(["-H", f"Authorization: Bearer {token}"])
+        cmd.extend(["--header", "@-"])
+        header_input = f"Authorization: Bearer {token}\n"
     if extra_flags:
         cmd.extend(extra_flags)
     cmd.append(f"http://_safeyolo.proxy.internal{path}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(
+            cmd,
+            input=header_input,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         status = int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0
         body = open(body_file).read()
     finally:

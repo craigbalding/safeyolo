@@ -59,13 +59,14 @@ mitmproxy; the request never goes upstream. Always use plain HTTP and read the
 agent token at request time:
 
 ```sh
-sy_api() {
+sy_api() (
   sy_path="$1"
   shift
-  curl -sS "http://_safeyolo.proxy.internal$sy_path" \
-    -H "Authorization: Bearer $(cat /app/agent_token)" \
-    "$@"
-}
+  agent_token=$(cat /app/agent_token) || exit
+  printf 'Authorization: Bearer %s\n' "$agent_token" |
+    curl -sS --header @- \
+      "http://_safeyolo.proxy.internal$sy_path" "$@"
+)
 
 sy_api /health | jq
 ```

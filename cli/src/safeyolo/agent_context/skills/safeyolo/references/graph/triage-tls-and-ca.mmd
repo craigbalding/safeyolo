@@ -19,7 +19,7 @@ flowchart TD
     ev.tls_check_node_env["env / grep -E '^NODE_EXTRA_CA_CERTS=' -- Node.js only picks up additional CAs via this env var"]
     ev.tls_check_proxy_env["env / grep -E '^(HTTP/HTTPS/NO)_PROXY=' -- both upper- and lower-case matter for some runtimes"]
     ev.tls_curl_verbose["curl -v https://TARGET -- observe cert chain, subject, issuer, and whether curl was routed through the proxy"]
-    ev.tls_check_agent_api_health["curl -sS http://_safeyolo.proxy.internal/health -H 'Authorization: Bearer $(cat /app/agent_token)' -- if THIS fails the proxy is unreachable"]
+    ev.tls_check_agent_api_health["Read /app/agent_token fresh; pipe the Authorization header to curl -sS --header @- http://_safeyolo.proxy.internal/health -- if THIS fails the proxy is unreachable"]
     ev.check_client_updates_upstream["Look online for a newer release of the client CLI/SDK/runtime and check its changelog and issue tracker for this specific failure signature"]
     cls.tls_ca_bundle_stale{{"SafeYolo CA is on disk but the system bundle was not regenerated"}}
     cls.tls_runtime_env_missing{{"Runtime-specific CA env var is unset in the child process; runtime does not read the system bundle"}}

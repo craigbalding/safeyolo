@@ -409,8 +409,12 @@ The `/policy` relay endpoint returns the full baseline policy. For policies with
 The `/lookup?host=X` relay endpoint checks what would happen for a specific host, using the calling agent's identity. This is useful for agents to pre-check whether a request would be allowed before attempting it:
 
 ```bash
-curl -s http://_safeyolo.proxy.internal/lookup?host=api.stripe.com \
-  -H "Authorization: Bearer $(cat /app/agent_token)"
+(
+  agent_token=$(cat /app/agent_token) || exit
+  printf 'Authorization: Bearer %s\n' "$agent_token" |
+    curl -s --header @- \
+      http://_safeyolo.proxy.internal/lookup?host=api.stripe.com
+)
 # Returns: {"host": "api.stripe.com", "agent": "boris", "effect": "allow", "reason": "..."}
 ```
 
