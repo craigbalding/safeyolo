@@ -812,6 +812,18 @@ def _compile_capability_routes(
                             sanitize_for_log(", ".join(missing)),
                         )
                         continue
+                    unsafe_path_references = _unsafe_path_binding_references(
+                        operation, bound_values
+                    )
+                    if unsafe_path_references:
+                        log.warning(
+                            "Skipping contract operation %s for %s/%s: path binding values %s must be scalar path segments without separators or glob metacharacters",
+                            sanitize_for_log(operation.name),
+                            sanitize_for_log(service_name),
+                            sanitize_for_log(capability_name),
+                            sanitize_for_log(", ".join(sorted(unsafe_path_references))),
+                        )
+                        continue
                     resolved_path = _resolve_path(operation, bound_values)
                     if resolved_path is None:
                         log.warning(
@@ -875,11 +887,48 @@ def _resolve_path(operation, bound_values: dict) -> str | None:
             or bound_values[constraint.equals_var] is None
         ):
             return None
-        path = path.replace(placeholder, str(bound_values[constraint.equals_var]))
+        component = _safe_path_binding_component(
+            bound_values[constraint.equals_var]
+        )
+        if component is None:
+            return None
+        path = path.replace(placeholder, component)
 
     if "{" in path or "}" in path:
         return None
     return path
+
+
+def _unsafe_path_binding_references(operation, bound_values: dict) -> set[str]:
+    """Return path-bound variables whose values could broaden a PDP pattern."""
+    unsafe: set[str] = set()
+    for constraint in operation.path_params.values():
+        reference = constraint.equals_var
+        if (
+            reference
+            and reference in bound_values
+            and bound_values[reference] is not None
+            and _safe_path_binding_component(bound_values[reference]) is None
+        ):
+            unsafe.add(reference)
+    return unsafe
+
+
+def _safe_path_binding_component(value) -> str | None:
+    """Convert a binding to one literal PDP path segment, or fail closed.
+
+    Resolved resources are fnmatch patterns. A persisted binding must therefore
+    never introduce glob syntax or change path segmentation, even if it bypassed
+    the normal submission endpoint.
+    """
+    if not isinstance(value, (str, int, bool)):
+        return None
+    component = str(value)
+    if not component or component in {".", ".."}:
+        return None
+    if any(character in component for character in "/\\*?[]"):
+        return None
+    return component
 
 
 def decompile_approval(destination: str, cred_ids: list[str]) -> dict:

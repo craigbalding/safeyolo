@@ -2161,6 +2161,76 @@ capabilities:
         assert "unknown or unenforceable contract operation unknown" in caplog.text
 
     @pytest.mark.parametrize(
+        "bound_value",
+        [
+            pytest.param("*", id="star-glob"),
+            pytest.param("?", id="question-glob"),
+            pytest.param("[ab]", id="bracket-class-glob"),
+            pytest.param("books/other", id="forward-slash"),
+            pytest.param(r"books\other", id="backslash"),
+        ],
+    )
+    def test_path_binding_values_cannot_broaden_compiled_resource(
+        self, tmp_path, caplog, bound_value
+    ):
+        """Persisted bindings cannot inject fnmatch syntax or path segments."""
+        from safeyolo.policy.compiler import compile_gateway
+
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
+schema_version: 1
+name: minifuse
+capabilities:
+  explorer:
+    routes: [{methods: [GET], path: /v1/**}]
+    contract:
+      template: explorer.v1
+      bindings:
+        approved_category: {source: operator, type: string}
+      operations:
+        - name: list_items
+          request:
+            method: GET
+            path: /v1/categories/{id}/items
+            path_params:
+              id: {equals_var: approved_category}
+      enforcement: {request_shape: enforced}
+""",
+        )
+        permissions = []
+
+        compile_gateway(
+            {
+                "agents": {
+                    "claude": {
+                        "services": {
+                            "minifuse": {
+                                "capability": "explorer",
+                                "token": "mf-key",
+                            }
+                        },
+                        "contract_bindings": [
+                            {
+                                "service": "minifuse",
+                                "capability": "explorer",
+                                "template": "explorer.v1",
+                                "bound_values": {"approved_category": bound_value},
+                                "grantable_operations": ["list_items"],
+                            }
+                        ],
+                    }
+                }
+            },
+            services_dir=svc_dir,
+            permissions=permissions,
+        )
+
+        assert permissions == []
+        assert "path binding values approved_category" in caplog.text
+        assert "without separators or glob metacharacters" in caplog.text
+
+    @pytest.mark.parametrize(
         ("binding_update", "diagnostic"),
         [
             ({"bound_values": []}, "invalid bound_values"),
