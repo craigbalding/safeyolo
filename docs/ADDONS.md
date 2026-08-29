@@ -145,10 +145,24 @@ Authenticated agent self-service API on virtual hostname `_safeyolo.proxy.intern
 **Always active** (infrastructure, not a security sensor)
 
 **How it works:**
-- Intercepts requests to `_safeyolo.proxy.internal` (virtual hostname, doesn't resolve)
+- Intercepts requests to `_safeyolo.proxy.internal` using case-insensitive
+  hostname semantics (the virtual hostname has no upstream destination)
 - Validates HMAC-signed readonly bearer tokens
 - Returns PDP data as synthetic HTTP responses (never touches the network)
 - Sets `flow.metadata["blocked_by"]` so downstream addons skip agent API requests
+
+`agent_api_guard.py` independently enforces request containment. It runs
+immediately after the normal handler and before policy, credential, and
+observability processing. Only a response explicitly owned by `agent_api`
+counts as handled; an absent, disabled, import-failed, or uncaught handler gets
+a local diagnostic `503`. On that path the guard removes authorization headers
+and the query before downstream hooks run. `transport_guard.py` remains the
+final `server_connect` backstop and refuses the reserved host when it appears
+in the server address or SNI, before DNS or an upstream connection. Containment
+emits the distinct
+`agent_api_unavailable`/`agent_api_reached_upstream` audit reasons without
+recording the bearer token or query string; pipeline-probe failures retain
+their separate reason and trace contract.
 
 **Important:** Agents must use `http://` (not `https://`) since the virtual hostname doesn't resolve and CONNECT tunnels would fail.
 

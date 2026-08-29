@@ -83,6 +83,7 @@ def _invoke(addon: FlowRecorder, store: FlowStore, flow, hook: str = "response")
         lambda flow, addon: flow.metadata.pop("test_context"),
         lambda flow, addon: flow.metadata.update(safeyolo_probe=True),
         lambda flow, addon: setattr(flow.request, "host", AGENT_API_HOST),
+        lambda flow, addon: setattr(flow.request, "host", AGENT_API_HOST.upper()),
         lambda flow, addon: setattr(addon, "store", None),
     ],
 )

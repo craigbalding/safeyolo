@@ -38,6 +38,12 @@ Grant the minimum access required. Agents run in isolated sandboxes with no exte
 ### Fail closed
 
 When uncertain, block. Unknown credentials trigger an approval workflow, not silent passthrough. Destination mismatches return HTTP 428 with actionable feedback. Invalid policies are rejected at load time. The startup script verifies block mode before accepting traffic.
+The Agent API virtual hostname is also contained independently of its handler.
+An adjacent request guard runs before policy, credential, and observability
+addons, so a missing, disabled, import-failed, or uncaught handler receives a
+local diagnostic 5xx without exposing its bearer token or query downstream. A
+separate final transport guard refuses the reserved destination before DNS or
+an upstream connection.
 
 ### Human-governed access
 

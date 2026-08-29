@@ -50,7 +50,7 @@ class TestAddonChain:
     def test_addon_chain_has_expected_count(self):
         """ADDON_CHAIN contains the complete ordered addon set."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 26
+        assert len(ADDON_CHAIN) == 27
 
     def test_addon_chain_starts_with_readiness_writer(self):
         """Script addons start with the readiness writer.
@@ -61,16 +61,17 @@ class TestAddonChain:
         from safeyolo.proxy import ADDON_CHAIN
         assert ADDON_CHAIN[0] == "pid_writer.py"
 
-    def test_addon_chain_ends_with_transport_guard(self):
-        """Last addon loaded is transport_guard.py (#213 PR B, seventh-pass
-        review).
+    def test_reserved_destination_guards_have_required_order(self):
+        """Request and transport containment occupy their required layers.
 
-        The doctor pipeline-probe layering requires:
+        Reserved-host layering requires:
+          - agent_api.py: normal Agent API handler, loaded earlier
+          - agent_api_guard.py: independent request containment immediately
+            after the handler and before policy/security/observability addons
           - probe_sink.py: normal terminator, MUST run after every
             security addon
-          - transport_guard.py: correlated late request-hook failsafe,
-            MUST run after probe_sink so a normally-terminated probe
-            bypasses the failsafe entirely
+          - transport_guard.py: probe request failsafe and final structural
+            server-connect backstop
 
         Any change to this ordering needs matching updates to both
         addons' docstrings and the ADDON_CHAIN comment block.
@@ -79,6 +80,49 @@ class TestAddonChain:
         assert ADDON_CHAIN[-1] == "transport_guard.py"
         # And probe_sink is immediately before it:
         assert ADDON_CHAIN[-2] == "probe_sink.py"
+        api_index = ADDON_CHAIN.index("agent_api.py")
+        assert ADDON_CHAIN[api_index + 1] == "agent_api_guard.py"
+        assert ADDON_CHAIN.index("agent_api_guard.py") < ADDON_CHAIN.index(
+            "network_guard.py"
+        )
+
+    def test_agent_api_import_failure_keeps_independent_containment(
+        self, monkeypatch
+    ):
+        """Only handler import failure is recoverable; its guards still load."""
+        from mitmproxy.test import tflow
+
+        import safeyolo.mitm_addons as addon_package
+
+        real_import = addon_package.import_module
+
+        def import_with_broken_handler(module_name):
+            if module_name == "safeyolo.mitm_addons.agent_api":
+                raise ImportError("deliberate handler import failure")
+            return real_import(module_name)
+
+        monkeypatch.setattr(addon_package, "import_module", import_with_broken_handler)
+        production = addon_package.ProductionAddons()
+        names = [getattr(addon, "name", None) for addon in production.addons]
+
+        assert "agent-api" not in names
+        assert "agent-api-request-guard" in names
+        assert names.index("agent-api-request-guard") < names.index("network-guard")
+        assert names[-1] == "transport-guard"
+
+        flow = tflow.tflow()
+        flow.request.url = "http://_safeyolo.proxy.internal/health?token=secret"
+        guard = next(
+            addon for addon in production.addons
+            if getattr(addon, "name", None) == "agent-api-request-guard"
+        )
+        with patch(
+            "safeyolo.mitm_addons.agent_api_guard.write_event", autospec=True
+        ):
+            guard.request(flow)
+
+        assert flow.response.status_code == 503
+        assert flow.request.path == "/health"
 
     def test_policy_engine_before_network_guard(self):
         """policy_engine.py loads before network_guard.py (policy must exist before enforcement)."""
