@@ -62,11 +62,13 @@ into markup. Do not let body content inherit or set styling that the
 provenance element uses.
 
 **Mattermost projection.** The optional adapter follows the same rule in a
-Markdown sink by placing canonical envelope fields and the sender-authored
-body in separately labelled, inert JSON code blocks. It JSON-escapes controls,
-ordering characters, mentions, and HTML delimiters, so a body cannot close its
-namespace or notify users. Mattermost thread IDs are correlation only; they do
-not alter the envelope attribution contract. See
+Markdown sink with a compact canonical provenance line followed by escaped
+sender body text. It escapes Markdown punctuation, controls, ordering
+characters, mentions, and HTML delimiters, so a body cannot rewrite its
+provenance or notify users. Privileged buttons require a separately configured
+canonical agent ID and an exact fixed JSON schema; prose never creates them.
+Mattermost thread IDs and button labels are correlation/input only and do not
+alter the envelope attribution contract. See
 [coord-mattermost.md](coord-mattermost.md).
 
 **Log exporters and transcripts.** Preserve structured fields. Do not

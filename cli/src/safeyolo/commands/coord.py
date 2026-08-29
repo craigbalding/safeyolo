@@ -76,7 +76,9 @@ async def _mattermost_check(config_path: Path) -> None:
     token = read_bot_token(config.bot_token_file)
     state = MattermostState(config)
     async with HTTPMattermostAPI(config, token) as client:
-        await MattermostAdapter(config, state, client).verify()
+        adapter = MattermostAdapter(config, state, client)
+        await adapter.verify()
+        await adapter.verify_action_listener()
 
 
 async def _mattermost_run(config_path: Path, *, once: bool) -> None:
@@ -107,7 +109,7 @@ def mattermost_check(
         help="External adapter TOML (default: ~/.safeyolo/coord-mattermost.toml).",
     ),
 ) -> None:
-    """Validate credentials, identities, channels, mapping, and coord grants."""
+    """Validate identities, mapping, grants, and the optional callback bind."""
 
     from ..coord.mattermost import MattermostAdapterError
 
