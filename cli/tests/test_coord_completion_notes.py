@@ -214,8 +214,8 @@ def test_unknown_root_field_invalidates_the_whole_trailer() -> None:
     [
         f"DONE x\n\n{completion_notes.TRAILER_START}\nnot-json\n{completion_notes.TRAILER_END}",
         f"DONE x\n\n{completion_notes.TRAILER_START}\n{{}}",
-        "DONE x\n\n<<<SAFEYOLO_COMPLETION_NOTES_V2>>>\n"
-        '{"candidates":[]}\n<<<END_SAFEYOLO_COMPLETION_NOTES_V2>>>'
+        "DONE x\n\n<<<SAFEYOLO_COMPLETION_NOTES_V2>>>",
+        "DONE x\n\n<<<END_SAFEYOLO_COMPLETION_NOTES_V2>>>",
         f"DONE x\n\n{completion_notes.TRAILER_END}",
         (
             f"DONE x\n\n{completion_notes.TRAILER_START}\n"
@@ -277,6 +277,34 @@ def test_oversized_authored_trailer_is_rejected_before_candidate_ingestion() -> 
     assert parsed.trailer_status == "invalid"
     assert parsed.candidates == ()
     assert "32768 UTF-8 bytes" in parsed.error
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "[" * 10_000 + "0" + "]" * 10_000,
+        '{"candidates":' + "9" * 5_000 + "}",
+    ],
+)
+def test_decoder_resource_failures_produce_a_bounded_invalid_result(
+    payload: str,
+) -> None:
+    body = f"DONE task=x\n\n{completion_notes.TRAILER_START}\n{payload}\n{completion_notes.TRAILER_END}"
+    parsed = completion_notes.parse_completion_envelope(envelope(body))
+    assert parsed.delivery_state is completion_notes.DeliveryState.DONE
+    assert parsed.trailer_status == "invalid"
+    assert parsed.candidates == ()
+    assert parsed.error == "trailer payload is not valid bounded JSON"
+
+
+def test_invalid_diagnostics_do_not_reflect_authored_control_characters() -> None:
+    candidate = dispatch_candidate().to_wire()
+    candidate["erase\x1b[2Jscreen"] = "untrusted"
+    parsed = parse_wire([candidate])
+    assert parsed.trailer_status == "invalid"
+    assert parsed.candidates == ()
+    assert parsed.error == "candidates[0] contains unknown fields"
+    assert "\x1b" not in parsed.error
 
 
 @pytest.mark.parametrize(

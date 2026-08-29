@@ -18,6 +18,7 @@ from typing import Any, Literal
 TRAILER_START = "<<<SAFEYOLO_COMPLETION_NOTES_V1>>>"
 TRAILER_END = "<<<END_SAFEYOLO_COMPLETION_NOTES_V1>>>"
 _RESERVED_MARKER_PREFIX = "<<<SAFEYOLO_COMPLETION_NOTES_"
+_RESERVED_END_MARKER_PREFIX = "<<<END_SAFEYOLO_COMPLETION_NOTES_"
 
 MAX_TRAILER_BYTES = 32 * 1024
 MAX_CANDIDATES = 8
@@ -266,12 +267,12 @@ def _decode_json(payload: str) -> Any:
         result: dict[str, Any] = {}
         for key, value in pairs:
             if key in result:
-                raise _TrailerValidationError(f"duplicate JSON key {key!r}")
+                raise _TrailerValidationError("trailer payload contains a duplicate JSON key")
             result[key] = value
         return result
 
-    def reject_constant(value: str) -> None:
-        raise _TrailerValidationError(f"non-finite JSON number {value!r} is not allowed")
+    def reject_constant(_value: str) -> None:
+        raise _TrailerValidationError("non-finite JSON numbers are not allowed")
 
     try:
         return json.loads(
@@ -279,8 +280,10 @@ def _decode_json(payload: str) -> Any:
             object_pairs_hook=object_pairs,
             parse_constant=reject_constant,
         )
-    except json.JSONDecodeError as exc:
-        raise _TrailerValidationError("trailer payload is not valid JSON") from exc
+    except _TrailerValidationError:
+        raise
+    except (json.JSONDecodeError, RecursionError, ValueError, OverflowError) as exc:
+        raise _TrailerValidationError("trailer payload is not valid bounded JSON") from exc
 
 
 def _validate_evidence(value: Any, index: int) -> tuple[EvidenceRef, ...]:
@@ -314,13 +317,13 @@ def _validate_candidate(
         keys & _RESERVED_PROVENANCE_KEYS
     )  # DOC: docs/coord-completion-notes.md, cli/src/safeyolo/agent_context/skills/safeyolo/references/completion-notes.md
     if spoofed:
-        raise _TrailerValidationError(f"candidates[{index}] contains reserved provenance: {', '.join(sorted(spoofed))}")
+        raise _TrailerValidationError(f"candidates[{index}] contains reserved provenance fields")
     unknown = keys - _CANDIDATE_KEYS
     if unknown:
-        raise _TrailerValidationError(f"candidates[{index}] contains unknown fields: {', '.join(sorted(unknown))}")
+        raise _TrailerValidationError(f"candidates[{index}] contains unknown fields")
     missing = {"type", "attribution", "summary"} - keys
     if missing:
-        raise _TrailerValidationError(f"candidates[{index}] missing fields: {', '.join(sorted(missing))}")
+        raise _TrailerValidationError(f"candidates[{index}] is missing required fields")
     try:
         candidate_type = CandidateType(value["type"])
     except (TypeError, ValueError) as exc:
@@ -465,7 +468,7 @@ def parse_completion_envelope(  # DOC: docs/coord-completion-notes.md, cli/src/s
         raise ValueError("canonical envelope has invalid content_type")
     state = _delivery_state(body)
     match = _TRAILER_RE.search(body)
-    has_reserved_marker = _RESERVED_MARKER_PREFIX in body or TRAILER_END in body
+    has_reserved_marker = _RESERVED_MARKER_PREFIX in body or _RESERVED_END_MARKER_PREFIX in body
     if match is None:
         return CompletionParseResult(
             delivery_state=state,
@@ -475,7 +478,7 @@ def parse_completion_envelope(  # DOC: docs/coord-completion-notes.md, cli/src/s
             error="malformed or unknown completion-notes trailer" if has_reserved_marker else None,
         )
     delivery_body = body[: match.start()]
-    if _RESERVED_MARKER_PREFIX in delivery_body or TRAILER_END in delivery_body:
+    if _RESERVED_MARKER_PREFIX in delivery_body or _RESERVED_END_MARKER_PREFIX in delivery_body:
         return CompletionParseResult(
             delivery_state=state,
             delivery_body=body,
