@@ -84,3 +84,8 @@ For durable correlation, issue-coverage checks, suppression, and presentation,
 use the [Relay factory-proposal workflow](factory-proposals.md). Candidate text
 remains an untrusted nomination; Relay must verify facts from authoritative
 sources before the proposal ledger accepts it.
+
+For public engineering digests, use the
+[Relay Dispatch generation contract](dispatch-generation.md). Dispatch notes
+remain private nominations: Relay verifies public evidence and authors new
+copy; raw candidate text, coord provenance, and transcripts are never rendered.
