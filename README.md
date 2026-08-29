@@ -178,6 +178,22 @@ safeyolo agent add codex        ~/experiments    --host-script contrib/codex-hos
 safeyolo agent run work       # Each agent gets its own isolated sandbox
 ```
 
+The folder chosen by `agent add` is the persistent host folder mounted at
+`/workspace`. Change it without recreating the agent or rerunning its host setup:
+
+```bash
+safeyolo agent config work --folder ~/new-work
+safeyolo agent stop work      # required only if it is currently running
+safeyolo agent run work
+```
+
+Relative paths and `~` are normalized before they are saved, and the folder
+must already exist and be owned by you. Use `--dangerously-allow-unowned` only
+when that ownership mismatch is intentional. A running sandbox keeps its
+current `/workspace` until stop/restart. In contrast, the `--folder` option on
+`agent run` overrides `/workspace` for that run only and does not change the
+saved folder.
+
 Agents can collaborate through SafeYolo's retained coord rooms. Operators who
 run that message plane should use the [coord operations
 runbook](docs/coord-operations.md) for its managed NATS credential lifecycle,

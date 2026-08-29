@@ -132,6 +132,60 @@ class TestComputeSnapshotVersion:
             ["/host/toolage", "/proj/toolage", False]
         ]
 
+    def test_resolved_primary_workspace_is_fingerprinted(
+        self, snapshot_inputs, tmp_path, monkeypatch
+    ):
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        relative = compute_snapshot_version(
+            memory_mb=4096,
+            cpus=4,
+            gateway_ip="x",
+            guest_ip="y",
+            workspace_path="project",
+        )
+        absolute = compute_snapshot_version(
+            memory_mb=4096,
+            cpus=4,
+            gateway_ip="x",
+            guest_ip="y",
+            workspace_path=workspace,
+        )
+
+        assert relative == absolute
+        assert relative["primary_workspace"] == str(workspace.resolve())
+
+    def test_primary_workspace_change_invalidates_with_same_extra_shares(
+        self, snapshot_inputs, tmp_path
+    ):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        shares = [("/host/toolage", "/proj/toolage", False)]
+
+        first_version = compute_snapshot_version(
+            memory_mb=4096,
+            cpus=4,
+            gateway_ip="x",
+            guest_ip="y",
+            workspace_path=first,
+            extra_shares=shares,
+        )
+        second_version = compute_snapshot_version(
+            memory_mb=4096,
+            cpus=4,
+            gateway_ip="x",
+            guest_ip="y",
+            workspace_path=second,
+            extra_shares=shares,
+        )
+
+        assert first_version != second_version
+        assert first_version["extra_shares"] == second_version["extra_shares"]
+
     def test_static_script_content_change_invalidates(self, snapshot_inputs, monkeypatch, tmp_path):
         """Changing guest-init-static.sh on disk must yield a different
         fingerprint -- the script runs inside the snapshot, so stale
@@ -303,6 +357,25 @@ class TestIsSnapshotValid:
         saved = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
         self._write_full_snapshot(agent_dir, "agent1", saved, MIN_SNAPSHOT_BYTES + 1)
         current = compute_snapshot_version(memory_mb=8192, cpus=4, gateway_ip="x", guest_ip="y")
+        assert is_snapshot_valid("agent1", current) is False
+
+    def test_pre_workspace_schema_metadata_is_invalid(
+        self, agent_dir, snapshot_inputs
+    ):
+        current = compute_snapshot_version(
+            memory_mb=4096,
+            cpus=4,
+            gateway_ip="x",
+            guest_ip="y",
+            workspace_path="/workspace/current",
+        )
+        old = dict(current)
+        old["snapshot_schema"] = 2
+        old.pop("primary_workspace")
+        self._write_full_snapshot(
+            agent_dir, "agent1", old, MIN_SNAPSHOT_BYTES + 1
+        )
+
         assert is_snapshot_valid("agent1", current) is False
 
     def test_tiny_snapshot_is_invalid(self, agent_dir, snapshot_inputs):

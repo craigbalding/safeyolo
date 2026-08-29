@@ -1201,7 +1201,9 @@ class TestRunAgent:
         assert mock_run.call_args.kwargs["rename_tmux_window"] is False
         associate.assert_called_once_with("test-agent")
 
-    def _committed_launch_patches(self, folder, rootfs):
+    def _committed_launch_patches(
+        self, folder, rootfs, *, snapshot_supported=False
+    ):
         """Mock every step from `_run_agent` entry through `prepare_config_share`
         as successful, and cut off execution at `write_event("agent.started")`
         so the sandbox layer is never invoked. Any test using this reaches the
@@ -1232,7 +1234,11 @@ class TestRunAgent:
             patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1, autospec=True,),
             patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[], autospec=True,),
             patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
-            patch("safeyolo.commands.agent.platform_supports_snapshot", return_value=False, autospec=True,),
+            patch(
+                "safeyolo.commands.agent.platform_supports_snapshot",
+                return_value=snapshot_supported,
+                autospec=True,
+            ),
             patch("safeyolo.commands.agent.prepare_config_share", autospec=True,),
             patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock"), autospec=True,),
             patch(
@@ -1291,6 +1297,44 @@ class TestRunAgent:
                     p.stop()
 
         rename.assert_not_called()
+
+    def test_snapshot_fingerprint_receives_effective_workspace(
+        self, config_dir, tmp_path
+    ):
+        """Both persistent and one-run primary mounts participate in restore."""
+        persistent = tmp_path / "persistent"
+        transient = tmp_path / "transient"
+        rootfs = tmp_path / "rootfs"
+        for path in (persistent, transient, rootfs):
+            path.mkdir()
+
+        from safeyolo.commands.agent import _run_agent
+
+        patches = self._committed_launch_patches(
+            persistent, rootfs, snapshot_supported=True
+        )
+        with (
+            patch(
+                "safeyolo.commands.agent.compute_snapshot_version",
+                return_value={"snapshot_schema": 3},
+                autospec=True,
+            ) as compute,
+            patch(
+                "safeyolo.commands.agent.is_snapshot_valid",
+                return_value=True,
+                autospec=True,
+            ),
+        ):
+            for item in patches:
+                item.start()
+            try:
+                with pytest.raises(RuntimeError, match="stop after rename boundary"):
+                    _run_agent("committed", folder_override=str(transient))
+            finally:
+                for item in patches:
+                    item.stop()
+
+        assert compute.call_args.kwargs["workspace_path"] == transient.resolve()
 
     def test_run_agent_network_reservation_failure_does_not_rename(
         self, config_dir, tmp_path
