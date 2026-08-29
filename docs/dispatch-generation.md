@@ -1,10 +1,11 @@
 # SafeYolo Dispatch generation
 
 The SafeYolo Dispatch is a concise public engineering digest selected and
-edited by Relay, SafeYolo's coordinator. Generation produces repository
-Markdown only. It does not deploy a site, schedule publication, create issues,
-change factory policy, or approve its own output. Publication remains a later
-operator-approved pull-request flow.
+edited by Relay, SafeYolo's coordinator. The generation command produces
+repository Markdown only: it does not deploy, schedule, create issues, change
+factory policy, or approve its own output. Scheduling, operator approval, CI,
+and Pages deployment are separate plumbing described in
+[Dispatch delivery and publication](dispatch-publication.md).
 
 The intended reader understands ordinary software and security concepts but
 does not know SafeYolo internals. Sources own their terminology definitions;
@@ -128,3 +129,9 @@ state, current-state bullets, and public evidence.
 Generated pages retain the state key in a machine-readable comment. Copy and
 evidence corrections may keep the same key; a genuinely material state change
 uses a new one. No topic entry in the source means no topic write.
+
+Generated Markdown includes fixed Jekyll front matter and canonical
+permalinks. `scripts/check_dispatch_site.py` regenerates every retained source
+in memory and checks committed bytes, metadata, duplicate periods and paths,
+obvious leaks, local and HTTPS links, and publication-branch path scope. The
+check is mechanical; it does not judge Relay's prose or evidence quality.
