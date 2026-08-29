@@ -233,22 +233,45 @@ acceptance request.
 
 ### Real-macOS state acceptance
 
-After changing action configuration on macOS, point `state_file` at a new empty
-path and run the repository's bounded acceptance before starting the daemon:
+Run the structural acceptance from a separate checkout of the exact reviewed
+candidate. It creates and later removes only its own unique temporary root; it
+does not read or change an operator config, token, live state, daemon, or
+Funnel:
 
 ```sh
 uv run python scripts/accept_mattermost_macos.py \
-  --config ~/.safeyolo/coord-mattermost.toml
+  --expected-head REVIEWED_FULL_COMMIT_SHA \
+  --expected-base REVIEWED_FULL_BASE_SHA
 ```
 
-The script verifies all nine deployment gates: initialization, WAL and its real
+That script verifies gates 1–7: initialization, WAL with real adjacent
 `-wal`/`-shm` sidecars, schema, read/write, close/reopen plus abrupt recovery,
-the separate process lease, fail-closed state/lease replacement, the real
-`mattermost check`, and the real `mattermost run --once`. It suppresses child
-command output and prints only numbered pass/fail labels; it never prints the
-bot token, capabilities, config contents, Mattermost responses, or coord
-messages. It refuses a non-empty state path so a prior deployment is not used
-as acceptance scratch space.
+the separate process lease, and fail-closed state/lease replacement.
+
+For gates 8–9, first make a separate mode-`0600` config copy that contains only
+the already-provisioned test Mattermost/coord mapping and explicitly sets its
+single room to `backfill = false`. Do not pass the live default config. The
+integration script reads that test copy but never edits it; it writes a second
+private config with a new state DB under its own temporary root:
+
+```sh
+uv run python scripts/accept_mattermost_macos_integration.py \
+  --expected-head REVIEWED_FULL_COMMIT_SHA \
+  --expected-base REVIEWED_FULL_BASE_SHA \
+  --test-config-copy /path/to/private-test-only-config.toml \
+  --confirm-dedicated-test-channel \
+  --allow-run-once-effects
+```
+
+The integration script preflights the remaining external effect before doing
+anything: concurrent activity after the disposable `backfill=false` baseline
+could cause `run --once` to append one operator message or project one post in
+the dedicated test mapping. It must never be aimed at a production mapping.
+Neither script starts, stops, or changes a daemon or Funnel. Both suppress child
+output, report the exact candidate/base plus platform/Python/SQLite versions,
+print concise numbered pass/fail results, and verify cleanup of only their own
+temporary artifacts. They never print tokens, private IDs, callbacks, config
+contents, Mattermost responses, or coord messages.
 
 ## Delivery and failure semantics
 
