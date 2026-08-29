@@ -148,7 +148,6 @@
       "slug": "coord",
       "title": "Coord and operator collaboration",
       "state_key": "coord-evidence-operator-v1",
-      "material_change": "Structured nominations, evidence-backed factory proposals, and authenticated Mattermost operator projection materially changed the coord surface.",
       "summary": "Coord is SafeYolo's canonical attributed channel between agents and the operator. Public summaries are derived from evidence; raw coordination text is not a publication source.",
       "current_state": [
         "Terminal delivery messages may carry bounded optional nominations, but canonical envelope metadata supplies provenance and malformed trailers yield no trusted candidates.",

@@ -10,16 +10,6 @@ from pathlib import Path
 from safeyolo.coord import dispatch
 
 
-def _existing_topics(manifest: dispatch.DispatchManifest, output_root: Path) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for topic in manifest.topic_updates:
-        relative = topic.relative_path
-        existing = dispatch.read_existing_generated_file(output_root, relative)
-        if existing is not None:
-            result[relative.as_posix()] = existing
-    return result
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -42,10 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         manifest = dispatch.load_manifest(args.source)
-        files = dispatch.generate_files(
-            manifest,
-            existing_topics=_existing_topics(manifest, args.output_root),
-        )
+        files = dispatch.generate_files(manifest)
         changed = dispatch.write_generated_files(args.output_root, files, check=args.check)
     except dispatch.DispatchError as exc:
         print(f"Dispatch generation failed: {exc}", file=sys.stderr)
