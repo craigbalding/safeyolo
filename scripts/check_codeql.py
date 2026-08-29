@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the same Python CodeQL quality suite locally before pushing.
+"""Run the same Python CodeQL quality suite locally before pushing when available.
 
 The first run downloads the checksum-pinned bundle used by the CodeQL action
 SHA in ``.github/workflows/codeql.yml``. The extracted bundle is cached under
@@ -44,6 +44,19 @@ ASSET_LAYOUT = {
 
 class CodeQLCheckError(RuntimeError):
     """A local CodeQL setup or execution failure."""
+
+
+class LocalCodeQLUnavailable(CodeQLCheckError):
+    """The pinned official stable bundle has no native platform asset."""
+
+    def __init__(self, system: str, machine: str, platform_key: str):
+        self.system = system
+        self.machine = machine
+        self.platform_key = platform_key
+        super().__init__(
+            f"the pinned official stable bundle has no {platform_key} asset "
+            f"for {system} {machine}"
+        )
 
 
 def _read_manifest() -> dict[str, Any]:
@@ -136,6 +149,8 @@ def _platform_key() -> str:
     machine = platform.machine().lower()
     if system == "Linux" and machine in {"amd64", "x86_64"}:
         return "linux-x86_64"
+    if system == "Linux" and machine in {"aarch64", "arm64"}:
+        return "linux-arm64"
     if system == "Darwin" and machine in {"amd64", "x86_64", "arm64", "aarch64"}:
         # GitHub publishes an x86_64 macOS bundle. It runs on Apple Silicon
         # through Rosetta 2, matching GitHub's documented CodeQL requirement.
@@ -198,7 +213,7 @@ def _extract(archive: Path, destination: Path) -> None:
 
 def _ensure_codeql() -> Path:
     configured = os.environ.get("SAFEYOLO_CODEQL_BIN")
-    if configured:
+    if configured:  # DOC: docs/DEVELOPERS.md
         binary = Path(configured).expanduser().resolve()
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise CodeQLCheckError(f"SAFEYOLO_CODEQL_BIN is not executable: {binary}")
@@ -206,6 +221,8 @@ def _ensure_codeql() -> Path:
 
     manifest = _load_manifest()
     platform_key = _platform_key()
+    if platform_key not in ASSET_LAYOUT:
+        raise LocalCodeQLUnavailable(platform.system(), platform.machine(), platform_key)
     candidates = manifest["assets"].get(platform_key)
     if not isinstance(candidates, list):
         raise CodeQLCheckError(f"missing {platform_key} asset in {BUNDLE_MANIFEST}")
@@ -421,6 +438,20 @@ def main() -> int:
         if arguments.install_only:
             return 0
         findings, suppressed_count = _run_analysis(codeql)
+    except LocalCodeQLUnavailable as error:  # DOC: docs/DEVELOPERS.md
+        ci_gate = "GitHub CI CodeQL remains the required analysis gate."
+        if arguments.install_only:
+            print(
+                f"local CodeQL install failed: {error}. {ci_gate}",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"Local CodeQL is unavailable for {error.system} {error.machine} "
+            f"and was skipped: no pinned official stable native bundle. {ci_gate}",
+            file=sys.stderr,
+        )
+        return 0
     except (CodeQLCheckError, OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
         print(f"local CodeQL check failed: {error}", file=sys.stderr)
         return 2
