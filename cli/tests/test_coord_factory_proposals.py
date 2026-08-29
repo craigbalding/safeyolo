@@ -56,6 +56,7 @@ def verified_observation(
     correlation_key: str = "exact-review-handoff",
     facts: tuple[str, ...] = ("Two exact-candidate reviews lacked a tree identifier.",),
     recommendation: str = "Require base, head, and tree in exact review handoffs.",
+    recommendation_key: str = "require-exact-review-identifiers",
     evidence: tuple[factory_proposals.VerifiedEvidence, ...] = (),
     material: bool = False,
 ) -> factory_proposals.VerifiedFactoryObservation:
@@ -65,6 +66,7 @@ def verified_observation(
         facts=facts,
         inference="The repeated omissions create avoidable review ambiguity.",
         recommendation=recommendation,
+        recommendation_key=recommendation_key,
         impact="One blocked review round trip per incomplete handoff.",
         confidence="high; exact coord sequences verified",
         evidence=evidence,
@@ -348,6 +350,63 @@ def test_repeated_nomination_from_same_task_is_not_a_new_revision(
     assert ledger.pending() == ()
 
 
+def test_nonmaterial_rendering_metadata_does_not_reopen_presented_revision(
+    tmp_path: Path,
+) -> None:
+    ledger, rendered = ready_ledger(tmp_path)
+    presented = ledger.mark_presented(rendered, relay_send_envelope(rendered))
+    changed_confidence = verified_observation(material=True)
+    changed_confidence = factory_proposals.VerifiedFactoryObservation(
+        **{**changed_confidence.__dict__, "confidence": "high."}
+    )
+    replay = consume(
+        ledger,
+        candidate_envelope(sequence=12),
+        changed_confidence,
+    )
+    assert replay.status is factory_proposals.ProposalStatus.PRESENTED
+    assert replay.revision == presented.revision
+    assert replay.confidence == presented.confidence
+    assert ledger.pending() == ()
+
+
+def test_out_of_order_exact_replay_cannot_regress_recommendation(
+    tmp_path: Path,
+) -> None:
+    ledger, first_rendered = ready_ledger(tmp_path)
+    ledger.mark_presented(first_rendered, relay_send_envelope(first_rendered))
+    recommendation_b = verified_observation(
+        recommendation="Require machine-validated exact review identifiers.",
+        recommendation_key="machine-validate-exact-review-identifiers",
+        material=True,
+    )
+    updated = consume(
+        ledger,
+        candidate_envelope(sequence=12),
+        recommendation_b,
+    )
+    second_rendered = ledger.pending()[0]
+    assert updated.recommendation == recommendation_b.recommendation
+    ledger.mark_presented(
+        second_rendered,
+        canonical_envelope(
+            second_rendered.body,
+            sequence=72,
+            sender_agent_name="relay",
+        ),
+    )
+
+    replay = consume(
+        ledger,
+        candidate_envelope(sequence=10),
+        verified_observation(material=True),
+    )
+    assert replay.status is factory_proposals.ProposalStatus.PRESENTED
+    assert replay.recommendation == recommendation_b.recommendation
+    assert replay.recommendation_key == recommendation_b.recommendation_key
+    assert ledger.pending() == ()
+
+
 def test_restart_reconciles_retained_send_before_representing(tmp_path: Path) -> None:
     ledger, rendered = ready_ledger(tmp_path)
     sent = relay_send_envelope(rendered)
@@ -370,6 +429,7 @@ def test_new_evidence_or_material_recommendation_reopens_presented_record(
         verified_observation(
             task_key="issue:#502",
             recommendation="Require a machine-checked base, head, and tree handoff.",
+            recommendation_key="machine-check-exact-review-identifiers",
         ),
     )
     assert changed.fingerprint == rendered.fingerprint
@@ -451,7 +511,7 @@ def test_accepted_and_rejected_outcomes_remain_terminal_on_new_input(
         subdir = tmp_path / outcome.value
         ledger, rendered = ready_ledger(subdir)
         ledger.mark_presented(rendered, relay_send_envelope(rendered))
-        ledger.record_operator_outcome(
+        decided = ledger.record_operator_outcome(
             rendered.fingerprint,
             outcome,
             operator_outcome_envelope(rendered.fingerprint, outcome),
@@ -462,10 +522,11 @@ def test_accepted_and_rejected_outcomes_remain_terminal_on_new_input(
             verified_observation(
                 task_key="issue:#504",
                 recommendation="A changed recommendation that cannot override the operator.",
+                recommendation_key="changed-recommendation-must-not-override-operator",
                 material=True,
             ),
         )
-        assert record.status.value == outcome.value
+        assert record == decided
         assert ledger.pending() == ()
 
 

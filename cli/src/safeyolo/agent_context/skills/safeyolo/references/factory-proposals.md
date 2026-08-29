@@ -26,6 +26,10 @@ Use `safeyolo.coord.factory_proposals.FactoryProposalWorkflow` and
    task key for every evidence item. Two messages from one task are still one
    task. A proposal becomes ready on evidence spanning two task keys or one
    explicitly material delivery/review impact.
+5. Give the recommendation a stable key. Keep that key unchanged for wording,
+   inference, impact, or confidence-only edits; change it only when the proposed
+   intervention materially changes. Canonical send time/message ID prevents an
+   older replay from replacing a newer proposal.
 
 ## Present without assuming operator authority
 
@@ -60,10 +64,12 @@ corrupt or oversized state fails closed without replacement.
 
 Statuses are `observed`, `proposal_ready`, `presented`, `deferred`, `accepted`,
 `rejected`, and `covered`. A presented or deferred record becomes ready only
-when authoritative evidence or the recommendation changes. Accepted, rejected,
-and covered correlations are terminal; the ledger does not manage resulting
-work. Another nomination from the same task is retained as provenance but does
-not create a revision by itself.
+when authoritative evidence or the recommendation key changes. Confidence,
+impact, inference, or other non-material presentation edits stay quiet.
+Accepted, rejected, and covered correlations preserve the immutable decided
+snapshot; the ledger does not manage resulting work. Another nomination from
+the same task is retained as provenance but does not create a revision by
+itself.
 
 The #437 Lens notes at backlog sequences 236 and 239 are one task-local handoff
 omission. Record and suppress them as `observed`; do not promote them merely to

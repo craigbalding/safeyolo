@@ -18,7 +18,7 @@ import threading
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,7 @@ MAX_TEXT_BYTES = 2 * 1024
 
 _FINGERPRINT_RE = re.compile(r"^factory-[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^rev-[0-9a-f]{64}$")
+_MSG_ID_RE = re.compile(r"^msg-[0-9a-f]{32}$")
 _TASK_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,127}$")
 _PATH_LOCKS: dict[str, threading.RLock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
@@ -103,6 +104,7 @@ class VerifiedFactoryObservation:
     facts: tuple[str, ...]
     inference: str
     recommendation: str
+    recommendation_key: str
     evidence: tuple[VerifiedEvidence, ...]
     impact: str | None = None
     confidence: str | None = None
@@ -121,6 +123,7 @@ class ProposalRecord:
     facts: tuple[str, ...]
     inference: str
     recommendation: str
+    recommendation_key: str
     impact: str | None
     confidence: str | None
     covered_by: str | None
@@ -129,17 +132,15 @@ class ProposalRecord:
     last_seen: int
     status: ProposalStatus
     last_presented_revision: str | None
+    proposal_source_sent_at: int
+    proposal_source_msg_id: str
 
     @property
     def revision(self) -> str:
         proposal = {
-            "confidence": self.confidence,
             "correlation_key": self.correlation_key,
-            "covered_by": self.covered_by,
             "facts": list(self.facts),
-            "impact": self.impact,
-            "inference": self.inference,
-            "recommendation": self.recommendation,
+            "recommendation_key": self.recommendation_key,
         }
         payload = {
             "nomination_tasks": sorted({item.task_key for item in self.evidence if item.nomination}),
@@ -187,13 +188,17 @@ def _bounded_text(value: Any, field: str, maximum: int) -> str:
     return value.strip()
 
 
-def _correlation_key(value: Any) -> str:
-    text = _bounded_text(value, "correlation_key", MAX_KEY_BYTES)
+def _stable_key(value: Any, field: str) -> str:
+    text = _bounded_text(value, field, MAX_KEY_BYTES)
     normalized = unicodedata.normalize("NFKC", text).casefold()
     normalized = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
     if not normalized or len(normalized.encode("ascii")) > MAX_KEY_BYTES:
-        raise ValueError("correlation_key does not produce a bounded stable key")
+        raise ValueError(f"{field} does not produce a bounded stable key")
     return normalized
+
+
+def _correlation_key(value: Any) -> str:
+    return _stable_key(value, "correlation_key")
 
 
 def proposal_fingerprint(correlation_key: str) -> str:
@@ -255,6 +260,7 @@ def _validate_observation(
         facts=facts,
         inference=_bounded_text(observation.inference, "inference", MAX_TEXT_BYTES),
         recommendation=_bounded_text(observation.recommendation, "recommendation", MAX_TEXT_BYTES),
+        recommendation_key=_stable_key(observation.recommendation_key, "recommendation_key"),
         evidence=_validate_evidence(observation.evidence),
         impact=(
             _bounded_text(observation.impact, "impact", MAX_TEXT_BYTES) if observation.impact is not None else None
@@ -303,6 +309,9 @@ def _record_to_wire(record: ProposalRecord) -> dict[str, Any]:
             "impact": record.impact,
             "inference": record.inference,
             "recommendation": record.recommendation,
+            "recommendation_key": record.recommendation_key,
+            "source_msg_id": record.proposal_source_msg_id,
+            "source_sent_at": record.proposal_source_sent_at,
         },
         "status": record.status.value,
     }
@@ -328,6 +337,9 @@ def _wire_to_record(value: Any, expected_fingerprint: str) -> ProposalRecord:
         "impact",
         "inference",
         "recommendation",
+        "recommendation_key",
+        "source_msg_id",
+        "source_sent_at",
     }:
         raise ProposalLedgerCorruptionError("stored proposal has invalid shape")
     try:
@@ -373,6 +385,17 @@ def _wire_to_record(value: Any, expected_fingerprint: str) -> ProposalRecord:
             or last_seen < first_seen
         ):
             raise ValueError("timestamps invalid")
+        source_sent_at = proposal["source_sent_at"]
+        source_msg_id = proposal["source_msg_id"]
+        if (
+            isinstance(source_sent_at, bool)
+            or not isinstance(source_sent_at, int)
+            or source_sent_at < first_seen
+            or source_sent_at > last_seen
+            or not isinstance(source_msg_id, str)
+            or not _MSG_ID_RE.fullmatch(source_msg_id)
+        ):
+            raise ValueError("proposal source is invalid")
         last_revision = value["last_presented_revision"]
         if last_revision is not None and (
             not isinstance(last_revision, str) or not _REVISION_RE.fullmatch(last_revision)
@@ -388,6 +411,7 @@ def _wire_to_record(value: Any, expected_fingerprint: str) -> ProposalRecord:
                 "stored recommendation",
                 MAX_TEXT_BYTES,
             ),
+            recommendation_key=_stable_key(proposal["recommendation_key"], "stored recommendation_key"),
             impact=(
                 _bounded_text(proposal["impact"], "stored impact", MAX_TEXT_BYTES)
                 if proposal["impact"] is not None
@@ -408,6 +432,8 @@ def _wire_to_record(value: Any, expected_fingerprint: str) -> ProposalRecord:
             last_seen=last_seen,
             status=ProposalStatus(value["status"]),
             last_presented_revision=last_revision,
+            proposal_source_sent_at=source_sent_at,
+            proposal_source_msg_id=source_msg_id,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ProposalLedgerCorruptionError("proposal entry failed validation") from exc
@@ -570,6 +596,7 @@ class FactoryProposalLedger:  # DOC: docs/factory-proposals.md, cli/src/safeyolo
                     facts=verified.facts,
                     inference=verified.inference,
                     recommendation=verified.recommendation,
+                    recommendation_key=verified.recommendation_key,
                     impact=verified.impact,
                     confidence=verified.confidence,
                     covered_by=covered_by,
@@ -578,35 +605,53 @@ class FactoryProposalLedger:  # DOC: docs/factory-proposals.md, cli/src/safeyolo
                     last_seen=seen_at,
                     status=status,
                     last_presented_revision=None,
+                    proposal_source_sent_at=seen_at,
+                    proposal_source_msg_id=candidate.provenance.msg_id,
                 )
             else:
+                if current.status in {
+                    ProposalStatus.ACCEPTED,
+                    ProposalStatus.REJECTED,
+                    ProposalStatus.COVERED,
+                }:
+                    # Operator decisions bind the exact decided snapshot. A
+                    # later nomination cannot rewrite what was accepted,
+                    # rejected, or already covered.
+                    return current
                 evidence = _validate_evidence((*current.evidence, *incoming_evidence))
                 facts = tuple(sorted(set(current.facts) | set(verified.facts)))
                 if len(facts) > MAX_FACTS:
                     raise ProposalLedgerLimitError(f"proposal supports at most {MAX_FACTS} facts")
-                terminal = current.status in {
-                    ProposalStatus.ACCEPTED,
-                    ProposalStatus.REJECTED,
-                    ProposalStatus.COVERED,
-                }
-                updated = ProposalRecord(
-                    fingerprint=fingerprint,
-                    correlation_key=current.correlation_key,
+                incoming_source = (seen_at, candidate.provenance.msg_id)
+                current_source = (
+                    current.proposal_source_sent_at,
+                    current.proposal_source_msg_id,
+                )
+                selected = (
+                    {
+                        "confidence": verified.confidence,
+                        "impact": verified.impact,
+                        "inference": verified.inference,
+                        "proposal_source_msg_id": candidate.provenance.msg_id,
+                        "proposal_source_sent_at": seen_at,
+                        "recommendation": verified.recommendation,
+                        "recommendation_key": verified.recommendation_key,
+                    }
+                    if incoming_source > current_source
+                    else {}
+                )
+                updated = replace(
+                    current,
                     facts=facts,
-                    inference=verified.inference,
-                    recommendation=verified.recommendation,
-                    impact=verified.impact,
-                    confidence=verified.confidence,
-                    covered_by=(current.covered_by if terminal else current.covered_by or covered_by),
+                    covered_by=current.covered_by or covered_by,
                     evidence=evidence,
                     first_seen=min(current.first_seen, seen_at),
                     last_seen=max(current.last_seen, seen_at),
-                    status=current.status,
-                    last_presented_revision=current.last_presented_revision,
+                    **selected,
                 )
                 task_count = len({item.task_key for item in evidence})
                 if current.status is ProposalStatus.OBSERVED and (verified.material or task_count >= 2):
-                    updated = ProposalRecord(**{**updated.__dict__, "status": ProposalStatus.PROPOSAL_READY})
+                    updated = replace(updated, status=ProposalStatus.PROPOSAL_READY)
                 elif (
                     current.status
                     in {
@@ -615,9 +660,25 @@ class FactoryProposalLedger:  # DOC: docs/factory-proposals.md, cli/src/safeyolo
                     }
                     and updated.revision != current.last_presented_revision
                 ):
-                    updated = ProposalRecord(**{**updated.__dict__, "status": ProposalStatus.PROPOSAL_READY})
-                if updated.covered_by is not None and not terminal:
-                    updated = ProposalRecord(**{**updated.__dict__, "status": ProposalStatus.COVERED})
+                    updated = replace(updated, status=ProposalStatus.PROPOSAL_READY)
+                elif current.status in {
+                    ProposalStatus.PRESENTED,
+                    ProposalStatus.DEFERRED,
+                }:
+                    # Non-material rendering metadata never rewrites the
+                    # presented proposal snapshot or causes re-presentation.
+                    updated = replace(
+                        updated,
+                        confidence=current.confidence,
+                        impact=current.impact,
+                        inference=current.inference,
+                        proposal_source_msg_id=current.proposal_source_msg_id,
+                        proposal_source_sent_at=current.proposal_source_sent_at,
+                        recommendation=current.recommendation,
+                        recommendation_key=current.recommendation_key,
+                    )
+                if updated.covered_by is not None:
+                    updated = replace(updated, status=ProposalStatus.COVERED)
             records[fingerprint] = updated
             self._write_unlocked(records)
             return updated

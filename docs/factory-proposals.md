@@ -22,7 +22,8 @@ Use `safeyolo.coord.factory_proposals.FactoryProposalWorkflow` with a
    check cited coord state, issues, PRs, exact commits/trees, tests, or runtime
    evidence and return a bounded `VerifiedFactoryObservation`. It also supplies
    the authoritative task key used to distinguish recurrence from two messages
-   about one task.
+   about one task and a stable recommendation key that changes only when the
+   proposed intervention materially changes.
 3. Search authoritative issue state through `find_existing_issue` before any
    ledger write. Return `ExistingIssueCoverage` when an open or otherwise
    relevant issue already covers the intervention; the record becomes
@@ -47,9 +48,10 @@ Rendering is deliberately separate from Relay's attributed coord send.
 The verifier assigns a narrow correlation key for the demonstrated problem.
 SafeYolo normalizes that key and hashes it into a stable `factory-...`
 fingerprint. Recommendation wording is not part of the fingerprint, so related
-evidence remains one proposal. A `rev-...` digest covers the current verified
-facts, inference, recommendation, coverage, verified evidence, and distinct
-nomination task keys.
+evidence remains one proposal. A `rev-...` digest covers verified facts,
+verified evidence, distinct nomination task keys, and the verifier's stable
+recommendation key. Confidence punctuation, explanatory inference, and other
+presentation-only wording do not create a new revision.
 
 Evidence is deduplicated and sorted. Every accepted nomination also gains a
 coord evidence reference built from canonical envelope provenance; authored
@@ -57,7 +59,9 @@ candidate provenance is never used. A revision already presented remains
 quiet after restart. New authoritative evidence or a materially changed
 recommendation creates a new revision that can return a presented or deferred
 proposal to `proposal_ready`. A repeated nomination from the same task is
-retained for provenance but does not by itself create a new revision.
+retained for provenance but does not by itself create a new revision. Canonical
+send time and message ID select proposal wording deterministically, so replay or
+out-of-order catch-up cannot restore an older recommendation.
 
 Rendered text separates:
 
@@ -81,9 +85,10 @@ The ledger is proposal deduplication, not work management:
   agent envelope.
 - `deferred` — the operator deferred the presented revision; it remains quiet
   until its revision changes.
-- `accepted` and `rejected` — terminal operator decisions for the correlation.
+- `accepted` and `rejected` — terminal immutable operator decisions for the
+  exact presented proposal snapshot.
 - `covered` — authoritative issue lookup or the operator found existing
-  coverage; no duplicate proposal is rendered.
+  coverage; the snapshot is terminal and no duplicate proposal is rendered.
 
 Operator outcomes are accepted only from a canonical operator envelope whose
 body is exactly:
@@ -100,7 +105,8 @@ recommendation or create follow-up work.
 The default ledger is
 `~/.safeyolo/data/coord/factory-proposals.json`. Each entry stores only the
 stable proposal and fingerprint, normalized evidence set, first/last canonical
-send times, status, and last-presented revision. It is a bounded atomic JSON
+send times, status, last-presented revision, and the minimal canonical source
+marker needed for deterministic proposal selection. It is a bounded atomic JSON
 file, not a database, daemon, scheduler, observation archive, or retrospective
 framework.
 
