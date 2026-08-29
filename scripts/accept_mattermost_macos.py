@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 from safeyolo.coord.mattermost import MattermostAdapterError, MattermostConfig, MattermostState, RoomMapping
@@ -38,6 +39,13 @@ def _config(state_file: Path) -> MattermostConfig:
         poll_interval_seconds=1.0,
         rooms=(RoomMapping(_ROOM, _CHANNEL_ID, False),),
     )
+
+
+def _schema_tables(state_path: Path) -> set[str]:
+    """Inspect schema without retaining a competing SQLite connection."""
+
+    with closing(sqlite3.connect(state_path)) as conn:
+        return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
 def _identity(expected_head: str, expected_tree: str, expected_base: str) -> tuple[str, str, str]:
@@ -147,9 +155,10 @@ def _replacement_guards(root: Path) -> None:
     state_path = root / "replacement-state.sqlite3"
     guarded = MattermostState(_config(state_path))
     redirected = root / "redirected.sqlite3"
-    with sqlite3.connect(redirected) as conn:
+    with closing(sqlite3.connect(redirected)) as conn:
         conn.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
         conn.execute("INSERT INTO sentinel(value) VALUES ('unchanged')")
+        conn.commit()
     redirected.chmod(0o600)
     state_path.unlink()
     state_path.symlink_to(redirected)
@@ -162,7 +171,7 @@ def _replacement_guards(root: Path) -> None:
             raise AcceptanceError("state pathname replacement was accepted")
     finally:
         guarded.close()
-    with sqlite3.connect(redirected) as conn:
+    with closing(sqlite3.connect(redirected)) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         value = conn.execute("SELECT value FROM sentinel").fetchone()
     if tables != {"sentinel"} or value != ("unchanged",):
@@ -281,8 +290,7 @@ def main() -> int:
         print(f"PASS {current_step}: {current_label}", flush=True)
 
         current_step, current_label = 3, "schema creation"
-        with sqlite3.connect(state_path) as conn:
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = _schema_tables(state_path)
         required = {"metadata", "room_state", "outbound_projection", "inbound_post", "action_capability"}
         if not required.issubset(tables):
             raise AcceptanceError("required schema is incomplete")

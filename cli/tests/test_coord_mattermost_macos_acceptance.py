@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -74,6 +75,36 @@ def test_structural_replacement_gate_includes_new_regular_and_hardlinked_copies(
     root = tmp_path / "safeyolo-mm-macos-accept-replacements"
     root.mkdir(mode=0o700)
     structural._replacement_guards(root)
+
+
+def test_structural_schema_probe_closes_its_sqlite_connection(tmp_path: Path) -> None:
+    structural = load_script("accept_mattermost_macos.py")
+    state_path = tmp_path / "schema.sqlite3"
+    conn = sqlite3.connect(state_path)
+    conn.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
+    conn.commit()
+    conn.close()
+
+    opened: list[sqlite3.Connection] = []
+    real_connect = structural.sqlite3.connect
+
+    def tracked_connect(path: Path) -> sqlite3.Connection:
+        tracked = real_connect(path)
+        opened.append(tracked)
+        return tracked
+
+    structural.sqlite3.connect = tracked_connect
+    try:
+        assert structural._schema_tables(state_path) == {"sentinel"}
+    finally:
+        structural.sqlite3.connect = real_connect
+    assert len(opened) == 1
+    try:
+        opened[0].execute("SELECT 1")
+    except sqlite3.ProgrammingError as exc:
+        assert "closed" in str(exc)
+    else:
+        raise AssertionError("schema probe retained its SQLite connection")
 
 
 def test_acceptance_scripts_expose_only_bounded_arguments() -> None:
