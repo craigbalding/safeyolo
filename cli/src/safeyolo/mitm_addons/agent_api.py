@@ -1412,13 +1412,28 @@ class AgentAPI:
             if var_name not in contract.bindings:
                 errors.append(f"Unknown binding variable '{var_name}'")
 
+        # Every operation proposed for approval must be fully resolvable. A
+        # partial record would otherwise persist an apparently grantable op
+        # that the compiler must silently omit.
+        for operation in contract.grantable_operations():
+            for var_name in sorted(operation.bound_value_references()):
+                if var_name not in contract.bindings:
+                    errors.append(
+                        f"Operation '{operation.name}' references unknown binding "
+                        f"'{var_name}'"
+                    )
+                elif var_name not in bindings or bindings[var_name] is None:
+                    errors.append(
+                        f"'{var_name}' is required by operation '{operation.name}'"
+                    )
+
         if errors:
             self._respond(
                 flow,
                 200,
                 {
                     "decision": "denied_out_of_scope",
-                    "errors": errors,
+                    "errors": list(dict.fromkeys(errors)),
                 },
             )
             return
