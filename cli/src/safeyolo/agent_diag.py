@@ -1,7 +1,8 @@
 """Per-agent egress chain diagnostic.
 
-Walks the hops from `curl inside the agent` out to `mitmproxy`, checking
-each link in order. Used by `safeyolo agent diag <name>`.
+Walks the host-visible hops from a named agent's UDS to mitmproxy, then checks
+the authenticated Agent API and its source-derived attribution separately.
+Used by `safeyolo agent diag <name>`.
 
 Cross-platform with platform-specific probes where the implementations
 differ (netns on Linux, lo0 aliases + VZ helper on macOS). Output is
@@ -17,6 +18,8 @@ reported and the rest continues.
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import socket
 import time
 from dataclasses import dataclass
@@ -24,11 +27,118 @@ from pathlib import Path
 
 from rich.console import Console
 
-from .config import get_agent_map_path, get_agents_dir
+from .config import (
+    get_agent_map_path,
+    get_agent_token_path,
+    get_agents_dir,
+    get_logs_dir,
+)
 from .proxy import is_proxy_running
 from .sockets import path_for as socket_path_for
 
 console = Console()
+
+_HTTP_STATUS_RE = re.compile(
+    rb"^HTTP/\d(?:\.\d)?[ \t]+([0-9]{3})(?:[ \t]+.*)?$"
+)
+_MAX_PROBE_RESPONSE_BYTES = 64 * 1024
+
+
+class _HTTPResponseError(ValueError):
+    """A bounded UDS response is not a complete HTTP response."""
+
+
+@dataclass(frozen=True)
+class _HTTPResponse:
+    status_code: int
+    headers: dict[str, str]
+    body: bytes
+
+
+def _parse_http_response(raw: bytes) -> _HTTPResponse:
+    """Parse the status and headers needed by host-side UDS diagnostics."""
+    if not raw:
+        raise _HTTPResponseError("no response")
+    head, separator, body = raw.partition(b"\r\n\r\n")
+    if not separator:
+        raise _HTTPResponseError("incomplete HTTP headers")
+    lines = head.split(b"\r\n")
+    match = _HTTP_STATUS_RE.fullmatch(lines[0])
+    if match is None:
+        raise _HTTPResponseError("malformed HTTP status line")
+
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        name, colon, value = line.partition(b":")
+        if not colon or not name.strip():
+            raise _HTTPResponseError("malformed HTTP header")
+        try:
+            header_name = name.decode("ascii").strip().casefold()
+            header_value = value.decode("iso-8859-1").strip()
+        except UnicodeError as exc:
+            raise _HTTPResponseError("malformed HTTP header") from exc
+        headers[header_name] = header_value
+
+    content_length = headers.get("content-length")
+    if content_length is not None:
+        try:
+            expected = int(content_length)
+        except ValueError as exc:
+            raise _HTTPResponseError("invalid Content-Length") from exc
+        if expected < 0 or len(body) < expected:
+            raise _HTTPResponseError("partial HTTP body")
+        body = body[:expected]
+
+    return _HTTPResponse(
+        status_code=int(match.group(1)),
+        headers=headers,
+        body=body,
+    )
+
+
+def _uds_roundtrip(
+    sock_path: str,
+    request: bytes,
+    *,
+    timeout: float = 5.0,
+) -> bytes:
+    """Send one bounded HTTP request over a named agent's UDS."""
+    deadline = time.monotonic() + timeout
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(sock_path)
+            sock.sendall(request)
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                sock.settimeout(remaining)
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > _MAX_PROBE_RESPONSE_BYTES:
+                    raise _HTTPResponseError("HTTP response exceeds diagnostic limit")
+    except TimeoutError as exc:
+        raise _HTTPResponseError("timed out waiting for HTTP response") from exc
+    except OSError as exc:
+        raise _HTTPResponseError(f"{type(exc).__name__}: {exc}") from exc
+    return b"".join(chunks)
+
+
+def _entry_socket_path(name: str, entry: dict) -> str:
+    return entry.get("socket") or str(
+        socket_path_for(name, entry.get("ip", ""))
+    )
+
+
+def _mitmproxy_log_remediation() -> str:
+    log_path = get_logs_dir() / "mitmproxy.log"
+    return f"tail -n 50 {shlex.quote(str(log_path))}"
 
 
 @dataclass
@@ -123,56 +233,171 @@ def _check_sandbox_running(name: str) -> Check:
     if plat.is_sandbox_running(name):
         return Check("Sandbox/VM", "PASS", "running")
     return Check("Sandbox/VM", "WARN",
-                 "not running (end-to-end probe will still test the host chain)",
+                 "not running (UDS probes will still test the host chain)",
                  f"safeyolo agent run {name}")
 
 
-def _check_end_to_end(name: str, entry: dict) -> Check:
-    """Send a minimal HTTP request through the per-agent UDS.
+def _check_proxy_transport(
+    name: str,
+    entry: dict,
+    *,
+    timeout: float = 5.0,
+) -> Check:
+    """Prove only UDS accept, mitmproxy parsing, and the return path.
 
-    We don't need a 200 from upstream -- mitmproxy answering at all
-    (even with 400 Bad Request for our empty Host header) proves the
-    full chain: UDS accept → mitmproxy parsed the request. That's
-    every host-side hop exercised.
+    The deliberately hostless request should be rejected locally. Any complete
+    HTTP response proves the transport contract, not Agent API health.
     """
-    sock_path_str = entry.get("socket") or str(
-        socket_path_for(name, entry.get("ip", ""))
-    )
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock_path_str)
-        s.sendall(b"GET / HTTP/1.0\r\nConnection: close\r\n\r\n")
-        buf = b""
-        started = time.monotonic()
-        while time.monotonic() - started < 5:
-            try:
-                chunk = s.recv(4096)
-            except TimeoutError:
-                break
-            if not chunk:
-                break
-            buf += chunk
-        s.close()
+        raw = _uds_roundtrip(
+            _entry_socket_path(name, entry),
+            b"GET / HTTP/1.0\r\nConnection: close\r\n\r\n",
+            timeout=timeout,
+        )
+        response = _parse_http_response(raw)
+    except _HTTPResponseError as exc:
+        return Check(
+            "Proxy transport",
+            "FAIL",
+            str(exc),
+            _mitmproxy_log_remediation(),
+        )
+    return Check(
+        "Proxy transport",
+        "PASS",
+        f"mitmdump answered HTTP {response.status_code} ({len(raw)}B)",
+    )
+
+
+def _agent_api_request(path: str, token: str) -> bytes:
+    """Build a request without putting the bearer in argv, URLs, or output."""
+    return (
+        f"GET {path} HTTP/1.0\r\n"
+        "Host: _safeyolo.proxy.internal\r\n"
+        f"Authorization: Bearer {token}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode()
+
+
+def _agent_api_response(
+    sock_path: str,
+    path: str,
+    token: str,
+    *,
+    timeout: float,
+) -> tuple[_HTTPResponse | None, Check | None]:
+    try:
+        raw = _uds_roundtrip(
+            sock_path,
+            _agent_api_request(path, token),
+            timeout=timeout,
+        )
+        response = _parse_http_response(raw)
+    except _HTTPResponseError as exc:
+        return None, Check(
+            "Agent API",
+            "FAIL",
+            f"{path}: {exc}",
+            _mitmproxy_log_remediation(),
+        )
+
+    marker = response.headers.get("x-safeyolo-agent-api", "")
+    if response.status_code != 200:
+        remediation = (
+            "safeyolo logs --tail 20"
+            if response.status_code in {401, 403} and marker.casefold() == "true"
+            else _mitmproxy_log_remediation()
+        )
+        return None, Check(
+            "Agent API",
+            "FAIL",
+            f"{path}: HTTP {response.status_code}",
+            remediation,
+        )
+    if marker.casefold() != "true":
+        return None, Check(
+            "Agent API",
+            "FAIL",
+            f"{path}: HTTP 200 without the Agent API handler marker",
+            _mitmproxy_log_remediation(),
+        )
+    return response, None
+
+
+def _check_agent_api(
+    name: str,
+    entry: dict,
+    *,
+    timeout: float = 5.0,
+) -> Check:
+    """Verify handler health and source-derived attribution over this UDS."""
+    token_path = get_agent_token_path()
+    try:
+        token = token_path.read_text().strip()
+    except FileNotFoundError:
+        return Check(
+            "Agent API",
+            "FAIL",
+            f"agent token missing at {token_path}",
+            "safeyolo start",
+        )
     except OSError as exc:
-        return Check("End-to-end probe", "FAIL",
-                     f"{type(exc).__name__}: {exc}")
-    if not buf:
-        return Check("End-to-end probe", "FAIL",
-                     "no response from mitmdump -- chain broken")
-    first_line = buf.split(b"\n", 1)[0].decode(errors="replace").strip()
-    if not first_line.startswith("HTTP/"):
-        # Something responded but it's not HTTP -- something's wrong on
-        # the other side (firewall mangling? wrong port?).
-        return Check("End-to-end probe", "FAIL",
-                     f"unexpected response (not HTTP): {first_line[:60]!r}")
-    # We intentionally send an incomplete request (no Host header) so
-    # mitmproxy rejects it with 400. A 400 *proves* the full host
-    # chain works -- UDS accept + attribution-IP bind + TCP to mitmproxy
-    # + reply back -- without touching any upstream or policy allowlist.
-    # Operators: this is the expected outcome; PASS is PASS.
-    return Check("End-to-end probe", "PASS",
-                 f"mitmdump answered ({len(buf)}B, probe request rejected as expected)")
+        return Check(
+            "Agent API",
+            "FAIL",
+            f"cannot read agent token: {type(exc).__name__}",
+            "safeyolo start",
+        )
+    if not token:
+        return Check(
+            "Agent API",
+            "FAIL",
+            f"agent token file is empty at {token_path}",
+            "safeyolo stop && safeyolo start",
+        )
+
+    sock_path = _entry_socket_path(name, entry)
+    _health, failure = _agent_api_response(
+        sock_path,
+        "/health",
+        token,
+        timeout=timeout,
+    )
+    if failure is not None:
+        return failure
+
+    identity, failure = _agent_api_response(
+        sock_path,
+        "/api/test-context/current",
+        token,
+        timeout=timeout,
+    )
+    if failure is not None:
+        return failure
+    assert identity is not None
+    try:
+        body = json.loads(identity.body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return Check(
+            "Agent API",
+            "FAIL",
+            "identity-scoped response is not JSON",
+            _mitmproxy_log_remediation(),
+        )
+    attributed_agent = body.get("agent") if isinstance(body, dict) else None
+    if attributed_agent != name:
+        return Check(
+            "Agent API",
+            "FAIL",
+            f"source attribution mismatch (expected {name!r}, got {attributed_agent!r})",
+            _mitmproxy_log_remediation(),
+        )
+
+    return Check(
+        "Agent API",
+        "PASS",
+        f"HTTP 200 with handler marker; source attributed as {name}",
+    )
 
 
 def run_agent_diag(name: str) -> int:
@@ -198,7 +423,8 @@ def run_agent_diag(name: str) -> int:
         lambda: _check_proxy_socket(name, entry),
         _check_proxy_process,
         lambda: _check_sandbox_running(name),
-        lambda: _check_end_to_end(name, entry),
+        lambda: _check_proxy_transport(name, entry),
+        lambda: _check_agent_api(name, entry),
     ):
         c = check_fn()
         checks.append(c)

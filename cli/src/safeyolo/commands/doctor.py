@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -31,6 +32,12 @@ from ..proxy import is_proxy_running, resolve_upstream_ca_cert
 console = Console()
 
 _FLOW_STORE_WARN_MB = 500
+
+
+def _mitmproxy_log_tail(lines: int = 50) -> str:
+    """Return an executable command for the raw proxy-process evidence."""
+    log_path = get_logs_dir() / "mitmproxy.log"
+    return f"tail -n {lines} {shlex.quote(str(log_path))}"
 
 
 def _registered_agent_sockets() -> list[Path]:
@@ -314,20 +321,45 @@ def _check_pipeline_probe() -> DiagResult:
             name="Pipeline probe",
             status="fail",
             message=f"No response from {sock_path.name}",
-            remediation="safeyolo logs --tail 20",
+            remediation=_mitmproxy_log_tail(),
         )
 
-    status_line = response.split(b"\r\n", 1)[0].decode(errors="replace")
-    if "200" not in status_line:
+    from ..agent_diag import _HTTPResponseError, _parse_http_response
+
+    try:
+        parsed_response = _parse_http_response(response)
+    except _HTTPResponseError as exc:
         return DiagResult(
             name="Pipeline probe",
             status="fail",
-            message=f"Agent API returned: {status_line.strip()}",
-            detail=response[:500].decode(errors="replace"),
-            remediation="safeyolo logs --security --tail 20",
+            message=f"Malformed HTTP response via {sock_path.name}: {exc}",
+            remediation=_mitmproxy_log_tail(),
         )
 
-    body = response.split(b"\r\n\r\n", 1)[-1]
+    marker = parsed_response.headers.get("x-safeyolo-agent-api", "")
+    if parsed_response.status_code != 200:
+        remediation = (
+            "safeyolo logs --tail 20"
+            if parsed_response.status_code in {401, 403}
+            and marker.casefold() == "true"
+            else _mitmproxy_log_tail()
+        )
+        return DiagResult(
+            name="Pipeline probe",
+            status="fail",
+            message=f"Agent API returned HTTP {parsed_response.status_code}",
+            remediation=remediation,
+        )
+
+    if marker.casefold() != "true":
+        return DiagResult(
+            name="Pipeline probe",
+            status="fail",
+            message="HTTP 200 response lacks the Agent API handler marker",
+            remediation=_mitmproxy_log_tail(),
+        )
+
+    body = parsed_response.body
     try:
         parsed = json.loads(body)
         pdp_status = parsed.get("pdp", "unknown")

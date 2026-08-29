@@ -911,7 +911,11 @@ class AgentAPI:
         """Return the caller's active declaration + remaining TTL, or null."""
         rec = tc.get_declaration(source_id, agent)
         if rec is None:
-            self._respond(flow, 200, {"context": None})
+            # Keep the harmless GET identity-scoped even when no declaration
+            # exists. Host diagnostics use this source-derived value to prove
+            # the named agent's UDS attribution; it is never supplied by the
+            # request body or query.
+            self._respond(flow, 200, {"agent": agent, "context": None})
             return
         context, expires_in = rec
         self._respond(

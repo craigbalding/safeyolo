@@ -70,8 +70,9 @@ safeyolo doctor             # Report host prerequisites, runtime, agents
 |---------|-------------|
 | `safeyolo logs` | View formatted logs |
 | `safeyolo logs -f` | Follow logs in real-time |
-| `safeyolo logs --security` | Show only security events |
+| `safeyolo logs --event security` | Show structured security events |
 | `safeyolo logs --raw` | Output raw JSONL |
+| `tail -n 50 ~/.local/state/safeyolo/mitmproxy.log` | Show raw mitmproxy/upstream failures (default log path) |
 
 ### WebMITM interface
 
