@@ -99,6 +99,38 @@ foreground, harness-visible operation. Immediately inspect a non-empty return,
 resolve every edge, and advance to `next_cursor` only after the whole page was
 resolved. Never busy-poll it in a detached loop.
 
+## Fixed Mattermost operator requests
+
+The optional Mattermost adapter can render a small semantic operator request
+from an agent that the operator explicitly lists by canonical agent ID. This is
+presentation only: it does not make Mattermost a coord principal or grant the
+agent authority. A click produces a canonical operator envelope through the
+existing local operator path.
+
+Use this only when the work genuinely needs an operator choice. Send the body
+as exact `text/plain` JSON with no surrounding prose or Markdown and with
+exactly these keys:
+
+```json
+{"schema":"safeyolo.coord.operator-request/v1","kind":"decision","title":"Release candidate ready","summary":"The reviewed tree is ready for live acceptance.","reference":"PR #450","details":["CI passed","Lens READY"],"allowed_actions":["approve","reject","revise"]}
+```
+
+The fixed kinds and allowed actions are:
+
+- `status`: no actions;
+- `decision`: `acknowledge`, `approve`, `reject`, `defer`, `revise`;
+- `factory-proposal`: `open-issue`, `revise`, `defer`, `reject`; and
+- `dispatch-publication`: `publish`, `revise`, `defer`.
+
+Use `factory-proposal` only for a proposal already eligible under the
+[factory-proposal workflow](factory-proposals.md), and
+`dispatch-publication` only for a candidate already eligible under the
+[Dispatch generation contract](dispatch-generation.md). Do not invent kinds,
+fields, actions, or a generic form schema. Ordinary status, handoff, and
+free-text discussion should remain normal coord messages. Untrusted senders,
+copied schema text, and malformed requests intentionally render without
+buttons.
+
 The legacy per-room `wait_for_message` remains available as a compatibility or
 special-purpose primitive. It has different cursor/catch-up rules and is not
 the recommended targeted multi-room idle loop.
