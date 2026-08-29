@@ -479,8 +479,6 @@ def _sqlite_path_for_state(path: Path, state_fd: int, state_opened: os.stat_resu
         candidate = f"{root}/{state_fd}"
         if not _fd_alias_matches(candidate, identity):
             continue
-        if _fd_alias_stat_identity(candidate) == identity:
-            return candidate, False
         if _is_darwin() and root == "/dev/fd":
             resolved = _darwin_path_from_fd(state_fd)
             try:
@@ -499,6 +497,8 @@ def _sqlite_path_for_state(path: Path, state_fd: int, state_opened: os.stat_resu
             ):
                 raise MattermostAdapterError("resolved Darwin state_file parent differs from validated parent")
             return str(resolved), True
+        if _fd_alias_stat_identity(candidate) == identity:
+            return candidate, False
     raise MattermostAdapterError("platform cannot bind SQLite to the validated state_file")
 
 
@@ -752,6 +752,14 @@ class MattermostState:
                 raise MattermostAdapterError(
                     "state_file belongs to a different server/operator/room/action configuration"
                 )
+            durable_state_identity = f"{self._state_identity[0]}:{self._state_identity[1]}"
+            conn.execute(
+                "INSERT OR IGNORE INTO metadata(key, value) VALUES ('state_identity', ?)",
+                (durable_state_identity,),
+            )
+            stored_state_identity = conn.execute("SELECT value FROM metadata WHERE key = 'state_identity'").fetchone()
+            if stored_state_identity is None or stored_state_identity["value"] != durable_state_identity:
+                raise MattermostAdapterError("state_file identity differs from durable state")
             durable_lease_identity = f"{self._lease_identity[0]}:{self._lease_identity[1]}"
             conn.execute(
                 "INSERT OR IGNORE INTO metadata(key, value) VALUES ('lease_identity', ?)",

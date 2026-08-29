@@ -39,12 +39,12 @@ def _config(state_file: Path) -> MattermostConfig:
     )
 
 
-def _identity(expected_head: str, expected_base: str) -> tuple[str, str]:
-    if not _SHA_RE.fullmatch(expected_head) or not _SHA_RE.fullmatch(expected_base):
-        raise AcceptanceError("expected head/base must be full lowercase commit SHAs")
+def _identity(expected_head: str, expected_tree: str, expected_base: str) -> tuple[str, str, str]:
+    if not all(_SHA_RE.fullmatch(value) for value in (expected_head, expected_tree, expected_base)):
+        raise AcceptanceError("expected head/tree/base must be full lowercase object SHAs")
     checkout = Path(__file__).resolve().parents[1]
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        ["git", "rev-parse", "HEAD", "HEAD^{tree}"],
         cwd=checkout,
         check=False,
         capture_output=True,
@@ -59,12 +59,12 @@ def _identity(expected_head: str, expected_base: str) -> tuple[str, str]:
         text=True,
         timeout=10,
     )
-    head = result.stdout.strip()
-    if result.returncode != 0 or head != expected_head or merge_base.returncode != 0:
+    values = result.stdout.splitlines()
+    if result.returncode != 0 or values != [expected_head, expected_tree] or merge_base.returncode != 0:
         raise AcceptanceError("checkout does not match the expected candidate")
     if merge_base.stdout.strip() != expected_base:
         raise AcceptanceError("candidate does not descend from the expected base")
-    return head, expected_base
+    return expected_head, expected_tree, expected_base
 
 
 def _silent_child(source: str, state_path: Path) -> int:
@@ -218,6 +218,7 @@ def _cleanup(root: Path | None, identity: tuple[int, int] | None) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-head", required=True)
+    parser.add_argument("--expected-tree", required=True)
     parser.add_argument("--expected-base", required=True)
     args = parser.parse_args()
     root: Path | None = None
@@ -228,12 +229,12 @@ def main() -> int:
     try:
         if sys.platform != "darwin":
             raise AcceptanceError("structural acceptance must run on real macOS")
-        head, base = _identity(args.expected_head, args.expected_base)
+        head, tree, base = _identity(args.expected_head, args.expected_tree, args.expected_base)
         root = Path(tempfile.mkdtemp(prefix="safeyolo-mm-macos-accept-")).resolve()
         root_st = root.lstat()
         root_identity = root_st.st_dev, root_st.st_ino
         print(
-            f"IDENTITY candidate={head} base={base} platform={platform.platform()} "
+            f"IDENTITY candidate={head} tree={tree} base={base} platform={platform.platform()} "
             f"python={platform.python_version()} sqlite={sqlite3.sqlite_version}",
             flush=True,
         )

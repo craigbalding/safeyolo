@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -1382,6 +1383,34 @@ def test_emulated_darwin_uses_real_wal_path_and_reopens_durable_state(
     reopened.close()
 
 
+def test_emulated_darwin_dev_fd_stat_match_still_uses_real_wal_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    emulate_darwin_fd_paths(monkeypatch)
+    resolved_fds: list[int] = []
+
+    def matching_alias_identity(candidate: str) -> tuple[int, int] | None:
+        if candidate.startswith("/proc/self/fd/"):
+            return None
+        opened = os.fstat(int(candidate.rsplit("/", 1)[1]))
+        return opened.st_dev, opened.st_ino
+
+    def resolved_path(fd: int) -> Path:
+        resolved_fds.append(fd)
+        return Path(os.readlink(f"/proc/self/fd/{fd}"))
+
+    monkeypatch.setattr(mattermost, "_fd_alias_stat_identity", matching_alias_identity)
+    monkeypatch.setattr(mattermost, "_darwin_path_from_fd", resolved_path)
+    config = make_config(tmp_path)
+    state = mattermost.MattermostState(config)
+    try:
+        assert state._state_fd_path == str(config.state_file)
+        assert state._verify_sqlite_fd
+        assert resolved_fds == [state._state_fd]
+    finally:
+        state.close()
+
+
 def test_emulated_darwin_recovers_committed_wal_after_abrupt_process_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1462,6 +1491,26 @@ def test_emulated_darwin_rejects_state_swap_between_validation_and_sqlite_open(
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert conn.execute("SELECT value FROM sentinel").fetchone() == ("unchanged",)
     assert tables == {"sentinel"}
+
+
+@pytest.mark.parametrize("replacement_kind", ["copy", "hardlinked-copy"])
+def test_durable_state_identity_rejects_copied_replacement_after_close(tmp_path: Path, replacement_kind: str) -> None:
+    config = make_config(tmp_path)
+    original = mattermost.MattermostState(config)
+    original.set_coord_cursor("backlog", 23)
+    original.close()
+    displaced = tmp_path / "original-state.sqlite3"
+    config.state_file.rename(displaced)
+    copied = tmp_path / "copied-state.sqlite3"
+    shutil.copy2(displaced, copied)
+    copied.chmod(0o600)
+    if replacement_kind == "copy":
+        copied.rename(config.state_file)
+    else:
+        os.link(copied, config.state_file)
+
+    with pytest.raises(mattermost.MattermostAdapterError, match="identity differs from durable state"):
+        mattermost.MattermostState(config)
 
 
 def test_state_initialization_does_not_follow_validation_to_open_swap(

@@ -81,5 +81,6 @@ def test_acceptance_scripts_expose_only_bounded_arguments() -> None:
             env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "cli" / "src")},
         )
         assert "--expected-head" in result.stdout
+        assert "--expected-tree" in result.stdout
         assert "--expected-base" in result.stdout
         assert "token" not in result.stdout.lower()

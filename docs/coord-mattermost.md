@@ -241,6 +241,7 @@ Funnel:
 ```sh
 uv run python scripts/accept_mattermost_macos.py \
   --expected-head REVIEWED_FULL_COMMIT_SHA \
+  --expected-tree REVIEWED_FULL_TREE_SHA \
   --expected-base REVIEWED_FULL_BASE_SHA
 ```
 
@@ -257,6 +258,7 @@ private config with a new state DB under its own temporary root:
 ```sh
 uv run python scripts/accept_mattermost_macos_integration.py \
   --expected-head REVIEWED_FULL_COMMIT_SHA \
+  --expected-tree REVIEWED_FULL_TREE_SHA \
   --expected-base REVIEWED_FULL_BASE_SHA \
   --test-config-copy /path/to/private-test-only-config.toml \
   --confirm-dedicated-test-channel \
