@@ -348,6 +348,7 @@ def test_pre_push_default_hook_skips_linux_arm64_without_analysis(
     assert hook["entry"] == "uv run python scripts/check_codeql.py"
     assert hook["stages"] == ["pre-push"]
     assert hook["always_run"] is True
+    assert hook["verbose"] is True
     assert "args" not in hook
 
     monkeypatch.delenv("SAFEYOLO_CODEQL_BIN", raising=False)
