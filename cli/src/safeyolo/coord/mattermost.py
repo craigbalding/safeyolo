@@ -372,6 +372,7 @@ class MattermostState:
 
     def __init__(self, config: MattermostConfig):
         self.path = config.state_file
+        self.lease_path = self.path.with_name(f"{self.path.name}.lock")
         _prepare_state_file(self.path)
         with self._connect() as conn:
             conn.executescript(
@@ -433,23 +434,82 @@ class MattermostState:
                     (room.coord_room, room.channel_id),
                 )
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path), isolation_level=None, timeout=10)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
-
     @contextmanager
-    def lease(self):
-        """Exclude another adapter process for the complete sync transaction."""
-
-        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    def _connect(self):
         try:
-            fd = os.open(self.path, flags)
+            conn = sqlite3.connect(str(self.path), isolation_level=None, timeout=10)
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA foreign_keys=ON")
+                with conn:
+                    yield conn
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise MattermostAdapterError(
+                f"Mattermost state database operation failed: {type(exc).__name__}"
+            ) from exc
+
+    def _open_lease_file(self) -> int:
+        try:
+            if self.lease_path.exists() or self.lease_path.is_symlink():
+                existing = self.lease_path.lstat()
+                if stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(
+                    existing.st_mode
+                ):
+                    raise MattermostAdapterError(
+                        "state_file lease must be a regular non-symlink file"
+                    )
+        except OSError as exc:
+            raise MattermostAdapterError(
+                f"cannot inspect state_file lease: {type(exc).__name__}"
+            ) from exc
+        flags = (
+            os.O_RDWR
+            | os.O_CREAT
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            fd = os.open(self.lease_path, flags, 0o600)
         except OSError as exc:
             raise MattermostAdapterError(
                 f"cannot open state_file lease: {type(exc).__name__}"
             ) from exc
+        try:
+            opened = os.fstat(fd)
+            linked = self.lease_path.lstat()
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not stat.S_ISREG(linked.st_mode)
+                or (opened.st_dev, opened.st_ino) != (linked.st_dev, linked.st_ino)
+            ):
+                raise MattermostAdapterError(
+                    "state_file lease must be one regular non-symlink file"
+                )
+            if hasattr(os, "getuid") and opened.st_uid != os.getuid():
+                raise MattermostAdapterError(
+                    "state_file lease must be owned by the current user"
+                )
+            if stat.S_IMODE(opened.st_mode) & 0o077:
+                raise MattermostAdapterError(
+                    "state_file lease permissions must be 0600 or stricter"
+                )
+        except MattermostAdapterError:
+            os.close(fd)
+            raise
+        except OSError as exc:
+            os.close(fd)
+            raise MattermostAdapterError(
+                f"cannot validate state_file lease: {type(exc).__name__}"
+            ) from exc
+        return fd
+
+    @contextmanager
+    def lease(self):
+        """Exclude another adapter process without locking SQLite's own file."""
+
+        fd = self._open_lease_file()
         try:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -457,12 +517,13 @@ class MattermostState:
                 raise MattermostAdapterError(
                     "another Mattermost adapter process owns this state_file"
                 ) from exc
+            except OSError as exc:
+                raise MattermostAdapterError(
+                    f"cannot acquire state_file lease: {type(exc).__name__}"
+                ) from exc
             yield
         finally:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
+            os.close(fd)
 
     def room_state(self, room: str) -> dict[str, Any]:
         with self._connect() as conn:
