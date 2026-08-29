@@ -156,13 +156,19 @@ def canonical_public_base_url(value: Any) -> str:
     segments = [segment for segment in parsed.path.split("/") if segment]
     if any(segment in {".", ".."} or not _PATH_SEGMENT_RE.fullmatch(segment) for segment in segments):
         raise ValueError("public_callback_base_url has an unsafe path")
+    if port == 0:
+        raise ValueError("public_callback_base_url has an invalid port")
     hostname = parsed.hostname.lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise ValueError("public_callback_base_url host must be publicly routable")
     if ":" in hostname:
         try:
-            hostname = str(ipaddress.IPv6Address(hostname))
+            address = ipaddress.IPv6Address(hostname)
         except ValueError as exc:
             raise ValueError("public_callback_base_url has an invalid host") from exc
-        hostname = f"[{hostname}]"
+        if not address.is_global:
+            raise ValueError("public_callback_base_url host must be publicly routable")
+        hostname = f"[{address}]"
     else:
         labels = hostname.split(".")
         if (
@@ -173,9 +179,12 @@ def canonical_public_base_url(value: Any) -> str:
             raise ValueError("public_callback_base_url has an invalid host")
         if all(char.isdigit() or char == "." for char in hostname):
             try:
-                hostname = str(ipaddress.IPv4Address(hostname))
+                address = ipaddress.IPv4Address(hostname)
             except ValueError as exc:
                 raise ValueError("public_callback_base_url has an invalid host") from exc
+            if not address.is_global:
+                raise ValueError("public_callback_base_url host must be publicly routable")
+            hostname = str(address)
     netloc = hostname if port is None else f"{hostname}:{port}"
     normalized = SplitResult("https", netloc, "/" + "/".join(segments) if segments else "", "", "")
     return urlunsplit(normalized)

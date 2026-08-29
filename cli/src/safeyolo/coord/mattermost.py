@@ -20,6 +20,7 @@ import sqlite3
 import stat
 import time
 import tomllib
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -407,26 +408,89 @@ class HTTPMattermostAPI:
         return value
 
 
-def _prepare_state_file(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    parent_st = path.parent.stat()
-    if not stat.S_ISDIR(parent_st.st_mode):
-        raise MattermostAdapterError("state_file parent must be a directory")
-    if hasattr(os, "getuid") and parent_st.st_uid != os.getuid():
-        raise MattermostAdapterError("state_file parent must be owned by the current user")
-    if stat.S_IMODE(parent_st.st_mode) & 0o022:
-        raise MattermostAdapterError("state_file parent must not be group/world writable")
-    if path.exists() or path.is_symlink():
-        st = path.lstat()
-        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-            raise MattermostAdapterError("state_file must be a regular non-symlink file")
-        if hasattr(os, "getuid") and st.st_uid != os.getuid():
-            raise MattermostAdapterError("state_file must be owned by the current user")
-        if stat.S_IMODE(st.st_mode) & 0o077:
-            raise MattermostAdapterError("state_file permissions must be 0600 or stricter")
-        return
-    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    os.close(fd)
+def _close_fds(fds: tuple[int, ...]) -> None:
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _open_state_anchors(path: Path) -> tuple[int, int, str]:
+    """Open stable parent/file identities before SQLite sees a pathname."""
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        raise MattermostAdapterError(f"cannot prepare state_file parent: {type(exc).__name__}") from exc
+    parent_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        parent_fd = os.open(path.parent, parent_flags)
+    except OSError as exc:
+        raise MattermostAdapterError(f"cannot open state_file parent: {type(exc).__name__}") from exc
+    try:
+        parent_opened = os.fstat(parent_fd)
+        parent_linked = path.parent.lstat()
+        if (
+            not stat.S_ISDIR(parent_opened.st_mode)
+            or not stat.S_ISDIR(parent_linked.st_mode)
+            or (parent_opened.st_dev, parent_opened.st_ino) != (parent_linked.st_dev, parent_linked.st_ino)
+        ):
+            raise MattermostAdapterError("state_file parent must be one regular non-symlink directory")
+        if hasattr(os, "getuid") and parent_opened.st_uid != os.getuid():
+            raise MattermostAdapterError("state_file parent must be owned by the current user")
+        if stat.S_IMODE(parent_opened.st_mode) & 0o022:
+            raise MattermostAdapterError("state_file parent must not be group/world writable")
+        state_flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            state_fd = os.open(path.name, state_flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            state_fd = os.open(
+                path.name,
+                state_flags | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=parent_fd,
+            )
+        try:
+            state_opened = os.fstat(state_fd)
+            state_linked = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(state_opened.st_mode)
+                or not stat.S_ISREG(state_linked.st_mode)
+                or (state_opened.st_dev, state_opened.st_ino) != (state_linked.st_dev, state_linked.st_ino)
+            ):
+                raise MattermostAdapterError("state_file must be one regular non-symlink file")
+            if hasattr(os, "getuid") and state_opened.st_uid != os.getuid():
+                raise MattermostAdapterError("state_file must be owned by the current user")
+            if stat.S_IMODE(state_opened.st_mode) & 0o077:
+                raise MattermostAdapterError("state_file permissions must be 0600 or stricter")
+            fd_path = ""
+            for root in ("/proc/self/fd", "/dev/fd"):
+                candidate = f"{root}/{state_fd}"
+                try:
+                    candidate_st = os.stat(candidate)
+                except OSError:
+                    continue
+                if (candidate_st.st_dev, candidate_st.st_ino) == (
+                    state_opened.st_dev,
+                    state_opened.st_ino,
+                ):
+                    fd_path = candidate
+                    break
+            if not fd_path:
+                raise MattermostAdapterError("platform cannot bind SQLite to the validated state_file")
+        except (MattermostAdapterError, OSError):
+            os.close(state_fd)
+            raise
+    except MattermostAdapterError:
+        os.close(parent_fd)
+        raise
+    except OSError as exc:
+        os.close(parent_fd)
+        raise MattermostAdapterError(f"cannot validate state_file: {type(exc).__name__}") from exc
+    return parent_fd, state_fd, fd_path
 
 
 class MattermostState:
@@ -435,7 +499,12 @@ class MattermostState:
     def __init__(self, config: MattermostConfig):
         self.path = config.state_file
         self.lease_path = self.path.with_name(f"{self.path.name}.lock")
-        _prepare_state_file(self.path)
+        self._parent_fd, self._state_fd, self._state_fd_path = _open_state_anchors(self.path)
+        parent_st = os.fstat(self._parent_fd)
+        state_st = os.fstat(self._state_fd)
+        self._parent_identity = (parent_st.st_dev, parent_st.st_ino)
+        self._state_identity = (state_st.st_dev, state_st.st_ino)
+        self._fd_finalizer = weakref.finalize(self, _close_fds, (self._state_fd, self._parent_fd))
         with self._connect() as conn:
             conn.executescript(
                 """
@@ -522,36 +591,89 @@ class MattermostState:
                     (room.coord_room, room.channel_id),
                 )
 
+    def _validate_state_path(self) -> None:
+        try:
+            parent_opened = os.fstat(self._parent_fd)
+            parent_linked = self.path.parent.lstat()
+            state_opened = os.fstat(self._state_fd)
+            state_anchored = os.stat(
+                self.path.name,
+                dir_fd=self._parent_fd,
+                follow_symlinks=False,
+            )
+            state_linked = self.path.lstat()
+        except OSError as exc:
+            raise MattermostAdapterError(f"state_file identity changed: {type(exc).__name__}") from exc
+        if (
+            not stat.S_ISDIR(parent_opened.st_mode)
+            or not stat.S_ISDIR(parent_linked.st_mode)
+            or (parent_opened.st_dev, parent_opened.st_ino) != self._parent_identity
+            or (parent_linked.st_dev, parent_linked.st_ino) != self._parent_identity
+            or not stat.S_ISREG(state_opened.st_mode)
+            or not stat.S_ISREG(state_anchored.st_mode)
+            or not stat.S_ISREG(state_linked.st_mode)
+            or (state_opened.st_dev, state_opened.st_ino) != self._state_identity
+            or (state_anchored.st_dev, state_anchored.st_ino) != self._state_identity
+            or (state_linked.st_dev, state_linked.st_ino) != self._state_identity
+        ):
+            raise MattermostAdapterError("state_file identity changed after validation")
+        if hasattr(os, "getuid") and (parent_opened.st_uid != os.getuid() or state_opened.st_uid != os.getuid()):
+            raise MattermostAdapterError("state_file ownership changed after validation")
+        if stat.S_IMODE(parent_opened.st_mode) & 0o022:
+            raise MattermostAdapterError("state_file parent permissions changed after validation")
+        if stat.S_IMODE(state_opened.st_mode) & 0o077:
+            raise MattermostAdapterError("state_file permissions changed after validation")
+
     @contextmanager
     def _connect(self):
+        self._validate_state_path()
         try:
-            conn = sqlite3.connect(str(self.path), isolation_level=None, timeout=10)
+            conn = sqlite3.connect(self._state_fd_path, isolation_level=None, timeout=10)
             try:
+                self._validate_state_path()
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA foreign_keys=ON")
                 with conn:
                     yield conn
+                    self._validate_state_path()
             finally:
                 conn.close()
         except sqlite3.Error as exc:
             raise MattermostAdapterError(f"Mattermost state database operation failed: {type(exc).__name__}") from exc
 
     def _open_lease_file(self) -> int:
+        self._validate_state_path()
         try:
-            if self.lease_path.exists() or self.lease_path.is_symlink():
-                existing = self.lease_path.lstat()
+            try:
+                existing = os.stat(
+                    self.lease_path.name,
+                    dir_fd=self._parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
                 if stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(existing.st_mode):
                     raise MattermostAdapterError("state_file lease must be a regular non-symlink file")
         except OSError as exc:
             raise MattermostAdapterError(f"cannot inspect state_file lease: {type(exc).__name__}") from exc
         flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
-            fd = os.open(self.lease_path, flags, 0o600)
+            fd = os.open(
+                self.lease_path.name,
+                flags,
+                0o600,
+                dir_fd=self._parent_fd,
+            )
         except OSError as exc:
             raise MattermostAdapterError(f"cannot open state_file lease: {type(exc).__name__}") from exc
         try:
             opened = os.fstat(fd)
-            linked = self.lease_path.lstat()
+            linked = os.stat(
+                self.lease_path.name,
+                dir_fd=self._parent_fd,
+                follow_symlinks=False,
+            )
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or not stat.S_ISREG(linked.st_mode)
@@ -562,6 +684,7 @@ class MattermostState:
                 raise MattermostAdapterError("state_file lease must be owned by the current user")
             if stat.S_IMODE(opened.st_mode) & 0o077:
                 raise MattermostAdapterError("state_file lease permissions must be 0600 or stricter")
+            self._validate_state_path()
         except MattermostAdapterError:
             os.close(fd)
             raise

@@ -1299,6 +1299,67 @@ def test_state_file_binds_server_operator_and_mapping(tmp_path: Path) -> None:
     assert os.stat(config.state_file).st_mode & 0o777 == 0o600
 
 
+def test_state_initialization_does_not_follow_validation_to_open_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = make_config(tmp_path)
+    redirected = tmp_path / "redirected.sqlite3"
+    real_connect = sqlite3.connect
+    with real_connect(redirected) as conn:
+        conn.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
+        conn.execute("INSERT INTO sentinel(value) VALUES ('unchanged')")
+    redirected.chmod(0o600)
+    swapped = False
+
+    def swap_then_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            config.state_file.unlink()
+            config.state_file.symlink_to(redirected)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(mattermost.sqlite3, "connect", swap_then_connect)
+    with pytest.raises(mattermost.MattermostAdapterError, match="identity changed"):
+        mattermost.MattermostState(config)
+
+    with real_connect(redirected) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert conn.execute("SELECT value FROM sentinel").fetchone() == ("unchanged",)
+    assert tables == {"sentinel"}
+
+
+def test_state_subsequent_open_does_not_follow_validation_to_open_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = make_config(tmp_path)
+    state = mattermost.MattermostState(config)
+    redirected = tmp_path / "redirected.sqlite3"
+    real_connect = sqlite3.connect
+    with real_connect(redirected) as conn:
+        conn.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
+        conn.execute("INSERT INTO sentinel(value) VALUES ('unchanged')")
+    redirected.chmod(0o600)
+    swapped = False
+
+    def swap_then_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            config.state_file.unlink()
+            config.state_file.symlink_to(redirected)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(mattermost.sqlite3, "connect", swap_then_connect)
+    with pytest.raises(mattermost.MattermostAdapterError, match="identity changed"):
+        state.room_state("backlog")
+
+    with real_connect(redirected) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert conn.execute("SELECT value FROM sentinel").fetchone() == ("unchanged",)
+    assert tables == {"sentinel"}
+
+
 def test_state_lease_is_private_sibling_and_does_not_lock_sqlite(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     state = mattermost.MattermostState(config)
