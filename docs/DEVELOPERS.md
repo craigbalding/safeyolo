@@ -355,7 +355,7 @@ uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 # Run the fast hooks manually on all files
 uv run pre-commit run --all-files
 
-# Run the same Python security-and-quality CodeQL suite used in CI
+# Run the Python security-and-quality CodeQL suite used in CI when available
 uv run python scripts/check_codeql.py
 ```
 
@@ -367,13 +367,28 @@ The commit hooks mirror CI's fast static checks:
 - **detect-private-key** - prevent accidental key commits
 
 The pre-push hook additionally runs the same CodeQL Python
-`security-and-quality` suite as `.github/workflows/codeql.yml`. Its first run
-downloads the checksum-pinned bundle used by the workflow action (about
-600–850 MB on Linux, depending on whether `zstd` is available) and caches it
-under `~/.cache/safeyolo/codeql`. Set
-`SAFEYOLO_CODEQL_CACHE` to relocate the cache or `SAFEYOLO_CODEQL_BIN` to use an
-already-installed matching CLI. Temporary databases and SARIF files are
-deleted after each analysis.
+`security-and-quality` suite as `.github/workflows/codeql.yml` on supported
+local platforms. Its first run downloads the checksum-pinned official stable
+bundle used by the workflow action (about 600–850 MB on Linux, depending on
+whether `zstd` is available) and caches it under
+`~/.cache/safeyolo/codeql`. Set `SAFEYOLO_CODEQL_CACHE` to relocate the cache
+or `SAFEYOLO_CODEQL_BIN` to use an already-installed matching CLI. An explicit
+binary is validated and used on every architecture; an invalid path is a
+pre-push failure. Temporary databases and SARIF files are deleted after each
+analysis.
+
+GitHub does not yet publish a pinned official stable native CodeQL bundle for
+Linux ARM64 ([upstream tracking PR](https://github.com/github/codeql-action/pull/4072)).
+On `aarch64` and `arm64`, the default pre-push hook therefore reports that
+local CodeQL is unavailable and skipped, and exits successfully without a
+download or analysis. GitHub CI CodeQL remains the required analysis gate; the
+skip message does not mean that the commit was analyzed locally. Set
+`SAFEYOLO_CODEQL_BIN` to an executable matching CLI to opt into real local
+analysis on Linux ARM64. `--install-only` fails if neither that override nor a
+supported pinned bundle is available, while `--verify-version` and
+`--update-bundle` remain platform-independent. When an official stable native
+asset becomes available, adding its platform layout and pinned digest to the
+manifest enables it without a separate architecture bypass.
 
 Treat CodeQL findings as defects by default. When a finding is a verified
 false positive, put a rationale and a query-specific `# codeql[query-id]`
