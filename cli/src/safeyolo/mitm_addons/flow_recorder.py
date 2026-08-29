@@ -21,9 +21,10 @@ import time
 
 from mitmproxy import ctx, http
 
-log = logging.getLogger("safeyolo.flow-recorder")
+from safeyolo.core.internal_api import AGENT_API_HOST as AGENT_API_HOST
+from safeyolo.core.internal_api import is_agent_api_host
 
-AGENT_API_HOST = "_safeyolo.proxy.internal"
+log = logging.getLogger("safeyolo.flow-recorder")
 
 
 class FlowRecorder:
@@ -111,7 +112,7 @@ class FlowRecorder:
         if "test_context" not in flow.metadata:
             return False
         # Skip agent API internal traffic
-        if flow.request.host == AGENT_API_HOST:
+        if is_agent_api_host(flow.request.host):
             return False
         # Evidence must never be assigned from caller-controlled metadata.
         # Reconcile the trusted UDS/IP-map sources here even if an earlier

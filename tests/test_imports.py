@@ -11,6 +11,7 @@ ADDON_MODULES = [
     "admin_api",
     "admin_shield",
     "agent_api",
+    "agent_api_guard",
     "circuit_breaker",
     "credential_guard",
     "file_logging",

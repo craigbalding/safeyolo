@@ -93,6 +93,48 @@ def test_production_addons_keep_script_hook_order_without_watchers(monkeypatch):
     assert not any(isinstance(addon, Script) for addon in traverse(chain))
 
 
+def test_agent_api_load_failure_keeps_request_and_transport_guards(monkeypatch):
+    """A handler load-hook failure cannot remove either containment layer."""
+    from mitmproxy.addonmanager import Loader
+
+    from safeyolo.mitm_addons.agent_api import AgentAPI
+
+    real_add_option = Loader.add_option
+
+    def fail_only_agent_api_option(self, name, *args, **kwargs):
+        if name == "agent_api_enabled":
+            raise RuntimeError("deliberate Agent API load failure")
+        return real_add_option(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(Loader, "add_option", fail_only_agent_api_option)
+    monkeypatch.delenv("SAFEYOLO_WEB_PASSWORD_FILE", raising=False)
+    master = make_master()
+    production = master.addons.get("safeyolo-production-addons")
+
+    names = [getattr(addon, "name", None) for addon in production.addons]
+    handler = next(addon for addon in production.addons if isinstance(addon, AgentAPI))
+    assert handler._load_available is False
+    assert "agent-api-request-guard" in names
+    assert names[-1] == "transport-guard"
+
+    flow = tflow.tflow()
+    flow.request.url = "http://_safeyolo.proxy.internal/health?token=secret"
+    guard = next(
+        addon for addon in production.addons
+        if getattr(addon, "name", None) == "agent-api-request-guard"
+    )
+    with (
+        patch(
+            "safeyolo.mitm_addons.agent_api_guard.write_event", autospec=True
+        ),
+        patch("safeyolo.mitm_addons.agent_api_guard.log", autospec=True),
+    ):
+        guard.request(flow)
+
+    assert flow.response.status_code == 503
+    assert flow.request.path == "/health"
+
+
 def test_agent_api_and_coord_dependency_change_only_as_one_process_generation(
     tmp_path,
     monkeypatch,

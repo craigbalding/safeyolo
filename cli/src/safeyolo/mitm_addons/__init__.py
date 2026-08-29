@@ -1,6 +1,9 @@
 """One-shot registration for SafeYolo's production mitmproxy addons."""
 
+import logging
 from importlib import import_module
+
+log = logging.getLogger("safeyolo.production-addons")
 
 # Canonical production addon load order.
 ADDON_CHAIN = [
@@ -12,7 +15,10 @@ ADDON_CHAIN = [
     "file_logging.py",
     "memory_monitor.py",
     "admin_shield.py",
+    # The normal handler is the sole recoverable production import. Its
+    # adjacent independent guard still has to load when this import fails.
     "agent_api.py",
+    "agent_api_guard.py",
     "loop_guard.py",
     "request_id.py",
     "operator_provenance.py",
@@ -41,9 +47,11 @@ ADDON_CHAIN = [
     # local 200 in request). transport_guard is the correlated late
     # request-hook failsafe (client-correlatable) + the structural
     # server_connect no-egress backstop (audit-only for catastrophic
-    # chain failures). Load order matters: transport_guard's request
-    # hook must run AFTER probe_sink so a normally-terminated probe
-    # bypasses the failsafe entirely.
+    # chain failures). Agent API request containment is handled much earlier
+    # by agent_api_guard, immediately after its normal handler and before any
+    # policy/security/observability addon. Load order here still matters:
+    # transport_guard's probe request hook must run AFTER probe_sink so a
+    # normally-terminated probe bypasses its failsafe.
     "probe_sink.py",
     "transport_guard.py",
 ]
@@ -64,5 +72,18 @@ class ProductionAddons:
         self.addons = []
         for addon_file in ADDON_CHAIN:
             module_name = addon_file.removesuffix(".py")
-            module = import_module(f"{__name__}.{module_name}")
-            self.addons.extend(module.addons)
+            try:
+                module = import_module(f"{__name__}.{module_name}")
+                self.addons.extend(module.addons)
+            except Exception as exc:
+                if addon_file != "agent_api.py":
+                    raise
+                # The virtual host is safer and more diagnosable with the
+                # independent guard alive than with the whole proxy aborted.
+                # Do not interpolate exception text: import errors may embed
+                # checkout paths or other operator-only values.
+                log.error(
+                    "Agent API handler import/registration failed (%s); "
+                    "continuing with independent local containment",
+                    type(exc).__name__,
+                )

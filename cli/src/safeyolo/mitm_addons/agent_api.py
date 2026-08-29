@@ -33,6 +33,11 @@ from mitmproxy import ctx, http
 from safeyolo.coord.nats_client import NatsPublishOutcomeUnknown, NatsUnavailable
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from safeyolo.core.identity import resolve_agent_identity
+from safeyolo.core.internal_api import (
+    AGENT_API_HOST,
+    AGENT_API_RESPONSE_METADATA,
+    is_agent_api_host,
+)
 from safeyolo.core.utils import sanitize_for_log, write_event
 from safeyolo.mitm_addons.request_id import REQUEST_ID_PATTERN as _REQUEST_ID_PATTERN
 from safeyolo.storage.flow_store import is_text_like_content_type
@@ -40,7 +45,6 @@ from safeyolo.test_context_contract import TestContextError, parse_test_context
 
 log = logging.getLogger("safeyolo.agent-api")
 
-AGENT_API_HOST = "_safeyolo.proxy.internal"
 MAX_EXPLAIN_LINES = 10000
 
 # Two limits, deliberately distinct:
@@ -247,16 +251,31 @@ class AgentAPI:
         # idempotent, and keeping the flag on the addon avoids mutable module
         # state shared by independently constructed test/proxy instances.
         self._coord_bootstrapped = False
+        # A load-hook failure disables only this handler.  The adjacent
+        # agent_api_guard remains registered and returns the local diagnostic
+        # response instead of aborting the complete production addon chain.
+        self._load_available = True
 
     def load(self, loader):
-        loader.add_option(
-            name="agent_api_enabled",
-            typespec=bool,
-            default=True,
-            help="Enable agent API endpoint on _safeyolo.proxy.internal",
-        )
+        self._load_available = True
+        try:
+            loader.add_option(
+                name="agent_api_enabled",
+                typespec=bool,
+                default=True,
+                help="Enable agent API endpoint on _safeyolo.proxy.internal",
+            )
+        except Exception as exc:
+            self._load_available = False
+            log.error(
+                "Agent API handler load failed (%s); independent containment "
+                "will return a local diagnostic response",
+                type(exc).__name__,
+            )
 
     def running(self):
+        if not self._load_available:
+            return
         if ctx.options.agent_api_enabled:
             log.info(f"Agent API active on {AGENT_API_HOST}")
         else:
@@ -269,10 +288,10 @@ class AgentAPI:
         without blocking the shared event loop. All existing handlers are
         synchronous and called normally; only the plumb path awaits.
         """
-        if not ctx.options.agent_api_enabled:
+        if not self._load_available or not ctx.options.agent_api_enabled:
             return
 
-        if flow.request.host != AGENT_API_HOST:
+        if not is_agent_api_host(flow.request.host):
             return
 
         # This is an agent API request - handle it entirely here
@@ -473,6 +492,7 @@ class AgentAPI:
                 "X-SafeYolo-Agent-API": "true",
             },
         )
+        flow.metadata[AGENT_API_RESPONSE_METADATA] = True
         flow.metadata["blocked_by"] = self.name
 
     def _find_addon(self, addon_name: str):

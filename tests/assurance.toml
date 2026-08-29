@@ -29,7 +29,7 @@ subjects = ["PatternScanner"]
 subjects = ["CircuitBreaker"]
 
 [boundary."tests/test_transport_guard.py"]
-subjects = ["TransportGuard"]
+subjects = ["AgentAPIRequestGuard", "TransportGuard"]
 
 [boundary."tests/test_loop_guard.py"]
 subjects = ["LoopGuard"]

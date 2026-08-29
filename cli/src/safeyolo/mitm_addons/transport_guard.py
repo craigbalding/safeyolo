@@ -1,8 +1,7 @@
 """
-transport_guard.py - Correlated request-hook failsafe + no-egress backstop
-for the reserved pipeline-probe destination (#213 B3, seventh-pass review)
+transport_guard.py - Local containment for SafeYolo-reserved destinations.
 
-Two-layer defense for the reserved doctor probe host:
+The reserved doctor probe host keeps its two-layer defense (#213 B3):
 
 1. **Request-hook failsafe** (`request(flow)`, loaded AFTER `probe_sink`):
    the client-correlatable catch. If `probe_sink` was missing / inert /
@@ -24,9 +23,17 @@ Two-layer defense for the reserved doctor probe host:
    missing-sink failure is caught before transport by layer 1, so the
    audit-only layer 2 is acceptable.
 
+The Agent API virtual host has the same structural no-egress requirement but a
+separate reason/audit contract (#398). Its adjacent ``agent_api_guard`` owns
+early request containment; this addon's ``server_connect`` hook remains the
+final structural backstop and refuses server-address and SNI matches. This
+addon imports only shared host identity, never the Agent API handler.
+
 Load order (see ADDON_CHAIN in cli/src/safeyolo/proxy.py):
+  agent_api.py        # normal Agent API handler (earlier in the chain)
+  agent_api_guard.py  # early independent request containment
   probe_sink.py       # normal terminator
-  transport_guard.py  # request-hook failsafe + server_connect backstop
+  transport_guard.py  # probe request failsafe + final transport backstop
 """
 
 from __future__ import annotations
@@ -38,6 +45,11 @@ from mitmproxy import http
 from mitmproxy.proxy.server_hooks import ServerConnectionHookData
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
+from safeyolo.core.internal_api import (
+    AGENT_API_HOST,
+    AGENT_API_REACHED_UPSTREAM_REASON,
+    is_agent_api_host,
+)
 from safeyolo.core.probe import (
     PROBE_HOST,
     PROBE_REACHED_UPSTREAM_REASON,
@@ -57,10 +69,13 @@ log = logging.getLogger("safeyolo.transport-guard")
 # The no-egress denial message set on data.server.error. Distinctive
 # so operators (and doctor's own diagnostics) can grep for it.
 REFUSAL_MESSAGE = f"SafeYolo: reserved pipeline-probe host must never egress ({PROBE_HOST})"
+AGENT_API_REFUSAL_MESSAGE = (
+    f"SafeYolo: Agent API virtual host must never egress ({AGENT_API_HOST})"
+)
 
 
 class TransportGuard:
-    """Refuse upstream connect attempts to the reserved probe host."""
+    """Contain probe failures and backstop all reserved transports."""
 
     name = "transport-guard"
 
@@ -81,7 +96,61 @@ class TransportGuard:
             return True
         return False
 
+    def _matches_agent_api(self, data: ServerConnectionHookData) -> bool:
+        """Match the Agent API in either connection-routing authority."""
+        if data.server.address and is_agent_api_host(data.server.address[0]):
+            return True
+        if data.client.sni and is_agent_api_host(data.client.sni):
+            return True
+        return False
+
+    def _refuse_agent_api_connect(self, data: ServerConnectionHookData) -> None:
+        """Refuse a late Agent API transport attempt before DNS/connect."""
+        data.server.error = AGENT_API_REFUSAL_MESSAGE
+
+        client_ip = self._client_ip(data)
+        agent = self._agent(data)
+        log.error(
+            "AGENT API REACHED TRANSPORT — refusing local virtual host %s "
+            "before upstream connect from %s (agent=%s, reason=%s).",
+            AGENT_API_HOST,
+            sanitize_for_log(client_ip),
+            sanitize_for_log(agent),
+            AGENT_API_REACHED_UPSTREAM_REASON,
+        )
+        try:
+            write_event(
+                "security.agent_api_reached_upstream",
+                kind=EventKind.SECURITY,
+                severity=Severity.CRITICAL,
+                summary="Agent API virtual host reached the transport backstop",
+                decision=Decision.DENY,
+                host=AGENT_API_HOST,
+                agent=agent,
+                addon=self.name,
+                details={
+                    "reason_code": AGENT_API_REACHED_UPSTREAM_REASON,
+                    "handler": "agent-api",
+                    "client_ip": client_ip,
+                    "server_address": (
+                        list(data.server.address) if data.server.address else None
+                    ),
+                    "sni": data.client.sni,
+                },
+            )
+        except Exception as exc:
+            # Refusal is already committed above. Audit availability must not
+            # turn a contained destination back into an upstream attempt.
+            log.error(
+                "Agent API transport-refusal audit failed: %s",
+                type(exc).__name__,
+            )
+
     def server_connect(self, data: ServerConnectionHookData) -> None:
+        if self._matches_agent_api(data):
+            self._refuse_agent_api_connect(data)
+            return
+
         if not self._matches_probe(data):
             return
 
@@ -120,7 +189,7 @@ class TransportGuard:
         )
 
     def request(self, flow: http.HTTPFlow) -> None:
-        """Late request-hook failsafe for the reserved probe host.
+        """Late request-hook failsafe for reserved local destinations.
 
         Loaded AFTER `probe_sink` in ADDON_CHAIN. If the sink terminated
         normally, `flow.response` is already set and this hook does

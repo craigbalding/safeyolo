@@ -1,9 +1,8 @@
-"""Tests for transport_guard addon (#213 B3).
+"""Tests for reserved-destination transport containment (#213, #398).
 
-Defense-in-depth: even if probe_sink is missing/misordered/broken and
-mitmproxy tries to open an upstream connection to the reserved probe
-host, the transport guard refuses that connection locally and writes
-a distinctive audit event. Doctor uses this event to fail loudly.
+The probe and Agent API virtual hosts keep independent reason/audit contracts,
+but neither may reach DNS or an upstream connection when its normal handler is
+missing, disabled, or broken.
 """
 
 from __future__ import annotations
@@ -50,6 +49,23 @@ def _hook_data(
 
 def _unix_mode(client_ip: str, agent: str) -> UnixMode:
     return UnixMode.parse(f"unix:/tmp/{client_ip}_{agent}/proxy.sock")
+
+
+def _agent_api_flow(
+    *,
+    host: str = "_safeyolo.proxy.internal",
+    path: str = "/health",
+    token: str | None = None,
+):
+    from mitmproxy.test import tflow
+
+    flow = tflow.tflow()
+    flow.request.method = "GET"
+    flow.request.url = f"http://{host}{path}"
+    flow.request.host = host
+    if token:
+        flow.request.headers["authorization"] = f"Bearer {token}"
+    return flow
 
 
 class TestRefusalForProbeHost:
@@ -104,8 +120,7 @@ class TestNoOpForNonProbeHosts:
         mock_write.assert_not_called()
 
     def test_ignores_missing_address_and_sni(self):
-        """If mitmproxy hasn't resolved either yet, nothing to check —
-        must not crash and must not refuse."""
+        """No routing authority yet means there is nothing to refuse."""
         addon, _ = _addon()
         data = _hook_data(server_host=None, sni=None)
         data.server.address = None
@@ -116,6 +131,53 @@ class TestNoOpForNonProbeHosts:
         assert data.server.error is None
         mock_write.assert_not_called()
 
+
+class TestAgentAPITransportRefusal:
+    """The Agent API host has a distinct structural connect backstop."""
+
+    @pytest.mark.parametrize(
+        ("server_host", "sni"),
+        [
+            ("_safeyolo.proxy.internal", None),
+            ("_SAFEYOLO.PROXY.INTERNAL", None),
+            ("unrelated.example.com", "_sAfEyOlO.pRoXy.InTeRnAl"),
+        ],
+    )
+    def test_refuses_address_and_sni_case_insensitively(self, server_host, sni):
+        from transport_guard import AGENT_API_REFUSAL_MESSAGE, TransportGuard
+
+        from safeyolo.core.internal_api import (
+            AGENT_API_HOST,
+            AGENT_API_REACHED_UPSTREAM_REASON,
+        )
+
+        data = _hook_data(server_host=server_host, server_port=443, sni=sni)
+        with patch("transport_guard.write_event", autospec=True) as audit:
+            TransportGuard().server_connect(data)
+
+        assert data.server.error == AGENT_API_REFUSAL_MESSAGE
+        audit.assert_called_once()
+        assert audit.call_args.args[0] == "security.agent_api_reached_upstream"
+        kwargs = audit.call_args.kwargs
+        assert kwargs["host"] == AGENT_API_HOST
+        assert kwargs["details"]["handler"] == "agent-api"
+        assert (
+            kwargs["details"]["reason_code"]
+            == AGENT_API_REACHED_UPSTREAM_REASON
+        )
+
+    def test_audit_failure_cannot_undo_transport_refusal(self):
+        from transport_guard import AGENT_API_REFUSAL_MESSAGE, TransportGuard
+
+        data = _hook_data(server_host="_safeyolo.proxy.internal")
+        with patch(
+            "transport_guard.write_event",
+            autospec=True,
+            side_effect=OSError("audit unavailable"),
+        ):
+            TransportGuard().server_connect(data)
+
+        assert data.server.error == AGENT_API_REFUSAL_MESSAGE
 
 class TestAuditEventShape:
     def test_event_carries_client_ip_and_agent(self):
@@ -535,3 +597,440 @@ class TestRequestHookFailsafe:
         rec = get_store().get(rid, "recovered-agent")
         assert rec is not None
         assert rec.steps[-1].reason == "probe_sink_failed"
+
+
+class TestAgentAPIRequestContainment:
+    """Early request containment survives every Agent API handler state."""
+
+    def test_absent_handler_returns_safe_local_diagnostic(self, caplog):
+        import json
+        import logging
+
+        from agent_api_guard import AgentAPIRequestGuard
+
+        from safeyolo.core.internal_api import AGENT_API_UNAVAILABLE_REASON
+
+        flow = _agent_api_flow(
+            path="/health?access_token=query-secret",
+            token="authorization-secret",
+        )
+        with (
+            patch("agent_api_guard.write_event", autospec=True) as audit,
+            caplog.at_level(logging.ERROR, logger="safeyolo.agent-api-guard"),
+        ):
+            AgentAPIRequestGuard().request(flow)
+
+        assert flow.response.status_code == 503
+        body = json.loads(flow.response.content)
+        assert body == {
+            "error": "SafeYolo Agent API handler unavailable",
+            "reason_code": AGENT_API_UNAVAILABLE_REASON,
+            "handler": "agent-api",
+            "host": "_safeyolo.proxy.internal",
+            "path": "/health",
+            "request_id": flow.metadata["request_id"],
+        }
+        assert flow.response.headers["X-SafeYolo-Agent-API"] == "true"
+        assert (
+            flow.response.headers["X-SafeYolo-Request-Id"]
+            == flow.metadata["request_id"]
+        )
+        assert flow.metadata["blocked_by"] == "agent-api-request-guard"
+        assert "authorization" not in flow.request.headers
+        assert flow.request.path == "/health"
+
+        audit.assert_called_once()
+        assert audit.call_args.args[0] == "security.agent_api_unavailable"
+        details = audit.call_args.kwargs["details"]
+        assert details == {
+            "reason_code": AGENT_API_UNAVAILABLE_REASON,
+            "handler": "agent-api",
+            "method": "GET",
+            "path": "/health",
+        }
+        emitted = f"{audit.call_args!r}\n{caplog.text}\n{flow.response.content!r}"
+        assert "authorization-secret" not in emitted
+        assert "query-secret" not in emitted
+
+    @pytest.mark.parametrize(
+        "host",
+        ["_SAFEYOLO.PROXY.INTERNAL", "_SaFeYoLo.PrOxY.iNtErNaL"],
+    )
+    def test_request_host_matching_is_case_insensitive(self, host):
+        from agent_api_guard import AgentAPIRequestGuard
+
+        flow = _agent_api_flow(host=host)
+        with patch("agent_api_guard.write_event", autospec=True):
+            AgentAPIRequestGuard().request(flow)
+
+        assert flow.response.status_code == 503
+
+    def test_healthy_handler_response_is_untouched(self):
+        import asyncio
+
+        from agent_api import AgentAPI
+        from agent_api_guard import AgentAPIRequestGuard
+        from mitmproxy.test import taddons
+
+        api = AgentAPI()
+        guard = AgentAPIRequestGuard()
+        flow = _agent_api_flow(host="_SAFEYOLO.PROXY.INTERNAL", token="good-token")
+        with taddons.context(api) as tctx:
+            tctx.options.agent_api_enabled = True
+            with patch(
+                "pdp.tokens.read_active_token",
+                autospec=True,
+                return_value="good-token",
+            ):
+                asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 200
+        response = flow.response
+        headers = tuple(response.headers.items(multi=True))
+        content = response.content
+        with patch("agent_api_guard.write_event", autospec=True) as audit:
+            guard.request(flow)
+
+        assert flow.response is response
+        assert tuple(response.headers.items(multi=True)) == headers
+        assert response.content == content
+        audit.assert_not_called()
+
+    def test_response_without_handler_ownership_is_replaced(self):
+        from agent_api_guard import AgentAPIRequestGuard
+        from mitmproxy import http
+
+        flow = _agent_api_flow()
+        flow.response = http.Response.make(403, b"an earlier addon responded")
+
+        with patch("agent_api_guard.write_event", autospec=True):
+            AgentAPIRequestGuard().request(flow)
+
+        assert flow.response.status_code == 503
+        assert flow.metadata["blocked_by"] == "agent-api-request-guard"
+
+    def test_disabled_handler_falls_through_to_local_503(self):
+        import asyncio
+
+        from agent_api import AgentAPI
+        from agent_api_guard import AgentAPIRequestGuard
+        from mitmproxy.test import taddons
+
+        api = AgentAPI()
+        flow = _agent_api_flow()
+        with taddons.context(api) as tctx:
+            tctx.options.agent_api_enabled = False
+            asyncio.run(api.request(flow))
+            assert flow.response is None
+
+            with patch("agent_api_guard.write_event", autospec=True):
+                AgentAPIRequestGuard().request(flow)
+        assert flow.response.status_code == 503
+
+    def test_handler_owned_exception_response_is_untouched(self):
+        import asyncio
+        import json
+
+        from agent_api import AgentAPI
+        from agent_api_guard import AgentAPIRequestGuard
+        from mitmproxy.test import taddons
+
+        class BrokenHealthAPI(AgentAPI):
+            def _handle_health(self, flow):
+                raise RuntimeError("deliberate handler failure")
+
+        api = BrokenHealthAPI()
+        flow = _agent_api_flow(token="good-token")
+        with taddons.context(api) as tctx:
+            tctx.options.agent_api_enabled = True
+            with patch(
+                "pdp.tokens.read_active_token",
+                autospec=True,
+                return_value="good-token",
+            ):
+                asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 500
+        assert json.loads(flow.response.content) == {
+            "error": "Internal error: RuntimeError"
+        }
+        response = flow.response
+        with patch("agent_api_guard.write_event", autospec=True) as audit:
+            AgentAPIRequestGuard().request(flow)
+        assert flow.response is response
+        audit.assert_not_called()
+
+    def test_uncaught_handler_exception_still_reaches_guard(self):
+        import asyncio
+
+        from agent_api_guard import AgentAPIRequestGuard
+        from mitmproxy.proxy.layers.http import HttpRequestHook
+        from mitmproxy.test import taddons
+
+        class BrokenAgentAPI:
+            name = "agent-api"
+
+            async def request(self, flow):
+                raise RuntimeError("deliberate addon failure")
+
+        flow = _agent_api_flow()
+        with taddons.context(BrokenAgentAPI(), AgentAPIRequestGuard()) as tctx:
+            with patch("agent_api_guard.write_event", autospec=True):
+                asyncio.run(
+                    tctx.master.addons.trigger_event(HttpRequestHook(flow))
+                )
+
+        # AddonManager.safecall logs the first addon's exception and continues
+        # through the chain. The adjacent independent guard owns the response.
+        assert flow.response.status_code == 503
+        assert flow.metadata["blocked_by"] == "agent-api-request-guard"
+
+    @pytest.mark.parametrize("handler_state", ["absent", "disabled", "uncaught"])
+    def test_production_order_contains_before_network_policy_and_logging(
+        self, handler_state, caplog
+    ):
+        """The adjacent guard wins before NetworkGuard can inspect secrets."""
+        import asyncio
+        import logging
+
+        from agent_api import AgentAPI
+        from agent_api_guard import AgentAPIRequestGuard
+        from mitmproxy.proxy.layers.http import HttpRequestHook
+        from mitmproxy.test import taddons
+        from network_guard import NetworkGuard
+        from request_logger import RequestLogger
+        from transport_guard import TransportGuard
+
+        from safeyolo.mitm_addons import ADDON_CHAIN
+
+        assert ADDON_CHAIN.index("agent_api.py") < ADDON_CHAIN.index(
+            "agent_api_guard.py"
+        ) < ADDON_CHAIN.index("network_guard.py")
+        assert ADDON_CHAIN.index("network_guard.py") < ADDON_CHAIN.index(
+            "request_logger.py"
+        )
+        assert ADDON_CHAIN[-1] == "transport_guard.py"
+
+        class BrokenAgentAPI:
+            name = "agent-api"
+
+            async def request(self, flow):
+                raise RuntimeError("deliberate addon failure")
+
+        guard = AgentAPIRequestGuard()
+        network = NetworkGuard()
+        request_logger = RequestLogger()
+        final_guard = TransportGuard()
+        if handler_state == "absent":
+            chain = [guard, network, request_logger, final_guard]
+        elif handler_state == "disabled":
+            chain = [AgentAPI(), guard, network, request_logger, final_guard]
+        else:
+            chain = [
+                BrokenAgentAPI(),
+                guard,
+                network,
+                request_logger,
+                final_guard,
+            ]
+
+        flow = _agent_api_flow(
+            path="/health?lookup=query-secret-production-order",
+            token="authorization-secret-production-order",
+        )
+        with taddons.context(*chain) as tctx:
+            if handler_state == "disabled":
+                tctx.options.agent_api_enabled = False
+            with (
+                patch("agent_api_guard.write_event", autospec=True) as audit,
+                patch(
+                    "request_logger.write_event", autospec=True
+                ) as downstream_audit,
+                caplog.at_level(logging.DEBUG),
+            ):
+                asyncio.run(
+                    tctx.master.addons.trigger_event(HttpRequestHook(flow))
+                )
+
+        assert flow.response.status_code == 503
+        assert flow.metadata["blocked_by"] == "agent-api-request-guard"
+        assert flow.request.path == "/health"
+        assert "authorization" not in flow.request.headers
+        assert network.stats.checks == 0
+        assert request_logger.requests_total == 1
+        audit.assert_called_once()
+        downstream_audit.assert_called_once()
+        emitted = (
+            f"{audit.call_args!r}\n{downstream_audit.call_args!r}\n"
+            f"{caplog.text}\n{flow.response.content!r}"
+        )
+        assert "query-secret-production-order" not in emitted
+        assert "authorization-secret-production-order" not in emitted
+
+    def test_audit_failure_cannot_undo_local_response(self):
+        from agent_api_guard import AgentAPIRequestGuard
+
+        flow = _agent_api_flow()
+        with patch(
+            "agent_api_guard.write_event",
+            autospec=True,
+            side_effect=OSError("audit unavailable"),
+        ):
+            AgentAPIRequestGuard().request(flow)
+
+        assert flow.response.status_code == 503
+
+    def test_real_mitmdump_absent_handler_contains_http_and_https(
+        self, tmp_path
+    ):
+        """Reproduce #397 with a real proxy process and no Agent API addon."""
+        import http.client
+        import json
+        import os
+        import socket
+        import ssl
+        import subprocess
+        import sys
+        import time
+        from pathlib import Path
+
+        from safeyolo.core.internal_api import AGENT_API_HOST
+
+        repo = Path(__file__).resolve().parents[1]
+        mitmdump = Path(sys.executable).with_name("mitmdump")
+        assert mitmdump.is_file(), f"mitmdump missing next to {sys.executable}"
+        guard_script = (
+            repo
+            / "cli"
+            / "src"
+            / "safeyolo"
+            / "mitm_addons"
+            / "agent_api_guard.py"
+        )
+        network_script = guard_script.with_name("network_guard.py")
+        request_logger_script = guard_script.with_name("request_logger.py")
+        transport_script = guard_script.with_name("transport_guard.py")
+
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+
+        env = os.environ.copy()
+        source_path = str(repo / "cli" / "src")
+        env["PYTHONPATH"] = os.pathsep.join(
+            value
+            for value in (source_path, str(repo), env.get("PYTHONPATH"))
+            if value
+        )
+        env["SAFEYOLO_LOG_PATH"] = str(tmp_path / "audit.jsonl")
+        process = subprocess.Popen(
+            [
+                str(mitmdump),
+                "--listen-host",
+                "127.0.0.1",
+                "--listen-port",
+                str(port),
+                "--set",
+                "connection_strategy=lazy",
+                "--set",
+                "flow_detail=0",
+                "--set",
+                "termlog_verbosity=error",
+                "--set",
+                f"confdir={tmp_path / 'mitmproxy'}",
+                "-s",
+                str(guard_script),
+                "-s",
+                str(network_script),
+                "-s",
+                str(request_logger_script),
+                "-s",
+                str(transport_script),
+            ],
+            cwd=repo,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        output = ""
+        try:
+            deadline = time.monotonic() + 10
+            while True:
+                if process.poll() is not None:
+                    output = process.communicate(timeout=1)[0]
+                    pytest.fail(f"mitmdump exited before readiness:\n{output}")
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                        break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        pytest.fail("mitmdump did not bind within 10 seconds")
+                    time.sleep(0.05)
+
+            connection_to_proxy = http.client.HTTPConnection(
+                "127.0.0.1", port, timeout=5
+            )
+            connection_to_proxy.request(
+                "GET",
+                f"http://{AGENT_API_HOST}/health?token=query-secret",
+                headers={
+                    "Host": AGENT_API_HOST,
+                    "Authorization": "Bearer authorization-secret",
+                },
+            )
+            response = connection_to_proxy.getresponse()
+            content = response.read()
+            connection_to_proxy.close()
+
+            assert response.status == 503
+            body = json.loads(content)
+            assert body["reason_code"] == "agent_api_unavailable"
+            assert body["path"] == "/health"
+            assert b"query-secret" not in content
+            assert b"authorization-secret" not in content
+
+            # Exercise the real CONNECT + TLS/SNI path. Lazy connection mode
+            # lets mitmproxy terminate the tunnel locally, and the same final
+            # request guard returns 503 without opening an upstream socket.
+            tunnel = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            tunnel.set_tunnel(AGENT_API_HOST, 443)
+            tunnel.connect()
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            tunnel.sock = context.wrap_socket(
+                tunnel.sock,
+                server_hostname=AGENT_API_HOST,
+            )
+            tunnel.request(
+                "GET",
+                "/health?token=query-secret",
+                headers={"Authorization": "Bearer authorization-secret"},
+            )
+            tls_response = tunnel.getresponse()
+            tls_content = tls_response.read()
+            tunnel.close()
+
+            assert tls_response.status == 503
+            tls_body = json.loads(tls_content)
+            assert tls_body["reason_code"] == "agent_api_unavailable"
+            assert tls_body["path"] == "/health"
+            assert b"query-secret" not in tls_content
+            assert b"authorization-secret" not in tls_content
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                output = process.communicate(timeout=5)[0]
+            except subprocess.TimeoutExpired:
+                process.kill()
+                output = process.communicate(timeout=5)[0]
+
+        audit_output = (tmp_path / "audit.jsonl").read_text()
+        emitted = f"{output}\n{audit_output}"
+        assert "security.agent_api_unavailable" in audit_output
+        assert "query-secret" not in emitted
+        assert "authorization-secret" not in emitted
+        assert "Name or service not known" not in emitted
+        assert "Temporary failure in name resolution" not in emitted
