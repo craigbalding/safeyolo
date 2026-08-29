@@ -355,7 +355,9 @@ Hatch wheel-build hook rather than at runtime. Release automation should set
 `SAFEYOLO_BUILD_ID` to a CI or release identifier before running `uv build
 --wheel`. A local wheel build falls back to a clean build checkout's Git
 revision; a dirty checkout or missing Git evidence produces an explicit
-`unknown` stamp.
+`unknown` stamp. The checkout's resolved Git top-level must also be the build
+project root, so a source archive nested under an unrelated repository cannot
+inherit that repository's revision.
 An installed production runtime only reads this package resource: it does not
 invoke Git or scan a checkout.
 
@@ -368,6 +370,9 @@ build output, caches, and dependency trees; roots are limited to the selected
 code packages, so operator configuration, user data, logs, and secrets are
 never scanned.
 Symlinked, missing, or unreadable source produces explicit `unknown` evidence.
+The traffic Python process runs in safe-path/no-user-site mode, ensuring its
+imports come from those selected roots rather than a package in the launch
+directory or a user-site shadow.
 
 On a later `safeyolo doctor` run, production mode reports only the immutable
 wheel stamp. Dev mode recomputes the recorded roots and distinguishes a clean

@@ -780,7 +780,7 @@ class TestBuildCommand:
             **cmd_env,
         )
 
-        assert cmd[1:3] == ["-m", "safeyolo.traffic_master"]
+        assert cmd[1:5] == ["-P", "-s", "-m", "safeyolo.traffic_master"]
         assert "--listen-host" not in cmd
         assert not any(a.startswith("mode=") for a in cmd)
         assert "listen_host=127.0.0.1" not in cmd
@@ -803,7 +803,7 @@ class TestBuildCommand:
             **cmd_env,
         )
 
-        assert "-s" not in cmd
+        assert "-s" not in cmd[5:]
         assert not any(arg.startswith("scripts=") for arg in cmd)
 
     def test_policy_toml_preferred_over_yaml(self, cmd_env):
@@ -988,8 +988,10 @@ class TestBuildCommand:
                 **cmd_env,
             )
 
-        assert cmd[:3] == [
+        assert cmd[:5] == [
             str(fake_python_dir / "python"),
+            "-P",
+            "-s",
             "-m",
             "safeyolo.traffic_master",
         ]

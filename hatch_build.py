@@ -32,9 +32,18 @@ class CustomBuildHook(BuildHookInterface):
                 )
             provenance = "build-environment"
         else:
+            project_root = Path(self.root).resolve()
             try:
                 result = subprocess.run(
-                    ["git", "-C", self.root, "rev-parse", "--verify", "HEAD"],
+                    [
+                        "git",
+                        "-C",
+                        self.root,
+                        "rev-parse",
+                        "--show-toplevel",
+                        "--verify",
+                        "HEAD",
+                    ],
                     check=False,
                     capture_output=True,
                     text=True,
@@ -42,7 +51,23 @@ class CustomBuildHook(BuildHookInterface):
                 )
             except (OSError, subprocess.SubprocessError):
                 result = None
-            revision = result.stdout.strip() if result is not None and result.returncode == 0 else ""
+            git_output = (
+                result.stdout.splitlines()
+                if result is not None and result.returncode == 0
+                else []
+            )
+            if len(git_output) == 2:
+                git_top_level, revision = git_output
+                try:
+                    checkout_matches_project = (
+                        Path(git_top_level).resolve(strict=True) == project_root
+                    )
+                except OSError:
+                    checkout_matches_project = False
+                if not checkout_matches_project:
+                    revision = ""
+            else:
+                revision = ""
             if revision and not _IMMUTABLE_REVISION.fullmatch(revision):
                 revision = ""
             if revision:

@@ -282,6 +282,50 @@ def test_real_subprocess_restart_converges_to_changed_source(tmp_path):
     assert restarted["process"]["start_token"] != first["process"]["start_token"]
 
 
+def test_safe_path_subprocess_imports_the_recorded_roots_not_launch_cwd(tmp_path):
+    shadow = tmp_path / "shadow"
+    (shadow / "safeyolo").mkdir(parents=True)
+    (shadow / "pdp").mkdir()
+    (shadow / "safeyolo" / "__init__.py").write_text("SHADOW = True\n")
+    (shadow / "pdp" / "__init__.py").write_text("SHADOW = True\n")
+
+    safeyolo_root = REPO_ROOT / "cli" / "src" / "safeyolo"
+    pdp_root = REPO_ROOT / "pdp"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(safeyolo_root.parent), str(pdp_root.parent)]
+    )
+    environment["SAFEYOLO_DEV_MODE"] = "1"
+    environment["SAFEYOLO_DEV_SOURCE_ROOTS"] = json.dumps(
+        {"safeyolo": str(safeyolo_root), "pdp": str(pdp_root)}
+    )
+    script = (
+        "import json, pathlib, pdp, safeyolo; "
+        "from safeyolo.runtime_identity import "
+        "initialize_runtime_identity_from_environment as init; "
+        "identity = init(); "
+        "print(json.dumps({'safeyolo': safeyolo.__file__, "
+        "'pdp': pdp.__file__, 'roots': identity.source.roots}))"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-P", "-s", "-c", script],
+        cwd=shadow,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    imported = json.loads(result.stdout)
+    assert Path(imported["safeyolo"]).resolve().is_relative_to(
+        Path(imported["roots"]["safeyolo"])
+    )
+    assert Path(imported["pdp"]).resolve().is_relative_to(
+        Path(imported["roots"]["pdp"])
+    )
+
+
 def test_isolated_wheel_carries_stamped_identity_without_git(tmp_path):
     output = tmp_path / "dist"
     environment = os.environ.copy()
@@ -341,3 +385,63 @@ def test_wheel_build_rejects_a_mutable_revision_name(tmp_path):
 
     assert result.returncode != 0
     assert "SAFEYOLO_BUILD_REVISION must be" in result.stderr
+
+
+def test_wheel_does_not_stamp_an_unrelated_parent_checkout(tmp_path):
+    parent = tmp_path / "unrelated"
+    source = parent / "data" / "source"
+    package = source / "cli" / "src" / "safeyolo"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (source / "hatch_build.py").write_text(
+        (REPO_ROOT / "hatch_build.py").read_text()
+    )
+    (source / "pyproject.toml").write_text(
+        """\
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "safeyolo"
+version = "9.9.9"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cli/src/safeyolo"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+"""
+    )
+    parent.mkdir(exist_ok=True)
+    (parent / ".gitignore").write_text("data/\n")
+    _git(parent, "init")
+    _git(parent, "config", "user.email", "identity-test@example.invalid")
+    _git(parent, "config", "user.name", "Identity Test")
+    _git(parent, "add", ".gitignore")
+    _git(parent, "commit", "-m", "unrelated clean parent")
+
+    output = tmp_path / "dist"
+    environment = os.environ.copy()
+    environment.pop("SAFEYOLO_BUILD_REVISION", None)
+    environment.pop("SAFEYOLO_BUILD_ID", None)
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(output), str(source)],
+        cwd=parent,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    wheel = next(output.glob("*.whl"))
+    with zipfile.ZipFile(wheel) as archive:
+        stamp = json.loads(archive.read("safeyolo/_build_identity.json"))
+    assert stamp == {
+        "build_identifier": None,
+        "package_version": "9.9.9",
+        "provenance": "unknown",
+        "schema_version": 1,
+        "source_revision": None,
+        "state": "unknown",
+    }

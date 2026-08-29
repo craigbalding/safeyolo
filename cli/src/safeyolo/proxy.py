@@ -496,7 +496,10 @@ def _build_command(
     """Build the mitmdump command line."""
     # The SafeYolo entrypoint composes ConsoleMaster and mitmweb around one
     # canonical View/Proxyserver. It must run inside the private tmux PTY.
-    cmd = [sys.executable, "-m", "safeyolo.traffic_master"]
+    # Safe-path and no-user-site modes make the selected PYTHONPATH roots
+    # authoritative. The private tmux session retains the caller's cwd; without
+    # -P, a checkout package there can shadow the roots fingerprinted for dev.
+    cmd = [sys.executable, "-P", "-s", "-m", "safeyolo.traffic_master"]
 
     # UnixMode and the production addon chain are registered directly by
     # safeyolo.traffic_master. Keeping the scripts option empty prevents
