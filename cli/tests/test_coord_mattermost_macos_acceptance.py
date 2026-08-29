@@ -26,6 +26,39 @@ def load_script(name: str) -> ModuleType:
     return module
 
 
+def write_portable_bundle(root: Path, *, token_reference: str = "bot-token") -> tuple[Path, Path, Path]:
+    root.mkdir(mode=0o700)
+    token = root / "bot-token"
+    token.write_text("portable-test-token\n", encoding="utf-8")
+    token.chmod(0o600)
+    state = root / "ordinary-existing-state.sqlite3"
+    state.write_text("must remain untouched", encoding="utf-8")
+    state.chmod(0o600)
+    config = root / "test-config.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "version = 1",
+                'server_url = "https://mattermost.example"',
+                f'bot_token_file = "{token_reference}"',
+                'bot_user_id = "' + "b" * 26 + '"',
+                'operator_user_id = "' + "o" * 26 + '"',
+                'state_file = "ordinary-existing-state.sqlite3"',
+                "poll_interval_seconds = 1.0",
+                "",
+                "[[rooms]]",
+                'coord_room = "dedicated-test"',
+                'channel_id = "' + "c" * 26 + '"',
+                "backfill = false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    return config, token, state
+
+
 def test_integration_copy_uses_private_disposable_state_and_forces_no_backfill(tmp_path: Path) -> None:
     script = load_script("accept_mattermost_macos_integration.py")
     live_state = tmp_path / "live-state.sqlite3"
@@ -54,147 +87,44 @@ def test_integration_copy_uses_private_disposable_state_and_forces_no_backfill(t
     assert not disposable_state.exists()
 
 
-def test_preparer_creates_validated_private_single_channel_config_without_touching_live_state(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    preparer = load_script("prepare_mattermost_macos_test_config.py")
+def test_ordinary_private_bundle_validates_after_relocation_and_source_state_is_ignored(tmp_path: Path) -> None:
     integration = load_script("accept_mattermost_macos_integration.py")
-    private = tmp_path / "private"
-    private.mkdir(mode=0o700)
-    token_path = private / "bot-token"
-    secret = "acceptance-token-that-must-not-be-printed"
-    token_path.write_text(f"{secret}\n", encoding="utf-8")
-    token_path.chmod(0o600)
-    live_state = tmp_path / "live-state.sqlite3"
-    live_state.write_text("untouched", encoding="utf-8")
-    output = private / "dedicated-test.toml"
+    original = tmp_path / "original-private-bundle"
+    config_path, _, source_state = write_portable_bundle(original)
+    config_path = integration._private_regular_config(config_path)
+    integration._validate_test_source(config_path, mattermost.load_config(config_path))
 
-    created = preparer.create_config(
-        output,
-        server_url="https://mattermost.example",
-        bot_token_file=str(token_path),
-        bot_user_id="b" * 26,
-        operator_user_id="o" * 26,
-        coord_room="dedicated-test",
-        channel_id="c" * 26,
-    )
+    relocated = tmp_path / "different-absolute-private-bundle"
+    original.rename(relocated)
+    relocated_config = integration._private_regular_config(relocated / config_path.name)
+    source = mattermost.load_config(relocated_config)
+    integration._validate_test_source(relocated_config, source)
+    assert source.state_file == relocated / source_state.name
+    assert source.state_file.read_text(encoding="utf-8") == "must remain untouched"
+    supplied_config = relocated_config.read_text(encoding="utf-8")
+    supplied_token = source.bot_token_file.read_text(encoding="utf-8")
 
-    assert created == output
-    assert stat.S_IMODE(output.stat().st_mode) == 0o600
-    assert preparer.validate_config(output) == output
-    config = mattermost.load_config(output)
-    assert config.rooms == (mattermost.RoomMapping("dedicated-test", "c" * 26, False),)
-    assert config.bot_token_file == private / ".dedicated-test.bot-token"
-    assert config.state_file.parent == private
-    assert config.state_file.name.endswith(".integration-source-state.sqlite3")
-    assert not config.state_file.exists()
-    raw = output.read_text(encoding="utf-8")
-    assert 'bot_token_file = ".dedicated-test.bot-token"' in raw
-    assert 'state_file = ".dedicated-test.integration-source-state.sqlite3"' in raw
-    assert str(private) not in raw
-    integration._validate_test_source(output, config)
-    assert live_state.read_text(encoding="utf-8") == "untouched"
-    captured = capsys.readouterr()
-    assert secret not in captured.out
-    assert secret not in captured.err
+    temp_root = tmp_path / "integration-temp"
+    temp_root.mkdir(mode=0o700)
+    temp_config = temp_root / "config.toml"
+    temp_state = temp_root / "state.sqlite3"
+    integration._write_disposable_config(source, temp_config, temp_state)
+    copied = mattermost.load_config(temp_config)
+    assert copied.state_file == temp_state
+    assert relocated_config.read_text(encoding="utf-8") == supplied_config
+    assert source.bot_token_file.read_text(encoding="utf-8") == supplied_token
+    assert source.state_file.read_text(encoding="utf-8") == "must remain untouched"
 
 
-def test_prepared_bundle_validates_after_relocation(tmp_path: Path) -> None:
-    preparer = load_script("prepare_mattermost_macos_test_config.py")
+def test_integration_rejects_absolute_token_even_when_it_is_a_sibling(tmp_path: Path) -> None:
     integration = load_script("accept_mattermost_macos_integration.py")
-    source = tmp_path / "source"
-    source.mkdir(mode=0o700)
-    source_token = source / "source-token"
-    source_token.write_text("portable-token\n", encoding="utf-8")
-    source_token.chmod(0o600)
-    original_bundle = tmp_path / "original-bundle"
-    original_bundle.mkdir(mode=0o700)
-    preparer.create_config(
-        original_bundle / "dedicated-test.toml",
-        server_url="https://mattermost.example",
-        bot_token_file=str(source_token),
-        bot_user_id="b" * 26,
-        operator_user_id="o" * 26,
-        coord_room="dedicated-test",
-        channel_id="c" * 26,
-    )
+    bundle = tmp_path / "private-bundle"
+    absolute_token = bundle / "bot-token"
+    config_path, _, _ = write_portable_bundle(bundle, token_reference=str(absolute_token))
+    config = mattermost.load_config(config_path)
 
-    relocated_bundle = tmp_path / "different-absolute-bundle"
-    original_bundle.rename(relocated_bundle)
-    relocated_config = relocated_bundle / "dedicated-test.toml"
-    assert preparer.validate_config(relocated_config) == relocated_config
-    config = mattermost.load_config(relocated_config)
-    assert config.bot_token_file == relocated_bundle / ".dedicated-test.bot-token"
-    assert config.state_file == relocated_bundle / ".dedicated-test.integration-source-state.sqlite3"
-    integration._validate_test_source(relocated_config, config)
-    assert source_token.read_text(encoding="utf-8") == "portable-token\n"
-
-    relocated_bundle.chmod(0o755)
-    with pytest.raises(preparer.PreparationError, match="must not be accessible"):
-        preparer.validate_config(relocated_config)
-    with pytest.raises(integration.AcceptanceError, match="private regular directory"):
-        integration._private_regular_config(relocated_config)
-
-
-def test_preparer_never_overwrites_reserved_bundle_token(tmp_path: Path) -> None:
-    preparer = load_script("prepare_mattermost_macos_test_config.py")
-    private = tmp_path / "private"
-    private.mkdir(mode=0o700)
-    source_token = private / "source-token"
-    source_token.write_text("source\n", encoding="utf-8")
-    source_token.chmod(0o600)
-    reserved = private / ".dedicated-test.bot-token"
-    reserved.write_text("untouched\n", encoding="utf-8")
-    reserved.chmod(0o600)
-
-    with pytest.raises(preparer.PreparationError, match="refusing to overwrite"):
-        preparer.create_config(
-            private / "dedicated-test.toml",
-            server_url="https://mattermost.example",
-            bot_token_file=str(source_token),
-            bot_user_id="b" * 26,
-            operator_user_id="o" * 26,
-            coord_room="dedicated-test",
-            channel_id="c" * 26,
-        )
-    assert reserved.read_text(encoding="utf-8") == "untouched\n"
-    assert not (private / "dedicated-test.toml").exists()
-
-
-def test_preparer_refuses_live_default_config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    preparer = load_script("prepare_mattermost_macos_test_config.py")
-    private = tmp_path / "private"
-    private.mkdir(mode=0o700)
-    live_config = private / "coord-mattermost.toml"
-    monkeypatch.setattr(preparer, "_LIVE_CONFIG", live_config)
-
-    with pytest.raises(preparer.PreparationError, match="live default config"):
-        preparer._output_path(live_config)
-
-
-def test_integration_refuses_existing_source_state(tmp_path: Path) -> None:
-    preparer = load_script("prepare_mattermost_macos_test_config.py")
-    integration = load_script("accept_mattermost_macos_integration.py")
-    private = tmp_path / "private"
-    private.mkdir(mode=0o700)
-    token_path = private / "bot-token"
-    token_path.write_text("test-token\n", encoding="utf-8")
-    token_path.chmod(0o600)
-    output = preparer.create_config(
-        private / "dedicated-test.toml",
-        server_url="https://mattermost.example",
-        bot_token_file=str(token_path),
-        bot_user_id="b" * 26,
-        operator_user_id="o" * 26,
-        coord_room="dedicated-test",
-        channel_id="c" * 26,
-    )
-    config = mattermost.load_config(output)
-    config.state_file.write_text("must not be used", encoding="utf-8")
-    config.state_file.chmod(0o600)
-
-    with pytest.raises(integration.AcceptanceError, match="must not already exist"):
-        integration._validate_test_source(output, config)
+    with pytest.raises(integration.AcceptanceError, match="relative sibling filename"):
+        integration._validate_test_source(config_path, config)
 
 
 def test_acceptance_cleanup_removes_only_verified_script_roots(tmp_path: Path) -> None:
@@ -317,15 +247,3 @@ def test_acceptance_scripts_expose_only_bounded_arguments() -> None:
         assert "--expected-tree" in result.stdout
         assert "--expected-base" in result.stdout
         assert "token" not in result.stdout.lower()
-
-    preparer = REPO_ROOT / "scripts" / "prepare_mattermost_macos_test_config.py"
-    result = subprocess.run(
-        [sys.executable, str(preparer), "--help"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "cli" / "src")},
-    )
-    assert "--output" in result.stdout
-    assert "--validate" in result.stdout

@@ -249,29 +249,14 @@ That script verifies gates 1–7: initialization, WAL with real adjacent
 `-wal`/`-shm` sidecars, schema, read/write, close/reopen plus abrupt recovery,
 the separate process lease, and fail-closed state/lease replacement.
 
-For gates 8–9, create a private test config interactively. The helper prompts
-for exactly six values: the Mattermost HTTPS origin, private bot-token file
-path, dedicated bot user ID, operator user ID, dedicated coord room, and
-dedicated Mattermost channel ID. It never prints the token contents or IDs. It
-writes a portable private bundle: mode-`0600` config and token copy referenced
-by relative sibling name, exactly one room with `backfill = false`, and a
-relative sibling state path that deliberately does not exist:
-
-```sh
-install -d -m 700 "$HOME/.safeyolo/macos-acceptance"
-uv run python scripts/prepare_mattermost_macos_test_config.py \
-  --output "$HOME/.safeyolo/macos-acceptance/dedicated-test.toml"
-uv run python scripts/prepare_mattermost_macos_test_config.py \
-  --validate "$HOME/.safeyolo/macos-acceptance/dedicated-test.toml"
-```
-
-The helper and integration script both refuse the live default config. The
-integration script also refuses an existing source state file, reads the test
-config without editing it, and writes a second private config with a new state
-DB under its own temporary root. If the bundle moves to another machine or
-absolute directory, copy its containing directory as a unit and keep the
-relative sibling names unchanged; validation proves the relocated bundle before
-any networked gate:
+For gates 8–9, use the separately prepared portable test bundle. Its directory
+must be mode `0700`; its ordinary config and token must be mode `0600`; the
+config must refer to the token by a single relative sibling filename and contain
+exactly one dedicated room with `backfill = false`. Copy the two-file bundle as
+a unit. The integration script refuses the live default config, validates the
+private relative token, reads but never edits the supplied config, ignores its
+state path, and writes its actual config and new state DB under its own temporary
+root. The operator runs one command:
 
 ```sh
 uv run python scripts/accept_mattermost_macos_integration.py \

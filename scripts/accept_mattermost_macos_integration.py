@@ -16,15 +16,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 import traceback
 from pathlib import Path
 
 from safeyolo.coord.mattermost import MattermostAdapterError, MattermostConfig, load_config, read_bot_token
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_SOURCE_STATE_SUFFIX = ".integration-source-state.sqlite3"
-
-
 class AcceptanceError(RuntimeError):
     pass
 
@@ -106,14 +104,18 @@ def _private_regular_config(path: Path) -> Path:
 def _validate_test_source(path: Path, config: MattermostConfig) -> None:
     if len(config.rooms) != 1 or config.rooms[0].backfill:
         raise AcceptanceError("test config copy must contain one room with backfill=false")
-    expected_token = path.with_name(f".{path.stem}.bot-token")
-    expected_state = path.with_name(f".{path.stem}{_SOURCE_STATE_SUFFIX}")
-    if config.bot_token_file != expected_token:
-        raise AcceptanceError("test config must use its portable sibling bot-token path")
-    if config.state_file != expected_state:
-        raise AcceptanceError("test config must use its private sibling integration-source-state path")
-    if config.state_file.exists() or config.state_file.is_symlink():
-        raise AcceptanceError("test config integration-source-state path must not already exist")
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise AcceptanceError(f"cannot validate portable test config: {type(exc).__name__}") from exc
+    token_value = raw.get("bot_token_file") if isinstance(raw, dict) else None
+    if not isinstance(token_value, str):
+        raise AcceptanceError("test config bot_token_file must be a relative sibling filename")
+    token_reference = Path(token_value)
+    if token_reference.is_absolute() or len(token_reference.parts) != 1 or token_reference.name in {"", ".", ".."}:
+        raise AcceptanceError("test config bot_token_file must be a relative sibling filename")
+    if config.bot_token_file != path.with_name(token_reference.name):
+        raise AcceptanceError("test config bot_token_file must resolve to its relative sibling")
     token = read_bot_token(config.bot_token_file)
     del token
 
@@ -216,7 +218,7 @@ def main() -> int:
         "--test-config-copy",
         type=Path,
         required=True,
-        help="Private config created/validated by prepare_mattermost_macos_test_config.py.",
+        help="Ordinary private portable bundle config with one backfill=false room.",
     )
     parser.add_argument("--confirm-dedicated-test-channel", action="store_true")
     parser.add_argument("--allow-run-once-effects", action="store_true")
