@@ -1,6 +1,7 @@
 """Tests for addons/service_gateway.py — Service Gateway addon (v2)."""
 
 import json
+import threading
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import create_autospec, patch
@@ -255,6 +256,76 @@ class TestServiceSourceConfiguration:
             assert get_service_registry() is previous
             assert observed == [["candidate"], ["previous"]]
         finally:
+            _swap_service_registry(original, stop_previous=False)
+
+    def test_policy_activation_blocks_registry_readers_until_commit(
+        self, gateway, tmp_path
+    ):
+        from safeyolo.core.service_loader import (
+            _swap_service_registry,
+            get_service_registry,
+        )
+
+        def registry_for(label):
+            directory = tmp_path / label
+            directory.mkdir()
+            (directory / "service.yaml").write_text(
+                f"schema_version: 1\nname: {label}\n"
+            )
+            result = ServiceRegistry(
+                directory,
+                builtin_dir=tmp_path / f"no-{label}-builtins",
+            )
+            result.load(strict=True)
+            return result
+
+        previous = registry_for("previous")
+        candidate = registry_for("candidate")
+        original = _swap_service_registry(previous, stop_previous=False)
+        callback_started = threading.Event()
+        allow_commit = threading.Event()
+        reader_finished = threading.Event()
+        activation_errors = []
+        observed = []
+
+        def synchronize_policy():
+            if get_service_registry() is candidate:
+                callback_started.set()
+                assert allow_commit.wait(timeout=2)
+
+        def activate():
+            try:
+                gateway._activate_service_registry(candidate)
+            except Exception as error:
+                activation_errors.append(error)
+
+        def read_live_registry():
+            observed.append(
+                [service.name for service in get_service_registry().list_services()]
+            )
+            reader_finished.set()
+
+        gateway._trigger_policy_reload = synchronize_policy
+        activation_thread = threading.Thread(target=activate)
+        reader_thread = threading.Thread(target=read_live_registry)
+        try:
+            activation_thread.start()
+            assert callback_started.wait(timeout=2)
+            reader_thread.start()
+            assert not reader_finished.wait(timeout=0.05)
+
+            allow_commit.set()
+            activation_thread.join(timeout=2)
+            reader_thread.join(timeout=2)
+            assert not activation_thread.is_alive()
+            assert not reader_thread.is_alive()
+            assert activation_errors == []
+            assert observed == [["candidate"]]
+        finally:
+            allow_commit.set()
+            activation_thread.join(timeout=2)
+            reader_thread.join(timeout=2)
+            candidate.stop_watcher()
             _swap_service_registry(original, stop_previous=False)
 
 

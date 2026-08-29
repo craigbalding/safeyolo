@@ -310,30 +310,22 @@ class ServiceGateway:
     def _activate_service_registry(self, registry):
         """Publish registry and compile policy as one startup transaction."""
         from safeyolo.core.service_loader import (
-            _swap_service_registry,
+            _activate_service_registry_transaction,
             get_service_registry,
         )
 
         previous = get_service_registry()
         if previous is not None and previous is not registry:
             previous.stop_watcher()
-        displaced = _swap_service_registry(registry, stop_previous=False)
-        if displaced is not previous:
-            _swap_service_registry(displaced, stop_previous=False)
-            if previous is not None:
-                previous.start_watcher()
-            raise RuntimeError("service registry changed during activation")
         try:
-            # The compiler resolves capabilities through the live singleton,
-            # so publish the candidate only for this guarded compilation.
-            self._trigger_policy_reload()
+            _activate_service_registry_transaction(
+                registry,
+                self._trigger_policy_reload,
+                expected_previous=previous,
+            )
         except Exception as error:
-            _swap_service_registry(previous, stop_previous=False)
-            if previous is not None:
-                try:
-                    self._trigger_policy_reload()
-                finally:
-                    previous.start_watcher()
+            if previous is not None and get_service_registry() is previous:
+                previous.start_watcher()
             from mitmproxy.exceptions import OptionsError
 
             raise OptionsError(

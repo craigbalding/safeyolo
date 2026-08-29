@@ -799,7 +799,7 @@ class ServiceRegistry:
 
 # Module singleton
 _registry: ServiceRegistry | None = None
-_registry_lock = threading.Lock()
+_registry_lock = threading.RLock()
 
 
 def _swap_service_registry(
@@ -815,6 +815,32 @@ def _swap_service_registry(
     if stop_previous and previous is not None and previous is not candidate:
         previous.stop_watcher()
     return previous
+
+
+def _activate_service_registry_transaction(
+    candidate: ServiceRegistry,
+    synchronize: Callable[[], None],
+    *,
+    expected_previous: ServiceRegistry | None,
+) -> None:
+    """Publish a registry only across an atomic consumer synchronization.
+
+    Registry lookup uses the same re-entrant process lock, so request readers
+    cannot obtain the candidate singleton until policy compilation commits.
+    The compiler can still resolve the candidate recursively from this thread.
+    """
+    global _registry
+    with _registry_lock:
+        if _registry is not expected_previous:
+            raise RuntimeError("service registry changed during activation")
+        _registry = candidate
+        try:
+            synchronize()
+        except Exception:
+            _registry = expected_previous
+            if expected_previous is not None:
+                synchronize()
+            raise
 
 
 def init_service_registry(
@@ -837,4 +863,5 @@ def init_service_registry(
 
 def get_service_registry() -> ServiceRegistry | None:
     """Get the module-level service registry singleton."""
-    return _registry
+    with _registry_lock:
+        return _registry
