@@ -47,6 +47,12 @@ evidence merely because the author produced it.
   boundaries when they are relevant to the change.
 - Check for unintended behavioural, API, schema, security, or compatibility
   changes.
+- Check whether substantial complexity exists only to satisfy guarantees
+  introduced by the implementation rather than by the issue, current design,
+  or a real security need. Identify what could be removed or simplified.
+- Treat substantial unjustified machinery as a review problem that can support
+  `CHANGES_REQUIRED`; keep minor cleanup, style preferences, and speculative
+  simplification non-blocking.
 
 Distinguish acceptance or correctness defects from optional improvements and
 style preferences. Do not demand speculative abstractions, unrelated cleanup,
