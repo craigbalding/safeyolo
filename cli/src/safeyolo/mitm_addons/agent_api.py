@@ -64,6 +64,8 @@ _COORD_ROOM_OPERATIONS = {
     "wait": "room.wait",
     "members": "room.members",
     "brief": "room.brief",
+    "state": "room.state",
+    "declarations": "room.declarations",
 }
 _COORD_URL_CREDENTIAL_RE = re.compile(
     r"(?i)\b((?:https?|nats|tls|ws|wss)://)[^\s/@]+@"
@@ -546,7 +548,7 @@ class AgentAPI:
         )
         attention_wait = path == "/api/coord/attention/wait"
         room_route = re.match(
-            r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait|members|brief)$",
+            r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait|members|brief|state|declarations)$",
             path,
         )
         if not attention_wait and attention_object is None and room_route is None:
@@ -591,6 +593,16 @@ class AgentAPI:
             elif op == "join" and method == "POST":
                 assert room is not None
                 result = coord_api.join_room(room, "agent", agent_id)
+                if "receive" in result["permissions"]:
+                    state = await coord_api.get_room_state(
+                        room,
+                        "agent",
+                        agent_id,
+                    )
+                    result["brief"] = state["brief"]
+                    result["state"] = state
+                else:
+                    result["state"] = None
             elif op == "send" and method == "POST":
                 assert room is not None
                 raw = flow.request.content or b""
@@ -662,6 +674,41 @@ class AgentAPI:
                     room,
                     "agent",
                     agent_id,
+                )
+            elif op == "state" and method == "GET":
+                assert room is not None
+                result = await coord_api.get_room_state(
+                    room,
+                    "agent",
+                    agent_id,
+                )
+            elif op == "declarations" and method == "POST":
+                assert room is not None
+                raw = flow.request.content or b""
+                if len(raw) > 32 * 1024:
+                    self._respond(
+                        flow,
+                        413,
+                        {"error": "inventory declaration request too large"},
+                    )
+                    return
+                try:
+                    data = json.loads(raw or b"{}")
+                except json.JSONDecodeError:
+                    self._respond(flow, 400, {"error": "invalid JSON body"})
+                    return
+                if not isinstance(data, dict):
+                    self._respond(
+                        flow,
+                        400,
+                        {"error": "JSON body must be an object"},
+                    )
+                    return
+                result = coord_api.declare_capabilities(
+                    room,
+                    agent_id,
+                    data.get("capabilities"),
+                    ttl_seconds=data.get("ttl_seconds"),
                 )
             elif op == "members" and method == "GET":
                 assert room is not None

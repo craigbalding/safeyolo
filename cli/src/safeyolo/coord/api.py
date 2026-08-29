@@ -13,7 +13,12 @@ import logging
 import sqlite3
 from typing import Any
 
-from . import attention, brief, nats_client, store
+from safeyolo.agents_store import (
+    load_all_agents_snapshot,
+    locked_all_agents_snapshot,
+)
+
+from . import attention, brief, inventory, nats_client, store
 from .envelope import Envelope, validate_content_type
 from .identity import (
     get_or_create_instance_id,
@@ -88,6 +93,7 @@ def bootstrap() -> str:
     from .outbox import project_pending
 
     project_pending()
+    inventory.discover_provider_adapters()
     return instance_id
 
 
@@ -221,6 +227,158 @@ def read_brief(
         room_id = _resolve_room(conn, room_name)
         _check_grant(conn, room_id, principal_kind, principal_id, "receive")
         result = brief.read_current(conn, room_id)
+        conn.execute("COMMIT")
+        return result
+
+
+# ---------- authoritative room inventory ----------
+
+
+def _inventory_snapshot(
+    room_name: str,
+    principal_kind: str | None,
+    principal_id: str | None,
+) -> tuple[str, inventory.InventorySnapshot, dict[str, Any]]:
+    """Pin room authorization and all SQLite-owned state to one snapshot."""
+    with store.connect() as conn:
+        conn.execute("BEGIN")
+        room_id = _resolve_room(conn, room_name)
+        if principal_kind is not None:
+            assert principal_id is not None
+            _check_grant(
+                conn,
+                room_id,
+                principal_kind,
+                principal_id,
+                "receive",
+            )
+        snapshot = inventory.read_snapshot(conn, room_id)
+        current_brief = brief.read_current(conn, room_id)
+        conn.execute("COMMIT")
+    return room_id, snapshot, current_brief
+
+
+async def get_room_state(
+    room_name: str,
+    principal_kind: str | None = None,
+    principal_id: str | None = None,
+) -> dict[str, Any]:
+    """Return current bounded room state with explicit source provenance.
+
+    ``principal_kind=None`` is the local operator/admin surface. Agent calls
+    provide transport-derived identity and are authorized twice: before
+    bounded provider I/O and again in the final state snapshot. Provider
+    results are filtered against that final snapshot and a fresh locked policy
+    read, so revocation/unadvertising cannot survive in a coord cache.
+    """
+    if (principal_kind is None) != (principal_id is None):
+        raise ValueError("principal_kind and principal_id must be supplied together")
+    room_id, preliminary, _preliminary_brief = _inventory_snapshot(
+        room_name,
+        principal_kind,
+        principal_id,
+    )
+    preliminary_agents = inventory.configured_agents(
+        await asyncio.to_thread(load_all_agents_snapshot)
+    )
+    requests = inventory.plan_provider_requests(
+        room_id,
+        preliminary,
+        preliminary_agents,
+    )
+    provider_evidence = await inventory.query_providers(requests)
+
+    # Hold the policy snapshot lock across the final SQLite authorization and
+    # state snapshot. Otherwise a policy revoke followed by a room
+    # advertisement can straddle the two reads and manufacture an intersection
+    # that never existed at any instant.
+    def final_authoritative_snapshot():
+        with locked_all_agents_snapshot() as raw_agents:
+            final_agents = inventory.configured_agents(raw_agents)
+            final_room_id, final_snapshot, final_brief = _inventory_snapshot(
+                room_name,
+                principal_kind,
+                principal_id,
+            )
+            return final_agents, final_room_id, final_snapshot, final_brief
+
+    final_agents, final_room_id, final_snapshot, final_brief = (
+        await asyncio.to_thread(final_authoritative_snapshot)
+    )
+    if final_room_id != room_id:
+        raise RuntimeError("room identity changed during inventory read")
+    instance_id = await asyncio.to_thread(get_or_create_instance_id)
+    return inventory.build_room_state(
+        room_id=room_id,
+        room_name=room_name,
+        snapshot=final_snapshot,
+        agents=final_agents,
+        provider_evidence=provider_evidence,
+        origin_instance_id=instance_id,
+        brief=final_brief,
+        now_ms=store.now_ms(),
+    )
+
+
+def advertise_capability(
+    room_name: str,
+    agent_id: str,
+    capability: str,
+    *,
+    advertised: bool,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Change an operator-owned room-visible capability label."""
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+    return inventory.set_capability_advertisement(
+        room_id,
+        agent_id,
+        capability,
+        advertised=advertised,
+        operation_id=operation_id,
+    )
+
+
+def advertise_resource(
+    room_name: str,
+    provider: str,
+    resource: str,
+    *,
+    advertised: bool,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Change an operator-owned room-visible provider resource label."""
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+    return inventory.set_resource_advertisement(
+        room_id,
+        provider,
+        resource,
+        advertised=advertised,
+        operation_id=operation_id,
+    )
+
+
+def declare_capabilities(
+    room_name: str,
+    agent_id: str,
+    capabilities: list[str],
+    *,
+    ttl_seconds: int,
+) -> dict[str, Any]:
+    """Replace one receive-authorized agent's untrusted declarations."""
+    with store.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        room_id = _resolve_room(conn, room_name)
+        _check_grant(conn, room_id, "agent", agent_id, "receive")
+        result = inventory.replace_declarations(
+            conn,
+            room_id,
+            agent_id,
+            capabilities,
+            ttl_seconds=ttl_seconds,
+        )
         conn.execute("COMMIT")
         return result
 

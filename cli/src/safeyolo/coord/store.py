@@ -14,7 +14,7 @@ from .identity import coord_data_dir
 
 log = logging.getLogger("safeyolo.coord.store")
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 class SchemaError(RuntimeError):
@@ -155,6 +155,35 @@ _BRIEF_STATEMENTS = (
        BEGIN
            SELECT RAISE(ABORT, 'coord brief revisions are immutable');
        END""",
+)
+
+_INVENTORY_STATEMENTS = (
+    """CREATE TABLE coord_capability_advertisements (
+           room_id TEXT NOT NULL REFERENCES rooms(room_id),
+           agent_id TEXT NOT NULL,
+           capability TEXT NOT NULL CHECK(length(capability) BETWEEN 3 AND 129),
+           operation_id TEXT NOT NULL,
+           created_at INTEGER NOT NULL,
+           PRIMARY KEY (room_id, agent_id, capability)
+       )""",
+    """CREATE TABLE coord_resource_advertisements (
+           room_id TEXT NOT NULL REFERENCES rooms(room_id),
+           provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 64),
+           resource TEXT NOT NULL CHECK(length(resource) BETWEEN 1 AND 64),
+           operation_id TEXT NOT NULL,
+           created_at INTEGER NOT NULL,
+           PRIMARY KEY (room_id, provider, resource)
+       )""",
+    """CREATE TABLE coord_capability_declarations (
+           room_id TEXT NOT NULL REFERENCES rooms(room_id),
+           agent_id TEXT NOT NULL,
+           capability TEXT NOT NULL CHECK(length(capability) BETWEEN 3 AND 129),
+           asserted_at INTEGER NOT NULL,
+           valid_until INTEGER NOT NULL CHECK(valid_until > asserted_at),
+           PRIMARY KEY (room_id, agent_id, capability)
+       )""",
+    """CREATE INDEX coord_capability_declarations_expiry
+       ON coord_capability_declarations(valid_until)""",
 )
 
 
@@ -517,11 +546,26 @@ def _migrate_3_to_4(
     )
 
 
+def _migrate_4_to_5(
+    conn: sqlite3.Connection,
+    after_statement: Callable[[str], None] | None,
+) -> None:
+    _run_statements(conn, _INVENTORY_STATEMENTS, after_statement)
+    from .outbox import enqueue_coord_event
+
+    enqueue_coord_event(
+        conn,
+        "coord.schema_migrated",
+        {"from_version": 4, "to_version": 5},
+    )
+
+
 _MIGRATIONS = {
     1: _migrate_0_to_1,
     2: _migrate_1_to_2,
     3: _migrate_2_to_3,
     4: _migrate_3_to_4,
+    5: _migrate_4_to_5,
 }
 
 

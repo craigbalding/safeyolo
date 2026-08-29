@@ -110,6 +110,30 @@ async def read_brief(room_name: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def get_room_state(room_name: str) -> dict[str, Any]:
+    """Read current authoritative room identity, verified capability,
+    declaration, and provider-owned resource-lease state. Authorization is
+    rechecked on every call; provider failures and stale evidence are unknown.
+    """
+    return await _get(f"/api/coord/rooms/{room_name}/state")
+
+
+@mcp.tool()
+async def declare_capabilities(
+    room_name: str,
+    capabilities: list[str],
+    ttl_seconds: int = 900,
+) -> dict[str, Any]:
+    """Replace this agent's bounded, expiring room capability declarations.
+    Declarations are attributed but untrusted and never become verified state.
+    """
+    return await _post(
+        f"/api/coord/rooms/{room_name}/declarations",
+        {"capabilities": capabilities, "ttl_seconds": ttl_seconds},
+    )
+
+
+@mcp.tool()
 async def send(
     room_name: str,
     body: str,

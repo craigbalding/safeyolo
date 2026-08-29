@@ -340,6 +340,34 @@ bob
       asserted_at: ...
 ```
 
+The operator surface is explicit and room-scoped:
+
+```text
+coord state huddle
+coord inventory advertise-capability huddle bob rundeck:acceptance_runner
+coord inventory unadvertise-capability huddle bob rundeck:acceptance_runner
+coord inventory advertise-resource huddle rundeck acceptance_runner
+```
+
+Provider adapters receive only room ID, stable member IDs, advertised granted
+labels and advertised resource labels. Their raw payloads and errors never
+enter room state: coord allow-lists availability/lease fields, bounds the call
+and output, and changes missing, failed, malformed or stale evidence to
+`unknown`.
+
+The production adapter boundary is provider-neutral. A service integration
+atomically replaces a bounded public observation file at
+`~/.safeyolo/coord-providers/<provider>.json`; coord discovers those adapters
+at process bootstrap and reconstructs them after restart. The JSON object uses
+the same narrow `capabilities` and `leases` evidence shape as the adapter
+contract and must not contain credentials or connection configuration. Coord
+never writes provider state. Missing, unreadable, oversized, malformed, stale,
+or removed snapshots produce `unknown`. The complete provider call, including
+incorrectly blocking implementations, runs outside the Agent API event loop
+behind its timeout. Global and per-provider in-flight caps bound abandoned
+daemon workers, so a hung integration cannot consume the shared executor used
+for authoritative state reads or spawn new work indefinitely.
+
 Keep provenance explicit:
 
 * `verified`: SafeYolo-derived. `authorized` is a current platform grant.

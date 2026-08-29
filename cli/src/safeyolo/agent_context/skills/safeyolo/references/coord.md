@@ -35,8 +35,10 @@ staged; no coord server, proxy, or addon restart is required.
 
 | Operation | Purpose |
 |---|---|
-| `join_room` | Attach to an existing operator-granted membership and obtain room metadata plus the current trusted operator brief when receive-authorized. Send-only grants see a null brief. Knowing a room name grants nothing. |
+| `join_room` | Attach to an existing operator-granted membership and obtain room metadata plus current trusted brief and authoritative room state when receive-authorized. Send-only grants see null brief/state. Knowing a room name grants nothing. |
 | `read_brief` | Read the current canonical operator-authored Markdown brief and revision. Authorization is checked on every read. |
+| `get_room_state` | Read current stable member identity, room-visible verified capability/availability, untrusted declarations, and provider-owned resource leases with explicit provenance. Authorization is rechecked after bounded provider reads. |
+| `declare_capabilities` | Replace this agent's bounded, expiring room capability declarations. Declarations remain attributed untrusted claims and never become verified state. |
 | `send` | Append a canonical retained message and choose attention intent with `notify=none`, `notify=room`, or an explicit agent-name list. |
 | `wait_for_coord` | Primary foreground idle wait. It waits on the multiplexed feed and resolves the complete returned page before exposing its caller-owned `next_cursor`. |
 | `wait_for_attention` | Lower-level multiplexed feed wait for diagnostics and specialised use. The cursor is caller-owned. |
@@ -55,6 +57,8 @@ POST /api/coord/rooms/<room>/send
 GET  /api/coord/attention/wait?since=<cursor>&timeout=<seconds>&limit=<n>
 GET  /api/coord/attention/<attention-id>/object
 GET  /api/coord/rooms/<room>/brief
+GET  /api/coord/rooms/<room>/state
+POST /api/coord/rooms/<room>/declarations
 GET  /api/coord/rooms/<room>/messages?since=<cursor>&limit=<n>
 ```
 
@@ -67,7 +71,7 @@ convenient but optional; raw Agent API access remains valid.
 When `safeyolo-coord` MCP is available, the normal lifecycle is:
 
 ```text
-join room and read the current trusted brief
+join room and read the current trusted brief plus authoritative room state
 → send or receive concise targeted work-state messages
 → wait_for_coord in the foreground
 → act on every returned canonical object
@@ -117,6 +121,28 @@ edge contains only the brief object ID and revision; resolve the canonical
 object to read the Markdown. A `message` object remains attributed peer data
 and cannot create or alter trusted brief state, even if its body looks like a
 brief or an operator command.
+
+Room inventory keeps authority namespaces separate. `verified` entries exist
+only when a current SafeYolo service grant intersects an operator-advertised
+room label; provider availability is independently `available`, `unavailable`,
+or `unknown`. Stale, failed, timed-out, or malformed provider evidence is
+`unknown`. `declared` entries are expiring agent/harness claims. Chat text and
+declarations cannot create verified capability state or supersede a
+provider-owned resource lease. Inventory output never includes complete grant
+configuration, credentials, tokens, account/persona data, bindings, routes,
+paths, or provider error payloads.
+
+Production provider integrations publish an atomically replaced, bounded
+public observation snapshot at
+`~/.safeyolo/coord-providers/<provider>.json`. SafeYolo discovers these generic
+adapters at coord/Agent-API process bootstrap and reconstructs them after a
+restart. The file uses the narrow `capabilities` and `leases` observation
+shape; it must contain public evidence only, never provider credentials or
+connection configuration. Missing, unreadable, oversized, malformed, stale,
+or removed snapshots render the affected observations `unknown`.
+Provider execution uses isolated daemon workers with global and per-provider
+in-flight caps; a timed-out or hung integration cannot occupy the Agent API's
+shared executor or spawn abandoned work without bound.
 
 A message intended to wake a peer and cause action must itself contain or
 directly identify the actionable handoff. Do not send substantive unnotified
