@@ -76,6 +76,96 @@ def test_create_room_and_send_do_not_claim_operation_id_support():
     assert "operation_id" not in inspect.signature(coord.api.send).parameters
 
 
+def test_brief_set_requires_expected_revision_and_passes_operation_id(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(coord.api, "bootstrap", lambda: "sy-test")
+    monkeypatch.setattr(coord, "_run", lambda result: result)
+
+    def set_brief(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return {
+            "revision": 5,
+            "content_hash": "a" * 64,
+        }
+
+    monkeypatch.setattr(coord.api, "set_brief", set_brief)
+    missing = CliRunner().invoke(
+        coord.coord_app,
+        ["brief", "set", "r", "# intent"],
+    )
+    assert missing.exit_code != 0
+
+    result = CliRunner().invoke(
+        coord.coord_app,
+        [
+            "brief",
+            "set",
+            "r",
+            "# intent",
+            "--expected-revision",
+            "4",
+            "--operation-id",
+            "op-brief-5",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == {
+        "args": ("r", "# intent"),
+        "kwargs": {
+            "expected_revision": 4,
+            "operation_id": "op-brief-5",
+        },
+    }
+    assert "revision=5" in result.output
+    assert "operation_id=op-brief-5" in result.output
+
+
+def test_brief_set_file_and_text_are_mutually_exclusive(monkeypatch, tmp_path):
+    markdown = tmp_path / "brief.md"
+    markdown.write_text("# from file\n")
+    monkeypatch.setattr(coord.api, "bootstrap", lambda: "sy-test")
+
+    result = CliRunner().invoke(
+        coord.coord_app,
+        [
+            "brief",
+            "set",
+            "r",
+            "inline",
+            "--file",
+            str(markdown),
+            "--expected-revision",
+            "0",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "exactly one" in result.output
+
+
+def test_brief_show_json_exposes_current_trusted_state(monkeypatch):
+    monkeypatch.setattr(coord.api, "bootstrap", lambda: "sy-test")
+    monkeypatch.setattr(
+        coord.api,
+        "show_brief",
+        lambda *_args, **_kwargs: {
+            "room_id": "rm-r",
+            "object_id": "brief-r",
+            "revision": 3,
+            "markdown": "# trusted",
+            "content_hash": "b" * 64,
+            "updated_at": 1,
+        },
+    )
+
+    result = CliRunner().invoke(
+        coord.coord_app,
+        ["brief", "show", "r", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["markdown"] == "# trusted"
+
+
 def test_interactive_send_reports_ambiguous_acceptance_without_safe_retry(
     monkeypatch,
 ):

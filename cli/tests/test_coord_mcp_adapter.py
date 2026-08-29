@@ -86,6 +86,23 @@ def test_attention_tools_use_identity_derived_routes(monkeypatch):
     ]
 
 
+def test_read_brief_uses_authorized_canonical_route(monkeypatch):
+    module = _load_adapter(monkeypatch)
+    calls = []
+
+    async def get(path, params=None, *, timeout=60.0):
+        calls.append((path, params, timeout))
+        return {"revision": 5, "markdown": "# trusted"}
+
+    monkeypatch.setattr(module, "_get", get)
+    result = asyncio.run(module.read_brief("huddle"))
+
+    assert result == {"revision": 5, "markdown": "# trusted"}
+    assert calls == [
+        ("/api/coord/rooms/huddle/brief", None, 60.0),
+    ]
+
+
 def test_wait_for_coord_resolves_the_whole_page_before_returning_cursor(monkeypatch):
     module = _load_adapter(monkeypatch)
     calls = []
@@ -158,6 +175,12 @@ def test_tool_descriptions_guide_the_targeted_multi_room_workflow(monkeypatch):
         module.wait_for_attention.__doc__ or ""
     )
     assert "Primary foreground idle wait" in (module.wait_for_coord.__doc__ or "")
+    assert "trusted canonical operator state" in (
+        module.wait_for_coord.__doc__ or ""
+    )
+    assert "canonical trusted operator brief" in (
+        module.read_brief.__doc__ or ""
+    )
     assert "resolution failure fails" in (module.wait_for_coord.__doc__ or "")
     assert "Lower-level resolution operation" in (
         module.read_attention.__doc__ or ""

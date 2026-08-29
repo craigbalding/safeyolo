@@ -342,6 +342,74 @@ def _materialize_recipient(
     )
 
 
+def create_state_attention_edges(
+    conn: sqlite3.Connection,
+    *,
+    room_id: str,
+    kind: str,
+    object_id: str,
+    revision: int,
+    created_at: int,
+) -> int:
+    """Create one canonical state-change edge per current room member.
+
+    The caller owns the surrounding state-mutation transaction. Edges and
+    their durable NATS hint outbox rows therefore commit with canonical state
+    and cannot be duplicated by an operation replay.
+    """
+    if kind != "brief_changed":
+        raise ValueError("unsupported state attention kind")
+    if type(revision) is not int or revision <= 0:
+        raise ValueError("state attention revision must be positive")
+    recipients = _active_receive_generations(conn, room_id)
+    from .outbox import enqueue_attention_hint
+
+    for agent_id, granted_at in sorted(recipients.items()):
+        attention_id = new_attention_id()
+        conn.execute(
+            """INSERT OR IGNORE INTO coord_attention_feeds
+               (recipient_agent_id, last_sequence) VALUES (?, 0)""",
+            (agent_id,),
+        )
+        feed_sequence = int(
+            conn.execute(
+                """SELECT last_sequence + 1 FROM coord_attention_feeds
+                   WHERE recipient_agent_id = ?""",
+                (agent_id,),
+            ).fetchone()[0]
+        )
+        conn.execute(
+            """UPDATE coord_attention_feeds SET last_sequence = ?
+               WHERE recipient_agent_id = ?""",
+            (feed_sequence, agent_id),
+        )
+        conn.execute(
+            """INSERT INTO coord_attention_edges
+               (recipient_agent_id, feed_sequence, attention_id, room_id,
+                kind, object_id, revision_or_sequence,
+                membership_granted_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                agent_id,
+                feed_sequence,
+                attention_id,
+                room_id,
+                kind,
+                object_id,
+                revision,
+                granted_at,
+                created_at,
+            ),
+        )
+        enqueue_attention_hint(
+            conn,
+            attention_id=attention_id,
+            recipient_agent_id=agent_id,
+            feed_sequence=feed_sequence,
+        )
+    return len(recipients)
+
+
 async def ensure_room_projection(room_id: str) -> int:
     """Create the pre-Stage-1 recovery frontier before message publication."""
     with store.connect() as conn:
@@ -841,6 +909,33 @@ async def read_attention_object(agent_id: str, attention_id: str) -> dict[str, A
         if row is None or not _edge_is_authorized(conn, row):
             raise AttentionObjectNotFound(attention_id)
         edge = dict(row)
+        if edge["kind"] == "brief_changed":
+            from . import brief
+
+            if edge["object_id"] != brief.brief_object_id(edge["room_id"]):
+                raise nats_client.CoordDataError(
+                    "brief attention edge canonical object mismatch"
+                )
+            try:
+                canonical = brief.read_public_revision(
+                    conn,
+                    edge["room_id"],
+                    edge["revision_or_sequence"],
+                )
+            except brief.BriefRevisionNotFound as exc:
+                raise nats_client.CoordDataError(
+                    "brief attention revision is missing"
+                ) from exc
+            return {
+                "edge": {
+                    "attention_id": edge["attention_id"],
+                    "room_id": edge["room_id"],
+                    "kind": edge["kind"],
+                    "object_id": edge["object_id"],
+                    "revision_or_sequence": edge["revision_or_sequence"],
+                },
+                "object": canonical,
+            }
     if edge["kind"] != "message":
         raise nats_client.CoordDataError("unsupported canonical attention kind")
     envelope = await nats_client.get_envelope_at(

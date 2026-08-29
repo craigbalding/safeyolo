@@ -18,6 +18,7 @@ _SUMMARIES = {
     "coord.grant_revoked": "Coord room grant revoked",
     "coord.operation_conflict": "Coord operation ID conflict",
     "coord.attention_projection_lost": "Coord attention projection lost to retention",
+    "coord.brief_updated": "Coord operator brief updated",
 }
 
 # This is deliberately an allow-list.  AuditEvent.details is generic, while

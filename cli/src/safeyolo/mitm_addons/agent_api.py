@@ -63,6 +63,7 @@ _COORD_ROOM_OPERATIONS = {
     "messages": "room.messages",
     "wait": "room.wait",
     "members": "room.members",
+    "brief": "room.brief",
 }
 _COORD_URL_CREDENTIAL_RE = re.compile(
     r"(?i)\b((?:https?|nats|tls|ws|wss)://)[^\s/@]+@"
@@ -545,7 +546,7 @@ class AgentAPI:
         )
         attention_wait = path == "/api/coord/attention/wait"
         room_route = re.match(
-            r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait|members)$",
+            r"^/api/coord/rooms/([^/]+)/(join|send|messages|wait|members|brief)$",
             path,
         )
         if not attention_wait and attention_object is None and room_route is None:
@@ -654,6 +655,13 @@ class AgentAPI:
                     principal_id=agent_id,
                     since_sequence=since,
                     limit=limit,
+                )
+            elif op == "brief" and method == "GET":
+                assert room is not None
+                result = coord_api.read_brief(
+                    room,
+                    "agent",
+                    agent_id,
                 )
             elif op == "members" and method == "GET":
                 assert room is not None

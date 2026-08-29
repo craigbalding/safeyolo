@@ -1,8 +1,8 @@
-"""Coord plane v0 CLI — bootstrap, rooms, chat.
+"""Coordination-plane CLI for rooms, trusted state, and messaging.
 
-Disposable v0 substrate for #371 dogfood. `safeyolo coord ...` is a separate
-tree from proxy / policy / vault. Agents themselves are managed by the
-existing `safeyolo agent add` command; this module never mints agent IDs.
+`safeyolo coord ...` is a separate tree from proxy / policy / vault. Agents
+themselves are managed by the existing `safeyolo agent add` command; this
+module never mints agent IDs.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -42,7 +43,7 @@ _run = asyncio.run
 
 coord_app = typer.Typer(
     name="coord",
-    help="Coordination-plane v0 (dogfood substrate for #371).",
+    help="Coordination-plane rooms, trusted state, and messaging.",
     no_args_is_help=True,
 )
 
@@ -166,6 +167,13 @@ def init() -> None:
 room_app = typer.Typer(name="room", help="Room commands.", no_args_is_help=True)
 coord_app.add_typer(room_app, name="room")
 
+brief_app = typer.Typer(
+    name="brief",
+    help="Trusted versioned operator brief commands.",
+    no_args_is_help=True,
+)
+coord_app.add_typer(brief_app, name="brief")
+
 
 @room_app.command("create")
 def room_create(
@@ -225,6 +233,152 @@ def room_list() -> None:
     for r in rooms:
         table.add_row(r["name"], r["room_id"], _fmt_ts(r["created_at"]))
     console.print(table)
+
+
+@brief_app.command("show")
+def brief_show(
+    room: str = typer.Argument(..., help="Room name"),
+    revision: int | None = typer.Option(
+        None,
+        "--revision",
+        "-r",
+        min=1,
+        help="Show one immutable revision instead of current state.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the canonical brief object as JSON.",
+    ),
+) -> None:
+    """Show the current trusted brief or one immutable prior revision."""
+    api.bootstrap()
+    try:
+        current = api.show_brief(room, revision=revision)
+    except api.NotFoundError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1)
+    if json_output:
+        console.print_json(json.dumps(current, ensure_ascii=False))
+        return
+    if current["revision"] == 0:
+        console.print(f"[dim]room {room!r} has no operator brief[/dim]")
+        return
+    console.print(
+        f"[bold]operator brief[/bold]  room={room}  "
+        f"revision={current['revision']}  hash={current['content_hash']}"
+    )
+    _render_body(current["markdown"])
+
+
+@brief_app.command("history")
+def brief_history(
+    room: str = typer.Argument(..., help="Room name"),
+    since_revision: int = typer.Option(
+        0,
+        "--since",
+        min=0,
+        help="Return revisions greater than this value.",
+    ),
+    limit: int = typer.Option(50, "--limit", min=1, max=200),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """List immutable brief revision metadata without replaying Markdown."""
+    api.bootstrap()
+    try:
+        page = api.list_brief_history(
+            room,
+            since_revision=since_revision,
+            limit=limit,
+        )
+    except api.NotFoundError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1)
+    if json_output:
+        console.print_json(json.dumps(page, ensure_ascii=False))
+        return
+    table = Table("revision", "content_hash", "actor", "operation_id", "created_at")
+    for item in page["revisions"]:
+        table.add_row(
+            str(item["revision"]),
+            item["content_hash"],
+            item["actor_id"],
+            item["operation_id"],
+            _fmt_ts(item["created_at"]),
+        )
+    console.print(table)
+    if page["has_more"]:
+        console.print(
+            f"[dim]more revisions available after {page['next_revision']}[/dim]"
+        )
+
+
+@brief_app.command("set")
+def brief_set(
+    room: str = typer.Argument(..., help="Room name"),
+    text: str | None = typer.Argument(
+        None,
+        help="Markdown text (quote multi-word text); mutually exclusive with --file.",
+    ),
+    file: Path | None = typer.Option(
+        None,
+        "--file",
+        "-f",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Read Markdown from this file.",
+    ),
+    expected_revision: int = typer.Option(
+        ...,
+        "--expected-revision",
+        min=0,
+        help="Required optimistic-concurrency revision (0 for the first brief).",
+    ),
+    operation_id: str | None = typer.Option(
+        None,
+        "--operation-id",
+        help="Retry handle; generated when omitted.",
+    ),
+) -> None:
+    """Set trusted operator intent with explicit optimistic concurrency."""
+    if (text is None) == (file is None):
+        console.print("[red]provide exactly one of TEXT or --file[/red]")
+        raise typer.Exit(1)
+    if file is not None:
+        try:
+            markdown = file.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            console.print(f"[red]could not read brief file: {type(exc).__name__}[/red]")
+            raise typer.Exit(1)
+    else:
+        assert text is not None
+        markdown = text
+    api.bootstrap()
+    operation_id = operation_id or new_operation_id()
+    try:
+        result = _run(
+            api.set_brief(
+                room,
+                markdown,
+                expected_revision=expected_revision,
+                operation_id=operation_id,
+            )
+        )
+    except api.RevisionConflictError as exc:
+        console.print(f"[red]{exc}[/]  operation_id={operation_id}")
+        raise typer.Exit(1)
+    except api.OperationConflictError as exc:
+        console.print(f"[red]{exc}[/]  operation_id={operation_id}")
+        raise typer.Exit(1)
+    except (api.NotFoundError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]operator brief updated[/]  room={room}  "
+        f"revision={result['revision']}  hash={result['content_hash']}  "
+        f"operation_id={operation_id}"
+    )
 
 
 @coord_app.command()

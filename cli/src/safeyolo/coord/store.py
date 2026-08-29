@@ -14,7 +14,7 @@ from .identity import coord_data_dir
 
 log = logging.getLogger("safeyolo.coord.store")
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 class SchemaError(RuntimeError):
@@ -118,6 +118,43 @@ _ATTENTION_STATEMENTS = (
                CHECK(last_sequence >= 0),
            updated_at INTEGER NOT NULL
        )""",
+)
+
+_BRIEF_STATEMENTS = (
+    """CREATE TABLE coord_brief_revisions (
+           room_id TEXT NOT NULL REFERENCES rooms(room_id),
+           revision INTEGER NOT NULL CHECK(revision > 0),
+           markdown TEXT NOT NULL,
+           content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+           actor_kind TEXT NOT NULL CHECK(actor_kind = 'operator'),
+           actor_id TEXT NOT NULL,
+           operation_id TEXT NOT NULL,
+           created_at INTEGER NOT NULL,
+           PRIMARY KEY (room_id, revision)
+       )""",
+    """CREATE TABLE coord_briefs (
+           room_id TEXT PRIMARY KEY REFERENCES rooms(room_id),
+           revision INTEGER NOT NULL CHECK(revision > 0),
+           markdown TEXT NOT NULL,
+           content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+           actor_kind TEXT NOT NULL CHECK(actor_kind = 'operator'),
+           actor_id TEXT NOT NULL,
+           operation_id TEXT NOT NULL,
+           updated_at INTEGER NOT NULL,
+           FOREIGN KEY (room_id, revision)
+               REFERENCES coord_brief_revisions(room_id, revision)
+               DEFERRABLE INITIALLY DEFERRED
+       )""",
+    """CREATE TRIGGER coord_brief_revisions_immutable_update
+       BEFORE UPDATE ON coord_brief_revisions
+       BEGIN
+           SELECT RAISE(ABORT, 'coord brief revisions are immutable');
+       END""",
+    """CREATE TRIGGER coord_brief_revisions_immutable_delete
+       BEFORE DELETE ON coord_brief_revisions
+       BEGIN
+           SELECT RAISE(ABORT, 'coord brief revisions are immutable');
+       END""",
 )
 
 
@@ -466,7 +503,26 @@ def _migrate_2_to_3(
     )
 
 
-_MIGRATIONS = {1: _migrate_0_to_1, 2: _migrate_1_to_2, 3: _migrate_2_to_3}
+def _migrate_3_to_4(
+    conn: sqlite3.Connection,
+    after_statement: Callable[[str], None] | None,
+) -> None:
+    _run_statements(conn, _BRIEF_STATEMENTS, after_statement)
+    from .outbox import enqueue_coord_event
+
+    enqueue_coord_event(
+        conn,
+        "coord.schema_migrated",
+        {"from_version": 3, "to_version": 4},
+    )
+
+
+_MIGRATIONS = {
+    1: _migrate_0_to_1,
+    2: _migrate_1_to_2,
+    3: _migrate_2_to_3,
+    4: _migrate_3_to_4,
+}
 
 
 def _enqueue_migration_failure(

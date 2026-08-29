@@ -13,7 +13,7 @@ import logging
 import sqlite3
 from typing import Any
 
-from . import attention, nats_client, store
+from . import attention, brief, nats_client, store
 from .envelope import Envelope, validate_content_type
 from .identity import (
     get_or_create_instance_id,
@@ -27,8 +27,10 @@ from .kernel import (
 from .kernel import (
     OperationConflictError as _OperationConflictError,
 )
+from .kernel import RevisionConflictError as _RevisionConflictError
 
 OperationConflictError = _OperationConflictError
+RevisionConflictError = _RevisionConflictError
 NOTIFY_OMITTED = attention.NOTIFY_OMITTED
 
 log = logging.getLogger("safeyolo.coord.api")
@@ -140,6 +142,84 @@ def _resolve_room(conn: sqlite3.Connection, name: str) -> str:
     if not row:
         raise NotFoundError(f"room {name!r} not found")
     return row["room_id"]
+
+
+# ---------- trusted operator brief ----------
+
+
+async def set_brief(
+    room_name: str,
+    markdown: str,
+    *,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Set trusted room intent through the local operator-only surface."""
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+    result = brief.set_brief(
+        room_id,
+        markdown,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+    try:
+        from .outbox import project_attention_hints
+
+        await project_attention_hints()
+    except Exception as exc:  # SQLite edges remain authoritative and pending
+        log.warning(
+            "brief attention wake hints remain pending for %s revision %s: %s",
+            room_id,
+            result["revision"],
+            type(exc).__name__,
+        )
+    return result
+
+
+def show_brief(
+    room_name: str,
+    *,
+    revision: int | None = None,
+) -> dict[str, Any]:
+    """Read current or immutable brief state from the local operator surface."""
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+        if revision is None:
+            return brief.read_current(conn, room_id)
+        try:
+            return brief.read_revision(conn, room_id, revision)
+        except brief.BriefRevisionNotFound as exc:
+            raise NotFoundError("brief revision not found") from exc
+
+
+def list_brief_history(
+    room_name: str,
+    *,
+    since_revision: int = 0,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """List metadata for immutable brief revisions as local operator."""
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+        return brief.list_history(
+            conn,
+            room_id,
+            since_revision=since_revision,
+            limit=limit,
+        )
+
+
+def read_brief(
+    room_name: str,
+    principal_kind: str,
+    principal_id: str,
+) -> dict[str, Any]:
+    """Read current trusted intent after a same-snapshot membership check."""
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+        _check_grant(conn, room_id, principal_kind, principal_id, "receive")
+        return brief.read_current(conn, room_id)
 
 
 # ---------- grants ----------
@@ -362,6 +442,7 @@ def join_room(room_name: str, principal_kind: str, principal_id: str) -> dict[st
             "room_name": room_name,
             "permissions": row["permissions"].split(","),
             "history_visibility": "retained",
+            "brief": brief.read_current(conn, room_id),
         }
 
 
