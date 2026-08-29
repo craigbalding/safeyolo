@@ -493,6 +493,36 @@ def _open_state_anchors(path: Path) -> tuple[int, int, str]:
     return parent_fd, state_fd, fd_path
 
 
+def _open_lease_anchor(parent_fd: int, name: str) -> int:
+    """Open one private sibling identity for this state's process lease."""
+
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(name, flags, 0o600, dir_fd=parent_fd)
+    except OSError as exc:
+        raise MattermostAdapterError(f"cannot open state_file lease: {type(exc).__name__}") from exc
+    try:
+        opened = os.fstat(fd)
+        linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(linked.st_mode)
+            or (opened.st_dev, opened.st_ino) != (linked.st_dev, linked.st_ino)
+        ):
+            raise MattermostAdapterError("state_file lease must be one regular non-symlink file")
+        if hasattr(os, "getuid") and opened.st_uid != os.getuid():
+            raise MattermostAdapterError("state_file lease must be owned by the current user")
+        if stat.S_IMODE(opened.st_mode) & 0o077:
+            raise MattermostAdapterError("state_file lease permissions must be 0600 or stricter")
+    except MattermostAdapterError:
+        os.close(fd)
+        raise
+    except OSError as exc:
+        os.close(fd)
+        raise MattermostAdapterError(f"cannot validate state_file lease: {type(exc).__name__}") from exc
+    return fd
+
+
 class MattermostState:
     """Durable duplicate/loop suppression, separate from authoritative coord."""
 
@@ -500,11 +530,28 @@ class MattermostState:
         self.path = config.state_file
         self.lease_path = self.path.with_name(f"{self.path.name}.lock")
         self._parent_fd, self._state_fd, self._state_fd_path = _open_state_anchors(self.path)
-        parent_st = os.fstat(self._parent_fd)
-        state_st = os.fstat(self._state_fd)
+        try:
+            self._lease_fd = _open_lease_anchor(self._parent_fd, self.lease_path.name)
+            parent_st = os.fstat(self._parent_fd)
+            state_st = os.fstat(self._state_fd)
+            lease_st = os.fstat(self._lease_fd)
+        except (MattermostAdapterError, OSError):
+            _close_fds(
+                (
+                    getattr(self, "_lease_fd", -1),
+                    self._state_fd,
+                    self._parent_fd,
+                )
+            )
+            raise
         self._parent_identity = (parent_st.st_dev, parent_st.st_ino)
         self._state_identity = (state_st.st_dev, state_st.st_ino)
-        self._fd_finalizer = weakref.finalize(self, _close_fds, (self._state_fd, self._parent_fd))
+        self._lease_identity = (lease_st.st_dev, lease_st.st_ino)
+        self._fd_finalizer = weakref.finalize(
+            self,
+            _close_fds,
+            (self._lease_fd, self._state_fd, self._parent_fd),
+        )
         with self._connect() as conn:
             conn.executescript(
                 """
@@ -578,6 +625,15 @@ class MattermostState:
                 raise MattermostAdapterError(
                     "state_file belongs to a different server/operator/room/action configuration"
                 )
+            durable_lease_identity = f"{self._lease_identity[0]}:{self._lease_identity[1]}"
+            conn.execute(
+                "INSERT OR IGNORE INTO metadata(key, value) VALUES ('lease_identity', ?)",
+                (durable_lease_identity,),
+            )
+            stored_lease_identity = conn.execute("SELECT value FROM metadata WHERE key = 'lease_identity'").fetchone()
+            if stored_lease_identity is None or stored_lease_identity["value"] != durable_lease_identity:
+                raise MattermostAdapterError("state_file lease identity differs from durable state")
+            self._validate_lease_path()
             expected = {(room.coord_room, room.channel_id) for room in config.rooms}
             actual = {
                 (row["coord_room"], row["channel_id"])
@@ -624,6 +680,30 @@ class MattermostState:
         if stat.S_IMODE(state_opened.st_mode) & 0o077:
             raise MattermostAdapterError("state_file permissions changed after validation")
 
+    def _validate_lease_path(self) -> None:
+        try:
+            opened = os.fstat(self._lease_fd)
+            anchored = os.stat(
+                self.lease_path.name,
+                dir_fd=self._parent_fd,
+                follow_symlinks=False,
+            )
+            linked = self.lease_path.lstat()
+        except OSError as exc:
+            raise MattermostAdapterError(f"state_file lease identity changed: {type(exc).__name__}") from exc
+        if not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(anchored.st_mode) or not stat.S_ISREG(linked.st_mode):
+            raise MattermostAdapterError("state_file lease must be one regular non-symlink file")
+        if hasattr(os, "getuid") and opened.st_uid != os.getuid():
+            raise MattermostAdapterError("state_file lease must be owned by the current user")
+        if stat.S_IMODE(opened.st_mode) & 0o077 or stat.S_IMODE(linked.st_mode) & 0o077:
+            raise MattermostAdapterError("state_file lease permissions must be 0600 or stricter")
+        if (
+            (opened.st_dev, opened.st_ino) != self._lease_identity
+            or (anchored.st_dev, anchored.st_ino) != self._lease_identity
+            or (linked.st_dev, linked.st_ino) != self._lease_identity
+        ):
+            raise MattermostAdapterError("state_file lease identity changed after validation")
+
     @contextmanager
     def _connect(self):
         self._validate_state_path()
@@ -643,26 +723,12 @@ class MattermostState:
 
     def _open_lease_file(self) -> int:
         self._validate_state_path()
-        try:
-            try:
-                existing = os.stat(
-                    self.lease_path.name,
-                    dir_fd=self._parent_fd,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError:
-                existing = None
-            if existing is not None:
-                if stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(existing.st_mode):
-                    raise MattermostAdapterError("state_file lease must be a regular non-symlink file")
-        except OSError as exc:
-            raise MattermostAdapterError(f"cannot inspect state_file lease: {type(exc).__name__}") from exc
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        self._validate_lease_path()
+        flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
             fd = os.open(
                 self.lease_path.name,
                 flags,
-                0o600,
                 dir_fd=self._parent_fd,
             )
         except OSError as exc:
@@ -677,7 +743,8 @@ class MattermostState:
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or not stat.S_ISREG(linked.st_mode)
-                or (opened.st_dev, opened.st_ino) != (linked.st_dev, linked.st_ino)
+                or (opened.st_dev, opened.st_ino) != self._lease_identity
+                or (linked.st_dev, linked.st_ino) != self._lease_identity
             ):
                 raise MattermostAdapterError("state_file lease must be one regular non-symlink file")
             if hasattr(os, "getuid") and opened.st_uid != os.getuid():
@@ -685,6 +752,7 @@ class MattermostState:
             if stat.S_IMODE(opened.st_mode) & 0o077:
                 raise MattermostAdapterError("state_file lease permissions must be 0600 or stricter")
             self._validate_state_path()
+            self._validate_lease_path()
         except MattermostAdapterError:
             os.close(fd)
             raise

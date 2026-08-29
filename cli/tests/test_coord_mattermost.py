@@ -1409,6 +1409,7 @@ def test_state_lease_rejects_symlink_and_non_private_file(tmp_path: Path) -> Non
     other = tmp_path / "unrelated"
     other.write_text("unchanged", encoding="utf-8")
     other.chmod(0o600)
+    state.lease_path.unlink()
     state.lease_path.symlink_to(other)
     with pytest.raises(mattermost.MattermostAdapterError, match="non-symlink"):
         with state.lease():
@@ -1421,6 +1422,24 @@ def test_state_lease_rejects_symlink_and_non_private_file(tmp_path: Path) -> Non
     with pytest.raises(mattermost.MattermostAdapterError, match="0600"):
         with state.lease():
             pass
+
+
+def test_locked_lease_replacement_cannot_admit_a_second_adapter(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    first = mattermost.MattermostState(config)
+    second = mattermost.MattermostState(config)
+    displaced = tmp_path / "displaced.lock"
+
+    with first.lease():
+        first.lease_path.rename(displaced)
+        first.lease_path.write_text("", encoding="utf-8")
+        first.lease_path.chmod(0o600)
+
+        with pytest.raises(mattermost.MattermostAdapterError, match="lease identity changed"):
+            with second.lease():
+                pass
+        with pytest.raises(mattermost.MattermostAdapterError, match="lease identity differs"):
+            mattermost.MattermostState(config)
 
 
 def test_sqlite_operational_error_is_sanitized_for_state_and_cli(
