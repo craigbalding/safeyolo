@@ -129,11 +129,6 @@
               "url": "https://github.com/craigbalding/safeyolo/pull/448"
             },
             {
-              "kind": "issue",
-              "label": "Darwin portability issue #450",
-              "url": "https://github.com/craigbalding/safeyolo/issues/450"
-            },
-            {
               "kind": "pr",
               "label": "Real-macOS acceptance correction PR #452",
               "url": "https://github.com/craigbalding/safeyolo/pull/452"
