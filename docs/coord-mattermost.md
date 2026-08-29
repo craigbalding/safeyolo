@@ -231,6 +231,55 @@ projection/reply diagnostic. It intentionally does not expose a callback
 listener or issue buttons; do not use it to consume an intended interactive
 acceptance request.
 
+### Real-macOS state acceptance
+
+Run the structural acceptance from a separate checkout of the exact reviewed
+candidate. It creates and later removes only its own unique temporary root; it
+does not read or change an operator config, token, live state, daemon, or
+Funnel:
+
+```sh
+uv run python scripts/accept_mattermost_macos.py \
+  --expected-head REVIEWED_FULL_COMMIT_SHA \
+  --expected-tree REVIEWED_FULL_TREE_SHA \
+  --expected-base REVIEWED_FULL_BASE_SHA
+```
+
+That script verifies gates 1–7: initialization, WAL with real adjacent
+`-wal`/`-shm` sidecars, schema, read/write, close/reopen plus abrupt recovery,
+the separate process lease, and fail-closed state/lease replacement.
+
+For gates 8–9, use the separately prepared portable test bundle. Its directory
+must be mode `0700`; its ordinary config and token must be mode `0600`; the
+config must refer to the token by a single relative sibling filename and contain
+exactly one dedicated room with `backfill = false`. Copy the two-file bundle as
+a unit. The integration script refuses the live default config, validates the
+private relative token, reads but never edits the supplied config, ignores its
+state path, and writes its actual config and new state DB under its own temporary
+root. The operator runs one command:
+
+```sh
+uv run python scripts/accept_mattermost_macos_integration.py \
+  --expected-head REVIEWED_FULL_COMMIT_SHA \
+  --expected-tree REVIEWED_FULL_TREE_SHA \
+  --expected-base REVIEWED_FULL_BASE_SHA \
+  --test-config-copy "$HOME/.safeyolo/macos-acceptance/dedicated-test.toml" \
+  --confirm-dedicated-test-channel \
+  --allow-run-once-effects
+```
+
+The integration script preflights the remaining external effect before doing
+anything: concurrent activity after the disposable `backfill=false` baseline
+could cause `run --once` to append one operator message or project one post in
+the dedicated test mapping. It must never be aimed at a production mapping.
+Neither script starts, stops, or changes a daemon or Funnel. Both report the
+exact candidate/base plus platform/Python/SQLite versions, print concise
+numbered pass/fail results, and verify cleanup of only their own temporary
+artifacts. On failure they additionally print the complete local exception
+chain, SQLite code/name/message when present, and child CLI diagnostics so the
+operator can debug without another diagnostic build. They never print bot-token
+contents; the operator decides which path, ID, or response details to share.
+
 ## Delivery and failure semantics
 
 SQLite suppresses inbound replay across retries/restarts and marks outbound
