@@ -59,6 +59,13 @@ open anything itself.
 
 ## Operator-owned setup
 
+On a fresh or self-hosted Mattermost deployment, bot creation may initially be
+disabled. Before creating the dedicated SafeYolo bot, a Mattermost System Admin
+must open **System Console > Integrations > Bot Accounts**, set **Enable Bot
+Account Creation** to `true`, and save the setting. This is the standard
+Mattermost bot-account setting; the adapter does not require an Enterprise
+license, trial feature, plugin, or PikaPods-specific capability.
+
 No existing SafeYolo repository file or `~/.safeyolo/config.yaml` entry should
 be changed. Create these two new operator-owned files:
 
@@ -82,12 +89,14 @@ backfill = false
 ```
 
 Supply the exact HTTPS origin of the managed Mattermost server and the IDs
-returned by that server. Add the bot as a normal member of every mapped
-channel; do not grant it System Admin. Ensure the local coord operator already
-has `send,receive` on each mapped room. Every coord room and channel ID may
-appear only once. `backfill=false` starts after current coord history and
-Mattermost channel history; use `true` only when intentionally projecting all
-retained coord history.
+returned by that server. Add the dedicated bot **directly as a normal member**
+of every channel named by a `[[rooms]]` mapping. Do not use an invitation flow;
+an invitation is not channel membership for this adapter. Do not grant the bot
+System Admin. Ensure the local coord operator already has `send,receive` on
+each mapped room. Every coord room and channel ID may appear only once.
+`backfill=false` starts after current coord history and Mattermost channel
+history; use `true` only when intentionally projecting all retained coord
+history.
 
 The adapter creates the `state_file` itself with mode `0600`. It stores only
 mapping cursors and correlation/idempotency records, not the bot token. Once a
