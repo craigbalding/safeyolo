@@ -14,17 +14,9 @@ def _existing_topics(manifest: dispatch.DispatchManifest, output_root: Path) -> 
     result: dict[str, str] = {}
     for topic in manifest.topic_updates:
         relative = topic.relative_path
-        target = output_root / relative
-        if not target.exists() and not target.is_symlink():
-            continue
-        if target.is_symlink() or not target.is_file():
-            raise dispatch.DispatchError(f"existing topic is not a regular non-symlink file: {relative}")
-        if target.stat().st_size > dispatch.MAX_OUTPUT_BYTES:
-            raise dispatch.DispatchError(f"existing topic is oversized: {relative}")
-        try:
-            result[relative.as_posix()] = target.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise dispatch.DispatchError(f"cannot read existing topic: {type(exc).__name__}") from exc
+        existing = dispatch.read_existing_generated_file(output_root, relative)
+        if existing is not None:
+            result[relative.as_posix()] = existing
     return result
 
 

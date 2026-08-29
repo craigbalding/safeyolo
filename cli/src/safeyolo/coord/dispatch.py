@@ -619,16 +619,39 @@ def parse_manifest_text(text: str) -> DispatchManifest:
 
 
 def load_manifest(path: Path) -> DispatchManifest:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise DispatchError("this platform cannot enforce no-follow source reads")
+    flags = os.O_RDONLY | no_follow | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        if path.is_symlink() or not path.is_file():
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise DispatchError("dispatch source must be a regular non-symlink file") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
             raise DispatchError("dispatch source must be a regular non-symlink file")
-        if path.stat().st_size > MAX_MANIFEST_BYTES:
+        if metadata.st_size > MAX_MANIFEST_BYTES:
             raise DispatchError(f"dispatch source exceeds {MAX_MANIFEST_BYTES} bytes")
-        text = path.read_text(encoding="utf-8")
-    except DispatchError:
-        raise
-    except (OSError, UnicodeError) as exc:
+        chunks: list[bytes] = []
+        remaining = MAX_MANIFEST_BYTES + 1
+        while remaining:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        if len(content) > MAX_MANIFEST_BYTES:
+            raise DispatchError(f"dispatch source exceeds {MAX_MANIFEST_BYTES} bytes")
+        try:
+            text = content.decode("utf-8")
+        except UnicodeError as exc:
+            raise DispatchError("dispatch source must be valid UTF-8") from exc
+    except OSError as exc:
         raise DispatchError(f"cannot read dispatch source: {type(exc).__name__}") from exc
+    finally:
+        os.close(fd)
     return parse_manifest_text(text)
 
 
@@ -963,13 +986,21 @@ def _directory_open_flags() -> int:
     return os.O_RDONLY | no_follow | directory | getattr(os, "O_CLOEXEC", 0)
 
 
-def _open_output_directory(root: Path, relative_parent: Path, *, create: bool) -> int:
+def _open_output_directory(
+    root: Path,
+    relative_parent: Path,
+    *,
+    create: bool,
+    missing_ok: bool = False,
+) -> int | None:
     """Open the target directory by held descriptors, never by a rechecked path."""
 
     flags = _directory_open_flags()
     try:
         current_fd = os.open(root, flags)
     except FileNotFoundError:
+        if missing_ok:
+            return None
         if not create:
             raise DispatchError("generated output root or directory is missing") from None
         try:
@@ -987,6 +1018,9 @@ def _open_output_directory(root: Path, relative_parent: Path, *, create: bool) -
             try:
                 next_fd = os.open(part, flags, dir_fd=current_fd)
             except FileNotFoundError:
+                if missing_ok:
+                    os.close(current_fd)
+                    return None
                 if not create:
                     raise DispatchError("generated output root or directory is missing") from None
                 try:
@@ -1040,6 +1074,40 @@ def _existing_output(parent_fd: int, name: str) -> str | None:
         os.close(fd)
 
 
+def _validate_output_path(relative: Path) -> None:
+    if relative.is_absolute() or ".." in relative.parts:
+        raise DispatchError("generated output path escapes the publication tree")
+    if (
+        len(relative.parts) != 2
+        or relative.parts[0]
+        not in {  # DOC: docs/dispatch-generation.md
+            "dispatch",
+            "snapshots",
+            "topics",
+        }
+        or relative.suffix != ".md"
+    ):
+        raise DispatchError("generated output path is outside the publication tree")
+
+
+def read_existing_generated_file(output_root: Path, relative: Path) -> str | None:
+    """Read one optional generated file through held no-follow descriptors."""
+
+    _validate_output_path(relative)
+    parent_fd = _open_output_directory(
+        output_root,
+        relative.parent,
+        create=False,
+        missing_ok=True,
+    )
+    if parent_fd is None:
+        return None
+    try:
+        return _existing_output(parent_fd, relative.name)
+    finally:
+        os.close(parent_fd)
+
+
 def _create_temporary_output(parent_fd: int, target_name: str) -> tuple[int, str]:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     for _attempt in range(32):
@@ -1063,23 +1131,14 @@ def write_generated_files(
     seen: set[Path] = set()
     for generated in files:
         relative = generated.relative_path
-        if relative.is_absolute() or ".." in relative.parts or relative in seen:
-            raise DispatchError("generated output path escapes or duplicates the publication tree")
-        if (
-            len(relative.parts) != 2
-            or relative.parts[0]
-            not in {  # DOC: docs/dispatch-generation.md
-                "dispatch",
-                "snapshots",
-                "topics",
-            }
-            or relative.suffix != ".md"
-        ):
-            raise DispatchError("generated output path is outside the publication tree")
+        _validate_output_path(relative)
+        if relative in seen:
+            raise DispatchError("generated output path duplicates the publication tree")
         if len(generated.content.encode("utf-8")) > MAX_OUTPUT_BYTES:
             raise DispatchError("generated output exceeds the size bound")
         seen.add(relative)
         parent_fd = _open_output_directory(output_root, relative.parent, create=not check)
+        assert parent_fd is not None
         try:
             existing = _existing_output(parent_fd, relative.name)
             if existing == generated.content:

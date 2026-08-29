@@ -38,9 +38,11 @@ Dates and content are explicit inputs; generation never reads the clock or
 network. The same source and existing material topic state produce identical
 bytes. Writes are atomic and limited to fixed `dispatch/`, `snapshots/`, and
 `topics/` descendants. Symlinked inputs, output roots, directories, and files
-fail closed. Final reads, temporary-file creation, replacement, and directory
-sync use held no-follow directory descriptors so a concurrent path swap cannot
-redirect output. The command neither deletes stale pages nor performs a publish.
+fail closed. Manifest and existing-topic reads hold one no-follow file or
+directory descriptor through validation and decoding. Final output reads,
+temporary-file creation, replacement, and directory sync likewise use held
+no-follow descriptors, so a concurrent path swap cannot redirect input or
+output. The command neither deletes stale pages nor performs a publish.
 
 The exercised source at
 [`site/_sources/dispatch/2026-08-29.json`](../site/_sources/dispatch/2026-08-29.json)

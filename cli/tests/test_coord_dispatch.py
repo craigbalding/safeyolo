@@ -552,6 +552,34 @@ def test_check_mode_does_not_create_missing_output_tree(tmp_path: Path) -> None:
     assert not root.exists()
 
 
+def test_manifest_read_does_not_follow_post_open_path_swap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "dispatch.json"
+    held_source = tmp_path / "dispatch-held.json"
+    outside = tmp_path / "outside.json"
+    source.write_text(json.dumps(manifest_data()), encoding="utf-8")
+    outside_source = manifest_data()
+    outside_source["sections"][0]["items"][0]["title"] = "Outside replacement"
+    outside.write_text(json.dumps(outside_source), encoding="utf-8")
+    original_fstat = dispatch.os.fstat
+    swapped = False
+
+    def swap_after_open(fd: int) -> Any:
+        nonlocal swapped
+        metadata = original_fstat(fd)
+        if not swapped:
+            source.rename(held_source)
+            source.symlink_to(outside)
+            swapped = True
+        return metadata
+
+    monkeypatch.setattr(dispatch.os, "fstat", swap_after_open)
+    manifest = dispatch.load_manifest(source)
+    assert manifest.sections[0].items[0].title == "Structured completion notes"
+
+    with pytest.raises(dispatch.DispatchError, match="non-symlink"):
+        dispatch.load_manifest(source)
+
+
 def test_writer_rejects_symlinks_and_path_escape(tmp_path: Path) -> None:
     files = dispatch.generate_files(parse(manifest_data()))
     real = tmp_path / "real"
