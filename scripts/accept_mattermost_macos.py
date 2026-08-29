@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import re
 import shutil
@@ -166,6 +167,28 @@ def _replacement_guards(root: Path) -> None:
         value = conn.execute("SELECT value FROM sentinel").fetchone()
     if tables != {"sentinel"} or value != ("unchanged",):
         raise AcceptanceError("state replacement target was modified")
+
+    for replacement_kind in ("copy", "hardlinked-copy"):
+        durable_path = root / f"durable-{replacement_kind}.sqlite3"
+        durable = MattermostState(_config(durable_path))
+        durable.set_coord_cursor(_ROOM, 41)
+        durable.close()
+        original_path = root / f"durable-{replacement_kind}-original.sqlite3"
+        durable_path.rename(original_path)
+        copied_path = root / f"durable-{replacement_kind}-copied.sqlite3"
+        shutil.copy2(original_path, copied_path)
+        copied_path.chmod(0o600)
+        if replacement_kind == "copy":
+            copied_path.rename(durable_path)
+        else:
+            os.link(copied_path, durable_path)
+        try:
+            MattermostState(_config(durable_path))
+        except MattermostAdapterError as exc:
+            if "state_file identity differs from durable state" not in str(exc):
+                raise AcceptanceError(f"{replacement_kind} state replacement failed for the wrong reason") from exc
+        else:
+            raise AcceptanceError(f"new adapter accepted {replacement_kind} state replacement")
 
     lease_path = root / "lease-state.sqlite3"
     first = MattermostState(_config(lease_path))

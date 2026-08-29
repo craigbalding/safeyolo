@@ -69,6 +69,13 @@ def test_acceptance_cleanup_removes_only_verified_script_roots(tmp_path: Path) -
         assert sibling.read_text(encoding="utf-8") == "untouched"
 
 
+def test_structural_replacement_gate_includes_new_regular_and_hardlinked_copies(tmp_path: Path) -> None:
+    structural = load_script("accept_mattermost_macos.py")
+    root = tmp_path / "safeyolo-mm-macos-accept-replacements"
+    root.mkdir(mode=0o700)
+    structural._replacement_guards(root)
+
+
 def test_acceptance_scripts_expose_only_bounded_arguments() -> None:
     for name in ("accept_mattermost_macos.py", "accept_mattermost_macos_integration.py"):
         path = REPO_ROOT / "scripts" / name
