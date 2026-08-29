@@ -81,6 +81,16 @@ repos:
         always_run: true
         pass_filenames: false
 
+      # Blackbox cadence drift: scheduled full lanes and artifact publication
+      # come from the workflow; marked docs may not claim hardware nightlies
+      # that are only run manually by the acceptance harness/operator.
+      - id: blackbox-cadence-drift
+        name: Blackbox cadence docs in sync
+        entry: python3 scripts/check_blackbox_cadence.py
+        language: system
+        always_run: true
+        pass_filenames: false
+
       # Repo-relative link check on user-facing docs. External URLs are
       # skipped (would flake in CI); this catches moved/renamed files
       # being referenced by stale paths.
