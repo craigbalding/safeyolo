@@ -7,10 +7,10 @@ change factory policy, or approve its own output. Publication remains a later
 operator-approved pull-request flow.
 
 The intended reader understands ordinary software and security concepts but
-does not know SafeYolo internals. A source must define any used SafeYolo term
-such as `coord`, `run_id`, or `sgw_`; the renderer omits unused definitions so
-they cannot become glossary filler. Relay, Forge, and Lens are expanded in the
-standard editorial and attribution labels.
+does not know SafeYolo internals. Sources own their terminology definitions;
+the renderer supports any concise defined term and emits it only where the
+content uses it. Relay, Forge, and Lens are expanded in the standard editorial
+and attribution labels.
 
 ## Repository paths and deterministic command
 
@@ -35,14 +35,12 @@ uv run python scripts/generate_dispatch.py \
 ```
 
 Dates and content are explicit inputs; generation never reads the clock or
-network. The same source and existing material topic state produce identical
-bytes. Writes are atomic and limited to fixed `dispatch/`, `snapshots/`, and
-`topics/` descendants. Symlinked inputs, output roots, directories, and files
-fail closed. Manifest and existing-topic reads hold one no-follow file or
-directory descriptor through validation and decoding. Final output reads,
-temporary-file creation, replacement, and directory sync likewise use held
-no-follow descriptors, so a concurrent path swap cannot redirect input or
-output. The command neither deletes stale pages nor performs a publish.
+network. The same source produces identical bytes. Writes are atomic and
+limited to fixed `dispatch/`, `snapshots/`, and `topics/` descendants. The
+command rejects symlinked inputs, output-root symlinks, output symlinks, and
+directory symlinks that escape the selected output root. Temporary files stay
+beside their target and are atomically replaced. The command neither deletes
+stale pages nor performs a publish.
 
 The exercised source at
 [`site/_sources/dispatch/2026-08-29.json`](../site/_sources/dispatch/2026-08-29.json)
@@ -68,7 +66,7 @@ The strict JSON root contains:
 
 - `version`, currently `1`;
 - `period`, with `kind`, `start`, and `end`;
-- `definitions`, only for SafeYolo-specific terms actually used;
+- `definitions`, a content-owned map of concise terms actually used;
 - `sections`, in editorial order; and
 - optional `topic_updates`.
 
@@ -96,56 +94,37 @@ and Relay synthesis. The renderer escapes editorial text as plain Markdown;
 only validated evidence records become links and only a dedicated snippet
 becomes a code fence.
 
-## Worker notes are private nominations
+## The final manifest is the publication input
 
-Use `safeyolo.coord.dispatch.collect_verified_nominations` with complete
-canonical retained envelopes and a required verifier callback. The #437 parser
-accepts only a valid `DISPATCH_CANDIDATE` trailer and derives private sender,
-message, time, and coord-sequence provenance from the envelope. Operator and
-factory candidates are ignored.
-
-The verifier checks issues, pull requests, exact commits or trees, tests, or
-runtime evidence and returns a stable key, verified attribution, and public
-GitHub evidence. Returning `None` rejects an unsupported nomination. A
-qualified nomination also returns an explicit Relay-authored qualification. A
-content item that references the key must retain the verified attribution,
-include all verified public evidence, and preserve the exact qualification.
-
-Candidate summary, snippet, attribution, authored evidence, raw envelope,
-message ID, internal sequence, and other private provenance are never copied
-into Markdown. They remain an in-memory interest signal. The committed public
-source contains Relay's verified editorial copy and public evidence, not raw
-completion notes or a coord transcript.
+Worker observations may lead Relay to material, but candidate collection and
+claim verification happen before generation. The command consumes only the
+final JSON manifest with Relay's authored copy, attribution, and public
+evidence. Raw completion notes, coord envelopes, transcripts, and private
+provenance are not generator inputs and never become publication copy.
 
 ## Evidence and hygiene
 
-Material claims accept only HTTPS links into the public
-`craigbalding/safeyolo` GitHub repository. Issue, pull-request, commit,
-document, and test evidence kinds must match their URL shape; exact-commit blob
-links are required for source/test citations. Internal coord sequences may be
-retained privately by Relay but are not public citations.
+Material claims accept public HTTPS evidence, including authoritative upstream
+sources. Credentials, query data, malformed Markdown-breaking destinations,
+private or noncanonical numeric addresses, and internal hostnames are rejected.
+On GitHub, issue, pull-request, commit, document, and test evidence kinds must
+match their URL shape. Relay remains responsible for establishing that each
+public source is authoritative for its claim. Internal coord sequences may be
+retained privately but are not public citations.
 
 Generation rejects bounded-input violations, duplicate or unknown JSON keys,
-malformed periods and section shapes, unsupported nomination references,
-obvious credential/token/private-key patterns, private coord identifiers or
-sequences, raw completion trailers, host-private paths, and chain-of-thought or
-raw-reasoning labels. These checks are a final obvious-leakage guard, not a
-substitute for Relay verifying and editing every public claim.
-
-Repeated canonical envelopes are accepted only when the same message ID has the
-same canonical identity and bytes. Conflicting uses of one message ID fail
-before any candidate is verified, keeping candidate selection independent of
-input order.
+malformed periods and section shapes, obvious credential/token/private-key
+patterns, private coord identifiers or sequences, raw completion trailers,
+host-private paths, and chain-of-thought or raw-reasoning labels. These checks
+are a final obvious-leakage guard, not a substitute for Relay verifying and
+editing every public claim.
 
 ## Material topic updates
 
 A topic page is a current-state synthesis, not a concatenated archive. Each
-proposed topic update requires a stable slug, a `state_key` for the material
-current state, an explanation of the material change, current-state bullets,
-and public evidence.
+topic update requires a stable slug, a `state_key` for the material current
+state, current-state bullets, and public evidence.
 
-Generated pages retain the state key in a machine-readable comment. Rerunning
-the same state is byte-identical. Changing topic copy or evidence without
-changing the semantic state key fails rather than creating a cosmetic update;
-a genuinely material state change uses a new key. No topic entry in the source
-means no topic write.
+Generated pages retain the state key in a machine-readable comment. Copy and
+evidence corrections may keep the same key; a genuinely material state change
+uses a new one. No topic entry in the source means no topic write.
