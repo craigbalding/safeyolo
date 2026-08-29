@@ -53,6 +53,10 @@ verified evidence, distinct nomination task keys, and the verifier's stable
 recommendation key. Confidence punctuation, explanatory inference, and other
 presentation-only wording do not create a new revision.
 
+Once `pending` exposes a proposal-ready revision, its exact rendered snapshot
+is frozen. Concurrent non-material nominations cannot produce a second body
+with the same revision; only a material revision change replaces it.
+
 Evidence is deduplicated and sorted. Every accepted nomination also gains a
 coord evidence reference built from canonical envelope provenance; authored
 candidate provenance is never used. A revision already presented remains

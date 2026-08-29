@@ -370,6 +370,30 @@ def test_nonmaterial_rendering_metadata_does_not_reopen_presented_revision(
     assert ledger.pending() == ()
 
 
+def test_pending_body_stays_exact_across_concurrent_nonmaterial_nomination(
+    tmp_path: Path,
+) -> None:
+    ledger, selected = ready_ledger(tmp_path)
+    changed_confidence = verified_observation(material=True)
+    changed_confidence = factory_proposals.VerifiedFactoryObservation(
+        **{**changed_confidence.__dict__, "confidence": "high."}
+    )
+    consume(
+        ledger,
+        candidate_envelope(sequence=12),
+        changed_confidence,
+    )
+    assert ledger.pending() == (selected,)
+
+    # Coord accepted the previously selected exact body before Relay could
+    # update the ledger. Restart reconciliation must recognize that send.
+    sent = relay_send_envelope(selected)
+    restarted = factory_proposals.FactoryProposalLedger(ledger.path)
+    reconciled = restarted.reconcile_presentations([sent])
+    assert reconciled[0].last_presented_revision == selected.revision
+    assert restarted.pending() == ()
+
+
 def test_out_of_order_exact_replay_cannot_regress_recommendation(
     tmp_path: Path,
 ) -> None:

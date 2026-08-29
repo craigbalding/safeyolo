@@ -649,6 +649,19 @@ class FactoryProposalLedger:  # DOC: docs/factory-proposals.md, cli/src/safeyolo
                     last_seen=max(current.last_seen, seen_at),
                     **selected,
                 )
+                if (
+                    current.status is ProposalStatus.PROPOSAL_READY
+                    and updated.revision == current.revision
+                    and covered_by is None
+                ):
+                    # Once pending() can hand this revision to Relay, its exact
+                    # rendered snapshot stays fixed. Non-material nominations
+                    # may advance last_seen but cannot create a second body for
+                    # the same presentation revision.
+                    updated = replace(
+                        current,
+                        last_seen=max(current.last_seen, seen_at),
+                    )
                 task_count = len({item.task_key for item in evidence})
                 if current.status is ProposalStatus.OBSERVED and (verified.material or task_count >= 2):
                     updated = replace(updated, status=ProposalStatus.PROPOSAL_READY)
@@ -712,7 +725,12 @@ class FactoryProposalLedger:  # DOC: docs/factory-proposals.md, cli/src/safeyolo
             current = records.get(rendered.fingerprint)
             if current is None:
                 raise ProposalTransitionError("proposal no longer exists")
-            if current.status is not ProposalStatus.PROPOSAL_READY or current.revision != rendered.revision:
+            current_rendered = render_proposal(current) if current.status is ProposalStatus.PROPOSAL_READY else None
+            if (
+                current_rendered is None
+                or current.revision != rendered.revision
+                or current_rendered.body != rendered.body
+            ):
                 raise ProposalTransitionError("proposal revision is no longer ready")
             updated = ProposalRecord(
                 **{

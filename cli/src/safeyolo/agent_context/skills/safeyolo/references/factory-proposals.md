@@ -39,6 +39,11 @@ separate sections. Relay sends that body unchanged through the existing
 operator-facing coord room as Relay. Only after a successful send, pass the
 returned canonical Relay envelope to `mark_presented`.
 
+The exact body for a pending revision is frozen. A concurrent confidence,
+inference, impact, wording, or same-task nomination update cannot create a
+different body with the same revision; a material revision invalidates the old
+selection and must be rendered again.
+
 After restart, call `reconcile_presentations` on retained room history before
 sending pending proposals. This recognizes an exact prior Relay send if the
 process stopped between coord acceptance and the ledger update. Do not copy the
