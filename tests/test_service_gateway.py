@@ -2400,6 +2400,191 @@ capabilities:
         assert "OPERATION_NOT_GRANTABLE" in body["reason_codes"]
 
 
+class TestPrebindingDiscoveryWithRealPDP:
+    """Policy compilation and gateway enforcement transition together."""
+
+    def test_discovery_before_binding_then_only_resolved_bound_route(
+        self, make_flow, tmp_path
+    ):
+        services = tmp_path / "services"
+        services.mkdir()
+        (services / "contractsvc.yaml").write_text(
+            """
+schema_version: 1
+name: contractsvc
+default_host: api.contractsvc.com
+auth: {type: bearer}
+capabilities:
+  explorer:
+    routes:
+      - methods: [GET]
+        path: /api/v1/**
+    contract:
+      template: explorer.v1
+      bindings:
+        category: {source: operator, type: string}
+      operations:
+        - name: discover_categories
+          request:
+            method: GET
+            path: /api/v1/categories
+            transport: {require_no_body: true}
+        - name: list_items
+          request:
+            method: GET
+            path: /api/v1/categories/{id}/items
+            path_params:
+              id: {equals_var: category}
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced
+"""
+        )
+        registry = init_service_registry(services)
+        policy_path = tmp_path / "policy.yaml"
+
+        def write_policy(*, bound: bool) -> None:
+            binding = ""
+            if bound:
+                binding = """
+    contract_bindings:
+      - service: contractsvc
+        capability: explorer
+        template: explorer.v1
+        bound_values: {category: books}
+        grantable_operations: [list_items]
+"""
+            policy_path.write_text(
+                """
+version: "2.0"
+hosts:
+  api.contractsvc.com: {service: contractsvc}
+agents:
+  testbot:
+    services:
+      contractsvc: {capability: explorer, token: test-cred}
+"""
+                + binding
+            )
+
+        write_policy(bound=False)
+        client = LocalPolicyClient(PolicyClientConfig(baseline_path=policy_path))
+        vault = _vault_with(
+            tmp_path,
+            VaultCredential(
+                name="test-cred",
+                type="bearer",
+                value="real-upstream-token",
+            ),
+        )
+        gateway = ServiceGateway()
+        gateway._host_map = {"api.contractsvc.com": "contractsvc"}
+        token = gateway.mint_tokens(
+            {
+                "testbot": {
+                    "contractsvc": {
+                        "capability": "explorer",
+                        "token": "test-cred",
+                    }
+                }
+            }
+        )["testbot"]["contractsvc"]
+
+        def request(path: str):
+            flow = make_flow(
+                url=f"https://api.contractsvc.com{path}",
+                headers={"authorization": f"Bearer {token}"},
+            )
+            for header in list(flow.request.headers):
+                if header.lower() not in (
+                    "authorization",
+                    "host",
+                    "content-length",
+                ):
+                    del flow.request.headers[header]
+            _set_agent(flow, "testbot")
+            with (
+                patch("service_gateway.ctx", _mock_ctx()),
+                patch(
+                    "service_gateway.get_service_registry",
+                    autospec=True,
+                    return_value=registry,
+                ),
+                patch(
+                    "service_gateway.get_vault",
+                    autospec=True,
+                    return_value=vault,
+                ),
+                patch(
+                    "pdp.is_policy_client_configured",
+                    autospec=True,
+                    return_value=True,
+                ),
+                patch(
+                    "pdp.get_policy_client",
+                    autospec=True,
+                    return_value=client,
+                ),
+            ):
+                gateway.request(flow)
+            return flow
+
+        try:
+            discovery = request("/api/v1/categories")
+            assert discovery.response is None
+            assert discovery.request.headers["authorization"] == (
+                "Bearer real-upstream-token"
+            )
+
+            broadened_discovery = request("/api/v1/categories?secret=value")
+            assert broadened_discovery.response.status_code == 403
+            assert json.loads(broadened_discovery.response.content)[
+                "reason_codes"
+            ] == ["CONTRACT_VIOLATION"]
+
+            before_binding = request("/api/v1/categories/books/items")
+            assert before_binding.response.status_code == 403
+            assert json.loads(before_binding.response.content)["reason_codes"] == [
+                "ROUTE_DENIED"
+            ]
+
+            write_policy(bound=True)
+            assert client._pdp._engine._loader.reload()
+            with patch.object(
+                gateway,
+                "_persist_contract_binding_delta",
+                autospec=True,
+            ):
+                gateway.add_contract_binding(
+                    agent="testbot",
+                    service="contractsvc",
+                    capability="explorer",
+                    template="explorer.v1",
+                    bound_values={"category": "books"},
+                    grantable_operations=["list_items"],
+                )
+
+            resolved = request("/api/v1/categories/books/items")
+            assert resolved.response is None
+            assert resolved.request.headers["authorization"] == (
+                "Bearer real-upstream-token"
+            )
+
+            wrong_value = request("/api/v1/categories/music/items")
+            assert wrong_value.response.status_code == 403
+            assert json.loads(wrong_value.response.content)["reason_codes"] == [
+                "ROUTE_DENIED"
+            ]
+
+            stale_discovery = request("/api/v1/categories")
+            assert stale_discovery.response.status_code == 403
+            assert json.loads(stale_discovery.response.content)["reason_codes"] == [
+                "ROUTE_DENIED"
+            ]
+        finally:
+            client.shutdown()
+
+
 # =========================================================================
 # Transport Hygiene E2E Tests
 # =========================================================================

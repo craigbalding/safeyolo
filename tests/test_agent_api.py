@@ -1552,11 +1552,75 @@ class TestEnvVarPaths:
 
 
 # -- Gateway endpoint tests --
-# DEFERRED: /gateway/services, /gateway/request-access, /gateway/submit-binding
-# require complex setup with service-discovery, service-gateway, service-loader,
-# and contract model mocking. These are better tested as integration tests or
-# in a dedicated test file. The endpoint handler logic is ~300 LOC with multiple
-# addon lookups, service registry calls, and contract validation.
+
+
+class TestGatewaySubmitBinding:
+    def test_partial_operation_values_fail_closed_with_diagnostics(
+        self, api, tmp_path
+    ):
+        from safeyolo.core.service_loader import init_service_registry
+
+        services = tmp_path / "services"
+        services.mkdir()
+        (services / "contractsvc.yaml").write_text(
+            """
+schema_version: 1
+name: contractsvc
+capabilities:
+  explorer:
+    contract:
+      template: explorer.v1
+      bindings:
+        category: {source: agent, type: string}
+        owner: {source: agent, type: string}
+      operations:
+        - name: by_category
+          request:
+            method: GET
+            path: /categories/{id}
+            path_params:
+              id: {equals_var: category}
+        - name: create
+          request:
+            method: POST
+            path: /items
+            body:
+              allow:
+                owner: {equals_var: owner}
+      enforcement: {request_shape: enforced}
+"""
+        )
+        init_service_registry(services)
+        flow = _make_api_flow("/gateway/submit-binding", method="POST")
+        flow.request.content = json.dumps(
+            {
+                "service": "contractsvc",
+                "capability": "explorer",
+                "bindings": {"category": "books"},
+            }
+        ).encode()
+
+        with (
+            patch.object(
+                api,
+                "_resolve_agent_id",
+                autospec=True,
+                return_value="testbot",
+            ),
+            patch("agent_api.write_event", autospec=True) as write_event_mock,
+        ):
+            api._handle_gateway_submit_binding(flow)
+
+        assert flow.response.status_code == 200
+        body = json.loads(flow.response.content)
+        assert body == {
+            "decision": "denied_out_of_scope",
+            "errors": ["'owner' is required by operation 'create'"],
+        }
+        write_event_mock.assert_not_called()
+
+
+# Remaining /gateway endpoint branches need multi-addon integration fixtures.
 
 
 # =============================================================================

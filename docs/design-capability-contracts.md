@@ -321,6 +321,28 @@ capabilities:
 
 ### What this enforces at each tier
 
+#### Pre-binding discovery subset
+
+Authorizing a contract capability does not approve its bound operations. Before
+an operator-approved binding exists, the compiler exposes only operations that:
+
+- are grantable under the contract's current enforcement-tier declarations;
+- have a literal path with no unresolved template parameter;
+- contain no `equals_var` reference in path, query, or body constraints; and
+- contain no `in_state_set` reference (state enforcement remains a later tier).
+
+These operations are intended for value-free discovery, such as listing the
+categories from which a binding value will be chosen. They keep the exact
+agent, capability, method, and resource conditions, and the gateway still
+applies the complete canonical request contract. SafeYolo never substitutes a
+wildcard, emits an unresolved placeholder, or falls back to the capability's
+raw routes.
+
+Once a binding is approved, its explicit `grantable_operations` and resolved
+values replace this pre-binding subset on policy reload. Missing or malformed
+values omit the affected operation rather than broadening it. Operator approval
+is still required; discovery neither submits nor approves a binding.
+
 **v1 — request shape + transport hygiene (list_messages only):**
 
 The `get_message` operation declares `requires_enforcement: state_enforcement`,

@@ -654,7 +654,8 @@ def _compile_capability_routes(
     For each agent/service/capability grant, resolves routes into permissions:
     - No contract: emit raw capability routes
     - Contract with binding: resolve operations using bound_values
-    - Contract without binding: skip (no permissions, PDP denies)
+    - Contract without binding: emit only exact operations whose complete
+      request contract needs no bound value or runtime state
 
     Args:
         token_map: Compiled token map (agent → service bindings)
@@ -680,10 +681,20 @@ def _compile_capability_routes(
             continue
 
         contract_bindings = agent_data.get("contract_bindings", [])
+        if not isinstance(contract_bindings, list):
+            log.warning(
+                "Ignoring invalid contract_bindings for agent %s: expected a list",
+                sanitize_for_log(agent_name),
+            )
+            contract_bindings = []
 
         for service_name, capability_name in service_map.items():
             service_def = registry.get_service(service_name)
             if service_def is None:
+                log.warning(
+                    "Service %s not found during capability compilation",
+                    sanitize_for_log(service_name),
+                )
                 continue
 
             capability = service_def.capabilities.get(capability_name)
@@ -720,17 +731,108 @@ def _compile_capability_routes(
                     capability_name,
                     capability.contract.template,
                 )
+                contract = capability.contract
                 if binding is None:
-                    # Case 3: No binding yet → no permissions emitted
-                    continue
+                    if any(
+                        isinstance(candidate, dict)
+                        and candidate.get("service") == service_name
+                        and candidate.get("capability") == capability_name
+                        for candidate in contract_bindings
+                    ):
+                        log.warning(
+                            "No contract binding for template %s on %s/%s; using only the pre-binding subset",
+                            sanitize_for_log(contract.template),
+                            sanitize_for_log(service_name),
+                            sanitize_for_log(capability_name),
+                        )
+                    # Case 3: Pre-binding discovery is limited to operations
+                    # whose exact request contract requires no external value.
+                    operations = contract.prebinding_grantable_operations()
+                    bound_values = {}
+                else:
+                    # Case 2: A persisted approval names the only operations
+                    # eligible for compilation. Invalid records fail closed.
+                    bound_values = binding.get("bound_values", {})
+                    operation_names = binding.get("grantable_operations", [])
+                    if not isinstance(bound_values, dict):
+                        log.warning(
+                            "Ignoring invalid bound_values for %s/%s/%s: expected an object",
+                            sanitize_for_log(agent_name),
+                            sanitize_for_log(service_name),
+                            sanitize_for_log(capability_name),
+                        )
+                        continue
+                    if not isinstance(operation_names, list) or not all(
+                        isinstance(name, str) for name in operation_names
+                    ):
+                        log.warning(
+                            "Ignoring invalid grantable_operations for %s/%s/%s: expected a string list",
+                            sanitize_for_log(agent_name),
+                            sanitize_for_log(service_name),
+                            sanitize_for_log(capability_name),
+                        )
+                        continue
 
-                # Case 2: Binding found — resolve grantable operations
-                bound_values = binding.get("bound_values", {})
-                for op_name in binding.get("grantable_operations", []):
-                    operation = _find_operation(capability.contract, op_name)
-                    if operation is None:
+                    grantable = {
+                        operation.name: operation
+                        for operation in contract.grantable_operations()
+                    }
+                    operations = []
+                    seen: set[str] = set()
+                    for operation_name in operation_names:
+                        if operation_name in seen:
+                            continue
+                        seen.add(operation_name)
+                        operation = grantable.get(operation_name)
+                        if operation is None:
+                            log.warning(
+                                "Ignoring unknown or unenforceable contract operation %s for %s/%s",
+                                sanitize_for_log(operation_name),
+                                sanitize_for_log(service_name),
+                                sanitize_for_log(capability_name),
+                            )
+                            continue
+                        operations.append(operation)
+
+                for operation in operations:
+                    references = operation.bound_value_references()
+                    unknown_references = references - set(contract.bindings)
+                    missing_references = {
+                        name
+                        for name in references
+                        if name not in bound_values or bound_values[name] is None
+                    }
+                    if unknown_references or missing_references:
+                        missing = sorted(unknown_references | missing_references)
+                        log.warning(
+                            "Skipping contract operation %s for %s/%s: unresolved binding values %s",
+                            sanitize_for_log(operation.name),
+                            sanitize_for_log(service_name),
+                            sanitize_for_log(capability_name),
+                            sanitize_for_log(", ".join(missing)),
+                        )
+                        continue
+                    unsafe_path_references = _unsafe_path_binding_references(
+                        operation, bound_values
+                    )
+                    if unsafe_path_references:
+                        log.warning(
+                            "Skipping contract operation %s for %s/%s: path binding values %s must be scalar path segments without separators or glob metacharacters",
+                            sanitize_for_log(operation.name),
+                            sanitize_for_log(service_name),
+                            sanitize_for_log(capability_name),
+                            sanitize_for_log(", ".join(sorted(unsafe_path_references))),
+                        )
                         continue
                     resolved_path = _resolve_path(operation, bound_values)
+                    if resolved_path is None:
+                        log.warning(
+                            "Skipping contract operation %s for %s/%s: path requires unresolved or stateful parameters",
+                            sanitize_for_log(operation.name),
+                            sanitize_for_log(service_name),
+                            sanitize_for_log(capability_name),
+                        )
+                        continue
                     permissions.append(
                         {
                             "action": "gateway:request",
@@ -749,20 +851,14 @@ def _compile_capability_routes(
 def _find_contract_binding(bindings: list[dict], service: str, capability: str, template: str) -> dict | None:
     """Find a matching contract binding for a service/capability/template."""
     for b in bindings:
+        if not isinstance(b, dict):
+            continue
         if b.get("service") == service and b.get("capability") == capability and b.get("template", "") == template:
             return b
     return None
 
 
-def _find_operation(contract, op_name: str):
-    """Find an operation by name in a contract template."""
-    for op in contract.operations:
-        if op.name == op_name:
-            return op
-    return None
-
-
-def _resolve_path(operation, bound_values: dict) -> str:
+def _resolve_path(operation, bound_values: dict) -> str | None:
     """Resolve path template parameters using bound values.
 
     For each {param} in the operation path, looks up the param's equals_var
@@ -773,21 +869,66 @@ def _resolve_path(operation, bound_values: dict) -> str:
         path_params: {id: {equals_var: approved_category_id}}
         bound_values: {approved_category_id: 137}
         → /v1/categories/137/feeds
+
+    Returns ``None`` rather than emitting an unresolved or stateful path.
     """
+    if operation.has_state_reference():
+        return None
+
     path = operation.path
-    if not operation.path_params:
-        return path
 
-    for param_name, constraint in operation.path_params.items():
+    for param_name in operation.path_placeholders():
         placeholder = f"{{{param_name}}}"
-        if placeholder not in path:
-            continue
+        constraint = operation.path_params.get(param_name)
+        if constraint is None or not constraint.equals_var:
+            return None
+        if (
+            constraint.equals_var not in bound_values
+            or bound_values[constraint.equals_var] is None
+        ):
+            return None
+        component = _safe_path_binding_component(
+            bound_values[constraint.equals_var]
+        )
+        if component is None:
+            return None
+        path = path.replace(placeholder, component)
 
-        var_name = getattr(constraint, "equals_var", None)
-        if var_name and var_name in bound_values:
-            path = path.replace(placeholder, str(bound_values[var_name]))
-
+    if "{" in path or "}" in path:
+        return None
     return path
+
+
+def _unsafe_path_binding_references(operation, bound_values: dict) -> set[str]:
+    """Return path-bound variables whose values could broaden a PDP pattern."""
+    unsafe: set[str] = set()
+    for constraint in operation.path_params.values():
+        reference = constraint.equals_var
+        if (
+            reference
+            and reference in bound_values
+            and bound_values[reference] is not None
+            and _safe_path_binding_component(bound_values[reference]) is None
+        ):
+            unsafe.add(reference)
+    return unsafe
+
+
+def _safe_path_binding_component(value) -> str | None:
+    """Convert a binding to one literal PDP path segment, or fail closed.
+
+    Resolved resources are fnmatch patterns. A persisted binding must therefore
+    never introduce glob syntax or change path segmentation, even if it bypassed
+    the normal submission endpoint.
+    """
+    if not isinstance(value, (str, int, bool)):
+        return None
+    component = str(value)
+    if not component or component in {".", ".."}:
+        return None
+    if any(character in component for character in "/\\*?[]"):
+        return None
+    return component
 
 
 def decompile_approval(destination: str, cred_ids: list[str]) -> dict:

@@ -946,6 +946,77 @@ class TestContractOperation:
         assert "id" in op.path_params
         assert op.path_params["id"].in_state_set == "discovered_ids"
 
+    def test_bound_value_references_cover_path_query_and_body(self):
+        op = ContractOperation.from_dict(
+            {
+                "name": "mixed",
+                "request": {
+                    "method": "POST",
+                    "path": "/api/{id}",
+                    "path_params": {"id": {"equals_var": "path_id"}},
+                    "query": {
+                        "allow": {"scope": {"equals_var": "query_scope"}}
+                    },
+                    "body": {
+                        "allow": {"owner": {"equals_var": "body_owner"}}
+                    },
+                },
+            }
+        )
+
+        assert op.bound_value_references() == {
+            "path_id",
+            "query_scope",
+            "body_owner",
+        }
+        assert op.path_placeholders() == {"id"}
+        assert op.is_prebinding_grantable() is False
+
+    @pytest.mark.parametrize(
+        "request_definition",
+        [
+            {"method": "GET", "path": "/api/{id}"},
+            {"method": "GET", "path": "/api/**"},
+            {
+                "method": "GET",
+                "path": "/api/{id}",
+                "path_params": {"id": {"in_state_set": "seen_ids"}},
+            },
+            {
+                "method": "GET",
+                "path": "/api",
+                "query": {"allow": {"scope": {"equals_var": "scope"}}},
+            },
+            {
+                "method": "POST",
+                "path": "/api",
+                "body": {"allow": {"scope": {"equals_var": "scope"}}},
+            },
+        ],
+    )
+    def test_prebinding_rejects_unresolved_or_stateful_requests(
+        self, request_definition
+    ):
+        operation = ContractOperation.from_dict(
+            {"name": "unsafe", "request": request_definition}
+        )
+
+        assert operation.is_prebinding_grantable() is False
+
+    def test_literal_value_free_request_is_prebinding_grantable(self):
+        operation = ContractOperation.from_dict(
+            {
+                "name": "discover",
+                "request": {
+                    "method": "GET",
+                    "path": "/api/categories",
+                    "query": {"allow": {"limit": {"integer_range": [1, 50]}}},
+                },
+            }
+        )
+
+        assert operation.is_prebinding_grantable() is True
+
 
 class TestEnforcementStatus:
     def test_from_dict(self):
@@ -1031,6 +1102,23 @@ class TestContractTemplate:
         grantable = ct.grantable_operations()
         assert len(grantable) == 1
         assert grantable[0].name == "list_messages"
+
+    def test_prebinding_subset_excludes_value_bound_grantable_operation(
+        self, gmail_contract_dict
+    ):
+        gmail_contract_dict["operations"].insert(
+            0,
+            {
+                "name": "list_categories",
+                "request": {"method": "GET", "path": "/gmail/v1/categories"},
+            },
+        )
+        contract = ContractTemplate.from_dict(gmail_contract_dict)
+
+        assert [
+            operation.name
+            for operation in contract.prebinding_grantable_operations()
+        ] == ["list_categories"]
 
     def test_is_grantable(self, gmail_contract_dict):
         ct = ContractTemplate.from_dict(gmail_contract_dict)

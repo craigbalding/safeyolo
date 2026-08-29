@@ -1891,7 +1891,7 @@ capabilities:
         assert "minifuse:/v1/feeds" in resources
 
     def test_skip_unbound_contracted_capability(self, tmp_path):
-        """Capability with contract but no binding -> no permissions emitted."""
+        """A value-bound operation remains denied without a binding."""
         from safeyolo.policy.compiler import compile_gateway
 
         svc_dir = self._make_service_dir(
@@ -1941,7 +1941,367 @@ capabilities:
         gw_perms = [p for p in permissions if p["action"] == "gateway:request"]
         assert gw_perms == []
 
-    def test_service_not_found_graceful(self, tmp_path):
+    def test_unbound_contract_compiles_only_value_free_exact_operations(
+        self, tmp_path
+    ):
+        """Path/query/body bindings, placeholders, and state never broaden discovery."""
+        from safeyolo.policy.compiler import compile_gateway
+
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
+schema_version: 1
+name: minifuse
+capabilities:
+  explorer:
+    routes:
+      - methods: [GET, POST]
+        path: /v1/**
+    contract:
+      template: explorer.v1
+      bindings:
+        approved_category: {source: operator, type: string}
+      operations:
+        - name: discover
+          request:
+            method: GET
+            path: /v1/categories
+            query:
+              allow:
+                limit: {integer_range: [1, 50]}
+        - name: by_path
+          request:
+            method: GET
+            path: /v1/categories/{id}
+            path_params:
+              id: {equals_var: approved_category}
+        - name: by_query
+          request:
+            method: GET
+            path: /v1/items
+            query:
+              allow:
+                category: {equals_var: approved_category}
+        - name: by_body
+          request:
+            method: POST
+            path: /v1/items
+            body:
+              allow:
+                category: {equals_var: approved_category}
+        - name: unresolved_path
+          request: {method: GET, path: "/v1/raw/{id}"}
+        - name: stateful
+          requires_enforcement: state_enforcement
+          request:
+            method: GET
+            path: /v1/state/{id}
+            path_params:
+              id: {in_state_set: discovered_ids}
+      enforcement:
+        request_shape: enforced
+        state_enforcement: enforced
+""",
+        )
+        raw = {
+            "agents": {
+                "claude": {
+                    "services": {
+                        "minifuse": {
+                            "capability": "explorer",
+                            "token": "mf-key",
+                        }
+                    }
+                }
+            }
+        }
+        permissions = []
+
+        compile_gateway(raw, services_dir=svc_dir, permissions=permissions)
+
+        gateway_permissions = [
+            permission
+            for permission in permissions
+            if permission["action"] == "gateway:request"
+        ]
+        assert gateway_permissions == [
+            {
+                "action": "gateway:request",
+                "resource": "minifuse:/v1/categories",
+                "effect": "allow",
+                "tier": "explicit",
+                "condition": {
+                    "agent": "claude",
+                    "capability": "explorer",
+                    "method": ["GET"],
+                },
+            }
+        ]
+
+    def test_binding_transition_replaces_safe_subset_with_explicit_resolved_ops(
+        self, tmp_path, caplog
+    ):
+        from safeyolo.policy.compiler import compile_gateway
+
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
+schema_version: 1
+name: minifuse
+capabilities:
+  explorer:
+    routes: [{methods: [GET], path: /v1/**}]
+    contract:
+      template: explorer.v1
+      bindings:
+        approved_category: {source: operator, type: string}
+      operations:
+        - name: discover
+          request: {method: GET, path: /v1/categories}
+        - name: list_items
+          request:
+            method: GET
+            path: /v1/categories/{id}/items
+            path_params:
+              id: {equals_var: approved_category}
+        - name: filtered
+          request:
+            method: GET
+            path: /v1/items
+            query:
+              allow:
+                category: {equals_var: approved_category}
+        - name: create
+          request:
+            method: POST
+            path: /v1/items
+            body:
+              allow:
+                category: {equals_var: approved_category}
+      enforcement: {request_shape: enforced}
+""",
+        )
+        agent = {
+            "services": {
+                "minifuse": {"capability": "explorer", "token": "mf-key"}
+            }
+        }
+
+        before = []
+        compile_gateway(
+            {"agents": {"claude": agent}},
+            services_dir=svc_dir,
+            permissions=before,
+        )
+        assert [permission["resource"] for permission in before] == [
+            "minifuse:/v1/categories"
+        ]
+
+        agent["contract_bindings"] = [
+            {
+                "service": "minifuse",
+                "capability": "explorer",
+                "template": "stale.v0",
+                "bound_values": {},
+                "grantable_operations": ["list_items", "filtered", "create"],
+            }
+        ]
+        stale_template = []
+        compile_gateway(
+            {"agents": {"claude": agent}},
+            services_dir=svc_dir,
+            permissions=stale_template,
+        )
+        assert [permission["resource"] for permission in stale_template] == [
+            "minifuse:/v1/categories"
+        ]
+        assert "No contract binding for template explorer.v1" in caplog.text
+
+        agent["contract_bindings"][0]["template"] = "explorer.v1"
+        partial = []
+        compile_gateway(
+            {"agents": {"claude": agent}},
+            services_dir=svc_dir,
+            permissions=partial,
+        )
+        assert partial == []
+        assert "unresolved binding values approved_category" in caplog.text
+
+        agent["contract_bindings"][0]["bound_values"] = {
+            "approved_category": "books"
+        }
+        agent["contract_bindings"][0]["grantable_operations"] = [
+            "list_items",
+            "filtered",
+            "create",
+            "list_items",
+            "unknown",
+        ]
+        after = []
+        compile_gateway(
+            {"agents": {"claude": agent}},
+            services_dir=svc_dir,
+            permissions=after,
+        )
+
+        assert [permission["resource"] for permission in after] == [
+            "minifuse:/v1/categories/books/items",
+            "minifuse:/v1/items",
+            "minifuse:/v1/items",
+        ]
+        assert [permission["condition"]["method"] for permission in after] == [
+            ["GET"],
+            ["GET"],
+            ["POST"],
+        ]
+        assert "{id}" not in str(after)
+        assert "minifuse:/v1/categories" not in {
+            permission["resource"] for permission in after
+        }
+        assert "unknown or unenforceable contract operation unknown" in caplog.text
+
+    @pytest.mark.parametrize(
+        "bound_value",
+        [
+            pytest.param("*", id="star-glob"),
+            pytest.param("?", id="question-glob"),
+            pytest.param("[ab]", id="bracket-class-glob"),
+            pytest.param("books/other", id="forward-slash"),
+            pytest.param(r"books\other", id="backslash"),
+        ],
+    )
+    def test_path_binding_values_cannot_broaden_compiled_resource(
+        self, tmp_path, caplog, bound_value
+    ):
+        """Persisted bindings cannot inject fnmatch syntax or path segments."""
+        from safeyolo.policy.compiler import compile_gateway
+
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
+schema_version: 1
+name: minifuse
+capabilities:
+  explorer:
+    routes: [{methods: [GET], path: /v1/**}]
+    contract:
+      template: explorer.v1
+      bindings:
+        approved_category: {source: operator, type: string}
+      operations:
+        - name: list_items
+          request:
+            method: GET
+            path: /v1/categories/{id}/items
+            path_params:
+              id: {equals_var: approved_category}
+      enforcement: {request_shape: enforced}
+""",
+        )
+        permissions = []
+
+        compile_gateway(
+            {
+                "agents": {
+                    "claude": {
+                        "services": {
+                            "minifuse": {
+                                "capability": "explorer",
+                                "token": "mf-key",
+                            }
+                        },
+                        "contract_bindings": [
+                            {
+                                "service": "minifuse",
+                                "capability": "explorer",
+                                "template": "explorer.v1",
+                                "bound_values": {"approved_category": bound_value},
+                                "grantable_operations": ["list_items"],
+                            }
+                        ],
+                    }
+                }
+            },
+            services_dir=svc_dir,
+            permissions=permissions,
+        )
+
+        assert permissions == []
+        assert "path binding values approved_category" in caplog.text
+        assert "without separators or glob metacharacters" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("binding_update", "diagnostic"),
+        [
+            ({"bound_values": []}, "invalid bound_values"),
+            (
+                {
+                    "bound_values": {"approved_category": "books"},
+                    "grantable_operations": "list_items",
+                },
+                "invalid grantable_operations",
+            ),
+        ],
+    )
+    def test_invalid_binding_record_shapes_fail_closed(
+        self, tmp_path, caplog, binding_update, diagnostic
+    ):
+        from safeyolo.policy.compiler import compile_gateway
+
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
+schema_version: 1
+name: minifuse
+capabilities:
+  explorer:
+    routes: [{methods: [GET], path: /v1/**}]
+    contract:
+      template: explorer.v1
+      bindings:
+        approved_category: {source: operator, type: string}
+      operations:
+        - name: list_items
+          request:
+            method: GET
+            path: /v1/categories/{id}/items
+            path_params:
+              id: {equals_var: approved_category}
+      enforcement: {request_shape: enforced}
+""",
+        )
+        binding = {
+            "service": "minifuse",
+            "capability": "explorer",
+            "template": "explorer.v1",
+            "bound_values": {"approved_category": "books"},
+            "grantable_operations": ["list_items"],
+        }
+        binding.update(binding_update)
+        permissions = []
+
+        compile_gateway(
+            {
+                "agents": {
+                    "claude": {
+                        "services": {
+                            "minifuse": {
+                                "capability": "explorer",
+                                "token": "mf-key",
+                            }
+                        },
+                        "contract_bindings": [binding],
+                    }
+                }
+            },
+            services_dir=svc_dir,
+            permissions=permissions,
+        )
+
+        assert permissions == []
+        assert diagnostic in caplog.text
+
+    def test_service_not_found_graceful(self, tmp_path, caplog):
         """Unknown service -> warning, no permissions, no crash."""
         from safeyolo.policy.compiler import compile_gateway
 
@@ -1957,6 +2317,7 @@ capabilities:
         permissions = []
         compile_gateway(raw, services_dir=svc_dir, permissions=permissions)
         assert permissions == []
+        assert "Service nonexistent not found" in caplog.text
 
     def test_no_services_dir_graceful(self):
         """No services_dir -> no-op, no crash."""

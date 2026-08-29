@@ -1536,21 +1536,6 @@ class ServiceGateway:
         contract = capability.contract
         auth_header = service.auth.header.lower() if service.auth else "authorization"
 
-        # 1. Binding required
-        if not binding_state:
-            self._deny(
-                flow,
-                403,
-                f"Contract not bound for capability '{capability.name}'",
-                "CONTRACT_NOT_BOUND",
-                action="request_binding",
-                reflection=(
-                    f"Capability '{sanitize_for_log(capability.name)}' requires a contract binding. "
-                    "Submit a binding via /gateway/submit-binding before making requests."
-                ),
-            )
-            return False
-
         # ── Phase 1: Raw rejection ──────────────────────────────────────
         raw_path = path_no_query(flow)
 
@@ -1611,6 +1596,32 @@ class ServiceGateway:
                 ),
             )
             return False
+
+        if not binding_state:
+            if op not in contract.prebinding_grantable_operations():
+                self._deny(
+                    flow,
+                    403,
+                    f"Contract not bound for capability '{capability.name}'",
+                    "CONTRACT_NOT_BOUND",
+                    action="request_binding",
+                    reflection=(
+                        f"Operation '{sanitize_for_log(op.name)}' requires an approved "
+                        "contract binding. Submit values via /gateway/submit-binding."
+                    ),
+                )
+                return False
+            # The compiler grants only this value-free subset. Reuse canonical
+            # enforcement with an explicitly empty, non-persisted binding.
+            binding_state = ContractBindingState(
+                binding_id="",
+                agent="",
+                service=service.name,
+                capability=capability.name,
+                template=contract.template,
+                bound_values={},
+                grantable_operations=[op.name],
+            )
 
         # Parse query
         raw_qs = flow.request.url.split("?", 1)[1] if "?" in flow.request.url else ""

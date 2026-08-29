@@ -18,6 +18,7 @@ Usage:
 
 import copy
 import logging
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -265,6 +266,48 @@ class ContractOperation:
             requires_enforcement=requires_enforcement,
         )
 
+    def bound_value_references(self) -> set[str]:
+        """Return every binding variable used by request constraints."""
+        references = {
+            constraint.equals_var
+            for constraint in self.path_params.values()
+            if constraint.equals_var
+        }
+        references.update(
+            constraint.equals_var
+            for constraint in self.query_allow.values()
+            if constraint.equals_var
+        )
+        references.update(
+            constraint.equals_var
+            for constraint in self.body_allow.values()
+            if constraint.equals_var
+        )
+        return references
+
+    def path_placeholders(self) -> set[str]:
+        """Return names in ``{name}`` path-template segments."""
+        return set(re.findall(r"\{([^{}]+)\}", self.path))
+
+    def has_state_reference(self) -> bool:
+        """Whether the request relies on state enforcement not implemented here."""
+        return any(constraint.in_state_set for constraint in self.path_params.values())
+
+    def is_prebinding_grantable(self) -> bool:
+        """Whether the full request shape is enforceable without a binding.
+
+        Parameterized paths cannot be represented exactly in a PDP permission
+        without a resolved value, and state-set enforcement belongs to #344.
+        """
+        return (
+            not self.bound_value_references()
+            and not self.has_state_reference()
+            and not self.path_placeholders()
+            and "{" not in self.path
+            and "}" not in self.path
+            and not any(marker in self.path for marker in ("*", "?", "["))
+        )
+
 
 @dataclass
 class EnforcementStatus:
@@ -332,6 +375,14 @@ class ContractTemplate:
             if self.enforcement.get_tier_status(tier) == "enforced":
                 result.append(op)
         return result
+
+    def prebinding_grantable_operations(self) -> list[ContractOperation]:
+        """Grantable operations needing neither bound values nor runtime state."""
+        return [
+            operation
+            for operation in self.grantable_operations()
+            if operation.is_prebinding_grantable()
+        ]
 
     @property
     def is_grantable(self) -> bool:
