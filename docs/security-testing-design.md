@@ -39,16 +39,24 @@ cd /path/to/safeyolo
 
 ## Execution lanes and cadence
 
-| Runtime | Execution host | Evidence |
-|---------|----------------|----------|
-| gVisor systrap | GitHub-hosted Ubuntu | Nightly/manual full suite; platform assertion recorded |
-| gVisor KVM | Fresh libvirt guest on the KVM VPS | Full nested-KVM acceptance evidence |
-| Apple VZ | Physical Apple Silicon Mac mini | Full native macOS + VZ acceptance evidence |
+<!-- blackbox-cadence-contract:start -->
+| Lane | Execution host | Scheduled | Current cadence | Evidence |
+|------|----------------|-----------|-----------------|----------|
+| `systrap` | GitHub-hosted Ubuntu | yes | Nightly and trusted manual dispatch | Platform assertion and GitHub Actions artifact |
+| `kvm` | Fresh libvirt guest on the KVM VPS | no | Manual/on-demand for high-risk changes and releases | Harness/operator nested-KVM evidence; not continuously published on GitHub |
+| `vz` | Physical Apple Silicon Mac mini | no | Manual/on-demand for high-risk changes and releases | Harness/operator native macOS/VZ evidence; not continuously published on GitHub |
+<!-- blackbox-cadence-contract:end -->
 
-Blackbox is not a required per-PR check. The scheduled GitHub lane tests the
-latest default-branch state once per day; KVM VPS and Mac mini runs use the
-same lane wrapper nightly, for high-risk changes, and before release. Manual
-runs select an exact trusted ref. All three runtimes must pass for a release.
+Blackbox is not a required per-PR check. Only the GitHub-hosted `systrap` lane
+is scheduled: it tests the latest default-branch state once per day and
+publishes a GitHub Actions artifact. KVM VPS and Mac mini runs use the same lane
+wrapper manually/on demand for high-risk changes and release acceptance. Those
+manual runs select an exact trusted ref and produce harness/operator evidence,
+not continuously public GitHub evidence.
+
+All three runtimes must pass against the release commit. That release gate is
+distinct from the current automation cadence; it does not imply that the KVM
+or VZ lanes run nightly.
 
 GitHub macOS can run a proxy-only smoke or compile the Swift helper, but it
 cannot supply VZ runtime evidence. GitHub-hosted nested KVM is not accepted as

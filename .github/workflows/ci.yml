@@ -169,6 +169,11 @@ jobs:
       - name: Doc constants drift check
         run: uv run python scripts/check_doc_constants.py
 
+      # The blackbox workflow is the source of truth for scheduled full lanes
+      # and public artifact publication. Marked cadence tables must match it.
+      - name: Blackbox cadence docs in sync
+        run: uv run python scripts/check_blackbox_cadence.py
+
       # Repo-relative link check on the user-facing doc allowlist. External
       # URLs deliberately skipped to keep CI offline-safe.
       - name: Doc repo-relative link check

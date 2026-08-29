@@ -28,15 +28,23 @@ suite.
 ## Runtime lanes
 
 The same suite runs against all three production isolation mechanisms. Blackbox
-tests are intentionally not triggered for every pull request; the nightly run
-coalesces changes on `master`, and any trusted ref can be run on demand.
+tests are intentionally not triggered for every pull request. The
+GitHub-hosted `systrap` lane is the only scheduled lane: its nightly run
+coalesces changes on `master`, also supports trusted manual dispatch, and
+publishes a GitHub Actions artifact. KVM and VZ are manual/on-demand acceptance
+lanes for high-risk changes and releases.
 
-| Lane | Where it runs | Coverage | Normal trigger |
-|------|---------------|----------|----------------|
-| `systrap` | GitHub-hosted Ubuntu | Full host + gVisor isolation + lifecycle | Nightly and manual |
-| `kvm` | Fresh libvirt guest on the KVM VPS via the acceptance harness | Full host + gVisor/KVM isolation + lifecycle | Nightly, high-risk change, release |
-| `vz` | Physical Apple Silicon Mac mini | Full native proxy + Apple VZ isolation + lifecycle | Nightly, high-risk change, release |
-| `proxy` | Any supported host, including GitHub macOS | Host proxy/security tests only | Installation smoke or focused diagnosis |
+<!-- blackbox-cadence-contract:start -->
+| Lane | Where it runs | Coverage | Scheduled | Current cadence | Evidence |
+|------|---------------|----------|-----------|-----------------|----------|
+| `systrap` | GitHub-hosted Ubuntu | Full host + gVisor isolation + lifecycle | yes | Nightly and trusted manual dispatch | GitHub Actions artifact |
+| `kvm` | Fresh libvirt guest on the KVM VPS via the acceptance harness | Full host + gVisor/KVM isolation + lifecycle | no | Manual/on-demand for high-risk changes and releases | Harness/operator evidence; not continuously published on GitHub |
+| `vz` | Physical Apple Silicon Mac mini | Full native proxy + Apple VZ isolation + lifecycle | no | Manual/on-demand for high-risk changes and releases | Harness/operator evidence; not continuously published on GitHub |
+<!-- blackbox-cadence-contract:end -->
+
+The `proxy` lane runs on any supported host, including GitHub macOS, for
+installation smoke tests or focused diagnosis; it is not a full isolation
+acceptance lane.
 
 GitHub-hosted macOS is useful for the `proxy` lane and for compiling the Swift
 helper, but it cannot provide VZ isolation evidence because the hosted machine
@@ -45,7 +53,11 @@ physical Mac mini. GitHub-hosted KVM is similarly not treated as acceptance
 evidence because nested virtualization is not a supported runner guarantee.
 
 Before a release, all three full lanes (`systrap`, `kvm`, and `vz`) must pass
-against the release commit.
+against the release commit. That release gate is independent of automation
+cadence: manual exact-ref KVM and VZ evidence is required even though those
+hardware lanes are not scheduled. Today that evidence is retained by the
+acceptance harness/operator, rather than continuously published as a GitHub
+artifact.
 
 ## Execution Model
 
@@ -144,7 +156,7 @@ a parallel CI-only installation recipe:
 2. `safeyolo bootstrap --check --json` supplies the current Linux package
    prerequisites; the lane wrapper installs missing apt packages on fresh CI
    and KVM VPS guests.
-3. The automated KVM wrapper grants its current operator UID access to
+3. The KVM lane wrapper grants its current operator UID access to
    `/dev/kvm`, replacing the interactive `kvm`-group logout/login step. Product
    bootstrap remains responsible for the persistent udev rule and UID 100000
    ACL required by rootless gVisor.

@@ -1,4 +1,19 @@
-# Nightly Blackbox Test Reporting via GitHub Check Runs
+# Historical proposal: nightly VZ reporting via GitHub Check Runs
+
+> [!WARNING]
+> This is an unimplemented historical design proposal, not current automation,
+> setup guidance, or test evidence. SafeYolo does not ship the sketched
+> `bb-nightly.sh`, GitHub App token helper, launchd job, credentials, Check Run
+> publisher, or badge. The example result text (including “31 passed”) is
+> illustrative and must not be cited as an executed run. Current automation is
+> the GitHub-hosted systrap workflow documented in
+> [`tests/blackbox/README.md`](../tests/blackbox/README.md); KVM and physical VZ
+> acceptance are manual/on-demand unless real scheduling and publication are
+> implemented later.
+
+Everything below is retained only to explain the earlier proposal. Do not
+create its credentials or install its launchd configuration as part of the
+current test workflow.
 
 ## Goal
 

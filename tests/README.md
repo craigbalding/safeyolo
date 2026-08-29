@@ -55,7 +55,7 @@ handles the rest.
 | Headers represented as dictionaries | Contract tests use mitmproxy `Headers` and exercise case-insensitive removal |
 | Real-process tests fail without evidence | Ten-second startup contract retained; failures capture process, console, logs, and timing data |
 | Mock-only assertions overcorrected | Interaction assertions remain where calls are the behavior, with signature-checked collaborators |
-| Blackbox suite is opt-in only | Nightly schedule plus trusted manual dispatch |
+| Blackbox suite is opt-in only | GitHub systrap nightly; trusted manual/on-demand KVM and VZ acceptance |
 
 ## Adding Tests
 
