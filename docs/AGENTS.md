@@ -34,8 +34,11 @@ Key paths:
 Use this exact form:
 
 ```sh
-curl -sS http://_safeyolo.proxy.internal/health \
-  -H "Authorization: Bearer $(cat /app/agent_token)"
+(
+  agent_token=$(cat /app/agent_token) || exit
+  printf 'Authorization: Bearer %s\n' "$agent_token" |
+    curl -sS --header @- http://_safeyolo.proxy.internal/health
+)
 ```
 
 A healthy response contains `"agent_api": "ok"`. If a request is blocked,

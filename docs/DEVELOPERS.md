@@ -456,11 +456,11 @@ $ curl https://httpbin.org/get
 ## Documentation drift protection
 
 User-facing docs listed in `scripts/doc_allowlist.toml` are guarded by
-five pre-commit hooks that fail CI when a claim in a doc no longer matches
+six pre-commit hooks that fail CI when a claim in a doc no longer matches
 the code. Each mechanism addresses one drift class; together they cover
-the four drift classes we've actually observed in this repo.
+the five drift classes we've actually observed in this repo.
 
-### The five checks
+### The six checks
 
 | Check | Script | Catches |
 |---|---|---|
@@ -469,6 +469,7 @@ the four drift classes we've actually observed in this repo.
 | Constants-in-prose | `check_doc_constants.py` + `doc_constants.toml` | Pinned values in code no longer matching what docs quote |
 | Repo-relative links | `check_doc_links.py` | `[text](path)` / `[label]: path` references to moved or renamed files |
 | Forbidden phrases | `check_doc_forbidden.py` + `doc_forbidden.toml` | Stale mechanism claims after the enforcing code was deleted (no anchor left to mark against) |
+| Agent token argv | `check_agent_token_argv.py` | Agent API curl examples that expand the bearer into `-H` / `--header` process arguments |
 
 An additional soft check, `audit_doc_coverage.py`, reports which docs
 carry how many bindings and which curated security keywords appear in
@@ -541,7 +542,7 @@ Anchors (`# DOC: docs/AGENTS.md#agents-section`) are advisory in v1.
 5. **Referenced file path** → the link check handles it automatically
    once the path is in a `[text](path)` or `[label]: path`.
 
-Run `pre-commit run --all-files` locally to verify all five checks pass.
+Run `pre-commit run --all-files` locally to verify all six checks pass.
 Run `python3 scripts/audit_doc_coverage.py` to see current coverage per
 doc and per security keyword — useful for planning what to mark next.
 

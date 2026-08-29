@@ -87,7 +87,7 @@ nodes:
 
   - id: ev.tls_check_agent_api_health
     kind: evidence
-    label: "curl -sS http://_safeyolo.proxy.internal/health -H 'Authorization: Bearer $(cat /app/agent_token)' -- if THIS fails the proxy is unreachable"
+    label: "Read /app/agent_token fresh; pipe the Authorization header to curl -sS --header @- http://_safeyolo.proxy.internal/health -- if THIS fails the proxy is unreachable"
     source: authored
 
   - id: ev.check_client_updates_upstream

@@ -72,7 +72,7 @@ two tiers:
 - `skill_files` — agent-facing skill docs shipped into sandboxes
   (`SKILL.md` + `references/*.md`, glob-expanded)
 
-All drift checks scan both tiers. The five checks below pick the
+All drift checks scan both tiers. The six checks below pick the
 mechanism that fits what you are documenting.
 
 | You are documenting… | Add… |
@@ -82,6 +82,7 @@ mechanism that fits what you are documenting.
 | A security or behavioural invariant enforced by a specific expression | `# DOC: <doc>` marker on the enforcement expression. See DEVELOPERS.md for the per-kind placement table. |
 | A claim about a mechanism that could be deleted later | A `[[rule]]` in `scripts/doc_forbidden.toml` blacklisting the phrases that must not remain if the mechanism is gone. |
 | A repo-relative file reference | Nothing — the link check runs automatically once the path is in `[text](path)` or `[label]: path`. |
+| An Agent API curl example | Pipe the header to `curl --header @-`; `check_agent_token_argv.py` rejects token-file expansions into curl arguments. |
 
 Then run `pre-commit run --all-files` (see above).
 
@@ -104,6 +105,9 @@ error verbatim; the message includes the fix path.
 - `check_doc_forbidden`: a doc contains a blacklisted phrase. The
   `reason:` field in the error is the *why* — read it before assuming
   the check is wrong.
+- `check_agent_token_argv`: an Agent API curl example puts the bearer in
+  process arguments. Read the token at call time and pipe the header to
+  `curl --header @-`.
 
 For visibility into what is covered where, run:
 

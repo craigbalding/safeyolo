@@ -90,13 +90,14 @@ new_audit() {
 # curl the Agent API via the UDS. `_safeyolo.proxy.internal` is a
 # mitmproxy virtual host, NOT a real DNS name — resolve it via the
 # Host header while connecting to the UDS.
-sy_api() {
-  local path="$1"
-  curl -sS --unix-socket "$AGENT_SOCK" \
-    -H "Host: _safeyolo.proxy.internal" \
-    -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
-    "http://_safeyolo.proxy.internal$path"
-}
+sy_api() (
+  path="$1"
+  agent_token=$(cat "$TOKEN_FILE") || exit
+  printf 'Authorization: Bearer %s\n' "$agent_token" |
+    curl -sS --unix-socket "$AGENT_SOCK" \
+      -H "Host: _safeyolo.proxy.internal" --header @- \
+      "http://_safeyolo.proxy.internal$path"
+)
 
 # Send the raw HTTP/1.0 origin-form probe (exactly what doctor does).
 # printf with explicit \r\n keeps CRLF line endings — heredocs give LF
