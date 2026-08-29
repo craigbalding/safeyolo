@@ -1,7 +1,7 @@
 """Persistent primary-workspace updates for ``agent config``."""
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 from safeyolo.agents_store import (
     load_agent,
@@ -10,6 +10,7 @@ from safeyolo.agents_store import (
     save_agent,
 )
 from safeyolo.cli import app
+from safeyolo.platform import AgentPlatform
 
 
 def _setup_agent(config_dir, folder, **extra):
@@ -24,6 +25,12 @@ def _setup_agent(config_dir, folder, **extra):
     return metadata
 
 
+def _platform(*, running: bool):
+    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
+    platform.is_sandbox_running.return_value = running
+    return platform
+
+
 class TestAgentConfigFolder:
     def test_stopped_agent_persists_normalized_folder(
         self, cli_runner, tmp_config_dir, tmp_path, monkeypatch
@@ -35,11 +42,16 @@ class TestAgentConfigFolder:
         _setup_agent(tmp_config_dir, old)
         monkeypatch.chdir(tmp_path)
 
-        platform = MagicMock()
-        platform.is_sandbox_running.return_value = False
+        platform = _platform(running=False)
         with (
-            patch("safeyolo.platform.get_platform", return_value=platform),
-            patch("safeyolo.commands.agent.write_event") as write_event,
+            patch(
+                "safeyolo.platform.get_platform",
+                return_value=platform,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.commands.agent.write_event", autospec=True
+            ) as write_event,
         ):
             result = cli_runner.invoke(
                 app, ["agent", "config", "worker", "--folder", "new"]
@@ -64,9 +76,12 @@ class TestAgentConfigFolder:
         new.mkdir()
         _setup_agent(tmp_config_dir, old)
 
-        platform = MagicMock()
-        platform.is_sandbox_running.return_value = True
-        with patch("safeyolo.platform.get_platform", return_value=platform):
+        platform = _platform(running=True)
+        with patch(
+            "safeyolo.platform.get_platform",
+            return_value=platform,
+            autospec=True,
+        ):
             result = cli_runner.invoke(
                 app, ["agent", "config", "worker", "--folder", str(new)]
             )
@@ -83,7 +98,9 @@ class TestAgentConfigFolder:
         folder.mkdir()
         before = _setup_agent(tmp_config_dir, folder)
 
-        with patch("safeyolo.commands.agent.write_event") as write_event:
+        with patch(
+            "safeyolo.commands.agent.write_event", autospec=True
+        ) as write_event:
             result = cli_runner.invoke(
                 app, ["agent", "config", "worker", "--folder", str(folder)]
             )
@@ -139,8 +156,11 @@ class TestAgentConfigFolder:
         denied = cli_runner.invoke(
             app, ["agent", "config", "worker", "--folder", str(target)]
         )
-        with patch("safeyolo.platform.get_platform") as get_platform:
-            get_platform.return_value.is_sandbox_running.return_value = False
+        with patch(
+            "safeyolo.platform.get_platform",
+            return_value=_platform(running=False),
+            autospec=True,
+        ):
             allowed = cli_runner.invoke(
                 app,
                 [
@@ -174,13 +194,17 @@ class TestAgentConfigFolder:
         )
 
         with (
-            patch("safeyolo.platform.get_platform") as get_platform,
+            patch(
+                "safeyolo.platform.get_platform",
+                return_value=_platform(running=False),
+                autospec=True,
+            ),
             patch(
                 "safeyolo.commands.agent._run_host_script_for_agent",
                 side_effect=AssertionError("config must not execute setup"),
+                autospec=True,
             ) as host_script,
         ):
-            get_platform.return_value.is_sandbox_running.return_value = False
             result = cli_runner.invoke(
                 app, ["agent", "config", "worker", "--folder", str(new)]
             )
@@ -209,8 +233,11 @@ class TestAgentConfigFolder:
             'methods = ["GET"]\n'
         )
 
-        with patch("safeyolo.platform.get_platform") as get_platform:
-            get_platform.return_value.is_sandbox_running.return_value = False
+        with patch(
+            "safeyolo.platform.get_platform",
+            return_value=_platform(running=False),
+            autospec=True,
+        ):
             result = cli_runner.invoke(
                 app, ["agent", "config", "worker", "--folder", str(new)]
             )
@@ -245,10 +272,14 @@ class TestAgentConfigFolder:
             patch(
                 "safeyolo.commands.agent.mutate_agent",
                 side_effect=concurrent_then_mutate,
+                autospec=True,
             ),
-            patch("safeyolo.platform.get_platform") as get_platform,
+            patch(
+                "safeyolo.platform.get_platform",
+                return_value=_platform(running=False),
+                autospec=True,
+            ),
         ):
-            get_platform.return_value.is_sandbox_running.return_value = False
             result = cli_runner.invoke(
                 app, ["agent", "config", "worker", "--folder", str(new)]
             )
@@ -267,8 +298,11 @@ class TestAgentConfigFolder:
             path.mkdir()
         _setup_agent(tmp_config_dir, old)
 
-        with patch("safeyolo.platform.get_platform") as get_platform:
-            get_platform.return_value.is_sandbox_running.return_value = False
+        with patch(
+            "safeyolo.platform.get_platform",
+            return_value=_platform(running=False),
+            autospec=True,
+        ):
             configured = cli_runner.invoke(
                 app,
                 ["agent", "config", "worker", "--folder", str(persistent)],
@@ -276,8 +310,14 @@ class TestAgentConfigFolder:
         assert configured.exit_code == 0, configured.output
 
         with (
-            patch("safeyolo.commands.agent._run_agent", return_value=0) as run_agent,
-            patch("safeyolo.commands.agent.associate_agent_pane"),
+            patch(
+                "safeyolo.commands.agent._run_agent",
+                return_value=0,
+                autospec=True,
+            ) as run_agent,
+            patch(
+                "safeyolo.commands.agent.associate_agent_pane", autospec=True
+            ),
         ):
             ordinary = cli_runner.invoke(app, ["agent", "run", "worker"])
             transient_run = cli_runner.invoke(
@@ -320,9 +360,16 @@ class TestAgentConfigFolder:
             patch(
                 "safeyolo.commands.agent._run_host_script_for_agent",
                 side_effect=interleaved_config,
+                autospec=True,
             ),
-            patch("safeyolo.commands.agent._run_agent", return_value=0),
-            patch("safeyolo.commands.agent.associate_agent_pane"),
+            patch(
+                "safeyolo.commands.agent._run_agent",
+                return_value=0,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.commands.agent.associate_agent_pane", autospec=True
+            ),
         ):
             result = cli_runner.invoke(
                 app,
@@ -351,8 +398,13 @@ class TestAgentConfigFolder:
             patch(
                 "safeyolo.commands.agent._run_host_script_for_agent",
                 side_effect=lambda **_kwargs: remove_agent("worker"),
+                autospec=True,
             ),
-            patch("safeyolo.commands.agent._run_agent", return_value=0) as run_agent,
+            patch(
+                "safeyolo.commands.agent._run_agent",
+                return_value=0,
+                autospec=True,
+            ) as run_agent,
         ):
             result = cli_runner.invoke(
                 app,
