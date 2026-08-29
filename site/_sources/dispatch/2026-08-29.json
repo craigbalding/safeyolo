@@ -114,8 +114,8 @@
       "kind": "worth_knowing",
       "items": [
         {
-          "title": "Put process locks beside SQLite, not on it",
-          "body": "A live macOS trial exposed that taking a process-level flock on the SQLite database itself can conflict with SQLite's own file locking. The adapter now leases a private sibling .lock file and leaves the database inode to SQLite.",
+          "title": "A SQLite safety lock worked on Linux and self-locked on macOS",
+          "body": "SafeYolo's Mattermost adapter uses SQLite to remember what it has seen, prevent message replay, and match operator button presses to requests. Only one adapter should update that state at a time, so it also needs a process lease. Locking the database file itself survived Linux-heavy testing but interfered with SQLite's own locks on macOS; moving the lease to a sibling file fixed that failure. Acceptance on a real Mac then exposed more assumptions about descriptor paths. The operator's stated future direction is sandboxed macOS execution for ground-truth platform testing, not a capability SafeYolo ships today.",
           "attribution": "infrastructure_environment_problem",
           "evidence": [
             {
@@ -127,6 +127,16 @@
               "kind": "pr",
               "label": "Corrective PR #448",
               "url": "https://github.com/craigbalding/safeyolo/pull/448"
+            },
+            {
+              "kind": "pr",
+              "label": "Real-macOS acceptance correction PR #452",
+              "url": "https://github.com/craigbalding/safeyolo/pull/452"
+            },
+            {
+              "kind": "issue",
+              "label": "Operator-informed Dispatch issue #454",
+              "url": "https://github.com/craigbalding/safeyolo/issues/454"
             }
           ]
         }

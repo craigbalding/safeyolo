@@ -47,7 +47,20 @@ output. The command neither deletes stale pages nor performs a publish.
 The exercised source at
 [`site/_sources/dispatch/2026-08-29.json`](../site/_sources/dispatch/2026-08-29.json)
 generates a dated Dispatch and a current-state coord topic. Its claims link to
-public issues, pull requests, and exact-commit tests from #437, #438, and #442.
+public issues, pull requests, exact-commit tests, and live-trial evidence.
+
+## Operator editorial interaction
+
+Before Relay drafts a substantive item, Relay gives the operator a short,
+normal-language account of what SafeYolo was trying to do, what happened, and
+why it may be interesting. When the significance needs operator judgment,
+Relay asks one focused question—not a questionnaire, writing assignment, or
+request to review repeated drafts. The response becomes source material for one
+authored item, or Relay omits the material if it is not worth publishing.
+
+The resulting item establishes what SafeYolo is doing and why before it
+introduces internal mechanisms. Public evidence and attribution remain
+traceable without structuring the prose like an audit record.
 
 ## Public content model
 
