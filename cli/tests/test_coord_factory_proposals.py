@@ -394,6 +394,27 @@ def test_pending_body_stays_exact_across_concurrent_nonmaterial_nomination(
     assert restarted.pending() == ()
 
 
+def test_pending_freeze_preserves_out_of_order_first_and_last_seen(
+    tmp_path: Path,
+) -> None:
+    ledger = factory_proposals.FactoryProposalLedger(tmp_path / "ledger.json")
+    later = consume(
+        ledger,
+        candidate_envelope(sequence=12),
+        verified_observation(material=True),
+    )
+    selected = ledger.pending()[0]
+    caught_up = consume(
+        ledger,
+        candidate_envelope(sequence=10),
+        verified_observation(material=True),
+    )
+    assert later.first_seen == 1_800_000_000_012
+    assert caught_up.first_seen == 1_800_000_000_010
+    assert caught_up.last_seen == 1_800_000_000_012
+    assert ledger.pending() == (selected,)
+
+
 def test_out_of_order_exact_replay_cannot_regress_recommendation(
     tmp_path: Path,
 ) -> None:

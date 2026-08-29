@@ -660,6 +660,7 @@ class FactoryProposalLedger:  # DOC: docs/factory-proposals.md, cli/src/safeyolo
                     # the same presentation revision.
                     updated = replace(
                         current,
+                        first_seen=min(current.first_seen, seen_at),
                         last_seen=max(current.last_seen, seen_at),
                     )
                 task_count = len({item.task_key for item in evidence})
