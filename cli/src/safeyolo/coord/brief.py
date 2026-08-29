@@ -277,6 +277,9 @@ def set_brief(
                 (room_id,),
             ).fetchone(),
         )
+        # Keep the idempotency ledger bounded and free of trusted prose.
+        # Callers retrieve Markdown from the canonical current/history tables.
+        result.pop("markdown")
         result["attention_count"] = attention_count
         return result
 

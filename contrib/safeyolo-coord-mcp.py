@@ -94,7 +94,8 @@ mcp = MCPServer("safeyolo-coord")
 async def join_room(room_name: str) -> dict[str, Any]:
     """Attach to an existing room membership. A room name is not a capability;
     this call verifies the operator has granted you a valid membership and
-    returns room metadata plus the current trusted operator brief.
+    returns room metadata plus the current trusted operator brief when the
+    active grant includes receive permission. Send-only grants see a null brief.
     """
     return await _post(f"/api/coord/rooms/{room_name}/join")
 

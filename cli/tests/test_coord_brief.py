@@ -232,6 +232,34 @@ def test_operation_conflict_and_deterministic_revision_replay(brief_env):
     assert api.show_brief("conflicts")["markdown"] == "v1"
 
 
+def test_exact_markdown_bound_commits_and_replays(brief_env):
+    room_id = _run(api.create_room("exact-bound"))
+    markdown = "x" * brief.MAX_BRIEF_BYTES
+
+    first = brief.set_brief(
+        room_id,
+        markdown,
+        expected_revision=0,
+        operation_id="op-exact-bound",
+    )
+    replay = brief.set_brief(
+        room_id,
+        markdown,
+        expected_revision=0,
+        operation_id="op-exact-bound",
+    )
+
+    assert replay == first
+    assert "markdown" not in first
+    assert api.show_brief("exact-bound")["markdown"] == markdown
+    with store.connect() as conn:
+        outcome = conn.execute(
+            """SELECT outcome_json FROM coord_operations
+               WHERE operation_id = 'op-exact-bound'"""
+        ).fetchone()[0]
+    assert markdown not in outcome
+
+
 def test_concurrent_same_base_edits_have_one_winner(brief_env):
     room_id = _run(api.create_room("concurrent"))
     brief.set_brief(
@@ -389,6 +417,120 @@ def test_attention_resolution_revocation_later_join_and_restart(brief_env):
     later = api.join_room("state", "agent", AGENTS["later"])
     assert later["brief"]["revision"] == 1
     assert later["brief"]["markdown"].startswith("# v1")
+
+
+def test_send_only_member_cannot_read_brief_via_join_or_attention(brief_env):
+    room_id = _run(api.create_room("send-only"))
+    brief.set_brief(
+        room_id,
+        "v1",
+        expected_revision=0,
+        operation_id="op-send-only-v1",
+    )
+    api.grant(
+        "send-only",
+        "agent",
+        AGENTS["alice"],
+        permissions=["send"],
+        operation_id="op-send-only-grant",
+    )
+
+    joined = api.join_room("send-only", "agent", AGENTS["alice"])
+    assert joined["permissions"] == ["send"]
+    assert joined["brief"] is None
+    with pytest.raises(api.GrantError, match="permission 'receive' denied"):
+        api.read_brief("send-only", "agent", AGENTS["alice"])
+
+    changed = brief.set_brief(
+        room_id,
+        "v2",
+        expected_revision=1,
+        operation_id="op-send-only-v2",
+    )
+    assert changed["attention_count"] == 0
+    assert attention.read_feed(AGENTS["alice"], 0, 10)["edges"] == []
+
+
+def test_current_read_pins_authorization_and_brief_to_one_snapshot(
+    brief_env, monkeypatch
+):
+    room_id = _run(api.create_room("read-race"))
+    _grant("read-race", AGENTS["alice"])
+    brief.set_brief(
+        room_id,
+        "v1",
+        expected_revision=0,
+        operation_id="op-read-race-v1",
+    )
+    real_check = api._check_grant
+    interleaved = False
+
+    def revoke_after_check(conn, checked_room, kind, principal, permission):
+        nonlocal interleaved
+        real_check(conn, checked_room, kind, principal, permission)
+        if not interleaved:
+            interleaved = True
+            brief.set_brief(
+                room_id,
+                "v2",
+                expected_revision=1,
+                operation_id="op-read-race-v2",
+            )
+            api.revoke_grant(
+                "read-race",
+                "agent",
+                AGENTS["alice"],
+                operation_id="op-read-race-revoke",
+            )
+
+    monkeypatch.setattr(api, "_check_grant", revoke_after_check)
+    observed = api.read_brief("read-race", "agent", AGENTS["alice"])
+    assert observed["revision"] == 1
+    assert observed["markdown"] == "v1"
+
+    monkeypatch.setattr(api, "_check_grant", real_check)
+    with pytest.raises(api.NoMembershipError):
+        api.read_brief("read-race", "agent", AGENTS["alice"])
+
+
+def test_join_pins_membership_and_brief_to_one_snapshot(brief_env, monkeypatch):
+    room_id = _run(api.create_room("join-race"))
+    _grant("join-race", AGENTS["alice"])
+    brief.set_brief(
+        room_id,
+        "v1",
+        expected_revision=0,
+        operation_id="op-join-race-v1",
+    )
+    real_read = brief.read_current
+    interleaved = False
+
+    def revoke_before_brief_read(conn, read_room):
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            brief.set_brief(
+                room_id,
+                "v2",
+                expected_revision=1,
+                operation_id="op-join-race-v2",
+            )
+            api.revoke_grant(
+                "join-race",
+                "agent",
+                AGENTS["alice"],
+                operation_id="op-join-race-revoke",
+            )
+        return real_read(conn, read_room)
+
+    monkeypatch.setattr(brief, "read_current", revoke_before_brief_read)
+    joined = api.join_room("join-race", "agent", AGENTS["alice"])
+    assert joined["brief"]["revision"] == 1
+    assert joined["brief"]["markdown"] == "v1"
+
+    monkeypatch.setattr(brief, "read_current", real_read)
+    with pytest.raises(api.NoMembershipError):
+        api.join_room("join-race", "agent", AGENTS["alice"])
 
 
 def test_hint_outage_keeps_committed_edge_pending_for_recovery(

@@ -217,9 +217,12 @@ def read_brief(
 ) -> dict[str, Any]:
     """Read current trusted intent after a same-snapshot membership check."""
     with store.connect() as conn:
+        conn.execute("BEGIN")
         room_id = _resolve_room(conn, room_name)
         _check_grant(conn, room_id, principal_kind, principal_id, "receive")
-        return brief.read_current(conn, room_id)
+        result = brief.read_current(conn, room_id)
+        conn.execute("COMMIT")
+        return result
 
 
 # ---------- grants ----------
@@ -309,6 +312,22 @@ def _check_grant(
     principal_id: str,
     required_perm: str,
 ) -> None:
+    perms = _active_permissions(conn, room_id, principal_kind, principal_id)
+    if required_perm not in perms:
+        # Caller IS a member but lacks this specific permission —
+        # 403 semantic. Legitimate signal to a member; not a leak.
+        raise GrantError(
+            f"permission {required_perm!r} denied; grant permits {perms}"
+        )
+
+
+def _active_permissions(
+    conn: sqlite3.Connection,
+    room_id: str,
+    principal_kind: str,
+    principal_id: str,
+) -> list[str]:
+    """Return the latest active grant's permissions or the 404-family error."""
     row = conn.execute(
         """SELECT permissions FROM memberships
            WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
@@ -322,13 +341,7 @@ def _check_grant(
         raise NoMembershipError(
             f"no active membership for {principal_kind}:{principal_id}"
         )
-    perms = row["permissions"].split(",")
-    if required_perm not in perms:
-        # Caller IS a member but lacks this specific permission —
-        # 403 semantic. Legitimate signal to a member; not a leak.
-        raise GrantError(
-            f"permission {required_perm!r} denied; grant permits {perms}"
-        )
+    return row["permissions"].split(",")
 
 
 def revoke_grant(
@@ -420,30 +433,33 @@ def join_room(room_name: str, principal_kind: str, principal_id: str) -> dict[st
     """Attach to an existing membership. Does not grant anything.
 
     A room ID is not a capability; this call verifies a valid membership
-    exists for the caller and returns room metadata. Missing membership
-    raises NoMembershipError (404 semantic per #20); nonexistent room
-    raises NotFoundError (also 404).
+    exists for the caller and returns room metadata. The trusted brief is
+    present only when that active grant includes ``receive``; send-only
+    members receive a null brief. Missing membership raises NoMembershipError
+    (404 semantic per #20); nonexistent room raises NotFoundError (also 404).
     """
     with store.connect() as conn:
+        conn.execute("BEGIN")
         room_id = _resolve_room(conn, room_name)
-        row = conn.execute(
-            """SELECT permissions FROM memberships
-               WHERE room_id = ? AND principal_kind = ? AND principal_id = ?
-                 AND revoked_at IS NULL
-               ORDER BY granted_at DESC LIMIT 1""",
-            (room_id, principal_kind, principal_id),
-        ).fetchone()
-        if not row:
-            raise NoMembershipError(
-                f"no active membership for {principal_kind}:{principal_id}"
-            )
-        return {
+        permissions = _active_permissions(
+            conn,
+            room_id,
+            principal_kind,
+            principal_id,
+        )
+        result = {
             "room_id": room_id,
             "room_name": room_name,
-            "permissions": row["permissions"].split(","),
+            "permissions": permissions,
             "history_visibility": "retained",
-            "brief": brief.read_current(conn, room_id),
+            "brief": (
+                brief.read_current(conn, room_id)
+                if "receive" in permissions
+                else None
+            ),
         }
+        conn.execute("COMMIT")
+        return result
 
 
 async def send(

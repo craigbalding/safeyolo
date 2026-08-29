@@ -797,6 +797,43 @@ class TestCoordOperatorBrief:
         assert denied.response.content == absent.response.content
         assert b"brief-room" not in denied.response.content
 
+    def test_send_only_join_cannot_bypass_brief_receive_permission(
+        self, api, isolated_state
+    ):
+        from safeyolo.agents_store import get_or_mint_agent_id
+        from safeyolo.coord import api as coord_api
+
+        _register_agent("alice")
+        coord_api.bootstrap()
+        _await(coord_api.create_room("send-only-brief"))
+        _await(
+            coord_api.set_brief(
+                "send-only-brief",
+                "# trusted",
+                expected_revision=0,
+                operation_id="op-send-only-api-v1",
+            )
+        )
+        _grant(
+            "send-only-brief",
+            "agent",
+            get_or_mint_agent_id("alice"),
+            permissions=["send"],
+        )
+
+        with _as_agent("alice"):
+            joined = _make_flow(
+                "/api/coord/rooms/send-only-brief/join", method="POST"
+            )
+            _run(api, joined)
+            read = _make_flow(
+                "/api/coord/rooms/send-only-brief/brief", method="GET"
+            )
+            _run(api, read)
+        assert joined.response.status_code == 200
+        assert json.loads(joined.response.content)["brief"] is None
+        assert read.response.status_code == 403
+
     @pytest.mark.timeout(45)
     def test_real_agent_api_nats_three_member_sticky_brief_flow(
         self, api, isolated_state

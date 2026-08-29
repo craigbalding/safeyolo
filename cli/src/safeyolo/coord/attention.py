@@ -901,6 +901,7 @@ def _public_message(envelope: dict) -> dict[str, Any]:
 async def read_attention_object(agent_id: str, attention_id: str) -> dict[str, Any]:
     """Read the canonical object referenced by one authorized edge."""
     with store.connect() as conn:
+        conn.execute("BEGIN")
         row = conn.execute(
             """SELECT * FROM coord_attention_edges
                WHERE recipient_agent_id = ? AND attention_id = ?""",
@@ -926,7 +927,7 @@ async def read_attention_object(agent_id: str, attention_id: str) -> dict[str, A
                 raise nats_client.CoordDataError(
                     "brief attention revision is missing"
                 ) from exc
-            return {
+            result = {
                 "edge": {
                     "attention_id": edge["attention_id"],
                     "room_id": edge["room_id"],
@@ -936,6 +937,9 @@ async def read_attention_object(agent_id: str, attention_id: str) -> dict[str, A
                 },
                 "object": canonical,
             }
+            conn.execute("COMMIT")
+            return result
+        conn.execute("COMMIT")
     if edge["kind"] != "message":
         raise nats_client.CoordDataError("unsupported canonical attention kind")
     envelope = await nats_client.get_envelope_at(

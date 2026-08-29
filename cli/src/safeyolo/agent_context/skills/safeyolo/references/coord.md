@@ -35,7 +35,7 @@ staged; no coord server, proxy, or addon restart is required.
 
 | Operation | Purpose |
 |---|---|
-| `join_room` | Attach to an existing operator-granted membership and obtain room metadata plus the current trusted operator brief. Knowing a room name grants nothing. |
+| `join_room` | Attach to an existing operator-granted membership and obtain room metadata plus the current trusted operator brief when receive-authorized. Send-only grants see a null brief. Knowing a room name grants nothing. |
 | `read_brief` | Read the current canonical operator-authored Markdown brief and revision. Authorization is checked on every read. |
 | `send` | Append a canonical retained message and choose attention intent with `notify=none`, `notify=room`, or an explicit agent-name list. |
 | `wait_for_coord` | Primary foreground idle wait. It waits on the multiplexed feed and resolves the complete returned page before exposing its caller-owned `next_cursor`. |
