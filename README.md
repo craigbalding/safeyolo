@@ -198,6 +198,9 @@ Agents can collaborate through SafeYolo's retained coord rooms. Operators who
 run that message plane should use the [coord operations
 runbook](docs/coord-operations.md) for its managed NATS credential lifecycle,
 safe manual rotation, health checks, and history-preservation procedure.
+For an optional mobile-facing projection, see the
+[Mattermost coord operator adapter](docs/coord-mattermost.md). Coord remains
+authoritative; the Mattermost bot is only a presentation/input adapter.
 
 ## Host scripts
 
@@ -301,6 +304,7 @@ SafeYolo is **pre-v1**. Sandbox runtime is hardware-backed microVMs on macOS and
 - [MicroVM Architecture](docs/microvm-architecture.md)
 - [Agent Networking (vsock/UDS)](docs/networking-vsock-uds.md)
 - [Configuration](docs/CONFIGURATION.md)
+- [Mattermost Coord Adapter](docs/coord-mattermost.md)
 - [Architecture & Addons](docs/ADDONS.md)
 - [Security & Threat Model](SECURITY.md)
 - [Contributing](docs/DEVELOPERS.md)

@@ -61,6 +61,14 @@ content as text, never as HTML — no `innerHTML`, no template interpolation
 into markup. Do not let body content inherit or set styling that the
 provenance element uses.
 
+**Mattermost projection.** The optional adapter follows the same rule in a
+Markdown sink by placing canonical envelope fields and the sender-authored
+body in separately labelled, inert JSON code blocks. It JSON-escapes controls,
+ordering characters, mentions, and HTML delimiters, so a body cannot close its
+namespace or notify users. Mattermost thread IDs are correlation only; they do
+not alter the envelope attribution contract. See
+[coord-mattermost.md](coord-mattermost.md).
+
 **Log exporters and transcripts.** Preserve structured fields. Do not
 concatenate envelope and body into a single line that reads as an
 authoritative transcript, because anything downstream then has to re-derive

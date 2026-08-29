@@ -47,7 +47,100 @@ coord_app = typer.Typer(
     no_args_is_help=True,
 )
 
+mattermost_app = typer.Typer(
+    name="mattermost",
+    help="Project selected coord rooms to one authenticated Mattermost operator.",
+    no_args_is_help=True,
+)
+coord_app.add_typer(mattermost_app, name="mattermost")
+
 console = Console()
+
+
+def _default_mattermost_config() -> Path:
+    from ..config import get_config_dir
+
+    return get_config_dir() / "coord-mattermost.toml"
+
+
+async def _mattermost_check(config_path: Path) -> None:
+    from ..coord.mattermost import (
+        HTTPMattermostAPI,
+        MattermostAdapter,
+        MattermostState,
+        load_config,
+        read_bot_token,
+    )
+
+    config = load_config(config_path)
+    token = read_bot_token(config.bot_token_file)
+    state = MattermostState(config)
+    async with HTTPMattermostAPI(config, token) as client:
+        await MattermostAdapter(config, state, client).verify()
+
+
+async def _mattermost_run(config_path: Path, *, once: bool) -> None:
+    from ..coord.mattermost import (
+        HTTPMattermostAPI,
+        MattermostAdapter,
+        MattermostState,
+        load_config,
+        read_bot_token,
+    )
+
+    config = load_config(config_path)
+    token = read_bot_token(config.bot_token_file)
+    state = MattermostState(config)
+    async with HTTPMattermostAPI(config, token) as client:
+        adapter = MattermostAdapter(config, state, client)
+        if once:
+            await adapter.run_once(verify=True)
+        else:
+            await adapter.run_forever()
+
+
+@mattermost_app.command("check")
+def mattermost_check(
+    config: Path = typer.Option(
+        None,
+        "--config",
+        help="External adapter TOML (default: ~/.safeyolo/coord-mattermost.toml).",
+    ),
+) -> None:
+    """Validate credentials, identities, channels, mapping, and coord grants."""
+
+    from ..coord.mattermost import MattermostAdapterError
+
+    path = config or _default_mattermost_config()
+    try:
+        _run(_mattermost_check(path))
+    except (MattermostAdapterError, OSError, ValueError) as exc:
+        console.print(f"[red]Mattermost adapter check failed:[/red] {escape(str(exc))}")
+        raise typer.Exit(1) from None
+    console.print("[green]Mattermost adapter configuration is valid.[/green]")
+
+
+@mattermost_app.command("run")
+def mattermost_run(
+    config: Path = typer.Option(
+        None,
+        "--config",
+        help="External adapter TOML (default: ~/.safeyolo/coord-mattermost.toml).",
+    ),
+    once: bool = typer.Option(False, "--once", help="Run one bounded sync cycle and exit."),
+) -> None:
+    """Run the foreground Mattermost adapter (use a host supervisor in production)."""
+
+    from ..coord.mattermost import MattermostAdapterError
+
+    path = config or _default_mattermost_config()
+    try:
+        _run(_mattermost_run(path, once=once))
+    except KeyboardInterrupt:
+        return
+    except (MattermostAdapterError, OSError, ValueError) as exc:
+        console.print(f"[red]Mattermost adapter stopped:[/red] {escape(str(exc))}")
+        raise typer.Exit(1) from None
 
 
 def _fmt_ts(ms: int) -> str:
