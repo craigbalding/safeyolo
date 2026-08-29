@@ -2,16 +2,17 @@
 
 from pathlib import Path
 
-import yaml
+from safeyolo.core.service_loader import ServiceRegistry, ServiceRegistryError
+from safeyolo.core.service_paths import resolve_service_directories
+
+
+class ServiceDiscoveryError(RuntimeError):
+    """CLI-facing service source or schema failure."""
 
 
 def _get_services_dirs() -> list[Path]:
-    """Get service definition directories (user + builtin)."""
-    from ..config import _get_config_dir_path
-
-    user_dir = _get_config_dir_path() / "services"
-    builtin_dir = Path(__file__).parent.parent.parent.parent.parent / "config" / "services"
-    return [builtin_dir, user_dir]
+    """Get the authoritative builtin then user service directories."""
+    return list(resolve_service_directories().precedence)
 
 
 def _load_service_files() -> list[dict]:
@@ -19,18 +20,17 @@ def _load_service_files() -> list[dict]:
 
     User directory takes priority over builtins (same name → user wins).
     """
-    services = {}
-    for directory in _get_services_dirs():
-        if not directory.exists():
-            continue
-        for yaml_file in sorted(directory.glob("*.yaml")):
-            try:
-                raw = yaml.safe_load(yaml_file.read_text())
-                if raw and isinstance(raw, dict) and "name" in raw:
-                    services[raw["name"]] = raw
-            except (OSError, yaml.YAMLError):
-                continue
-    return list(services.values())
+    builtin_dir, user_dir = _get_services_dirs()
+    registry = ServiceRegistry(
+        user_dir,
+        builtin_dir=builtin_dir,
+        require_builtin=True,
+    )
+    try:
+        registry.load(strict=True)
+    except ServiceRegistryError as error:
+        raise ServiceDiscoveryError(str(error)) from error
+    return [service.to_dict() for service in registry.list_services()]
 
 
 def find_service(name: str) -> dict | None:

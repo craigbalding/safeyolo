@@ -583,8 +583,29 @@ def _build_command(
     vault_key = config_dir / "data" / "vault.key"
     vault_enc = config_dir / "data" / "vault.yaml.enc"
     if vault_key.exists() and vault_enc.exists():
+        from .core.service_loader import ServiceRegistry, ServiceRegistryError
+        from .core.service_paths import resolve_service_directories
+
+        service_directories = resolve_service_directories(config_dir / "services")
+        registry = ServiceRegistry(
+            service_directories.user,
+            builtin_dir=service_directories.builtin,
+            require_builtin=True,
+        )
+        try:
+            registry.load(strict=True)
+        except ServiceRegistryError as error:
+            raise RuntimeError(
+                f"Service gateway configuration is invalid: {error}"
+            ) from error
         cmd.extend(["--set", "gateway_enabled=true"])
-        cmd.extend(["--set", f"gateway_services_dir={config_dir / 'services'}"])
+        cmd.extend(["--set", f"gateway_services_dir={service_directories.user}"])
+        cmd.extend(
+            [
+                "--set",
+                f"gateway_builtin_services_dir={service_directories.builtin}",
+            ]
+        )
         cmd.extend(["--set", f"gateway_vault_path={vault_enc}"])
         cmd.extend(["--set", f"gateway_vault_key={vault_key}"])
 

@@ -226,6 +226,8 @@ class ServiceGateway:
         self.stats = GatewayStats()
 
     def load(self, loader):
+        from safeyolo.core.service_paths import builtin_services_dir
+
         loader.add_option(
             name="gateway_enabled",
             typespec=bool,
@@ -237,6 +239,12 @@ class ServiceGateway:
             typespec=str,
             default="/safeyolo/services",
             help="Directory containing service definition YAML files",
+        )
+        loader.add_option(
+            name="gateway_builtin_services_dir",
+            typespec=str,
+            default=str(builtin_services_dir()),
+            help="Directory containing packaged builtin service definitions",
         )
         loader.add_option(
             name="gateway_vault_path",
@@ -255,11 +263,13 @@ class ServiceGateway:
         if not ctx.options.gateway_enabled:
             return
 
-        if "gateway_enabled" in updates or "gateway_services_dir" in updates:
-            self._init_services()
-            # Registry now available — trigger policy reload so compiler can
-            # emit gateway:request permissions from capability routes
-            self._trigger_policy_reload()
+        if (
+            "gateway_enabled" in updates
+            or "gateway_services_dir" in updates
+            or "gateway_builtin_services_dir" in updates
+        ):
+            registry = self._init_services()
+            self._activate_service_registry(registry)
 
         if "gateway_enabled" in updates or "gateway_vault_path" in updates:
             self._init_vault()
@@ -274,14 +284,56 @@ class ServiceGateway:
     def _init_services(self):
         """Initialize service registry from service definition files."""
         try:
-            from safeyolo.core.service_loader import init_service_registry
+            from safeyolo.core.service_loader import ServiceRegistry
 
             user_dir = Path(ctx.options.gateway_services_dir)
-            registry = init_service_registry(user_dir)
-            registry.start_watcher()
-            log.info(f"Service registry loaded from {user_dir}")
+            builtin_dir = Path(ctx.options.gateway_builtin_services_dir)
+            registry = ServiceRegistry(
+                user_dir,
+                builtin_dir=builtin_dir,
+                require_builtin=True,
+            )
+            registry.load(strict=True)
+            log.info(
+                "Service registry loaded (builtin=%s, user=%s)",
+                builtin_dir,
+                user_dir,
+            )
+            return registry
         except Exception as e:
-            log.error(f"Failed to load service registry: {type(e).__name__}: {e}")
+            from mitmproxy.exceptions import OptionsError
+
+            message = f"Failed to load service registry: {type(e).__name__}: {e}"
+            log.error(message)
+            raise OptionsError(message) from e
+
+    def _activate_service_registry(self, registry):
+        """Publish registry and compile policy as one startup transaction."""
+        from safeyolo.core.service_loader import (
+            _activate_service_registry_transaction,
+            get_service_registry,
+        )
+
+        previous = get_service_registry()
+        if previous is not None and previous is not registry:
+            previous.stop_watcher()
+        try:
+            _activate_service_registry_transaction(
+                registry,
+                self._trigger_policy_reload,
+                expected_previous=previous,
+            )
+        except Exception as error:
+            if previous is not None and get_service_registry() is previous:
+                previous.start_watcher()
+            from mitmproxy.exceptions import OptionsError
+
+            raise OptionsError(
+                f"Service registry and policy activation failed: {error}"
+            ) from error
+
+        registry.add_reload_callback(self._trigger_policy_reload)
+        registry.start_watcher()
 
     def _trigger_policy_reload(self):
         """Trigger a policy reload so the compiler can use the now-available registry."""
@@ -294,12 +346,23 @@ class ServiceGateway:
             pdp = getattr(client, "_pdp", None)
             engine = getattr(pdp, "_engine", None) if pdp else None
             loader = getattr(engine, "_loader", None) if engine else None
-            if loader:
-                loader.reload()
-                gw_count = sum(1 for p in loader.baseline.permissions if p.action == "gateway:request")
-                log.info(f"Policy reloaded after service registry init ({gw_count} gateway:request permissions)")
+            if loader is None:
+                raise RuntimeError("Policy client is configured without a policy loader")
+            if not loader.reload():
+                raise RuntimeError("Policy reload did not commit the service candidate")
+            gw_count = sum(
+                1
+                for permission in loader.baseline.permissions
+                if permission.action == "gateway:request"
+            )
+            log.info(
+                "Policy reloaded after service registry init "
+                "(%d gateway:request permissions)",
+                gw_count,
+            )
         except Exception as e:
             log.error(f"Policy reload after registry init failed: {type(e).__name__}: {e}")
+            raise
 
     def _init_vault(self):
         """Initialize vault from encrypted file, using auto-generated key file."""
@@ -417,6 +480,26 @@ class ServiceGateway:
         # Extract sgw_ token from Authorization header
         token = self._extract_sgw_token(flow)
         if not token:
+            unresolved_token = self._find_sgw_token_candidate(flow)
+            if unresolved_token:
+                for header_name, header_value in tuple(flow.request.headers.items()):
+                    if unresolved_token in header_value:
+                        del flow.request.headers[header_name]
+                self._deny(
+                    flow,
+                    503,
+                    "Gateway token could not be resolved from the live service registry",
+                    "GATEWAY_CONFIGURATION_ERROR",
+                    action="abort",
+                    reflection=(
+                        "The request contains a SafeYolo gateway credential, but the "
+                        "running gateway has no matching host/service/auth metadata. "
+                        "Check the packaged and user service definitions and restart "
+                        "or reload the proxy."
+                    ),
+                )
+                self.stats.denied_token += 1
+                return
             trace_evaluated(flow, addon=self.name, outcome=OUTCOME_NOT_A_GATEWAY_REQUEST)
             return  # Not a gateway request - pass through
 
@@ -1218,6 +1301,23 @@ class ServiceGateway:
         value = value.strip()
         if value.startswith(SGW_TOKEN_PREFIX):
             return value
+        return None
+
+    @staticmethod
+    def _find_sgw_token_candidate(flow: http.HTTPFlow) -> str | None:
+        """Find a synthetic gateway token without relying on registry metadata.
+
+        This narrow fallback recognizes only the reserved ``sgw_`` prefix. It
+        prevents SafeYolo-minted credentials from reaching upstream unchanged
+        when host or schema metadata is absent, while ordinary credentials keep
+        their existing pass-through behavior.
+        """
+        for value in flow.request.headers.values():
+            candidate = value.strip()
+            if " " in candidate:
+                candidate = candidate.split(" ", 1)[1].strip()
+            if candidate.startswith(SGW_TOKEN_PREFIX):
+                return candidate
         return None
 
     def _evaluate_capability_routes(self, method, path, capability) -> bool:  # DOC: SECURITY.md

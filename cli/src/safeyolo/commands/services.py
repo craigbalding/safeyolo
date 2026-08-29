@@ -6,7 +6,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from .._tactics import TACTIC_LABELS
-from ._service_discovery import _load_service_files
+from ._service_discovery import ServiceDiscoveryError, _load_service_files
 
 console = Console()
 
@@ -25,7 +25,11 @@ def list_services() -> None:
 
         safeyolo services list
     """
-    services = _load_service_files()
+    try:
+        services = _load_service_files()
+    except ServiceDiscoveryError as error:
+        console.print(f"[red]Service definitions failed to load:[/red] {escape(str(error))}")
+        raise typer.Exit(1) from error
 
     if not services:
         console.print("[dim]No service definitions found.[/dim]")
@@ -60,7 +64,11 @@ def show(
         safeyolo services show gmail
         safeyolo services show minifuse
     """
-    services = _load_service_files()
+    try:
+        services = _load_service_files()
+    except ServiceDiscoveryError as error:
+        console.print(f"[red]Service definitions failed to load:[/red] {escape(str(error))}")
+        raise typer.Exit(1) from error
     svc = next((s for s in services if s["name"] == name), None)
 
     if not svc:

@@ -78,6 +78,7 @@ class PolicyClientConfig:
     # For local mode: paths to policy files
     baseline_path: Path | None = None
     budget_state_path: Path | None = None
+    # Deprecated compatibility field; the process ServiceRegistry is canonical.
     services_dir: Path | None = None
 
     # For http mode: PDP service endpoint

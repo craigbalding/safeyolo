@@ -1,18 +1,24 @@
 """Tests for service definition file loading.
 
 Contract for _load_service_files():
-- Scans builtin_dir then user_dir for *.yaml files, sorted alphabetically per dir.
-- Each file must be valid YAML, a dict, and contain a 'name' key to be accepted.
+- Uses the same strict ServiceRegistry parser as the running gateway.
 - User dir entries override builtin entries with the same 'name' value.
-- Malformed YAML files are silently skipped (OSError or yaml.YAMLError).
-- Files missing the 'name' key are silently skipped.
-- Non-existent directories are silently skipped.
-- Returns a list of dicts (the raw parsed YAML content).
+- Malformed, incomplete, and duplicate definitions fail discovery loudly.
+- The packaged builtin source is required; the user directory is optional.
+- Returns validated raw schema documents for CLI rendering.
 """
 
+import pytest
 import yaml
 
-from safeyolo.commands._service_discovery import _load_service_files
+from safeyolo.commands._service_discovery import (
+    ServiceDiscoveryError,
+    _load_service_files,
+)
+
+
+def _service(name: str, **values) -> dict:
+    return {"schema_version": 1, "name": name, **values}
 
 
 class TestLoadServiceFilesBuiltinOnly:
@@ -23,7 +29,7 @@ class TestLoadServiceFilesBuiltinOnly:
         builtin.mkdir()
         user = tmp_path / "user"  # Does not exist
 
-        svc = {"name": "redis", "description": "Redis cache"}
+        svc = _service("redis", description="Redis cache")
         (builtin / "redis.yaml").write_text(yaml.dump(svc))
 
         monkeypatch.setattr(
@@ -46,8 +52,8 @@ class TestLoadServiceFilesUserOverride:
         user = tmp_path / "user"
         user.mkdir()
 
-        builtin_svc = {"name": "slack", "description": "Builtin slack"}
-        user_svc = {"name": "slack", "description": "Custom slack"}
+        builtin_svc = _service("slack", description="Builtin slack")
+        user_svc = _service("slack", description="Custom slack")
         (builtin / "slack.yaml").write_text(yaml.dump(builtin_svc))
         (user / "slack.yaml").write_text(yaml.dump(user_svc))
 
@@ -70,8 +76,8 @@ class TestLoadServiceFilesBothContribute:
         user = tmp_path / "user"
         user.mkdir()
 
-        (builtin / "redis.yaml").write_text(yaml.dump({"name": "redis"}))
-        (user / "postgres.yaml").write_text(yaml.dump({"name": "postgres"}))
+        (builtin / "redis.yaml").write_text(yaml.dump(_service("redis")))
+        (user / "postgres.yaml").write_text(yaml.dump(_service("postgres")))
 
         monkeypatch.setattr(
             "safeyolo.commands._service_discovery._get_services_dirs",
@@ -83,46 +89,46 @@ class TestLoadServiceFilesBothContribute:
         assert names == {"redis", "postgres"}
 
 
-class TestLoadServiceFilesMalformedSkipped:
-    """Malformed YAML and missing keys are skipped gracefully."""
+class TestLoadServiceFilesInvalidFails:
+    """CLI discovery refuses definitions the running registry cannot load."""
 
-    def test_malformed_yaml_skipped_other_services_loaded(self, tmp_path, monkeypatch):
+    def test_malformed_yaml_names_offending_file(self, tmp_path, monkeypatch):
         builtin = tmp_path / "builtin"
         builtin.mkdir()
         user = tmp_path / "user"  # Not created
 
         (builtin / "bad.yaml").write_text(": : : not valid yaml {{{}}")
-        (builtin / "good.yaml").write_text(yaml.dump({"name": "good-svc", "port": 8080}))
+        (builtin / "good.yaml").write_text(yaml.dump(_service("good-svc")))
 
         monkeypatch.setattr(
             "safeyolo.commands._service_discovery._get_services_dirs",
             lambda: [builtin, user],
         )
 
-        result = _load_service_files()
-        assert len(result) == 1
-        assert result[0]["name"] == "good-svc"
+        with pytest.raises(ServiceDiscoveryError, match="bad.yaml"):
+            _load_service_files()
 
-    def test_file_without_name_key_skipped(self, tmp_path, monkeypatch):
+    def test_file_without_name_key_fails(self, tmp_path, monkeypatch):
         builtin = tmp_path / "builtin"
         builtin.mkdir()
         user = tmp_path / "user"  # Not created
 
-        (builtin / "noname.yaml").write_text(yaml.dump({"description": "no name field"}))
-        (builtin / "valid.yaml").write_text(yaml.dump({"name": "valid-svc"}))
+        (builtin / "noname.yaml").write_text(
+            yaml.dump({"schema_version": 1, "description": "no name field"})
+        )
+        (builtin / "valid.yaml").write_text(yaml.dump(_service("valid-svc")))
 
         monkeypatch.setattr(
             "safeyolo.commands._service_discovery._get_services_dirs",
             lambda: [builtin, user],
         )
 
-        result = _load_service_files()
-        assert len(result) == 1
-        assert result[0]["name"] == "valid-svc"
+        with pytest.raises(ServiceDiscoveryError, match="noname.yaml"):
+            _load_service_files()
 
 
 class TestLoadServiceFilesEmptyDirs:
-    """Empty or non-existent directories."""
+    """Empty sources are valid, but the packaged source must exist."""
 
     def test_empty_directories_return_empty_list(self, tmp_path, monkeypatch):
         builtin = tmp_path / "builtin"
@@ -137,3 +143,16 @@ class TestLoadServiceFilesEmptyDirs:
 
         result = _load_service_files()
         assert result == []
+
+    def test_missing_builtin_directory_fails(self, tmp_path, monkeypatch):
+        builtin = tmp_path / "missing-builtin"
+        user = tmp_path / "user"
+        user.mkdir()
+
+        monkeypatch.setattr(
+            "safeyolo.commands._service_discovery._get_services_dirs",
+            lambda: [builtin, user],
+        )
+
+        with pytest.raises(ServiceDiscoveryError, match="packaged builtin"):
+            _load_service_files()

@@ -862,6 +862,7 @@ class TestBuildCommand:
         cmd_str = " ".join(cmd)
         assert "gateway_enabled=true" in cmd_str
         assert "gateway_services_dir=" in cmd_str
+        assert "gateway_builtin_services_dir=" in cmd_str
         assert "gateway_vault_path=" in cmd_str
         assert "gateway_vault_key=" in cmd_str
 
@@ -876,6 +877,19 @@ class TestBuildCommand:
 
         cmd_str = " ".join(cmd)
         assert "gateway_enabled" not in cmd_str
+
+    def test_gateway_service_schema_failure_aborts_command_build(self, cmd_env):
+        from safeyolo.proxy import _build_command
+
+        data = cmd_env["config_dir"] / "data"
+        (data / "vault.key").touch()
+        (data / "vault.yaml.enc").touch()
+        services = cmd_env["config_dir"] / "services"
+        services.mkdir()
+        (services / "broken.yaml").write_text("not: valid: yaml: [")
+
+        with pytest.raises(RuntimeError, match="broken.yaml"):
+            _build_command(admin_token="tok", **cmd_env)
 
     def test_gateway_not_enabled_with_only_vault_key(self, cmd_env):
         """Gateway needs both vault.key AND vault.yaml.enc."""

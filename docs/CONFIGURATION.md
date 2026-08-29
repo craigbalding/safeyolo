@@ -237,8 +237,16 @@ addons:
 
 Service definitions describe APIs: auth methods, capabilities (named sets of allowed routes), and risky routes (tagged with ATT&CK tactics). They are used by the service gateway to enforce per-agent access control.
 
-- Builtin services ship with SafeYolo (gmail, slack, etc.) in `config/services/`.
-- User overrides go in `~/.safeyolo/services/`.
+- Builtin services (gmail, slack, etc.) ship inside the installed
+  `safeyolo/services/` package directory, including editable source installs
+  and built wheels.
+- User definitions go in `~/.safeyolo/services/` (or
+  `$SAFEYOLO_CONFIG_DIR/services/`). They override builtins by the service
+  `name`; duplicate names within one source or any malformed definition make
+  discovery/authorization fail with the offending file named.
+- The CLI, running gateway, and policy compiler use that same builtin-then-user
+  source order. Successful service reloads recompile policy; failed reloads
+  retain the previous registry and policy together.
 - The `service` field in host entries links a host to a service definition.
 
 Example service YAML (v2 format):

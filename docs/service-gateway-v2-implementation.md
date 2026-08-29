@@ -71,7 +71,7 @@ The implementation is staged. Each stage is independently shippable.
 | `pdp/schemas.py` | Risk appetite policy schema |
 | `cli/.../commands/watch.py` | Service approval, risky route approval, group display, passive fallback info |
 | `cli/.../commands/agent.py` | Update authorize to use capabilities |
-| `config/services/*.yaml` | Convert to v2 format |
+| `cli/src/safeyolo/services/*.yaml` | Convert packaged builtins to v2 format |
 | `tests/test_service_gateway.py` | Update for capabilities, add risky route tests |
 | `tests/test_service_loader.py` | Update for new schema |
 

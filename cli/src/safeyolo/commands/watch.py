@@ -546,7 +546,7 @@ def _pick_or_create_credential(service: str) -> str | None:
 
     Returns credential name, or None if cancelled.
     """
-    from ._service_discovery import find_service
+    from ._service_discovery import ServiceDiscoveryError, find_service
     from .vault import _load_vault
 
     try:
@@ -556,10 +556,17 @@ def _pick_or_create_credential(service: str) -> str | None:
         return None
 
     # Look up auth type from service definition
-    svc = find_service(service)
-    auth_type = "bearer"
-    if svc:
-        auth_type = svc.get("auth", {}).get("type", "bearer")
+    try:
+        svc = find_service(service)
+    except ServiceDiscoveryError as error:
+        console.print(f"[red]Service definitions failed to load:[/red] {escape(str(error))}")
+        return None
+    if svc is None:
+        console.print(
+            f"[red]Service '{escape(service)}' is not available in the effective registry.[/red]"
+        )
+        return None
+    auth_type = svc.get("auth", {}).get("type", "bearer")
 
     AUTH_TYPE_LABELS = {
         "bearer": "Bearer token",

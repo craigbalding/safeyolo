@@ -1101,6 +1101,34 @@ class TestPostCircuitBreakerReset:
 class TestAgentServiceEndpoints:
     """Tests for agent service authorization/revocation endpoints."""
 
+    @pytest.fixture(autouse=True)
+    def live_service_registry(self, tmp_path):
+        from safeyolo.core.service_loader import ServiceRegistry
+
+        services_dir = tmp_path / "live-services"
+        services_dir.mkdir()
+        (services_dir / "gmail.yaml").write_text(
+            """
+schema_version: 1
+name: gmail
+auth: {type: bearer}
+capabilities:
+  readonly:
+    routes: []
+"""
+        )
+        registry = ServiceRegistry(
+            services_dir,
+            builtin_dir=tmp_path / "no-builtins",
+        )
+        registry.load(strict=True)
+        with patch(
+            "safeyolo.core.service_loader.get_service_registry",
+            autospec=True,
+            return_value=registry,
+        ) as get_registry:
+            yield get_registry
+
     @pytest.fixture
     def policy_toml(self, tmp_path):
         """Create a mock policy.toml with agents section."""
@@ -1188,6 +1216,78 @@ class TestAgentServiceEndpoints:
 
         assert handler._status == 400
         assert _parse_response(handler)["error"] == "missing request body"
+
+    def test_post_service_not_loaded_by_gateway_returns_404(
+        self, handler_class, mock_pdp
+    ):
+        body = json.dumps(
+            {
+                "service": "checkout-only",
+                "capability": "reader",
+                "credential": "key",
+            }
+        )
+        handler = _make_handler(
+            handler_class,
+            "POST",
+            "/admin/agents/boris/services",
+            body=body,
+        )
+        handler.do_POST()
+
+        assert handler._status == 404
+        assert "not loaded by the running gateway" in _parse_response(handler)["error"]
+
+    def test_post_registry_unavailable_returns_503(
+        self,
+        handler_class,
+        mock_pdp,
+        live_service_registry,
+    ):
+        body = json.dumps(
+            {
+                "service": "gmail",
+                "capability": "readonly",
+                "credential": "key",
+            }
+        )
+        handler = _make_handler(
+            handler_class,
+            "POST",
+            "/admin/agents/boris/services",
+            body=body,
+        )
+
+        previous_registry = live_service_registry.return_value
+        live_service_registry.return_value = None
+        try:
+            handler.do_POST()
+        finally:
+            live_service_registry.return_value = previous_registry
+
+        assert handler._status == 503
+        assert "registry is not available" in _parse_response(handler)["error"]
+
+    def test_post_capability_not_loaded_by_gateway_returns_404(
+        self, handler_class, mock_pdp
+    ):
+        body = json.dumps(
+            {
+                "service": "gmail",
+                "capability": "missing",
+                "credential": "key",
+            }
+        )
+        handler = _make_handler(
+            handler_class,
+            "POST",
+            "/admin/agents/boris/services",
+            body=body,
+        )
+        handler.do_POST()
+
+        assert handler._status == 404
+        assert "capability 'missing' is not loaded" in _parse_response(handler)["error"]
 
     def test_post_nonexistent_agent_returns_404(self, handler_class, mock_pdp):
         body = json.dumps({"service": "gmail", "capability": "readonly", "credential": "gmail-key"})
