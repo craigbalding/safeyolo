@@ -424,19 +424,31 @@ def _python_findings(text: str) -> list[tuple[int, str]]:
     }
     function_returns: dict[str, _Provenance] = {name: set() for name in functions}
 
-    empty_params: dict[ast.AST, dict[str, _Provenance]] = {
-        node: {} for node in function_nodes
-    }
-    global_state, global_containers, _returned, _findings, _changed = _analyze_scope(
-        tree, {}, {}, function_returns, functions, empty_params, collect_findings=False,
-    )
-
     # Resolve return provenance from actual return expressions. Returning the
     # token-file Path remains PATH; only read_text/read_bytes/open(...).read()
-    # becomes TOKEN.
+    # becomes TOKEN. Module state and helper returns converge together so a
+    # module alias initialized by a helper is available inside later functions.
+    global_state: dict[str, _Provenance] = {}
+    global_containers: dict[str, list[_Arg]] = {}
     changed = True
     while changed:
         changed = False
+        next_global_state, next_global_containers, _returned, _findings, _param_changed = _analyze_scope(
+            tree,
+            {},
+            {},
+            function_returns,
+            functions,
+            parameter_provenance,
+            collect_findings=False,
+        )
+        if (
+            next_global_state != global_state
+            or next_global_containers != global_containers
+        ):
+            global_state = next_global_state
+            global_containers = next_global_containers
+            changed = True
         for name, function in functions.items():
             initial = {
                 **global_state,

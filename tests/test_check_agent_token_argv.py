@@ -188,6 +188,22 @@ subprocess.run([
     assert mod.find_unsafe_token_argv(text) == []
 
 
+def test_helper_derived_module_token_flows_into_function_curl():
+    text = '''import subprocess
+from pathlib import Path
+
+def read_token():
+    return Path("/app/agent_token").read_text().strip()
+
+TOKEN = read_token()
+URL = "http://_safeyolo.proxy.internal/health"
+
+def request():
+    subprocess.run(["curl", "-H", f"Authorization: Bearer {TOKEN}", URL])
+'''
+    assert mod.find_unsafe_token_argv(text)
+
+
 def test_accepts_stdin_header_pattern_on_one_or_many_lines():
     multiline = """(
   agent_token=$(cat /app/agent_token) || exit
