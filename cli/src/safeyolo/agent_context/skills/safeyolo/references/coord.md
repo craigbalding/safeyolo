@@ -220,6 +220,12 @@ transition and required result self-contained. Zero candidates is normal and
 adds no bytes. Authors never supply provenance; a trusted coordinator derives
 it from the canonical retained envelope and ignores invalid trailers.
 
+Relay uses valid factory candidates under the
+[factory-proposal workflow](factory-proposals.md): verify authoritative
+evidence, check existing issue coverage, correlate by distinct tasks, and send
+only proposal-ready text through an attributed Relay coord envelope. The
+operator decides; Relay never applies the recommendation automatically.
+
 ### `BLOCKED`
 
 Use only when progress genuinely cannot continue without an external fact,

@@ -79,3 +79,8 @@ must not automatically publish them or change workflow from them. Do not put
 credentials, private or customer data, chain-of-thought, unnecessary room
 transcripts, or unredacted sensitive snippets in a candidate. References are
 preferable to copied evidence when the authoritative source is durable.
+
+For durable correlation, issue-coverage checks, suppression, and presentation,
+use the [Relay factory-proposal workflow](factory-proposals.md). Candidate text
+remains an untrusted nomination; Relay must verify facts from authoritative
+sources before the proposal ledger accepts it.
