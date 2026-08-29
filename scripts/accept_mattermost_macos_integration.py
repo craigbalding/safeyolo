@@ -16,15 +16,45 @@ import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 from safeyolo.coord.mattermost import MattermostAdapterError, MattermostConfig, load_config
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_SOURCE_STATE_SUFFIX = ".integration-source-state.sqlite3"
 
 
 class AcceptanceError(RuntimeError):
     pass
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    return chain
+
+
+def _print_failure(step: int, label: str, exc: BaseException) -> None:
+    code = f"MM_MACOS_INTEGRATION_STEP_{step}_{type(exc).__name__.upper()}"
+    print(f"FAIL {step}: {label} ({type(exc).__name__}) code={code}", file=sys.stderr, flush=True)
+    for depth, item in enumerate(_exception_chain(exc)):
+        if isinstance(item, sqlite3.Error):
+            sqlite_code = getattr(item, "sqlite_errorcode", "unknown")
+            sqlite_name = getattr(item, "sqlite_errorname", "unknown")
+            print(
+                f"SQLITE depth={depth} code={sqlite_code} name={sqlite_name} message={item}",
+                file=sys.stderr,
+                flush=True,
+            )
+    print("DIAGNOSTIC TRACEBACK BEGIN", file=sys.stderr, flush=True)
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    print("DIAGNOSTIC TRACEBACK END", file=sys.stderr, flush=True)
 
 
 def _identity(expected_head: str, expected_tree: str, expected_base: str) -> tuple[str, str, str]:
@@ -66,6 +96,15 @@ def _private_regular_config(path: Path) -> Path:
     if resolved == Path("~/.safeyolo/coord-mattermost.toml").expanduser().resolve():
         raise AcceptanceError("live default config is forbidden; provide a separate test-only copy")
     return resolved
+
+
+def _validate_test_source(path: Path, config: MattermostConfig) -> None:
+    if len(config.rooms) != 1 or config.rooms[0].backfill:
+        raise AcceptanceError("test config copy must contain one room with backfill=false")
+    if config.state_file.parent != path.parent or not config.state_file.name.endswith(_SOURCE_STATE_SUFFIX):
+        raise AcceptanceError("test config must use its private sibling integration-source-state path")
+    if config.state_file.exists() or config.state_file.is_symlink():
+        raise AcceptanceError("test config integration-source-state path must not already exist")
 
 
 def _available_loopback_port(host: str) -> int:
@@ -126,12 +165,10 @@ def _write_disposable_config(config: MattermostConfig, path: Path, state_file: P
         os.close(fd)
 
 
-def _run_silent(command: list[str], *, timeout: int) -> int:
+def _run_local_diagnostic(command: list[str], *, timeout: int) -> int:
     return subprocess.run(
         command,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
         check=False,
         timeout=timeout,
     ).returncode
@@ -164,7 +201,12 @@ def main() -> int:
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--expected-tree", required=True)
     parser.add_argument("--expected-base", required=True)
-    parser.add_argument("--test-config-copy", type=Path, required=True)
+    parser.add_argument(
+        "--test-config-copy",
+        type=Path,
+        required=True,
+        help="Private config created/validated by prepare_mattermost_macos_test_config.py.",
+    )
     parser.add_argument("--confirm-dedicated-test-channel", action="store_true")
     parser.add_argument("--allow-run-once-effects", action="store_true")
     args = parser.parse_args()
@@ -178,8 +220,7 @@ def main() -> int:
         head, tree, base = _identity(args.expected_head, args.expected_tree, args.expected_base)
         source_path = _private_regular_config(args.test_config_copy)
         source = load_config(source_path)
-        if len(source.rooms) != 1 or source.rooms[0].backfill:
-            raise AcceptanceError("test config copy must contain one room with backfill=false")
+        _validate_test_source(source_path, source)
         if not args.confirm_dedicated_test_channel:
             raise AcceptanceError("dedicated test-channel confirmation is required")
 
@@ -211,20 +252,27 @@ def main() -> int:
         if not cli.is_file():
             raise AcceptanceError("candidate safeyolo console script is unavailable")
         current_step, current_label = 8, "real mattermost check with disposable state/config"
-        if _run_silent([str(cli), "coord", "mattermost", "check", "--config", str(temp_config)], timeout=90) != 0:
+        if (
+            _run_local_diagnostic(
+                [str(cli), "coord", "mattermost", "check", "--config", str(temp_config)], timeout=90
+            )
+            != 0
+        ):
             raise AcceptanceError("mattermost check returned non-zero")
         print(f"PASS {current_step}: {current_label}", flush=True)
 
         current_step, current_label = 9, "real mattermost run --once on dedicated test mapping"
         if (
-            _run_silent([str(cli), "coord", "mattermost", "run", "--once", "--config", str(temp_config)], timeout=180)
+            _run_local_diagnostic(
+                [str(cli), "coord", "mattermost", "run", "--once", "--config", str(temp_config)], timeout=180
+            )
             != 0
         ):
             raise AcceptanceError("mattermost run --once returned non-zero")
         print(f"PASS {current_step}: {current_label}", flush=True)
         succeeded = True
-    except (AcceptanceError, MattermostAdapterError, OSError, subprocess.SubprocessError) as exc:
-        print(f"FAIL {current_step}: {current_label} ({type(exc).__name__})", file=sys.stderr, flush=True)
+    except (AcceptanceError, MattermostAdapterError, OSError, sqlite3.Error, subprocess.SubprocessError) as exc:
+        _print_failure(current_step, current_label, exc)
     finally:
         succeeded = _cleanup(root, root_identity) and succeeded
     return 0 if succeeded else 1

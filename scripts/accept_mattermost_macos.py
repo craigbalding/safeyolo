@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 from contextlib import closing
 from pathlib import Path
 
@@ -27,6 +28,34 @@ _ROOM = "macos-state-acceptance"
 
 class AcceptanceError(RuntimeError):
     pass
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    return chain
+
+
+def _print_failure(step: int, label: str, exc: BaseException) -> None:
+    code = f"MM_MACOS_STRUCTURAL_STEP_{step}_{type(exc).__name__.upper()}"
+    print(f"FAIL {step}: {label} ({type(exc).__name__}) code={code}", file=sys.stderr, flush=True)
+    for depth, item in enumerate(_exception_chain(exc)):
+        if isinstance(item, sqlite3.Error):
+            sqlite_code = getattr(item, "sqlite_errorcode", "unknown")
+            sqlite_name = getattr(item, "sqlite_errorname", "unknown")
+            print(
+                f"SQLITE depth={depth} code={sqlite_code} name={sqlite_name} message={item}",
+                file=sys.stderr,
+                flush=True,
+            )
+    print("DIAGNOSTIC TRACEBACK BEGIN", file=sys.stderr, flush=True)
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    print("DIAGNOSTIC TRACEBACK END", file=sys.stderr, flush=True)
 
 
 def _config(state_file: Path) -> MattermostConfig:
@@ -319,7 +348,7 @@ def main() -> int:
         print(f"PASS {current_step}: {current_label}", flush=True)
         succeeded = True
     except (AcceptanceError, MattermostAdapterError, OSError, sqlite3.Error, subprocess.SubprocessError) as exc:
-        print(f"FAIL {current_step}: {current_label} ({type(exc).__name__})", file=sys.stderr, flush=True)
+        _print_failure(current_step, current_label, exc)
     finally:
         if state is not None:
             state.close()

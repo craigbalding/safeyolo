@@ -249,18 +249,32 @@ That script verifies gates 1–7: initialization, WAL with real adjacent
 `-wal`/`-shm` sidecars, schema, read/write, close/reopen plus abrupt recovery,
 the separate process lease, and fail-closed state/lease replacement.
 
-For gates 8–9, first make a separate mode-`0600` config copy that contains only
-the already-provisioned test Mattermost/coord mapping and explicitly sets its
-single room to `backfill = false`. Do not pass the live default config. The
-integration script reads that test copy but never edits it; it writes a second
-private config with a new state DB under its own temporary root:
+For gates 8–9, create a private test config interactively. The helper prompts
+for exactly six values: the Mattermost HTTPS origin, private bot-token file
+path, dedicated bot user ID, operator user ID, dedicated coord room, and
+dedicated Mattermost channel ID. It never prints the token contents or IDs. It
+writes mode `0600`, exactly one room with `backfill = false`, and a deliberately
+unused sibling state path:
+
+```sh
+install -d -m 700 "$HOME/.safeyolo/macos-acceptance"
+uv run python scripts/prepare_mattermost_macos_test_config.py \
+  --output "$HOME/.safeyolo/macos-acceptance/dedicated-test.toml"
+uv run python scripts/prepare_mattermost_macos_test_config.py \
+  --validate "$HOME/.safeyolo/macos-acceptance/dedicated-test.toml"
+```
+
+The helper and integration script both refuse the live default config. The
+integration script also refuses an existing source state file, reads the test
+config without editing it, and writes a second private config with a new state
+DB under its own temporary root:
 
 ```sh
 uv run python scripts/accept_mattermost_macos_integration.py \
   --expected-head REVIEWED_FULL_COMMIT_SHA \
   --expected-tree REVIEWED_FULL_TREE_SHA \
   --expected-base REVIEWED_FULL_BASE_SHA \
-  --test-config-copy /path/to/private-test-only-config.toml \
+  --test-config-copy "$HOME/.safeyolo/macos-acceptance/dedicated-test.toml" \
   --confirm-dedicated-test-channel \
   --allow-run-once-effects
 ```
@@ -269,11 +283,13 @@ The integration script preflights the remaining external effect before doing
 anything: concurrent activity after the disposable `backfill=false` baseline
 could cause `run --once` to append one operator message or project one post in
 the dedicated test mapping. It must never be aimed at a production mapping.
-Neither script starts, stops, or changes a daemon or Funnel. Both suppress child
-output, report the exact candidate/base plus platform/Python/SQLite versions,
-print concise numbered pass/fail results, and verify cleanup of only their own
-temporary artifacts. They never print tokens, private IDs, callbacks, config
-contents, Mattermost responses, or coord messages.
+Neither script starts, stops, or changes a daemon or Funnel. Both report the
+exact candidate/base plus platform/Python/SQLite versions, print concise
+numbered pass/fail results, and verify cleanup of only their own temporary
+artifacts. On failure they additionally print the complete local exception
+chain, SQLite code/name/message when present, and child CLI diagnostics so the
+operator can debug without another diagnostic build. They never print bot-token
+contents; the operator decides which path, ID, or response details to share.
 
 ## Delivery and failure semantics
 
