@@ -2010,7 +2010,8 @@ def diag(
     Runs through the hops from the agent out to mitmproxy and back,
     checking each link:
         agent map entry → proxy socket → attribution IP →
-        mitmproxy process → VM process → end-to-end UDS probe
+        mitmproxy process → VM process → proxy transport →
+        authenticated Agent API + source attribution
 
     Exits 0 if everything checks out, 1 if any link is broken. Output
     is one line per check, PASS/FAIL/WARN prefix, so piping to grep

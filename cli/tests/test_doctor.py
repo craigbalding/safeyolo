@@ -629,18 +629,36 @@ class TestCheckPipelineProbe:
         assert result.status == "fail"
         assert "no response" in result.message.lower()
 
-    def test_non_200_fails(self, tmp_config_dir, monkeypatch):
+    def test_503_log(self, tmp_config_dir, monkeypatch):
         _make_agent_socket(tmp_config_dir)
         _write_agent_token(tmp_config_dir)
-        body = b'{"error":"Invalid agent token"}'
+        body = b'{"reason_code":"agent_api_unavailable"}'
         response = (
-            b"HTTP/1.1 401 Unauthorized\r\n"
+            b"HTTP/1.1 503 Service Unavailable\r\n"
+            b"X-SafeYolo-Agent-API: true\r\n"
             b"Content-Type: application/json\r\n\r\n" + body
         )
         _install_fake_socket(monkeypatch, _FakeSocket(response))
         result = _check_pipeline_probe()
         assert result.status == "fail"
-        assert "401" in result.message
+        assert "503" in result.message
+        assert "mitmproxy.log" in result.remediation
+        assert result.remediation.startswith("tail -n 50 ")
+        assert "--security" not in result.remediation
+
+    def test_401_uses_security_log(self, tmp_config_dir, monkeypatch):
+        _make_agent_socket(tmp_config_dir)
+        _write_agent_token(tmp_config_dir)
+        response = (
+            b"HTTP/1.1 401 Unauthorized\r\n"
+            b"X-SafeYolo-Agent-API: true\r\n\r\n"
+        )
+        _install_fake_socket(monkeypatch, _FakeSocket(response))
+
+        result = _check_pipeline_probe()
+
+        assert result.status == "fail"
+        assert result.remediation == "safeyolo logs --tail 20"
 
     def test_pdp_unavailable_warns(self, tmp_config_dir, monkeypatch):
         _make_agent_socket(tmp_config_dir)
@@ -648,6 +666,7 @@ class TestCheckPipelineProbe:
         body = b'{"agent_api":"ok","pdp":"unavailable"}'
         response = (
             b"HTTP/1.1 200 OK\r\n"
+            b"X-SafeYolo-Agent-API: true\r\n"
             b"Content-Type: application/json\r\n\r\n" + body
         )
         _install_fake_socket(monkeypatch, _FakeSocket(response))
@@ -661,6 +680,7 @@ class TestCheckPipelineProbe:
         body = b'{"agent_api":"ok","pdp":"ok"}'
         response = (
             b"HTTP/1.1 200 OK\r\n"
+            b"x-sAfEyOlO-aGeNt-ApI: TrUe\r\n"
             b"Content-Type: application/json\r\n\r\n" + body
         )
         fake = _FakeSocket(response)
@@ -676,11 +696,37 @@ class TestCheckPipelineProbe:
     def test_non_json_body_warns(self, tmp_config_dir, monkeypatch):
         _make_agent_socket(tmp_config_dir)
         _write_agent_token(tmp_config_dir)
-        response = b"HTTP/1.1 200 OK\r\n\r\nnot-json"
+        response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"X-SafeYolo-Agent-API: true\r\n\r\nnot-json"
+        )
         _install_fake_socket(monkeypatch, _FakeSocket(response))
         result = _check_pipeline_probe()
         assert result.status == "warn"
         assert "not json" in result.message.lower()
+
+    def test_unmarked_200_fails(self, tmp_config_dir, monkeypatch):
+        _make_agent_socket(tmp_config_dir)
+        _write_agent_token(tmp_config_dir)
+        response = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+        _install_fake_socket(monkeypatch, _FakeSocket(response))
+
+        result = _check_pipeline_probe()
+
+        assert result.status == "fail"
+        assert "handler marker" in result.message
+        assert "mitmproxy.log" in result.remediation
+
+    def test_1200_status_fails(self, tmp_config_dir, monkeypatch):
+        _make_agent_socket(tmp_config_dir)
+        _write_agent_token(tmp_config_dir)
+        response = b"HTTP/1.1 1200 Not-A-Status\r\n\r\n"
+        _install_fake_socket(monkeypatch, _FakeSocket(response))
+
+        result = _check_pipeline_probe()
+
+        assert result.status == "fail"
+        assert "malformed" in result.message.lower()
 
 
 class TestCheckAdminApi:

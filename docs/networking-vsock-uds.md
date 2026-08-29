@@ -170,7 +170,8 @@ shape:
 | guest-shell-bridge     | VM console / `serial.log` on host                  |
 | VSockProxyRelay (mac)  | `~/.safeyolo/agents/<name>/serial.log`             |
 | VSockShellBridge (mac) | `~/.safeyolo/agents/<name>/serial.log`             |
-| mitmproxy + addons     | `~/.local/state/safeyolo/safeyolo.jsonl`           |
+| mitmproxy process / upstream failures | `~/.local/state/safeyolo/mitmproxy.log` |
+| structured addon events | `~/.local/state/safeyolo/safeyolo.jsonl`         |
 
 **Cross-hop correlation.** All hops tag each flow with the agent name;
 `grep 'agent=syone'` across the log files above reconstructs a single
@@ -197,13 +198,21 @@ broken:
 $ safeyolo agent diag syone
 
   PASS  Agent config: /Users/…/agents/syone
-  PASS  Agent map: ip=127.0.0.2 socket=/Users/…/sockets/syone.sock
-  PASS  Attribution IP: 127.0.0.2 (port 30002)
-  PASS  Bridge socket: /Users/…/syone.sock mode=0o600
-  PASS  Bridge process: pid=35520
+  PASS  Agent map: ip=127.0.0.2 socket=/Users/…/127.0.0.2_syone/proxy.sock
+  PASS  Attribution IP: 127.0.0.2 (UDS directory)
+  PASS  Proxy socket: /Users/…/127.0.0.2_syone/proxy.sock mode=0o600
+  PASS  Proxy process: mitmdump running (owns per-agent UnixInstance listeners)
   PASS  Sandbox/VM: running
-  PASS  End-to-end probe: mitmproxy answered (292B)
+  PASS  Proxy transport: mitmdump answered HTTP 400 (292B)
+  PASS  Agent API: HTTP 200 with handler marker; source attributed as syone
 ```
+
+`Proxy transport` proves only that the named per-agent UDS reaches mitmproxy
+and carries a complete HTTP response back. `Agent API` is a separate,
+authenticated check: `/health` must return HTTP 200 with
+`X-SafeYolo-Agent-API: true`, then a harmless identity-scoped GET confirms the
+source-derived agent attribution. A generic mitmproxy response or the local
+Agent API containment 503 is therefore a failure even when transport passes.
 
 Exit code 0 on all-pass, 1 on any fail.
 
@@ -223,6 +232,7 @@ For a failing flow, start at the agent-map side and walk outward:
 ```
 # All events for syone across every hop, in chronological order:
 ( cat ~/.safeyolo/agents/syone/serial.log \
+  ~/.local/state/safeyolo/mitmproxy.log \
   ~/.local/state/safeyolo/safeyolo.jsonl
 ) | grep 'agent=syone\|"agent":"syone"' | sort
 ```

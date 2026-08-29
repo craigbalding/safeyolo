@@ -1716,7 +1716,10 @@ class TestTestContextEndpoint:
              patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc), autospec=True,):
             flow = _make_tc_flow("GET", agent_token)
             asyncio.run(api.request(flow))
-        assert json.loads(flow.response.content) == {"context": None}
+        assert json.loads(flow.response.content) == {
+            "agent": "pickup",
+            "context": None,
+        }
 
     def test_delete_clears_and_is_idempotent(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
@@ -1872,7 +1875,10 @@ class TestTestContextEndpointExpiry:
              patch("test_context.time.monotonic", autospec=True, return_value=2000.0):
             flow = _make_tc_flow("GET", agent_token)
             asyncio.run(api.request(flow))
-        assert json.loads(flow.response.content) == {"context": None}
+        assert json.loads(flow.response.content) == {
+            "agent": "pickup",
+            "context": None,
+        }
 
     def test_get_does_not_refresh_ttl(self, api, agent_token):
         sd, tc = self._sd(), self._tc()
