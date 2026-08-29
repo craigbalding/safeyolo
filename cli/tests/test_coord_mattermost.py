@@ -58,7 +58,9 @@ class FakeMattermost:
         return {"id": BOT_ID, "is_bot": True, "delete_at": 0}
 
     async def get_user(self, user_id: str) -> dict[str, Any]:
-        return {"id": user_id, "is_bot": False, "delete_at": 0}
+        # Mattermost model.User uses `json:"is_bot,omitempty"`, so false is
+        # absent from the real human-user response.
+        return {"id": user_id, "delete_at": 0}
 
     async def get_channel(self, channel_id: str) -> dict[str, Any]:
         return {"id": channel_id, "delete_at": 0}
@@ -535,8 +537,54 @@ async def test_operator_channel_and_local_grant_must_all_match(
     "operator",
     [
         {"id": OPERATOR_ID, "delete_at": 0},
+        {"id": OPERATOR_ID, "is_bot": False, "delete_at": 0},
+    ],
+    ids=["mattermost-omitempty", "explicit-false"],
+)
+async def test_operator_identity_accepts_human_is_bot_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operator: dict[str, Any]
+) -> None:
+    config = make_config(tmp_path)
+    remote = FakeMattermost()
+    coord = CoordHarness()
+    install_coord(monkeypatch, coord)
+
+    async def get_human_user(_user_id: str) -> dict[str, Any]:
+        return operator
+
+    monkeypatch.setattr(remote, "get_user", get_human_user)
+    await mattermost.MattermostAdapter(
+        config, mattermost.MattermostState(config), remote
+    ).verify()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_bot", [True, None, 0, 1, "false", [], {}])
+async def test_operator_bot_or_non_boolean_is_bot_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    is_bot: Any,
+) -> None:
+    config = make_config(tmp_path)
+    remote = FakeMattermost()
+    coord = CoordHarness()
+    install_coord(monkeypatch, coord)
+
+    async def get_user(_user_id: str) -> dict[str, Any]:
+        return {"id": OPERATOR_ID, "is_bot": is_bot, "delete_at": 0}
+
+    monkeypatch.setattr(remote, "get_user", get_user)
+    with pytest.raises(mattermost.MattermostAdapterError, match="active human"):
+        await mattermost.MattermostAdapter(
+            config, mattermost.MattermostState(config), remote
+        ).verify()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operator",
+    [
         {"id": OPERATOR_ID, "is_bot": False},
-        {"id": OPERATOR_ID, "is_bot": 0, "delete_at": 0},
         {"id": OPERATOR_ID, "is_bot": False, "delete_at": False},
     ],
 )

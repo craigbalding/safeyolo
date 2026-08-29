@@ -740,10 +740,18 @@ class MattermostAdapter:
 
     async def _verify_operator(self) -> None:
         operator = await self.client.get_user(self.config.operator_user_id)
+        # Mattermost's model.User serializes IsBot with `omitempty`, so the
+        # canonical JSON shape for a human can omit is_bot. A present value is
+        # still required to be an actual boolean so numbers and other malformed
+        # values cannot be interpreted as a trusted human identity.
+        operator_is_bot = (
+            operator.get("is_bot", False) if isinstance(operator, dict) else None
+        )
         if (
             not isinstance(operator, dict)
             or operator.get("id") != self.config.operator_user_id
-            or operator.get("is_bot") is not False
+            or not isinstance(operator_is_bot, bool)
+            or operator_is_bot
             or not _is_active_timestamp(operator.get("delete_at"))
         ):
             raise MattermostAdapterError("configured Mattermost operator is not one active human user")
