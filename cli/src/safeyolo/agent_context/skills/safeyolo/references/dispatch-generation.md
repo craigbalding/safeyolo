@@ -22,6 +22,23 @@ schedules, changes policy, creates an issue, or approves publication.
 Duplicate retained envelopes are harmless only when their canonical identity
 and bytes agree. A conflicting reuse of one message ID fails closed.
 
+## Operator editorial interaction
+
+Before drafting a substantive public item:
+
+1. Tell the operator in normal language what SafeYolo was trying to do, what
+   happened, and why it may be interesting. Give enough technical context for
+   an informed reaction; do not send publication copy as the prompt.
+2. When the significance needs operator judgment, ask one focused question.
+   Do not turn this into a questionnaire, writing assignment, or repeated draft
+   loop.
+3. Use the response as source material and author one item. If the material is
+   not worth publishing, omit it instead of manufacturing a takeaway or hook.
+
+Orient the resulting item around what SafeYolo is doing and why before
+introducing internal mechanisms. Keep evidence and attribution traceable
+without making the prose read like an audit record.
+
 ## Editorial contract
 
 - Group `shipped` items by theme.
