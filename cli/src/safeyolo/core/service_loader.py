@@ -147,14 +147,21 @@ class TransportConstraint:
     """HTTP transport-level constraints for an operation."""
 
     require_no_body: bool = False
-    allow_headers: list[str] = field(default_factory=list)
+    # None preserves schema omission. [] is an explicit restrictive stance.
+    allow_headers: list[str] | None = None
     deny_ambiguous_encoding: bool = False
 
     @classmethod
     def from_dict(cls, d: dict) -> "TransportConstraint":
+        allow_headers = d.get("allow_headers")
+        if "allow_headers" in d and (
+            not isinstance(allow_headers, list)
+            or not all(isinstance(header, str) for header in allow_headers)
+        ):
+            raise ValueError("transport.allow_headers must be a list of header names")
         return cls(
             require_no_body=d.get("require_no_body", False),
-            allow_headers=d.get("allow_headers", []),
+            allow_headers=allow_headers,
             deny_ambiguous_encoding=d.get("deny_ambiguous_encoding", False),
         )
 

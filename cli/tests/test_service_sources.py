@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 
 from safeyolo.commands._service_discovery import _load_service_files
-from safeyolo.core.service_loader import ServiceRegistry
+from safeyolo.core.service_loader import ServiceDefinition, ServiceRegistry
 from safeyolo.core.service_paths import (
     builtin_services_dir,
     resolve_service_directories,
@@ -18,6 +18,19 @@ from safeyolo.core.service_paths import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILTIN_NAMES = {"gmail", "minifuse", "slack"}
+
+
+def _assert_gmail_uses_omitted_header_default(services_dir: Path) -> None:
+    raw = yaml.safe_load((services_dir / "gmail.yaml").read_text(encoding="utf-8"))
+    operations = raw["capabilities"]["read_messages"]["contract"]["operations"]
+    assert all(
+        "allow_headers" not in operation["request"]["transport"]
+        for operation in operations
+    )
+
+    service = ServiceDefinition.from_dict(raw)
+    parsed = service.capabilities["read_messages"].contract.operations
+    assert all(operation.transport.allow_headers is None for operation in parsed)
 
 
 def _write_service(path: Path, name: str, description: str) -> None:
@@ -38,6 +51,7 @@ def test_source_checkout_uses_packaged_builtin_directory() -> None:
 
     assert builtin == REPO_ROOT / "cli" / "src" / "safeyolo" / "services"
     assert {path.stem for path in builtin.glob("*.yaml")} == BUILTIN_NAMES
+    _assert_gmail_uses_omitted_header_default(builtin)
 
 
 def test_default_contract_uses_config_override_and_builtin_then_user(
@@ -105,6 +119,7 @@ def test_built_wheel_contains_curated_services_in_runtime_package(
         archive.extractall(installed)
 
     assert packaged == BUILTIN_NAMES
+    _assert_gmail_uses_omitted_header_default(installed / "safeyolo" / "services")
     result = subprocess.run(
         [
             sys.executable,
@@ -112,8 +127,16 @@ def test_built_wheel_contains_curated_services_in_runtime_package(
             "-c",
             (
                 "import sys; sys.path.insert(0, sys.argv[1]); "
+                "from safeyolo.core.service_loader import ServiceRegistry; "
                 "from safeyolo.core.service_paths import builtin_services_dir; "
-                "print(builtin_services_dir())"
+                "services = builtin_services_dir(); "
+                "registry = ServiceRegistry(services / '_missing-user', "
+                "builtin_dir=services, require_builtin=True); "
+                "registry.load(strict=True); "
+                "operations = registry.get_service('gmail').capabilities"
+                "['read_messages'].contract.operations; "
+                "print(services); "
+                "print(all(op.transport.allow_headers is None for op in operations))"
             ),
             str(installed),
         ],
@@ -121,4 +144,6 @@ def test_built_wheel_contains_curated_services_in_runtime_package(
         capture_output=True,
         text=True,
     )
-    assert Path(result.stdout.strip()) == installed / "safeyolo" / "services"
+    output_lines = result.stdout.splitlines()
+    assert Path(output_lines[0]) == installed / "safeyolo" / "services"
+    assert output_lines[1] == "True"

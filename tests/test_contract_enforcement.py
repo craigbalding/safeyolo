@@ -1,6 +1,9 @@
 """Tests for contract enforcement logic in service_gateway.py."""
 
 import json
+import socket
+import subprocess
+import threading
 
 import pytest
 from mitmproxy.http import Headers
@@ -583,19 +586,19 @@ class TestDuplicateHeaders:
         assert "TRANSPORT_DUPLICATE_HEADER" in body["reason_codes"]
 
 
-class TestAbsentAllowHeaders:
-    """Rule 1: Unknown agent header → reject. Absent allow_headers = restrictive."""
+class TestHeaderAllowlistDefaults:
+    """Omission is usable; empty and explicit lists retain exact intent."""
 
     @pytest.fixture
     def gateway(self):
         return ServiceGateway()
 
-    def test_no_allow_headers_rejects_custom_header(self, gateway):
-        """When allow_headers is absent/empty, only implicit + auth headers pass."""
+    def test_omitted_allow_headers_rejects_custom_header(self, gateway):
+        """The ordinary-client default never broadens to custom headers."""
         ops = [
             ContractOperation(
                 name="test", method="GET", path="/test",
-                transport=TransportConstraint(),  # allow_headers=[] (empty)
+                transport=TransportConstraint(),
             ),
         ]
         contract = _make_contract(operations=ops)
@@ -611,23 +614,111 @@ class TestAbsentAllowHeaders:
         body = json.loads(flow.response.content)
         assert "TRANSPORT_HEADER_DENIED" in body["reason_codes"]
 
-    def test_no_allow_headers_allows_implicit(self, gateway):
-        """Implicit headers (Host, Connection, etc.) always pass."""
+    @pytest.mark.parametrize(
+        ("configured", "sent"),
+        [
+            ("X-Client-Context", "x-client-context"),
+            ("x-client-context", "X-CLIENT-CONTEXT"),
+            ("X-cLiEnT-CoNtExT", "x-ClIeNt-cOnTeXt"),
+        ],
+    )
+    def test_explicit_header_names_are_case_insensitive(
+        self, gateway, configured, sent
+    ):
+        op = ContractOperation(
+            name="test",
+            method="GET",
+            path="/test",
+            transport=TransportConstraint(allow_headers=[configured]),
+        )
+        flow = _make_contract_flow(path="/test", headers={sent: "value"})
+
+        assert _enforce(gateway, flow, op) is True
+
+    @pytest.mark.parametrize("header_name", ["Accept", "User-Agent"])
+    def test_explicit_empty_rejects_ordinary_client_headers(
+        self, gateway, header_name
+    ):
+        op = ContractOperation(
+            name="test",
+            method="GET",
+            path="/test",
+            transport=TransportConstraint(allow_headers=[]),
+        )
+        flow = _make_contract_flow(
+            path="/test", headers={header_name: "client-value"}
+        )
+
+        assert _enforce(gateway, flow, op) is False
+        body = json.loads(flow.response.content)
+        assert body["reason_codes"] == ["TRANSPORT_HEADER_DENIED"]
+
+    def test_explicit_nonempty_list_does_not_add_omitted_defaults(self, gateway):
+        op = ContractOperation(
+            name="test",
+            method="GET",
+            path="/test",
+            transport=TransportConstraint(allow_headers=["X-Client-Context"]),
+        )
+        flow = _make_contract_flow(
+            path="/test", headers={"User-Agent": "ordinary-client"}
+        )
+
+        assert _enforce(gateway, flow, op) is False
+        body = json.loads(flow.response.content)
+        assert body["reason_codes"] == ["TRANSPORT_HEADER_DENIED"]
+
+    @pytest.mark.parametrize("with_transport_block", [False, True])
+    def test_omission_allows_common_client_metadata(
+        self, gateway, with_transport_block
+    ):
+        """No transport block and an omitted key have the same safe default."""
+        transport = (
+            TransportConstraint(require_no_body=True)
+            if with_transport_block
+            else None
+        )
+        op = ContractOperation(
+            name="test",
+            method="GET",
+            path="/test",
+            transport=transport,
+        )
+        flow = _make_contract_flow(
+            path="/test",
+            headers={
+                "aCcEpT": "application/json",
+                "USER-agent": "curl/test",
+                "Accept-Encoding": "gzip",
+            },
+        )
+
+        assert _enforce(gateway, flow, op) is True
+
+    def test_implicit_and_service_auth_headers_always_pass(self, gateway):
+        """Explicit empty cannot remove transport or configured auth headers."""
         ops = [
             ContractOperation(
                 name="test", method="GET", path="/test",
-                transport=TransportConstraint(),
+                transport=TransportConstraint(allow_headers=[]),
             ),
         ]
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
         binding = _make_binding_state(grantable_ops=["test"])
-        service = _make_service()
         flow = _make_contract_flow(
             path="/test",
-            headers={"Host": "example.com", "Connection": "keep-alive"},
+            headers={
+                "Host": "example.com",
+                "Connection": "keep-alive",
+                "Accept-Encoding": "gzip",
+                "X-Auth-Token": "gateway-token",
+            },
         )
-        result = gateway._enforce_contract(flow, binding, service, capability, "GET", "/test")
+        service = _make_service(auth_header="X-Auth-Token")
+        result = gateway._enforce_contract(
+            flow, binding, service, capability, "GET", "/test"
+        )
         assert result is True
 
     def test_no_transport_block_still_runs_header_dedup(self, gateway):
@@ -646,8 +737,8 @@ class TestAbsentAllowHeaders:
         body = json.loads(flow.response.content)
         assert "TRANSPORT_DUPLICATE_HEADER" in body["reason_codes"]
 
-    def test_no_transport_allows_implicit_only(self, gateway):
-        """Without transport block, header allowlist still runs (restrictive default)."""
+    def test_no_transport_block_still_rejects_unrelated_headers(self, gateway):
+        """Omission changes only the three documented client headers."""
         ops = [ContractOperation(name="test", method="GET", path="/test")]
         contract = _make_contract(operations=ops)
         capability = _make_capability_with_contract(contract)
@@ -661,6 +752,90 @@ class TestAbsentAllowHeaders:
         assert result is False
         body = json.loads(flow.response.content)
         assert "TRANSPORT_HEADER_DENIED" in body["reason_codes"]
+
+
+def _capture_curl_headers_over_uds(socket_path, extra_header=None):
+    """Capture the real HTTP/1.1 headers curl emits over a Unix socket."""
+    raw_request = bytearray()
+    errors = []
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    listener.settimeout(5)
+
+    def serve_once():
+        try:
+            connection, _ = listener.accept()
+            with connection:
+                while b"\r\n\r\n" not in raw_request:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        break
+                    raw_request.extend(chunk)
+                connection.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"
+                    b"Connection: close\r\n\r\nok"
+                )
+        except Exception as error:  # surfaced in the test thread
+            errors.append(error)
+
+    server = threading.Thread(target=serve_once)
+    server.start()
+    command = [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        "5",
+        "--http1.1",
+        "--compressed",
+        "--unix-socket",
+        str(socket_path),
+    ]
+    if extra_header:
+        command.extend(["--header", extra_header])
+    command.append("http://localhost/test")
+    result = subprocess.run(command, check=True, capture_output=True)
+    server.join(timeout=5)
+    listener.close()
+
+    assert result.stdout == b"ok"
+    assert not server.is_alive()
+    assert errors == []
+    request_head = bytes(raw_request).split(b"\r\n\r\n", 1)[0]
+    lines = request_head.decode("latin-1").split("\r\n")
+    return [tuple(line.split(":", 1)) for line in lines[1:] if ":" in line]
+
+
+@pytest.mark.parametrize(
+    ("extra_header", "expected_reason"),
+    [
+        (None, None),
+        ("X-Unrelated: denied", "TRANSPORT_HEADER_DENIED"),
+        ("X-HTTP-Method-Override: DELETE", "TRANSPORT_AMBIGUOUS_ENCODING"),
+    ],
+)
+def test_real_curl_uds_headers_follow_omitted_default(
+    tmp_path, extra_header, expected_reason
+):
+    """Exercise curl's real auto-headers, including --compressed encoding."""
+    fields = _capture_curl_headers_over_uds(
+        tmp_path / "curl.sock", extra_header=extra_header
+    )
+    header_names = {name.strip().lower() for name, _ in fields}
+    assert {"accept", "user-agent", "accept-encoding"} <= header_names
+
+    flow = _make_contract_flow(
+        path="/test",
+        header_fields=[(name.strip(), value.strip()) for name, value in fields],
+    )
+    op = ContractOperation(name="test", method="GET", path="/test")
+    gateway = ServiceGateway()
+
+    assert _enforce(gateway, flow, op) is (expected_reason is None)
+    if expected_reason:
+        body = json.loads(flow.response.content)
+        assert body["reason_codes"] == [expected_reason]
 
 
 class TestContentType:

@@ -2231,7 +2231,6 @@ capabilities:
             path: /api/v1/items
             transport:
               require_no_body: true
-              allow_headers: [Accept]
               deny_ambiguous_encoding: true
             query:
               allow:
@@ -2280,11 +2279,26 @@ capabilities:
         return gw, token, contract_registry, contract_vault
 
     def _clean_flow(self, make_flow, token, url, **kwargs):
-        """Create a flow with only contract-compatible headers."""
-        flow = make_flow(url=url, headers={"authorization": f"Bearer {token}"}, **kwargs)
-        # Remove default tflow headers not in our contract allowlist
+        """Create a flow carrying ordinary client auto-headers."""
+        flow = make_flow(
+            url=url,
+            headers={
+                "authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "curl/test",
+                "Accept-Encoding": "gzip",
+            },
+            **kwargs,
+        )
         for h in list(flow.request.headers.keys()):
-            if h.lower() not in ("authorization", "accept", "host", "content-length"):
+            if h.lower() not in (
+                "authorization",
+                "accept",
+                "user-agent",
+                "accept-encoding",
+                "host",
+                "content-length",
+            ):
                 del flow.request.headers[h]
         _set_agent(flow, "testbot")
         return flow
@@ -2313,6 +2327,7 @@ capabilities:
             body = json.loads(flow.response.content)
             pytest.fail(f"Expected no response but got {flow.response.status_code}: {body}")
         assert flow.metadata.get("gateway_service") == "contractsvc"
+        assert flow.request.headers["authorization"] == "Bearer real-bearer-token"
 
     def test_no_binding_denied(self, make_flow, gw_with_contract):
         gw, token, registry, vault_obj = gw_with_contract

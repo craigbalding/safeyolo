@@ -149,7 +149,6 @@ contract:
         path: /api/resource
         transport:
           require_no_body: true
-          allow_headers: [Authorization, Accept, User-Agent]
           deny_ambiguous_encoding: true
           canonical_form: true        # see Transport hygiene section
         query:
@@ -277,7 +276,6 @@ capabilities:
             path: /gmail/v1/users/me/messages
             transport:
               require_no_body: true
-              allow_headers: [Authorization, Accept, User-Agent]
               deny_ambiguous_encoding: true
             query:
               allow:
@@ -300,7 +298,6 @@ capabilities:
             path: /gmail/v1/users/me/messages/{id}
             transport:
               require_no_body: true
-              allow_headers: [Authorization, Accept, User-Agent]
               deny_ambiguous_encoding: true
             path_params:
               id:
@@ -354,7 +351,7 @@ contract grants list-only access:
 - `GET /messages?labelIds=CATEGORY_PROMOTIONS&q=secret` — denied (unknown param)
 - `GET /messages/{id}` — **denied** (operation not yet grantable)
 - `POST /messages` — denied (wrong method)
-- Request with `X-HTTP-Method-Override` header — denied (not in `allow_headers`)
+- Request with `X-HTTP-Method-Override` header — denied (override directive)
 - Request with double-encoded `%25` in query — denied (ambiguous encoding)
 
 This is honest: the operator approves "list promotions", not "read promotions."
@@ -404,18 +401,27 @@ The `transport` block on each operation controls HTTP-level evasion vectors.
 
 ### Header allowlist
 
-`allow_headers` is a per-operation list of permitted request headers. Any
-header not in the list is rejected. The gateway also accepts headers it injects
-itself (e.g., `Host`, `Via`, proxy-internal headers) — these are implicitly
-allowed and cannot be set by the agent.
+`allow_headers` is a per-operation, case-insensitive allowlist addition. The
+schema deliberately distinguishes omission from an explicitly empty list:
 
-A sensible default for read-only operations:
+| Schema form | Headers allowed beyond the implicit set |
+|---|---|
+| omitted | `Accept` and `User-Agent` (the effective common set also includes implicit `Accept-Encoding`) |
+| `allow_headers: []` | none (the opt-in restrictive stance) |
+| `allow_headers: [X-Client-Context]` | only the named additions |
 
-```yaml
-allow_headers: [Authorization, Accept, User-Agent]
-```
+All three forms also accept the mandatory transport set (`Host`, connection and
+framing headers, `Content-Type`, `Accept-Encoding`, proxy-internal headers) and
+the service's configured authentication header. Those headers must not be
+repeated in an operation allowlist, and an explicit list cannot remove them.
+Any other header is rejected with `TRANSPORT_HEADER_DENIED`.
 
-Write operations may need `Content-Type` and `Content-Length` in addition.
+The omitted default is intentionally small: it makes ordinary curl and HTTP
+client metadata usable, but does not admit cookies, forwarding controls,
+method-override headers, application-specific context, or arbitrary `X-*`
+headers. Duplicate headers and method overrides are still rejected before
+allowlist evaluation. Specify `[]` when even ordinary client metadata should be
+forbidden, or name only the additional application headers an operation needs.
 
 ### Canonical form and ambiguity rejection
 

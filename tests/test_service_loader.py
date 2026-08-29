@@ -19,6 +19,7 @@ from safeyolo.core.service_loader import (
     ServiceDefinition,
     ServiceRegistry,
     ServiceRegistryError,
+    TransportConstraint,
     _path_match_specificity,
     get_service_registry,
     init_service_registry,
@@ -898,6 +899,72 @@ class TestContractOperation:
         assert op.transport is None
         assert op.query_allow == {}
         assert op.requires_enforcement == ""
+
+    def test_yaml_roundtrip_preserves_allow_headers_omitted_empty_and_explicit(
+        self, tmp_path
+    ):
+        services = tmp_path / "services"
+        services.mkdir()
+        (services / "headers.yaml").write_text(
+            """
+schema_version: 1
+name: headers
+capabilities:
+  reader:
+    contract:
+      template: headers.v1
+      operations:
+        - name: omitted
+          request:
+            method: GET
+            path: /omitted
+            transport: {require_no_body: true}
+        - name: empty
+          request:
+            method: GET
+            path: /empty
+            transport: {allow_headers: []}
+        - name: explicit
+          request:
+            method: GET
+            path: /explicit
+            transport: {allow_headers: [X-Client-Context]}
+      enforcement: {request_shape: enforced}
+"""
+        )
+        registry = ServiceRegistry(
+            services, builtin_dir=tmp_path / "missing-builtin"
+        )
+        registry.load(strict=True)
+
+        service = registry.get_service("headers")
+        operations = service.capabilities["reader"].contract.operations
+        assert [operation.transport.allow_headers for operation in operations] == [
+            None,
+            [],
+            ["X-Client-Context"],
+        ]
+
+        raw_operations = service.to_dict()["capabilities"]["reader"]["contract"][
+            "operations"
+        ]
+        raw_transports = {
+            operation["name"]: operation["request"]["transport"]
+            for operation in raw_operations
+        }
+        assert "allow_headers" not in raw_transports["omitted"]
+        assert raw_transports["empty"]["allow_headers"] == []
+        assert raw_transports["explicit"]["allow_headers"] == [
+            "X-Client-Context"
+        ]
+
+    @pytest.mark.parametrize(
+        "allow_headers",
+        [None, "Accept", ["Accept", 7]],
+    )
+    def test_allow_headers_rejects_invalid_schema_shapes(self, allow_headers):
+        with pytest.raises(ValueError, match="must be a list of header names"):
+            TransportConstraint.from_dict({"allow_headers": allow_headers})
 
     def test_requires_enforcement_valid(self):
         op = ContractOperation.from_dict({
