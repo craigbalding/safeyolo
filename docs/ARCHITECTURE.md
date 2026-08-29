@@ -2,6 +2,10 @@
 
 This document describes the software architecture of SafeYolo, an egress control proxy for AI coding agents.
 
+The current agent identity/lifecycle sources of truth and the staged plan for
+durable `agent_id` plus runtime `run_id` are documented in the
+[agent identity and run-lifecycle implementation plan](agent-lifecycle-identity-plan.md).
+
 ## Overview
 
 SafeYolo is built as a mitmproxy addon stack with a centralized Policy Decision Point (PDP). The architecture separates concerns into:

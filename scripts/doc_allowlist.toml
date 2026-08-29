@@ -37,6 +37,7 @@ user_facing_docs = [
     "docs/SERVICE_DISCOVERY.md",
     "docs/TLS_CERTIFICATE.md",
     "docs/agent-debugging.md",
+    "docs/agent-lifecycle-identity-plan.md",
     "docs/agent-roles/independent-reviewer.md",
     "docs/agent-roles/issue-owner.md",
     "docs/security-verification.md",

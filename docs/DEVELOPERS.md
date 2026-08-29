@@ -2,6 +2,11 @@
 
 This guide is for developers who want to contribute to SafeYolo, build integrations, or extend it with custom addons.
 
+Before changing agent attribution or sandbox lifecycle, read the
+[agent identity and run-lifecycle implementation plan](agent-lifecycle-identity-plan.md).
+It separates operator-facing names from durable agent identity, records the
+current restart behavior, and defines the proposed minimal runtime incarnation.
+
 ## Architecture Overview
 
 ```

@@ -1,5 +1,11 @@
 # SafeYolo Agent Principal Identity
 
+> **Status:** This early direction is retained as background for its trusted
+> boundary analysis. The evidence-backed
+> [agent identity and run-lifecycle implementation plan](docs/agent-lifecycle-identity-plan.md)
+> supersedes its proposed representation: extend the existing `AgentIdentity`
+> result instead of introducing a parallel `AgentPrincipal` API.
+
 ## Summary
 
 SafeYolo currently uses agent names as plain strings across config, policy, audit logs, and runtime request handling. That works, but it has a security smell: a string that came from trusted runtime attribution can look identical to a string supplied by an agent or CLI request.
