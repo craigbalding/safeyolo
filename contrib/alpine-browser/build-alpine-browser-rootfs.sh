@@ -70,7 +70,7 @@ echo "=== Installing Alpine packages ==="
 #   fluxbox/xterm -- tiny window manager plus a discoverable app menu/terminal
 #   font-noto      -- without fonts the browser renders blank/tofu text
 #   procps-ng      -- the core desktop launcher uses pkill (not in busybox)
-#   util-linux-misc -- provides setsid for detached desktop processes
+#   util-linux-misc -- provides setsid and the PID 1 prlimit operation
 #   mise          -- Alpine's native musl-linked package
 #   nodejs/npm    -- native musl-linked Node toolchain for Codex/web tooling
 #   chromium      -- headful browser shown through noVNC

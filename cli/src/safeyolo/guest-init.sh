@@ -39,14 +39,19 @@
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
-# Match the OCI runtime contract before PID 1 launches any service.  This shell
-# is PID 1 (the rootfs stub execs it), so the limit is inherited by the static
-# phase, sshd, the per-run phase, the agent, and later SSH shells. The VZ rootfs
-# stub sets the same limit. This second setup supports older rootfs images and
-# checks the limit before the snapshot gate. A restored VM retains PID 1's
-# limit.
+# Match the OCI runtime contract before PID 1 launches any service. The rootfs
+# stub execs this shell as PID 1. A separate prlimit process targets the
+# kernel's numeric PID 1, then this script reads that process through /proc.
+# This gives the host's later /proc/1 probe the same target as the boot check.
+# The VZ rootfs stub repeats the operation. This setup also supports older
+# rootfs images and runs before the snapshot gate.
 _nofile_limit=65536
-if ! ulimit -n "$_nofile_limit"; then
+if ! command -v prlimit >/dev/null 2>&1; then
+    echo "FATAL: prlimit is required to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit} for PID 1" >&2
+    echo "[orch fatal] prlimit is required for PID 1 RLIMIT_NOFILE" > /dev/console 2>/dev/null || true
+    exit 1
+fi
+if ! prlimit --pid 1 --nofile="${_nofile_limit}:${_nofile_limit}"; then
     echo "FATAL: unable to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" >&2
     echo "[orch fatal] unable to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true
     exit 1
@@ -59,7 +64,7 @@ while read -r _limit_word1 _limit_word2 _limit_word3 _limit_soft _limit_hard _li
         _nofile_hard=$_limit_hard
         break
     fi
-done < "/proc/$$/limits"
+done < "/proc/1/limits"
 if [ "$_nofile_soft" != "$_nofile_limit" ] || [ "$_nofile_hard" != "$_nofile_limit" ]; then
     echo "FATAL: RLIMIT_NOFILE is ${_nofile_soft}/${_nofile_hard}; expected ${_nofile_limit}/${_nofile_limit}" >&2
     echo "[orch fatal] RLIMIT_NOFILE is ${_nofile_soft}/${_nofile_hard}; expected ${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true

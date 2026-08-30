@@ -8,11 +8,16 @@
 #
 set -e
 
-# Set the VZ limit in PID 1 before it mounts the VirtioFS config share. The
-# config-share orchestrator sets and checks the same limit for rootfs images
-# that do not contain this stub change.
+# Set the VZ limit on the kernel's PID 1 before this shell mounts the VirtioFS
+# config share. Use a separate prlimit process that targets numeric PID 1. This
+# avoids relying only on the init shell's view of its own limit. The
+# config-share orchestrator repeats this operation for older rootfs images.
 _nofile_limit=65536
-if ! ulimit -n "$_nofile_limit"; then
+if ! command -v prlimit >/dev/null 2>&1; then
+    echo "FATAL: prlimit is required to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit} for PID 1" >&2
+    exec sleep infinity
+fi
+if ! prlimit --pid 1 --nofile="${_nofile_limit}:${_nofile_limit}"; then
     echo "FATAL: unable to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" >&2
     exec sleep infinity
 fi
