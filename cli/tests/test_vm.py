@@ -550,6 +550,43 @@ class TestPrepareConfigShare:
         assert result.returncode != 0
         assert "FATAL: unable to establish RLIMIT_NOFILE=65536/65536" in result.stderr
 
+    def test_guest_init_nofile_check_needs_only_bash(
+        self, tmp_config_dir, tmp_path
+    ):
+        """The PID 1 limit check must not require an external command."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init").read_text()
+        prefix, separator, _rest = source.partition(
+            'echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)"'
+        )
+        assert separator
+
+        limits = tmp_path / "limits"
+        limits.write_text(
+            "Limit Soft Limit Hard Limit Units\n"
+            "Max open files 65536 65536 files\n"
+        )
+        prefix = prefix.replace('"/proc/$$/limits"', f'"{limits}"')
+        harness = (
+            "ulimit() { return 0; }\n"
+            f"{prefix}\n"
+            "printf 'passed\\n'\n"
+        )
+        env = os.environ.copy()
+        env["PATH"] = "/nonexistent"
+        result = subprocess.run(
+            ["/bin/bash"],
+            input=harness,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0
+        assert result.stdout == "passed\n"
+        assert "command not found" not in result.stderr
+
     def test_guest_init_sets_nofile_before_static_and_snapshot_gate(
         self, tmp_config_dir
     ):
@@ -599,12 +636,15 @@ class TestPrepareConfigShare:
             f"Max open files {soft} {hard} files\n"
         )
         prefix = prefix.replace('"/proc/$$/limits"', f'"{limits}"')
+        env = os.environ.copy()
+        env["PATH"] = "/nonexistent"
         result = subprocess.run(
-            ["bash"],
+            ["/bin/bash"],
             input=f"{prefix}\nprintf 'passed\\n'\n",
             check=False,
             capture_output=True,
             text=True,
+            env=env,
         )
 
         assert result.returncode == expected_code
@@ -612,6 +652,7 @@ class TestPrepareConfigShare:
             assert result.stdout == "passed\n"
         else:
             assert "PID 1 RLIMIT_NOFILE is 1024/4096" in result.stderr
+        assert "awk: command not found" not in result.stderr
 
     def test_per_run_keeps_bash_as_pid1_when_idle(self, tmp_config_dir):
         """Idle modes must not replace PID 1 after the kernel limit check."""

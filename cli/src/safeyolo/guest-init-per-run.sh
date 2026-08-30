@@ -23,17 +23,23 @@ echo "[per-run start] pid=$$" > /dev/console 2>/dev/null || true
 # The orchestrator execs this script as PID 1. Check the kernel value after
 # that exec. Do this before the host receives the per-run-started marker.
 _nofile_limit=65536
-_nofile_values=$(
-    awk '$1 == "Max" && $2 == "open" && $3 == "files" { print $4, $5 }' "/proc/$$/limits"
-)
-read -r _nofile_soft _nofile_hard <<< "$_nofile_values"
+_nofile_soft=
+_nofile_hard=
+while read -r _limit_word1 _limit_word2 _limit_word3 _limit_soft _limit_hard _limit_unit; do
+    if [ "$_limit_word1 $_limit_word2 $_limit_word3" = "Max open files" ]; then
+        _nofile_soft=$_limit_soft
+        _nofile_hard=$_limit_hard
+        break
+    fi
+done < "/proc/$$/limits"
 if [ "$_nofile_soft" != "$_nofile_limit" ] || [ "$_nofile_hard" != "$_nofile_limit" ]; then
     echo "FATAL: PID 1 RLIMIT_NOFILE is ${_nofile_soft:-unknown}/${_nofile_hard:-unknown}; expected ${_nofile_limit}/${_nofile_limit}" >&2
     echo "[per-run fatal] PID 1 RLIMIT_NOFILE is ${_nofile_soft:-unknown}/${_nofile_hard:-unknown}; expected ${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true
     exit 1
 fi
 echo "[per-run rlimit] PID 1 RLIMIT_NOFILE=${_nofile_soft}/${_nofile_hard}" > /dev/console 2>/dev/null || true
-unset _nofile_limit _nofile_values _nofile_soft _nofile_hard
+unset _nofile_limit _nofile_soft _nofile_hard
+unset _limit_word1 _limit_word2 _limit_word3 _limit_soft _limit_hard _limit_unit
 
 # --------------------------------------------------------------------------
 # 0. Post-restore fixups (no-ops on cold boot)

@@ -51,17 +51,23 @@ if ! ulimit -n "$_nofile_limit"; then
     echo "[orch fatal] unable to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true
     exit 1
 fi
-_nofile_values=$(
-    awk '$1 == "Max" && $2 == "open" && $3 == "files" { print $4, $5 }' "/proc/$$/limits"
-)
-read -r _nofile_soft _nofile_hard <<< "$_nofile_values"
+_nofile_soft=
+_nofile_hard=
+while read -r _limit_word1 _limit_word2 _limit_word3 _limit_soft _limit_hard _limit_unit; do
+    if [ "$_limit_word1 $_limit_word2 $_limit_word3" = "Max open files" ]; then
+        _nofile_soft=$_limit_soft
+        _nofile_hard=$_limit_hard
+        break
+    fi
+done < "/proc/$$/limits"
 if [ "$_nofile_soft" != "$_nofile_limit" ] || [ "$_nofile_hard" != "$_nofile_limit" ]; then
     echo "FATAL: RLIMIT_NOFILE is ${_nofile_soft}/${_nofile_hard}; expected ${_nofile_limit}/${_nofile_limit}" >&2
     echo "[orch fatal] RLIMIT_NOFILE is ${_nofile_soft}/${_nofile_hard}; expected ${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true
     exit 1
 fi
 echo "[orch rlimit] RLIMIT_NOFILE=${_nofile_soft}/${_nofile_hard}" > /dev/console 2>/dev/null || true
-unset _nofile_limit _nofile_values _nofile_soft _nofile_hard
+unset _nofile_limit _nofile_soft _nofile_hard
+unset _limit_word1 _limit_word2 _limit_word3 _limit_soft _limit_hard _limit_unit
 
 echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)" > /dev/console 2>/dev/null || true
 
