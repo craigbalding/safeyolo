@@ -41,6 +41,7 @@ from .timing import install_mitmproxy_addon_profiling as _install_addon_profilin
 from .timing import phase as _profile_phase
 from .timing import record_process_imports as _record_process_imports
 from .timing import uninstall_mitmproxy_addon_profiling as _uninstall_addon_profiling
+from .websocket_body_filter import install_websocket_body_filter_cache
 from .websocket_console import install_bounded_websocket_renderer
 
 log = logging.getLogger("safeyolo.traffic-master")
@@ -290,7 +291,8 @@ class WebFrontend:
     def view_add(self, flow: Any) -> None:
         app.ClientConnection.broadcast_flow("flows/add", flow)
 
-    def view_remove(self, flow: Any, _index: int) -> None:
+    def view_remove(self, flow: Any, index: int) -> None:
+        del index
         app.ClientConnection.broadcast(type="flows/remove", payload=flow.id)
 
     def view_update(self, flow: Any) -> None:
@@ -627,6 +629,7 @@ class TrafficMaster(ConsoleMaster):
             self.addons.add(WebFrontend(self), WebTailnetShare(self))
         self._register_production_addons()
         self._add_scope_keys()
+        install_websocket_body_filter_cache(self)
 
     def _register_production_addons(self) -> None:
         """Register the one-shot chain at the former script hook position."""
