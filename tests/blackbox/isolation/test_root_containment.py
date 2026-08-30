@@ -7,6 +7,7 @@ boundary.
 """
 
 import os
+import resource
 import shutil
 import socket
 import subprocess
@@ -15,6 +16,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+
+NOFILE_LIMIT = 65536
 
 
 def _is_gvisor() -> bool:
@@ -50,6 +53,27 @@ class TestGuestRootCapability:
         """
         assert os.getuid() == 0, f"Expected guest UID 0, got {os.getuid()}"
         assert os.geteuid() == 0, f"Expected guest EUID 0, got {os.geteuid()}"
+
+    def test_root_shell_and_pid1_have_nofile_limit(self):
+        """The root SSH login and its PID 1 view have the required limit.
+
+        What: Inspect this process through the dedicated ``agent shell --root``
+        lane and read the open-file limit for PID 1 from proc.
+        Why: PAM can apply identity-specific limits during SSH login. A sudo
+        transition inside the normal agent session does not exercise the root
+        login path that the CLI creates.
+        """
+        assert resource.getrlimit(resource.RLIMIT_NOFILE) == (
+            NOFILE_LIMIT,
+            NOFILE_LIMIT,
+        )
+
+        with open("/proc/1/limits") as limits_file:
+            pid1_line = next(
+                line for line in limits_file if line.startswith("Max open files")
+            )
+        pid1_limits = tuple(int(value) for value in pid1_line.split()[3:5])
+        assert pid1_limits == (NOFILE_LIMIT, NOFILE_LIMIT)
 
     def test_root_can_install_local_apt_package(self):
         """Guest root can install and remove a local package with apt/dpkg.

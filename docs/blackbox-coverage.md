@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**101 tests across 36 threat categories.**
+**102 tests across 36 threat categories.**
 
 ## Host-side
 
@@ -589,6 +589,12 @@ zero when the suite is launched with ``agent shell --root``.
   - *Consequence if unasserted:* Merely accepting the CLI flag is not useful acceptance evidence;
 package installation and guest repair require actual guest-root
 privileges.
+- **`test_root_shell_and_pid1_have_nofile_limit`** — The root SSH login and its PID 1 view have the required limit.
+  - *Probe:* Inspect this process through the dedicated ``agent shell --root``
+lane and read the open-file limit for PID 1 from proc.
+  - *Consequence if unasserted:* PAM can apply identity-specific limits during SSH login. A sudo
+transition inside the normal agent session does not exercise the root
+login path that the CLI creates.
 - **`test_root_can_install_local_apt_package`** — Guest root can install and remove a local package with apt/dpkg.
   - *Probe:* Build a minimal local Debian package, install it through apt,
 verify its payload under /usr/local, then purge it without network
@@ -640,8 +646,8 @@ they inherited below the documented runtime contract.
 
 - **`test_pid1_shell_and_child_inherit_nofile_limit`** — PID 1 and all later descendants have a 65536 soft/hard limit.
   - *Probe:* Read PID 1's proc limit, inspect the running test process that
-was launched through the normal agent-shell path, spawn one more
-child, and inspect both the root shell and its view of PID 1.
+was launched through the normal agent-shell path, and spawn one more
+child.
   - *Consequence if unasserted:* Checking only the final agent process can hide a child-only
 workaround. PID 1 must establish the limit before sshd and agent
 launch so both cold boot and snapshot restore propagate it naturally.

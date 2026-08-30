@@ -19,8 +19,8 @@ class TestOpenFileLimit:
         """PID 1 and all later descendants have a 65536 soft/hard limit.
 
         What: Read PID 1's proc limit, inspect the running test process that
-        was launched through the normal agent-shell path, spawn one more
-        child, and inspect both the root shell and its view of PID 1.
+        was launched through the normal agent-shell path, and spawn one more
+        child.
         Why: Checking only the final agent process can hide a child-only
         workaround. PID 1 must establish the limit before sshd and agent
         launch so both cold boot and snapshot restore propagate it naturally.
@@ -49,26 +49,3 @@ class TestOpenFileLimit:
             text=True,
         )
         assert child.stdout.strip() == f"{NOFILE_LIMIT} {NOFILE_LIMIT}"
-
-        root = subprocess.run(
-            [
-                "sudo",
-                "-n",
-                sys.executable,
-                "-c",
-                (
-                    "import json,resource; "
-                    "line=next(line for line in open('/proc/1/limits') "
-                    "if line.startswith('Max open files')); "
-                    "print(json.dumps([resource.getrlimit(resource.RLIMIT_NOFILE), "
-                    "tuple(map(int,line.split()[3:5]))]))"
-                ),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        assert root.stdout.strip() == (
-            f"[[{NOFILE_LIMIT}, {NOFILE_LIMIT}], "
-            f"[{NOFILE_LIMIT}, {NOFILE_LIMIT}]]"
-        )
