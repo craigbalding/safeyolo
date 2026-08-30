@@ -61,7 +61,7 @@ safeyolo agent add work ~/code --host-script @claude
 safeyolo agent run work
 ```
 
-`~/code` is your project directory, mounted read-write into the sandbox. `@claude` is a bundled host-script alias that stages Claude Code and the coord MCP adapter inside the guest. Other bundled aliases: `@codex` (OpenAI Codex CLI, also with coord MCP), `@mise-shell` (interactive shell with mise). Paths still work — pass any executable script if you have your own.
+`~/code` is your project directory, mounted read-write into the sandbox. `@claude` is a bundled host-script alias that stages Claude Code and the coord MCP adapter inside the guest. Other bundled aliases: `@codex` (interactive OpenAI Codex CLI, also with coord MCP), `@codex-coord` (opt-in supervised Codex factory worker), and `@mise-shell` (interactive shell with mise). Paths still work — pass any executable script if you have your own.
 
 Inside the sandbox:
 
@@ -212,6 +212,7 @@ The `contrib/` directory has ready-made host scripts:
 |--------|---------|
 | `contrib/claude-host-setup.sh` | Claude Code — stages host `~/.claude/` auth + user extensions, registers the coord MCP adapter, injects SafeYolo's compact baseline, installs the shared `/safeyolo` skill, and launches nag-free |
 | `contrib/codex-host-setup.sh` | OpenAI Codex CLI — stages `~/.codex/`, registers the coord MCP adapter, injects SafeYolo's compact baseline, installs the shared `$safeyolo` skill, and launches with sandboxing disabled inside the guest (`-s danger-full-access -a never`) while SafeYolo remains the outer boundary |
+| `contrib/codex-coord-host-setup.sh` | Explicit factory mode for Codex — uses the normal staged subscription auth and coord MCP, then supervises bounded non-interactive turns inside the guest; see the [supervisor contract](docs/codex-coord-supervisor.md) |
 | `contrib/mise-shell-host-setup.sh` | BYOA — boots into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
 
 Without `--host-script`, the sandbox boots to an interactive bash shell in a per-agent persistent home.

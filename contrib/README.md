@@ -12,6 +12,8 @@ Example integrations. Copy and adapt for your own use.
 | `skills/safeyolo/` | Shared Codex/Claude skill for guest tool installation, Agent API, flows, service gateway, plumb, block responses, and troubleshooting |
 | `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions and the default coord MCP server, injects the baseline, links `/safeyolo`, and writes an install-on-first-run foreground command |
 | `codex-host-setup.sh` | Host setup for OpenAI Codex CLI -- stages user state and the default coord MCP server, injects the baseline, links `$safeyolo`, and writes an install-on-first-run foreground command |
+| `codex-coord-host-setup.sh` | Opt-in `@codex-coord` setup for a long-lived factory worker; it uses the normal Codex setup and runs bounded non-interactive turns under the guest-side coord supervisor |
+| `codex-coord-supervisor.py` | Small persistent-process supervisor for one Codex thread, structured MCP events, and bounded atomic coord recovery state |
 | `coord-mcp-bootstrap.sh` | Shared idempotent coord MCP staging/registration helper used by the bundled Claude and Codex setup scripts |
 | `safeyolo-coord-mcp-launcher.sh` | SafeYolo-owned launcher that restores the current proxy/TLS environment before starting the coord adapter |
 | `safeyolo-coord-mcp.py` | Standalone coord MCP adapter staged into first-party agent homes by the shared bootstrap |
@@ -29,6 +31,19 @@ the Codex MCP deadline must stay strictly higher. The 30-second margin lets the
 adapter resolve the returned page and deliver its adoptable cursor after a
 full idle wait. Change these coupled bounds together; do not shorten the coord
 wait to fit a harness timeout.
+
+The normal `@codex` setup stays interactive. For a factory worker, set the
+receive rooms and the operator-designated coordinators, then select the
+separate `@codex-coord` alias:
+
+```bash
+SAFEYOLO_CODEX_COORD_ROOMS=backlog \
+SAFEYOLO_CODEX_COORDINATORS=relay \
+  safeyolo agent run worker --host-script @codex-coord
+```
+
+See [the supervised worker contract](../docs/codex-coord-supervisor.md) before
+you enable this mode.
 
 ## The Integration Pattern
 
