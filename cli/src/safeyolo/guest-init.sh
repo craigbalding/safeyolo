@@ -39,6 +39,41 @@
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
+# Match the OCI runtime contract before PID 1 launches any service. The rootfs
+# stub execs this shell as PID 1. A separate prlimit process targets the
+# kernel's numeric PID 1, then this script reads that process through /proc.
+# This gives the host's later /proc/1 probe the same target as the boot check.
+# The VZ rootfs stub repeats the operation. This setup also supports older
+# rootfs images and runs before the snapshot gate.
+_nofile_limit=65536
+if ! command -v prlimit >/dev/null 2>&1; then
+    echo "FATAL: prlimit is required to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit} for PID 1" >&2
+    echo "[orch fatal] prlimit is required for PID 1 RLIMIT_NOFILE" > /dev/console 2>/dev/null || true
+    exit 1
+fi
+if ! prlimit --pid 1 --nofile="${_nofile_limit}:${_nofile_limit}"; then
+    echo "FATAL: unable to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" >&2
+    echo "[orch fatal] unable to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true
+    exit 1
+fi
+_nofile_soft=
+_nofile_hard=
+while read -r _limit_word1 _limit_word2 _limit_word3 _limit_soft _limit_hard _limit_unit; do
+    if [ "$_limit_word1 $_limit_word2 $_limit_word3" = "Max open files" ]; then
+        _nofile_soft=$_limit_soft
+        _nofile_hard=$_limit_hard
+        break
+    fi
+done < "/proc/1/limits"
+if [ "$_nofile_soft" != "$_nofile_limit" ] || [ "$_nofile_hard" != "$_nofile_limit" ]; then
+    echo "FATAL: RLIMIT_NOFILE is ${_nofile_soft}/${_nofile_hard}; expected ${_nofile_limit}/${_nofile_limit}" >&2
+    echo "[orch fatal] RLIMIT_NOFILE is ${_nofile_soft}/${_nofile_hard}; expected ${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true
+    exit 1
+fi
+echo "[orch rlimit] RLIMIT_NOFILE=${_nofile_soft}/${_nofile_hard}" > /dev/console 2>/dev/null || true
+unset _nofile_limit _nofile_soft _nofile_hard
+unset _limit_word1 _limit_word2 _limit_word3 _limit_soft _limit_hard _limit_unit
+
 echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)" > /dev/console 2>/dev/null || true
 
 /safeyolo/guest-init-static

@@ -8,6 +8,30 @@ GUEST_DIR = REPO_ROOT / "guest"
 GLOBAL_ONLY_CONFIG = "/etc/safeyolo/mise-project-config-disabled.toml"
 
 
+def test_installer_rejects_rootfs_without_prlimit(tmp_path: Path) -> None:
+    """The PID 1 boot dependency must fail at image build time."""
+    rootfs = tmp_path / "rootfs"
+    rootfs.mkdir()
+    command = (
+        "chroot() { return 1; }; "
+        'source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"; '
+        'install_safeyolo_guest_common "$TEST_ROOTFS"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "SAFEYOLO_GUEST_SRC_DIR": str(GUEST_DIR),
+            "TEST_ROOTFS": str(rootfs),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "missing prlimit in rootfs" in result.stderr
+
+
 def test_installer_precreates_runtime_bind_mount_targets(tmp_path: Path) -> None:
     """Custom rootfs trees must be complete before Linux uid remapping."""
     rootfs = tmp_path / "rootfs"

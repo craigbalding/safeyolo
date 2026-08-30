@@ -33,10 +33,45 @@ def _shell_socket_path(name: str) -> Path:
     return get_data_dir() / "shell-sockets" / f"{name}.sock"
 
 
-def _wrap_ssh_command(command: str) -> str:
-    """Load the per-run environment and export-only global mise setup."""
+def _ssh_nofile_prelude(user: str) -> str:
+    """Raise the limit on the SSH session shell before it runs a payload.
+
+    OpenSSH can create an unprivileged session with the guest's low default
+    hard limit even when PID 1 and the root session have the required limit.
+    The normal path uses the supported guest sudo helper. The root path can
+    call prlimit directly. Both paths target numeric PID 1 and the waiting
+    session shell. The shell's later exec and children inherit the result.
+    """
+    prefix = "" if user == "root" else "/usr/local/bin/sudo -n "
+    establish = (
+        f"{prefix}/usr/bin/prlimit --pid 1 --nofile=65536:65536; "
+        f'{prefix}/usr/bin/prlimit --pid "$$" --nofile=65536:65536; '
+    )
     return (
-        ". /etc/environment 2>/dev/null; "
+        establish
+        + 'if [ "$(ulimit -Sn)" != 65536 ] || '
+        '[ "$(ulimit -Hn)" != 65536 ]; then '
+        'echo "SafeYolo: SSH session RLIMIT_NOFILE setup failed" >&2; '
+        "exit 1; fi; "
+        "_sy_pid1_soft=; _sy_pid1_hard=; "
+        "while read -r _sy_w1 _sy_w2 _sy_w3 _sy_soft _sy_hard _sy_unit; do "
+        'if [ "$_sy_w1 $_sy_w2 $_sy_w3" = "Max open files" ]; then '
+        "_sy_pid1_soft=$_sy_soft; _sy_pid1_hard=$_sy_hard; break; fi; "
+        "done < /proc/1/limits; "
+        'if [ "$_sy_pid1_soft" != 65536 ] || '
+        '[ "$_sy_pid1_hard" != 65536 ]; then '
+        'echo "SafeYolo: PID 1 RLIMIT_NOFILE setup failed" >&2; '
+        "exit 1; fi; "
+        "unset _sy_pid1_soft _sy_pid1_hard _sy_w1 _sy_w2 _sy_w3 "
+        "_sy_soft _sy_hard _sy_unit; "
+    )
+
+
+def _wrap_ssh_command(command: str, *, user: str) -> str:
+    """Set the session limit, then load per-run environment and mise."""
+    return (
+        _ssh_nofile_prelude(user)
+        + ". /etc/environment 2>/dev/null; "
         "if [ -f /etc/mise-activate.sh ]; then "
         ". /etc/mise-activate.sh; "
         "fi; "
@@ -175,10 +210,15 @@ class DarwinPlatform(AgentPlatform):
             # Load proxy/CA state and the export-only global mise setup. sshd's
             # non-login non-interactive shell does neither (and Alpine has no
             # PAM fallback), so shell -c must apply both explicitly.
-            cmd.append(_wrap_ssh_command(command))
+            cmd.append(_wrap_ssh_command(command, user=ssh_user))
             # Close stdin for non-interactive commands so nc's UDS
             # ProxyCommand exits when the remote command finishes.
             stdin = subprocess.DEVNULL
+        else:
+            # Run the limit setup in the initial sshd session shell, then
+            # replace it with the same login shell users received before this
+            # wrapper existed. The exec preserves the repaired limit.
+            cmd.append(_wrap_ssh_command("exec /bin/bash -l", user=ssh_user))
 
         result = subprocess.run(cmd, stdin=stdin)
         return result.returncode
@@ -207,7 +247,7 @@ class DarwinPlatform(AgentPlatform):
             "-o", "LogLevel=ERROR",
             "-o", f"ProxyCommand=nc -U {shell_sock}",
             f"{ssh_user}@sandbox",
-            _wrap_ssh_command(command),
+            _wrap_ssh_command(command, user=ssh_user),
         ]
         return subprocess.Popen(
             cmd,
@@ -242,7 +282,7 @@ class DarwinPlatform(AgentPlatform):
             "-o", "LogLevel=ERROR",
             "-o", f"ProxyCommand=nc -U {shell_sock}",
             f"{ssh_user}@sandbox",
-            _wrap_ssh_command(command),
+            _wrap_ssh_command(command, user=ssh_user),
         ]
         return subprocess.Popen(
             cmd,

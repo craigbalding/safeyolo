@@ -272,7 +272,7 @@ echo "=== Installing base packages ==="
 sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive \
     /usr/bin/apt-get install -y --no-install-recommends \
     ca-certificates curl git jq build-essential gnupg \
-    openssh-server iproute2 iputils-ping procps less xz-utils \
+    openssh-server iproute2 iputils-ping procps util-linux less xz-utils \
     libgomp1 libatomic1 \
     python3 python3-pip python3-venv \
     busybox-static socat file pkg-config \

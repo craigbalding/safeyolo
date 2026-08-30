@@ -218,6 +218,10 @@ install_safeyolo_guest_common() {
         echo "install_safeyolo_guest_common: missing $SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-guest-init" >&2
         return 1
     }
+    if ! chroot "$rootfs" /bin/bash -c 'command -v prlimit >/dev/null 2>&1'; then
+        echo "install_safeyolo_guest_common: missing prlimit in rootfs -- install util-linux first" >&2
+        return 1
+    fi
 
     echo "=== Installing SafeYolo guest bits into $rootfs ==="
 

@@ -77,8 +77,9 @@ What's required:
      — Alpine's OpenSSH refuses locked accounts even for pubkey)
    - `sudo` (the distro implementation used for standard command-line
      semantics and hardware-microVM guest elevation)
-   - `setpriv` from `util-linux` (the SafeYolo sudo shim uses the agent's
-     existing namespace capabilities on rootless Linux gVisor)
+   - `setpriv` and `prlimit` from `util-linux` (the SafeYolo sudo shim uses
+     the agent's existing namespace capabilities on rootless Linux gVisor;
+     PID 1 uses `prlimit` to set the open-file limit on its numeric process)
 
    Optional:
    - `python3` — only needed if you want `safeyolo agent shell <name>

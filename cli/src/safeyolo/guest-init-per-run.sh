@@ -20,6 +20,42 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "[per-run start] pid=$$" > /dev/console 2>/dev/null || true
 
+# The orchestrator execs this script as PID 1. Use a separate process to set
+# the limit on numeric PID 1, then read the same /proc/1 file that an agent
+# shell reads later. Reapply after restore and before the host receives its
+# ready marker. This does not depend on Bash's saved view of its own PID.
+ensure_pid1_nofile() {
+    _nofile_limit=65536
+    if ! command -v prlimit >/dev/null 2>&1; then
+        echo "FATAL: prlimit is required to establish PID 1 RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" >&2
+        echo "[per-run fatal] prlimit is required for PID 1 RLIMIT_NOFILE" > /dev/console 2>/dev/null || true
+        return 1
+    fi
+    if ! prlimit --pid 1 --nofile="${_nofile_limit}:${_nofile_limit}"; then
+        echo "FATAL: unable to establish PID 1 RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" >&2
+        echo "[per-run fatal] unable to establish PID 1 RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true
+        return 1
+    fi
+
+    _nofile_soft=
+    _nofile_hard=
+    while read -r _limit_word1 _limit_word2 _limit_word3 _limit_soft _limit_hard _limit_unit; do
+        if [ "$_limit_word1 $_limit_word2 $_limit_word3" = "Max open files" ]; then
+            _nofile_soft=$_limit_soft
+            _nofile_hard=$_limit_hard
+            break
+        fi
+    done < "/proc/1/limits"
+    if [ "$_nofile_soft" != "$_nofile_limit" ] || [ "$_nofile_hard" != "$_nofile_limit" ]; then
+        echo "FATAL: PID 1 RLIMIT_NOFILE is ${_nofile_soft:-unknown}/${_nofile_hard:-unknown}; expected ${_nofile_limit}/${_nofile_limit}" >&2
+        echo "[per-run fatal] PID 1 RLIMIT_NOFILE is ${_nofile_soft:-unknown}/${_nofile_hard:-unknown}; expected ${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true
+        return 1
+    fi
+    echo "[per-run rlimit] PID 1 RLIMIT_NOFILE=${_nofile_soft}/${_nofile_hard}" > /dev/console 2>/dev/null || true
+    unset _nofile_limit _nofile_soft _nofile_hard
+    unset _limit_word1 _limit_word2 _limit_word3 _limit_soft _limit_hard _limit_unit
+}
+
 # --------------------------------------------------------------------------
 # 0. Post-restore fixups (no-ops on cold boot)
 # --------------------------------------------------------------------------
@@ -30,13 +66,6 @@ hwclock -s 2>/dev/null || true
 # the guest was paused/snapshotted become visible. Read of the directory
 # is enough; content isn't used.
 ls /safeyolo >/dev/null 2>&1 || true
-
-# Definitive "the guest reached per-run" signal. The host-side CLI polls
-# for this marker to decide whether a cold boot or restore reached the
-# per-run phase. Written after the VirtioFS readdir above so the host sees
-# the write promptly.
-echo "$(date +%s)" > /safeyolo-status/per-run-started
-echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
 # 1. Configure environment
@@ -142,8 +171,6 @@ if [ -f /safeyolo/agent_token ]; then
     chmod 644 /app/agent_token
 fi
 
-echo "ready" > /safeyolo-status/vm-status
-
 # --------------------------------------------------------------------------
 # 3. Run user init hook (legacy; host script can write here too)
 # --------------------------------------------------------------------------
@@ -169,19 +196,38 @@ if [ ! -x "$VSOCK_TERM" ]; then
     VSOCK_TERM="/usr/local/bin/vsock-term"
 fi
 
+# Keep Bash as PID 1 after the kernel check. A physical VZ test reported a low
+# limit after the final idle exec. A child can wait without replacing PID 1.
+# The wait command also reaps the child when it exits.
+keep_pid1_alive() {
+    while :; do
+        sleep 2147483647 &
+        wait "$!" || true
+    done
+}
+
+# All per-run setup is complete. Establish the externally visible PID 1
+# contract at the common boundary before the host publishes readiness and
+# before detach, host-terminal, or vsock-term can launch. The host waits for
+# per-run-started, so an immediate agent-shell probe cannot race this check.
+ensure_pid1_nofile
+echo "$(date +%s)" > /safeyolo-status/per-run-started
+echo "ready" > /safeyolo-status/vm-status
+echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
+
 # Detach mode: skip vsock terminal, keep VM alive for SSH access.
 # The host-side safeyolo-vm runs with --no-terminal so it doesn't
 # try to connect vsock. sshd is already running in background.
 if [ "${SAFEYOLO_DETACH:-}" = "1" ]; then
     echo "Detach mode: VM running, SSH ready" >&2
-    exec sleep infinity
+    keep_pid1_alive
 fi
 
 if [ "${SAFEYOLO_HOST_TERMINAL:-}" = "1" ]; then
     # Linux/gVisor: the host CLI launches the agent via `runsc exec`,
     # which bridges the user's terminal into the sandbox directly.
     # Keep the container alive so runsc exec has a target.
-    exec sleep infinity
+    keep_pid1_alive
 elif [ -x "$VSOCK_TERM" ]; then
     # macOS: vsock-term sets up the PTY, drops privileges, sets PATH,
     # and execs the command. A shell wrapper (bash -lc) would break
@@ -205,6 +251,6 @@ fi
 # on PSCI (CONFIG_ARM_PSCI_FW=y) to hand off to VZ.
 sync
 /usr/bin/busybox poweroff -f 2>/dev/null || true
-# Unreachable if poweroff succeeded; fallback keeps PID 1 alive so the kernel
-# doesn't panic, and the host's 5s force-stop will catch us.
-exec sleep infinity
+# Unreachable if poweroff succeeded. The fallback keeps PID 1 alive. The host
+# force-stops the VM after five seconds.
+keep_pid1_alive

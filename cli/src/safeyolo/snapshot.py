@@ -244,7 +244,9 @@ def compute_snapshot_version(
     environment (different CA cert, different kernel, different IP, ...).
     """
     cli_dir = Path(__file__).parent
+    init_script = cli_dir / "guest-init.sh"
     static_script = cli_dir / "guest-init-static.sh"
+    per_run_script = cli_dir / "guest-init-per-run.sh"
     guest_sudo = _guest_sudo_source()
     ca_cert = get_config_dir() / "certs" / "mitmproxy-ca-cert.pem"
     kernel = get_kernel_path()
@@ -253,7 +255,9 @@ def compute_snapshot_version(
 
     return {
         "snapshot_schema": SNAPSHOT_SCHEMA,
+        "guest_init_sha256": _sha256_file(init_script),
         "guest_init_static_sha256": _sha256_file(static_script),
+        "guest_init_per_run_sha256": _sha256_file(per_run_script),
         "guest_sudo_sha256": _sha256_file(guest_sudo),
         "ca_cert_sha256": _sha256_file(ca_cert) if ca_cert.exists() else "",
         "kernel_sha256": _sha256_file(kernel) if kernel.exists() else "",

@@ -461,6 +461,345 @@ class TestPrepareConfigShare:
         assert guest_init.exists()
         assert os.access(guest_init, os.X_OK)
 
+    def test_guest_init_refresh_replaces_existing_inode(self, tmp_config_dir):
+        """Each run must stage guest-init as a new inode."""
+        share = prepare_config_share("agent1", "/workspace")
+        guest_init = share / "guest-init"
+        old_inode = guest_init.stat().st_ino
+        guest_init.write_text("#!/bin/bash\necho stale\n")
+
+        prepare_config_share("agent1", "/workspace")
+
+        import safeyolo.vm as vm_mod
+
+        source = Path(vm_mod.__file__).parent / "guest-init.sh"
+        assert guest_init.stat().st_ino != old_inode
+        assert guest_init.read_bytes() == source.read_bytes()
+        assert os.access(guest_init, os.X_OK)
+
+    def test_vz_rootfs_stub_sets_nofile_before_mount_and_handoff(self):
+        """The VZ rootfs stub must set the limit before it mounts the share."""
+        import safeyolo.vm as vm_mod
+
+        stub = (
+            Path(vm_mod.__file__).resolve().parents[3]
+            / "guest/rootfs/safeyolo-guest-init"
+        ).read_text()
+
+        limit = stub.index(
+            'prlimit --pid 1 --nofile="${_nofile_limit}:${_nofile_limit}"'
+        )
+        first_mount = stub.index("\nmount -t proc proc /proc")
+        handoff = stub.index("\n    exec /safeyolo/guest-init")
+
+        assert limit < first_mount < handoff
+
+    def test_guest_init_sets_nofile_for_pid1_and_children(self, tmp_config_dir):
+        """The real PID 1 prefix establishes the promised inherited limit."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init").read_text()
+        prefix, separator, _rest = source.partition(
+            'echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)"'
+        )
+        assert separator
+
+        current_hard = int(
+            subprocess.run(
+                ["bash", "-c", "ulimit -Hn"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        if current_hard < 65536:
+            pytest.skip("test host hard RLIMIT_NOFILE is below the product limit")
+
+        prefix = prefix.replace('"/proc/1/limits"', '"/proc/$$/limits"')
+        harness = (
+            "ulimit -Sn 4096\n"
+            "prlimit() {\n"
+            "    [ \"$1\" = --pid ] && [ \"$2\" = 1 ] "
+            "&& [ \"$3\" = --nofile=65536:65536 ] || return 2\n"
+            "    builtin ulimit -n 65536\n"
+            "}\n"
+            f"{prefix}\n"
+            "printf 'pid1 %s %s\\n' \"$(ulimit -Sn)\" \"$(ulimit -Hn)\"\n"
+            "bash -c 'printf \"child %s %s\\n\" \"$(ulimit -Sn)\" \"$(ulimit -Hn)\"'\n"
+        )
+        result = subprocess.run(
+            ["bash"], input=harness, check=True, capture_output=True, text=True,
+        )
+
+        assert result.stdout.splitlines() == [
+            "pid1 65536 65536",
+            "child 65536 65536",
+        ]
+
+    def test_guest_init_nofile_failure_is_fatal_and_clear(self, tmp_config_dir):
+        """PID 1 must not silently continue with a limit below its contract."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init").read_text()
+        prefix, separator, _rest = source.partition(
+            'echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)"'
+        )
+        assert separator
+
+        harness = f"prlimit() {{ return 1; }}\n{prefix}\n"
+        result = subprocess.run(
+            ["bash"], input=harness, check=False, capture_output=True, text=True,
+        )
+
+        assert result.returncode != 0
+        assert "FATAL: unable to establish RLIMIT_NOFILE=65536/65536" in result.stderr
+
+    def test_guest_init_nofile_parser_needs_only_bash(
+        self, tmp_config_dir, tmp_path
+    ):
+        """After prlimit, the proc parser needs only Bash built-ins."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init").read_text()
+        prefix, separator, _rest = source.partition(
+            'echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)"'
+        )
+        assert separator
+
+        limits = tmp_path / "limits"
+        limits.write_text(
+            "Limit Soft Limit Hard Limit Units\n"
+            "Max open files 65536 65536 files\n"
+        )
+        prefix = prefix.replace('"/proc/1/limits"', f'"{limits}"')
+        harness = (
+            "prlimit() { return 0; }\n"
+            f"{prefix}\n"
+            "printf 'passed\\n'\n"
+        )
+        env = os.environ.copy()
+        env["PATH"] = "/nonexistent"
+        result = subprocess.run(
+            ["/bin/bash"],
+            input=harness,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0
+        assert result.stdout == "passed\n"
+        assert "command not found" not in result.stderr
+
+    def test_guest_init_sets_nofile_before_static_and_snapshot_gate(
+        self, tmp_config_dir
+    ):
+        """Cold boot and snapshot capture inherit the limit before services."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init").read_text()
+
+        limit = source.index(
+            'prlimit --pid 1 --nofile="${_nofile_limit}:${_nofile_limit}"'
+        )
+        static = source.index("\n/safeyolo/guest-init-static\n")
+        capture_marker = source.index(
+            'echo "ready" > /safeyolo-status/static-init-done'
+        )
+        restore_gate = source.index('while [ ! -f /safeyolo/per-run-go ]')
+        per_run = source.index('exec "$PER_RUN_SCRIPT"')
+
+        assert limit < static < capture_marker < restore_gate < per_run
+
+    def test_per_run_checks_pid1_nofile_before_ready_marker(self, tmp_config_dir):
+        """The final PID 1 check must follow setup and precede ready."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-per-run").read_text()
+
+        prlimit = source.index(
+            'prlimit --pid 1 --nofile="${_nofile_limit}:${_nofile_limit}"'
+        )
+        proc_check = source.index('"/proc/1/limits"')
+        apply_limit = source.index("\nensure_pid1_nofile\n")
+        ready = source.index('> /safeyolo-status/per-run-started')
+        user_hook = source.index(
+            'su agent -c "bash /home/agent/.safeyolo-hooks/agent-init.sh"'
+        )
+
+        assert prlimit < proc_check < user_hook < apply_limit < ready
+
+    @pytest.mark.parametrize(
+        "branch",
+        [
+            'if [ "${SAFEYOLO_DETACH:-}" = "1" ]; then',
+            'if [ "${SAFEYOLO_HOST_TERMINAL:-}" = "1" ]; then',
+            'elif [ -x "$VSOCK_TERM" ]; then',
+        ],
+    )
+    def test_per_run_common_nofile_boundary_precedes_launch_branch(
+        self, tmp_config_dir, branch
+    ):
+        """Detach, host-terminal, and vsock-term share one ready boundary."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-per-run").read_text()
+
+        final_check = source.index("\nensure_pid1_nofile\n")
+        ready = source.index('> /safeyolo-status/per-run-started')
+        vm_status = source.index('> /safeyolo-status/vm-status')
+        launch = source.index(branch)
+
+        assert source.count("\nensure_pid1_nofile\n") == 1
+        assert final_check < ready < vm_status < launch
+
+    @pytest.mark.parametrize(
+        ("soft", "hard", "expected_code"),
+        [(65536, 65536, 0), (1024, 4096, 1)],
+    )
+    def test_per_run_checks_kernel_nofile_values(
+        self, tmp_config_dir, tmp_path, soft, hard, expected_code
+    ):
+        """The per-run check must reject low values from proc."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-per-run").read_text()
+        prefix, separator, _rest = source.partition(
+            "# --------------------------------------------------------------------------\n"
+            "# 0. Post-restore fixups"
+        )
+        assert separator
+
+        limits = tmp_path / "limits"
+        limits.write_text(
+            "Limit Soft Limit Hard Limit Units\n"
+            f"Max open files {soft} {hard} files\n"
+        )
+        prefix = prefix.replace('"/proc/1/limits"', f'"{limits}"')
+        env = os.environ.copy()
+        env["PATH"] = "/nonexistent"
+        result = subprocess.run(
+            ["/bin/bash"],
+            input=(
+                "prlimit() { return 0; }\n"
+                f"{prefix}\n"
+                "ensure_pid1_nofile\n"
+                "printf 'passed\\n'\n"
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == expected_code
+        if expected_code == 0:
+            assert result.stdout == "passed\n"
+        else:
+            assert "PID 1 RLIMIT_NOFILE is 1024/4096" in result.stderr
+        assert "awk: command not found" not in result.stderr
+
+    def test_per_run_prlimit_targets_numeric_pid1_before_proc_check(
+        self, tmp_config_dir, tmp_path
+    ):
+        """The external operation changes the value read from proc."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-per-run").read_text()
+        prefix, separator, _rest = source.partition(
+            "# --------------------------------------------------------------------------\n"
+            "# 0. Post-restore fixups"
+        )
+        assert separator
+
+        limits = tmp_path / "limits"
+        limits.write_text(
+            "Limit Soft Limit Hard Limit Units\n"
+            "Max open files 1024 4096 files\n"
+        )
+        prefix = prefix.replace('"/proc/1/limits"', f'"{limits}"')
+        harness = (
+            "prlimit() {\n"
+            "    [ \"$1\" = --pid ] && [ \"$2\" = 1 ] "
+            "&& [ \"$3\" = --nofile=65536:65536 ] || return 2\n"
+            f"    printf '%s\\n' 'Limit Soft Limit Hard Limit Units' "
+            f"'Max open files 65536 65536 files' > '{limits}'\n"
+            "}\n"
+            f"{prefix}\n"
+            "ensure_pid1_nofile\n"
+            "printf 'passed\\n'\n"
+        )
+        env = os.environ.copy()
+        env["PATH"] = "/nonexistent"
+        result = subprocess.run(
+            ["/bin/bash"],
+            input=harness,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0
+        assert result.stdout == "passed\n"
+
+    def test_prlimit_changes_a_later_external_proc_read(self):
+        """A separate process can update the target seen through proc."""
+        if not Path("/proc/self/limits").exists() or not shutil.which("prlimit"):
+            pytest.skip("Linux proc and util-linux prlimit are required")
+
+        current_hard = int(
+            subprocess.run(
+                ["bash", "-c", "ulimit -Hn"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        if current_hard < 65536:
+            pytest.skip("test host hard RLIMIT_NOFILE is below the product limit")
+
+        target = subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                "ulimit -Sn 1024; ulimit -Hn 65536; "
+                "printf 'ready\\n'; exec sleep 60",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert target.stdout is not None
+            assert target.stdout.readline() == "ready\n"
+            subprocess.run(
+                [
+                    "prlimit",
+                    "--pid",
+                    str(target.pid),
+                    "--nofile=65536:65536",
+                ],
+                check=True,
+            )
+            limits = Path(f"/proc/{target.pid}/limits").read_text()
+            line = next(
+                line
+                for line in limits.splitlines()
+                if line.startswith("Max open files")
+            )
+            assert tuple(int(value) for value in line.split()[3:5]) == (
+                65536,
+                65536,
+            )
+        finally:
+            target.terminate()
+            try:
+                target.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                target.kill()
+                target.wait(timeout=5)
+
+    def test_per_run_keeps_bash_as_pid1_when_idle(self, tmp_config_dir):
+        """Idle modes must not replace PID 1 after the kernel limit check."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-per-run").read_text()
+
+        assert "exec sleep infinity" not in source
+        assert source.count("keep_pid1_alive") == 4
+
     def test_guest_init_static_and_per_run_are_executable(self, tmp_config_dir):
         """The orchestrator execs two phase scripts -- both must be present
         and executable on the config share or the guest hangs."""
