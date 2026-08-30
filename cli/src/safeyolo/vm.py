@@ -1033,8 +1033,20 @@ def prepare_config_share(
     ]:
         src = Path(__file__).parent / src_name
         dst = share_dir / dst_name
-        shutil.copy2(str(src), str(dst))
-        dst.chmod(0o755)
+        # Replace boot executables with a new, fully-written inode.  In-place
+        # copy left an existing VirtioFS export free to keep serving the old
+        # executable inode while the host believed the current package had
+        # been staged.  The guest-init orchestrator is the first consumer of
+        # this share, so stale bytes here bypass every later boot guarantee.
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{dst_name}-", dir=share_dir)
+        os.close(fd)
+        temporary = Path(temporary_name)
+        try:
+            shutil.copy2(src, temporary)
+            temporary.chmod(0o755)
+            os.replace(temporary, dst)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     # Refresh the guest-root compatibility shim independently of the base
     # image. guest-init-static installs it into the writable guest overlay,

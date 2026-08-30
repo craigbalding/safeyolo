@@ -461,6 +461,37 @@ class TestPrepareConfigShare:
         assert guest_init.exists()
         assert os.access(guest_init, os.X_OK)
 
+    def test_guest_init_refresh_replaces_existing_inode(self, tmp_config_dir):
+        """A new run must expose a newly staged executable to VirtioFS."""
+        share = prepare_config_share("agent1", "/workspace")
+        guest_init = share / "guest-init"
+        old_inode = guest_init.stat().st_ino
+        guest_init.write_text("#!/bin/bash\necho stale\n")
+
+        prepare_config_share("agent1", "/workspace")
+
+        import safeyolo.vm as vm_mod
+
+        source = Path(vm_mod.__file__).parent / "guest-init.sh"
+        assert guest_init.stat().st_ino != old_inode
+        assert guest_init.read_bytes() == source.read_bytes()
+        assert os.access(guest_init, os.X_OK)
+
+    def test_vz_rootfs_stub_sets_nofile_before_mount_and_handoff(self):
+        """The immutable VZ PID 1 boundary must not rely on share freshness."""
+        import safeyolo.vm as vm_mod
+
+        stub = (
+            Path(vm_mod.__file__).resolve().parents[3]
+            / "guest/rootfs/safeyolo-guest-init"
+        ).read_text()
+
+        limit = stub.index('ulimit -n "$_nofile_limit"')
+        first_mount = stub.index("\nmount -t proc proc /proc")
+        handoff = stub.index("\n    exec /safeyolo/guest-init")
+
+        assert limit < first_mount < handoff
+
     def test_guest_init_sets_nofile_for_pid1_and_children(self, tmp_config_dir):
         """The real PID 1 prefix establishes the promised inherited limit."""
         share = prepare_config_share("agent1", "/workspace")

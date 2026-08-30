@@ -41,9 +41,10 @@ export DEBIAN_FRONTEND=noninteractive
 
 # Match the OCI runtime contract before PID 1 launches any service.  This shell
 # is PID 1 (the rootfs stub execs it), so the limit is inherited by the static
-# phase, sshd, the per-run phase, the agent, and later SSH shells.  It is
-# deliberately established before the snapshot gate: a captured VM retains
-# PID 1's rlimit and restores with the same capability.
+# phase, sshd, the per-run phase, the agent, and later SSH shells.  The baked VZ
+# stub establishes the same limit for fresh images; repeating it here upgrades
+# already-built images and verifies the effective capability before the
+# snapshot gate.  A captured VM retains PID 1's rlimit on restore.
 _nofile_limit=65536
 if ! ulimit -n "$_nofile_limit"; then
     echo "FATAL: unable to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" >&2
@@ -57,6 +58,7 @@ if [ "$_nofile_soft" != "$_nofile_limit" ] || [ "$_nofile_hard" != "$_nofile_lim
     echo "[orch fatal] RLIMIT_NOFILE is ${_nofile_soft}/${_nofile_hard}; expected ${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true
     exit 1
 fi
+echo "[orch rlimit] RLIMIT_NOFILE=${_nofile_soft}/${_nofile_hard}" > /dev/console 2>/dev/null || true
 unset _nofile_limit _nofile_soft _nofile_hard
 
 echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)" > /dev/console 2>/dev/null || true
