@@ -328,9 +328,50 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
         assert data["mcp_servers"]["unrelated"] == {"command": "other"}
         managed = data["mcp_servers"]["safeyolo-coord"]
 
-    assert managed == {
+    expected = {
         "command": "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher",
         "args": [],
+    }
+    if script_name == "codex-host-setup.sh":
+        expected["tool_timeout_sec"] = 330
+        assert expected["tool_timeout_sec"] > 300
+    assert managed == expected
+
+
+def test_codex_coord_registration_repairs_timeout_idempotently(
+    tmp_path: Path,
+) -> None:
+    """Reapplying @codex repairs the old table and preserves its neighbours."""
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    config_path = agent_home / ".codex/config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        'model = "preserved"\n\n'
+        "[mcp_servers.before]\n"
+        'command = "before"\n\n'
+        "[mcp_servers.safeyolo-coord]\n"
+        'command = "old-launcher"\n'
+        'args = ["--old"]\n\n'
+        "[mcp_servers.after]\n"
+        'command = "after"\n'
+    )
+
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    first = config_path.read_text()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    assert config_path.read_text() == first
+    assert first.count("[mcp_servers.safeyolo-coord]") == 1
+    data = tomllib.loads(first)
+    assert data["model"] == "preserved"
+    assert data["mcp_servers"]["before"] == {"command": "before"}
+    assert data["mcp_servers"]["after"] == {"command": "after"}
+    assert data["mcp_servers"]["safeyolo-coord"] == {
+        "command": "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher",
+        "args": [],
+        "tool_timeout_sec": 330,
     }
 
 

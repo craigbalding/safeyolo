@@ -23,6 +23,13 @@ Example integrations. Copy and adapt for your own use.
 | `monitors/` | Log monitoring and visualization tools |
 | `notifiers/` | Push notifications via ntfy with optional approval buttons |
 
+The bundled Codex coord registration sets `tool_timeout_sec = 330`. SafeYolo
+allows a foreground `wait_for_coord` call to wait for at most 300 seconds, so
+the Codex MCP deadline must stay strictly higher. The 30-second margin lets the
+adapter resolve the returned page and deliver its adoptable cursor after a
+full idle wait. Change these coupled bounds together; do not shorten the coord
+wait to fit a harness timeout.
+
 ## The Integration Pattern
 
 SafeYolo integrations work by tailing the JSONL log:
