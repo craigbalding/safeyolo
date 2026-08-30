@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -29,8 +30,15 @@ from .config import (
 log = logging.getLogger("safeyolo.vm")
 
 VM_HELPER_NAME = "safeyolo-vm"
+VM_HELPER_CHECK_OK = "safeyolo-vm check: ok"
+VM_HELPER_CHECK_TIMEOUT_SECONDS = 3.0
 VSOCK_TERM_NAME = "vsock-term"
 VSOCK_TERM_INSTALL_HINT = "make -C vm install"
+_VM_HELPER_STARTUP_GRACE_SECONDS = 0.2
+_VM_HELPER_OUTPUT_LIMIT = 320
+_SENSITIVE_HELPER_OUTPUT_RE = re.compile(
+    r"(?i)\b(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*\S+"
+)
 
 
 class VMError(Exception):
@@ -72,6 +80,124 @@ def find_vm_helper() -> Path:
         f"Cannot find {VM_HELPER_NAME}. Install with:\n"
         f"  cd vm && make install"
     )
+
+
+def _helper_output_excerpt(stdout: str | None, stderr: str | None) -> str:
+    """Return one bounded, single-line, obviously redacted helper diagnostic."""
+    raw = (stderr or "").strip() or (stdout or "").strip()
+    if not raw:
+        return ""
+    single_line = " ".join(raw.split())
+    redacted = _SENSITIVE_HELPER_OUTPUT_RE.sub(r"\1=<redacted>", single_line)
+    if len(redacted) > _VM_HELPER_OUTPUT_LIMIT:
+        return redacted[:_VM_HELPER_OUTPUT_LIMIT] + "…"
+    return redacted
+
+
+def _vm_helper_exit_message(
+    helper: Path,
+    returncode: int,
+    *,
+    stdout: str | None = None,
+    stderr: str | None = None,
+    operation: str = "capability check",
+) -> str:
+    excerpt = _helper_output_excerpt(stdout, stderr)
+    suffix = f": {excerpt}" if excerpt else ""
+    if returncode < 0:
+        signal_number = -returncode
+        try:
+            signal_label = signal.Signals(signal_number).name
+        except ValueError:
+            signal_label = f"signal {signal_number}"
+        return f"{helper} {operation} terminated by {signal_label} ({signal_number}){suffix}"
+    if returncode == 0:
+        return f"{helper} {operation} exited unexpectedly with exit code 0{suffix}"
+    return f"{helper} {operation} failed with exit code {returncode}{suffix}"
+
+
+def vm_helper_failure_summary(name: str, pid: int) -> str:
+    """Summarize a helper that died before guest readiness was observed."""
+    returncode: int | None = None
+    try:
+        waited_pid, wait_status = os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        waited_pid = 0
+    if waited_pid:
+        if os.WIFEXITED(wait_status):
+            returncode = os.WEXITSTATUS(wait_status)
+        elif os.WIFSIGNALED(wait_status):
+            returncode = -os.WTERMSIG(wait_status)
+
+    serial_log = get_agents_dir() / name / "serial.log"
+    try:
+        helper_output = serial_log.read_text(errors="replace")
+    except OSError:
+        helper_output = ""
+    if returncode is not None:
+        return _vm_helper_exit_message(
+            Path(VM_HELPER_NAME),
+            returncode,
+            stderr=helper_output,
+            operation="startup",
+        )
+
+    excerpt = _helper_output_excerpt("", helper_output)
+    if excerpt:
+        return f"safeyolo-vm exited before guest startup: {excerpt}"
+    return (
+        "safeyolo-vm exited before guest startup without a diagnostic; "
+        "run `safeyolo doctor` to check the helper and Apple VZ capability"
+    )
+
+
+def probe_vm_helper(
+    helper: Path | None = None,
+    *,
+    timeout: float = VM_HELPER_CHECK_TIMEOUT_SECONDS,
+) -> Path:
+    """Execute the narrow, side-effect-free helper capability check.
+
+    A zero exit alone is insufficient: requiring the stable marker prevents an
+    unrelated or stale executable from being reported as a working VZ helper.
+    """
+    resolved = helper or find_vm_helper()
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise VMError(f"safeyolo-vm is not executable at {resolved}")
+    try:
+        result = subprocess.run(
+            [str(resolved), "check"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise VMError(
+            f"{resolved} capability check timed out after {timeout:g}s"
+        ) from exc
+    except OSError as exc:
+        detail = _helper_output_excerpt("", str(exc))
+        raise VMError(
+            f"Could not launch {resolved} capability check"
+            + (f": {detail}" if detail else "")
+        ) from exc
+
+    if result.returncode != 0:
+        raise VMError(
+            _vm_helper_exit_message(
+                resolved,
+                result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        )
+    if result.stdout.strip() != VM_HELPER_CHECK_OK or result.stderr.strip():
+        raise VMError(
+            f"{resolved} capability check returned an unexpected response; "
+            "reinstall the matching safeyolo-vm helper"
+        )
+    return resolved
 
 
 def get_vsock_term_path() -> Path:
@@ -1102,11 +1228,14 @@ def start_vm(
         raise VMError("snapshot_capture_path and restore_from_path are mutually exclusive")
 
     helper = find_vm_helper()
+    host_system = platform.system()
+    if host_system == "Darwin":
+        probe_vm_helper(helper)
     rootfs = get_agent_rootfs_path(name)
     if not rootfs.exists():
         raise VMError(f"Agent rootfs not found: {rootfs}\nRun 'safeyolo agent add' first.")
 
-    if platform.system() == "Darwin" and not background:
+    if host_system == "Darwin" and not background:
         require_vsock_term()
 
     kernel = get_kernel_path()
@@ -1224,30 +1353,60 @@ def start_vm(
             mode = "ro" if read_only else "rw"
             cmd.extend(["--share", f"{host_path}:extra{index}:{mode}"])
 
-    if background:
-        cmd.append("--no-terminal")
-        serial_log = get_agents_dir() / name / "serial.log"
-        # `with` closes our parent-side handle on block exit; Popen has
-        # already duplicated the fd into the child process, which
-        # continues writing independently. Avoids the parent leaking an
-        # fd for the lifetime of the VM.
-        with open(serial_log, "w") as serial_fh:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=serial_fh,
-                stderr=serial_fh,
+    serial_log = get_agents_dir() / name / "serial.log"
+    try:
+        if background:
+            cmd.append("--no-terminal")
+            # `with` closes our parent-side handle on block exit; Popen has
+            # already duplicated the fd into the child process, which
+            # continues writing independently. Avoids the parent leaking an
+            # fd for the lifetime of the VM.
+            with open(serial_log, "w") as serial_fh:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=serial_fh,
+                    stderr=serial_fh,
+                )
+        else:
+            # Foreground mode: the vsock terminal's stdout is the agent's
+            # interactive session -- it must reach the user's terminal. But
+            # stderr carries bridge relay logs (proxy-relay, shell-bridge)
+            # which would corrupt the agent's TUI. Redirect stderr to the
+            # serial log so diagnostics are captured without leaking into
+            # the interactive session.
+            with open(serial_log, "w") as serial_fh:
+                proc = subprocess.Popen(cmd, stderr=serial_fh)
+    except OSError as exc:
+        detail = _helper_output_excerpt("", str(exc))
+        raise VMError(
+            f"Could not launch {helper}"
+            + (f": {detail}" if detail else "")
+        ) from exc
+
+    # A helper that fails before VZ boot previously became a generic
+    # "check serial.log" result (often pointing at an empty file). Give the
+    # child a short bounded window to expose immediate loader, signing,
+    # argument, or framework failures and preserve its actionable exit text.
+    # Restore failures remain on the existing liveness/fallback path.
+    if host_system == "Darwin" and restore_from_path is None:
+        try:
+            returncode = proc.wait(timeout=_VM_HELPER_STARTUP_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            try:
+                helper_output = serial_log.read_text(errors="replace")
+            except OSError:
+                helper_output = ""
+            raise VMError(
+                _vm_helper_exit_message(
+                    helper,
+                    returncode,
+                    stderr=helper_output,
+                    operation="startup",
+                )
             )
-    else:
-        # Foreground mode: the vsock terminal's stdout is the agent's
-        # interactive session -- it must reach the user's terminal. But
-        # stderr carries bridge relay logs (proxy-relay, shell-bridge)
-        # which would corrupt the agent's TUI. Redirect stderr to the
-        # serial log so diagnostics are captured without leaking into
-        # the interactive session.
-        serial_log = get_agents_dir() / name / "serial.log"
-        with open(serial_log, "w") as serial_fh:
-            proc = subprocess.Popen(cmd, stderr=serial_fh)
 
     # Write PID file
     pid_path = get_agent_pid_path(name)

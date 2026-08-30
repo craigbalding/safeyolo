@@ -1428,20 +1428,20 @@ def _check_sandbox_runtime() -> DiagResult:
                 status="fail",
                 message=f"Intel Mac ({machine}) — Virtualization.framework requires Apple Silicon (arm64)",
             )
-        from ..vm import VMError, find_vm_helper
+        from ..vm import VMError, probe_vm_helper
         try:
-            helper = find_vm_helper()
-        except VMError:
+            helper = probe_vm_helper()
+        except VMError as exc:
             return DiagResult(
                 name="Sandbox runtime",
                 status="fail",
-                message="Apple Silicon detected but safeyolo-vm binary not found",
-                remediation="cd vm && make install",
+                message=str(exc),
+                remediation="Rebuild and install the helper: make -C vm install",
             )
         return DiagResult(
             name="Sandbox runtime",
             status="pass",
-            message=f"Apple Silicon, safeyolo-vm at {helper}",
+            message=f"Apple Silicon, safeyolo-vm capability check passed at {helper}",
         )
 
     if system == "Linux":
@@ -1514,12 +1514,46 @@ def _check_vsock_term() -> DiagResult:
     )
 
 
-def _check_isolation_platform() -> DiagResult:
+def _check_isolation_platform(
+    sandbox_runtime: DiagResult | None = None,
+) -> DiagResult:
     """Check isolation platform (KVM vs systrap vs Apple VZ)."""
     import platform as _plat
     system = _plat.system()
 
     if system == "Darwin":
+        # A normal Doctor run passes the already-evaluated Sandbox runtime
+        # result so both rows describe one immutable observation. Direct
+        # callers still perform the platform and helper capability checks.
+        if sandbox_runtime is not None:
+            if sandbox_runtime.status != "pass":
+                return DiagResult(
+                    name="Isolation platform",
+                    status="skip",
+                    message="Skipped (depends on: Sandbox runtime)",
+                )
+            return DiagResult(
+                name="Isolation platform",
+                status="pass",
+                message="Apple Virtualization.framework (hardware isolation)",
+            )
+        machine = _plat.machine()
+        if machine != "arm64":
+            return DiagResult(
+                name="Isolation platform",
+                status="fail",
+                message=f"Apple VZ unavailable on {machine}",
+            )
+        from ..vm import VMError, probe_vm_helper
+        try:
+            probe_vm_helper()
+        except VMError as exc:
+            return DiagResult(
+                name="Isolation platform",
+                status="fail",
+                message=f"Apple VZ capability check failed: {exc}",
+                remediation="Rebuild and install the helper: make -C vm install",
+            )
         return DiagResult(
             name="Isolation platform",
             status="pass",
@@ -1878,6 +1912,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
     )
 
     results = []
+    results_by_name: dict[str, DiagResult] = {}
     unavailable_checks = set()  # checks that failed or were skipped
 
     for check_name, check_fn in checks_funcs:
@@ -1899,8 +1934,14 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
         if skip:
             continue
 
-        result = check_fn()
+        if check_name == "Isolation platform" and _plat.system() == "Darwin":
+            result = _check_isolation_platform(
+                sandbox_runtime=results_by_name.get("Sandbox runtime")
+            )
+        else:
+            result = check_fn()
         results.append(result)
+        results_by_name[check_name] = result
         if result.status == "fail":
             unavailable_checks.add(check_name)
 

@@ -1449,6 +1449,63 @@ class TestRunAgent:
 
         rename.assert_not_called()
 
+    def test_immediate_helper_failure_surfaces_error_instead_of_empty_log_hint(
+        self, config_dir, tmp_path, capsys
+    ):
+        from safeyolo.commands.agent import _run_agent
+
+        folder = tmp_path / "project"
+        folder.mkdir()
+        rootfs = tmp_path / "rootfs.ext4"
+        rootfs.touch()
+        fake_platform = _platform()
+        fake_platform.agent_rootfs_path.return_value = rootfs
+        fake_platform.is_sandbox_running.return_value = False
+        fake_platform.setup_networking.return_value = {
+            "host_ip": "127.0.0.1",
+            "guest_ip": "127.0.0.1",
+            "attribution_ip": "10.200.0.2",
+            "subnet": None,
+            "needs_bridge_socket": False,
+        }
+        fake_platform.start_sandbox.return_value = 4321
+
+        with (
+            patch(
+                "safeyolo.commands.agent._load_agent_metadata",
+                return_value={"folder": str(folder)},
+                autospec=True,
+            ),
+            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1, autospec=True,),
+            patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[], autospec=True,),
+            patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
+            patch("safeyolo.commands.agent.write_event", autospec=True,),
+            patch("safeyolo.commands.agent.prepare_config_share", autospec=True,),
+            patch("safeyolo.commands.agent.platform_supports_snapshot", return_value=False, autospec=True,),
+            patch(
+                "safeyolo.commands.agent.vm_helper_failure_summary",
+                return_value=(
+                    "safeyolo-vm startup failed with exit code 1: "
+                    "Error: Virtualization is not supported on this machine"
+                ),
+                autospec=True,
+            ) as failure_summary,
+            patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
+            patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock", autospec=True,),
+            patch("sys.platform", "darwin"),
+        ):
+            result = _run_agent("broken-helper", no_snapshot=True)
+
+        output = capsys.readouterr().out
+        normalized_output = " ".join(output.split())
+        assert result == 1
+        assert "Virtualization is not supported on this machine" in normalized_output
+        assert "exit code 1" in normalized_output
+        assert "Check logs" not in output
+        failure_summary.assert_called_once_with("broken-helper", 4321)
+
     def test_run_preflight_failure_does_not_rename(self, runner, config_dir):
         """Nonexistent agent: preflight fails before rename gets a chance."""
         with (

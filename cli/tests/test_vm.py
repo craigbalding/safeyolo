@@ -12,6 +12,7 @@ from unittest.mock import create_autospec, patch
 import pytest
 
 from safeyolo.vm import (
+    VM_HELPER_CHECK_OK,
     VMError,
     _update_agent_map,
     check_guest_images,
@@ -27,9 +28,11 @@ from safeyolo.vm import (
     guest_image_status,
     is_vm_running,
     prepare_config_share,
+    probe_vm_helper,
     stage_guest_desktop_launcher,
     start_vm,
     stop_vm,
+    vm_helper_failure_summary,
 )
 
 _POPEN = subprocess.Popen
@@ -172,6 +175,139 @@ class TestFindVmHelper:
 
         with pytest.raises(VMError, match="cd vm && make install"):
             find_vm_helper()
+
+
+class TestProbeVmHelper:
+    def test_accepts_only_the_stable_success_marker(self, tmp_path):
+        helper = tmp_path / "safeyolo-vm"
+        helper.write_text(f"#!/bin/sh\nprintf '%s\\n' '{VM_HELPER_CHECK_OK}'\n")
+        helper.chmod(0o755)
+
+        assert probe_vm_helper(helper) == helper
+
+    def test_rejects_executable_but_broken_helper(self, tmp_path):
+        helper = tmp_path / "safeyolo-vm"
+        helper.write_text("#!/bin/sh\necho unrelated-program\n")
+        helper.chmod(0o755)
+
+        with pytest.raises(VMError, match="unexpected response"):
+            probe_vm_helper(helper)
+
+    def test_rejects_non_executable_helper(self, tmp_path):
+        helper = tmp_path / "safeyolo-vm"
+        helper.write_text("not executable")
+        helper.chmod(0o644)
+
+        with pytest.raises(VMError, match="not executable"):
+            probe_vm_helper(helper)
+
+    def test_reports_unlaunchable_helper(self, tmp_path, monkeypatch):
+        helper = tmp_path / "safeyolo-vm"
+        helper.write_text("#!/bin/sh\n")
+        helper.chmod(0o755)
+
+        def fail_launch(*args, **kwargs):
+            raise OSError("Bad CPU type in executable")
+
+        monkeypatch.setattr("safeyolo.vm.subprocess.run", fail_launch)
+
+        with pytest.raises(VMError, match="Could not launch.*Bad CPU type"):
+            probe_vm_helper(helper)
+
+    def test_reports_unsupported_virtualization(self, tmp_path):
+        helper = tmp_path / "safeyolo-vm"
+        helper.write_text(
+            "#!/bin/sh\n"
+            "echo 'Error: Virtualization is not supported on this machine' >&2\n"
+            "exit 1\n"
+        )
+        helper.chmod(0o755)
+
+        with pytest.raises(VMError, match="exit code 1.*Virtualization is not supported"):
+            probe_vm_helper(helper)
+
+    def test_reports_timeout_without_output_dump(self, tmp_path, monkeypatch):
+        helper = tmp_path / "safeyolo-vm"
+        helper.write_text("#!/bin/sh\n")
+        helper.chmod(0o755)
+        monkeypatch.setattr(
+            "safeyolo.vm.subprocess.run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+            ),
+        )
+
+        with pytest.raises(VMError, match="timed out after 0.01s"):
+            probe_vm_helper(helper, timeout=0.01)
+
+    @pytest.mark.parametrize(
+        ("returncode", "expected"),
+        [
+            (9, "exit code 9"),
+            (-signal.SIGKILL, r"terminated by SIGKILL \(9\)"),
+        ],
+    )
+    def test_reports_nonzero_and_signal(self, tmp_path, monkeypatch, returncode, expected):
+        helper = tmp_path / "safeyolo-vm"
+        helper.write_text("#!/bin/sh\n")
+        helper.chmod(0o755)
+        monkeypatch.setattr(
+            "safeyolo.vm.subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], returncode, "", "helper failed"
+            ),
+        )
+
+        with pytest.raises(VMError, match=expected):
+            probe_vm_helper(helper)
+
+    def test_redacts_and_bounds_failure_output(self, tmp_path, monkeypatch):
+        helper = tmp_path / "safeyolo-vm"
+        helper.write_text("#!/bin/sh\n")
+        helper.chmod(0o755)
+        secret = "secret=credential-that-must-not-render"
+        monkeypatch.setattr(
+            "safeyolo.vm.subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 1, "", secret + " " + ("x" * 1000)
+            ),
+        )
+
+        with pytest.raises(VMError) as exc_info:
+            probe_vm_helper(helper)
+        rendered = str(exc_info.value)
+        assert "credential-that-must-not-render" not in rendered
+        assert "secret=<redacted>" in rendered
+        assert len(rendered) < 500
+
+
+class TestVmHelperFailureSummary:
+    def test_reports_reapable_exit_status_and_bounded_helper_error(
+        self, tmp_config_dir, monkeypatch
+    ):
+        agent_dir = tmp_config_dir / "agents" / "broken"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "serial.log").write_text("Error: VZ configuration rejected\n")
+        monkeypatch.setattr("safeyolo.vm.os.waitpid", lambda pid, flags: (pid, 7 << 8))
+
+        summary = vm_helper_failure_summary("broken", 4321)
+
+        assert "exit code 7" in summary
+        assert "VZ configuration rejected" in summary
+
+    def test_empty_log_still_gives_actionable_diagnostic(
+        self, tmp_config_dir, monkeypatch
+    ):
+        agent_dir = tmp_config_dir / "agents" / "broken"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "serial.log").write_text("")
+        monkeypatch.setattr("safeyolo.vm.os.waitpid", lambda pid, flags: (0, 0))
+
+        summary = vm_helper_failure_summary("broken", 4321)
+
+        assert "exited before guest startup" in summary
+        assert "without a diagnostic" in summary
+        assert "safeyolo doctor" in summary
 
 
 # ---------------------------------------------------------------------------
@@ -663,6 +799,9 @@ class TestStartVm:
         per-agent file. Overlay.img is per-agent under agents/<name>/.
         """
         self.config_dir = tmp_config_dir
+        # Platform-neutral lifecycle tests must be deterministic on both CI
+        # and real macOS hosts. Darwin-specific cases opt back in explicitly.
+        monkeypatch.setattr("safeyolo.vm.platform.system", lambda: "Linux")
 
         # Shared kernel / initrd / ext4 base. get_agent_rootfs_path now
         # returns the shared base directly.
@@ -682,7 +821,10 @@ class TestStartVm:
         bin_dir = tmp_config_dir / "bin"
         bin_dir.mkdir(exist_ok=True)
         helper = bin_dir / "safeyolo-vm"
-        helper.write_text("#!/bin/sh\n")
+        helper.write_text(
+            "#!/bin/sh\n"
+            f"[ \"$1\" = check ] && printf '%s\\n' '{VM_HELPER_CHECK_OK}'\n"
+        )
         helper.chmod(0o755)
         vsock_term = bin_dir / "vsock-term"
         vsock_term.write_text("#!/bin/sh\n")
@@ -711,6 +853,7 @@ class TestStartVm:
     def test_darwin_foreground_requires_vsock_term(self, tmp_config_dir, monkeypatch):
         (tmp_config_dir / "bin" / "vsock-term").unlink()
         monkeypatch.setattr("safeyolo.vm.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("safeyolo.vm.probe_vm_helper", lambda helper: helper)
         monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: _process())
 
         with pytest.raises(VMError, match="vsock-term not found"):
@@ -727,16 +870,42 @@ class TestStartVm:
         captured_cmd = []
         (tmp_config_dir / "bin" / "vsock-term").unlink()
         monkeypatch.setattr("safeyolo.vm.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("safeyolo.vm.probe_vm_helper", lambda helper: helper)
 
         def mock_popen(cmd, **kw):
             captured_cmd.extend(cmd)
-            return _process()
+            proc = _process()
+            proc.wait.side_effect = subprocess.TimeoutExpired(cmd, 0.2)
+            return proc
 
         monkeypatch.setattr("subprocess.Popen", mock_popen)
 
         start_vm("agent1", "/workspace", background=True)
 
         assert "--no-terminal" in captured_cmd
+
+    def test_darwin_immediate_helper_exit_reports_error_and_cleans_pid(
+        self, tmp_config_dir, monkeypatch
+    ):
+        monkeypatch.setattr("safeyolo.vm.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("safeyolo.vm.probe_vm_helper", lambda helper: helper)
+
+        def mock_popen(cmd, **kwargs):
+            kwargs["stderr"].write("Error: failed to initialize Virtualization.framework\n")
+            kwargs["stderr"].flush()
+            proc = _process(pid=4321)
+            proc.wait.return_value = 78
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        with pytest.raises(
+            VMError,
+            match="startup failed with exit code 78.*failed to initialize",
+        ):
+            start_vm("agent1", "/workspace", background=True)
+
+        assert not (tmp_config_dir / "agents" / "agent1" / "vm.pid").exists()
 
     def test_writes_pid_file(self, tmp_config_dir, monkeypatch):
         mock_proc = _process()
