@@ -10,9 +10,9 @@ NOFILE_LIMIT = 65536
 class TestOpenFileLimit:
     """Every supported sandbox exposes the same open-file headroom.
 
-    Why: A lower hard limit on the VZ path makes agent workloads depend on
-    the operator's host platform, and descendants cannot repair a hard limit
-    they inherited below the documented runtime contract.
+    Why: A lower hard limit on the VZ normal-session path makes agent
+    workloads depend on the operator's host platform. The session must repair
+    that limit before it runs the requested workload.
     """
 
     def test_pid1_shell_and_child_inherit_nofile_limit(self):
@@ -22,8 +22,8 @@ class TestOpenFileLimit:
         was launched through the normal agent-shell path, and spawn one more
         child.
         Why: Checking only the final agent process can hide a child-only
-        workaround. PID 1 must establish the limit before sshd and agent
-        launch so both cold boot and snapshot restore propagate it naturally.
+        workaround. The normal SSH entry path must establish the session and
+        its visible PID 1 limit before it launches the requested workload.
         """
         with open("/proc/1/limits") as limits_file:
             pid1_line = next(

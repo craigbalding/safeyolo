@@ -59,9 +59,9 @@ class TestGuestRootCapability:
 
         What: Inspect this process through the dedicated ``agent shell --root``
         lane and read the open-file limit for PID 1 from proc.
-        Why: PAM can apply identity-specific limits during SSH login. A sudo
-        transition inside the normal agent session does not exercise the root
-        login path that the CLI creates.
+        Why: SSH can produce identity-specific limits. A sudo transition
+        inside the normal agent session does not exercise the root login path
+        that the CLI creates.
         """
         assert resource.getrlimit(resource.RLIMIT_NOFILE) == (
             NOFILE_LIMIT,

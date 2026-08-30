@@ -859,20 +859,6 @@ class TestPrepareConfigShare:
         assert "chmod 700 /root/.ssh" in source
         assert "chmod 600 /root/.ssh/authorized_keys" in source
 
-    @pytest.mark.parametrize("identity", ["agent", "root"])
-    def test_guest_init_static_sets_ssh_login_nofile_before_sshd(
-        self, tmp_config_dir, identity
-    ):
-        """PAM and inherited SSH sessions must keep the runtime limit."""
-        share = prepare_config_share("agent1", "/workspace")
-        source = (share / "guest-init-static").read_text()
-
-        soft = source.index(f"{identity} soft nofile 65536")
-        hard = source.index(f"{identity} hard nofile 65536")
-        sshd = source.index("/usr/sbin/sshd -D -e")
-
-        assert soft < hard < sshd
-
     def test_guest_init_static_unlocks_root_password_at_boot(self, tmp_config_dir):
         """OpenSSH on Alpine (9.7+) refuses pubkey auth on `!`-locked
         accounts. The runtime `usermod -p '*' root` in guest-init-static
