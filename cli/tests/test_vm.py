@@ -462,7 +462,7 @@ class TestPrepareConfigShare:
         assert os.access(guest_init, os.X_OK)
 
     def test_guest_init_refresh_replaces_existing_inode(self, tmp_config_dir):
-        """A new run must expose a newly staged executable to VirtioFS."""
+        """Each run must stage guest-init as a new inode."""
         share = prepare_config_share("agent1", "/workspace")
         guest_init = share / "guest-init"
         old_inode = guest_init.stat().st_ino
@@ -478,7 +478,7 @@ class TestPrepareConfigShare:
         assert os.access(guest_init, os.X_OK)
 
     def test_vz_rootfs_stub_sets_nofile_before_mount_and_handoff(self):
-        """The immutable VZ PID 1 boundary must not rely on share freshness."""
+        """The VZ rootfs stub must set the limit before it mounts the share."""
         import safeyolo.vm as vm_mod
 
         stub = (

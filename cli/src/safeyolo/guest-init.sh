@@ -41,10 +41,10 @@ export DEBIAN_FRONTEND=noninteractive
 
 # Match the OCI runtime contract before PID 1 launches any service.  This shell
 # is PID 1 (the rootfs stub execs it), so the limit is inherited by the static
-# phase, sshd, the per-run phase, the agent, and later SSH shells.  The baked VZ
-# stub establishes the same limit for fresh images; repeating it here upgrades
-# already-built images and verifies the effective capability before the
-# snapshot gate.  A captured VM retains PID 1's rlimit on restore.
+# phase, sshd, the per-run phase, the agent, and later SSH shells. The VZ rootfs
+# stub sets the same limit. This second setup supports older rootfs images and
+# checks the limit before the snapshot gate. A restored VM retains PID 1's
+# limit.
 _nofile_limit=65536
 if ! ulimit -n "$_nofile_limit"; then
     echo "FATAL: unable to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" >&2

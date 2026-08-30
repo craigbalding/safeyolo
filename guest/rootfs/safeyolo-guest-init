@@ -8,10 +8,9 @@
 #
 set -e
 
-# Establish the VZ process capability at the immutable PID 1 boundary before
-# any VirtioFS-hosted boot code runs.  The config-share orchestrator repeats
-# and verifies this for compatibility with already-built rootfs images, but a
-# fresh image must not depend on mutable share contents for its initial rlimit.
+# Set the VZ limit in PID 1 before it mounts the VirtioFS config share. The
+# config-share orchestrator sets and checks the same limit for rootfs images
+# that do not contain this stub change.
 _nofile_limit=65536
 if ! ulimit -n "$_nofile_limit"; then
     echo "FATAL: unable to establish RLIMIT_NOFILE=${_nofile_limit}/${_nofile_limit}" >&2

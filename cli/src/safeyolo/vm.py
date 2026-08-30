@@ -1033,11 +1033,10 @@ def prepare_config_share(
     ]:
         src = Path(__file__).parent / src_name
         dst = share_dir / dst_name
-        # Replace boot executables with a new, fully-written inode.  In-place
-        # copy left an existing VirtioFS export free to keep serving the old
-        # executable inode while the host believed the current package had
-        # been staged.  The guest-init orchestrator is the first consumer of
-        # this share, so stale bytes here bypass every later boot guarantee.
+        # Write each boot executable to a temporary file. Then replace the
+        # destination. An in-place copy keeps the old inode. The guest can then
+        # execute old bytes from the VirtioFS share. A new inode makes the next
+        # boot open the staged file.
         fd, temporary_name = tempfile.mkstemp(prefix=f".{dst_name}-", dir=share_dir)
         os.close(fd)
         temporary = Path(temporary_name)
