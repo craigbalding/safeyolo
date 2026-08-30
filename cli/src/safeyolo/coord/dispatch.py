@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 SCHEMA_VERSION = 1
 MAX_MANIFEST_BYTES = 256 * 1024
@@ -224,6 +224,17 @@ def _hygiene(text: str, field: str) -> None:
             raise DispatchError(f"{field} contains private coordination or reasoning material")
 
 
+def validate_publication_text(text: str, field: str = "publication text") -> None:
+    """Apply the generator's obvious-leak guard to site-owned text."""
+    if not isinstance(text, str):
+        raise DispatchError(f"{field} must be text")
+    try:
+        text.encode("utf-8")
+    except UnicodeError as exc:
+        raise DispatchError(f"{field} must be valid UTF-8") from exc
+    _hygiene(text, field)
+
+
 def _text(
     value: Any,
     field: str,
@@ -327,6 +338,19 @@ def _public_evidence(value: Any, field: str) -> PublicEvidence:
         raise DispatchError(f"{field}.kind is invalid") from exc
     label = _text(obj["label"], f"{field}.label", maximum=256)
     url = _text(obj["url"], f"{field}.url", maximum=512)
+    parsed = validate_public_url(url, f"{field}.url")
+    hostname = _normalized_hostname(parsed.hostname) if parsed.hostname is not None else None
+    github_pattern = _GITHUB_KIND_PATHS.get(kind.value)
+    if hostname == "github.com" and github_pattern is not None and not github_pattern.fullmatch(parsed.path):
+        raise DispatchError(f"{field}.kind does not match its GitHub URL")
+    return PublicEvidence(kind=kind, label=label, url=url)
+
+
+def validate_public_url(url: str, field: str = "public URL") -> SplitResult:
+    """Validate one public HTTPS link and return its parsed representation."""
+    if not isinstance(url, str) or not url or len(url.encode("utf-8")) > 512:
+        raise DispatchError(f"{field} must be a bounded URL")
+    _hygiene(url, field)
     parsed = urlsplit(url)
     hostname = _normalized_hostname(parsed.hostname) if parsed.hostname is not None else None
     try:
@@ -343,11 +367,8 @@ def _public_evidence(value: Any, field: str) -> PublicEvidence:
         or parsed.query
         or _UNSAFE_EVIDENCE_URL_RE.search(url)
     ):
-        raise DispatchError(f"{field}.url must be public HTTPS evidence without credentials or query data")
-    github_pattern = _GITHUB_KIND_PATHS.get(kind.value)
-    if hostname == "github.com" and github_pattern is not None and not github_pattern.fullmatch(parsed.path):
-        raise DispatchError(f"{field}.kind does not match its GitHub URL")
-    return PublicEvidence(kind=kind, label=label, url=url)
+        raise DispatchError(f"{field} must be public HTTPS without credentials or query data")
+    return parsed
 
 
 def _evidence_list(value: Any, field: str) -> tuple[PublicEvidence, ...]:
@@ -686,11 +707,13 @@ def render_dispatch(manifest: DispatchManifest) -> str | None:
                 texts.append(item.snippet.code)
     lines = [
         "---",
+        "layout: default",
         "dispatch_schema: safeyolo.dispatch/v1",
         f"period: {manifest.period.kind.value}",
         f"start: {manifest.period.start.isoformat()}",
         f"end: {manifest.period.end.isoformat()}",
         "editor: Relay",
+        f"permalink: /{manifest.period.relative_path.with_suffix('').as_posix()}/",
         "---",
         "",
         f"# SafeYolo Dispatch — {manifest.period.heading}",
@@ -751,6 +774,15 @@ def render_topic(topic: TopicUpdate, manifest: DispatchManifest) -> str:
         *(evidence.label for evidence in topic.evidence),
     ]
     lines = [
+        "---",
+        "layout: default",
+        "dispatch_schema: safeyolo.dispatch-topic/v1",
+        f"topic: {topic.slug}",
+        f"updated_through: {manifest.period.end.isoformat()}",
+        "editor: Relay",
+        f"permalink: /topics/{topic.slug}/",
+        "---",
+        "",
         f"<!-- safeyolo-topic-state: {topic.state_key} -->",
         f"# {_markdown_text(topic.title)}",
         "",

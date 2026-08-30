@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 from typing import Any
 
@@ -54,6 +55,7 @@ _WAIT_DRAIN_S = 0.05
 # Measured against serialized wire size, not raw body length.
 READ_PAGE_MAX_BYTES = 4 * 1024 * 1024
 MAX_BODY_BYTES = 256 * 1024
+_MSG_ID_RE = re.compile(r"^msg-[0-9a-f]{32}$")
 
 
 class NotFoundError(LookupError):
@@ -705,6 +707,169 @@ async def send(
         content_type=content_type,
         body=body,
     ).to_dict()
+    return await _publish_prepared_message(room_id, envelope, manifest)
+
+
+async def prepare_operator_message(
+    room_name: str,
+    body: str,
+    *,
+    declared_content_type: str = "text/markdown",
+    notify: Any = NOTIFY_OMITTED,
+) -> dict[str, Any]:
+    """Prepare one canonical operator message for a durable local outbox.
+
+    This surface is intentionally local and operator-only.  It exists for the
+    Dispatch one-shot scheduler, which must persist SafeYolo-minted envelope
+    and attention IDs before a publish whose acknowledgement can be lost.
+    Agent API and MCP callers cannot supply or reuse these fields.
+    """
+    if not isinstance(body, str):
+        raise ValueError("body must be a string")
+    try:
+        body_bytes_len = len(body.encode("utf-8"))
+    except UnicodeError as exc:
+        raise ValueError("invalid body encoding") from exc
+    if body_bytes_len > MAX_BODY_BYTES:
+        raise ValueError(f"body too large ({body_bytes_len} > {MAX_BODY_BYTES} bytes)")
+
+    content_type = validate_content_type(declared_content_type)
+    with store.connect() as conn:
+        room_id = _resolve_room(conn, room_name)
+        _check_grant(conn, room_id, "operator", "operator", "send")
+
+    await attention.ensure_room_projection(room_id)
+    stream_state = await nats_client.room_stream_state(room_id)
+    msg_id = new_msg_id()
+    with store.connect() as conn:
+        _check_grant(conn, room_id, "operator", "operator", "send")
+        manifest = attention.build_message_manifest(
+            conn,
+            room_id=room_id,
+            msg_id=msg_id,
+            sender_agent_id=None,
+            notify=notify,
+        )
+
+    envelope = Envelope(
+        msg_id=msg_id,
+        sent_at=store.now_ms(),
+        sender_kind="operator",
+        sender_agent_id=None,
+        sender_agent_name=None,
+        origin_instance_id=get_or_create_instance_id(),
+        content_type=content_type,
+        body=body,
+    ).to_dict()
+    return {
+        "room_id": room_id,
+        "since_sequence": int(stream_state["last_seq"]),
+        "envelope": envelope,
+        "attention_manifest": manifest.to_header(),
+    }
+
+
+def _validate_prepared_operator_message(
+    room_name: str,
+    prepared: Any,
+) -> tuple[str, dict[str, Any], attention.AttentionManifest, int]:
+    if not isinstance(prepared, dict) or set(prepared) != {
+        "room_id",
+        "since_sequence",
+        "envelope",
+        "attention_manifest",
+    }:
+        raise ValueError("invalid prepared operator message")
+    room_id = prepared["room_id"]
+    since_sequence = prepared["since_sequence"]
+    envelope = prepared["envelope"]
+    if not isinstance(room_id, str) or type(since_sequence) is not int or since_sequence < 0:
+        raise ValueError("invalid prepared operator message metadata")
+    if not isinstance(envelope, dict) or set(envelope) != {
+        "msg_id",
+        "sent_at",
+        "sender_kind",
+        "sender_agent_id",
+        "sender_agent_name",
+        "origin_instance_id",
+        "content_type",
+        "body",
+    }:
+        raise ValueError("invalid prepared operator envelope")
+    msg_id = envelope.get("msg_id")
+    if not isinstance(msg_id, str) or not _MSG_ID_RE.fullmatch(msg_id):
+        raise ValueError("invalid prepared operator msg_id")
+    if (
+        envelope.get("sender_kind") != "operator"
+        or envelope.get("sender_agent_id") is not None
+        or envelope.get("sender_agent_name") is not None
+        or envelope.get("origin_instance_id") != get_or_create_instance_id()
+    ):
+        raise ValueError("prepared message is not a canonical local operator envelope")
+    if type(envelope.get("sent_at")) is not int or envelope["sent_at"] < 0:
+        raise ValueError("invalid prepared operator timestamp")
+    validate_content_type(envelope.get("content_type"))
+    body = envelope.get("body")
+    if not isinstance(body, str) or len(body.encode("utf-8")) > MAX_BODY_BYTES:
+        raise ValueError("invalid prepared operator body")
+    manifest_header = prepared["attention_manifest"]
+    if not isinstance(manifest_header, str):
+        raise ValueError("invalid prepared attention manifest")
+    manifest = attention.parse_manifest(manifest_header, expected_msg_id=msg_id)
+
+    with store.connect() as conn:
+        resolved_room_id = _resolve_room(conn, room_name)
+        if resolved_room_id != room_id:
+            raise ValueError("prepared operator message belongs to another room")
+        _check_grant(conn, room_id, "operator", "operator", "send")
+    return room_id, envelope, manifest, since_sequence
+
+
+async def find_prepared_operator_message(
+    room_name: str,
+    prepared: Any,
+) -> dict[str, Any] | None:
+    """Reconcile a prepared send against retained history without replaying it."""
+    _, envelope, _, cursor = _validate_prepared_operator_message(room_name, prepared)
+    while True:
+        page = await read_room(
+            room_name,
+            "operator",
+            "operator",
+            since_sequence=cursor,
+            limit=READ_PAGE_MAX,
+        )
+        for message in page["messages"]:
+            if message.get("msg_id") == envelope["msg_id"]:
+                return message
+        if page["history_truncated"]:
+            raise nats_client.CoordDataError(
+                "prepared Dispatch send is older than retained room history; "
+                "refusing a possibly duplicate replay"
+            )
+        cursor = page["next_cursor"]
+        if not page["has_more"]:
+            return None
+
+
+async def publish_prepared_operator_message(
+    room_name: str,
+    prepared: Any,
+) -> dict[str, Any]:
+    """Publish a persisted local-operator message with stable retry identity."""
+    room_id, envelope, manifest, _ = _validate_prepared_operator_message(room_name, prepared)
+    await attention.ensure_room_projection(room_id)
+    with store.connect() as conn:
+        _check_grant(conn, room_id, "operator", "operator", "send")
+    return await _publish_prepared_message(room_id, envelope, manifest)
+
+
+async def _publish_prepared_message(
+    room_id: str,
+    envelope: dict[str, Any],
+    manifest: attention.AttentionManifest,
+) -> dict[str, Any]:
+    msg_id = envelope["msg_id"]
     sequence = await nats_client.publish_envelope(
         room_id,
         envelope,

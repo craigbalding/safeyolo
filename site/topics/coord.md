@@ -1,3 +1,12 @@
+---
+layout: default
+dispatch_schema: safeyolo.dispatch-topic/v1
+topic: coord
+updated_through: 2026-08-29
+editor: Relay
+permalink: /topics/coord/
+---
+
 <!-- safeyolo-topic-state: coord-evidence-operator-v1 -->
 # Coord and operator collaboration
 

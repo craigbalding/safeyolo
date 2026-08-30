@@ -2,7 +2,10 @@
 
 Use the Dispatch generator only for evidence-backed public editorial work.
 Relay is the editor; generation writes repository Markdown and never deploys,
-schedules, changes policy, creates an issue, or approves publication.
+schedules, changes policy, creates an issue, or approves publication. The
+separate host trigger delivers a canonical operator task; publication remains
+an idempotent side lane that must never hold an issue claim or occupy Forge or
+Lens.
 
 ## Final manifest path
 
@@ -13,6 +16,33 @@ schedules, changes policy, creates an issue, or approves publication.
    never become publication copy.
 3. Give the generator the final JSON manifest. It does not consume coord
    envelopes or perform candidate verification.
+
+## Scheduled production and publication
+
+`safeyolo coord dispatch-trigger ROOM --date YYYY-MM-DD` is the supported
+noninteractive operator surface. It targets Relay, durably deduplicates the
+explicit date, includes a weekly request on the configured weekday and the
+previous month on each first day, and may legitimately produce nothing. Do
+not add a generic scheduler to coord or bind this command to a Relay harness
+session.
+
+The default task requires this exact flow:
+
+```text
+Relay generates -> publication PR -> operator approves -> CI -> Pages
+```
+
+Use a `dispatch/<date>` branch restricted to the documented source and
+generated site paths. After opening the PR, present the existing fixed
+`dispatch-publication` request with `publish`, `revise`, and `defer`. A delayed
+or failed publication never delays ordinary issue delivery.
+
+Only an operator may deliberately change the host command to
+`--publication-mode automatic`, after separately provisioning narrow
+Relay-only repository authority. That selects `Relay generates -> CI ->
+Pages` through the same generator, validation, and Pages lane; it does not
+create a second protocol or mint credentials. Manual publication remains
+available for exceptions.
 
 ## Operator editorial interaction
 
