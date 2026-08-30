@@ -193,10 +193,17 @@ for line in existing_lines:
         continue
     out.append(line)
 
+# The Agent API caps a foreground coord wait at 300 seconds
+# (cli/src/safeyolo/mitm_addons/agent_api.py). Codex's MCP tool deadline must
+# be strictly longer so the adapter can return the empty page and its
+# adoptable cursor after the full wait. The extra 30 seconds covers adapter
+# resolution and transport overhead. Keep these coupled bounds in sync.
+coord_tool_timeout_sec = 330
 new_block = (
     "[mcp_servers.safeyolo-coord]\n"
     f'command = "{launcher}"\n'
     'args = []\n'
+    f"tool_timeout_sec = {coord_tool_timeout_sec}\n"
 )
 
 body = "".join(out).rstrip()
