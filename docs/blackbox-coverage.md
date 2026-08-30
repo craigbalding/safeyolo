@@ -640,8 +640,8 @@ they inherited below the documented runtime contract.
 
 - **`test_pid1_shell_and_child_inherit_nofile_limit`** — PID 1 and all later descendants have a 65536 soft/hard limit.
   - *Probe:* Read PID 1's proc limit, inspect the running test process that
-was launched through the agent-shell path, and spawn one more child
-which reports its inherited RLIMIT_NOFILE.
+was launched through the normal agent-shell path, spawn one more
+child, and inspect both the root shell and its view of PID 1.
   - *Consequence if unasserted:* Checking only the final agent process can hide a child-only
 workaround. PID 1 must establish the limit before sshd and agent
 launch so both cold boot and snapshot restore propagate it naturally.

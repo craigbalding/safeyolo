@@ -285,6 +285,20 @@ SUDOERS
     chmod 0440 /etc/sudoers.d/safeyolo-agent
 fi
 
+# PAM can rebuild limits when sshd opens a login session. Set explicit values
+# for both supported shell identities so a normal agent shell does not fall
+# back to the kernel's 1024/4096 defaults after sshd inherited 65536/65536.
+# Root needs its own entries because pam_limits does not apply wildcard limits
+# to root. Rootfs images without PAM ignore this file and retain inheritance.
+install -d -m 0755 /etc/security/limits.d
+cat > /etc/security/limits.d/99-safeyolo-nofile.conf <<'LIMITS'
+agent soft nofile 65536
+agent hard nofile 65536
+root soft nofile 65536
+root hard nofile 65536
+LIMITS
+chmod 0644 /etc/security/limits.d/99-safeyolo-nofile.conf
+
 mkdir -p /run/sshd
 # -e routes syslog messages to stderr, which we capture in sshd.log.
 # Without it, auth failures go to syslog -- and custom rootfs images
