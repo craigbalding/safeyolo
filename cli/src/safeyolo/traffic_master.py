@@ -41,6 +41,7 @@ from .timing import install_mitmproxy_addon_profiling as _install_addon_profilin
 from .timing import phase as _profile_phase
 from .timing import record_process_imports as _record_process_imports
 from .timing import uninstall_mitmproxy_addon_profiling as _uninstall_addon_profiling
+from .websocket_console import install_bounded_websocket_renderer
 
 log = logging.getLogger("safeyolo.traffic-master")
 
@@ -672,6 +673,7 @@ class TrafficMaster(ConsoleMaster):
         with _profile_phase("traffic-master: listeners and running hooks"):
             await super().running()
         if self.window is not None:
+            install_bounded_websocket_renderer(self)
             native_status = SafeYoloStatusBar(self)
             self.window.statusbar = native_status
             self.window.footer = urwid.AttrMap(native_status, "background")
