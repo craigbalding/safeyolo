@@ -6,7 +6,7 @@ import asyncio
 import re
 import time
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 from mitmproxy import flowfilter, options
@@ -70,7 +70,11 @@ def _body_leaves(node):
 def _count_searches(filter_ast):
     counters = []
     for leaf in _body_leaves(filter_ast):
-        leaf.re = Mock(spec=leaf.re, wraps=leaf.re)
+        original = leaf.re
+        leaf.re = create_autospec(original, spec_set=True)
+        leaf.re.search.side_effect = original.search
+        leaf.re.pattern = original.pattern
+        leaf.re.flags = original.flags
         counters.append(leaf.re.search)
     return counters
 
