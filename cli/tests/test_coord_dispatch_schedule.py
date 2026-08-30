@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
+import re
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
-from safeyolo.coord import api, dispatch_schedule
+from safeyolo.commands.coord import coord_app
+from safeyolo.coord import api, dispatch, dispatch_schedule
 from safeyolo.coord.nats_client import NatsPublishOutcomeUnknown
 
 
@@ -47,6 +51,46 @@ def test_task_has_deterministic_daily_weekly_and_monthly_boundaries() -> None:
     )
     assert "operator explicitly selected automatic publication" in automatic
     assert "without a publication PR" in automatic
+
+
+@pytest.mark.parametrize(
+    ("weekly_on", "offset"),
+    tuple((weekday, offset) for weekday, offset in dispatch_schedule.WEEKDAYS.items()),
+)
+def test_every_weekly_trigger_emits_a_real_monday_sunday_manifest_period(
+    weekly_on: str,
+    offset: int,
+) -> None:
+    run_date = date(2026, 6, 1) + timedelta(days=offset)
+    _, body = dispatch_schedule.render_task(run_date, weekly_on=weekly_on)
+    match = re.search(r"weekly \d{4}-W\d{2} \((\d{4}-\d{2}-\d{2}) through (\d{4}-\d{2}-\d{2})\)", body)
+    assert match is not None
+    manifest = dispatch.parse_manifest_text(
+        json.dumps(
+            {
+                "version": 1,
+                "period": {
+                    "kind": "weekly",
+                    "start": match.group(1),
+                    "end": match.group(2),
+                },
+                "sections": [],
+            }
+        )
+    )
+    assert manifest.period.start.weekday() == 0
+    assert manifest.period.end.weekday() == 6
+    assert manifest.period.end < run_date
+
+
+@pytest.mark.parametrize("value", ["20260829", "2026-W35-6", "2026-8-29"])
+def test_cli_requires_exact_calendar_date_lexical_form(value: str) -> None:
+    result = CliRunner().invoke(
+        coord_app,
+        ["dispatch-trigger", "backlog", "--date", value],
+    )
+    assert result.exit_code == 2
+    assert "exact YYYY-MM-DD" in result.output
 
 
 @pytest.mark.asyncio

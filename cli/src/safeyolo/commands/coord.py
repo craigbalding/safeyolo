@@ -850,6 +850,8 @@ def dispatch_trigger(
 
     try:
         run_date = date.fromisoformat(for_date)
+        if run_date.isoformat() != for_date:
+            raise ValueError
     except ValueError:
         console.print("[red]--date must be an exact YYYY-MM-DD date[/]")
         raise typer.Exit(2) from None

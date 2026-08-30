@@ -65,7 +65,11 @@ def render_task(
     key = f"dispatch-production/{run_date.isoformat()}"
     periods = [f"daily {run_date.isoformat()}"]
     if run_date.weekday() == weekday:
-        weekly_end = run_date - timedelta(days=1)
+        # Weekly Dispatch manifests are always complete Monday-Sunday
+        # periods. A Sunday trigger runs before that UTC day is complete, so
+        # Sunday selects the prior week rather than a partial current week.
+        days_since_completed_sunday = (run_date.weekday() + 1) % 7 or 7
+        weekly_end = run_date - timedelta(days=days_since_completed_sunday)
         weekly_start = weekly_end - timedelta(days=6)
         iso = weekly_start.isocalendar()
         periods.append(

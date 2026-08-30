@@ -29,10 +29,11 @@ second task. Changing the room, weekday, or publication mode for an existing
 date fails closed.
 
 Every date requests a daily period. On the configured weekday the same task
-also requests the preceding seven complete days. On the first of a month it
-also requests the preceding complete calendar month. Relay may conclude that
-there is nothing substantive to publish; that creates neither a placeholder
-artifact nor a pull request.
+also requests the latest fully completed Monday-through-Sunday period (a
+Sunday trigger therefore selects the prior week, never the partial current
+week). On the first of a month it also requests the preceding complete
+calendar month. Relay may conclude that there is nothing substantive to
+publish; that creates neither a placeholder artifact nor a pull request.
 
 The host scheduler supplies the date; the command never reads the clock. A UTC
 cron entry is sufficient:
