@@ -193,6 +193,7 @@ class TestComputeSnapshotVersion:
         fake_cli_dir = tmp_path / "fakepkg"
         fake_cli_dir.mkdir()
         (fake_cli_dir / "guest-init.sh").write_text("orchestrator")
+        (fake_cli_dir / "guest-init-per-run.sh").write_text("per-run")
         script = fake_cli_dir / "guest-init-static.sh"
         script.write_text("v1")
         # Force distinct mtimes so the hash cache doesn't treat these as
@@ -214,6 +215,25 @@ class TestComputeSnapshotVersion:
         script = fake_cli_dir / "guest-init.sh"
         script.write_text("v1")
         (fake_cli_dir / "guest-init-static.sh").write_text("static")
+        (fake_cli_dir / "guest-init-per-run.sh").write_text("per-run")
+        os.utime(script, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
+        monkeypatch.setattr(snap_mod, "__file__", str(fake_cli_dir / "snapshot.py"))
+        v1 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
+
+        script.write_text("v2")
+        os.utime(script, ns=(2_000_000_000_000_000_000, 2_000_000_000_000_000_000))
+        v2 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
+
+        assert v1 != v2
+
+    def test_per_run_content_change_invalidates(self, snapshot_inputs, monkeypatch, tmp_path):
+        """A per-run change must invalidate a snapshot that contains old code."""
+        fake_cli_dir = tmp_path / "fakepkg"
+        fake_cli_dir.mkdir()
+        (fake_cli_dir / "guest-init.sh").write_text("orchestrator")
+        (fake_cli_dir / "guest-init-static.sh").write_text("static")
+        script = fake_cli_dir / "guest-init-per-run.sh"
+        script.write_text("v1")
         os.utime(script, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
         monkeypatch.setattr(snap_mod, "__file__", str(fake_cli_dir / "snapshot.py"))
         v1 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
@@ -386,6 +406,21 @@ class TestIsSnapshotValid:
         )
         old = current.copy()
         old.pop("guest_init_sha256")
+        self._write_full_snapshot(
+            agent_dir, "agent1", old, MIN_SNAPSHOT_BYTES + 1
+        )
+
+        assert is_snapshot_valid("agent1", current) is False
+
+    def test_pre_per_run_fingerprint_snapshot_is_invalid(
+        self, agent_dir, snapshot_inputs
+    ):
+        """A snapshot without the per-run hash must be recaptured."""
+        current = compute_snapshot_version(
+            memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y"
+        )
+        old = current.copy()
+        old.pop("guest_init_per_run_sha256")
         self._write_full_snapshot(
             agent_dir, "agent1", old, MIN_SNAPSHOT_BYTES + 1
         )

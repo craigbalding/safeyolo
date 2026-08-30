@@ -20,6 +20,21 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "[per-run start] pid=$$" > /dev/console 2>/dev/null || true
 
+# The orchestrator execs this script as PID 1. Check the kernel value after
+# that exec. Do this before the host receives the per-run-started marker.
+_nofile_limit=65536
+_nofile_values=$(
+    awk '$1 == "Max" && $2 == "open" && $3 == "files" { print $4, $5 }' "/proc/$$/limits"
+)
+read -r _nofile_soft _nofile_hard <<< "$_nofile_values"
+if [ "$_nofile_soft" != "$_nofile_limit" ] || [ "$_nofile_hard" != "$_nofile_limit" ]; then
+    echo "FATAL: PID 1 RLIMIT_NOFILE is ${_nofile_soft:-unknown}/${_nofile_hard:-unknown}; expected ${_nofile_limit}/${_nofile_limit}" >&2
+    echo "[per-run fatal] PID 1 RLIMIT_NOFILE is ${_nofile_soft:-unknown}/${_nofile_hard:-unknown}; expected ${_nofile_limit}/${_nofile_limit}" > /dev/console 2>/dev/null || true
+    exit 1
+fi
+echo "[per-run rlimit] PID 1 RLIMIT_NOFILE=${_nofile_soft}/${_nofile_hard}" > /dev/console 2>/dev/null || true
+unset _nofile_limit _nofile_values _nofile_soft _nofile_hard
+
 # --------------------------------------------------------------------------
 # 0. Post-restore fixups (no-ops on cold boot)
 # --------------------------------------------------------------------------
@@ -169,19 +184,29 @@ if [ ! -x "$VSOCK_TERM" ]; then
     VSOCK_TERM="/usr/local/bin/vsock-term"
 fi
 
+# Keep Bash as PID 1 after the kernel check. A physical VZ test reported a low
+# limit after the final idle exec. A child can wait without replacing PID 1.
+# The wait command also reaps the child when it exits.
+keep_pid1_alive() {
+    while :; do
+        sleep 2147483647 &
+        wait "$!" || true
+    done
+}
+
 # Detach mode: skip vsock terminal, keep VM alive for SSH access.
 # The host-side safeyolo-vm runs with --no-terminal so it doesn't
 # try to connect vsock. sshd is already running in background.
 if [ "${SAFEYOLO_DETACH:-}" = "1" ]; then
     echo "Detach mode: VM running, SSH ready" >&2
-    exec sleep infinity
+    keep_pid1_alive
 fi
 
 if [ "${SAFEYOLO_HOST_TERMINAL:-}" = "1" ]; then
     # Linux/gVisor: the host CLI launches the agent via `runsc exec`,
     # which bridges the user's terminal into the sandbox directly.
     # Keep the container alive so runsc exec has a target.
-    exec sleep infinity
+    keep_pid1_alive
 elif [ -x "$VSOCK_TERM" ]; then
     # macOS: vsock-term sets up the PTY, drops privileges, sets PATH,
     # and execs the command. A shell wrapper (bash -lc) would break
@@ -205,6 +230,6 @@ fi
 # on PSCI (CONFIG_ARM_PSCI_FW=y) to hand off to VZ.
 sync
 /usr/bin/busybox poweroff -f 2>/dev/null || true
-# Unreachable if poweroff succeeded; fallback keeps PID 1 alive so the kernel
-# doesn't panic, and the host's 5s force-stop will catch us.
-exec sleep infinity
+# Unreachable if poweroff succeeded. The fallback keeps PID 1 alive. The host
+# force-stops the VM after five seconds.
+keep_pid1_alive

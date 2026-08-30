@@ -567,6 +567,60 @@ class TestPrepareConfigShare:
 
         assert limit < static < capture_marker < restore_gate < per_run
 
+    def test_per_run_checks_pid1_nofile_before_ready_marker(self, tmp_config_dir):
+        """The final PID 1 script must check the kernel value before ready."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-per-run").read_text()
+
+        proc_check = source.index('"/proc/$$/limits"')
+        ready = source.index('> /safeyolo-status/per-run-started')
+
+        assert proc_check < ready
+
+    @pytest.mark.parametrize(
+        ("soft", "hard", "expected_code"),
+        [(65536, 65536, 0), (1024, 4096, 1)],
+    )
+    def test_per_run_checks_kernel_nofile_values(
+        self, tmp_config_dir, tmp_path, soft, hard, expected_code
+    ):
+        """The per-run check must reject low values from proc."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-per-run").read_text()
+        prefix, separator, _rest = source.partition(
+            "# --------------------------------------------------------------------------\n"
+            "# 0. Post-restore fixups"
+        )
+        assert separator
+
+        limits = tmp_path / "limits"
+        limits.write_text(
+            "Limit Soft Limit Hard Limit Units\n"
+            f"Max open files {soft} {hard} files\n"
+        )
+        prefix = prefix.replace('"/proc/$$/limits"', f'"{limits}"')
+        result = subprocess.run(
+            ["bash"],
+            input=f"{prefix}\nprintf 'passed\\n'\n",
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == expected_code
+        if expected_code == 0:
+            assert result.stdout == "passed\n"
+        else:
+            assert "PID 1 RLIMIT_NOFILE is 1024/4096" in result.stderr
+
+    def test_per_run_keeps_bash_as_pid1_when_idle(self, tmp_config_dir):
+        """Idle modes must not replace PID 1 after the kernel limit check."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-per-run").read_text()
+
+        assert "exec sleep infinity" not in source
+        assert source.count("keep_pid1_alive") == 4
+
     def test_guest_init_static_and_per_run_are_executable(self, tmp_config_dir):
         """The orchestrator execs two phase scripts -- both must be present
         and executable on the config share or the guest hangs."""
