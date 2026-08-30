@@ -609,7 +609,7 @@ class TestPrepareConfigShare:
         assert limit < static < capture_marker < restore_gate < per_run
 
     def test_per_run_checks_pid1_nofile_before_ready_marker(self, tmp_config_dir):
-        """The final PID 1 script must check the kernel value before ready."""
+        """The final PID 1 check must follow setup and precede ready."""
         share = prepare_config_share("agent1", "/workspace")
         source = (share / "guest-init-per-run").read_text()
 
@@ -619,8 +619,34 @@ class TestPrepareConfigShare:
         proc_check = source.index('"/proc/1/limits"')
         apply_limit = source.index("\nensure_pid1_nofile\n")
         ready = source.index('> /safeyolo-status/per-run-started')
+        user_hook = source.index(
+            'su agent -c "bash /home/agent/.safeyolo-hooks/agent-init.sh"'
+        )
 
-        assert prlimit < proc_check < apply_limit < ready
+        assert prlimit < proc_check < user_hook < apply_limit < ready
+
+    @pytest.mark.parametrize(
+        "branch",
+        [
+            'if [ "${SAFEYOLO_DETACH:-}" = "1" ]; then',
+            'if [ "${SAFEYOLO_HOST_TERMINAL:-}" = "1" ]; then',
+            'elif [ -x "$VSOCK_TERM" ]; then',
+        ],
+    )
+    def test_per_run_common_nofile_boundary_precedes_launch_branch(
+        self, tmp_config_dir, branch
+    ):
+        """Detach, host-terminal, and vsock-term share one ready boundary."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-per-run").read_text()
+
+        final_check = source.index("\nensure_pid1_nofile\n")
+        ready = source.index('> /safeyolo-status/per-run-started')
+        vm_status = source.index('> /safeyolo-status/vm-status')
+        launch = source.index(branch)
+
+        assert source.count("\nensure_pid1_nofile\n") == 1
+        assert final_check < ready < vm_status < launch
 
     @pytest.mark.parametrize(
         ("soft", "hard", "expected_code"),

@@ -67,17 +67,6 @@ hwclock -s 2>/dev/null || true
 # is enough; content isn't used.
 ls /safeyolo >/dev/null 2>&1 || true
 
-# Establish the externally visible PID 1 contract at the last point before
-# the host can report readiness. The check targets /proc/1, not /proc/$$.
-ensure_pid1_nofile
-
-# Definitive "the guest reached per-run" signal. The host-side CLI polls
-# for this marker to decide whether a cold boot or restore reached the
-# per-run phase. Written after the VirtioFS readdir above so the host sees
-# the write promptly.
-echo "$(date +%s)" > /safeyolo-status/per-run-started
-echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
-
 # --------------------------------------------------------------------------
 # 1. Configure environment
 #
@@ -182,8 +171,6 @@ if [ -f /safeyolo/agent_token ]; then
     chmod 644 /app/agent_token
 fi
 
-echo "ready" > /safeyolo-status/vm-status
-
 # --------------------------------------------------------------------------
 # 3. Run user init hook (legacy; host script can write here too)
 # --------------------------------------------------------------------------
@@ -213,14 +200,20 @@ fi
 # limit after the final idle exec. A child can wait without replacing PID 1.
 # The wait command also reaps the child when it exits.
 keep_pid1_alive() {
-    # Detach and host-terminal modes can run after more per-run setup. Apply
-    # the external PID 1 operation again at this final process boundary.
-    ensure_pid1_nofile
     while :; do
         sleep 2147483647 &
         wait "$!" || true
     done
 }
+
+# All per-run setup is complete. Establish the externally visible PID 1
+# contract at the common boundary before the host publishes readiness and
+# before detach, host-terminal, or vsock-term can launch. The host waits for
+# per-run-started, so an immediate agent-shell probe cannot race this check.
+ensure_pid1_nofile
+echo "$(date +%s)" > /safeyolo-status/per-run-started
+echo "ready" > /safeyolo-status/vm-status
+echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
 
 # Detach mode: skip vsock terminal, keep VM alive for SSH access.
 # The host-side safeyolo-vm runs with --no-terminal so it doesn't
