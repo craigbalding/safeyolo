@@ -1103,6 +1103,31 @@ class TestRunChecks:
         assert results["Isolation platform"].status == "skip"
         assert "hardware isolation" not in results["Isolation platform"].message
 
+    def test_macos_runtime_and_isolation_reuse_one_probe(
+        self, tmp_config_dir, monkeypatch
+    ):
+        from safeyolo.vm import VMError
+
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        monkeypatch.setattr("platform.machine", lambda: "arm64")
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        calls = 0
+
+        def changing_probe():
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise VMError("capability changed between rows")
+            return tmp_config_dir / "bin" / "safeyolo-vm"
+
+        monkeypatch.setattr("safeyolo.vm.probe_vm_helper", changing_probe)
+
+        results = {result.name: result for result in _run_checks()}
+
+        assert calls == 1
+        assert results["Sandbox runtime"].status == "pass"
+        assert results["Isolation platform"].status == "pass"
+
 
 class TestBuildBundle:
     def test_bundle_structure(self):

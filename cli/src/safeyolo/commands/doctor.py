@@ -1514,12 +1514,29 @@ def _check_vsock_term() -> DiagResult:
     )
 
 
-def _check_isolation_platform() -> DiagResult:
+def _check_isolation_platform(
+    sandbox_runtime: DiagResult | None = None,
+) -> DiagResult:
     """Check isolation platform (KVM vs systrap vs Apple VZ)."""
     import platform as _plat
     system = _plat.system()
 
     if system == "Darwin":
+        # A normal Doctor run passes the already-evaluated Sandbox runtime
+        # result so both rows describe one immutable observation. Direct
+        # callers still perform the platform and helper capability checks.
+        if sandbox_runtime is not None:
+            if sandbox_runtime.status != "pass":
+                return DiagResult(
+                    name="Isolation platform",
+                    status="skip",
+                    message="Skipped (depends on: Sandbox runtime)",
+                )
+            return DiagResult(
+                name="Isolation platform",
+                status="pass",
+                message="Apple Virtualization.framework (hardware isolation)",
+            )
         machine = _plat.machine()
         if machine != "arm64":
             return DiagResult(
@@ -1895,6 +1912,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
     )
 
     results = []
+    results_by_name: dict[str, DiagResult] = {}
     unavailable_checks = set()  # checks that failed or were skipped
 
     for check_name, check_fn in checks_funcs:
@@ -1916,8 +1934,14 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
         if skip:
             continue
 
-        result = check_fn()
+        if check_name == "Isolation platform" and _plat.system() == "Darwin":
+            result = _check_isolation_platform(
+                sandbox_runtime=results_by_name.get("Sandbox runtime")
+            )
+        else:
+            result = check_fn()
         results.append(result)
+        results_by_name[check_name] = result
         if result.status == "fail":
             unavailable_checks.add(check_name)
 

@@ -799,6 +799,9 @@ class TestStartVm:
         per-agent file. Overlay.img is per-agent under agents/<name>/.
         """
         self.config_dir = tmp_config_dir
+        # Platform-neutral lifecycle tests must be deterministic on both CI
+        # and real macOS hosts. Darwin-specific cases opt back in explicitly.
+        monkeypatch.setattr("safeyolo.vm.platform.system", lambda: "Linux")
 
         # Shared kernel / initrd / ext4 base. get_agent_rootfs_path now
         # returns the shared base directly.
