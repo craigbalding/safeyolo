@@ -46,12 +46,3 @@ jobs:
         uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
           category: "/language:python"
-          output: ${{ runner.temp }}/codeql-sarif
-
-      - name: Upload diagnostic CodeQL SARIF
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: codeql-sarif
-          path: ${{ runner.temp }}/codeql-sarif
-          retention-days: 1

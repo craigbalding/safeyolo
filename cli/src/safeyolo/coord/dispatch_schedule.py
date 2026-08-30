@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -217,10 +217,8 @@ class DispatchScheduleLedger:
             finally:
                 os.close(directory_fd)
         except BaseException:
-            try:
+            with suppress(FileNotFoundError):
                 os.unlink(temporary)
-            except FileNotFoundError:
-                pass
             raise
 
 

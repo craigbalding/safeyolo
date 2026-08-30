@@ -865,6 +865,12 @@ def dispatch_trigger(
                 publication_mode=publication_mode.lower(),
             )
         )
+    except NatsPublishOutcomeUnknown as exc:
+        console.print(
+            "[yellow]Dispatch publish outcome is unknown; rerun the exact same "
+            f"command to reconcile safely:[/] {escape(str(exc))}"
+        )
+        raise typer.Exit(1) from None
     except (
         api.GrantError,
         api.NotFoundError,
@@ -874,12 +880,6 @@ def dispatch_trigger(
         ValueError,
     ) as exc:
         console.print(f"[red]Dispatch task not delivered:[/] {escape(str(exc))}")
-        raise typer.Exit(1) from None
-    except NatsPublishOutcomeUnknown as exc:
-        console.print(
-            "[yellow]Dispatch publish outcome is unknown; rerun the exact same "
-            f"command to reconcile safely:[/] {escape(str(exc))}"
-        )
         raise typer.Exit(1) from None
     console.print(
         f"[green]{result.status}[/]  task_key={result.task_key}  "

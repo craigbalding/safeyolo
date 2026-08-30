@@ -93,6 +93,24 @@ def test_cli_requires_exact_calendar_date_lexical_form(value: str) -> None:
     assert "exact YYYY-MM-DD" in result.output
 
 
+def test_cli_reports_ambiguous_publish_as_safely_retriable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def ambiguous(*_args, **_kwargs):
+        raise NatsPublishOutcomeUnknown("lost acknowledgement")
+
+    monkeypatch.setattr(api, "bootstrap", lambda: None)
+    monkeypatch.setattr(dispatch_schedule, "deliver_task", ambiguous)
+    result = CliRunner().invoke(
+        coord_app,
+        ["dispatch-trigger", "backlog", "--date", "2026-08-29"],
+    )
+    assert result.exit_code == 1
+    assert "outcome is unknown" in result.output
+    assert "reconcile" in result.output
+    assert "safely" in result.output
+
+
 @pytest.mark.asyncio
 async def test_preparation_mints_only_a_canonical_operator_envelope(
     monkeypatch: pytest.MonkeyPatch,
