@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**100 tests across 35 threat categories.**
+**101 tests across 36 threat categories.**
 
 ## Host-side
 
@@ -629,6 +629,22 @@ guest-root shell; hardware microVMs use their own device boundary.
   - *Consequence if unasserted:* The Linux KVM lane gives gVisor's sentry host-side access to KVM;
 passing that device through to the agent would expose a powerful host
 virtualization interface outside the intended boundary.
+
+### `tests/blackbox/isolation/test_runtime_capabilities.py`
+
+#### TestOpenFileLimit — Every supported sandbox exposes the same open-file headroom.
+
+**Threat:** A lower hard limit on the VZ path makes agent workloads depend on
+the operator's host platform, and descendants cannot repair a hard limit
+they inherited below the documented runtime contract.
+
+- **`test_pid1_shell_and_child_inherit_nofile_limit`** — PID 1 and all later descendants have a 65536 soft/hard limit.
+  - *Probe:* Read PID 1's proc limit, inspect the running test process that
+was launched through the agent-shell path, and spawn one more child
+which reports its inherited RLIMIT_NOFILE.
+  - *Consequence if unasserted:* Checking only the final agent process can hide a child-only
+workaround. PID 1 must establish the limit before sshd and agent
+launch so both cold boot and snapshot restore propagate it naturally.
 
 ### `tests/blackbox/isolation/test_vm_isolation.py`
 

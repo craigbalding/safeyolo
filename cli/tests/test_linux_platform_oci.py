@@ -178,6 +178,30 @@ def test_home_agent_is_bind_mounted(isolated_env):
     assert "nodev" in m["options"]
 
 
+def test_pid1_nofile_limit_remains_65536(isolated_env):
+    """Shared guest-init enforcement must preserve the Linux OCI contract."""
+    from safeyolo.platform.linux import LinuxPlatform
+    from safeyolo.vm import ensure_agent_persistent_dirs
+
+    name = "nofile-limit"
+    ensure_agent_persistent_dirs(name)
+
+    spec = LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+        name=name,
+        rootfs_path=isolated_env / "agents" / name / "rootfs",
+        workspace_path=str(isolated_env),
+        config_share=isolated_env / "agents" / name / "config-share",
+        fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.3"},
+        cpus=1,
+        memory_mb=1024,
+        extra_shares=None,
+    )
+
+    assert spec["process"]["rlimits"] == [
+        {"type": "RLIMIT_NOFILE", "hard": 65536, "soft": 65536},
+    ]
+
+
 def test_workspace_dcache_zero_is_mount_local(isolated_env, monkeypatch):
     """Normal startup disables idle dentry retention only for /workspace."""
     from safeyolo.platform import linux

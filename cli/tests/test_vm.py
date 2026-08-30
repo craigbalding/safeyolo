@@ -461,6 +461,81 @@ class TestPrepareConfigShare:
         assert guest_init.exists()
         assert os.access(guest_init, os.X_OK)
 
+    def test_guest_init_sets_nofile_for_pid1_and_children(self, tmp_config_dir):
+        """The real PID 1 prefix establishes the promised inherited limit."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init").read_text()
+        prefix, separator, _rest = source.partition(
+            'echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)"'
+        )
+        assert separator
+
+        current_hard = int(
+            subprocess.run(
+                ["bash", "-c", "ulimit -Hn"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        if current_hard < 65536:
+            pytest.skip("test host hard RLIMIT_NOFILE is below the product limit")
+
+        harness = (
+            "ulimit -Sn 4096\n"
+            f"{prefix}\n"
+            "printf 'pid1 %s %s\\n' \"$(ulimit -Sn)\" \"$(ulimit -Hn)\"\n"
+            "bash -c 'printf \"child %s %s\\n\" \"$(ulimit -Sn)\" \"$(ulimit -Hn)\"'\n"
+        )
+        result = subprocess.run(
+            ["bash"], input=harness, check=True, capture_output=True, text=True,
+        )
+
+        assert result.stdout.splitlines() == [
+            "pid1 65536 65536",
+            "child 65536 65536",
+        ]
+
+    def test_guest_init_nofile_failure_is_fatal_and_clear(self, tmp_config_dir):
+        """PID 1 must not silently continue with a limit below its contract."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init").read_text()
+        prefix, separator, _rest = source.partition(
+            'echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)"'
+        )
+        assert separator
+
+        harness = (
+            "ulimit() {\n"
+            "    if [ \"$#\" -eq 2 ]; then return 1; fi\n"
+            "    builtin ulimit \"$@\"\n"
+            "}\n"
+            f"{prefix}\n"
+        )
+        result = subprocess.run(
+            ["bash"], input=harness, check=False, capture_output=True, text=True,
+        )
+
+        assert result.returncode != 0
+        assert "FATAL: unable to establish RLIMIT_NOFILE=65536/65536" in result.stderr
+
+    def test_guest_init_sets_nofile_before_static_and_snapshot_gate(
+        self, tmp_config_dir
+    ):
+        """Cold boot and snapshot capture inherit the limit before services."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init").read_text()
+
+        limit = source.index('ulimit -n "$_nofile_limit"')
+        static = source.index("\n/safeyolo/guest-init-static\n")
+        capture_marker = source.index(
+            'echo "ready" > /safeyolo-status/static-init-done'
+        )
+        restore_gate = source.index('while [ ! -f /safeyolo/per-run-go ]')
+        per_run = source.index('exec "$PER_RUN_SCRIPT"')
+
+        assert limit < static < capture_marker < restore_gate < per_run
+
     def test_guest_init_static_and_per_run_are_executable(self, tmp_config_dir):
         """The orchestrator execs two phase scripts -- both must be present
         and executable on the config share or the guest hangs."""
