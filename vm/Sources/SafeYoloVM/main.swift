@@ -27,6 +27,12 @@ let helperVersion = "0.3.1"
 func printUsage() {
     let usage = """
     Usage: safeyolo-vm run [OPTIONS]
+           safeyolo-vm check
+           safeyolo-vm version
+
+    Commands:
+      check               Verify that Apple Virtualization.framework is supported.
+      version             Print the helper version without requiring VZ support.
 
     Options:
       --kernel PATH       Path to kernel Image (required)
@@ -77,10 +83,6 @@ func parseArguments() -> RunConfig? {
     guard args.count > 1, args[1] == "run" else {
         if args.count > 1 && args[1] == "--help" {
             printUsage()
-            return nil
-        }
-        if args.count > 1 && args[1] == "version" {
-            print("safeyolo-vm \(helperVersion)")
             return nil
         }
         fputs("Error: expected 'run' subcommand\n", stderr)
@@ -167,6 +169,23 @@ func parseArguments() -> RunConfig? {
 }
 
 // MARK: - Main
+
+if CommandLine.arguments.count == 2 {
+    switch CommandLine.arguments[1] {
+    case "version":
+        print("safeyolo-vm \(helperVersion)")
+        exit(0)
+    case "check":
+        guard VZVirtualMachine.isSupported else {
+            fputs("Error: Virtualization is not supported on this machine\n", stderr)
+            exit(1)
+        }
+        print("safeyolo-vm check: ok")
+        exit(0)
+    default:
+        break
+    }
+}
 
 guard VZVirtualMachine.isSupported else {
     fputs("Error: Virtualization is not supported on this machine\n", stderr)

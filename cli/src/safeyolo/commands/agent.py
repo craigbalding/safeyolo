@@ -54,6 +54,7 @@ from ..vm import (
     get_agent_status_dir,
     prepare_config_share,
     stage_guest_desktop_launcher,
+    vm_helper_failure_summary,
 )
 from ._service_discovery import ServiceDiscoveryError, find_service
 from .mount import is_path_protected
@@ -792,7 +793,7 @@ def _run_agent(
                     )
                 else:
                     console.print(
-                        f"  Check logs: ~/.safeyolo/agents/{name}/serial.log"
+                        f"  {escape(vm_helper_failure_summary(name, helper_pid))}"
                     )
                 exit_code = 1
             else:

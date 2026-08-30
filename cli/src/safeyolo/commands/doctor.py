@@ -1428,20 +1428,20 @@ def _check_sandbox_runtime() -> DiagResult:
                 status="fail",
                 message=f"Intel Mac ({machine}) — Virtualization.framework requires Apple Silicon (arm64)",
             )
-        from ..vm import VMError, find_vm_helper
+        from ..vm import VMError, probe_vm_helper
         try:
-            helper = find_vm_helper()
-        except VMError:
+            helper = probe_vm_helper()
+        except VMError as exc:
             return DiagResult(
                 name="Sandbox runtime",
                 status="fail",
-                message="Apple Silicon detected but safeyolo-vm binary not found",
-                remediation="cd vm && make install",
+                message=str(exc),
+                remediation="Rebuild and install the helper: make -C vm install",
             )
         return DiagResult(
             name="Sandbox runtime",
             status="pass",
-            message=f"Apple Silicon, safeyolo-vm at {helper}",
+            message=f"Apple Silicon, safeyolo-vm capability check passed at {helper}",
         )
 
     if system == "Linux":
@@ -1520,6 +1520,23 @@ def _check_isolation_platform() -> DiagResult:
     system = _plat.system()
 
     if system == "Darwin":
+        machine = _plat.machine()
+        if machine != "arm64":
+            return DiagResult(
+                name="Isolation platform",
+                status="fail",
+                message=f"Apple VZ unavailable on {machine}",
+            )
+        from ..vm import VMError, probe_vm_helper
+        try:
+            probe_vm_helper()
+        except VMError as exc:
+            return DiagResult(
+                name="Isolation platform",
+                status="fail",
+                message=f"Apple VZ capability check failed: {exc}",
+                remediation="Rebuild and install the helper: make -C vm install",
+            )
         return DiagResult(
             name="Isolation platform",
             status="pass",

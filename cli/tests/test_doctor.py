@@ -22,10 +22,12 @@ from safeyolo.commands.doctor import (
     _check_firewall,
     _check_flow_store,
     _check_guest_images,
+    _check_isolation_platform,
     _check_log_health,
     _check_pipeline_probe,
     _check_proxy_process,
     _check_runtime_identity,
+    _check_sandbox_runtime,
     _check_tokens,
     _check_upstream_ca_cert,
     _check_vault,
@@ -366,6 +368,66 @@ class TestCheckVsockTerm:
 
         assert result.status == "pass"
         assert str(vsock_term) in result.message
+
+
+class TestCheckDarwinSandboxRuntime:
+    def test_pass_requires_successful_helper_probe(self, monkeypatch, tmp_path):
+        helper = tmp_path / "safeyolo-vm"
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        monkeypatch.setattr("platform.machine", lambda: "arm64")
+        monkeypatch.setattr(
+            "safeyolo.vm.probe_vm_helper",
+            lambda: helper,
+        )
+
+        result = _check_sandbox_runtime()
+
+        assert result.status == "pass"
+        assert "capability check passed" in result.message
+        assert str(helper) in result.message
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            "safeyolo-vm is not executable",
+            "Could not launch safeyolo-vm capability check",
+            "safeyolo-vm capability check timed out after 3s",
+            "safeyolo-vm capability check failed with exit code 1: Error: Virtualization is not supported",
+        ],
+    )
+    def test_probe_failures_never_report_pass(self, monkeypatch, failure):
+        from safeyolo.vm import VMError
+
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        monkeypatch.setattr("platform.machine", lambda: "arm64")
+
+        def fail_probe():
+            raise VMError(failure)
+
+        monkeypatch.setattr("safeyolo.vm.probe_vm_helper", fail_probe)
+
+        result = _check_sandbox_runtime()
+
+        assert result.status == "fail"
+        assert failure in result.message
+        assert result.remediation
+
+    def test_isolation_platform_does_not_claim_vz_when_probe_fails(self, monkeypatch):
+        from safeyolo.vm import VMError
+
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        monkeypatch.setattr("platform.machine", lambda: "arm64")
+
+        def fail_probe():
+            raise VMError("Virtualization is not supported on this machine")
+
+        monkeypatch.setattr("safeyolo.vm.probe_vm_helper", fail_probe)
+
+        result = _check_isolation_platform()
+
+        assert result.status == "fail"
+        assert "capability check failed" in result.message
+        assert "hardware isolation" not in result.message
 
 
 class TestCheckGuestImages:
@@ -1022,6 +1084,24 @@ class TestRunChecks:
 
         assert "User namespaces" not in names
         assert "Interactive terminal" in names
+
+    def test_macos_helper_failure_skips_isolation_claim(self, tmp_config_dir, monkeypatch):
+        from safeyolo.vm import VMError
+
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        monkeypatch.setattr("platform.machine", lambda: "arm64")
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+
+        def fail_probe():
+            raise VMError("Virtualization is not supported on this machine")
+
+        monkeypatch.setattr("safeyolo.vm.probe_vm_helper", fail_probe)
+
+        results = {result.name: result for result in _run_checks()}
+
+        assert results["Sandbox runtime"].status == "fail"
+        assert results["Isolation platform"].status == "skip"
+        assert "hardware isolation" not in results["Isolation platform"].message
 
 
 class TestBuildBundle:
