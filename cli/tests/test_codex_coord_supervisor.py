@@ -44,11 +44,17 @@ def _config(module: ModuleType, tmp_path: Path, **overrides):
     return module.Config(**values)
 
 
-def _resolved(attention_id: str, *, sender: str = "relay", body: str = "TASK task=one assignee=forge"):
+def _resolved(
+    attention_id: str,
+    *,
+    sender: str = "relay",
+    body: str = "TASK task=one assignee=forge",
+    room_id: str = "room-1",
+):
     return {
         "edge": {
             "attention_id": attention_id,
-            "room_id": "room-1",
+            "room_id": room_id,
             "kind": "message",
             "object_id": "message-1",
             "revision_or_sequence": 11,
@@ -84,15 +90,15 @@ def _wait_event(module: ModuleType, state, objects, *, next_cursor=12, status="c
     }
 
 
-def _terminal_event(attention_id: str):
-    body = f"DONE task=one attention_id={attention_id}\nresult=complete"
+def _terminal_event(attention_id: str, *, room_name: str = "backlog", body: str | None = None):
+    body = body or f"DONE task=one attention_id={attention_id}\nresult=complete"
     return {
         "type": "item.completed",
         "item": {
             "type": "mcp_tool_call",
             "server": "safeyolo-coord",
             "tool": "send",
-            "arguments": {"room_name": "backlog", "body": body},
+            "arguments": {"room_name": room_name, "body": body},
             "result": {
                 "structured_content": {
                     "envelope": {
@@ -204,6 +210,52 @@ def test_peer_task_is_not_promoted_to_authorized_work(supervisor_module, tmp_pat
     assert module.load_state(state_path)["in_flight"] == []
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "TASK task=one assignee=lens",
+        "TASK task=one",
+        "TASK task=one assignee=forge assignee=forge",
+    ],
+)
+def test_task_for_another_or_ambiguous_assignee_is_not_promoted(supervisor_module, tmp_path, body):
+    module = supervisor_module
+    attention_id = "attn-" + "8" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(_config(module, tmp_path), state, state_path, {"room-1": "backlog"})
+
+    consumer.consume(_wait_event(module, state, [_resolved(attention_id, body=body)]))
+
+    assert state["in_flight"][0]["requires_terminal"] is False
+
+
+def test_attention_from_unconfigured_room_is_checkpointed_and_ignored(supervisor_module, tmp_path):
+    module = supervisor_module
+    attention_id = "attn-" + "7" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(_config(module, tmp_path), state, state_path, {"room-1": "backlog"})
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [_resolved(attention_id, room_id="authorized-extra-room")],
+        )
+    )
+
+    persisted = module.load_state(state_path)
+    assert consumer.result.wait_succeeded is True
+    assert persisted["safe_cursor"] == 12
+    assert persisted["in_flight"] == []
+    assert persisted["recent_attention_ids"] == [attention_id]
+
+    prompt = module.build_prompt(_config(module, tmp_path), module.empty_state(), {"room-1": "backlog"})
+    assert "Ignore returned objects whose edge.room_id" in prompt
+    assert '"configured_room_ids":{"room-1":"backlog"}' in prompt
+
+
 def test_canonical_history_recovers_terminal_lost_after_send(supervisor_module, tmp_path, monkeypatch):
     module = supervisor_module
     attention_id = "attn-" + "d" * 32
@@ -241,14 +293,14 @@ def test_canonical_history_recovers_terminal_lost_after_send(supervisor_module, 
     assert state["recent_attention_ids"] == [attention_id]
 
 
-def test_task_token_prevents_issue_only_cross_completion(supervisor_module):
+def test_terminal_requires_exact_attention_id(supervisor_module):
     module = supervisor_module
     pending = {
         "attention_id": "attn-" + "1" * 32,
         "body": "TASK issue=#471 task=first assignee=forge",
     }
 
-    assert module._terminal_matches(pending, "DONE issue=#471 task=first") is True
+    assert module._terminal_matches(pending, "DONE issue=#471 task=first") is False
     assert module._terminal_matches(pending, "DONE issue=#471 task=second") is False
     assert (
         module._terminal_matches(
@@ -257,6 +309,52 @@ def test_task_token_prevents_issue_only_cross_completion(supervisor_module):
         )
         is False
     )
+    assert (
+        module._terminal_matches(
+            pending,
+            f"DONE issue=#471 task=other attention_id={'attn-' + '1' * 32}",
+        )
+        is True
+    )
+
+
+def test_terminal_send_must_target_pending_room(supervisor_module, tmp_path):
+    module = supervisor_module
+    attention_id = "attn-" + "6" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(
+        _config(module, tmp_path, rooms=("backlog", "other")),
+        state,
+        state_path,
+        {"room-1": "backlog", "room-2": "other"},
+    )
+    consumer.consume(_wait_event(module, state, [_resolved(attention_id)]))
+
+    consumer.consume(_terminal_event(attention_id, room_name="other"))
+    assert module.load_state(state_path)["in_flight"][0]["attention_id"] == attention_id
+    assert consumer.result.terminal_observed is False
+
+    consumer.consume(_terminal_event(attention_id))
+    assert module.load_state(state_path)["in_flight"] == []
+    assert consumer.result.terminal_observed is True
+
+
+def test_one_correlation_label_cannot_complete_two_attentions(supervisor_module, tmp_path):
+    module = supervisor_module
+    first = "attn-" + "4" * 32
+    second = "attn-" + "5" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(_config(module, tmp_path), state, state_path, {"room-1": "backlog"})
+    consumer.consume(_wait_event(module, state, [_resolved(first), _resolved(second)], next_cursor=13))
+
+    consumer.consume(_terminal_event(first, body="DONE task=one\nresult=complete"))
+
+    assert {item["attention_id"] for item in module.load_state(state_path)["in_flight"]} == {
+        first,
+        second,
+    }
 
 
 def test_recovery_prompt_uses_checkpoint_and_skips_wait(supervisor_module, tmp_path):
@@ -275,11 +373,12 @@ def test_recovery_prompt_uses_checkpoint_and_skips_wait(supervisor_module, tmp_p
         }
     ]
 
-    prompt = module.build_prompt(_config(module, tmp_path), state)
+    prompt = module.build_prompt(_config(module, tmp_path), state, {"room-1": "backlog"})
 
     assert "Do not call wait_for_coord in this turn" in prompt
     assert attention_id in prompt
     assert "attention_id=<id>" in prompt
+    assert '"configured_room_ids":{"room-1":"backlog"}' in prompt
 
     state_path = tmp_path / "state.json"
     module.save_state(state_path, state)
@@ -472,6 +571,59 @@ def test_timeout_cleans_the_owned_process_group(supervisor_module, tmp_path, mon
             break
         time.sleep(0.02)
     assert not Path(f"/proc/{child_pid}").exists()
+
+
+def test_work_deadline_does_not_slide_on_later_stdout(supervisor_module, tmp_path, monkeypatch):
+    module = supervisor_module
+    fake_codex = tmp_path / "noisy-codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, time\n"
+        "print(json.dumps({'type':'thread.started','thread_id':'thread-one'}), flush=True)\n"
+        "print(json.dumps({'type':'turn.started'}), flush=True)\n"
+        "print(json.dumps({\n"
+        "  'type':'item.completed',\n"
+        "  'item':{\n"
+        "    'type':'mcp_tool_call',\n"
+        "    'server':'safeyolo-coord',\n"
+        "    'tool':'wait_for_coord',\n"
+        "    'arguments':{'since_sequence':0,'timeout_seconds':5,'limit':16},\n"
+        "    'result':{'structured_content':{'objects':[{\n"
+        "      'edge':{'attention_id':'attn-' + '3' * 32,'room_id':'room-1',\n"
+        "              'kind':'message','object_id':'message-1','revision_or_sequence':1},\n"
+        "      'object':{'sender_agent_id':'agent-relay','sender_agent_name':'relay',\n"
+        "                'body':'TASK task=one assignee=forge','sequence':1}\n"
+        "    }],'next_cursor':1}},\n"
+        "    'error':None,\n"
+        "    'status':'completed'\n"
+        "  }\n"
+        "}), flush=True)\n"
+        "for _ in range(20):\n"
+        "    time.sleep(0.2)\n"
+        "    print(json.dumps({'type':'benign.progress'}), flush=True)\n"
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("SAFEYOLO_CODEX_BIN", str(fake_codex))
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+
+    started = time.monotonic()
+    result = module.run_invocation(
+        _config(
+            module,
+            tmp_path,
+            startup_timeout_seconds=10,
+            work_timeout_seconds=1,
+        ),
+        state,
+        state_path,
+        {"room-1": "backlog"},
+        [],
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.timed_out is True
+    assert elapsed < 2.5
 
 
 def test_restart_cleans_a_checkpointed_detached_child(supervisor_module, tmp_path):

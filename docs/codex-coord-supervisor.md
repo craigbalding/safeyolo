@@ -31,12 +31,17 @@ text are not idle or success evidence. A failed MCP result cannot advance the
 safe cursor.
 
 For each returned object, the supervisor atomically stores a narrow canonical
-checkpoint before it adopts the returned cursor. An authorized `TASK` stays
-in flight until the supervisor observes a matching canonical `DONE`,
-`BLOCKED`, or `FAILED`. Supervised terminal messages include the returned
-`attention_id` for exact correlation. If a terminal send reached coord but
-the local execution event was lost, the supervisor checks bounded canonical
-room history after the task sequence.
+checkpoint before it adopts the returned cursor. Only a `TASK` from a
+configured coordinator with exactly `assignee=<worker-name>` becomes work.
+That task stays in flight until the supervisor observes a canonical `DONE`,
+`BLOCKED`, or `FAILED` in the same room with its exact `attention_id`.
+Correlation labels such as `task=` cannot complete work. If a terminal send
+reached coord but the local execution event was lost, the supervisor checks
+bounded canonical room history after the task sequence.
+
+The coord wait is identity-wide. Attention from an authorized room that is not
+configured for this worker is checkpointed as ignored before the cursor moves.
+It cannot route work to the worker or wedge later waits.
 
 If Codex stops after delivery, the supervisor tries the exact session first.
 If that session is unavailable, a new thread receives the bounded canonical
@@ -69,7 +74,9 @@ not idle and does not advance the cursor. Repeated failures use exponential
 backoff with a cap.
 
 The initial provider and wait phase and the later work phase have separate
-deadlines. On timeout or abnormal exit, the supervisor signals only the
+absolute deadlines. The work deadline is set once when a non-empty wait
+completes; later output cannot extend it. The invocation also keeps a hard
+overall bound. On timeout or abnormal exit, the supervisor signals only the
 process group that it created for that Codex invocation. On Linux it also acts
 as a child subreaper, so repeated recovery does not accumulate orphaned
 code-mode children or zombies.
