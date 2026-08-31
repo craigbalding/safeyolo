@@ -7,11 +7,24 @@
 
 **Want your AI agents to do more without giving them access to more?**
 
-SafeYolo gives coding agents room to get useful work done without handing them your desktop, your credentials, or unrestricted access to your network and third-party services.
+SafeYolo gives coding agents room to work without handing them your desktop,
+vaulted service credentials, or unrestricted access to your network and
+third-party services.
 
-Give the agent root. Let it install tools, run browsers, start services, debug code and improvise within the scope you give it. The sandbox is there to limit the blast radius, not to hobble the agent.
+Give the agent guest-local root. Let it install tools, run browsers, start
+services, and debug code within the scope you choose. SafeYolo contains those
+actions inside the sandbox while preserving ordinary development tools.
 
-SafeYolo doesn't try to make agents safe by replacing the world with a small set of approved tools. Agents can use normal CLIs, SDKs, browsers and web services — GitHub is GitHub, AWS is AWS. SafeYolo sits at the boundary, controlling what the agent can reach and keeping credentials out of its hands.
+SafeYolo does not replace external systems with a small set of approved tools.
+Agents can use normal command-line interfaces (CLIs), software development kits
+(SDKs), browsers, and web services. SafeYolo controls which destinations and
+service capabilities the agent can reach. Its service gateway keeps vaulted
+credentials on the host and injects them only into authorized requests.
+
+Coding-harness authentication is a separate, explicit path. The bundled Claude
+Code and Codex host scripts copy the operator's subscription state into the
+agent's persistent `/home/agent`. The agent process can read and use those
+copies. Use a host script only when that trust decision is acceptable.
 
 Each agent runs in an isolated Linux sandbox — hardware-backed microVM on macOS, gVisor on Linux — with network traffic forced through a programmable [mitmproxy](https://mitmproxy.org/) policy layer.
 
@@ -46,9 +59,13 @@ safeyolo bootstrap
 ```
 
 `./install.sh` puts `safeyolo` on your `PATH` at `~/.local/bin/safeyolo`.
-`safeyolo bootstrap` runs first-time setup (config init, guest image build, host prereqs). Idempotent — safe to re-run.
+`safeyolo bootstrap` initializes configuration, builds the platform-specific
+guest artifacts, and applies host prerequisites. The command is idempotent.
 
-If a Linux build prerequisite is missing, `bootstrap` prints the single `sudo apt-get install ...` line you need and exits so you decide when to sudo. Machine-parseable output via `safeyolo bootstrap --json` for CI / harness use.
+If a Linux build prerequisite is missing, `safeyolo bootstrap` prints one
+`sudo apt-get install ...` command and exits without using `sudo`. The operator
+decides whether to run that command. Use `safeyolo bootstrap --json` for
+machine-readable continuous-integration (CI) or acceptance-harness output.
 
 _macOS only_ — one additional step to build the Swift VM helper:
 
@@ -63,14 +80,28 @@ safeyolo agent add work ~/code --host-script @claude
 safeyolo agent run work
 ```
 
-`~/code` is your project directory, mounted read-write into the sandbox. `@claude` is a bundled host-script alias that stages Claude Code and the coord MCP adapter inside the guest. Other bundled aliases: `@codex` (interactive OpenAI Codex CLI, also with coord MCP), `@codex-coord` (opt-in supervised Codex factory worker), and `@mise-shell` (interactive shell with mise). Paths still work — pass any executable script if you have your own.
+`~/code` is the project directory mounted read-write at `/workspace`. The
+`@claude` argument selects a bundled host-script alias.
+
+| Alias | Guest setup |
+|---|---|
+| `@claude` | Claude Code plus the coord Model Context Protocol (MCP) adapter. |
+| `@codex` | Interactive OpenAI Codex CLI plus the coord MCP adapter. |
+| `@codex-coord` | Opt-in supervised Codex factory worker. |
+| `@mise-shell` | Interactive shell with mise. |
+
+You can also pass the path of any executable host script.
 
 Inside the sandbox:
 
 - **All traffic routes through SafeYolo proxy** — the sandbox has no external network interface; the only path out is through the proxy
-- **API keys are protected** — credentials only reach their intended hosts
-- **Everything is logged** — JSONL audit trail for review
-- **Dev-ready VMs** — agents install toolchains via mise, state persists across restarts
+- **Credentials in proxied requests are guarded** — detected credentials can
+  reach only destinations that policy permits. This guard does not hide files
+  that a host script intentionally copies into `/home/agent`.
+- **Security decisions are logged** — structured JSON Lines (JSONL) records are
+  available for review.
+- **Development state persists** — agents install toolchains through mise, and
+  the persistent home survives restarts.
 - **Linux agents run rootless** — `safeyolo agent run` is zero-sudo; `bootstrap` applies a one-time AppArmor profile and a KVM udev rule so ongoing operation needs no elevated privileges
 
 ### Verify isolation
@@ -94,11 +125,16 @@ safeyolo doctor --raw        # no color / no wrap (grep-friendly)
 safeyolo doctor --json | jq  # machine-parseable single JSON object
 ```
 
-On Linux this reports the sandbox runtime (runsc version), isolation platform (KVM vs systrap and why), user-namespace prerequisites (newuidmap, subuid, AppArmor profile), the guest image, and any running agents. On macOS it confirms Apple Silicon + the safeyolo-vm helper. Exits non-zero on any failed check.
+On Linux, the command reports the `runsc` version, the selected KVM or systrap
+isolation platform and its reason, user-namespace prerequisites, the guest
+rootfs tree, and running agents. On macOS, it confirms Apple Silicon and the
+`safeyolo-vm` helper. The command exits nonzero if any check fails.
 
 ### Install from source (advanced)
 
-`safeyolo bootstrap` above wraps three separate commands (`safeyolo init`, `safeyolo build`, `safeyolo setup`). If you want to run them individually — for example to peek at exactly what each does — the sequence is:
+`safeyolo bootstrap` wraps three commands: `safeyolo init`, `safeyolo build`,
+and `safeyolo setup`. Run them individually when you want to inspect or retry
+one phase:
 
 ```bash
 # Linux only: install build prereqs up front (bootstrap prints the list for you;
@@ -131,7 +167,8 @@ Each agent runs in an isolated Linux sandbox with **no external network interfac
 ```
 Agent sandbox (loopback-only; no eth0)
     │
-    │  HTTP_PROXY → in-guest forwarder → AF_UNIX or AF_VSOCK
+    │  HTTP_PROXY → in-guest forwarder → Unix domain socket (AF_UNIX)
+    │                                  or virtual socket (AF_VSOCK)
     ▼
 Per-agent bridge socket (one per agent, host-owned)
     │
@@ -144,9 +181,22 @@ SafeYolo mitmproxy (host process)
 Internet
 ```
 
-The sandbox itself is a hardware-backed microVM on macOS (Apple Virtualization.framework + vsock) and a rootless gVisor container on Linux (runsc in an unprivileged user namespace, with `--network=sandbox` and `--host-uds=open`). Either way: if the agent unsets proxy vars → no effect, because there is no other network path. Raw TCP → impossible (no external interface). DNS → no resolver reachable (no external interface). **Enforcement is structural, not policy-based** — there are no firewall rules to misconfigure; there's simply nowhere else for traffic to go.
+On macOS, the sandbox is a hardware-backed microVM that uses Apple
+Virtualization.framework and virtual sockets. On Linux, it is a rootless gVisor
+container that runs `runsc` in an unprivileged user namespace with
+`--network=sandbox` and `--host-uds=open`.
 
-Agent identity is cross-platform via a per-agent Unix domain socket. On both macOS and Linux each agent talks to its own host-owned UDS at `<ip>_<agent>/proxy.sock`; mitmproxy's `UnixMode` listener parses the path at bind and stamps `client.peername = (ip, 0)` on every accepted connection. No per-agent lo0 aliases, no sudo at runtime.
+Both platforms omit an external network interface. Unsetting the proxy
+variables therefore does not create another egress path. Raw external TCP has
+no interface, and external Domain Name System (DNS) resolution has no reachable
+resolver. **The egress boundary is structural:** it does not depend on host
+firewall rules.
+
+Agent identity uses a per-agent Unix domain socket (UDS) on both platforms.
+Each agent connects to the host-owned `<ip>_<agent>/proxy.sock`. At bind time,
+mitmproxy's `UnixMode` listener parses that path and stamps
+`client.peername = (ip, 0)` on every accepted connection. SafeYolo uses no
+per-agent `lo0` aliases and no host `sudo` at runtime.
 
 See [docs/networking-vsock-uds.md](docs/networking-vsock-uds.md) for hop-by-hop detail, attribution mechanics, log correlation, and troubleshooting.
 
@@ -160,7 +210,10 @@ See [docs/networking-vsock-uds.md](docs/networking-vsock-uds.md) for hop-by-hop 
 - **Operator access from anywhere over Tailscale** — if you use Tailscale, publish the traffic-inspection UI and agent previews to your tailnet so you can review, approve or debug from any device without exposing anything to the public internet
 - **Scoped network access** — allow, deny, prompt or rate-limit access by host, with per-agent overrides and a global traffic budget
 - **Capability-scoped service access** — give an agent only the operations it needs against services such as Gmail or GitHub; risky routes can require explicit approval
-- **Credentials stay outside the sandbox** — SafeYolo holds real credentials and injects them only into authorized requests; credential guards stop secrets being sent to the wrong destination
+- **Vaulted service credentials stay outside the sandbox** — the service
+  gateway injects them only into authorized requests, and credential guards
+  stop detected secrets from reaching the wrong destination. Host scripts can
+  separately copy coding-harness authentication into the sandbox.
 - **Human-in-the-loop where it matters** — new egress, credential use and risky service actions can stop for approval in `safeyolo watch`, rather than interrupting the agent for routine work
 - **Runaway protection** — rate budgets, circuit breakers and loop detection contain broken retry loops before they hammer an API, fill logs or damage your IP reputation
 - **Agent-visible guardrails** — agents can inspect their own policy, budgets, available capabilities and block reasons, then self-correct instead of guessing
@@ -206,16 +259,25 @@ authoritative; the Mattermost bot is only a presentation/input adapter.
 
 ## Host scripts
 
-`safeyolo agent add` takes an optional `--host-script PATH`. The script runs on the host, as you, before the sandbox boots. It populates the agent's persistent home (`~/.safeyolo/agents/<name>/home/`) with whatever the agent needs — credentials, settings, user extensions — and writes a `.safeyolo-command` file the guest execs as the default foreground command. For an existing agent, reapply or switch the setup with `safeyolo agent run <name> --host-script PATH`.
+`safeyolo agent add` accepts an optional `--host-script PATH`. Before the
+sandbox boots, SafeYolo runs the script on the host with the operator's user
+permissions. The script can copy authentication, settings, and extensions into
+the agent's persistent home at `~/.safeyolo/agents/<name>/home/`. Files copied
+there are mounted at `/home/agent` and are readable by the agent process. The
+script also writes `.safeyolo-command`, which becomes the default foreground
+command in the guest.
+
+For an existing agent, reapply or change the setup with
+`safeyolo agent run <name> --host-script PATH`.
 
 The `contrib/` directory has ready-made host scripts:
 
 | Script | Purpose |
 |--------|---------|
-| `contrib/claude-host-setup.sh` | Claude Code — stages host `~/.claude/` auth + user extensions, registers the coord MCP adapter, injects SafeYolo's compact baseline, installs the shared `/safeyolo` skill, and launches nag-free |
-| `contrib/codex-host-setup.sh` | OpenAI Codex CLI — stages `~/.codex/`, registers the coord MCP adapter, injects SafeYolo's compact baseline, installs the shared `$safeyolo` skill, and launches with sandboxing disabled inside the guest (`-s danger-full-access -a never`) while SafeYolo remains the outer boundary |
-| `contrib/codex-coord-host-setup.sh` | Explicit factory mode for Codex — uses the normal staged subscription auth and coord MCP, then supervises bounded non-interactive turns inside the guest; see the [supervisor contract](docs/codex-coord-supervisor.md) |
-| `contrib/mise-shell-host-setup.sh` | BYOA — boots into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
+| `contrib/claude-host-setup.sh` | Copies Claude Code authentication and selected user extensions into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context, and launches Claude Code. |
+| `contrib/codex-host-setup.sh` | Copies `~/.codex/` into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context, and launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`). SafeYolo remains the outer boundary. |
+| `contrib/codex-coord-host-setup.sh` | Uses the Codex setup above, including copied subscription authentication, then supervises bounded non-interactive turns. See the [supervisor contract](docs/codex-coord-supervisor.md). |
+| `contrib/mise-shell-host-setup.sh` | Opens an interactive shell with mise ready for `mise use -g ...`. |
 
 Without `--host-script`, the sandbox boots to an interactive bash shell in a per-agent persistent home.
 
@@ -223,9 +285,13 @@ Writing your own: see [`contrib/HOST_SCRIPT_GUIDE.md`](contrib/HOST_SCRIPT_GUIDE
 
 ## Custom rootfs
 
-`safeyolo agent add` also takes an optional `--rootfs-script PATH` for agents that need a different base system than SafeYolo's default Debian-trixie rootfs — e.g. Kali for a pentest agent or Alpine for a minimal shell. The script builds a full per-agent rootfs from any distro's OCI image or bootstrap tarball. Examples: [`contrib/kali-pentest/build-kali-rootfs.sh`](contrib/kali-pentest/build-kali-rootfs.sh), [`contrib/alpine-minimal/build-alpine-rootfs.sh`](contrib/alpine-minimal/build-alpine-rootfs.sh). Writing your own: see [`contrib/ROOTFS_SCRIPT_GUIDE.md`](contrib/ROOTFS_SCRIPT_GUIDE.md).
+`safeyolo agent add` also takes an optional `--rootfs-script PATH` for agents that need a different base system than SafeYolo's default Debian-trixie rootfs — e.g. Kali for a pentest agent or Alpine for a minimal shell. The script builds a full per-agent rootfs from any distribution's Open Container Initiative (OCI) image or bootstrap tarball. Examples: [`contrib/kali-pentest/build-kali-rootfs.sh`](contrib/kali-pentest/build-kali-rootfs.sh), [`contrib/alpine-minimal/build-alpine-rootfs.sh`](contrib/alpine-minimal/build-alpine-rootfs.sh). Writing your own: see [`contrib/ROOTFS_SCRIPT_GUIDE.md`](contrib/ROOTFS_SCRIPT_GUIDE.md).
 
-The default Debian base is intentionally small but agent-friendly. It includes common search and debugging tools (`ripgrep`, `fd-find`, `file`, `unzip`, `zip`, `tmux`, `lsof`, `strace`, `jq`, `less`), Python venv support, and BusyBox-backed `nc`/`hexdump` shims. Language ecosystems still come from `mise`, not from stuffing extra runtimes into the image.
+The default Debian base is intentionally small. It includes common search and
+debugging tools (`ripgrep`, `fd-find`, `file`, `unzip`, `zip`, `tmux`, `lsof`,
+`strace`, `jq`, `less`), Python virtual-environment support, and BusyBox-backed
+`nc` and `hexdump` shims. Install language runtimes through `mise`; the base
+rootfs does not include them.
 
 SafeYolo splits agent guidance by when it is needed. The compact, always-on
 baseline at [`docs/AGENTS.md`](docs/AGENTS.md) covers environment invariants,
@@ -241,7 +307,10 @@ agent's native skill directory, leaving existing user instructions untouched.
 
 ## Controlling Agent Access
 
-Grant agents access to specific services with specific capabilities. Your credentials stay in SafeYolo's vault — agents make requests, SafeYolo handles authentication.
+Grant agents specific capabilities for specific services. Credentials managed
+by this service-gateway path stay in SafeYolo's vault. Agents make requests,
+and SafeYolo injects the vaulted credential after authorization. This guarantee
+does not apply to coding-harness authentication copied by a host script.
 
 ```bash
 safeyolo agent authorize boris gmail --capability read_agent_folder --token-env GMAIL_TOKEN
@@ -266,7 +335,10 @@ $ safeyolo watch
 
 ## Architecture
 
-Full technical design: [docs/microvm-architecture.md](docs/microvm-architecture.md) (macOS microVM path) and [docs/linux-port-design.md](docs/linux-port-design.md) (Linux gVisor path). Highlights common to both paths:
+The current [architecture overview](docs/ARCHITECTURE.md) describes the shared
+system. The [macOS microVM](docs/microvm-architecture.md) and [historical Linux
+port](docs/linux-port-design.md) documents preserve platform design context.
+Current highlights common to both paths:
 
 - **Networking**: no external interface in the sandbox — egress is UDS/vsock to a per-agent host socket → proxy bridge → mitmproxy (structural isolation)
 - **Terminal**: full PTY with resize — vsock PTY bridge on macOS, `runsc exec` on Linux
@@ -276,7 +348,12 @@ Full technical design: [docs/microvm-architecture.md](docs/microvm-architecture.
 Linux specifics:
 
 - **Rootless host operation**: runsc runs in an unprivileged user namespace (`unshare -Un` + `newuidmap`/`newgidmap`) and launching agents requires no host sudo. Agents start as uid 1000; in-guest `sudo` may enter sandbox uid 0 for ephemeral package installs. That identity maps to subordinate host uid 100000, while container uid 1000 maps to the operator.
-- **Rootfs**: a single shared directory tree at `~/.safeyolo/share/rootfs-tree/` used directly as gVisor's OCI `root.path` (no image packaging step). Writes go to a memory-backed overlay upper per sandbox; per-agent persistent bind mounts cover apt caches so reinstalls stay cheap.
+- **Rootfs**: a single shared directory tree at
+  `~/.safeyolo/share/rootfs-tree/` is the gVisor OCI `root.path`; Linux does
+  not package it as an image. By default, writes
+  go to a per-agent file-backed overlay and persist across stop and run.
+  `--ephemeral` selects a memory-backed overlay whose rootfs writes are
+  discarded on stop. Per-agent package-cache bind mounts keep reinstalls cheap.
 - **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. Auto-detected by `safeyolo setup` and surfaced in `safeyolo doctor`.
 - **One-time setup**: AppArmor profile to allow unprivileged user namespaces on Ubuntu 24.04+, and a udev rule granting the subordinate uid access to `/dev/kvm` — both applied idempotently by `safeyolo setup`.
 

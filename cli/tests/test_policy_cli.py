@@ -309,8 +309,7 @@ class TestPolicyHostDeny:
         assert doc["hosts"]["evil.com"]["egress"] == "deny"
 
     def test_deny_merges_into_existing_entry_preserving_rate(self, tmp_config_dir):
-        """B2 fix: denying a host that already has rate/credentials merges,
-        not clobbers.  The rate must survive the deny."""
+        """Denying a host preserves its existing rate and credential rules."""
         runner.invoke(app, ["policy", "host", "add", "api.stripe.com", "--rate", "600"])
         result = runner.invoke(app, ["policy", "host", "deny", "api.stripe.com", "--expires", "1d"])
         assert result.exit_code == 0
@@ -491,7 +490,7 @@ class TestPolicyEgressSet:
         assert "Invalid posture" in result.output
 
     def test_set_creates_wildcard_when_missing(self, tmp_config_dir):
-        """B3 fix: egress set creates '*' entry when hosts has no wildcard."""
+        """Setting egress creates the wildcard host entry when it is absent."""
         # Remove the wildcard from the fixture
         doc = _read_toml(tmp_config_dir)
         hosts = tomlkit.table()
@@ -550,8 +549,7 @@ class TestPolicyEgressShow:
         assert "deny" in result.output
 
     def test_show_no_wildcard_reports_deny(self, tmp_config_dir):
-        """B4 fix: when no '*' wildcard exists in hosts, egress show reports 'deny'
-        because network-guard blocks everything without a wildcard."""
+        """Without a wildcard host, egress reports the enforced deny posture."""
         doc = _read_toml(tmp_config_dir)
         hosts = tomlkit.table()
         hosts.add("api.stripe.com", tomlkit.inline_table())

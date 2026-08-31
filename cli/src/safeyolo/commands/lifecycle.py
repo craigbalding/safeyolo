@@ -209,7 +209,7 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
         help="Profile lifecycle phases and write a JSONL timing artifact",
     ),
 ) -> None:
-    """Start SafeYolo proxy and firewall."""
+    """Start the SafeYolo host proxy."""
     _profile_enter("configuration bootstrap and preflight")
     first_run = False
 
@@ -794,10 +794,11 @@ def _install_guest_artifacts(out_dir: Path, share_dir: Path) -> None:
 
 
 def build() -> None:  # DOC: docs/DEVELOPERS.md
-    """Build guest VM images (kernel, initramfs, rootfs).
+    """Build platform-specific guest artifacts.
 
-    Runs natively on Linux and through Lima on macOS. Output is installed
-    to ~/.safeyolo/share/.
+    Linux builds an unpacked rootfs tree. macOS builds a kernel, initramfs,
+    and ext4 rootfs image through Lima. Output is installed in
+    ~/.safeyolo/share/.
     """
     # Find build script
     repo_root = Path(__file__).resolve().parents[4]
@@ -813,7 +814,7 @@ def build() -> None:  # DOC: docs/DEVELOPERS.md
         _print_linux_build_storage_failure(storage_failures)
         raise typer.Exit(1)
 
-    console.print("[bold]Building guest VM images...[/bold]")
+    console.print("[bold]Building guest artifacts...[/bold]")
     console.print("This takes several minutes on first build.\n")
 
     try:

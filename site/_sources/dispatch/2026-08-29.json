@@ -6,7 +6,7 @@
     "end": "2026-08-29"
   },
   "definitions": {
-    "coord": "SafeYolo's canonical coordination channel for attributed agent and operator messages."
+    "coord": "SafeYolo's retained channel for agent and operator messages with verified sender attribution."
   },
   "sections": [
     {
@@ -87,14 +87,14 @@
       "kind": "lens_caught",
       "items": [
         {
-          "title": "Freeze the proposal body with its semantic revision",
-          "body": "Independent review found that non-material metadata arriving after a proposal became ready could change its presentation without changing the semantic revision. The final ledger preserves the selected body until material evidence creates a new revision.",
+          "title": "Freeze proposal text with the revision that selected it",
+          "body": "SafeYolo increments a proposal's semantic revision when evidence changes the proposal's meaning. Independent review found that later, nonmaterial metadata could change the displayed text without advancing that revision. The final proposal record now freezes the selected text; only material evidence creates a new revision.",
           "attribution": "lens_review_finding",
           "snippet": {
             "language": "python",
             "code": "if current.status is ProposalStatus.PROPOSAL_READY and updated.revision == current.revision:\n    updated = replace(current, first_seen=min(current.first_seen, seen_at), last_seen=max(current.last_seen, seen_at))"
           },
-          "lesson": "A deduplication key and the bytes selected for presentation must advance together; otherwise replay protection can still emit contradictory copy.",
+          "lesson": "The revision used for deduplication and the text selected for display must advance together. Otherwise, replay protection can still publish contradictory text.",
           "evidence": [
             {
               "kind": "pr",
@@ -114,8 +114,8 @@
       "kind": "worth_knowing",
       "items": [
         {
-          "title": "A SQLite safety lock worked on Linux and self-locked on macOS",
-          "body": "SafeYolo's Mattermost adapter uses SQLite to remember what it has seen, prevent message replay, and match operator button presses to requests. Only one adapter should update that state at a time, so it also needs a process lease. Locking the database file itself survived Linux-heavy testing but interfered with SQLite's own locks on macOS; moving the lease to a sibling file fixed that failure. Acceptance on a real Mac then exposed more assumptions about descriptor paths. The operator's stated future direction is sandboxed macOS execution for ground-truth platform testing, not a capability SafeYolo ships today.",
+          "title": "A process lock conflicted with SQLite on macOS",
+          "body": "SafeYolo's Mattermost adapter uses SQLite to remember processed messages, prevent replay, and match operator buttons to requests. A separate process lease ensures that only one adapter updates this state. Locking the database file itself passed Linux-heavy tests but conflicted with SQLite's own locks on macOS, so the lease moved to a sibling file. Real-macOS acceptance then found another platform assumption: the adapter had to verify the identity of a /dev/fd descriptor and resolve it to a normal filesystem path before SQLite could create its write-ahead-log and shared-memory files. The operator's future direction is sandboxed macOS acceptance for ground-truth platform testing; SafeYolo does not ship that capability today.",
           "attribution": "infrastructure_environment_problem",
           "evidence": [
             {
@@ -148,11 +148,11 @@
       "slug": "coord",
       "title": "Coord and operator collaboration",
       "state_key": "coord-evidence-operator-v1",
-      "summary": "Coord is SafeYolo's canonical attributed channel between agents and the operator. Public summaries are derived from evidence; raw coordination text is not a publication source.",
+      "summary": "Coord is SafeYolo's canonical attributed channel between agents and the operator. Private coord messages may nominate a topic, but Relay independently writes every public claim from public evidence. Raw private text is neither copied nor cited.",
       "current_state": [
-        "Terminal delivery messages may carry bounded optional nominations, but canonical envelope metadata supplies provenance and malformed trailers yield no trusted candidates.",
-        "Relay, SafeYolo's coordinator, verifies factory observations, suppresses one-off friction, checks existing issue coverage, and presents recommendations without applying them.",
-        "Mattermost is a projection for the configured operator. Exact user, channel, thread, and replay checks preserve coord as the authority."
+        "A terminal DONE, BLOCKED, or FAILED message may include one bounded nomination. SafeYolo derives its sender and sequence from the stored message and rejects malformed nomination trailers.",
+        "Relay verifies repeated factory observations, filters one-off friction, checks whether an issue already covers the problem, and presents recommendations without applying them.",
+        "Mattermost presents a configured view to the operator. Exact user, channel, thread, and replay checks keep coord authoritative."
       ],
       "evidence": [
         {

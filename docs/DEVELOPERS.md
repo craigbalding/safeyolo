@@ -517,6 +517,12 @@ $ curl https://httpbin.org/get
 
 ## Documentation drift protection
 
+All authoritative prose changes must follow the project
+[technical-writing rule and lossless review checklist](technical-writing.md).
+The rule uses Simplified Technical English principles for clarity without
+claiming formal ASD-STE100 compliance. Automated drift checks support that
+review, but they do not judge whether a rewrite is clear or lossless.
+
 User-facing docs listed in `scripts/doc_allowlist.toml` are guarded by
 six pre-commit hooks that fail CI when a claim in a doc no longer matches
 the code. Each mechanism addresses one drift class; together they cover
@@ -587,7 +593,7 @@ Anchors (`# DOC: docs/AGENTS.md#agents-section`) are advisory in v1.
 
 ### Adding a new claim to a user-facing doc
 
-1. **CLI reference** (`safeyolo cmd --flag`) → no action needed; the
+1. **CLI reference** (a `safeyolo` command or option) → no action needed; the
    CLI-flag check catches broken references automatically. If you want
    the reverse binding ("changing this flag reminds me to update the
    doc"), add a `# DOC:` marker per the table above.
@@ -604,8 +610,8 @@ Anchors (`# DOC: docs/AGENTS.md#agents-section`) are advisory in v1.
 5. **Referenced file path** → the link check handles it automatically
    once the path is in a `[text](path)` or `[label]: path`.
 
-Run `pre-commit run --all-files` locally to verify all six checks pass.
-Run `python3 scripts/audit_doc_coverage.py` to see current coverage per
+Run `uv run pre-commit run --all-files` locally to verify all six checks pass.
+Run `uv run python scripts/audit_doc_coverage.py` to see current coverage per
 doc and per security keyword — useful for planning what to mark next.
 
 ### When *not* to add a marker

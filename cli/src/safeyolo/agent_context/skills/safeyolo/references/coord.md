@@ -35,15 +35,27 @@ staged; no coord server, proxy, or addon restart is required.
 
 | Operation | Purpose |
 |---|---|
-| `join_room` | Attach to an existing operator-granted membership and obtain room metadata plus current trusted brief and authoritative room state when receive-authorized. Send-only grants see null brief/state. Knowing a room name grants nothing. |
-| `read_brief` | Read the current canonical operator-authored Markdown brief and revision. Authorization is checked on every read. |
-| `get_room_state` | Read current stable member identity, room-visible verified capability/availability, untrusted declarations, and provider-owned resource leases with explicit provenance. Authorization is rechecked after bounded provider reads. |
-| `declare_capabilities` | Replace this agent's bounded, expiring room capability declarations. Declarations remain attributed untrusted claims and never become verified state. |
-| `send` | Append a canonical retained message and choose attention intent with `notify=none`, `notify=room`, or an explicit agent-name list. |
-| `wait_for_coord` | Primary foreground idle wait. It waits on the multiplexed feed and resolves the complete returned page before exposing its caller-owned `next_cursor`. |
-| `wait_for_attention` | Lower-level multiplexed feed wait for diagnostics and specialised use. The cursor is caller-owned. |
-| `read_attention` | Resolve and read the canonical object referenced by an attention edge. Authorization is checked again at read time. |
-| `read_room` | Read bounded retained history for deliberate context, catch-up, or audit. It is not the normal second half of a targeted notification. |
+| `join_room` | Attach to an existing membership and read room metadata. |
+| `read_brief` | Read the operator-authored brief and its revision. |
+| `get_room_state` | Read attributed membership, capability, and lease state. |
+| `declare_capabilities` | Replace this agent's expiring capability claims. |
+| `send` | Append a retained message and choose who to notify. |
+| `wait_for_coord` | Wait for and resolve a complete attention page. |
+| `wait_for_attention` | Wait on the lower-level attention feed. |
+| `read_attention` | Resolve one object from an attention edge. |
+| `read_room` | Read bounded retained room history. |
+
+Knowing a room name grants nothing. Receive-authorized members get the trusted
+brief and room state when they join; send-only members get null values.
+Authorization is checked on every brief and attention read, and rechecked after
+bounded provider reads for room state. Capability declarations remain
+attributed, untrusted claims and never become verified state.
+
+`wait_for_coord` is the primary foreground wait. It resolves the complete page
+before exposing the caller-owned `next_cursor`. `wait_for_attention` is a
+lower-level diagnostic primitive, and its cursor is also caller-owned.
+`read_room` supports deliberate context, catch-up, and audit; it is not the
+normal second half of a targeted notification.
 
 Set `notify` explicitly when using raw `send`. The MCP adapter defaults it to
 `none`; omitting it through an older or raw caller preserves legacy room-wake
@@ -112,7 +124,15 @@ as exact `text/plain` JSON with no surrounding prose or Markdown and with
 exactly these keys:
 
 ```json
-{"schema":"safeyolo.coord.operator-request/v1","kind":"decision","title":"Release candidate ready","summary":"The reviewed tree is ready for live acceptance.","reference":"PR #450","details":["CI passed","Lens READY"],"allowed_actions":["approve","reject","revise"]}
+{
+  "schema": "safeyolo.coord.operator-request/v1",
+  "kind": "decision",
+  "title": "Release candidate ready",
+  "summary": "The reviewed tree is ready for live acceptance.",
+  "reference": "PR #450",
+  "details": ["CI passed", "Lens READY"],
+  "allowed_actions": ["approve", "reject", "revise"]
+}
 ```
 
 The fixed kinds and allowed actions are:

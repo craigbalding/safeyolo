@@ -60,11 +60,15 @@ class AgentPlatform(ABC):
     @abstractmethod
     def load_firewall_rules(self, proxy_port: int, admin_port: int,
                             active_subnets: list[str]) -> None:
-        """Load firewall rules allowing only proxy egress."""
+        """Apply any platform egress controls.
+
+        Current platforms use structural isolation and implement this as a
+        no-op. The method remains part of the lifecycle interface.
+        """
 
     @abstractmethod
     def unload_firewall_rules(self) -> None:
-        """Remove all firewall rules for this instance."""
+        """Remove platform egress controls, if the platform created any."""
 
     @abstractmethod
     def agent_rootfs_path(self, name: str) -> Path:
@@ -72,12 +76,13 @@ class AgentPlatform(ABC):
 
         Returns the path whether or not it exists — callers use this to
         check whether `prepare_rootfs` has run for this agent.
-        Darwin: a file (ext4 disk image). Linux: a directory (overlayfs).
+        Darwin returns a per-agent ext4 image. Linux returns the shared
+        unpacked tree or a custom per-agent tree.
         """
 
     @abstractmethod
     def prepare_rootfs(self, name: str) -> Path:
-        """Create agent rootfs from base image. Returns rootfs path."""
+        """Select or create the platform rootfs and return its path."""
 
     @abstractmethod
     def start_sandbox(

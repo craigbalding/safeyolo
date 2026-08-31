@@ -591,21 +591,23 @@ def _sudoers_template_and_summary() -> tuple[Path, str, str]:
     """Return (template_path, post-install-summary, missing-template-error)
     for the current platform.
 
-    Darwin: safeyolo.sudoers — ifconfig lo0 alias for attribution IPs.
-    Linux:  safeyolo-linux.sudoers — ip/iptables/mount/umount/runsc/cp rules.
+    Darwin: safeyolo.sudoers — an empty compatibility file; current macOS
+    operation does not require sudoers rules.
+    Linux: safeyolo-linux.sudoers — one-time mount/copy/chown fallback rules
+    for rootfs extraction when fuse2fs is unavailable.
     """
     templates_dir = Path(__file__).parent.parent / "templates"
     system = _platform.system()
     if system == "Darwin":
         return (
             templates_dir / "safeyolo.sudoers",
-            "ifconfig lo0 alias",
+            "none; current macOS operation does not require sudoers rules",
             "Darwin sudoers template missing",
         )
     if system == "Linux":
         return (
             templates_dir / "safeyolo-linux.sudoers",
-            "ip/iptables/mount/umount/runsc/cp",
+            "one-time rootfs extraction fallback: mount, umount, cp, and chown",
             "Linux sudoers template missing",
         )
     raise RuntimeError(f"Unsupported platform for sudoers setup: {system}")
@@ -614,12 +616,10 @@ def _sudoers_template_and_summary() -> tuple[Path, str, str]:
 def _resolve_sudoers_body(template_path: Path) -> str:
     """Read the template and apply platform-specific substitutions.
 
-    Both platforms substitute the invoking user's username into the
-    template so that rules are scoped to a single operator, not a
-    broad group like macOS %staff (which includes ALL local users).
-
-    Linux additionally substitutes rootfs paths and chown targets to
-    pin the extraction rules to literal destinations.
+    Linux substitutes the invoking user's name, rootfs paths, and chown
+    targets so the one-time extraction fallback is pinned to one operator and
+    literal destinations. The macOS compatibility template has no active
+    rules; retaining its username replacement also supports older templates.
     """
     content = template_path.read_text()
 
@@ -667,22 +667,17 @@ def _resolve_sudoers_body(template_path: Path) -> str:
 
 @setup_app.command()
 def sudoers() -> None:
-    """Install sudoers rules for passwordless SafeYolo privileged operations.
+    """Install optional legacy rootfs-extraction sudoers rules.
 
-    Copies a platform-specific SafeYolo sudoers template to
-    /etc/sudoers.d/safeyolo, granting passwordless sudo for ONLY the
-    specific commands SafeYolo needs at runtime:
+    Current SafeYolo sandbox networking and lifecycle operations do not need
+    host sudoers rules.
 
-      macOS: ifconfig lo0 alias/-alias for the per-agent attribution IP
-        (a synthetic 127.0.0.X bound by the proxy bridge). The rules are
-        scoped to the invoking user via the %safeyolo_user placeholder.
+    On Linux, this command installs narrowly pinned mount, unmount, copy, and
+    ownership commands for the one-time rootfs extraction fallback used when
+    fuse2fs is unavailable. Agent start and stop do not use these rules.
 
-      Linux: ip netns/link/addr for veth and namespace lifecycle,
-        iptables for per-agent egress rules, mount/umount for overlayfs,
-        runsc for gVisor container lifecycle, sysctl for IP forwarding,
-        mkdir/cp for base-rootfs extraction. The Linux template's
-        `%safeyolo` placeholder is replaced with the invoking user's
-        username at install time.
+    On macOS, the bundled file contains no rules. Existing legacy files can be
+    removed because current macOS operation does not use them.
 
     Examples:
 
@@ -747,4 +742,4 @@ def sudoers() -> None:
         raise typer.Exit(1)
 
     console.print("[green]Sudoers rules installed.[/green]")
-    console.print(f"SafeYolo commands ({post_install_summary}) no longer require a password.")
+    console.print(f"Installed scope: {post_install_summary}.")

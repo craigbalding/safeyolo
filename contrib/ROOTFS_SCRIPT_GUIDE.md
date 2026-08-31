@@ -1,8 +1,8 @@
 # Rootfs scripts
 
-Rootfs scripts let you replace SafeYolo's default Debian-trixie base rootfs
-with one you build yourself — Kali, Alpine, Fedora, Arch, whatever distro
-publishes an OCI image or rootfs tarball. SafeYolo invokes them via:
+Rootfs scripts replace SafeYolo's default Debian-trixie base rootfs with a
+custom distribution. The source can be an Open Container Initiative (OCI)
+image or a rootfs tarball. SafeYolo invokes the script with:
 
 ```sh
 safeyolo agent add <name> <folder> \
@@ -36,9 +36,15 @@ Your script is called with these env vars set:
 | `SAFEYOLO_TARGET_ARCH` | `arm64` or `amd64`. Your script must pull or build binaries for this arch. |
 | `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS` | Absolute path of a host-side file where the script declares per-distro package cache dirs (one absolute in-rootfs path per line, e.g. `/var/cache/apt`). SafeYolo bind-mounts each path to a persistent per-agent dir so runtime `apt install` / `apk add` doesn't re-download on restart. Write an empty file if the distro has no cache worth persisting. |
 
-Exactly one of `_OUT_EXT4` / `_OUT_TREE` is set per invocation — the
-others of the two match what the target runtime needs. Write your
-script to handle whichever is set (see the examples).
+Exactly one output variable is set for each invocation:
+
+- On macOS, `SAFEYOLO_ROOTFS_OUT_EXT4` names the ext4 image to create.
+- On Linux, `SAFEYOLO_ROOTFS_OUT_TREE` names the unpacked directory tree to
+  populate.
+
+Handle both branches if the script supports both host platforms. Always create
+`SAFEYOLO_ROOTFS_OUT_CACHE_PATHS`; write an empty file when no package cache
+should persist.
 
 Exit `0` → SafeYolo validates the expected output file exists, is non-empty,
 and uses it for the agent. Non-zero → SafeYolo aborts `agent add`, prints
@@ -53,12 +59,12 @@ bundled Kali builder follows that model.
 
 ## What the rootfs must contain
 
-SafeYolo boots the rootfs you produce, bypassing the distro's own init.
-What's required:
+SafeYolo boots the rootfs without the distribution's init system. The rootfs
+must meet these requirements:
 
-1. **`/usr/local/bin/safeyolo-guest-init`** — exec'd as PID 1 on macOS
-   (via the initramfs `switch_root`) and as the OCI entrypoint on Linux.
-   Handed over to by SafeYolo's boot orchestrator.
+1. **`/usr/local/bin/safeyolo-guest-init`** — SafeYolo's boot orchestrator
+   executes this file as process ID 1. On macOS, the initramfs reaches it through
+   `switch_root`. On Linux, the OCI entrypoint executes it directly.
 2. **A userland that runs on Linux 6.12** — glibc ≥ 2.17 or musl; any
    modern distro from 2018 onwards is fine.
 3. **The right architecture** — use `$SAFEYOLO_TARGET_ARCH` to pull the
@@ -70,7 +76,8 @@ What's required:
      `VSOCK-CONNECT`, which these pumps require on macOS. Debian trixie,
      Alpine 3.20+, Fedora 40+, Arch, and RHEL 9 all ship ≥ 1.8.)
    - `openssh-server` (sshd — entrypoint for `safeyolo agent shell`)
-   - `ca-certificates` (trust store — SafeYolo's MITM CA is appended at
+   - `ca-certificates` (trust store — SafeYolo's man-in-the-middle certificate
+     authority (CA) certificate is appended at
      boot by `guest-init-static`)
    - `shadow` or equivalent (provides `useradd` + `usermod`; the latter
      is used to unlock the agent account so OpenSSH accepts pubkey auth

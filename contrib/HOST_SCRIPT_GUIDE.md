@@ -1,10 +1,9 @@
 # Host scripts
 
-Host scripts are plain shell scripts that run **on the host** (the machine
-you're running SafeYolo on -- macOS or Linux), as **you**, before a
-SafeYolo agent boots. They're how you install an agent (e.g. Claude
-Code, OpenAI Codex, aider), stage auth, and define what the sandbox
-should execute.
+Host scripts are shell scripts that run on the macOS or Linux host before a
+SafeYolo agent boots. SafeYolo runs them with the operator's user permissions.
+A host script can install an agent harness, copy authentication or settings,
+and define the command that the sandbox executes.
 
 SafeYolo invokes them via:
 
@@ -18,21 +17,20 @@ For an existing agent, reapply or change the host setup before boot:
 safeyolo agent run <name> --host-script path/to/my-host-setup.sh
 ```
 
-There is no template system, no DSL, no TOML -- just a shell script that
-does what any shell script does. Read it, edit it, run it anywhere else
-to confirm what it does.
+SafeYolo does not interpret a template, domain-specific language (DSL), or
+TOML document. It executes the selected shell script. Read the script before
+you run it.
 
 ## Why host-side
 
-A host script runs in your own shell session with your own permissions.
-It can read `~/.claude/.credentials.json`, copy it into the agent's
-persistent home, and you can see exactly what happened. Keeping the
-script host-side means no magic between "I wrote the script" and "this
-is what ran."
+A host script can read any file that the operator can read. For example, it can
+copy `~/.claude/.credentials.json` into the agent's persistent home. The
+persistent home is mounted at `/home/agent`; the agent process can read that
+copied credential. This is an explicit credential-sharing path and is not
+covered by the service gateway's vault-isolation guarantee.
 
-The sandbox's trust boundary is between the **agent** (what runs
-inside) and the host. The script itself is your code -- there's nothing
-to gain by running it in the sandbox.
+The sandbox boundary separates the agent process from the host. A host script
+runs outside that boundary and must be trusted as host code.
 
 ## The contract
 
@@ -41,23 +39,23 @@ Your script is called with these env vars set:
 | Variable | Meaning |
 |---|---|
 | `SAFEYOLO_AGENT_NAME` | The instance name the user passed to `agent add`. |
-| `SAFEYOLO_AGENT_HOME` | Absolute path to the persistent host dir that's bind-mounted to `/home/agent` inside the VM. Write files here. |
-| `SAFEYOLO_AGENT_FOLDER` | Absolute path to the workspace folder (mounted as `/workspace` in the VM). |
+| `SAFEYOLO_AGENT_HOME` | Absolute path to the persistent host directory mounted at `/home/agent` in the sandbox. Write agent-readable files here. |
+| `SAFEYOLO_AGENT_FOLDER` | Absolute path to the workspace directory mounted at `/workspace` in the sandbox. |
 
-Exit `0` to proceed. Any non-zero exit aborts `agent add` -- SafeYolo
-prints your stderr and leaves the agent in a half-configured state so
-you can re-run with `--force` after fixing the script.
+Exit with status `0` to proceed. Any nonzero status aborts `agent add`.
+SafeYolo prints the script's standard error and leaves the partial agent state
+in place. After you correct the script, run `agent add --force` to retry.
 
 ## What to write
 
 Typical tasks:
 
-1. **Stage auth, settings, user extensions** into `$SAFEYOLO_AGENT_HOME`
-   so the agent finds them on first boot.
-2. **Write `$SAFEYOLO_AGENT_HOME/.safeyolo-command`** -- an executable
-   foreground command file that is exec'd by `safeyolo agent run`. Use
-   it to install the agent binary on first run (idempotently) and then
-   exec it with the flags you want.
+1. Copy authentication, settings, or user extensions into
+   `$SAFEYOLO_AGENT_HOME` only when the agent must be able to read them.
+2. Write an executable `$SAFEYOLO_AGENT_HOME/.safeyolo-command` foreground
+   command. `safeyolo agent run` executes this file. The command can install the
+   agent binary idempotently on first run and then replace itself with the
+   selected agent process.
 
 First-party integrations also source `contrib/lib/stage-safeyolo-context.sh`
 to install SafeYolo's compact baseline and shared operational skill. Pass
@@ -104,7 +102,7 @@ chmod +x "$SAFEYOLO_AGENT_HOME/.safeyolo-command"
 
 `$SAFEYOLO_AGENT_HOME/.safeyolo-command` must be an **interactive foreground
 process**: a coding agent (`exec claude ...`), a shell (`exec bash -l`), or a
-TUI that owns stdin/stdout for the session. `safeyolo agent run <name>`
+terminal user interface (TUI) that owns stdin/stdout for the session. `safeyolo agent run <name>`
 (without `--detach`) attaches a terminal and expects the command to interact
 with it.
 

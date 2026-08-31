@@ -13,15 +13,15 @@ permalink: /topics/coord/
 _Last materially updated through 2026-08-29. Relay editorial synthesis._
 
 **SafeYolo terms used here:**
-- `coord` — SafeYolo's canonical coordination channel for attributed agent and operator messages.
+- `coord` — SafeYolo's retained channel for agent and operator messages with verified sender attribution.
 
-Coord is SafeYolo's canonical attributed channel between agents and the operator. Public summaries are derived from evidence; raw coordination text is not a publication source.
+Coord is SafeYolo's canonical attributed channel between agents and the operator. Private coord messages may nominate a topic, but Relay independently writes every public claim from public evidence. Raw private text is neither copied nor cited.
 
 ## Current state
 
-- Terminal delivery messages may carry bounded optional nominations, but canonical envelope metadata supplies provenance and malformed trailers yield no trusted candidates.
-- Relay, SafeYolo's coordinator, verifies factory observations, suppresses one-off friction, checks existing issue coverage, and presents recommendations without applying them.
-- Mattermost is a projection for the configured operator. Exact user, channel, thread, and replay checks preserve coord as the authority.
+- A terminal DONE, BLOCKED, or FAILED message may include one bounded nomination. SafeYolo derives its sender and sequence from the stored message and rejects malformed nomination trailers.
+- Relay verifies repeated factory observations, filters one-off friction, checks whether an issue already covers the problem, and presents recommendations without applying them.
+- Mattermost presents a configured view to the operator. Exact user, channel, thread, and replay checks keep coord authoritative.
 
 ## Public evidence
 

@@ -28,14 +28,19 @@ mod = _load_module()
 # ---------------------------------------------------------------------------
 
 class TestExtractInvocations:
-    def test_ignores_inline_prose_backticks(self, tmp_path: Path):
+    def test_captures_inline_code_invocations(self, tmp_path: Path):
         doc = tmp_path / "d.md"
         doc.write_text(
             "Run `safeyolo start` to boot the proxy.\n"
             "```bash\nsafeyolo start\n```\n",
         )
         invocations = mod._extract_safeyolo_invocations(doc)
-        assert invocations == [(3, "safeyolo start")]
+        assert invocations == [(1, "safeyolo start"), (3, "safeyolo start")]
+
+    def test_ignores_inline_code_that_is_not_an_invocation(self, tmp_path: Path):
+        doc = tmp_path / "d.md"
+        doc.write_text("The `safeyolo` package provides `agent add`.\n")
+        assert mod._extract_safeyolo_invocations(doc) == []
 
     def test_captures_multiple_fenced_invocations(self, tmp_path: Path):
         doc = tmp_path / "d.md"
@@ -67,6 +72,8 @@ FAKE_SURFACE = {
     "": {"--version"},
     "start": {"--dev", "--test", "--wait", "--no-wait"},
     "stop": {"--all"},
+    "setup": set(),
+    "setup apparmor": set(),
     "agent": set(),
     "agent add": {"--host-script", "--force", "-f"},
     "agent run": {"--yolo", "--no-yolo"},
@@ -98,8 +105,12 @@ class TestValidateLine:
     def test_unknown_command_fails(self):
         err = mod._validate_line("safeyolo token create --ttl 1h", FAKE_SURFACE)
         assert err is not None
-        # "token" is unknown; resolver stops at "" root, then --ttl fails
-        assert "unknown flag" in err or "unknown command" in err
+        assert "unknown command" in err
+
+    def test_unknown_nested_command_fails(self):
+        err = mod._validate_line("safeyolo setup check", FAKE_SURFACE)
+        assert err is not None
+        assert "safeyolo setup check" in err
 
     def test_positional_placeholder_ignored(self):
         assert (

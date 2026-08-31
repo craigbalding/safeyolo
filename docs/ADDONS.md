@@ -183,14 +183,18 @@ their separate reason and trace contract.
 
 Identity for every action route is source-derived (`service-discovery`), never taken from the request body. `/api/test-context/current` POST/DELETE require the caller to resolve to a real agent (`unknown`/`default` → `403`).
 
-**Token management:**
+**Agent authentication:**
 ```bash
-# On host: create a readonly token
-safeyolo token create
-
-# Agent uses token in requests
-curl -H "Authorization: Bearer <token>" http://_safeyolo.proxy.internal/status
+# Inside the sandbox, read the per-agent token for this command only.
+(
+  agent_token=$(cat /app/agent_token) || exit
+  printf 'Authorization: Bearer %s\n' "$agent_token" |
+    curl -sS --header @- http://_safeyolo.proxy.internal/status
+)
 ```
+
+SafeYolo creates and mounts the per-agent bearer token. Do not print, persist,
+or pass it in a URL.
 
 ---
 
@@ -685,8 +689,9 @@ Fast regex scanning for secrets and suspicious patterns.
 
 **Related CLI:**
 - `safeyolo agent authorize <agent> <service> --capability <name>` -- wire an agent to a service
-- `safeyolo services list/show` -- inspect service definitions
-- `safeyolo vault add/list/remove/oauth2` -- manage credentials
+- `safeyolo services list` and `safeyolo services show` -- inspect service definitions
+- `safeyolo vault add`, `safeyolo vault list`, `safeyolo vault remove`, and
+  `safeyolo vault oauth2` -- manage credentials
 
 ---
 

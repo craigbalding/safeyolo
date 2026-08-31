@@ -400,8 +400,8 @@ def _run_agent(
     _t("cli entry (metadata, proxy check)")
     _validate_instance_name(name)
 
-    # Rootfs path is platform-specific -- Darwin uses an ext4 disk image file,
-    # Linux uses an overlayfs merged directory. Ask the platform which to check.
+    # Rootfs path is platform-specific. Darwin uses a per-agent ext4 image.
+    # Linux selects the shared unpacked tree or a custom per-agent tree.
     from ..platform import get_platform
     rootfs = get_platform().agent_rootfs_path(name)
     if not rootfs.exists():
@@ -1054,7 +1054,11 @@ def add(  # DOC: README.md, docs/AGENTS.md
     rootfs_script: str = typer.Option(
         None,
         "--rootfs-script",
-        help="Path to a rootfs builder script. Produces a custom per-agent rootfs image instead of cloning the default base. See contrib/ROOTFS_SCRIPT_GUIDE.md.",
+        help=(
+            "Path to a rootfs builder script. Produces a custom per-agent ext4 "
+            "image on macOS or unpacked tree on Linux. "
+            "See contrib/ROOTFS_SCRIPT_GUIDE.md."
+        ),
     ),
     rootfs_from: str = typer.Option(
         None,
@@ -1068,11 +1072,10 @@ def add(  # DOC: README.md, docs/AGENTS.md
         False,
         "--ephemeral",
         help=(
-            "Boot with a tmpfs overlay upper instead of a per-agent writable "
-            "disk. Writes to /etc, /usr, /var etc. are discarded when the agent "
-            "stops. /home/agent remains persistent (virtiofs-bound). Useful for "
-            "one-shot sandboxes and security experiments that want a pristine "
-            "rootfs every run."
+            "Boot with a memory-backed rootfs overlay instead of the platform's "
+            "persistent per-agent overlay. Writes to /etc, /usr, and /var are "
+            "discarded when the agent stops. The host-mounted /home/agent remains "
+            "persistent."
         ),
     ),
     force: bool = typer.Option(
@@ -1251,11 +1254,10 @@ def add(  # DOC: README.md, docs/AGENTS.md
                 console.print("Use --force to overwrite")
                 raise typer.Exit(1)
 
-    # --rootfs-script runs before platform.prepare_rootfs so the script's
-    # output is in place when the platform layer goes looking for the image.
-    # On Linux, writes ~/.safeyolo/agents/<name>/rootfs/. On Darwin,
-    # writes rootfs.ext4. Platform layer then finds the pre-built image and
-    # skips its default clone/share step.
+    # --rootfs-script runs before platform.prepare_rootfs so the selected
+    # platform can find its custom output. Linux uses the per-agent rootfs/
+    # tree. Darwin uses rootfs.ext4. Without custom output, Linux selects the
+    # shared tree and Darwin creates its default per-agent ext4 image.
     if rootfs_script_path is not None:
         console.print(f"  [bold]Running rootfs script:[/bold] {rootfs_script_path}")
         try:
@@ -1271,7 +1273,8 @@ def add(  # DOC: README.md, docs/AGENTS.md
             console.print(f"[red]Rootfs clone failed:[/red] {escape(str(err))}")
             raise typer.Exit(1)
 
-    # Create rootfs for this agent (platform-specific: APFS clone on macOS, overlayfs on Linux)
+    # Select or create the platform rootfs: a per-agent ext4 image on macOS,
+    # or the shared/custom unpacked tree on Linux.
     from ..platform import get_platform
     try:
         rootfs = get_platform().prepare_rootfs(name)
@@ -1381,8 +1384,8 @@ def list_agents() -> None:
     all_agents = load_all_agents()
 
     if agents_dir.exists():
-        # Ask the platform for the expected rootfs path (ext4 file on Darwin,
-        # overlayfs directory on Linux) so the filter works on both.
+        # Ask the platform for the expected rootfs path: an ext4 file on
+        # Darwin, or a shared/custom unpacked directory on Linux.
         from ..platform import get_platform
         plat = get_platform()
         instances = [

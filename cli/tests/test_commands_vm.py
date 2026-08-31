@@ -1837,8 +1837,8 @@ class TestInit:
         assert result.exit_code == 1
         assert "already exists" in result.output.lower()
 
-    def test_warns_when_guest_images_missing(self, runner, tmp_path, monkeypatch):
-        """Warns about missing guest images but continues."""
+    def test_warns_when_guest_artifacts_are_missing(self, runner, tmp_path, monkeypatch):
+        """Warns about missing guest artifacts but continues."""
         cfg = tmp_path / "init-test"
         logs = tmp_path / "init-logs"
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(cfg))
@@ -1853,8 +1853,8 @@ class TestInit:
             result = runner.invoke(app, ["init", "--no-interactive"])
 
         assert result.exit_code == 0
-        assert "guest vm images not found" in result.output.lower()
-        # VM directories should still be created
+        assert "guest artifacts not found" in result.output.lower()
+        # Guest-artifact directories should still be created.
         assert (cfg / "share").exists()
         assert (cfg / "bin").exists()
 

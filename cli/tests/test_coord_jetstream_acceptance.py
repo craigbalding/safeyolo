@@ -1,9 +1,9 @@
-"""Reviewer-mandated acceptance tests for the coord JetStream substrate.
+"""Acceptance tests for the coord JetStream substrate.
 
-Six invariants the reviewer called out on the stage-1 handoff. These sit
-above the unit tests in test_coord_v0.py — they verify substrate
-properties (durability, retention reporting, per-room isolation, auth,
-availability isolation, mid-flight revoke) rather than the API surface.
+These tests verify substrate properties such as durability, retention
+reporting, per-room isolation, authorization, availability isolation, and
+mid-flight revocation. They complement the API-focused unit tests in
+test_coord_v0.py.
 
 Each test starts a real nats-server, so they are slower than unit tests
 by design. Marked with sensible timeouts so a hung fetch fails loudly
@@ -65,10 +65,9 @@ AGENT_B = "ag-bbbb000000000000000000000000bbbb"
 def test_publish_then_restart_message_survives(coord_env):
     """A PubAck'd message must survive a full nats-server stop+start.
 
-    JetStream FileStorage — the whole reason we picked it over pure NATS
-    core — should replay the message from disk on reboot. Reviewer point:
-    if this fails, the substrate isn't durable and stage-1 has bought
-    nothing over stage-0's SQLite.
+    JetStream FileStorage, unlike the in-memory NATS core, should replay the
+    message from disk after a restart. Failure means the substrate does not
+    provide its required durability.
     """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
@@ -91,12 +90,11 @@ def test_publish_then_restart_message_survives(coord_env):
 
 @pytest.mark.timeout(30)
 def test_safeyolo_stop_start_lifecycle_preserves_messages(coord_env):
-    """Reviewer round-4 acceptance: exercise the coord lifecycle
-    exactly the way `safeyolo stop`/`safeyolo start` do (via the
-    _stop_coord_best_effort / _start_coord_best_effort helpers, not
-    raw nats_runtime calls). Confirms the issue's specific acceptance
-    signal — restarting SafeYolo does not lose accepted messages —
-    routes through the same code path the operator hits."""
+    """A CLI lifecycle restart preserves messages accepted by coord.
+
+    Exercise the same best-effort helpers used by `safeyolo stop` and
+    `safeyolo start`, rather than calling the NATS runtime directly.
+    """
     from safeyolo.commands.lifecycle import (
         _start_coord_best_effort,
         _stop_coord_best_effort,
@@ -219,11 +217,10 @@ def test_manual_credential_rotation_preserves_history_and_redacts_evidence(
 
 @pytest.mark.timeout(30)
 def test_instance_id_minted_at_safeyolo_start(nats_env):
-    """Reviewer round-6 point 4: #371 says safeyolo_instance_id is
-    generated on first `safeyolo start`, not lazily on first coord
-    API request. Verify _start_coord_best_effort mints the ID
-    itself so `safeyolo status` can display it immediately after
-    startup — without waiting for an agent to poke coord."""
+    """The first `safeyolo start` creates the instance ID eagerly.
+
+    Status must be able to display the ID before any agent calls the coord API.
+    """
     from safeyolo.commands.lifecycle import (
         _start_coord_best_effort,
         _stop_coord_best_effort,
@@ -293,9 +290,9 @@ def test_retention_truncation_surfaces_history_flags(coord_env):
 
 @pytest.mark.timeout(30)
 def test_cross_room_isolation_hyperactive_room_does_not_starve_peer(coord_env):
-    """Reviewer point 3: room A hitting its own retention cap must not
-    hollow out room B. Per-room max_bytes/max_msgs contain the blast
-    radius so one noisy room cannot destroy another's history.
+    """One room reaching its retention cap does not erase another's history.
+
+    Per-room byte and message caps isolate a noisy room from its peers.
     """
     _run(api.create_room("hot"))
     _run(api.create_room("cold"))
@@ -416,11 +413,11 @@ def test_revoke_during_blocked_wait_returns_empty(coord_env):
 
 @pytest.mark.timeout(45)
 def test_send_read_wait_all_fail_with_nats_unavailable_when_nats_down(coord_env):
-    """Reviewer round-3 point 1: NatsUnavailable must be the SINGLE
-    boundary across every NATS-touching op. Killing NATS mid-flight
-    then invoking send/read/wait must raise NatsUnavailable, not a raw
-    nats-py exception that would escape as a proxy 500 and take a
-    healthy request path down with it."""
+    """All NATS operations expose the same unavailable error boundary.
+
+    After NATS stops, send, read, and wait must raise `NatsUnavailable`
+    instead of leaking a transport-library exception as a proxy error.
+    """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
 
@@ -445,10 +442,7 @@ def test_send_read_wait_all_fail_with_nats_unavailable_when_nats_down(coord_env)
 
 @pytest.mark.timeout(30)
 def test_body_at_api_max_survives_jetstream(coord_env):
-    """Reviewer round-3 point 2: a body exactly at the API cap must
-    make it through JetStream. If MaxMsgSize == MAX_BODY_BYTES the
-    envelope overhead pushes the total past the limit and a valid
-    max-sized body is rejected. Pin the headroom with this test."""
+    """A body at the API limit fits in JetStream with envelope overhead."""
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
     _grant("r", "agent", AGENT_B)
@@ -464,12 +458,12 @@ def test_body_at_api_max_survives_jetstream(coord_env):
 
 @pytest.mark.timeout(30)
 def test_body_at_api_max_survives_jetstream_non_ascii(coord_env):
-    """Reviewer round-5 point 1: an ASCII body of `x` doesn't exercise
-    JSON's Unicode-escape behavior. A legal 256 KiB body of `é` used to
-    serialize to ~768 KiB (because json.dumps' default ensure_ascii=True
-    expanded each 2-byte UTF-8 char to `\\u00e9`, 6 chars), blowing past
-    a tight stream ceiling. This test locks in the ensure_ascii=False
-    fix + 2 MiB headroom."""
+    """A non-ASCII body at the API byte limit fits in JetStream.
+
+    Escaping every character as `\\u00e9` would expand this valid 256 KiB
+    body to about 768 KiB. The UTF-8 serializer and stream headroom must
+    accommodate it without changing the payload.
+    """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
     _grant("r", "agent", AGENT_B)
@@ -490,10 +484,12 @@ def test_body_at_api_max_survives_jetstream_non_ascii(coord_env):
 
 @pytest.mark.timeout(30)
 def test_missing_jetstream_stream_for_existing_room_raises_coord_data_error(coord_env):
-    """Reviewer round-5 point 2: SQLite says the room exists but the
-    JetStream stream is gone. Silently returning an empty page would
-    hide the data loss. Must surface as CoordDataError (→ addon 500).
-    delete_room_stream itself stays idempotent."""
+    """A missing stream for a registered room is a data-integrity error.
+
+    Returning an empty page would hide data loss. Reads and writes must raise
+    `CoordDataError`, while deleting an already missing stream stays
+    idempotent.
+    """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
     room_id = next(r["room_id"] for r in api.list_rooms() if r["name"] == "r")
@@ -510,7 +506,7 @@ def test_missing_jetstream_stream_for_existing_room_raises_coord_data_error(coor
         _run(api.read_room("r", "agent", AGENT_A))
 
     # A publish to the still-registered room must also surface the
-    # data loss (reviewer round-6 point 2). Otherwise the send would
+    # data loss. Otherwise the send would
     # be broadly reported as NatsUnavailable → 503, which would look
     # like an outage the operator should wait out rather than a
     # storage integrity failure to investigate.
@@ -528,11 +524,12 @@ def test_missing_jetstream_stream_for_existing_room_raises_coord_data_error(coor
 
 @pytest.mark.timeout(45)
 def test_repeated_read_and_wait_do_not_grow_consumer_count(coord_env):
-    """Reviewer round-3 point 3: nats-py's PullSubscription.unsubscribe
-    only tears down the client-side inbox; the server-side consumer
-    lingers until an inactivity threshold fires. Verify that the
-    explicit delete_consumer we do after every fetch keeps the
-    consumer_count from creeping up under /messages+/wait traffic."""
+    """Repeated reads and waits do not leak server-side consumers.
+
+    `PullSubscription.unsubscribe` tears down only the client-side inbox. The
+    explicit consumer deletion after each fetch must keep the server count at
+    zero.
+    """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
     _grant("r", "agent", AGENT_B)
@@ -561,11 +558,12 @@ def test_repeated_read_and_wait_do_not_grow_consumer_count(coord_env):
 
 @pytest.mark.timeout(30)
 def test_corrupt_persisted_envelope_raises_coord_data_error(coord_env):
-    """Reviewer round-3 point 4: SafeYolo is the sole writer of these
-    subjects, so a payload that is not a JSON envelope is a storage
-    integrity failure. It must surface as CoordDataError (→ addon 500)
-    rather than being ACKed and silently skipped, which would produce
-    an unexplained hole in room history."""
+    """A persisted payload that is not a JSON envelope is a data error.
+
+    SafeYolo is the sole writer of these subjects. The read must raise
+    `CoordDataError` instead of acknowledging and silently skipping the bad
+    payload.
+    """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
     room_id = next(r["room_id"] for r in api.list_rooms() if r["name"] == "r")
@@ -591,11 +589,11 @@ def test_corrupt_persisted_envelope_raises_coord_data_error(coord_env):
 
 @pytest.mark.timeout(15)
 def test_revoke_during_blocked_read_raises_no_membership(coord_env):
-    """Reviewer round-4 point 2: read_room checks receive, then does a
-    potentially blocking JetStream fetch, then returns messages. A
-    revoke that lands while the fetch is blocked must NOT ship a peer
-    message the caller has since lost permission to see. Semantically
-    matches #20: post-revoke, all reads are 404.
+    """A receive revocation during a blocked read prevents message delivery.
+
+    `read_room` checks permission before and after its potentially blocking
+    JetStream fetch. A caller that loses permission during the fetch must not
+    receive the peer message.
     """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
@@ -624,11 +622,12 @@ def test_revoke_during_blocked_read_raises_no_membership(coord_env):
 
 @pytest.mark.timeout(30)
 def test_existing_stream_with_different_config_fails_loud(coord_env):
-    """Reviewer round-3 point 5: `ensure_room_stream` used to accept
-    any existing ROOM_* as good enough. A future bump of MaxAge /
-    MaxBytes / dedup would silently miss all pre-existing streams.
-    Now: config drift raises StreamConfigDrift so the operator has
-    to explicitly reconcile."""
+    """An existing room stream with different settings fails explicitly.
+
+    Changes to maximum age, maximum bytes, or deduplication settings must not
+    silently skip pre-existing streams. Configuration drift requires operator
+    reconciliation.
+    """
     _run(api.create_room("r"))
     room_id = next(r["room_id"] for r in api.list_rooms() if r["name"] == "r")
 

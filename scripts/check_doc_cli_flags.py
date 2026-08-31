@@ -12,8 +12,9 @@ How it works
 1. Introspect the Typer ``app`` and walk its Click command tree.
    Build ``{"agent add": {"--host-script", "--force", "-f", ...},
             "start":     {"--dev", "--test", ...}, ...}``.
-2. Walk every fenced code block in the user-facing doc allowlist.
-3. For each line starting with ``safeyolo ``, parse the command path
+2. Walk every fenced code block and inline code span in the user-facing doc
+   allowlist.
+3. For each invocation starting with ``safeyolo ``, parse the command path
    greedily (longest match against the surface), then classify remaining
    tokens as flags. Every ``--foo`` or short ``-f`` must be in the
    allowed-flag set for the resolved command.
@@ -47,6 +48,7 @@ from _doc_config import ALL_SHIPPED_DOCS  # noqa: E402
 
 FENCE_RE = re.compile(r"^\s*```")
 SAFEYOLO_LINE_RE = re.compile(r"^\s*safeyolo(?:\s|$)")
+INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 
 # Tokens that look like flags but are placeholders in prose. If we hit one,
 # stop parsing the rest of the line (typical: `safeyolo agent add NAME <PATH>`
@@ -95,8 +97,7 @@ def _load_cli_surface() -> dict[str, set[str]]:
 
 
 def _extract_safeyolo_invocations(doc_path: Path) -> list[tuple[int, str]]:
-    """Return [(line_number, invocation), ...] for every safeyolo line inside
-    a fenced code block (only fenced blocks — inline `code` is prose)."""
+    """Return each fenced or inline-code SafeYolo invocation."""  # DOC: docs/technical-writing.md
     invocations: list[tuple[int, str]] = []
     in_fence = False
     for i, raw in enumerate(doc_path.read_text().splitlines(), start=1):
@@ -104,6 +105,10 @@ def _extract_safeyolo_invocations(doc_path: Path) -> list[tuple[int, str]]:
             in_fence = not in_fence
             continue
         if not in_fence:
+            for match in INLINE_CODE_RE.finditer(raw):
+                inline = match.group(1).strip()
+                if inline.startswith("safeyolo "):
+                    invocations.append((i, inline))
             continue
         if SAFEYOLO_LINE_RE.match(raw):
             # Strip trailing `#` comments and shell continuations
@@ -125,26 +130,33 @@ def _validate_line(
     if not tokens or tokens[0] != "safeyolo":
         return None  # not a safeyolo invocation; defensive
 
-    # Greedy resolve command path
+    # Resolve the longest known command path. A known group followed by an
+    # unknown bare token is an invalid subcommand, not a positional argument.
     path: list[str] = []
     i = 1
     while i < len(tokens):
         candidate = " ".join(path + [tokens[i]])
-        if candidate in surface and surface[candidate] is not None:
-            # Only extend if this is a group (has sub-commands) or exact match
+        if candidate in surface:
             path.append(tokens[i])
             i += 1
-            # Peek: is (path + next_token) also a valid command? if not, stop
-            if i < len(tokens):
-                deeper = " ".join(path + [tokens[i]])
-                if deeper not in surface:
-                    break
         else:
             break
 
     key = " ".join(path)
-    if key not in surface and key != "":
-        return f"unknown command: `safeyolo {key}` — no such command"
+    group_prefix = f"{key} " if key else ""
+    is_group = any(
+        command != key and command.startswith(group_prefix)
+        for command in surface
+    )
+    if is_group and i < len(tokens):
+        token = tokens[i]
+        if (
+            not token.startswith("-")
+            and not _PLACEHOLDER_RE.match(token)
+            and token not in ("|", "&&", "||", "\\", ";", ">", ">>", "<")
+        ):
+            attempted = " ".join(path + [token])
+            return f"unknown command: `safeyolo {attempted}` — no such command"
 
     allowed = surface.get(key, set()) | surface.get("", set())  # inherit global opts
 
