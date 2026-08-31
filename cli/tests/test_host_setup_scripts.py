@@ -13,12 +13,19 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_SOURCE = REPO_ROOT / "docs" / "AGENTS.md"
 SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo"
+LAB_CONTROLLER_SOURCE = (
+    REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller"
+)
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
 COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
 CODEX_COORD_SUPERVISOR_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor.py"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
+LAB_CONTROLLER_LINK_TARGET = "/safeyolo/skills/safeyolo-lab-controller"
 LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
+LAB_COMMAND_TARGET = (
+    "/safeyolo/skills/safeyolo-lab-controller/scripts/safeyolo-lab"
+)
 
 
 def _setup_env(operator_home: Path, agent_home: Path, folder: Path) -> dict[str, str]:
@@ -74,9 +81,13 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
     assert (agent_home / ".safeyolo/AGENTS.md").read_bytes() == BASELINE_SOURCE.read_bytes()
 
     if consumer_dir is not None:
-        link = agent_home / consumer_dir / "skills" / "safeyolo"
-        assert link.is_symlink()
-        assert os.readlink(link) == SKILL_LINK_TARGET
+        expected_links = {"safeyolo": SKILL_LINK_TARGET}
+        if consumer_dir == ".agents":
+            expected_links["safeyolo-lab-controller"] = LAB_CONTROLLER_LINK_TARGET
+        for name, target in expected_links.items():
+            link = agent_home / consumer_dir / "skills" / name
+            assert link.is_symlink()
+            assert os.readlink(link) == target
 
 
 @pytest.mark.parametrize(
@@ -279,6 +290,16 @@ def test_context_staging_is_idempotent_and_preserves_user_files(
     _assert_managed_context(agent_home, consumer_dir)
     assert instruction.read_text() == "user-owned instructions\n"
     assert personal_skill.read_text() == "user-owned skill\n"
+    lab_command = agent_home / ".local/bin/safeyolo-lab"
+    if script_name == "codex-host-setup.sh":
+        assert lab_command.is_symlink()
+        assert os.readlink(lab_command) == LAB_COMMAND_TARGET
+        bashrc = (agent_home / ".bashrc").read_text()
+        assert bashrc.count("# >>> safeyolo-lab PATH >>>") == 1
+        assert bashrc.count("# <<< safeyolo-lab PATH <<<") == 1
+    else:
+        assert not lab_command.exists()
+        assert not lab_command.is_symlink()
 
 
 @pytest.mark.parametrize(
@@ -706,6 +727,73 @@ def test_context_staging_refuses_user_owned_safeyolo_skill(
     assert marker.read_text() == "user-owned safeyolo skill\n"
 
 
+def test_codex_context_refuses_user_owned_lab_controller_skill(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    collision = agent_home / ".agents/skills/safeyolo-lab-controller"
+    collision.mkdir(parents=True)
+    marker = collision / "SKILL.md"
+    marker.write_text("user-owned lab skill\n")
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to replace existing user skill" in result.stderr
+    assert marker.read_text() == "user-owned lab skill\n"
+
+
+def test_codex_context_refuses_user_owned_lab_command(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    command = agent_home / ".local/bin/safeyolo-lab"
+    command.parent.mkdir(parents=True)
+    command.write_text("user-owned command\n")
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to replace existing command" in result.stderr
+    assert command.read_text() == "user-owned command\n"
+
+
+def test_codex_context_refuses_incomplete_lab_bashrc_block(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    bashrc = agent_home / ".bashrc"
+    bashrc.parent.mkdir(parents=True)
+    bashrc.write_text("# >>> safeyolo-lab PATH >>>\nuser content\n")
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "PATH block is incomplete" in result.stderr
+    assert bashrc.read_text() == "# >>> safeyolo-lab PATH >>>\nuser content\n"
+    assert not (agent_home / ".local/bin/safeyolo-lab").is_symlink()
+
+
 def test_claude_setup_stages_personal_skills_but_reserves_safeyolo_name(
     tmp_path: Path,
 ) -> None:
@@ -803,6 +891,34 @@ def test_shared_skill_has_cross_agent_frontmatter_and_direct_references() -> Non
         "Do not expose guest ports 5900 or 6080 directly",
     ):
         assert expected in desktop
+
+
+def test_lab_controller_skill_is_codex_scoped_and_self_contained() -> None:
+    content = (LAB_CONTROLLER_SOURCE / "SKILL.md").read_text()
+    _, frontmatter, body = content.split("---", 2)
+    metadata = yaml.safe_load(frontmatter)
+
+    assert set(metadata) == {"name", "description"}
+    assert metadata["name"] == "safeyolo-lab-controller"
+    assert "SafeYolo Codex agent" in metadata["description"]
+    for reference in (
+        "bootstrap.md",
+        "experiment-protocol.md",
+        "evidence-retention.md",
+        "tmux-ui.md",
+    ):
+        assert f"references/{reference}" in body
+        assert (LAB_CONTROLLER_SOURCE / "references" / reference).is_file()
+
+    for script in (
+        "safeyolo-lab",
+        "run-controller.sh",
+        "adapt-layout.sh",
+        "self-test.sh",
+    ):
+        path = LAB_CONTROLLER_SOURCE / "scripts" / script
+        assert path.is_file()
+        assert path.stat().st_mode & 0o111
 
 
 def test_baseline_explains_guest_privilege_without_implying_host_root() -> None:
