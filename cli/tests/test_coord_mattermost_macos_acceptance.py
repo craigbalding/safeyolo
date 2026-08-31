@@ -217,19 +217,63 @@ def test_acceptance_failure_prints_full_sqlite_chain_and_code(
     assert "DIAGNOSTIC TRACEBACK END" in stderr
 
 
-def test_integration_child_output_is_not_suppressed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_integration_child_output_is_captured_sanitized_and_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     integration = load_script("accept_mattermost_macos_integration.py")
     observed: dict[str, Any] = {}
 
     def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         observed.update(kwargs)
-        return subprocess.CompletedProcess(command, 0)
+        return subprocess.CompletedProcess(command, 0, stdout="child stdout\n", stderr="child stderr\n")
 
     monkeypatch.setattr(integration.subprocess, "run", fake_run)
     assert integration._run_local_diagnostic(["safeyolo", "check"], timeout=9) == 0
     assert observed["stdin"] is subprocess.DEVNULL
-    assert "stdout" not in observed
-    assert "stderr" not in observed
+    assert observed["capture_output"] is True
+    assert observed["text"] is True
+    captured = capsys.readouterr()
+    assert captured.out == "child stdout\n"
+    assert captured.err == "child stderr\n"
+
+
+def test_integration_diagnostics_never_disclose_known_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    integration = load_script("accept_mattermost_macos_integration.py")
+    sentinel = "SENTINEL-BOT-TOKEN-MUST-NOT-LEAK"
+
+    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=f"stdout contained {sentinel}\n",
+            stderr=f"stderr traceback local token={sentinel}\n",
+        )
+
+    monkeypatch.setattr(integration.subprocess, "run", fake_run)
+    assert integration._run_local_diagnostic(
+        ["safeyolo", "coord", "mattermost", "check"],
+        timeout=9,
+        secrets=(sentinel,),
+    ) == 1
+    try:
+        try:
+            raise RuntimeError(f"child failure included {sentinel}")
+        except RuntimeError as root:
+            raise integration.AcceptanceError(f"summary included {sentinel}") from root
+    except integration.AcceptanceError as wrapped:
+        integration._print_failure(8, f"label included {sentinel}", wrapped, secrets=(sentinel,))
+
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out
+    assert sentinel not in captured.err
+    assert "[REDACTED]" in captured.out
+    assert "[REDACTED]" in captured.err
+    assert "DIAGNOSTIC TRACEBACK BEGIN" in captured.err
+    assert "DIAGNOSTIC TRACEBACK END" in captured.err
 
 
 def test_acceptance_scripts_expose_only_bounded_arguments() -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import ipaddress
 import json
 import re
@@ -16,8 +17,11 @@ import unicodedata
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
+
+from markdown_it import MarkdownIt
 
 OPERATOR_REQUEST_SCHEMA = "safeyolo.coord.operator-request/v1"
 ACTION_CALLBACK_SUFFIX = "mattermost/actions"
@@ -35,6 +39,81 @@ _PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _CONTENT_LENGTH_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 _DNS_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+_MARKDOWN_LINK_RE = re.compile(r"(!?)\[([^\]\n]*)\]\(([^)\n]*)\)")
+_CHANNEL_LINK_RE = re.compile(r"(?<![\w~])~(?=[A-Za-z0-9_-])")
+_UNSAFE_SCHEME_RE = re.compile(
+    r"(?i)\b(?:javascript|data|file|vbscript|mattermost|mmaction):(?://)?|"
+    r"\b(?!https://)[a-z][a-z0-9+.-]*://"
+)
+_PROVENANCE_CLAIM_RE = re.compile(r"(?i)canonical\s+provenance")
+_PROVENANCE_REPLACEMENT = "[sender provenance claim]"
+_HORIZONTAL_RULE_RE = re.compile(r"^[ \t]{0,3}(?:[-*_][ \t]*){3,}$")
+_TASK_ACCEPTED_RE = re.compile(r"^ACCEPTED(?=\s|$)")
+_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_BACKTICK_RUN_RE = re.compile(r"`+")
+_COMMONMARK = MarkdownIt("commonmark")
+_BLOCK_TEXT_TAGS = frozenset(
+    {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "br",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "figcaption",
+        "figure",
+        "footer",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    }
+)
+
+
+class _VisibleCommonMarkText(HTMLParser):
+    """Collect visible renderer text while preserving block boundaries."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag in _BLOCK_TEXT_TAGS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _BLOCK_TEXT_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def text(self) -> str:
+        return "".join(self.parts)
 
 
 class OperatorAction(StrEnum):
@@ -296,7 +375,9 @@ def operator_request_body(request: SemanticRequest) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def _safe_markdown_text(value: str, *, maximum: int) -> str:
+def _strict_single_line(value: str, *, maximum: int) -> str:
+    """Render untrusted metadata as one non-active Markdown line."""
+
     encoded = value.encode("utf-8")
     if len(encoded) > maximum:
         digest = hashlib.sha256(encoded).hexdigest()[:16]
@@ -312,11 +393,312 @@ def _safe_markdown_text(value: str, *, maximum: int) -> str:
             result.append(f"\\u{code:04x}")
         elif char == "@":
             result.append(r"\u0040")
-        elif char in "\\`*_[]()<>~#+-=|{}.!":
+        elif char in "\\`*_[]()<>~#+=|{}!":
             result.append("\\" + char)
         else:
             result.append(char)
     return "".join(result)
+
+
+def _safe_https_destination(value: str) -> str | None:
+    destination = value.strip()
+    if not destination or any(char.isspace() for char in destination):
+        return None
+    try:
+        parsed = urlsplit(destination)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or any(unicodedata.category(char).startswith("C") for char in destination)
+    ):
+        return None
+    return destination
+
+
+def _sanitize_markdown_link(match: re.Match[str]) -> str:
+    image, label, raw_destination = match.groups()
+    destination = _safe_https_destination(raw_destination)
+    safe_label = label.replace("@", "＠")
+    safe_label = _CHANNEL_LINK_RE.sub("～", safe_label)
+    if destination is None:
+        return f"{safe_label} [blocked link]"
+    if image:
+        return f"[image: {safe_label}]({destination})"
+    return f"[{safe_label}]({destination})"
+
+
+def _truncate_markdown_source(value: str, maximum: int) -> tuple[str, str | None]:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= maximum:
+        return value, None
+    digest = hashlib.sha256(encoded).hexdigest()[:16]
+    allowance = max(0, maximum - 96)
+    prefix = encoded[:allowance].decode("utf-8", errors="ignore")
+    # Prefer a complete line. A single very long line is made inert below if
+    # it leaves an unmatched inline-code or link delimiter.
+    if "\n" in prefix:
+        prefix = prefix.rsplit("\n", 1)[0]
+    return prefix, f"[truncated; sha256 {digest}]"
+
+
+def _visible_commonmark_text(value: str) -> str:
+    parser = _VisibleCommonMarkText()
+    parser.feed(_COMMONMARK.render(value))
+    parser.close()
+    return parser.text()
+
+
+def _insert_visible_provenance_boundaries(rendered: str) -> str | None:
+    """Break renderer-visible provenance claims without discarding other Markdown."""
+
+    visible = _visible_commonmark_text(rendered)
+    matches = tuple(_PROVENANCE_CLAIM_RE.finditer(visible))
+    if not matches:
+        return rendered
+
+    # The forbidden visible word ``canonical`` necessarily contributes an
+    # ASCII ``l`` after character-reference normalization. Probe those source
+    # boundaries through the real renderer and retain only insertions whose
+    # sole visible effect is the explicit replacement marker. This keeps the
+    # surrounding headings, lists, links, and inline formatting intact without
+    # trusting source-text contiguity.
+    selected: list[int] = []
+    used: set[int] = set()
+    source_boundaries = [
+        source_offset
+        for source_offset, character in enumerate(rendered, start=1)
+        if character in "lL"
+    ]
+    for match in matches:
+        target = match.start() + len("canonical")
+        found: int | None = None
+        for source_offset in sorted(source_boundaries, key=lambda offset: abs(offset - target)):
+            if source_offset in used:
+                continue
+            candidate = (
+                rendered[:source_offset] + _PROVENANCE_REPLACEMENT + rendered[source_offset:]
+            )
+            candidate_visible = _visible_commonmark_text(candidate)
+            marker_offset = candidate_visible.find(_PROVENANCE_REPLACEMENT)
+            while marker_offset >= 0:
+                without_marker = (
+                    candidate_visible[:marker_offset]
+                    + candidate_visible[marker_offset + len(_PROVENANCE_REPLACEMENT) :]
+                )
+                if (
+                    without_marker == visible
+                    and match.start() < marker_offset < match.end()
+                ):
+                    found = source_offset
+                    break
+                marker_offset = candidate_visible.find(
+                    _PROVENANCE_REPLACEMENT,
+                    marker_offset + 1,
+                )
+            if found is not None:
+                break
+        if found is None:
+            return None
+        selected.append(found)
+        used.add(found)
+
+    for source_offset in sorted(selected, reverse=True):
+        rendered = rendered[:source_offset] + _PROVENANCE_REPLACEMENT + rendered[source_offset:]
+    if _PROVENANCE_CLAIM_RE.search(_visible_commonmark_text(rendered)):
+        return None
+    return rendered
+
+
+def _enforce_final_provenance_invariant(
+    rendered: str,
+    *,
+    original: str,
+    maximum: int | None,
+) -> str:
+    """Validate and neutralize claims in the exact final rendered sender body."""
+
+    for _ in range(4):
+        matches = tuple(_PROVENANCE_CLAIM_RE.finditer(_visible_commonmark_text(rendered)))
+        if not matches:
+            return rendered
+        growth = len(_PROVENANCE_REPLACEMENT) * len(matches)
+        if maximum is not None and len(rendered) + growth > maximum:
+            reserved = maximum - growth
+            if reserved < 128:
+                return _PROVENANCE_REPLACEMENT[:maximum]
+            digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:16]
+            rendered = _finish_truncated_markdown(
+                rendered,
+                f"[truncated; sha256 {digest}]",
+                maximum=reserved,
+            )
+            continue
+        neutralized = _insert_visible_provenance_boundaries(rendered)
+        if neutralized is None:
+            return _PROVENANCE_REPLACEMENT
+        rendered = neutralized
+    return _PROVENANCE_REPLACEMENT
+
+
+def _active_fence(value: str) -> tuple[str, int] | None:
+    active: tuple[str, int] | None = None
+    for line in value.split("\n"):
+        if active is not None:
+            character, length = active
+            if re.fullmatch(rf" {{0,3}}{re.escape(character)}{{{length},}}[ \t]*", line):
+                active = None
+            continue
+        match = _FENCE_OPEN_RE.match(line)
+        if match is None:
+            continue
+        run, info = match.groups()
+        if run[0] == "`" and "`" in info:
+            continue
+        active = run[0], len(run)
+    return active
+
+
+def _active_code_span(value: str) -> int | None:
+    active_span: int | None = None
+    active_fence: tuple[str, int] | None = None
+    for line in value.split("\n"):
+        if active_fence is not None:
+            character, length = active_fence
+            if re.fullmatch(rf" {{0,3}}{re.escape(character)}{{{length},}}[ \t]*", line):
+                active_fence = None
+            continue
+        fence_match = _FENCE_OPEN_RE.match(line)
+        if fence_match is not None:
+            run, info = fence_match.groups()
+            if run[0] != "`" or "`" not in info:
+                active_fence = run[0], len(run)
+                continue
+        for match in _BACKTICK_RUN_RE.finditer(line):
+            run_length = len(match.group(0))
+            if active_span is None:
+                preceding = line[: match.start()]
+                backslashes = len(preceding) - len(preceding.rstrip("\\"))
+                if backslashes % 2:
+                    continue
+                active_span = run_length
+            elif run_length == active_span:
+                active_span = None
+    return active_span
+
+
+def _close_truncated_markdown(rendered: str, maximum: int | None = None) -> str:
+    """Close active tail syntax, optionally within an exact character bound."""
+
+    def close(prefix: str) -> str:
+        # Do not leave half of a visible control escape at the cut point.
+        prefix = re.sub(r"\\u[0-9a-fA-F]{0,3}$", "", prefix)
+        if prefix.endswith("\\"):
+            prefix = prefix[:-1]
+        fence = _active_fence(prefix)
+        if fence is not None:
+            character, length = fence
+            return prefix + "\n" + character * length
+        tail_lines = prefix.split("\n")
+        tail = tail_lines[-1]
+        if tail.count("[") != tail.count("]") or tail.count("(") != tail.count(")"):
+            tail_lines[-1] = re.sub(r"([!\[\]()])", r"\\\1", tail)
+            prefix = "\n".join(tail_lines)
+        code_span = _active_code_span(prefix)
+        if code_span is not None:
+            prefix += "`" * code_span
+        return prefix
+
+    if maximum is None:
+        return close(rendered)
+    prefix = rendered[:maximum]
+    for _ in range(32):
+        closed = close(prefix)
+        if len(closed) <= maximum:
+            return closed
+        overflow = len(closed) - maximum
+        prefix = prefix[: max(0, len(prefix) - max(1, (overflow + 1) // 2))]
+    return ""
+
+
+def _finish_truncated_markdown(rendered: str, marker: str, *, maximum: int | None = None) -> str:
+    suffix = f"\n\n{marker}"
+    if maximum is None:
+        return _close_truncated_markdown(rendered) + suffix
+    prefix_limit = max(0, maximum - len(suffix))
+    return _close_truncated_markdown(rendered[:prefix_limit], prefix_limit) + suffix
+
+
+def sanitize_mattermost_markdown(
+    value: str,
+    *,
+    maximum: int = 8 * 1024,
+    output_maximum: int | None = None,
+) -> str:
+    """Keep useful Markdown while removing Mattermost side-effect syntax.
+
+    Newlines, headings, lists, code, and ordinary HTTPS links survive. The
+    result cannot mention users/channels, embed an image, select an unsafe
+    scheme, register a Mattermost action, or counterfeit the final canonical
+    provenance boundary added by :func:`compact_fallback`.
+    """
+
+    original = value
+    value, truncation = _truncate_markdown_source(value, maximum)
+    # Mattermost/CommonMark decodes character references before rendering.
+    # Normalize them before every syntax and provenance check so an entity
+    # cannot recreate active syntax after this sanitizer has inspected it.
+    value = html.unescape(value)
+    value = value.replace("\r\n", "\n")
+    result: list[str] = []
+    for char in value:
+        code = ord(char)
+        if char == "\n":
+            result.append(char)
+        elif code < 0x20 or code == 0x7F or 0x80 <= code <= 0x9F or unicodedata.category(char).startswith("C"):
+            result.append(f"\\u{code:04x}")
+        elif char == "@":
+            result.append("＠")
+        elif char == "<":
+            result.append(r"\<")
+        elif char == ">":
+            result.append(r"\>")
+        else:
+            result.append(char)
+    rendered = "".join(result)
+    # Every CommonMark image form starts with this opener: inline, full
+    # reference, collapsed reference, and shortcut reference. Demoting the
+    # opener before link handling preserves readable alt text and references
+    # while making an image token structurally impossible.
+    rendered = rendered.replace("![", "[image: ")
+    rendered = _MARKDOWN_LINK_RE.sub(_sanitize_markdown_link, rendered)
+    rendered = _CHANNEL_LINK_RE.sub("～", rendered)
+    rendered = _UNSAFE_SCHEME_RE.sub(lambda match: match.group(0).replace(":", r"\:"), rendered)
+    rendered = _PROVENANCE_CLAIM_RE.sub(_PROVENANCE_REPLACEMENT, rendered)
+
+    lines = rendered.split("\n")
+    for index, line in enumerate(lines):
+        if _HORIZONTAL_RULE_RE.fullmatch(line):
+            lines[index] = "\\" + line
+    rendered = "\n".join(lines)
+    rendered = _TASK_ACCEPTED_RE.sub("TASK ACCEPTED", rendered, count=1)
+    if truncation is not None:
+        rendered = _finish_truncated_markdown(rendered, truncation)
+    if output_maximum is not None and len(rendered) > output_maximum:
+        digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:16]
+        rendered = _finish_truncated_markdown(
+            rendered,
+            f"[truncated; sha256 {digest}]",
+            maximum=output_maximum,
+        )
+    return _enforce_final_provenance_invariant(
+        rendered,
+        original=original,
+        maximum=output_maximum,
+    )
 
 
 def compact_fallback(envelope: Mapping[str, Any], room: str) -> str:
@@ -326,20 +708,20 @@ def compact_fallback(envelope: Mapping[str, Any], room: str) -> str:
     name = envelope.get("sender_agent_name")
     sender = name if isinstance(name, str) and name else str(envelope.get("sender_kind", "unknown"))
     agent_id = envelope.get("sender_agent_id")
-    if isinstance(agent_id, str) and agent_id:
-        sender = f"{sender} ({agent_id})"
     msg_id = envelope.get("msg_id")
     provenance = (
-        f"{_safe_markdown_text(sender, maximum=128)} · "
-        f"canonical {_safe_markdown_text(str(envelope.get('sender_kind', 'unknown')), maximum=32)} · "
-        f"room {_safe_markdown_text(room, maximum=128)} · "
-        f"message `{_safe_markdown_text(str(msg_id), maximum=96)}`"
+        "Canonical provenance · "
+        f"sender {_strict_single_line(sender, maximum=128)} · "
+        f"agent `{_strict_single_line(str(agent_id), maximum=64)}` · "
+        f"kind `{_strict_single_line(str(envelope.get('sender_kind', 'unknown')), maximum=32)}` · "
+        f"room `{_strict_single_line(room, maximum=128)}` · "
+        f"message `{_strict_single_line(str(msg_id), maximum=96)}`"
     )
-    rendered = f"{provenance}\n\n{_safe_markdown_text(body, maximum=8 * 1024)}"
-    if len(rendered) > 13_500:
-        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
-        rendered = rendered[:13_400] + f"… [truncated; sha256 {digest}]"
-    return rendered
+    separator = "\n\n---\n"
+    maximum = 13_500
+    body_maximum = maximum - len(separator) - len(provenance)
+    projected_body = sanitize_mattermost_markdown(body, output_maximum=body_maximum)
+    return f"{projected_body}{separator}{provenance}"
 
 
 def semantic_attachment(
@@ -361,8 +743,8 @@ def semantic_attachment(
         SemanticKind.DISPATCH_PUBLICATION: "Dispatch publication candidate",
     }[request.kind]
     detail_lines = [
-        f"**Reference:** {_safe_markdown_text(request.reference, maximum=256)}",
-        *(f"• {_safe_markdown_text(detail, maximum=512)}" for detail in request.details),
+        f"**Reference:** {_strict_single_line(request.reference, maximum=256)}",
+        *(f"• {_strict_single_line(detail, maximum=512)}" for detail in request.details),
     ]
     actions: list[dict[str, Any]] = []
     if callback_url is not None and capability is not None:
@@ -398,17 +780,17 @@ def semantic_attachment(
         else (f"{sender_name} ({sender_agent_id}) · canonical provenance · {room} · no interactive actions")
     )
     return {
-        "fallback": _safe_markdown_text(f"{kind_label}: {request.title}", maximum=512),
+        "fallback": _strict_single_line(f"{kind_label}: {request.title}", maximum=512),
         "color": "#3d85c6" if request.kind is not SemanticKind.STATUS else "#6a737d",
         "pretext": kind_label,
-        "title": _safe_markdown_text(request.title, maximum=256),
+        "title": _strict_single_line(request.title, maximum=256),
         "text": "\n\n".join(
             [
-                _safe_markdown_text(request.summary, maximum=2 * 1024),
+                _strict_single_line(request.summary, maximum=2 * 1024),
                 "\n".join(detail_lines),
             ]
         ),
-        "footer": _safe_markdown_text(footer, maximum=512),
+        "footer": _strict_single_line(footer, maximum=512),
         "actions": actions,
     }
 
@@ -423,11 +805,11 @@ def semantic_post_message(
     """Short top-level text for clients that collapse legacy attachments."""
 
     return (
-        f"{_safe_markdown_text(request.title, maximum=256)}\n"
-        f"{_safe_markdown_text(sender_name, maximum=128)} "
-        f"({_safe_markdown_text(sender_agent_id, maximum=64)}) · canonical trusted agent · "
-        f"room {_safe_markdown_text(room, maximum=128)} · "
-        f"{_safe_markdown_text(request.reference, maximum=256)}"
+        f"{_strict_single_line(request.title, maximum=256)}\n"
+        f"{_strict_single_line(sender_name, maximum=128)} "
+        f"({_strict_single_line(sender_agent_id, maximum=64)}) · canonical trusted agent · "
+        f"room {_strict_single_line(room, maximum=128)} · "
+        f"{_strict_single_line(request.reference, maximum=256)}"
     )
 
 

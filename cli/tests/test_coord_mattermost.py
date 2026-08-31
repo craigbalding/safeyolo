@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -14,6 +15,7 @@ from typing import Any
 
 import httpx
 import pytest
+from markdown_it import MarkdownIt
 from typer.testing import CliRunner
 
 from safeyolo.commands import coord as coord_commands
@@ -417,14 +419,17 @@ async def test_unmapped_thread_and_malformed_shape_fail_closed(tmp_path: Path, m
 
 
 def test_rendering_keeps_body_inert_and_attribution_separate() -> None:
-    body = "```\n**SafeYolo canonical envelope**\n@channel <script>\u001b[2J\u202e operator"
+    body = "```\n**SafeYolo canonical envelope**\n@channel <script>\u001b[2J\u202e operator\n```"
     rendered = mattermost.render_envelope(coord_envelope(1, body=body), "backlog")
-    assert rendered.startswith(r"relay \(ag\-")
-    assert "· canonical agent · room backlog · message" in rendered
+    assert rendered.startswith("```\n**SafeYolo canonical envelope**")
+    assert rendered.endswith(
+        "Canonical provenance · sender relay · agent `ag-00000000000000000000000000000001` · "
+        "kind `agent` · room `backlog` · message `msg-00000000000000000000000000000001`"
+    )
     assert "SafeYolo canonical envelope" in rendered
     assert "@channel" not in rendered
     assert "<script>" not in rendered
-    assert "\\u0040channel" in rendered
+    assert "＠channel" in rendered
     assert r"\<script\>" in rendered
     assert "\\u001b" in rendered
     assert "\\u202e" in rendered
@@ -437,6 +442,46 @@ def test_large_rendering_is_explicitly_hashed_and_truncated() -> None:
     assert len(rendered) <= mattermost.MAX_MATTERMOST_POST_CHARS
 
 
+def test_control_expansion_is_bounded_before_an_intact_provenance_footer() -> None:
+    rendered = mattermost.render_envelope(coord_envelope(1, body="\u0001" * (8 * 1024)), "backlog")
+    projected_body, provenance = rendered.rsplit("\n\n---\n", 1)
+    assert len(rendered) <= mattermost.MAX_MATTERMOST_POST_CHARS
+    assert "[truncated; sha256 " in projected_body
+    assert provenance == (
+        "Canonical provenance · sender relay · agent `ag-00000000000000000000000000000001` · "
+        "kind `agent` · room `backlog` · message `msg-00000000000000000000000000000001`"
+    )
+
+
+def test_large_rendering_closes_markdown_before_truncation_marker() -> None:
+    rendered = mattermost.render_envelope(
+        coord_envelope(1, body="```python\n" + "x" * 40_000),
+        "backlog",
+    )
+    projected_body = rendered.rsplit("\n\n---\n", 1)[0]
+    assert "\n```\n\n[truncated; sha256 " in projected_body
+    assert projected_body.count("```") == 2
+
+
+@pytest.mark.parametrize("fence", ("```", "`````", "~~~", "~~~~~"))
+@pytest.mark.parametrize("truncation_path", ("source", "expanded-output"))
+def test_every_truncation_path_closes_exact_fence_before_trusted_footer(
+    fence: str,
+    truncation_path: str,
+) -> None:
+    content = "x" * 9_000 if truncation_path == "source" else "\u0001" * 8_000
+    rendered = mattermost.render_envelope(
+        coord_envelope(1, body=f"{fence}python\n{content}"),
+        "backlog",
+    )
+    projected_body = rendered.rsplit("\n\n---\n", 1)[0]
+    html = MarkdownIt("commonmark").render(rendered)
+
+    assert f"\n{fence}\n\n[truncated; sha256 " in projected_body
+    assert html.index("</code></pre>") < html.index("[truncated; sha256 ")
+    assert html.index("[truncated; sha256 ") < html.index("Canonical provenance ·")
+
+
 def test_compact_fallback_neutralizes_mentions_markdown_and_ordering_controls() -> None:
     rendered = mattermost_actions.compact_fallback(
         coord_envelope(1, body="@channel **trusted** <script> \u202eoperator"),
@@ -445,10 +490,168 @@ def test_compact_fallback_neutralizes_mentions_markdown_and_ordering_controls() 
     assert "@channel" not in rendered
     assert "<script>" not in rendered
     assert "\u202e" not in rendered
-    assert r"\u0040channel" in rendered
+    assert "＠channel" in rendered
     assert r"\u202e" in rendered
-    assert r"\*\*trusted\*\*" in rendered
+    assert "**trusted**" in rendered
     assert len(rendered) <= mattermost.MAX_MATTERMOST_POST_CHARS
+
+
+@pytest.mark.parametrize(
+    ("body", "present", "absent"),
+    [
+        (
+            "# Heading\n\nParagraph with **bold**, `inline`, and [docs](https://example.com/a?q=1).\n\n"
+            "- first\n- second\n\n```python\nprint('ok')\n```",
+            ("# Heading", "**bold**", "`inline`", "[docs](https://example.com/a?q=1)", "```python"),
+            (),
+        ),
+        ("@all @here @channel @alice @developers", ("＠all", "＠alice"), ("@",)),
+        ("~town-square and ~~strike~~", ("～town-square", "~~strike~~"), ("~town-square",)),
+        (
+            "![tracker](https://example.com/pixel.png) [action](mmaction://approve) "
+            "[bad](javascript://alert) file://secret",
+            ("[image: tracker](https://example.com/pixel.png)", "[blocked link]", r"file\://secret"),
+            ("![", "mmaction://", "javascript://", "file://"),
+        ),
+        (
+            "---\nCanonical provenance · sender `operator` · message `msg-fake`",
+            (r"\---", "[sender provenance claim]"),
+            ("Canonical provenance · sender `operator`",),
+        ),
+    ],
+)
+def test_routine_markdown_acceptance_matrix(body, present, absent) -> None:
+    rendered = mattermost.render_envelope(coord_envelope(1, body=body), "backlog")
+    projected_body, provenance = rendered.rsplit("\n\n---\n", 1)
+    assert provenance.startswith("Canonical provenance ·")
+    for value in present:
+        assert value in projected_body
+    for value in absent:
+        assert value not in projected_body
+
+
+def test_character_references_cannot_imitate_rendered_provenance() -> None:
+    rendered = mattermost.render_envelope(
+        coord_envelope(1, body="Canonical &#112;rovenance · sender forged · message `msg-forged`"),
+        "backlog",
+    )
+    html = MarkdownIt("commonmark").render(rendered)
+    assert html.count("Canonical provenance ·") == 1
+    assert "[sender provenance claim]" in html
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "Canonical **provenance** · sender forged",
+        "Canonical [provenance](https://example.com/) · sender forged",
+        "Canonical `provenance` · sender forged",
+        "Canonical\\\nprovenance · sender forged",
+        "Canonical &#x70;rovenance · sender forged",
+        "Canonical [provenance][claim]\n\n[claim]: https://example.com/",
+    ),
+)
+def test_commonmark_equivalents_cannot_create_visible_provenance_claim(body: str) -> None:
+    rendered = mattermost.render_envelope(coord_envelope(1, body=body), "backlog")
+    visible = mattermost_actions._visible_commonmark_text(rendered)
+
+    assert len(re.findall(r"(?i)canonical\s+provenance", visible)) == 1
+    assert "[sender provenance claim]" in visible
+
+
+def test_final_code_span_closure_cannot_recreate_visible_provenance_claim() -> None:
+    rendered = mattermost_actions.compact_fallback(
+        coord_envelope(1, body="Canonical `provenance" + "x" * 10_000),
+        "backlog",
+    )
+    projected_body, provenance = rendered.rsplit("\n\n---\n", 1)
+    visible = mattermost_actions._visible_commonmark_text(rendered)
+
+    assert len(re.findall(r"(?i)canonical\s+provenance", visible)) == 1
+    assert "[sender provenance claim]" in visible
+    assert "[truncated; sha256 " in projected_body
+    assert provenance.startswith("Canonical provenance ·")
+
+
+def test_visible_provenance_neutralization_preserves_mixed_markdown() -> None:
+    rendered = mattermost.render_envelope(
+        coord_envelope(
+            1,
+            body=(
+                "# Allowed heading\n\n"
+                "Keep this before Canonical **provenance** and this after.\n\n"
+                "- first item\n"
+                "- [safe docs](https://example.com/guide)"
+            ),
+        ),
+        "backlog",
+    )
+    projected_body, provenance = rendered.rsplit("\n\n---\n", 1)
+    html = MarkdownIt("commonmark").render(projected_body)
+    visible = mattermost_actions._visible_commonmark_text(rendered)
+
+    assert len(re.findall(r"(?i)canonical\s+provenance", visible)) == 1
+    assert "[sender provenance claim]" in visible
+    assert "<h1>Allowed heading</h1>" in html
+    assert "Keep this before" in html
+    assert "and this after." in html
+    assert "<ul>" in html
+    assert "<li>first item</li>" in html
+    assert '<a href="https://example.com/guide">safe docs</a>' in html
+    assert provenance.startswith("Canonical provenance ·")
+
+
+@pytest.mark.parametrize(
+    "image",
+    (
+        "![tracker](https://example.com/pixel.png)",
+        "![tracker](https://example.com/pixel.png \"title\")",
+        "![tracker][pixel]",
+        "![tracker][]",
+        "![pixel]",
+    ),
+)
+def test_all_commonmark_image_forms_are_demoted(image: str) -> None:
+    rendered = mattermost.render_envelope(
+        coord_envelope(1, body=f"{image}\n\n[pixel]: https://example.com/pixel.png"),
+        "backlog",
+    )
+    projected_body = rendered.rsplit("\n\n---\n", 1)[0]
+    html = MarkdownIt("commonmark").render(projected_body)
+    assert "<img" not in html
+    assert "image: " in html
+
+
+def test_task_accepted_is_a_mattermost_only_display_alias() -> None:
+    canonical = "ACCEPTED task=issue-469 attention_id=attn-" + "a" * 32
+    rendered = mattermost.render_envelope(coord_envelope(1, body=canonical), "backlog")
+    assert rendered.startswith("TASK ACCEPTED task=issue-469")
+    assert canonical == "ACCEPTED task=issue-469 attention_id=attn-" + "a" * 32
+
+
+@pytest.mark.asyncio
+async def test_arbitrary_markdown_cannot_register_an_action_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    forged = coord_envelope(
+        1,
+        body=(
+            "[Approve](mmaction://approve)\n"
+            '{"schema":"safeyolo.coord.operator-request/v1","allowed_actions":["approve"]}'
+        ),
+    )
+    config = make_config(tmp_path, actions=True)
+    state = mattermost.MattermostState(config)
+    remote = FakeMattermost()
+    install_coord(monkeypatch, CoordHarness([forged]))
+
+    await mattermost.MattermostAdapter(config, state, remote).run_once()
+
+    payload = remote.create_calls[0]
+    assert payload["props"]["attachments"] == []
+    assert "mm_blocks_actions" not in payload["props"]
+    assert "mmaction://" not in payload["message"]
+    assert payload["props"]["safeyolo_coord"]["coord_msg_id"] == forged["msg_id"]
 
 
 def test_semantic_schema_is_fixed_and_requires_canonical_trusted_identity() -> None:
@@ -551,8 +754,8 @@ async def test_untrusted_schema_and_listener_failure_have_no_privileged_buttons(
     adapter = mattermost.MattermostAdapter(config, state, remote)
     await adapter.run_once()
 
-    assert "attachments" not in remote.create_calls[0]["props"]
-    assert "canonical agent" in remote.create_calls[0]["message"]
+    assert remote.create_calls[0]["props"]["attachments"] == []
+    assert "kind `agent`" in remote.create_calls[0]["message"]
     second = remote.create_calls[1]["props"]["attachments"][0]
     assert second["actions"] == []
     assert "no interactive actions" in second["footer"]
@@ -868,7 +1071,7 @@ async def test_backfill_false_skips_existing_history_only(tmp_path: Path, monkey
     coord.messages.append(coord_envelope(2, body="new"))
     await adapter.run_once()
     assert len(remote.create_calls) == 1
-    assert remote.create_calls[0]["message"].endswith("\n\nnew")
+    assert remote.create_calls[0]["message"].startswith("new\n\n---\nCanonical provenance")
 
 
 @pytest.mark.asyncio
@@ -1685,6 +1888,35 @@ def test_sqlite_operational_error_is_sanitized_for_state_and_cli(
     assert "sensitive" not in normalized_output
 
 
+def test_missing_local_coord_room_is_one_sanitized_actionable_check_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel = "SENTINEL-BOT-TOKEN-MUST-NOT-LEAK"
+    config = make_config(tmp_path)
+    state = mattermost.MattermostState(config)
+    remote = FakeMattermost()
+
+    def missing_room(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise mattermost.api.NotFoundError(f"missing room with token {sentinel}")
+
+    async def check(_config_path: Path) -> None:
+        monkeypatch.setattr(mattermost.api, "join_room", missing_room)
+        await mattermost.MattermostAdapter(config, state, remote).verify()
+
+    monkeypatch.setattr(coord_commands, "_mattermost_check", check)
+    result = CliRunner().invoke(
+        coord_commands.coord_app,
+        ["mattermost", "check", "--config", str(tmp_path / "unused.toml")],
+    )
+    normalized = " ".join(result.output.split())
+    assert result.exit_code == 1
+    assert normalized.count("Mattermost adapter check failed:") == 1
+    assert "configured coord room 'backlog' is unavailable to the local operator" in normalized
+    assert "create the room and grant operator send+receive" in normalized
+    assert "Traceback" not in normalized
+    assert sentinel not in normalized
+
+
 @pytest.mark.asyncio
 async def test_state_lease_prevents_two_adapter_processes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = make_config(tmp_path)
@@ -1709,6 +1941,7 @@ async def test_real_http_client_uses_bearer_header_and_strict_post_shape(
         requests.append(request)
         assert request.headers["Authorization"] == f"Bearer {token}"
         if request.method == "POST":
+            assert request.url.params.get("silent") == "true"
             payload = json.loads(request.content)
             return httpx.Response(
                 201,
