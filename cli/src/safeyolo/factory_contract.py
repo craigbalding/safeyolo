@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,8 @@ class Role:
     name: str
     agent: str
     contract: str
+    contract_source: Path
+    contract_bytes: int
     contract_sha256: str
     contract_text: str
 
@@ -41,11 +44,18 @@ class Handoff:
 
 
 @dataclass(frozen=True)
+class OperatorInput:
+    destination: str
+    types: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class FactoryContract:
     name: str
     room: str
     roles: tuple[Role, ...]
     handoffs: tuple[Handoff, ...]
+    operator_input: OperatorInput
 
     @property
     def agents(self) -> tuple[str, ...]:
@@ -60,6 +70,7 @@ class FactoryContract:
                 role.name: {
                     "agent": role.agent,
                     "contract": role.contract,
+                    "contract_bytes": role.contract_bytes,
                     "contract_sha256": role.contract_sha256,
                     "contract_text": role.contract_text,
                 }
@@ -74,6 +85,10 @@ class FactoryContract:
                 }
                 for handoff in self.handoffs
             ],
+            "operator_input": {
+                "to": self.operator_input.destination,
+                "types": list(self.operator_input.types),
+            },
         }
 
 
@@ -112,7 +127,15 @@ def load_factory_file(path: Path) -> FactoryContract:
         raw = tomllib.loads(source.read_text())
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise FactoryContractError(f"cannot read factory file {source}: {exc}") from exc
-    _exact_keys("factory", raw, {"schema", "name", "room", "roles", "handoffs"})
+    if isinstance(raw, dict) and "operator_input" not in raw:
+        raise FactoryContractError(
+            "factory must declare operator_input so an authenticated operator can activate it"
+        )
+    _exact_keys(
+        "factory",
+        raw,
+        {"schema", "name", "room", "roles", "handoffs", "operator_input"},
+    )
     if raw["schema"] != SCHEMA:
         raise FactoryContractError(f"schema must be {SCHEMA!r}")
     name = _simple_name("name", raw["name"])
@@ -135,11 +158,22 @@ def load_factory_file(path: Path) -> FactoryContract:
             raise FactoryContractError(f"roles.{role_name}.contract must be an explicit relative path")
         contract_path = (source.parent / contract).resolve()
         try:
-            contract_text = contract_path.read_text()
+            contract_encoded = contract_path.read_bytes()
+            contract_text = contract_encoded.decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise FactoryContractError(f"cannot read role contract {contract!r}: {exc}") from exc
-        contract_hash = hashlib.sha256(contract_text.encode()).hexdigest()
-        roles.append(Role(role_name, agent, contract, contract_hash, contract_text))
+        contract_hash = hashlib.sha256(contract_encoded).hexdigest()
+        roles.append(
+            Role(
+                role_name,
+                agent,
+                contract,
+                contract_path,
+                len(contract_encoded),
+                contract_hash,
+                contract_text,
+            )
+        )
 
     raw_handoffs = raw["handoffs"]
     if not isinstance(raw_handoffs, list) or not raw_handoffs:
@@ -177,7 +211,69 @@ def load_factory_file(path: Path) -> FactoryContract:
         overlap = requests & responses
         if overlap:
             raise FactoryContractError(f"role {role.name!r} has ambiguous request/response type {sorted(overlap)[0]!r}")
-    return FactoryContract(name, room, tuple(roles), tuple(handoffs))
+
+    raw_operator_input = _exact_keys(
+        "operator_input",
+        raw["operator_input"],
+        {"to", "types"},
+    )
+    operator_destination = _simple_name("operator_input.to", raw_operator_input["to"])
+    if operator_destination not in role_names:
+        raise FactoryContractError("operator_input.to references an unknown role")
+    operator_types_raw = raw_operator_input["types"]
+    if not isinstance(operator_types_raw, list) or not operator_types_raw:
+        raise FactoryContractError("operator_input.types must be a non-empty array")
+    operator_types = tuple(
+        _message_type("operator_input.types", item) for item in operator_types_raw
+    )
+    if len(set(operator_types)) != len(operator_types):
+        raise FactoryContractError("operator_input.types contains a duplicate")
+    handoff_types = {
+        item
+        for handoff in handoffs
+        for item in (handoff.request, *handoff.responses)
+    }
+    overlap = handoff_types & set(operator_types)
+    if overlap:
+        raise FactoryContractError(
+            f"operator input cannot masquerade as handoff type {sorted(overlap)[0]!r}"
+        )
+    _validate_reachable_roles(
+        role_names,
+        ((handoff.source, handoff.destination) for handoff in handoffs),
+        operator_destination,
+    )
+    return FactoryContract(
+        name,
+        room,
+        tuple(roles),
+        tuple(handoffs),
+        OperatorInput(operator_destination, operator_types),
+    )
+
+
+def _validate_reachable_roles(
+    role_names: set[str],
+    edges: Iterable[tuple[str, str]],
+    operator_destination: str,
+) -> None:
+    reachable = {operator_destination}
+    edge_list = tuple(edges)
+    while True:
+        expanded = reachable | {
+            destination
+            for source, destination in edge_list
+            if source in reachable
+        }
+        if expanded == reachable:
+            break
+        reachable = expanded
+    unreachable = sorted(role_names - reachable)
+    if unreachable:
+        raise FactoryContractError(
+            "factory roles are unreachable from operator_input.to: "
+            + ", ".join(unreachable)
+        )
 
 
 def canonical_snapshot(payload: dict[str, Any]) -> bytes:
@@ -253,7 +349,15 @@ def load_active_snapshot(name: str) -> tuple[str, Path, dict[str, Any]]:
 
 
 def _validate_snapshot_payload(payload: dict[str, Any], *, expected_name: str) -> None:
-    _exact_keys("snapshot", payload, {"schema", "name", "room", "roles", "handoffs"})
+    if isinstance(payload, dict) and "operator_input" not in payload:
+        raise FactoryContractError(
+            "factory snapshot has no operator_input and cannot be activated; check and apply a reachable contract"
+        )
+    _exact_keys(
+        "snapshot",
+        payload,
+        {"schema", "name", "room", "roles", "handoffs", "operator_input"},
+    )
     if payload["schema"] != SCHEMA or payload["name"] != expected_name:
         raise FactoryContractError("snapshot schema or factory name does not match")
     _simple_name("snapshot room", payload["room"])
@@ -266,7 +370,7 @@ def _validate_snapshot_payload(payload: dict[str, Any], *, expected_name: str) -
         _exact_keys(
             f"snapshot role {role_name}",
             role,
-            {"agent", "contract", "contract_sha256", "contract_text"},
+            {"agent", "contract", "contract_bytes", "contract_sha256", "contract_text"},
         )
         agent = _simple_name("snapshot agent", role["agent"])
         if agent in agents:
@@ -274,23 +378,61 @@ def _validate_snapshot_payload(payload: dict[str, Any], *, expected_name: str) -
         agents.add(agent)
         if not isinstance(role["contract"], str) or not isinstance(role["contract_text"], str):
             raise FactoryContractError("snapshot role contract is invalid")
+        contract_encoded = role["contract_text"].encode()
+        contract_bytes = role["contract_bytes"]
+        if (
+            isinstance(contract_bytes, bool)
+            or not isinstance(contract_bytes, int)
+            or contract_bytes != len(contract_encoded)
+        ):
+            raise FactoryContractError(
+                f"snapshot role {role_name!r} contract byte count does not match"
+            )
         digest = role["contract_sha256"]
-        actual = hashlib.sha256(role["contract_text"].encode()).hexdigest()
+        actual = hashlib.sha256(contract_encoded).hexdigest()
         if digest != actual:
             raise FactoryContractError(f"snapshot role {role_name!r} contract hash does not match")
     handoffs = payload["handoffs"]
     if not isinstance(handoffs, list) or not handoffs:
         raise FactoryContractError("snapshot handoffs are invalid")
+    handoff_edges = []
+    handoff_types = set()
     for handoff in handoffs:
         _exact_keys("snapshot handoff", handoff, {"request", "from", "to", "responses"})
-        _message_type("snapshot request", handoff["request"])
+        request = _message_type("snapshot request", handoff["request"])
         if handoff["from"] not in roles or handoff["to"] not in roles:
             raise FactoryContractError("snapshot handoff references an unknown role")
+        handoff_edges.append((handoff["from"], handoff["to"]))
+        handoff_types.add(request)
         responses = handoff["responses"]
         if not isinstance(responses, list) or not responses:
             raise FactoryContractError("snapshot handoff responses are invalid")
         for response in responses:
-            _message_type("snapshot response", response)
+            handoff_types.add(_message_type("snapshot response", response))
+
+    operator_input = _exact_keys(
+        "snapshot operator_input",
+        payload["operator_input"],
+        {"to", "types"},
+    )
+    destination = _simple_name("snapshot operator_input.to", operator_input["to"])
+    if destination not in roles:
+        raise FactoryContractError("snapshot operator_input.to references an unknown role")
+    operator_types_raw = operator_input["types"]
+    if not isinstance(operator_types_raw, list) or not operator_types_raw:
+        raise FactoryContractError("snapshot operator_input.types are invalid")
+    operator_types = [
+        _message_type("snapshot operator input type", item)
+        for item in operator_types_raw
+    ]
+    if len(set(operator_types)) != len(operator_types):
+        raise FactoryContractError("snapshot operator_input.types contains a duplicate")
+    overlap = handoff_types & set(operator_types)
+    if overlap:
+        raise FactoryContractError(
+            f"snapshot operator input masquerades as handoff type {sorted(overlap)[0]!r}"
+        )
+    _validate_reachable_roles(set(roles), handoff_edges, destination)
 
 
 def _atomic_write(path: Path, encoded: bytes) -> None:

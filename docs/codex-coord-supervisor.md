@@ -30,6 +30,15 @@ an empty `objects` list and a valid `next_cursor`. Codex exit code 0 and model
 text are not idle or success evidence. A failed MCP result cannot advance the
 safe cursor.
 
+In factory mode, the approved snapshot may declare one `operator_input` edge.
+Only its destination role admits the declared leading control types, and only
+when coord reports the canonical sender kind as `operator`. Canonical operator
+messages have no agent ID or agent name. The supervisor normalizes those null
+fields only after checking the sender kind, limits the control body to 4 KiB
+of UTF-8, and checkpoints the control as non-terminal input. It never lets
+an operator message impersonate an agent handoff or lets peer text impersonate
+operator control.
+
 For each returned object, the supervisor atomically stores a narrow canonical
 checkpoint before it adopts the returned cursor. Only a `TASK` from a
 configured coordinator with exactly `assignee=<worker-name>` becomes work.
@@ -106,7 +115,9 @@ handles and fingerprints.
 ## Configuration
 
 The host setup writes the private, non-secret configuration file
-`~/.safeyolo/codex-coord-supervisor.json`. The defaults are:
+`~/.safeyolo/codex-coord-supervisor.json`. In factory mode that configuration
+also binds the immutable operator edge and handoff table from the approved
+snapshot. It contains no inferred workflow state. The defaults are:
 
 | Setting | Default | Purpose |
 |---|---:|---|

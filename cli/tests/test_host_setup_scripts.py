@@ -648,18 +648,21 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
             "coordinator": {
                 "agent": "relay",
                 "contract": "coordinator.md",
+                "contract_bytes": 6,
                 "contract_sha256": "0" * 64,
                 "contract_text": "unused",
             },
             "owner": {
                 "agent": "test-agent",
                 "contract": "owner.md",
+                "contract_bytes": len(contract.encode()),
                 "contract_sha256": __import__("hashlib").sha256(contract.encode()).hexdigest(),
                 "contract_text": contract,
             },
             "reviewer": {
                 "agent": "lens",
                 "contract": "reviewer.md",
+                "contract_bytes": 6,
                 "contract_sha256": "0" * 64,
                 "contract_text": "unused",
             },
@@ -678,6 +681,10 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
                 "responses": ["READY", "CHANGES_REQUIRED", "BLOCKED"],
             },
         ],
+        "operator_input": {
+            "to": "coordinator",
+            "types": ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"],
+        },
     }
     snapshot_path = tmp_path / "snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot))
@@ -703,6 +710,7 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
         "owner": "test-agent",
         "reviewer": "lens",
     }
+    assert config["factory"]["operator_input"] == snapshot["operator_input"]
     instructions = (agent_home / ".safeyolo/AGENTS.md").read_text()
     assert instructions.startswith(BASELINE_SOURCE.read_text().rstrip())
     assert instructions.endswith(contract.lstrip())

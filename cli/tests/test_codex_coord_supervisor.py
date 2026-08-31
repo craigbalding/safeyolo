@@ -67,6 +67,8 @@ def _factory_config(module: ModuleType, tmp_path: Path, role: str):
                 ("READY", "CHANGES_REQUIRED", "BLOCKED"),
             ),
         ),
+        factory_operator_role="coordinator",
+        factory_operator_types=("ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"),
         contract_sha256="a" * 64,
     )
 
@@ -90,8 +92,8 @@ def _resolved(
         "object": {
             "msg_id": "message-1",
             "sender_kind": sender_kind,
-            "sender_agent_id": f"agent-{sender}",
-            "sender_agent_name": sender,
+            "sender_agent_id": None if sender_kind == "operator" else f"agent-{sender}",
+            "sender_agent_name": None if sender_kind == "operator" else sender,
             "content_type": "text/plain",
             "body": body,
             "sequence": 11,
@@ -468,6 +470,184 @@ def test_factory_rejects_an_other_room_even_for_an_exact_handoff(supervisor_modu
 
     assert state["in_flight"] == []
     assert state["recent_attention_ids"] == [attention_id]
+
+
+@pytest.mark.parametrize("control", ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY issue=#480", "NEXT", "DIRECTION issue=#480"])
+def test_factory_admits_only_canonical_operator_controls_to_coordinator(
+    supervisor_module,
+    tmp_path,
+    control,
+):
+    module = supervisor_module
+    attention_id = "attn-" + "d" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(
+        _factory_config(module, tmp_path, "coordinator"),
+        state,
+        state_path,
+        {"room-1": "backlog"},
+    )
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [_resolved(attention_id, sender_kind="operator", body=control)],
+        )
+    )
+
+    assert state["in_flight"][0]["requires_terminal"] is False
+    assert state["in_flight"][0]["sender_agent_name"] == ""
+    prompt = module.build_prompt(consumer.config, state, {"room-1": "backlog"})
+    assert '"sender_kind":"operator"' in prompt
+
+
+@pytest.mark.parametrize(
+    ("role", "sender_kind", "body"),
+    [
+        ("coordinator", "agent", "ACTIVATE"),
+        ("owner", "operator", "ACTIVATE"),
+        ("coordinator", "operator", "TASK task=one assignee=relay"),
+        ("coordinator", "operator", "ACTIVATE_NOW"),
+        ("coordinator", "operator", "DIRECTION\n" + "x" * 4096),
+    ],
+)
+def test_factory_rejects_operator_lockout_and_peer_impersonation_cases(
+    supervisor_module,
+    tmp_path,
+    role,
+    sender_kind,
+    body,
+):
+    module = supervisor_module
+    attention_id = "attn-" + "e" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(
+        _factory_config(module, tmp_path, role),
+        state,
+        state_path,
+        {"room-1": "backlog"},
+    )
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [_resolved(attention_id, sender="relay", sender_kind=sender_kind, body=body)],
+        )
+    )
+
+    assert state["in_flight"] == []
+    assert state["recent_attention_ids"] == [attention_id]
+
+
+def test_factory_canonical_operator_to_terminal_chain(supervisor_module, tmp_path):
+    module = supervisor_module
+    room_ids = {"room-1": "backlog"}
+    relay_state = module.empty_state()
+    forge_state = module.empty_state()
+    lens_state = module.empty_state()
+    relay = module.EventConsumer(
+        _factory_config(module, tmp_path, "coordinator"),
+        relay_state,
+        tmp_path / "relay-state.json",
+        room_ids,
+    )
+    forge = module.EventConsumer(
+        _factory_config(module, tmp_path, "owner"),
+        forge_state,
+        tmp_path / "forge-state.json",
+        room_ids,
+    )
+    lens = module.EventConsumer(
+        _factory_config(module, tmp_path, "reviewer"),
+        lens_state,
+        tmp_path / "lens-state.json",
+        room_ids,
+    )
+    control_attention = "attn-" + "1" * 32
+    task_attention = "attn-" + "2" * 32
+    review_attention = "attn-" + "3" * 32
+    ready_attention = "attn-" + "4" * 32
+
+    relay.consume(
+        _wait_event(
+            module,
+            relay_state,
+            [_resolved(control_attention, sender_kind="operator", body="ACTIVATE")],
+        )
+    )
+    assert relay_state["in_flight"][0]["requires_terminal"] is False
+    relay.consume({"type": "turn.completed"})
+
+    task_body = "TASK task=issue-480 assignee=forge"
+    task_send = _terminal_event(task_attention, body=task_body, sender="relay")
+    task_send["item"]["arguments"]["notify"] = ["forge"]
+    relay.consume(task_send)
+    assert relay_state["awaiting_handoff"]["request"] == "TASK"
+    forge.consume(
+        _wait_event(
+            module,
+            forge_state,
+            [_resolved(task_attention, sender="relay", body=task_body)],
+        )
+    )
+    assert forge_state["in_flight"][0]["requires_terminal"] is True
+
+    review_body = f"REVIEW_READY issue=#480 pr=#485 head={'a' * 40}"
+    review_send = _terminal_event(task_attention, body=review_body, sender="forge")
+    review_send["item"]["arguments"]["notify"] = ["lens"]
+    forge.consume(review_send)
+    lens.consume(
+        _wait_event(
+            module,
+            lens_state,
+            [_resolved(review_attention, sender="forge", body=review_body)],
+        )
+    )
+    assert lens_state["in_flight"][0]["requires_terminal"] is True
+
+    ready_body = (
+        f"READY issue=#480 pr=#485 head={'a' * 40} "
+        f"attention_id={review_attention}"
+    )
+    lens.consume(_terminal_event(review_attention, body=ready_body, sender="lens"))
+    assert lens_state["in_flight"] == []
+    forge = module.EventConsumer(
+        _factory_config(module, tmp_path, "owner"),
+        forge_state,
+        tmp_path / "forge-state.json",
+        room_ids,
+    )
+    forge.consume(
+        _wait_event(
+            module,
+            forge_state,
+            [_resolved(ready_attention, sender="lens", body=ready_body)],
+        )
+    )
+    assert forge_state["awaiting_handoff"] is None
+
+    done_body = f"DONE task=issue-480 attention_id={task_attention}"
+    forge.consume(_terminal_event(task_attention, body=done_body, sender="forge"))
+    assert forge_state["in_flight"][-1]["requires_terminal"] is False
+    relay = module.EventConsumer(
+        _factory_config(module, tmp_path, "coordinator"),
+        relay_state,
+        tmp_path / "relay-state.json",
+        room_ids,
+    )
+    relay.consume(
+        _wait_event(
+            module,
+            relay_state,
+            [_resolved(ready_attention, sender="forge", body=done_body)],
+        )
+    )
+    assert relay_state["awaiting_handoff"] is None
+    assert relay_state["in_flight"][-1]["requires_terminal"] is False
 
 
 def test_factory_rejects_a_terminal_outside_the_declared_response_set(supervisor_module, tmp_path):

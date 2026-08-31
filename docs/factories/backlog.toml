@@ -2,6 +2,10 @@ schema = "safeyolo.factory/v1"
 name = "backlog"
 room = "backlog"
 
+[operator_input]
+to = "coordinator"
+types = ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"]
+
 [roles.coordinator]
 agent = "relay"
 contract = "backlog-coordinator.md"

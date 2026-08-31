@@ -20,6 +20,9 @@ def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> 
         'schema = "safeyolo.factory/v1"\n'
         f'name = "{name}"\n'
         'room = "backlog"\n\n'
+        '[operator_input]\n'
+        'to = "coordinator"\n'
+        'types = ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"]\n\n'
         '[roles.coordinator]\nagent = "relay"\ncontract = "coordinator.md"\n\n'
         '[roles.owner]\nagent = "forge"\ncontract = "owner.md"\n\n'
         '[roles.reviewer]\nagent = "lens"\ncontract = "reviewer.md"\n\n'
@@ -39,7 +42,10 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     assert result.exit_code == 0, result.output
     assert "factory=backlog schema=safeyolo.factory/v1 room=backlog" in result.output
     assert "role=owner agent=forge contract=owner.md" in result.output
+    assert f"source={tmp_path / 'owner.md'}" in result.output
+    assert "bytes=24" in result.output
     assert "sha256=" in result.output
+    assert "operator_input=operator to=coordinator" in result.output
     assert "handoff=REVIEW_READY from=owner to=reviewer" in result.output
 
 
@@ -105,6 +111,8 @@ def test_factory_run_uses_only_the_active_verified_snapshot(cli_runner, tmp_path
     assert len(calls) == 1
     assert calls[0][1]["name"] == "backlog"
     assert calls[0][1]["roles"]["reviewer"]["agent"] == "lens"
+    assert "snapshot_path=" in result.output
+    assert "operator_input=operator to=coordinator" in result.output
 
 
 def test_factory_run_preserves_each_agents_local_codex_auth(
@@ -172,3 +180,54 @@ def test_active_snapshot_rejects_tampering(tmp_path, tmp_config_dir):
     with pytest.raises(FactoryContractError, match="content hash"):
         load_active_snapshot("backlog")
     assert identifier in snapshot_path.name
+
+
+def test_factory_rejects_missing_operator_input_and_unreachable_roles(tmp_path):
+    path = _factory_file(tmp_path)
+    source = path.read_text()
+    start = source.index("[operator_input]")
+    end = source.index("[roles.coordinator]")
+    path.write_text(source[:start] + source[end:])
+    with pytest.raises(FactoryContractError, match="must declare operator_input"):
+        load_factory_file(path)
+
+    path = _factory_file(tmp_path)
+    path.write_text(path.read_text().replace('to = "coordinator"', 'to = "owner"', 1))
+    with pytest.raises(FactoryContractError, match="unreachable from operator_input.to: coordinator"):
+        load_factory_file(path)
+
+
+def test_factory_binds_exact_utf8_contract_bytes(tmp_path):
+    path = _factory_file(tmp_path)
+    encoded = b"# Owner\r\n\r\nExact bytes.\r\n"
+    (tmp_path / "owner.md").write_bytes(encoded)
+
+    contract = load_factory_file(path)
+    owner = next(role for role in contract.roles if role.name == "owner")
+
+    assert owner.contract_bytes == len(encoded)
+    assert owner.contract_sha256 == __import__("hashlib").sha256(encoded).hexdigest()
+    assert owner.contract_text.encode() == encoded
+
+
+def test_factory_run_rejects_a_legacy_source_only_snapshot(
+    cli_runner,
+    tmp_path,
+    tmp_config_dir,
+):
+    from safeyolo.factory_contract import canonical_snapshot, snapshot_id, store_snapshot
+
+    _identifier, snapshot_path = store_snapshot(load_factory_file(_factory_file(tmp_path)))
+    payload = json.loads(snapshot_path.read_text())
+    payload.pop("operator_input")
+    legacy_identifier = snapshot_id(payload)
+    legacy_path = snapshot_path.with_name(f"{legacy_identifier}.json")
+    legacy_path.write_bytes(canonical_snapshot(payload))
+    (snapshot_path.parents[1] / "active").write_text(legacy_identifier + "\n")
+
+    result = cli_runner.invoke(app, ["factory", "run", "backlog"])
+
+    assert result.exit_code == 1
+    assert "snapshot has no operator_input" in result.output
+    assert "cannot be" in result.output
+    assert "activated; check and apply a reachable contract" in result.output

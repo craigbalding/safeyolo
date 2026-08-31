@@ -80,21 +80,28 @@ try:
     snapshot = json.loads(snapshot_bytes)
 except (OSError, UnicodeError, json.JSONDecodeError) as exc:
     raise SystemExit(f"codex-host-setup: cannot read factory snapshot: {exc}")
-if not isinstance(snapshot, dict) or set(snapshot) != {"schema", "name", "room", "roles", "handoffs"}:
+if not isinstance(snapshot, dict) or set(snapshot) != {
+    "schema", "name", "room", "roles", "handoffs", "operator_input"
+}:
     raise SystemExit("codex-host-setup: invalid factory snapshot shape")
 if snapshot.get("schema") != "safeyolo.factory/v1":
     raise SystemExit("codex-host-setup: unsupported factory snapshot schema")
 room = snapshot.get("room")
 roles = snapshot.get("roles")
 handoffs = snapshot.get("handoffs")
+operator_input = snapshot.get("operator_input")
 if name_re.fullmatch(str(room)) is None or not isinstance(roles, dict) or role_name not in roles:
     raise SystemExit("codex-host-setup: factory role or room is invalid")
 role = roles[role_name]
-if not isinstance(role, dict) or set(role) != {"agent", "contract", "contract_sha256", "contract_text"}:
+if not isinstance(role, dict) or set(role) != {
+    "agent", "contract", "contract_bytes", "contract_sha256", "contract_text"
+}:
     raise SystemExit("codex-host-setup: factory role binding is invalid")
 if role.get("agent") != agent_name or not isinstance(role.get("contract_text"), str):
     raise SystemExit("codex-host-setup: factory role is not bound to this agent")
 contract_hash = hashlib.sha256(role["contract_text"].encode()).hexdigest()
+if role.get("contract_bytes") != len(role["contract_text"].encode()):
+    raise SystemExit("codex-host-setup: factory role contract byte count does not match")
 if role.get("contract_sha256") != contract_hash:
     raise SystemExit("codex-host-setup: factory role contract hash does not match")
 role_agents = {}
@@ -109,6 +116,8 @@ if not isinstance(handoffs, list) or not handoffs:
     raise SystemExit("codex-host-setup: factory has no handoffs")
 runtime_handoffs = []
 coordinators = []
+handoff_types = set()
+handoff_edges = []
 for handoff in handoffs:
     if not isinstance(handoff, dict) or set(handoff) != {"request", "from", "to", "responses"}:
         raise SystemExit("codex-host-setup: invalid factory handoff")
@@ -133,10 +142,40 @@ for handoff in handoffs:
             "responses": responses,
         }
     )
+    handoff_edges.append((source, destination))
+    handoff_types.add(request)
+    handoff_types.update(responses)
     if request == "TASK" and role_agents[source] not in coordinators:
         coordinators.append(role_agents[source])
 if not coordinators:
     raise SystemExit("codex-host-setup: factory must declare a TASK coordinator handoff")
+if not isinstance(operator_input, dict) or set(operator_input) != {"to", "types"}:
+    raise SystemExit("codex-host-setup: invalid factory operator input")
+operator_role = operator_input.get("to")
+operator_types = operator_input.get("types")
+if (
+    operator_role not in role_agents
+    or not isinstance(operator_types, list)
+    or not operator_types
+    or any(type_re.fullmatch(str(item)) is None for item in operator_types)
+    or len(set(operator_types)) != len(operator_types)
+    or handoff_types.intersection(operator_types)
+):
+    raise SystemExit("codex-host-setup: invalid factory operator input values")
+reachable = {operator_role}
+while True:
+    expanded = reachable | {
+        destination for source, destination in handoff_edges if source in reachable
+    }
+    if expanded == reachable:
+        break
+    reachable = expanded
+unreachable = sorted(set(role_agents) - reachable)
+if unreachable:
+    raise SystemExit(
+        "codex-host-setup: factory roles are unreachable from operator input: "
+        + ", ".join(unreachable)
+    )
 
 config = {
     "agent_name": agent_name,
@@ -149,6 +188,7 @@ config = {
         "role": role_name,
         "roles": role_agents,
         "handoffs": runtime_handoffs,
+        "operator_input": {"to": operator_role, "types": operator_types},
         "contract_sha256": contract_hash,
     },
 }
