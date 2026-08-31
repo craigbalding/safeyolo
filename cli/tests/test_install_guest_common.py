@@ -109,6 +109,33 @@ def test_default_and_custom_builders_share_current_mise_pin() -> None:
         assert value in custom_helper
 
 
+def test_default_builder_supports_a_host_without_resolv_conf() -> None:
+    """Nested SafeYolo relies on its outer proxy and has no host resolver."""
+    source = (GUEST_DIR / "build-rootfs.sh").read_text()
+
+    assert "if [ -r /etc/resolv.conf ]; then" in source
+    assert 'sudo cp /etc/resolv.conf "$ROOTFS/etc/resolv.conf"' not in source
+    assert source.index("if [ -r /etc/resolv.conf ]; then") < source.index(
+        'sudo chroot "$ROOTFS" /usr/bin/apt-get update'
+    )
+
+
+def test_default_builder_stages_then_removes_inherited_tls_ca() -> None:
+    """The outer proxy CA is build-only state, not part of the artifact."""
+    source = (GUEST_DIR / "build-rootfs.sh").read_text()
+
+    stage = 'sudo install -D -m 0644 -- "$SSL_CERT_FILE" "$BUILD_SSL_CERT_DEST"'
+    first_chroot = 'sudo chroot "$ROOTFS" /usr/bin/apt-get update'
+    cleanup = 'sudo rm -f -- "$BUILD_SSL_CERT_DEST"'
+    empty_runtime_target = (
+        'sudo install -D -m 0644 /dev/null "$BUILD_SSL_CERT_DEST"'
+    )
+    emit = 'echo "=== Emitting directory tree ==="'
+    assert source.index(stage) < source.index(first_chroot)
+    assert source.index(first_chroot) < source.index(cleanup) < source.index(emit)
+    assert source.index(cleanup) < source.index(empty_runtime_target) < source.index(emit)
+
+
 def test_mise_integration_keeps_ordinary_tools_global_and_has_explicit_opt_in(
     tmp_path: Path,
 ) -> None:

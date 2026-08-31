@@ -472,6 +472,69 @@ class TestLifecycleBuild:
             ),
         ]
 
+    def test_build_output_dir_honors_native_storage_override(
+        self, tmp_path, monkeypatch
+    ):
+        from safeyolo.commands.lifecycle import _build_output_dir
+
+        build_script = tmp_path / "checkout" / "guest" / "build-all.sh"
+        override = tmp_path / "native" / "build"
+        monkeypatch.setenv("OUTPUT_DIR", str(override))
+
+        assert _build_output_dir(build_script) == override.resolve()
+
+    def test_subordinate_ownership_probe_detects_virtiofs_style_rejection(
+        self, tmp_path
+    ):
+        from safeyolo.commands.lifecycle import _probe_subordinate_ownership
+
+        failure = subprocess.CompletedProcess(
+            ["sudo", "chown"], 1, "", "chown: Operation not permitted"
+        )
+        with patch(
+            "safeyolo.commands.lifecycle.subprocess.run",
+            return_value=failure,
+            autospec=True,
+        ):
+            supported, reason = _probe_subordinate_ownership(tmp_path / "share")
+
+        assert supported is False
+        assert "Operation not permitted" in reason
+        assert not list(tmp_path.glob(".safeyolo-subuid-probe-*"))
+
+    def test_subordinate_ownership_probe_requires_reported_uid_and_gid(
+        self, tmp_path
+    ):
+        from safeyolo.commands.lifecycle import _probe_subordinate_ownership
+
+        real_stat = Path.stat
+
+        def stat_with_subuid_owner(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            if path.name == "rootfs-tree" and path.parent.name.startswith(
+                ".safeyolo-subuid-probe-"
+            ):
+                values = list(result)
+                values[4] = 100000
+                values[5] = 100000
+                return type(result)(values)
+            return result
+
+        success = subprocess.CompletedProcess(["sudo", "chown"], 0, "", "")
+        with (
+            patch(
+                "safeyolo.commands.lifecycle.subprocess.run",
+                return_value=success,
+                autospec=True,
+            ),
+            patch.object(Path, "stat", autospec=True, side_effect=stat_with_subuid_owner),
+        ):
+            supported, reason = _probe_subordinate_ownership(tmp_path / "share")
+
+        assert supported is True
+        assert reason == "uid/gid 100000 ownership is preserved"
+        assert not list(tmp_path.glob(".safeyolo-subuid-probe-*"))
+
 
 # ---------------------------------------------------------------------------
 # agent.py: name validation

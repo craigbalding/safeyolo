@@ -337,6 +337,103 @@ def test_etxtbsy_normal_startup_leaves_global_dcache_unset(monkeypatch):
     assert linux._experiment_runsc_flags() == []  # noqa: SLF001
 
 
+def test_non_systemd_pid1_disables_user_scope(monkeypatch):
+    from safeyolo.platform import linux
+
+    monkeypatch.setattr(linux.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    available, reason = linux._systemd_user_scope_available(  # noqa: SLF001
+        {}, pid1_comm="safeyolo-guest-init"
+    )
+
+    assert available is False
+    assert "not systemd" in reason
+
+
+def test_missing_user_bus_environment_disables_scope(monkeypatch):
+    from safeyolo.platform import linux
+
+    monkeypatch.setattr(linux.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    available, reason = linux._systemd_user_scope_available(  # noqa: SLF001
+        {}, pid1_comm="systemd"
+    )
+
+    assert available is False
+    assert "user-bus environment" in reason
+
+
+def test_unusable_systemd_user_manager_disables_scope(monkeypatch):
+    from safeyolo.platform import linux
+
+    monkeypatch.setattr(linux.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        linux.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, "", "Failed to connect to bus"
+        ),
+    )
+
+    available, reason = linux._systemd_user_scope_available(  # noqa: SLF001
+        {"XDG_RUNTIME_DIR": "/run/user/1000"}, pid1_comm="systemd"
+    )
+
+    assert available is False
+    assert "Failed to connect to bus" in reason
+
+
+def test_usable_systemd_user_manager_enables_scope(monkeypatch):
+    from safeyolo.platform import linux
+
+    monkeypatch.setattr(linux.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        linux.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    available, reason = linux._systemd_user_scope_available(  # noqa: SLF001
+        {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"},
+        pid1_comm="systemd",
+    )
+
+    assert available is True
+    assert reason == "systemd user scope available"
+
+
+def test_nested_launch_falls_back_to_direct_runsc(monkeypatch, caplog):
+    from safeyolo.platform import linux
+
+    direct = ["nsenter", "--user", "--", "runsc", "start", "agent"]
+    monkeypatch.setattr(
+        linux,
+        "_systemd_user_scope_available",
+        lambda: (False, "PID 1 is guest-init, not systemd"),
+    )
+
+    assert linux._sandbox_launch_command(direct, "inner", 2048, 2) == direct
+    assert "MemoryMax and CPUQuota limits are not enforced" in caplog.text
+
+
+def test_normal_launch_keeps_systemd_resource_scope(monkeypatch):
+    from safeyolo.platform import linux
+
+    direct = ["runsc", "start", "agent"]
+    monkeypatch.setattr(
+        linux,
+        "_systemd_user_scope_available",
+        lambda: (True, "available"),
+    )
+
+    command = linux._sandbox_launch_command(direct, "normal", 1536, 3)
+
+    assert command[:3] == ["systemd-run", "--user", "--scope"]
+    assert "MemoryMax=1536M" in command
+    assert "CPUQuota=300%" in command
+    assert command[-3:] == direct
+
+
 def test_etxtbsy_experiment_workspace_dcache_rejects_invalid_value(
     isolated_env, monkeypatch,
 ):

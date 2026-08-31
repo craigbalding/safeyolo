@@ -1533,6 +1533,72 @@ class TestSafeyoloCaCert:
         assert "ssl_verify_upstream_trusted_ca" not in cmd_str
 
 
+class TestNestedProxyConfiguration:
+    def test_upstream_proxy_environment_is_normalized(self, monkeypatch):
+        from safeyolo.proxy import resolve_upstream_proxy
+
+        monkeypatch.setenv("SAFEYOLO_UPSTREAM_PROXY", "http://127.0.0.1:8080")
+
+        assert resolve_upstream_proxy({"upstream_proxy": ""}) == (
+            "http://127.0.0.1:8080"
+        )
+
+    def test_persistent_upstream_proxy_is_supported(self, monkeypatch):
+        from safeyolo.proxy import resolve_upstream_proxy
+
+        monkeypatch.delenv("SAFEYOLO_UPSTREAM_PROXY", raising=False)
+
+        assert resolve_upstream_proxy(
+            {"upstream_proxy": "https://proxy.example"}
+        ) == "https://proxy.example:443"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "socks5://127.0.0.1:1080",
+            "http://user:secret@proxy.example:8080",
+            "http://proxy.example:8080/path",
+            "http://proxy.example:not-a-port",
+        ],
+    )
+    def test_invalid_upstream_proxy_is_rejected(self, monkeypatch, value):
+        from safeyolo.proxy import resolve_upstream_proxy
+
+        monkeypatch.setenv("SAFEYOLO_UPSTREAM_PROXY", value)
+
+        with pytest.raises(ValueError, match="upstream proxy|UPSTREAM_PROXY"):
+            resolve_upstream_proxy({})
+
+    def test_via_token_defaults_to_instance_identity(self, monkeypatch):
+        from safeyolo.proxy import resolve_via_token
+
+        monkeypatch.delenv("SAFEYOLO_VIA_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "safeyolo.coord.identity.get_or_create_instance_id",
+            lambda: "sy-inner-instance",
+        )
+
+        assert resolve_via_token({"via_token": ""}) == "sy-inner-instance"
+
+    def test_via_token_environment_overrides_config(self, monkeypatch):
+        from safeyolo.proxy import resolve_via_token
+
+        monkeypatch.setenv("SAFEYOLO_VIA_TOKEN", "safeyolo-explicit-inner")
+
+        assert resolve_via_token({"via_token": "persistent-token"}) == (
+            "safeyolo-explicit-inner"
+        )
+
+    @pytest.mark.parametrize("value", ["two words", "bad,comma", "x" * 129])
+    def test_invalid_via_token_is_rejected(self, monkeypatch, value):
+        from safeyolo.proxy import resolve_via_token
+
+        monkeypatch.setenv("SAFEYOLO_VIA_TOKEN", value)
+
+        with pytest.raises(ValueError, match="via_token"):
+            resolve_via_token({})
+
+
 # ---------------------------------------------------------------------------
 # TestCertDirPermissions
 # ---------------------------------------------------------------------------
@@ -1878,6 +1944,10 @@ class TestStartProxy:
 
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
+        monkeypatch.setenv(
+            "SAFEYOLO_COORD_DATA_DIR", str(tmp_path / "data" / "coord")
+        )
+        monkeypatch.setenv("SAFEYOLO_UPSTREAM_PROXY", "http://127.0.0.1:8080")
         data_dir = tmp_path / "data"
         data_dir.mkdir(exist_ok=True)
         (tmp_path / "logs").mkdir(exist_ok=True)
@@ -1926,6 +1996,10 @@ class TestStartProxy:
             data_dir / "web-tailnet-status.json"
         )
         assert json.loads(launched["env"]["SAFEYOLO_INITIAL_MODES"]) == []
+        assert launched["env"]["SAFEYOLO_UPSTREAM_PROXY"] == (
+            "http://127.0.0.1:8080"
+        )
+        assert launched["env"]["SAFEYOLO_VIA_TOKEN"].startswith("sy-")
         assert launched["env"]["SAFEYOLO_PROFILE_PROCESS"] == "traffic-master"
         assert launched["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(
             package_dir.parent

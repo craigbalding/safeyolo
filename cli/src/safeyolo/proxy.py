@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -31,6 +32,7 @@ log = logging.getLogger("safeyolo.proxy")
 
 ADDON_CHAIN = _mitm_addons.ADDON_CHAIN
 DEFAULT_FLOW_CACHE = 5_000
+_VIA_TOKEN_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 
 def _pid_file() -> Path:
@@ -40,6 +42,66 @@ def _pid_file() -> Path:
 def web_tailnet_status_file() -> Path:
     """Return the traffic master's durable WebMITM Tailnet state path."""
     return get_data_dir() / "web-tailnet-status.json"
+
+
+def resolve_upstream_proxy(proxy_config: dict | None) -> str | None:
+    """Return a validated HTTP(S) parent proxy URL, if configured.
+
+    The environment override is intentionally explicit for disposable nested
+    labs. Persistent configuration remains useful for longer-lived instances.
+    Credentials and URL paths are rejected: SafeYolo currently supports an
+    unauthenticated HTTP-proxy hop, not a general proxy URL transport.
+    """
+    from urllib.parse import urlsplit
+
+    value = os.environ.get("SAFEYOLO_UPSTREAM_PROXY")
+    if value in (None, ""):
+        value = (proxy_config or {}).get("upstream_proxy")
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("proxy.upstream_proxy must be an HTTP(S) URL")
+
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        raise ValueError(
+            "SAFEYOLO_UPSTREAM_PROXY/proxy.upstream_proxy must use "
+            "http:// or https:// with a host"
+        )
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("authenticated upstream proxy URLs are not supported")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError("upstream proxy URL must not contain a path, query, or fragment")
+    try:
+        port = parsed.port or (80 if parsed.scheme == "http" else 443)
+    except ValueError as exc:
+        raise ValueError("upstream proxy URL has an invalid port") from exc
+    host = parsed.hostname
+    rendered_host = f"[{host}]" if ":" in host else host
+    return f"{parsed.scheme}://{rendered_host}:{port}"
+
+
+def resolve_via_token(proxy_config: dict | None) -> str:
+    """Return this SafeYolo instance's stable RFC Via pseudonym."""
+    value = os.environ.get("SAFEYOLO_VIA_TOKEN")
+    if value in (None, ""):
+        value = (proxy_config or {}).get("via_token")
+    if value in (None, ""):
+        from .coord.identity import get_or_create_instance_id
+
+        # The coord instance ID is already an RFC token and globally unique.
+        # Keep it unprefixed so a nested instance also works behind older
+        # SafeYolo releases whose legacy loop guard used substring matching
+        # against the fixed word "safeyolo".
+        value = get_or_create_instance_id()
+    if not isinstance(value, str) or not _VIA_TOKEN_RE.fullmatch(value):
+        raise ValueError(
+            "SAFEYOLO_VIA_TOKEN/proxy.via_token must be one RFC token "
+            "without whitespace"
+        )
+    if len(value) > 128:
+        raise ValueError("SAFEYOLO_VIA_TOKEN/proxy.via_token must be at most 128 characters")
+    return value
 
 
 def _read_startup_failure(path: Path, offset: int) -> str | None:
@@ -806,6 +868,12 @@ def start_proxy(
     else:
         log.info("Test mode enabled via config.yaml")
 
+    proxy_config = full_config.get("proxy", {})
+    if not isinstance(proxy_config, dict):
+        raise ValueError("proxy configuration must be a mapping")
+    upstream_proxy = resolve_upstream_proxy(proxy_config)
+    via_token = resolve_via_token(proxy_config)
+
     resolved_flow_cache = resolve_flow_cache(flow_cache)
 
     # Build command
@@ -819,7 +887,7 @@ def start_proxy(
         admin_port=admin_port,
         flow_cache=resolved_flow_cache,
         test_config=test_config,
-        proxy_config=full_config.get("proxy", {}),
+        proxy_config=proxy_config,
     )
 
     # Select the entire package containing the chosen addons, not the flat
@@ -835,6 +903,12 @@ def start_proxy(
         env.get("PYTHONPATH", ""),
     )
     env[DEV_MODE_ENV] = "1" if dev else "0"
+    env["SAFEYOLO_VIA_TOKEN"] = via_token
+    if upstream_proxy is None:
+        env.pop("SAFEYOLO_UPSTREAM_PROXY", None)
+    else:
+        env["SAFEYOLO_UPSTREAM_PROXY"] = upstream_proxy
+        log.info("Forwarding proxy egress through %s", upstream_proxy)
     if dev:
         env[DEV_SOURCE_ROOTS_ENV] = json.dumps(
             {
@@ -866,7 +940,7 @@ def start_proxy(
     # avoids a temporary TCP listener and the old fixed bootstrap delay.
     env["SAFEYOLO_INITIAL_MODES"] = json.dumps(_initial_mode_specs(data_dir))
     env["SAFEYOLO_WEB_PASSWORD_FILE"] = str(data_dir / "admin_token")
-    web_tailnet = full_config.get("proxy", {}).get("web_tailnet", {})
+    web_tailnet = proxy_config.get("web_tailnet", {})
     if not isinstance(web_tailnet, dict):
         raise ValueError("proxy.web_tailnet must be a mapping")
     web_tailnet_enabled = web_tailnet.get("enabled", False)
@@ -874,7 +948,7 @@ def start_proxy(
         raise ValueError("proxy.web_tailnet.enabled must be true or false")
     web_tailnet_port = web_tailnet.get("port", 443)
     validate_tailnet_port(web_tailnet_port)
-    if web_tailnet_enabled and full_config.get("proxy", {}).get("web_host", "127.0.0.1") != "127.0.0.1":
+    if web_tailnet_enabled and proxy_config.get("web_host", "127.0.0.1") != "127.0.0.1":
         raise ValueError("WebMITM Tailnet sharing requires proxy.web_host to remain 127.0.0.1")
     env["SAFEYOLO_WEB_TAILNET_ENABLED"] = "1" if web_tailnet_enabled else "0"
     env["SAFEYOLO_WEB_TAILNET_PORT"] = str(web_tailnet_port)

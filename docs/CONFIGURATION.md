@@ -37,6 +37,8 @@ proxy:
   container_name: safeyolo
   ignore_hosts: []      # Exact HOST or HOST:PORT TLS passthrough entries
   upstream_ca_cert: ""  # Optional PEM bundle for additional upstream trust
+  upstream_proxy: ""    # Optional parent HTTP(S) proxy for nested labs
+  via_token: ""         # Empty derives a stable per-instance Via pseudonym
 
 desktop:
   size: auto           # Persistent host preference: auto or WIDTHxHEIGHT
@@ -69,6 +71,14 @@ override and takes precedence over the persistent setting; `safeyolo doctor`
 warns when that non-persistent form is active. Bundles add trust and continue
 to enforce certificate signatures, validity periods, and hostnames. SafeYolo
 does not enable mitmproxy's global `ssl_insecure` option.
+
+`SAFEYOLO_UPSTREAM_PROXY` temporarily overrides `proxy.upstream_proxy`. It is
+an explicit HTTP(S) parent proxy for SafeYolo's own outbound connections; it
+does not rely on ambient `HTTP_PROXY` behavior inside mitmproxy. URLs with
+credentials or paths are rejected. `SAFEYOLO_VIA_TOKEN` similarly overrides
+`proxy.via_token`; values must be one RFC token. When neither is set, SafeYolo
+derives a stable Via pseudonym from its instance ID so intentional nested
+instances do not look like self-loops. See [the nested Linux lab recipe](nested-linux-lab.md).
 
 `desktop.size` is the default geometry for `safeyolo agent desktop` and for
 noVNC started through `safeyolo agent preview`. Set it once to match the

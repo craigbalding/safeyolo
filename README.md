@@ -33,6 +33,8 @@ Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patt
 - [uv](https://docs.astral.sh/uv/) — the Python package/project manager SafeYolo uses. Grab it from your distro's package manager or the upstream installer.
 - macOS only: [Lima](https://lima-vm.io/) for the guest image build (`brew install lima`, `sudo port install lima`, or `mise use -g lima`).
 - Linux (apt-based): `safeyolo bootstrap` installs gVisor `runsc`, `uidmap`, `acl`, and other build prereqs via apt. On non-apt distros install gVisor first per its [upstream instructions](https://gvisor.dev/).
+- Linux SafeYolo can also run inside an outer SafeYolo agent as a disposable
+  proxy-only integration lab; see [SafeYolo-in-SafeYolo](docs/nested-linux-lab.md).
 
 ### Install
 

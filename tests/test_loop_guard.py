@@ -16,6 +16,7 @@ from mitmproxy.test import tflow
 from service_discovery import ServiceDiscovery
 
 pytestmark = pytest.mark.assurance_boundary
+VIA_TOKEN = "safeyolo-test-instance"
 
 
 def _service_discovery(ip: str, agent: str) -> ServiceDiscovery:
@@ -29,7 +30,7 @@ class TestLoopDetection:
 
     def _addon(self):
         from loop_guard import LoopGuard
-        return LoopGuard()
+        return LoopGuard(VIA_TOKEN)
 
     def test_normal_request_passes(self):
         """Request without Via is not blocked and gets Via injected."""
@@ -39,14 +40,14 @@ class TestLoopDetection:
         addon.requestheaders(flow)
 
         assert flow.response is None
-        assert flow.request.headers["via"] == "1.1 safeyolo"
+        assert flow.request.headers["via"] == f"1.1 {VIA_TOKEN}"
 
     def test_loop_detected_returns_508(self):
         """Request with our Via token returns 508."""
         addon = self._addon()
         flow = tflow.tflow()
         flow.client_conn.peername = ("10.0.0.42", 12345)
-        flow.request.headers["via"] = "1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 {VIA_TOKEN}"
 
         addon.requestheaders(flow)
 
@@ -57,7 +58,7 @@ class TestLoopDetection:
         """Loop detection sets blocked_by and block_reason metadata."""
         addon = self._addon()
         flow = tflow.tflow()
-        flow.request.headers["via"] = "1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 {VIA_TOKEN}"
 
         addon.requestheaders(flow)
 
@@ -74,7 +75,7 @@ class TestLoopDetection:
 
         assert flow.response is None
         via = flow.request.headers["via"]
-        assert via == "1.1 other-proxy, 1.1 safeyolo"
+        assert via == f"1.1 other-proxy, 1.1 {VIA_TOKEN}"
 
     def test_existing_via_not_flagged_as_loop(self):
         """Via from other proxies does not trigger loop detection."""
@@ -90,7 +91,7 @@ class TestLoopDetection:
         """Loop detected even when other Via entries are present."""
         addon = self._addon()
         flow = tflow.tflow()
-        flow.request.headers["via"] = "1.1 other-proxy, 1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 other-proxy, 1.1 {VIA_TOKEN}"
 
         addon.requestheaders(flow)
 
@@ -104,7 +105,7 @@ class TestLoopDetection:
 
         addon = self._addon()
         flow = tflow.tflow()
-        flow.request.headers["via"] = "1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 {VIA_TOKEN}"
 
         addon.requestheaders(flow)
 
@@ -121,7 +122,7 @@ class TestLoopDetectionAudit:
 
     def _addon(self):
         from loop_guard import LoopGuard
-        return LoopGuard()
+        return LoopGuard(VIA_TOKEN)
 
     def test_loop_detection_emits_audit_event(self):
         """Loop detection writes a security.loop_guard audit event with DENY decision."""
@@ -129,7 +130,7 @@ class TestLoopDetectionAudit:
 
         addon = self._addon()
         flow = tflow.tflow()
-        flow.request.headers["via"] = "1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 {VIA_TOKEN}"
 
         with patch("loop_guard.write_event", autospec=True) as mock_write:
             addon.requestheaders(flow)
@@ -148,7 +149,7 @@ class TestViaTokenPresence:
 
     def _addon(self):
         from loop_guard import LoopGuard
-        return LoopGuard()
+        return LoopGuard(VIA_TOKEN)
 
     def test_via_present_after_requestheaders(self):
         """Via token is in headers after requestheaders (will be sent upstream)."""
@@ -157,7 +158,7 @@ class TestViaTokenPresence:
 
         addon.requestheaders(flow)
 
-        assert "safeyolo" in flow.request.headers.get("via", "")
+        assert VIA_TOKEN in flow.request.headers.get("via", "")
 
     def test_existing_via_preserved(self):
         """Other proxy Via entries are preserved alongside ours."""
@@ -169,7 +170,7 @@ class TestViaTokenPresence:
 
         via = flow.request.headers["via"]
         assert "1.1 upstream" in via
-        assert "1.1 safeyolo" in via
+        assert f"1.1 {VIA_TOKEN}" in via
 
 
 class TestLoopBlockCorrelationHeaders:
@@ -183,14 +184,14 @@ class TestLoopBlockCorrelationHeaders:
 
     def _addon(self):
         from loop_guard import LoopGuard
-        return LoopGuard()
+        return LoopGuard(VIA_TOKEN)
 
     def test_loop_508_carries_request_id_header(self):
         from request_id import REQUEST_ID_PATTERN
 
         addon = self._addon()
         flow = tflow.tflow()
-        flow.request.headers["via"] = "1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 {VIA_TOKEN}"
 
         addon.requestheaders(flow)
 
@@ -207,7 +208,7 @@ class TestLoopBlockCorrelationHeaders:
     def test_loop_508_carries_blocked_by_header(self):
         addon = self._addon()
         flow = tflow.tflow()
-        flow.request.headers["via"] = "1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 {VIA_TOKEN}"
 
         addon.requestheaders(flow)
 
@@ -218,7 +219,7 @@ class TestLoopBlockCorrelationHeaders:
         /explain can correlate — the fix threads it into write_event."""
         addon = self._addon()
         flow = tflow.tflow()
-        flow.request.headers["via"] = "1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 {VIA_TOKEN}"
 
         with patch("loop_guard.write_event", autospec=True) as mock_write:
             addon.requestheaders(flow)
@@ -236,7 +237,7 @@ class TestLoopBlockCorrelationHeaders:
         addon = self._addon()
         flow = tflow.tflow()
         flow.client_conn.peername = ("10.0.0.42", 12345)
-        flow.request.headers["via"] = "1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 {VIA_TOKEN}"
 
         discovery = _service_discovery("10.0.0.42", "the-real-agent")
 
@@ -259,7 +260,7 @@ class TestLoopBlockCorrelationHeaders:
         addon = self._addon()
         flow = tflow.tflow()
         flow.client_conn.peername = ("10.0.0.42", 12345)
-        flow.request.headers["via"] = "1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 {VIA_TOKEN}"
 
         with patch("loop_guard.find_addon", autospec=True, return_value=None), \
              patch("loop_guard.write_event", autospec=True) as mock_write:
@@ -312,10 +313,10 @@ class TestLoopFullCorrelationRoundTrip:
             with open(log_file, "a") as fh:
                 fh.write(json.dumps(entry) + "\n")
 
-        loop = LoopGuard()
+        loop = LoopGuard(VIA_TOKEN)
         flow = tflow.tflow()
         flow.client_conn.peername = ("10.0.0.42", 12345)
-        flow.request.headers["via"] = "1.1 safeyolo"
+        flow.request.headers["via"] = f"1.1 {VIA_TOKEN}"
 
         discovery = _service_discovery("10.0.0.42", agent_name)
 
@@ -371,7 +372,7 @@ class TestLoopSimulation:
 
     def _addon(self):
         from loop_guard import LoopGuard
-        return LoopGuard()
+        return LoopGuard(VIA_TOKEN)
 
     def test_first_pass_injects_second_pass_blocks(self):
         """First pass injects Via; second pass (simulating loop) gets 508."""
@@ -389,3 +390,32 @@ class TestLoopSimulation:
         addon.requestheaders(flow2)
         assert flow2.response is not None
         assert flow2.response.status_code == 508
+
+    def test_different_safeyolo_instance_is_allowed(self):
+        """An outer instance's Via token is not an inner-instance loop."""
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.headers["via"] = "1.1 safeyolo-outer-instance"
+
+        addon.requestheaders(flow)
+
+        assert flow.response is None
+        assert flow.request.headers["via"] == (
+            f"1.1 safeyolo-outer-instance, 1.1 {VIA_TOKEN}"
+        )
+
+    def test_received_by_match_is_not_a_substring(self):
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.headers["via"] = f"1.1 prefix-{VIA_TOKEN}-suffix"
+
+        addon.requestheaders(flow)
+
+        assert flow.response is None
+
+    @pytest.mark.parametrize("token", ["", "two words", "bad,comma", "x" * 129])
+    def test_invalid_instance_token_is_rejected(self, token):
+        from loop_guard import LoopGuard
+
+        with pytest.raises(ValueError, match="Via token"):
+            LoopGuard(token)
