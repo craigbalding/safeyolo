@@ -169,7 +169,7 @@ module. Only trace-participating addons appear here (defined by
 |---|---|
 | `allowed` | Circuit closed; request passed the pre-request check. |
 | `excluded_domain` | Destination in the addon's exclusion list. |
-| `success_recorded` | Response hook recorded a 2xx (or <4xx) success against the circuit. |
+| `success_recorded` | Response hook ran the success path for a 2xx (or <4xx) response. Existing circuit state is updated when present; this outcome alone does not prove a stored mutation. |
 | `failure_recorded` | Response hook recorded a 5xx or 429 failure against the circuit. |
 | `status_no_action` | Response hook saw a 4xx (non-429); circuit state unchanged. |
 | `prior_block` | Response hook saw a `blocked_by` flow (an earlier SafeYolo response). |
