@@ -49,6 +49,25 @@ cannot overlap a handoff request or response. `factory check`, `apply`, and
 old source-only v1 snapshots therefore fail closed instead of starting an
 inert factory.
 
+Use operator chat's explicit target when a control is intended to interrupt
+only that role's bound agent:
+
+```sh
+safeyolo coord chat backlog --to relay
+```
+
+Without `--to`, operator chat keeps its room-wide wake behavior. The target
+must be an active, receive-authorized room member; unknown, revoked, and
+send-only targets fail before the message is accepted. Targeting changes only
+attention delivery. The operator-authored message remains canonically
+attributed and visible in retained room history.
+
+The room brief is a separate operator-authored standing-context channel.
+Canonical `brief_changed` attention updates every receive-authorized factory
+role's bounded checkpoint, and preflight refreshes the current brief after a
+restart. Brief updates are not handoffs: they create no in-flight request,
+need no terminal response, and cause no automatic runtime transition.
+
 ## Check, approve, and run
 
 Inspect the resolved source path, exact UTF-8 byte count, and SHA-256 of every
@@ -96,8 +115,9 @@ For a running legacy backlog factory:
 3. Run `factory apply` and approve that exact resolved snapshot.
 4. Run `factory run backlog`.
 
-The supervisor upgrades its existing version-1 checkpoint in memory and keeps
-the thread, safe cursor, recent attention IDs, and in-flight canonical objects.
+The supervisor upgrades its existing checkpoint in memory and keeps the
+thread, safe cursor, recent attention IDs, in-flight canonical objects, and
+current trusted room brief context.
 The active Markdown contract and routing table come from the immutable
 snapshot. To change either, stop the agents, check and apply a new snapshot,
 then run the factory again.

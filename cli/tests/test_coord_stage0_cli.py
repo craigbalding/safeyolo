@@ -285,6 +285,39 @@ def test_interactive_send_reports_ambiguous_acceptance_without_safe_retry(
     assert "message was not accepted" not in rendered
 
 
+def test_interactive_send_uses_explicit_target(monkeypatch):
+    inputs = iter(["targeted direction", ":q"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+    seen = []
+
+    async def send(*_args, **kwargs):
+        seen.append(kwargs["notify"])
+        return {"attention_status": "ready"}
+
+    async def read_room(*_args, **_kwargs):
+        return {"messages": [], "next_cursor": 0, "has_more": False}
+
+    monkeypatch.setattr(coord.api, "send", send)
+    monkeypatch.setattr(coord.api, "read_room", read_room)
+
+    class Runtime:
+        def run(self, coroutine):
+            return asyncio.run(coroutine)
+
+    coord._interactive_loop(Runtime(), "r", 0, target="relay")
+    assert seen == [["relay"]]
+
+
+def test_chat_rejects_target_in_observe_mode(monkeypatch):
+    monkeypatch.setattr(coord.api, "bootstrap", lambda: "sy-test")
+    result = CliRunner().invoke(
+        coord.coord_app,
+        ["chat", "r", "--observe", "--to", "relay"],
+    )
+    assert result.exit_code == 1
+    assert "--to requires interactive mode" in result.output
+
+
 def test_watch_accepts_coord_event_and_deduplicates_event_id(capsys):
     watch._seen_event_ids.clear()
     watch._seen_event_id_set.clear()

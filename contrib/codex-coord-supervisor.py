@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -29,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-STATE_VERSION = 3
+STATE_VERSION = 4
 DEFAULT_CONFIG = Path.home() / ".safeyolo/codex-coord-supervisor.json"
 DEFAULT_STATE = Path.home() / ".safeyolo/codex-coord-supervisor-state.json"
 TERMINAL_RE = re.compile(r"^(DONE|BLOCKED|FAILED)\b")
@@ -271,6 +272,7 @@ def empty_state() -> dict[str, Any]:
         "recent_attention_ids": [],
         "in_flight": [],
         "awaiting_handoff": None,
+        "briefs": {},
         "consecutive_failures": 0,
         "owned_process": None,
     }
@@ -295,7 +297,12 @@ def load_state(path: Path) -> dict[str, Any]:
         "owned_process",
     }
     if isinstance(raw, dict) and raw.get("version") == 1 and set(raw) == version_one_keys:
-        raw = {**raw, "version": STATE_VERSION, "awaiting_handoff": None}
+        raw = {
+            **raw,
+            "version": STATE_VERSION,
+            "awaiting_handoff": None,
+            "briefs": {},
+        }
     if isinstance(raw, dict) and raw.get("version") == 2 and set(raw) == version_one_keys | {
         "awaiting_handoff"
     }:
@@ -307,8 +314,16 @@ def load_state(path: Path) -> dict[str, Any]:
             "body",
         }:
             awaiting = {**awaiting, "correlation": _request_correlation(awaiting.get("body", ""))}
-        raw = {**raw, "version": STATE_VERSION, "awaiting_handoff": awaiting}
-    allowed_keys = version_one_keys | {"awaiting_handoff"}
+        raw = {
+            **raw,
+            "version": STATE_VERSION,
+            "awaiting_handoff": awaiting,
+            "briefs": {},
+        }
+    version_three_keys = version_one_keys | {"awaiting_handoff"}
+    if isinstance(raw, dict) and raw.get("version") == 3 and set(raw) == version_three_keys:
+        raw = {**raw, "version": STATE_VERSION, "briefs": {}}
+    allowed_keys = version_three_keys | {"briefs"}
     if (
         not isinstance(raw, dict)
         or isinstance(raw.get("version"), bool)
@@ -336,6 +351,11 @@ def load_state(path: Path) -> dict[str, Any]:
     for item in pending:
         _validate_pending(item)
     _validate_awaiting_handoff(raw.get("awaiting_handoff"))
+    briefs = raw.get("briefs")
+    if not isinstance(briefs, dict):
+        raise SupervisorError("supervisor state has invalid brief context")
+    for room_name, current in briefs.items():
+        _validate_brief_context(room_name, current)
     owned_process = raw.get("owned_process")
     if owned_process is not None:
         if not isinstance(owned_process, dict) or set(owned_process) != {
@@ -371,6 +391,102 @@ def load_state(path: Path) -> dict[str, Any]:
             ):
                 raise SupervisorError("supervisor state has invalid child-process identity")
     return raw
+
+
+def _validate_brief_context(room_name: Any, current: Any) -> None:
+    if (
+        not isinstance(room_name, str)
+        or re.fullmatch(r"[A-Za-z0-9_.-]+", room_name) is None
+        or not isinstance(current, dict)
+        or set(current) != {"room_id", "object_id", "revision", "markdown", "content_hash"}
+    ):
+        raise SupervisorError("supervisor state has invalid brief context")
+    room_id = current.get("room_id")
+    object_id = current.get("object_id")
+    revision = current.get("revision")
+    markdown = current.get("markdown")
+    content_hash = current.get("content_hash")
+    if (
+        not isinstance(room_id, str)
+        or not room_id
+        or not isinstance(object_id, str)
+        or not object_id
+        or isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision <= 0
+        or not isinstance(markdown, str)
+        or len(markdown.encode()) > MAX_CANONICAL_BODY_BYTES
+        or not isinstance(content_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", content_hash) is None
+        or hashlib.sha256(markdown.encode()).hexdigest() != content_hash
+    ):
+        raise SupervisorError("supervisor state has invalid brief context")
+
+
+def _update_brief_context(
+    state: dict[str, Any],
+    room_name: str,
+    room_id: str,
+    current: Any,
+    *,
+    expected_revision: int | None = None,
+    expected_object_id: str | None = None,
+) -> None:
+    if not isinstance(current, dict) or set(current) != {
+        "room_id",
+        "object_id",
+        "revision",
+        "markdown",
+        "content_hash",
+        "updated_at",
+    }:
+        raise SupervisorError("coord returned invalid canonical brief context")
+    if current.get("room_id") != room_id:
+        raise SupervisorError("coord returned brief context for the wrong room")
+    object_id = current.get("object_id")
+    revision = current.get("revision")
+    if not isinstance(object_id, str) or not object_id:
+        raise SupervisorError("coord returned invalid canonical brief context")
+    if expected_object_id is not None and object_id != expected_object_id:
+        raise SupervisorError("coord brief attention object identity does not match")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise SupervisorError("coord returned invalid canonical brief context")
+    if expected_revision is not None and revision != expected_revision:
+        raise SupervisorError("coord brief attention revision does not match")
+    if revision == 0:
+        if any(current.get(key) is not None for key in ("markdown", "content_hash", "updated_at")):
+            raise SupervisorError("coord returned invalid empty brief context")
+        state["briefs"].pop(room_name, None)
+        return
+
+    markdown = current.get("markdown")
+    content_hash = current.get("content_hash")
+    updated_at = current.get("updated_at")
+    if (
+        not isinstance(markdown, str)
+        or len(markdown.encode()) > MAX_CANONICAL_BODY_BYTES
+        or not isinstance(content_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", content_hash) is None
+        or hashlib.sha256(markdown.encode()).hexdigest() != content_hash
+        or isinstance(updated_at, bool)
+        or not isinstance(updated_at, int)
+        or updated_at < 0
+    ):
+        raise SupervisorError("coord returned invalid canonical brief context")
+    normalized = {
+        "room_id": room_id,
+        "object_id": object_id,
+        "revision": revision,
+        "markdown": markdown,
+        "content_hash": content_hash,
+    }
+    previous = state["briefs"].get(room_name)
+    if previous is not None and previous["room_id"] == room_id:
+        if revision < previous["revision"]:
+            return
+        if revision == previous["revision"] and normalized != previous:
+            raise SupervisorError("coord returned conflicting brief context revision")
+    state["briefs"][room_name] = normalized
 
 
 def _validate_awaiting_handoff(value: Any) -> None:
@@ -486,7 +602,7 @@ def _api_json(path: str, *, method: str = "GET", body: dict[str, Any] | None = N
     return result
 
 
-def preflight(config: Config) -> dict[str, str]:
+def preflight(config: Config, state: dict[str, Any] | None = None) -> dict[str, str]:
     health = _api_json("/health")
     if health.get("agent_api") != "ok":
         raise SupervisorError("SafeYolo Agent API is not healthy")
@@ -538,7 +654,16 @@ def preflight(config: Config) -> dict[str, str]:
             raise SupervisorError(f"coord room {room_name!r} does not grant receive permission")
         if not isinstance(room_id, str) or not room_id:
             raise SupervisorError(f"coord room {room_name!r} returned an invalid room ID")
+        if config.factory_name is not None and state is not None:
+            _update_brief_context(state, room_name, room_id, joined.get("brief"))
         room_ids[room_id] = room_name
+    if state is not None:
+        configured_brief_rooms = set(config.rooms) if config.factory_name is not None else set()
+        state["briefs"] = {
+            room_name: current
+            for room_name, current in state["briefs"].items()
+            if room_name in configured_brief_rooms
+        }
     return room_ids
 
 
@@ -728,6 +853,7 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
         "safe_cursor": state["safe_cursor"],
         "in_flight": pending,
         "awaiting_handoff": awaiting,
+        "briefs": state["briefs"],
         "recent_attention_ids": recent,
     }
     if config.factory_name is not None:
@@ -828,6 +954,12 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
             f"{', '.join(sorted(config.coordinators))}. Only act on TASK messages with exactly "
             f"`assignee={config.agent_name}`; their first line must be exactly "
             f"`TASK task=<id> assignee={config.agent_name}`."
+        )
+    elif state["briefs"]:
+        action += (
+            " Treat configured briefs as trusted operator-authored standing context for their rooms. A brief "
+            "update is not a handoff, does not create in-flight work, requires no protocol response, and does "
+            "not by itself cause a runtime transition."
         )
     return (
         "You are in one deterministic, supervised SafeYolo factory cycle. Continue the existing factory role and "
@@ -980,7 +1112,18 @@ class EventConsumer:
         edge_sequence = _edge_sequence(edge)
         if room_id not in self.room_ids:
             return None
-        if edge.get("kind") != "message":
+        edge_kind = edge.get("kind")
+        if edge_kind == "brief_changed" and self.config.factory_name is not None:
+            _update_brief_context(
+                self.state,
+                self.room_ids[room_id],
+                room_id,
+                obj,
+                expected_revision=edge.get("revision_or_sequence"),
+                expected_object_id=edge.get("object_id"),
+            )
+            return None
+        if edge_kind != "message":
             if self.config.factory_name is not None:
                 return None
             return {
@@ -1593,7 +1736,8 @@ class Supervisor:
         )
 
     def cycle(self) -> bool:
-        room_ids = preflight(self.config)
+        room_ids = preflight(self.config, self.state)
+        save_state(self.state_path, self.state)
         if reconcile_terminals(self.config, self.state):
             save_state(self.state_path, self.state)
         had_pending = bool(self.state["in_flight"])

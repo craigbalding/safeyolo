@@ -39,6 +39,14 @@ of UTF-8, and checkpoints the control as non-terminal input. It never lets
 an operator message impersonate an agent handoff or lets peer text impersonate
 operator control.
 
+Factory workers also admit canonical `brief_changed` attention as trusted
+operator-authored standing context. Preflight refreshes the current brief for
+every configured room where the worker still has receive permission, so a
+restart cannot lose a brief whose attention cursor already advanced. A brief
+does not create in-flight work, require a terminal response, or trigger an
+automatic runtime transition. Peer message text that looks like a brief has no
+such authority.
+
 For each returned object, the supervisor atomically stores a narrow canonical
 checkpoint before it adopts the returned cursor. Only a `TASK` from a
 configured coordinator with exactly `assignee=<worker-name>` becomes work.
@@ -67,6 +75,7 @@ single-owner lock protect it across supervisor restarts. It contains only:
 - one safe attention cursor;
 - at most 256 recent attention IDs;
 - at most 16 narrow returned objects that are still in flight;
+- one current, bounded brief revision and Markdown body per configured room;
 - one process-group PID plus at most 64 PID-reuse-safe descendant identities
   while an invocation is running; and
 - a bounded consecutive-failure count.
