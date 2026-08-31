@@ -16,6 +16,7 @@ SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo"
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
 COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
+CODEX_COORD_SUPERVISOR_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor.py"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
 
@@ -41,11 +42,14 @@ def _run_setup(
     *,
     check: bool = True,
     stage_coord_runtime: bool = True,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    env = _setup_env(operator_home, agent_home, folder)
+    env.update(extra_env or {})
     result = subprocess.run(
         [str(REPO_ROOT / "contrib" / script_name)],
         check=check,
-        env=_setup_env(operator_home, agent_home, folder),
+        env=env,
         capture_output=True,
         text=True,
     )
@@ -56,7 +60,8 @@ def _run_setup(
     if (
         result.returncode == 0
         and stage_coord_runtime
-        and script_name in {"claude-host-setup.sh", "codex-host-setup.sh"}
+        and script_name
+        in {"claude-host-setup.sh", "codex-host-setup.sh", "codex-coord-host-setup.sh"}
     ):
         coord_python = agent_home / ".safeyolo/venv/bin/python"
         coord_python.parent.mkdir(parents=True, exist_ok=True)
@@ -573,10 +578,74 @@ def test_wheel_manifest_includes_coord_runtime_files() -> None:
     assert force_include["contrib/safeyolo-coord-mcp.py"] == (
         "safeyolo/contrib/safeyolo-coord-mcp.py"
     )
+    assert force_include["contrib/codex-coord-host-setup.sh"] == (
+        "safeyolo/contrib/codex-coord-host-setup.sh"
+    )
+    assert force_include["contrib/codex-coord-supervisor.py"] == (
+        "safeyolo/contrib/codex-coord-supervisor.py"
+    )
     assert force_include["docs/AGENTS.md"] == "safeyolo/docs/AGENTS.md"
     assert COORD_BOOTSTRAP_SOURCE.stat().st_mode & 0o111
     assert COORD_LAUNCHER_SOURCE.stat().st_mode & 0o111
     assert COORD_SHIM_SOURCE.stat().st_mode & 0o111
+    assert CODEX_COORD_SUPERVISOR_SOURCE.stat().st_mode & 0o111
+
+
+def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    requested = {
+        "SAFEYOLO_CODEX_COORD_ROOMS": "backlog, releases",
+        "SAFEYOLO_CODEX_COORDINATORS": "relay",
+    }
+
+    _run_setup(
+        "codex-coord-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        extra_env=requested,
+    )
+    first_command = (agent_home / ".safeyolo-command").read_bytes()
+    first_config = (agent_home / ".safeyolo/codex-coord-supervisor.json").read_bytes()
+    _run_setup(
+        "codex-coord-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        extra_env=requested,
+    )
+
+    command = (agent_home / ".safeyolo-command").read_text()
+    config_path = agent_home / ".safeyolo/codex-coord-supervisor.json"
+    config = json.loads(config_path.read_text())
+    assert first_command == (agent_home / ".safeyolo-command").read_bytes()
+    assert first_config == config_path.read_bytes()
+    assert config == {
+        "agent_name": "test-agent",
+        "coordinators": ["relay"],
+        "rooms": ["backlog", "releases"],
+        "workspace": "/workspace",
+    }
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    assert (agent_home / ".safeyolo/codex-coord-supervisor.py").stat().st_mode & 0o111
+    assert 'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"' in command
+    assert "--dangerously-bypass-approvals-and-sandbox" in command
+    assert command.count("coord-mcp-bootstrap: mcp+httpx install") == 1
+
+
+def test_normal_codex_setup_keeps_interactive_entrypoint(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    command = (agent_home / ".safeyolo-command").read_text()
+    assert 'exec codex "${args[@]}" "$@"' in command
+    assert 'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"' not in command
+    assert not (agent_home / ".safeyolo/codex-coord-supervisor.json").exists()
 
 
 @pytest.mark.parametrize(

@@ -118,6 +118,13 @@ If you press Ctrl-C during the attached Linux session, SafeYolo detaches the
 terminal and leaves the sandbox running. Reconnect with `safeyolo agent shell
 <name>` or stop it explicitly with `safeyolo agent stop <name>`.
 
+The bundled `@codex-coord` setup is one explicit exception to the interactive
+harness shape. Its foreground process is a guest-side supervisor for bounded
+non-interactive Codex turns. SafeYolo still owns the sandbox lifetime and the
+terminal attachment. The supervisor does not become a host daemon. See the
+[supervisor contract](../docs/codex-coord-supervisor.md) for its recovery and
+authority rules.
+
 For Alpine rootfs images, do not rely on `mise use -g node@...`: mise may
 try to build Node from source against musl. Use Alpine's native packages and
 a persistent home prefix instead:

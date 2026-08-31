@@ -44,6 +44,69 @@ fi
 # shared skill is linked into ~/.agents/skills/ for automatic discovery.
 stage_safeyolo_context "$AGENT_HOME" codex
 
+# The curated @codex-coord wrapper opts into a deterministic guest-side
+# supervisor. Normal @codex runs never enter this branch.
+if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
+    : "${SAFEYOLO_CODEX_COORD_ROOMS:?set a comma-separated receive room list for @codex-coord}"
+    : "${SAFEYOLO_CODEX_COORDINATORS:?set a comma-separated coordinator name list for @codex-coord}"
+    SUPERVISOR_SRC="$SCRIPT_DIR/codex-coord-supervisor.py"
+    if [ ! -f "$SUPERVISOR_SRC" ]; then
+        echo "codex-host-setup: expected supervisor at $SUPERVISOR_SRC" >&2
+        exit 1
+    fi
+    install -m 0755 "$SUPERVISOR_SRC" "$AGENT_HOME/.safeyolo/codex-coord-supervisor.py"
+    python3 - \
+        "$AGENT_HOME/.safeyolo/codex-coord-supervisor.json" \
+        "$SAFEYOLO_AGENT_NAME" \
+        "$SAFEYOLO_CODEX_COORD_ROOMS" \
+        "$SAFEYOLO_CODEX_COORDINATORS" <<'PY'
+import json
+import os
+import re
+import sys
+import tempfile
+
+path, agent_name, room_text, coordinator_text = sys.argv[1:]
+
+
+def names(label, value):
+    result = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item or re.fullmatch(r"[A-Za-z0-9_.-]+", item) is None:
+            raise SystemExit(f"codex-host-setup: invalid {label} name {item!r}")
+        if item not in result:
+            result.append(item)
+    if not result:
+        raise SystemExit(f"codex-host-setup: {label} list cannot be empty")
+    return result
+
+
+config = {
+    "agent_name": names("agent", agent_name)[0],
+    "rooms": names("room", room_text),
+    "coordinators": names("coordinator", coordinator_text),
+    "workspace": "/workspace",
+}
+directory = os.path.dirname(path)
+fd, temporary = tempfile.mkstemp(prefix=".codex-coord-supervisor.", dir=directory)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        json.dump(config, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
+PY
+fi
+
 # --- Write the foreground command --------------------------------------------
 cat > "$AGENT_HOME/.safeyolo-command" <<'EOF'
 #!/usr/bin/env bash
@@ -145,13 +208,34 @@ toml_string_from_file() {
 }
 
 args=(-s danger-full-access -a never)
+supervised_args=(--dangerously-bypass-approvals-and-sandbox)
 if [ -f "$HOME/.safeyolo/AGENTS.md" ]; then
     args+=(-c "developer_instructions=$(toml_string_from_file "$HOME/.safeyolo/AGENTS.md")")
+    supervised_args+=(-c "developer_instructions=$(toml_string_from_file "$HOME/.safeyolo/AGENTS.md")")
 fi
 
 exec codex "${args[@]}" "$@"
 EOF
 chmod +x "$AGENT_HOME/.safeyolo-command"
+
+if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
+    python3 - "$AGENT_HOME/.safeyolo-command" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path) as handle:
+    body = handle.read()
+interactive = 'exec codex "${args[@]}" "$@"\n'
+supervised = (
+    'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py" '
+    '-- "${supervised_args[@]}" "$@"\n'
+)
+if body.count(interactive) != 1:
+    raise SystemExit("codex-host-setup: cannot install the supervised foreground command")
+with open(path, "w") as handle:
+    handle.write(body.replace(interactive, supervised))
+PY
+fi
 
 # --- Stage and register the coord MCP server ---------------------------------
 # This runs after the foreground command is written so the shared bootstrap can

@@ -164,6 +164,7 @@ def _rollback_preview_tailnet_port(
 _HOST_SCRIPT_ALIASES: dict[str, str] = {
     "claude": "claude-host-setup.sh",
     "codex": "codex-host-setup.sh",
+    "codex-coord": "codex-coord-host-setup.sh",
     "mise-shell": "mise-shell-host-setup.sh",
 }
 

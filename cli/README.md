@@ -154,6 +154,10 @@ safeyolo agent run myproject
 # Reapply or switch host setup for an existing agent
 safeyolo agent run myproject --host-script contrib/codex-host-setup.sh
 
+# Opt into a supervised, coord-driven Codex factory worker
+SAFEYOLO_CODEX_COORD_ROOMS=backlog SAFEYOLO_CODEX_COORDINATORS=relay \
+  safeyolo agent run myproject --host-script @codex-coord
+
 # Or run with a different folder
 safeyolo agent run myproject -f ~/other-project
 
@@ -189,6 +193,7 @@ safeyolo agent desktop myproject --share tailnet --ttl 15m
 **Host scripts** configure what the agent is. Ready-made examples in `contrib/`:
 - `contrib/claude-host-setup.sh` — Claude Code (stages host auth/extensions, install-on-first-run foreground command)
 - `contrib/codex-host-setup.sh` — OpenAI Codex CLI
+- `contrib/codex-coord-host-setup.sh` — supervised Codex coord worker (explicit opt-in)
 - `contrib/mise-shell-host-setup.sh` — BYOA interactive shell with mise
 - See `contrib/HOST_SCRIPT_GUIDE.md` to write your own.
 
