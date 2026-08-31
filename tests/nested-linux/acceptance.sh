@@ -25,6 +25,8 @@ INNER_ADMIN_PORT=${SAFEYOLO_NESTED_ADMIN_PORT:-19090}
 INNER_WEB_PORT=${SAFEYOLO_NESTED_WEB_PORT:-18081}
 TARGET_URL=${SAFEYOLO_NESTED_TARGET_URL:-https://example.com/}
 LOOP_TARGET_URL=${SAFEYOLO_NESTED_LOOP_TARGET_URL:-http://example.com/}
+RUN_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(8))')
+COORD_ROOM="nested-linux-$RUN_NONCE"
 
 case "$LAB_ROOT" in
     /var/lib/*) ;;
@@ -89,6 +91,8 @@ step "Start nested proxy and a direct-runsc agent"
 uv run safeyolo start --dev
 uv run safeyolo agent add "$INNER_AGENT" "$LAB_SOURCE" \
     --host-script "$LAB_SOURCE/contrib/codex-host-setup.sh" --no-run
+uv run safeyolo coord room create "$COORD_ROOM" \
+    --member "$INNER_AGENT" --no-operator
 uv run safeyolo agent run "$INNER_AGENT" --detach
 
 inner_shell() {
@@ -139,7 +143,8 @@ inner_shell \
     'for attempt in $(seq 1 30); do { printf "Authorization: Bearer "; cat /app/agent_token; printf "\n"; } | curl -fsS -o /tmp/nested-health.json --header @- http://_safeyolo.proxy.internal/health && cat /tmp/nested-health.json && exit 0; sleep 0.2; done; exit 1'
 
 step "Prove the bundled coord MCP connects"
-inner_shell 'python3 /workspace/tests/nested-linux/mcp_probe.py'
+inner_shell \
+    "python3 /workspace/tests/nested-linux/mcp_probe.py --room '$COORD_ROOM'"
 
 echo
 echo "nested-linux acceptance: PASS"
