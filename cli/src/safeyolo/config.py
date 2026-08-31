@@ -101,7 +101,9 @@ def get_config_dir(create: bool = False) -> Path:
     return config_dir
 
 
-def get_logs_dir(create: bool = False) -> Path:
+def get_logs_dir(  # DOC: contrib/README.md, docs/DEVELOPERS.md
+    create: bool = False,
+) -> Path:
     """Get the logs directory ($SAFEYOLO_LOGS_DIR or $XDG_STATE_HOME/safeyolo/)."""
     override = os.environ.get(_LOGS_DIR_ENV)
     if override:

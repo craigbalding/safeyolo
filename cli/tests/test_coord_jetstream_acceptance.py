@@ -416,7 +416,9 @@ def test_send_read_wait_all_fail_with_nats_unavailable_when_nats_down(coord_env)
     """All NATS operations expose the same unavailable error boundary.
 
     After NATS stops, send, read, and wait must raise `NatsUnavailable`
-    instead of leaking a transport-library exception as a proxy error.
+    instead of leaking a nats-py exception. A raw exception would escape as
+    proxy HTTP 500 and could take down a healthy request path with a
+    message-plane failure.
     """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
@@ -442,7 +444,12 @@ def test_send_read_wait_all_fail_with_nats_unavailable_when_nats_down(coord_env)
 
 @pytest.mark.timeout(30)
 def test_body_at_api_max_survives_jetstream(coord_env):
-    """A body at the API limit fits in JetStream with envelope overhead."""
+    """A body at the API limit fits in JetStream with envelope overhead.
+
+    If JetStream `MaxMsgSize` equaled `MAX_BODY_BYTES`, the envelope would
+    push a valid maximum-sized body past the stream limit. This test requires
+    the stream to reserve headroom for the envelope.
+    """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
     _grant("r", "agent", AGENT_B)
@@ -460,9 +467,10 @@ def test_body_at_api_max_survives_jetstream(coord_env):
 def test_body_at_api_max_survives_jetstream_non_ascii(coord_env):
     """A non-ASCII body at the API byte limit fits in JetStream.
 
-    Escaping every character as `\\u00e9` would expand this valid 256 KiB
-    body to about 768 KiB. The UTF-8 serializer and stream headroom must
-    accommodate it without changing the payload.
+    With the `json.dumps` default `ensure_ascii=True`, each two-byte `é`
+    becomes the six-byte escape `\\u00e9`. A valid 256 KiB body would expand
+    to about 768 KiB. SafeYolo uses `ensure_ascii=False` and sets the stream
+    message limit to 2 MiB, which provides headroom without changing the body.
     """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
@@ -486,9 +494,10 @@ def test_body_at_api_max_survives_jetstream_non_ascii(coord_env):
 def test_missing_jetstream_stream_for_existing_room_raises_coord_data_error(coord_env):
     """A missing stream for a registered room is a data-integrity error.
 
+    SQLite still records the room, but its JetStream stream is absent.
     Returning an empty page would hide data loss. Reads and writes must raise
-    `CoordDataError`, while deleting an already missing stream stays
-    idempotent.
+    `CoordDataError`, which the addon reports as HTTP 500. Deleting an already
+    missing stream stays idempotent.
     """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
@@ -562,7 +571,8 @@ def test_corrupt_persisted_envelope_raises_coord_data_error(coord_env):
 
     SafeYolo is the sole writer of these subjects. The read must raise
     `CoordDataError` instead of acknowledging and silently skipping the bad
-    payload.
+    payload. Skipping it would create an unexplained hole in room history;
+    the addon reports the integrity failure as HTTP 500.
     """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)
@@ -593,7 +603,8 @@ def test_revoke_during_blocked_read_raises_no_membership(coord_env):
 
     `read_room` checks permission before and after its potentially blocking
     JetStream fetch. A caller that loses permission during the fetch must not
-    receive the peer message.
+    receive the peer message. This matches issue #20: after revocation, API
+    reads must return HTTP 404.
     """
     _run(api.create_room("r"))
     _grant("r", "agent", AGENT_A)

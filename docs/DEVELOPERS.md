@@ -160,7 +160,10 @@ The simplest integration is tailing the JSONL log file. Every security decision 
 **Python example:**
 ```python
 import json
+import os
+import time
 from pathlib import Path
+
 
 def tail_events(log_path: Path):
     """Tail JSONL log for events."""
@@ -173,8 +176,16 @@ def tail_events(log_path: Path):
             else:
                 time.sleep(0.1)
 
+logs_dir = os.environ.get("SAFEYOLO_LOGS_DIR")
+if not logs_dir:
+    state_home = Path(
+        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    )
+    logs_dir = state_home / "safeyolo"
+log_path = Path(logs_dir) / "safeyolo.jsonl"
+
 # React to blocked credentials
-for event in tail_events(Path("./safeyolo/logs/safeyolo.jsonl")):
+for event in tail_events(log_path):
     if event.get("event") == "security.credential":
         data = event.get("data", {})
         if data.get("decision") == "block":

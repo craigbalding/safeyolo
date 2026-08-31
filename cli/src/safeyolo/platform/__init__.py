@@ -108,12 +108,14 @@ class AgentPlatform(ABC):
         save/restore). Linux ignores them until PR 5 adds gVisor
         checkpoint support.
 
-        ephemeral=True: boot with a tmpfs overlay upper (writes to /
-        are discarded on stop). macOS VZ honors this via kernel
-        cmdline + omitting --overlay; Linux honors this once the
-        disk-backed-overlay task lands (currently the Linux memory
-        overlay is ephemeral-by-default so this flag is structurally
-        a no-op there).
+        ephemeral=True selects a temporary overlay upper. Writes to / are
+        discarded on stop. macOS VZ selects tmpfs through the kernel command
+        line and omits --overlay. Linux selects gVisor's
+        --overlay2=root:memory mode.
+
+        ephemeral=False is the default. Both platforms select a per-agent
+        disk-backed or file-backed overlay, and writes to / persist across
+        stop and run.
         """
 
     @abstractmethod

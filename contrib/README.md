@@ -51,7 +51,10 @@ SafeYolo integrations work by tailing the JSONL log:
 
 ```python
 import json
+import os
 import time
+from pathlib import Path
+
 
 def tail_jsonl(path):
     with open(path) as f:
@@ -63,7 +66,15 @@ def tail_jsonl(path):
             else:
                 time.sleep(0.1)
 
-for event in tail_jsonl("./safeyolo/logs/safeyolo.jsonl"):
+logs_dir = os.environ.get("SAFEYOLO_LOGS_DIR")
+if not logs_dir:
+    state_home = Path(
+        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    )
+    logs_dir = state_home / "safeyolo"
+log_path = Path(logs_dir) / "safeyolo.jsonl"
+
+for event in tail_jsonl(log_path):
     if event.get("event") == "security.credential":
         if event["data"].get("decision") == "block":
             # Send notification, update dashboard, etc.
