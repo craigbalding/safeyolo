@@ -1198,6 +1198,7 @@ def main(argv: list[str] | None = None) -> int:
         codex_args = codex_args[1:]
     _set_subreaper()
     signal.signal(signal.SIGTERM, _interrupt_for_signal)
+    lock = None
     try:
         config = Config.load(args.config)
         lock = _lock_state(args.state)
@@ -1222,7 +1223,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"codex-coord-supervisor: {exc}", file=sys.stderr)
         return 1
     finally:
-        if "lock" in locals():
+        if lock is not None:
             lock.close()
 
 
