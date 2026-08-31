@@ -559,6 +559,48 @@ def test_commonmark_equivalents_cannot_create_visible_provenance_claim(body: str
     assert "[sender provenance claim]" in visible
 
 
+def test_final_code_span_closure_cannot_recreate_visible_provenance_claim() -> None:
+    rendered = mattermost_actions.compact_fallback(
+        coord_envelope(1, body="Canonical `provenance" + "x" * 10_000),
+        "backlog",
+    )
+    projected_body, provenance = rendered.rsplit("\n\n---\n", 1)
+    visible = mattermost_actions._visible_commonmark_text(rendered)
+
+    assert len(re.findall(r"(?i)canonical\s+provenance", visible)) == 1
+    assert "[sender provenance claim]" in visible
+    assert "[truncated; sha256 " in projected_body
+    assert provenance.startswith("Canonical provenance ·")
+
+
+def test_visible_provenance_neutralization_preserves_mixed_markdown() -> None:
+    rendered = mattermost.render_envelope(
+        coord_envelope(
+            1,
+            body=(
+                "# Allowed heading\n\n"
+                "Keep this before Canonical **provenance** and this after.\n\n"
+                "- first item\n"
+                "- [safe docs](https://example.com/guide)"
+            ),
+        ),
+        "backlog",
+    )
+    projected_body, provenance = rendered.rsplit("\n\n---\n", 1)
+    html = MarkdownIt("commonmark").render(projected_body)
+    visible = mattermost_actions._visible_commonmark_text(rendered)
+
+    assert len(re.findall(r"(?i)canonical\s+provenance", visible)) == 1
+    assert "[sender provenance claim]" in visible
+    assert "<h1>Allowed heading</h1>" in html
+    assert "Keep this before" in html
+    assert "and this after." in html
+    assert "<ul>" in html
+    assert "<li>first item</li>" in html
+    assert '<a href="https://example.com/guide">safe docs</a>' in html
+    assert provenance.startswith("Canonical provenance ·")
+
+
 @pytest.mark.parametrize(
     "image",
     (

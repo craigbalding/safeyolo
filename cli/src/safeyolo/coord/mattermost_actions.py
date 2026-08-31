@@ -46,6 +46,7 @@ _UNSAFE_SCHEME_RE = re.compile(
     r"\b(?!https://)[a-z][a-z0-9+.-]*://"
 )
 _PROVENANCE_CLAIM_RE = re.compile(r"(?i)canonical\s+provenance")
+_PROVENANCE_REPLACEMENT = "[sender provenance claim]"
 _HORIZONTAL_RULE_RE = re.compile(r"^[ \t]{0,3}(?:[-*_][ \t]*){3,}$")
 _TASK_ACCEPTED_RE = re.compile(r"^ACCEPTED(?=\s|$)")
 _FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
@@ -451,6 +452,98 @@ def _visible_commonmark_text(value: str) -> str:
     return parser.text()
 
 
+def _insert_visible_provenance_boundaries(rendered: str) -> str | None:
+    """Break renderer-visible provenance claims without discarding other Markdown."""
+
+    visible = _visible_commonmark_text(rendered)
+    matches = tuple(_PROVENANCE_CLAIM_RE.finditer(visible))
+    if not matches:
+        return rendered
+
+    # The forbidden visible word ``canonical`` necessarily contributes an
+    # ASCII ``l`` after character-reference normalization. Probe those source
+    # boundaries through the real renderer and retain only insertions whose
+    # sole visible effect is the explicit replacement marker. This keeps the
+    # surrounding headings, lists, links, and inline formatting intact without
+    # trusting source-text contiguity.
+    selected: list[int] = []
+    used: set[int] = set()
+    source_boundaries = [
+        source_offset
+        for source_offset, character in enumerate(rendered, start=1)
+        if character in "lL"
+    ]
+    for match in matches:
+        target = match.start() + len("canonical")
+        found: int | None = None
+        for source_offset in sorted(source_boundaries, key=lambda offset: abs(offset - target)):
+            if source_offset in used:
+                continue
+            candidate = (
+                rendered[:source_offset] + _PROVENANCE_REPLACEMENT + rendered[source_offset:]
+            )
+            candidate_visible = _visible_commonmark_text(candidate)
+            marker_offset = candidate_visible.find(_PROVENANCE_REPLACEMENT)
+            while marker_offset >= 0:
+                without_marker = (
+                    candidate_visible[:marker_offset]
+                    + candidate_visible[marker_offset + len(_PROVENANCE_REPLACEMENT) :]
+                )
+                if (
+                    without_marker == visible
+                    and match.start() < marker_offset < match.end()
+                ):
+                    found = source_offset
+                    break
+                marker_offset = candidate_visible.find(
+                    _PROVENANCE_REPLACEMENT,
+                    marker_offset + 1,
+                )
+            if found is not None:
+                break
+        if found is None:
+            return None
+        selected.append(found)
+        used.add(found)
+
+    for source_offset in sorted(selected, reverse=True):
+        rendered = rendered[:source_offset] + _PROVENANCE_REPLACEMENT + rendered[source_offset:]
+    if _PROVENANCE_CLAIM_RE.search(_visible_commonmark_text(rendered)):
+        return None
+    return rendered
+
+
+def _enforce_final_provenance_invariant(
+    rendered: str,
+    *,
+    original: str,
+    maximum: int | None,
+) -> str:
+    """Validate and neutralize claims in the exact final rendered sender body."""
+
+    for _ in range(4):
+        matches = tuple(_PROVENANCE_CLAIM_RE.finditer(_visible_commonmark_text(rendered)))
+        if not matches:
+            return rendered
+        growth = len(_PROVENANCE_REPLACEMENT) * len(matches)
+        if maximum is not None and len(rendered) + growth > maximum:
+            reserved = maximum - growth
+            if reserved < 128:
+                return _PROVENANCE_REPLACEMENT[:maximum]
+            digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:16]
+            rendered = _finish_truncated_markdown(
+                rendered,
+                f"[truncated; sha256 {digest}]",
+                maximum=reserved,
+            )
+            continue
+        neutralized = _insert_visible_provenance_boundaries(rendered)
+        if neutralized is None:
+            return _PROVENANCE_REPLACEMENT
+        rendered = neutralized
+    return _PROVENANCE_REPLACEMENT
+
+
 def _active_fence(value: str) -> tuple[str, int] | None:
     active: tuple[str, int] | None = None
     for line in value.split("\n"):
@@ -584,7 +677,7 @@ def sanitize_mattermost_markdown(
     rendered = _MARKDOWN_LINK_RE.sub(_sanitize_markdown_link, rendered)
     rendered = _CHANNEL_LINK_RE.sub("～", rendered)
     rendered = _UNSAFE_SCHEME_RE.sub(lambda match: match.group(0).replace(":", r"\:"), rendered)
-    rendered = _PROVENANCE_CLAIM_RE.sub("[sender provenance claim]", rendered)
+    rendered = _PROVENANCE_CLAIM_RE.sub(_PROVENANCE_REPLACEMENT, rendered)
 
     lines = rendered.split("\n")
     for index, line in enumerate(lines):
@@ -592,9 +685,6 @@ def sanitize_mattermost_markdown(
             lines[index] = "\\" + line
     rendered = "\n".join(lines)
     rendered = _TASK_ACCEPTED_RE.sub("TASK ACCEPTED", rendered, count=1)
-    if _PROVENANCE_CLAIM_RE.search(_visible_commonmark_text(rendered)):
-        rendered = "[sender provenance claim]"
-
     if truncation is not None:
         rendered = _finish_truncated_markdown(rendered, truncation)
     if output_maximum is not None and len(rendered) > output_maximum:
@@ -604,7 +694,11 @@ def sanitize_mattermost_markdown(
             f"[truncated; sha256 {digest}]",
             maximum=output_maximum,
         )
-    return rendered
+    return _enforce_final_provenance_invariant(
+        rendered,
+        original=original,
+        maximum=output_maximum,
+    )
 
 
 def compact_fallback(envelope: Mapping[str, Any], room: str) -> str:
