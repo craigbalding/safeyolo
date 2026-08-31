@@ -85,7 +85,7 @@ When the pass is complete, send one targeted, self-contained disposition to
 the owner. A passing disposition has this shape:
 
 ```text
-READY issue=#<issue> pr=#<pr> head=<full-reviewed-head-sha>
+READY issue=#<issue> pr=#<pr> head=<full-reviewed-head-sha> attention_id=<request-attention-id>
 
 Validation:
 <concise material independent evidence>
@@ -97,7 +97,7 @@ Limitations:
 A failing disposition has this shape:
 
 ```text
-CHANGES_REQUIRED issue=#<issue> pr=#<pr> head=<full-reviewed-head-sha>
+CHANGES_REQUIRED issue=#<issue> pr=#<pr> head=<full-reviewed-head-sha> attention_id=<request-attention-id>
 
 BLOCKING:
 <complete actionable correctness or acceptance finding(s)>
@@ -118,7 +118,7 @@ If required evidence is unavailable, target an actionable disposition naming
 the same review object:
 
 ```text
-BLOCKED issue=#<issue> pr=#<pr> head=<full-reviewed-head-sha>
+BLOCKED issue=#<issue> pr=#<pr> head=<full-reviewed-head-sha> attention_id=<request-attention-id>
 
 need=<specific evidence, input, capability, or decision required>
 ```
