@@ -7,10 +7,16 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from ..api import APIError, get_api
 from .watch import STATUS_FILE, has_tmux, is_in_tmux
 
 console = Console()
+
+
+def get_api():
+    """Load the admin API client only when a traffic command needs it."""
+    from ..api import get_api as _get_api
+
+    return _get_api()
 
 # Config snippet location (never touch user's .tmux.conf)
 TMUX_CONFIG_DIR = Path.home() / ".config" / "tmux"
@@ -174,6 +180,8 @@ def _require_tmux_pane() -> str:
 @tmux_app.command(name="traffic", hidden=True)
 def traffic_window() -> None:
     """Scope and open the shared traffic window for the invoking agent pane."""
+    from ..api import APIError
+
     pane = _require_tmux_pane()
     agent = _pane_value(pane, PANE_AGENT_OPTION)
     if not agent:

@@ -1,11 +1,9 @@
 """Administrative commands for SafeYolo."""
 
-import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from ..api import APIError, get_api
 from ..config import (
     find_config_dir,
     get_admin_token,
@@ -84,6 +82,10 @@ def check() -> None:  # DOC: docs/ADDONS.md
 
     # 8. Check API connectivity
     if proxy_running:
+        import httpx
+
+        from ..api import APIError, get_api
+
         try:
             api = get_api()
             health = api.health()
@@ -196,6 +198,8 @@ def mode(
         safeyolo mode credential-guard warn     # Set to warn mode
         safeyolo mode credential-guard block    # Set to block mode
     """
+    from ..api import APIError, get_api
+
     try:
         api = get_api()
     except Exception as e:
@@ -296,6 +300,8 @@ def policies(
         safeyolo policies           # List all policies
         safeyolo policies default   # Show default policy
     """
+    from ..api import APIError, get_api
+
     try:
         api = get_api()
     except Exception as e:

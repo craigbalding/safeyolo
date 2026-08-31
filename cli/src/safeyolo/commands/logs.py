@@ -10,9 +10,20 @@ from rich.console import Console
 from rich.text import Text
 
 from ..config import find_config_dir, get_logs_dir
-from ..core.audit_schema import InvalidAuditEvent, parse_audit_event, sanitize_for_log
 
 console = Console()
+
+
+class _LazyAuditSchema:
+    """Resolve the audit schema only when logs are parsed or rendered."""
+
+    def __getattr__(self, name: str):
+        from ..core import audit_schema
+
+        return getattr(audit_schema, name)
+
+
+audit_schema = _LazyAuditSchema()
 
 # Severity colors and display
 SEVERITY_COLORS = {
@@ -68,7 +79,7 @@ def format_event(event: dict) -> Text:
         text.append(f"{severity:<8} ", style=sev_color)
 
     # Event type (colored by severity)
-    event_type = sanitize_for_log(event.get("event", "unknown"))
+    event_type = audit_schema.sanitize_for_log(event.get("event", "unknown"))
     text.append(f"{event_type:<24} ", style=sev_color)
 
     # Decision (if present)
@@ -80,13 +91,13 @@ def format_event(event: dict) -> Text:
     # Summary — the human-readable description from the event
     summary = event.get("summary", "")
     if summary:
-        text.append(sanitize_for_log(summary))
+        text.append(audit_schema.sanitize_for_log(summary))
 
     # Context suffix: (agent, client_ip) when available
     agent = event.get("agent")
     details = event.get("details", {})
     client = details.get("client") or details.get("client_ip")
-    context_parts = [sanitize_for_log(p) for p in (agent, client) if p]
+    context_parts = [audit_schema.sanitize_for_log(p) for p in (agent, client) if p]
     if context_parts:
         text.append(f"  ({', '.join(context_parts)})", style="dim")
 
@@ -215,8 +226,8 @@ def logs(
             # here are warnings, not skips — an old CLI against a newer log
             # should still render events whose shape it understands.
             try:
-                parse_audit_event(event)
-            except InvalidAuditEvent as exc:
+                audit_schema.parse_audit_event(event)
+            except audit_schema.InvalidAuditEvent as exc:
                 if drift_warnings < _MAX_DRIFT_WARNINGS:
                     drift_warnings += 1
                     print(

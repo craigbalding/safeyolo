@@ -21,11 +21,26 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .._tactics import TACTIC_LABELS
-from ..api import AdminAPI, APIError, get_api
 from ..config import get_logs_dir
-from ..core.audit_schema import InvalidAuditEvent, parse_audit_event, sanitize_for_log
 
 console = Console()
+
+
+class _LazyModule:
+    """Resolve a command-only module on its first attribute access."""
+
+    def __init__(self, module_name: str) -> None:
+        self.module_name = module_name
+
+    def __getattr__(self, name: str):
+        from importlib import import_module
+
+        module = import_module(self.module_name)
+        return getattr(module, name)
+
+
+admin_api = _LazyModule("safeyolo.api")
+audit_schema = _LazyModule("safeyolo.core.audit_schema")
 
 # Default status file location
 STATUS_FILE = Path.home() / ".cache" / "safeyolo" / "tmux_status.txt"
@@ -60,8 +75,8 @@ def _parse_jsonl_line(line: str) -> dict | None:
         return None
 
     try:
-        parse_audit_event(event)
-    except InvalidAuditEvent as exc:
+        audit_schema.parse_audit_event(event)
+    except audit_schema.InvalidAuditEvent as exc:
         if _drift_warnings_emitted < _MAX_DRIFT_WARNINGS:
             _drift_warnings_emitted += 1
             console.print(f"[dim yellow]schema drift: {exc}[/dim yellow]")
@@ -373,13 +388,13 @@ class BatchItem:
 class ApprovalDispatch:
     """Per-approval-type handlers for approve/deny/format."""
 
-    approve: Callable[[dict, AdminAPI], str | None]  # returns grant_id/status or None
-    deny: Callable[[dict, AdminAPI], None]
+    approve: Callable[[dict, admin_api.AdminAPI], str | None]  # returns grant_id/status or None
+    deny: Callable[[dict, admin_api.AdminAPI], None]
     format_row: Callable[[dict], tuple[str, str, str, str]]  # agent, action, risk, description
     format_detail: Callable[[dict], Panel]  # full panel for review mode
 
 
-def _credential_approve(event: dict, api: AdminAPI) -> str | None:
+def _credential_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
     approval = event.get("approval", {})
     details = event.get("details", {})
     fingerprint = approval.get("key", details.get("fingerprint", ""))
@@ -388,7 +403,7 @@ def _credential_approve(event: dict, api: AdminAPI) -> str | None:
     return result.get("status", "ok")
 
 
-def _credential_deny(event: dict, api: AdminAPI) -> None:
+def _credential_deny(event: dict, api: admin_api.AdminAPI) -> None:
     approval = event.get("approval", {})
     details = event.get("details", {})
     fingerprint = approval.get("key", details.get("fingerprint", ""))
@@ -408,7 +423,7 @@ def _credential_format_row(event: dict) -> tuple[str, str, str, str]:
     return (agent, action, risk, description)
 
 
-def _gateway_approve(event: dict, api: AdminAPI) -> str | None:
+def _gateway_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
     details = event.get("details", {})
     agent = event.get("agent", "unknown")
     service = details.get("service", "unknown")
@@ -420,7 +435,7 @@ def _gateway_approve(event: dict, api: AdminAPI) -> str | None:
     return result.get("grant_id")
 
 
-def _gateway_deny(event: dict, api: AdminAPI) -> None:
+def _gateway_deny(event: dict, api: admin_api.AdminAPI) -> None:
     details = event.get("details", {})
     agent = event.get("agent", "unknown")
     service = details.get("service", "unknown")
@@ -503,7 +518,7 @@ def _service_format_detail(event: dict) -> Panel:
     )
 
 
-def _service_approve(event: dict, api: AdminAPI) -> str | None:
+def _service_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
     approval = event.get("approval", {})
     scope = approval.get("scope_hint", {})
     agent = event.get("agent", "")
@@ -614,7 +629,7 @@ def _pick_or_create_credential(service: str) -> str | None:
     return cred_name
 
 
-def _service_deny(event: dict, api: AdminAPI) -> None:
+def _service_deny(event: dict, api: admin_api.AdminAPI) -> None:
     # Log the denial via the generic denial endpoint
     approval = event.get("approval", {})
     agent = event.get("agent", "unknown")
@@ -626,14 +641,14 @@ def _service_deny(event: dict, api: AdminAPI) -> None:
     )
 
 
-def _unsupported_approve(event: dict, api: AdminAPI) -> str | None:
+def _unsupported_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
     raise NotImplementedError(
         f"Cannot approve unknown approval_type {event.get('approval', {}).get('approval_type')!r} "
         "in batch mode — use individual review (r<N>) instead"
     )
 
 
-def _unsupported_deny(event: dict, api: AdminAPI) -> None:
+def _unsupported_deny(event: dict, api: admin_api.AdminAPI) -> None:
     raise NotImplementedError(
         f"Cannot deny unknown approval_type {event.get('approval', {}).get('approval_type')!r} "
         "in batch mode — use individual review (r<N>) instead"
@@ -693,7 +708,7 @@ def _host_to_domain(host: str) -> str:
     return "*." + host
 
 
-def _network_egress_approve(event: dict, api: AdminAPI) -> str | None:
+def _network_egress_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
     """Approve with defaults — used by batch approve and fallback."""
     approval = event.get("approval", {})
     host = event.get("host", approval.get("target", ""))
@@ -701,7 +716,7 @@ def _network_egress_approve(event: dict, api: AdminAPI) -> str | None:
     return result.get("status", "ok")
 
 
-def _network_egress_deny(event: dict, api: AdminAPI) -> None:
+def _network_egress_deny(event: dict, api: admin_api.AdminAPI) -> None:
     """Deny with defaults — used by batch deny and fallback."""
     approval = event.get("approval", {})
     host = event.get("host", approval.get("target", ""))
@@ -709,7 +724,7 @@ def _network_egress_deny(event: dict, api: AdminAPI) -> None:
     api.deny_host(host=host, expires=expires)
 
 
-def _prompt_egress_approval(item: BatchItem, api: AdminAPI) -> bool:
+def _prompt_egress_approval(item: BatchItem, api: admin_api.AdminAPI) -> bool:
     """Interactive prompt for network egress approval.
 
     Single prompt following the existing a/d/l pattern. Scope modifiers
@@ -797,7 +812,7 @@ def _prompt_egress_approval(item: BatchItem, api: AdminAPI) -> bool:
                 dur_label = f"expires {duration}" if duration else "permanent"
                 console.print(f"[red]Denied[/red] {scope_label} [{dur_label}]")
                 return False
-        except (APIError, NotImplementedError) as e:
+        except (admin_api.APIError, NotImplementedError) as e:
             console.print(f"[red]Error:[/red] {escape(str(e))}")
             return False
 
@@ -908,7 +923,7 @@ def _contract_binding_format_detail(event: dict) -> Panel:
     )
 
 
-def _contract_binding_approve(event: dict, api: AdminAPI) -> str | None:
+def _contract_binding_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
     approval = event.get("approval", {})
     scope = approval.get("scope_hint", {})
     agent = event.get("agent", "")
@@ -940,7 +955,7 @@ def _contract_binding_approve(event: dict, api: AdminAPI) -> str | None:
     return result.get("status", "bound")
 
 
-def _contract_binding_deny(event: dict, api: AdminAPI) -> None:
+def _contract_binding_deny(event: dict, api: admin_api.AdminAPI) -> None:
     approval = event.get("approval", {})
     agent = event.get("agent", "unknown")
     target = approval.get("target", "unknown")
@@ -1090,7 +1105,7 @@ def parse_selection(raw: str, max_index: int) -> str | tuple[str, int] | list[in
 
 def handle_batch(
     items: list[BatchItem],
-    api: AdminAPI,
+    api: admin_api.AdminAPI,
     stats: RollingStats,
 ) -> None:
     """Handle a batch of pending approvals interactively.
@@ -1165,7 +1180,7 @@ def handle_batch(
             continue
 
 
-def _prompt_single_item(item: BatchItem, api: AdminAPI) -> bool:
+def _prompt_single_item(item: BatchItem, api: admin_api.AdminAPI) -> bool:
     """Prompt for a single item using the appropriate per-type handler.
 
     Returns True if approved.
@@ -1194,13 +1209,13 @@ def _prompt_single_item(item: BatchItem, api: AdminAPI) -> bool:
                     dispatch.approve(item.event, api)
                     console.print("[green]Authorized[/green]")
                     return True
-                except (APIError, NotImplementedError) as e:
+                except (admin_api.APIError, NotImplementedError) as e:
                     console.print(f"[red]Error:[/red] {escape(str(e))}")
                     return False
             elif response in ("d", "deny", "n", "no"):
                 try:
                     dispatch.deny(item.event, api)
-                except (APIError, NotImplementedError) as e:
+                except (admin_api.APIError, NotImplementedError) as e:
                     console.print(f"[yellow]Warning:[/yellow] {escape(str(e))}")
                 console.print("[red]Denied[/red]")
                 return False
@@ -1226,13 +1241,13 @@ def _prompt_single_item(item: BatchItem, api: AdminAPI) -> bool:
                     dispatch.approve(item.event, api)
                     console.print("[green]Approved[/green]")
                     return True
-                except (APIError, NotImplementedError) as e:
+                except (admin_api.APIError, NotImplementedError) as e:
                     console.print(f"[red]Error:[/red] {escape(str(e))}")
                     return False
             elif response in ("d", "deny", "n", "no"):
                 try:
                     dispatch.deny(item.event, api)
-                except (APIError, NotImplementedError) as e:
+                except (admin_api.APIError, NotImplementedError) as e:
                     console.print(f"[yellow]Warning:[/yellow] {escape(str(e))}")
                 console.print("[red]Denied[/red]")
                 return False
@@ -1245,7 +1260,7 @@ def _prompt_single_item(item: BatchItem, api: AdminAPI) -> bool:
 
 def _batch_approve_all(
     items: list[BatchItem],
-    api: AdminAPI,
+    api: admin_api.AdminAPI,
     stats: RollingStats,
 ) -> None:
     """Approve all items; irreversible ones get individual confirmation."""
@@ -1260,7 +1275,7 @@ def _batch_approve_all(
             dispatch.approve(item.event, api)
             stats.mark_resolved(item.dedup_key)
             approved_count += 1
-        except (APIError, NotImplementedError) as e:
+        except (admin_api.APIError, NotImplementedError) as e:
             console.print(f"[red]Error approving #{item.index}:[/red] {escape(str(e))}")
 
     if approved_count:
@@ -1289,14 +1304,14 @@ def _batch_approve_all(
                         dispatch.approve(item.event, api)
                         stats.mark_resolved(item.dedup_key)
                         console.print(f"[green]Approved #{item.index}[/green]")
-                    except (APIError, NotImplementedError) as e:
+                    except (admin_api.APIError, NotImplementedError) as e:
                         console.print(f"[red]Error:[/red] {escape(str(e))}")
                     break
                 elif response.lower() in ("d", "deny", "n", "no"):
                     try:
                         dispatch.deny(item.event, api)
                         stats.mark_resolved(item.dedup_key)
-                    except (APIError, NotImplementedError) as e:
+                    except (admin_api.APIError, NotImplementedError) as e:
                         console.print(f"[yellow]Warning:[/yellow] {escape(str(e))}")
                     console.print(f"[red]Denied #{item.index}[/red]")
                     break
@@ -1309,7 +1324,7 @@ def _batch_approve_all(
 
 def _batch_deny_all(
     items: list[BatchItem],
-    api: AdminAPI,
+    api: admin_api.AdminAPI,
     stats: RollingStats,
 ) -> None:
     """Deny all items in the batch."""
@@ -1320,7 +1335,7 @@ def _batch_deny_all(
             dispatch.deny(item.event, api)
             stats.mark_resolved(item.dedup_key)
             denied_count += 1
-        except (APIError, NotImplementedError) as e:
+        except (admin_api.APIError, NotImplementedError) as e:
             console.print(f"[red]Error denying #{item.index}:[/red] {escape(str(e))}")
     console.print(f"[red]Denied {denied_count} item(s)[/red]")
 
@@ -1328,7 +1343,7 @@ def _batch_deny_all(
 def _batch_select(
     items: list[BatchItem],
     indices: list[int],
-    api: AdminAPI,
+    api: admin_api.AdminAPI,
     stats: RollingStats,
 ) -> list[BatchItem]:
     """Process selected items individually; return remaining items."""
@@ -1591,7 +1606,7 @@ def format_risky_route_approval(event: dict) -> Panel:
     )
 
 
-def _plumb_approve(event: dict, api: AdminAPI) -> str | None:
+def _plumb_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
     """Approve a plumb agent-to-agent chat request -> creates a grant."""
     approval = event.get("approval", {})
     request_id = approval.get("key", "")
@@ -1599,7 +1614,7 @@ def _plumb_approve(event: dict, api: AdminAPI) -> str | None:
     return result.get("conversation_id") or result.get("status", "ok")
 
 
-def _plumb_deny(event: dict, api: AdminAPI) -> None:
+def _plumb_deny(event: dict, api: admin_api.AdminAPI) -> None:
     """Deny a plumb chat request."""
     approval = event.get("approval", {})
     api.plumb_deny(request_id=approval.get("key", ""))
@@ -1638,8 +1653,8 @@ def _plumb_format_detail(event: dict) -> Panel:
     # markup so it can't spoof the operator prompt.
     from safeyolo.core.plumb_service import UNTRUSTED_FIELD_DISPLAY_MAXLEN
 
-    topic = sanitize_for_log(hint.get("topic", ""), max_len=UNTRUSTED_FIELD_DISPLAY_MAXLEN)
-    note = sanitize_for_log(hint.get("note", ""), max_len=UNTRUSTED_FIELD_DISPLAY_MAXLEN)
+    topic = audit_schema.sanitize_for_log(hint.get("topic", ""), max_len=UNTRUSTED_FIELD_DISPLAY_MAXLEN)
+    note = audit_schema.sanitize_for_log(hint.get("note", ""), max_len=UNTRUSTED_FIELD_DISPLAY_MAXLEN)
     if topic or note:
         table.add_row("", "")
         table.add_row("[yellow]agent-supplied (untrusted)[/yellow]", "")
@@ -1709,7 +1724,7 @@ class ActionDef:
     key: str  # single char shortcut
     label: str  # for hint display
     confirm: str  # "instant" | "value" | "explicit"
-    execute: Callable[[dict, AdminAPI], str]  # returns status message
+    execute: Callable[[dict, admin_api.AdminAPI], str]  # returns status message
     value_prompt: str | None = None
     value_default: Callable[[dict], str] | None = None
 
@@ -1739,7 +1754,7 @@ def _match_pattern_block(event: dict) -> bool:
     return event.get("event") == "security.pattern_scanner" and event.get("decision") == "deny"
 
 
-def _exec_bump_rate(event: dict, api: AdminAPI, value: str | None = None) -> str:
+def _exec_bump_rate(event: dict, api: admin_api.AdminAPI, value: str | None = None) -> str:
     host = event.get("host", "")
     details = event.get("details", {})
     old_rate = details.get("budget", details.get("rate", 0))
@@ -1748,26 +1763,26 @@ def _exec_bump_rate(event: dict, api: AdminAPI, value: str | None = None) -> str
     return f"Rate limit: {result.get('old_rate')} \u2192 {result.get('new_rate')}"
 
 
-def _exec_reset_budget(event: dict, api: AdminAPI) -> str:
+def _exec_reset_budget(event: dict, api: admin_api.AdminAPI) -> str:
     host = event.get("host", "")
     resource = f"network:request:{host}"
     api.reset_budget(resource=resource)
     return f"Budget reset for {host}"
 
 
-def _exec_allow_host(event: dict, api: AdminAPI) -> str:
+def _exec_allow_host(event: dict, api: admin_api.AdminAPI) -> str:
     host = event.get("host", "")
     result = api.allow_host(host=host, rate=600)
     return f"Host allowed: {result.get('host')} (rate={result.get('rate')})"
 
 
-def _exec_reset_circuit(event: dict, api: AdminAPI) -> str:
+def _exec_reset_circuit(event: dict, api: admin_api.AdminAPI) -> str:
     host = event.get("host", "")
     api.reset_circuit(host=host)
     return f"Circuit reset for {host}"
 
 
-def _exec_suppress_pattern(event: dict, api: AdminAPI) -> str:
+def _exec_suppress_pattern(event: dict, api: admin_api.AdminAPI) -> str:
     host = event.get("host", "")
     api.add_host_bypass(host=host, addon="pattern-scanner")
     return f"Pattern scanner bypassed for {host}"
@@ -1883,7 +1898,7 @@ def format_action_help() -> str:
 def handle_action_key(
     key: str,
     last_actionable: dict[str, tuple[dict, ActionDef]],
-    api: AdminAPI,
+    api: admin_api.AdminAPI,
 ) -> bool:
     """Handle an action key press. Returns True if handled."""
     if key == "?":
@@ -1935,7 +1950,7 @@ def handle_action_key(
             result_msg = action_def.execute(event, api)
             console.print(f"  [green]\u2713[/green] {result_msg}")
 
-    except APIError as e:
+    except admin_api.APIError as e:
         console.print(f"  [red]Error:[/red] {escape(str(e))}")
     except Exception as e:
         console.print(f"  [red]Error:[/red] {escape(str(e))}")
@@ -1943,7 +1958,7 @@ def handle_action_key(
     return True
 
 
-def handle_risky_route_approval(event: dict, api: AdminAPI) -> bool:
+def handle_risky_route_approval(event: dict, api: admin_api.AdminAPI) -> bool:
     """Handle a risky route approval request interactively.
 
     Returns True if approved, False if denied/skipped.
@@ -1980,7 +1995,7 @@ def handle_risky_route_approval(event: dict, api: AdminAPI) -> bool:
             elif response.lower() in ("d", "deny", "n", "no"):
                 try:
                     api.log_gateway_denial(agent=agent, service=service, method=method, path=path)
-                except APIError as e:
+                except admin_api.APIError as e:
                     console.print(f"[yellow]Warning: Could not log denial: {e}[/yellow]")
                 console.print(f"[red]Denied[/red] - {service} {method} {path}")
                 return False
@@ -1996,7 +2011,7 @@ def handle_risky_route_approval(event: dict, api: AdminAPI) -> bool:
             elif response in ("d", "deny", "n", "no"):
                 try:
                     api.log_gateway_denial(agent=agent, service=service, method=method, path=path)
-                except APIError as e:
+                except admin_api.APIError as e:
                     console.print(f"[yellow]Warning: Could not log denial: {e}[/yellow]")
                 console.print(f"[red]Denied[/red] - {service} {method} {path}")
                 return False
@@ -2019,12 +2034,12 @@ def handle_risky_route_approval(event: dict, api: AdminAPI) -> bool:
             grant_id = result.get("grant_id", "?")
             console.print(f"[green]Approved[/green] - {service} {method} {path} (grant {grant_id})")
             return True
-        except APIError as e:
+        except admin_api.APIError as e:
             console.print(f"[red]API Error:[/red] {e}")
             return False
 
 
-def handle_approval(event: dict, api: AdminAPI) -> bool:
+def handle_approval(event: dict, api: admin_api.AdminAPI) -> bool:
     """Handle an approval request interactively.
 
     Returns True if approved, False if denied/skipped.
@@ -2064,7 +2079,7 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
                 else:
                     console.print(f"[green]OK[/green] - {result}")
                 return True
-            except APIError as e:
+            except admin_api.APIError as e:
                 console.print(f"[red]API Error:[/red] {e}")
                 return False
 
@@ -2076,7 +2091,7 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
                     cred_id=fingerprint,
                     reason="user_denied",
                 )
-            except APIError as e:
+            except admin_api.APIError as e:
                 console.print(f"[yellow]Warning: Could not log denial: {e}[/yellow]")
             console.print(f"[red]Denied[/red] - {fingerprint[:16]}...")
             return False
@@ -2232,10 +2247,10 @@ def watch(
     api = None
     if interactive:
         try:
-            api = get_api()
+            api = admin_api.get_api()
             # Test connection
             api.health()
-        except APIError as e:
+        except admin_api.APIError as e:
             console.print(f"[yellow]Warning:[/yellow] Cannot connect to admin API: {e}")
             console.print("[dim]Approvals will be disabled. Run 'safeyolo start' first.[/dim]")
             api = None

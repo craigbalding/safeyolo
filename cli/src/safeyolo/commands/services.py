@@ -6,7 +6,6 @@ from rich.markup import escape
 from rich.table import Table
 
 from .._tactics import TACTIC_LABELS
-from ._service_discovery import ServiceDiscoveryError, _load_service_files
 
 console = Console()
 
@@ -25,6 +24,8 @@ def list_services() -> None:
 
         safeyolo services list
     """
+    from ._service_discovery import ServiceDiscoveryError, _load_service_files
+
     try:
         services = _load_service_files()
     except ServiceDiscoveryError as error:
@@ -64,6 +65,8 @@ def show(
         safeyolo services show gmail
         safeyolo services show minifuse
     """
+    from ._service_discovery import ServiceDiscoveryError, _load_service_files
+
     try:
         services = _load_service_files()
     except ServiceDiscoveryError as error:
