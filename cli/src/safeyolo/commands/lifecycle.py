@@ -435,7 +435,8 @@ def stop_all() -> None:
             f"  [yellow]Platform cleanup incomplete ({type(error).__name__})[/yellow]"
         )
 
-    # Unload host firewall rules (Linux: iptables. macOS: no-op).
+    # Remove platform egress controls if the platform created any. Current
+    # platforms use structural isolation, so this call is a no-op.
     try:
         plat.unload_firewall_rules()
     except Exception as error:

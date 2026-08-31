@@ -282,8 +282,10 @@ class TestLifecycleStop:
         mock_platform.stop_sandbox.assert_called_once_with("test-agent")
 
     def test_stop_all_unloads_firewall_rules(self, runner, config_dir):
-        """stop --all calls plat.unload_firewall_rules() (iptables on Linux,
-        no-op on macOS)."""
+        """stop --all preserves the platform egress-control lifecycle hook.
+
+        Current platforms use structural isolation, so the hook is a no-op.
+        """
         mock_platform = _platform()
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
