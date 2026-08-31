@@ -692,50 +692,33 @@ def _reap_children() -> None:
 def _terminate_process_group(
     process: subprocess.Popen[Any],
     grace: int,
+    leader_start_time: str,
     owned_descendants: dict[int, str] | None = None,
 ) -> None:
-    owned = dict(owned_descendants or {})
-    owned.update(_descendant_identities(process.pid))
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    for pid, start_time in owned.items():
-        if pid != process.pid and _process_start_time(pid) == start_time:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+    owned = {process.pid: leader_start_time, **(owned_descendants or {})}
+    if _owned_process_group_matches(process, leader_start_time):
+        owned.update(_process_group_identities(process.pid))
+        owned.update(_descendant_identities(process.pid))
+    _signal_owned_process_group(process, leader_start_time, signal.SIGTERM)
+    _signal_owned_identities(owned, signal.SIGTERM)
     try:
         process.wait(timeout=grace)
     except subprocess.TimeoutExpired:
+        _signal_owned_process_group(process, leader_start_time, signal.SIGKILL)
+        _signal_owned_identities(owned, signal.SIGKILL)
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            _reap_children()
     deadline = time.monotonic() + grace
     while True:
         _reap_children()
-        try:
-            os.killpg(process.pid, 0)
-            group_alive = True
-        except ProcessLookupError:
-            group_alive = False
-        descendants_alive = any(_process_start_time(pid) == start_time for pid, start_time in owned.items())
-        if not group_alive and not descendants_alive:
+        identities_alive = any(_process_start_time(pid) == start_time for pid, start_time in owned.items())
+        if not identities_alive:
             return
         if time.monotonic() >= deadline:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            for pid, start_time in owned.items():
-                if _process_start_time(pid) == start_time:
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+            _signal_owned_process_group(process, leader_start_time, signal.SIGKILL)
+            _signal_owned_identities(owned, signal.SIGKILL)
             kill_deadline = time.monotonic() + 1
             while time.monotonic() < kill_deadline:
                 _reap_children()
@@ -745,6 +728,91 @@ def _terminate_process_group(
             _reap_children()
             return
         time.sleep(0.05)
+
+
+def _terminate_uncheckpointed_process(process: subprocess.Popen[Any], grace: int) -> None:
+    """Stop a just-created child before any operation can reap and reuse its PID."""
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            # The supervisor has no verified identity for any broader cleanup.
+            return
+
+
+def _owned_process_group_matches(process: subprocess.Popen[Any], start_time: str) -> bool:
+    # Do not poll here. A dead but unreaped child keeps its PID reserved, so a
+    # matching /proc fingerprint still makes the following group signal safe.
+    # Once Popen has reaped the child, returncode prevents all group signals.
+    if process.returncode is not None or _process_start_time(process.pid) != start_time:
+        return False
+    try:
+        return os.getpgid(process.pid) == process.pid
+    except ProcessLookupError:
+        return False
+
+
+def _signal_owned_process_group(process: subprocess.Popen[Any], start_time: str, signal_number: int) -> bool:
+    if not _owned_process_group_matches(process, start_time):
+        return False
+    try:
+        os.killpg(process.pid, signal_number)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _signal_owned_identities(identities: dict[int, str], signal_number: int) -> None:
+    for pid, start_time in identities.items():
+        _signal_pid_identity(pid, start_time, signal_number)
+
+
+def _signal_pid_identity(pid: int, start_time: str, signal_number: int) -> bool:
+    """Signal only the Linux process bound to a verified PID fingerprint."""
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        return False
+    try:
+        pidfd = os.pidfd_open(pid)
+    except OSError:
+        return False
+    try:
+        if _process_start_time(pid) != start_time:
+            return False
+        try:
+            signal.pidfd_send_signal(pidfd, signal_number)
+        except ProcessLookupError:
+            return False
+        return True
+    finally:
+        os.close(pidfd)
+
+
+def _require_pidfd_support() -> None:
+    if (
+        not sys.platform.startswith("linux")
+        or not hasattr(os, "pidfd_open")
+        or not hasattr(signal, "pidfd_send_signal")
+    ):
+        raise SupervisorError("the Codex coord supervisor requires Linux PID handles")
+    pidfd: int | None = None
+    try:
+        pidfd = os.pidfd_open(os.getpid())
+        signal.pidfd_send_signal(pidfd, 0)
+    except OSError as exc:
+        raise SupervisorError(f"Linux PID handles are unavailable: {exc}") from exc
+    finally:
+        if pidfd is not None:
+            os.close(pidfd)
 
 
 def _process_start_time(pid: int) -> str | None:
@@ -782,7 +850,23 @@ def _descendant_identities(root_pid: int) -> dict[int, str]:
     return descendants
 
 
-def _record_owned_process(process: subprocess.Popen[Any], state: dict[str, Any], state_path: Path) -> None:
+def _process_group_identities(process_group: int) -> dict[int, str]:
+    """Return current members of one verified Linux process group."""
+    if not sys.platform.startswith("linux"):
+        return {}
+    members: dict[int, str] = {}
+    for stat_path in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            pid = int(stat_path.parent.name)
+            fields = stat_path.read_text().rsplit(") ", 1)[1].split()
+            if pid != process_group and int(fields[2]) == process_group:
+                members[pid] = fields[19]
+        except (OSError, ValueError, IndexError):
+            continue
+    return members
+
+
+def _record_owned_process(process: subprocess.Popen[Any], state: dict[str, Any], state_path: Path) -> str:
     start_time = _process_start_time(process.pid)
     try:
         process_group = os.getpgid(process.pid)
@@ -796,6 +880,7 @@ def _record_owned_process(process: subprocess.Popen[Any], state: dict[str, Any],
         "descendants": [],
     }
     save_state(state_path, state)
+    return start_time
 
 
 def _checkpoint_owned_descendants(state: dict[str, Any], state_path: Path, descendants: dict[int, str]) -> None:
@@ -816,27 +901,11 @@ def cleanup_stale_owned_process(state: dict[str, Any], state_path: Path, grace: 
     pid = owned["pid"]
     identities = {pid: owned["start_time"]}
     identities.update({item["pid"]: item["start_time"] for item in owned["descendants"]})
-    if _process_start_time(pid) == owned["start_time"]:
-        try:
-            if os.getpgid(pid) == pid:
-                os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    for child_pid, start_time in identities.items():
-        if _process_start_time(child_pid) == start_time:
-            try:
-                os.kill(child_pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+    _signal_owned_identities(identities, signal.SIGTERM)
     deadline = time.monotonic() + grace
     while any(_process_start_time(item) == start for item, start in identities.items()):
         if time.monotonic() >= deadline:
-            for child_pid, start_time in identities.items():
-                if _process_start_time(child_pid) == start_time:
-                    try:
-                        os.kill(child_pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+            _signal_owned_identities(identities, signal.SIGKILL)
             break
         time.sleep(0.05)
     state["owned_process"] = None
@@ -879,9 +948,9 @@ def run_invocation(
     except OSError as exc:
         raise SupervisorError(f"cannot launch Codex: {exc}") from exc
     try:
-        _record_owned_process(process, state, state_path)
+        leader_start_time = _record_owned_process(process, state, state_path)
     except BaseException:
-        _terminate_process_group(process, config.terminate_grace_seconds)
+        _terminate_uncheckpointed_process(process, config.terminate_grace_seconds)
         state["owned_process"] = None
         raise
     assert process.stdin is not None
@@ -889,7 +958,7 @@ def run_invocation(
         process.stdin.write(prompt.encode())
         process.stdin.close()
     except OSError as exc:
-        _terminate_process_group(process, config.terminate_grace_seconds)
+        _terminate_process_group(process, config.terminate_grace_seconds, leader_start_time)
         state["owned_process"] = None
         save_state(state_path, state)
         raise SupervisorError(f"cannot send the supervised prompt to Codex: {exc}") from exc
@@ -907,7 +976,9 @@ def run_invocation(
     stdout_buffer = b""
     try:
         while selector.get_map() or process.poll() is None:
-            owned_descendants.update(_descendant_identities(process.pid))
+            if _owned_process_group_matches(process, leader_start_time):
+                owned_descendants.update(_process_group_identities(process.pid))
+                owned_descendants.update(_descendant_identities(process.pid))
             _checkpoint_owned_descendants(state, state_path, owned_descendants)
             now = time.monotonic()
             if now >= deadline:
@@ -955,6 +1026,7 @@ def run_invocation(
         _terminate_process_group(
             process,
             config.terminate_grace_seconds,
+            leader_start_time,
             owned_descendants,
         )
         state["owned_process"] = None
@@ -964,6 +1036,7 @@ def run_invocation(
 
 class Supervisor:
     def __init__(self, config: Config, state_path: Path, codex_args: list[str]) -> None:
+        _require_pidfd_support()
         self.config = config
         self.state_path = state_path
         self.codex_args = codex_args

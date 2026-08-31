@@ -626,6 +626,100 @@ def test_work_deadline_does_not_slide_on_later_stdout(supervisor_module, tmp_pat
     assert elapsed < 2.5
 
 
+def test_cleanup_never_signals_reused_process_group(supervisor_module, monkeypatch):
+    module = supervisor_module
+
+    class ReapedProcess:
+        pid = 4242
+        returncode = None
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait(timeout=None):
+            return 0
+
+    group_signals = []
+    monkeypatch.setattr(module, "_process_start_time", lambda pid: "new-unrelated-start")
+    monkeypatch.setattr(
+        module.os,
+        "killpg",
+        lambda pid, signal_number: group_signals.append((pid, signal_number)),
+    )
+
+    module._terminate_process_group(ReapedProcess(), 0, "old-owned-start")
+
+    assert group_signals == []
+
+
+def test_cleanup_signals_only_fingerprint_matching_descendants(supervisor_module, monkeypatch):
+    module = supervisor_module
+
+    class ReapedProcess:
+        pid = 4242
+        returncode = 0
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait(timeout=None):
+            return 0
+
+    identities = {4242: "new-unrelated-start", 5000: "owned-child-start"}
+    individual_signals = []
+    group_signals = []
+
+    def process_start_time(pid):
+        return identities.get(pid)
+
+    def signal_identity(pid, start_time, signal_number):
+        if identities.get(pid) != start_time:
+            return False
+        individual_signals.append((pid, signal_number))
+        identities.pop(pid)
+        return True
+
+    monkeypatch.setattr(module, "_process_start_time", process_start_time)
+    monkeypatch.setattr(module, "_signal_pid_identity", signal_identity)
+    monkeypatch.setattr(
+        module.os,
+        "killpg",
+        lambda pid, signal_number: group_signals.append((pid, signal_number)),
+    )
+
+    module._terminate_process_group(
+        ReapedProcess(),
+        0,
+        "old-owned-start",
+        {5000: "owned-child-start"},
+    )
+
+    assert group_signals == []
+    assert individual_signals == [(5000, module.signal.SIGTERM)]
+
+
+def test_pidfd_signal_rejects_reused_pid_identity(supervisor_module, monkeypatch):
+    module = supervisor_module
+    sent = []
+    closed = []
+    monkeypatch.setattr(module.os, "pidfd_open", lambda pid: 17)
+    monkeypatch.setattr(module, "_process_start_time", lambda pid: "new-unrelated-start")
+    monkeypatch.setattr(
+        module.signal,
+        "pidfd_send_signal",
+        lambda pidfd, signal_number: sent.append((pidfd, signal_number)),
+    )
+    monkeypatch.setattr(module.os, "close", lambda pidfd: closed.append(pidfd))
+
+    assert module._signal_pid_identity(4242, "old-owned-start", module.signal.SIGTERM) is False
+    assert sent == []
+    assert closed == [17]
+
+
 def test_restart_cleans_a_checkpointed_detached_child(supervisor_module, tmp_path):
     module = supervisor_module
     child = module.subprocess.Popen(["sleep", "60"], start_new_session=True)

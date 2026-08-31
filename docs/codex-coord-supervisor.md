@@ -77,9 +77,13 @@ The initial provider and wait phase and the later work phase have separate
 absolute deadlines. The work deadline is set once when a non-empty wait
 completes; later output cannot extend it. The invocation also keeps a hard
 overall bound. On timeout or abnormal exit, the supervisor signals only the
-process group that it created for that Codex invocation. On Linux it also acts
-as a child subreaper, so repeated recovery does not accumulate orphaned
-code-mode children or zombies.
+process group that it created for that Codex invocation while its leader
+fingerprint is still verified. After the leader exits, cleanup never signals
+the numeric process-group ID. It uses PID handles and matching start-time
+fingerprints for recorded descendants. On Linux the supervisor also acts as a
+child subreaper, so repeated recovery does not accumulate orphaned code-mode
+children or zombies. The supervisor requires Linux PID handles and fails
+closed before recovery if they are unavailable.
 
 ## Configuration
 
