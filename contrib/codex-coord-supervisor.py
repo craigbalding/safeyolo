@@ -779,22 +779,34 @@ def _signal_owned_identities(identities: dict[int, str], signal_number: int) -> 
 
 def _signal_pid_identity(pid: int, start_time: str, signal_number: int) -> bool:
     """Signal only the Linux process bound to a verified PID fingerprint."""
-    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+    pidfd = _open_pidfd_for_identity(pid, start_time)
+    if pidfd is None:
         return False
+    try:
+        return _signal_pidfd(pidfd, signal_number)
+    finally:
+        os.close(pidfd)
+
+
+def _open_pidfd_for_identity(pid: int, start_time: str) -> int | None:
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        return None
     try:
         pidfd = os.pidfd_open(pid)
     except OSError:
-        return False
-    try:
-        if _process_start_time(pid) != start_time:
-            return False
-        try:
-            signal.pidfd_send_signal(pidfd, signal_number)
-        except ProcessLookupError:
-            return False
-        return True
-    finally:
+        return None
+    if _process_start_time(pid) != start_time:
         os.close(pidfd)
+        return None
+    return pidfd
+
+
+def _signal_pidfd(pidfd: int, signal_number: int) -> bool:
+    try:
+        signal.pidfd_send_signal(pidfd, signal_number)
+    except OSError:
+        return False
+    return True
 
 
 def _require_pidfd_support() -> None:
@@ -901,13 +913,43 @@ def cleanup_stale_owned_process(state: dict[str, Any], state_path: Path, grace: 
     pid = owned["pid"]
     identities = {pid: owned["start_time"]}
     identities.update({item["pid"]: item["start_time"] for item in owned["descendants"]})
-    _signal_owned_identities(identities, signal.SIGTERM)
-    deadline = time.monotonic() + grace
-    while any(_process_start_time(item) == start for item, start in identities.items()):
-        if time.monotonic() >= deadline:
-            _signal_owned_identities(identities, signal.SIGKILL)
-            break
-        time.sleep(0.05)
+    leader_pidfd = _open_pidfd_for_identity(pid, owned["start_time"])
+    try:
+        group_owned = False
+        if leader_pidfd is not None:
+            try:
+                group_owned = os.getpgid(pid) == pid and _process_start_time(pid) == owned["start_time"]
+            except ProcessLookupError:
+                group_owned = False
+        if group_owned:
+            identities.update(_process_group_identities(pid))
+            try:
+                # The verified leader pidfd stays open across this group
+                # signal, so a recycled numeric PID cannot authorize it.
+                os.killpg(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                # The invocation group exited after the verified snapshot.
+                pass
+        if leader_pidfd is not None:
+            _signal_pidfd(leader_pidfd, signal.SIGTERM)
+        _signal_owned_identities(
+            {child_pid: start for child_pid, start in identities.items() if child_pid != pid},
+            signal.SIGTERM,
+        )
+        deadline = time.monotonic() + grace
+        while any(_process_start_time(item) == start for item, start in identities.items()):
+            if time.monotonic() >= deadline:
+                if leader_pidfd is not None:
+                    _signal_pidfd(leader_pidfd, signal.SIGKILL)
+                _signal_owned_identities(
+                    {child_pid: start for child_pid, start in identities.items() if child_pid != pid},
+                    signal.SIGKILL,
+                )
+                break
+            time.sleep(0.05)
+    finally:
+        if leader_pidfd is not None:
+            os.close(leader_pidfd)
     state["owned_process"] = None
     save_state(state_path, state)
 

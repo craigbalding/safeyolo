@@ -85,6 +85,12 @@ child subreaper, so repeated recovery does not accumulate orphaned code-mode
 children or zombies. The supervisor requires Linux PID handles and fails
 closed before recovery if they are unavailable.
 
+On supervisor restart, cleanup opens a PID handle for the recorded leader and
+rechecks its start fingerprint and process-group identity. While that verified
+handle remains open, it snapshots and terminates the live invocation group.
+Recorded descendants that escaped into other groups still use individual PID
+handles and fingerprints.
+
 ## Configuration
 
 The host setup writes the private, non-secret configuration file

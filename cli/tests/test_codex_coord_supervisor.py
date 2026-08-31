@@ -738,6 +738,81 @@ def test_restart_cleans_a_checkpointed_detached_child(supervisor_module, tmp_pat
     assert module.load_state(state_path)["owned_process"] is None
 
 
+def test_restart_cleans_uncheckpointed_same_group_child(supervisor_module, tmp_path):
+    module = supervisor_module
+    child_pid_file = tmp_path / "same-group-child.pid"
+    leader = module.subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import signal, subprocess, sys, time\n"
+                "from pathlib import Path\n"
+                "child = subprocess.Popen(['sleep', '60'])\n"
+                "def stop(*_):\n"
+                "    child.terminate()\n"
+                "    child.wait()\n"
+                "    raise SystemExit(0)\n"
+                "signal.signal(signal.SIGTERM, stop)\n"
+                "Path(sys.argv[1]).write_text(str(child.pid))\n"
+                "while True:\n"
+                "    time.sleep(1)\n"
+            ),
+            str(child_pid_file),
+        ],
+        start_new_session=True,
+    )
+    for _ in range(100):
+        if child_pid_file.exists():
+            break
+        time.sleep(0.02)
+    assert child_pid_file.exists()
+    child_pid = int(child_pid_file.read_text())
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    state["owned_process"] = {
+        "pid": leader.pid,
+        "start_time": module._process_start_time(leader.pid),
+        "descendants": [],
+    }
+    module.save_state(state_path, state)
+
+    module.cleanup_stale_owned_process(state, state_path, grace=1)
+    leader.wait(timeout=2)
+    for _ in range(100):
+        if not Path(f"/proc/{child_pid}").exists():
+            break
+        time.sleep(0.02)
+
+    assert not Path(f"/proc/{child_pid}").exists()
+    assert module.load_state(state_path)["owned_process"] is None
+
+
+def test_restart_never_signals_group_for_reused_leader(supervisor_module, tmp_path, monkeypatch):
+    module = supervisor_module
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    state["owned_process"] = {
+        "pid": 4242,
+        "start_time": "old-owned-start",
+        "descendants": [],
+    }
+    module.save_state(state_path, state)
+    group_signals = []
+    monkeypatch.setattr(module, "_open_pidfd_for_identity", lambda pid, start: None)
+    monkeypatch.setattr(module, "_process_start_time", lambda pid: "new-unrelated-start")
+    monkeypatch.setattr(
+        module.os,
+        "killpg",
+        lambda pid, signal_number: group_signals.append((pid, signal_number)),
+    )
+
+    module.cleanup_stale_owned_process(state, state_path, grace=0)
+
+    assert group_signals == []
+    assert module.load_state(state_path)["owned_process"] is None
+
+
 def test_recovery_object_uses_stdin_not_process_arguments(supervisor_module, tmp_path, monkeypatch):
     module = supervisor_module
     fake_codex = tmp_path / "fake-codex"
