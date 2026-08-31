@@ -67,7 +67,10 @@ def test_send_task_builds_one_header_and_notifies_only_exact_assignee(monkeypatc
 
     async def post(path, body):
         calls.append((path, body))
-        return {"envelope": {"msg_id": "msg-" + "a" * 32, "sequence": 41}}
+        return {
+            "envelope": {"msg_id": "msg-" + "a" * 32},
+            "sequence": 41,
+        }
 
     monkeypatch.setattr(module, "_post", post)
     result = asyncio.run(
@@ -80,9 +83,13 @@ def test_send_task_builds_one_header_and_notifies_only_exact_assignee(monkeypatc
     )
 
     assert result == {
-        "send_result": {"envelope": {"msg_id": "msg-" + "a" * 32, "sequence": 41}},
+        "send_result": {
+            "envelope": {"msg_id": "msg-" + "a" * 32},
+            "sequence": 41,
+        },
         "room_sequence": 41,
     }
+    assert len(calls) == 1
     assert calls == [
         (
             "/api/coord/rooms/backlog/send",
@@ -146,7 +153,9 @@ def test_send_task_requires_canonical_sequence(monkeypatch):
     module = _load_adapter(monkeypatch)
 
     async def post(_path, _body):
-        return {"envelope": {"msg_id": "msg-" + "a" * 32}}
+        return {
+            "envelope": {"msg_id": "msg-" + "a" * 32, "sequence": 41},
+        }
 
     monkeypatch.setattr(module, "_post", post)
     with pytest.raises(RuntimeError, match="canonical room sequence"):

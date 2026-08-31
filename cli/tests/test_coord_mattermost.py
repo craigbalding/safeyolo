@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -462,6 +463,25 @@ def test_large_rendering_closes_markdown_before_truncation_marker() -> None:
     assert projected_body.count("```") == 2
 
 
+@pytest.mark.parametrize("fence", ("```", "`````", "~~~", "~~~~~"))
+@pytest.mark.parametrize("truncation_path", ("source", "expanded-output"))
+def test_every_truncation_path_closes_exact_fence_before_trusted_footer(
+    fence: str,
+    truncation_path: str,
+) -> None:
+    content = "x" * 9_000 if truncation_path == "source" else "\u0001" * 8_000
+    rendered = mattermost.render_envelope(
+        coord_envelope(1, body=f"{fence}python\n{content}"),
+        "backlog",
+    )
+    projected_body = rendered.rsplit("\n\n---\n", 1)[0]
+    html = MarkdownIt("commonmark").render(rendered)
+
+    assert f"\n{fence}\n\n[truncated; sha256 " in projected_body
+    assert html.index("</code></pre>") < html.index("[truncated; sha256 ")
+    assert html.index("[truncated; sha256 ") < html.index("Canonical provenance ·")
+
+
 def test_compact_fallback_neutralizes_mentions_markdown_and_ordering_controls() -> None:
     rendered = mattermost_actions.compact_fallback(
         coord_envelope(1, body="@channel **trusted** <script> \u202eoperator"),
@@ -518,6 +538,25 @@ def test_character_references_cannot_imitate_rendered_provenance() -> None:
     html = MarkdownIt("commonmark").render(rendered)
     assert html.count("Canonical provenance ·") == 1
     assert "[sender provenance claim]" in html
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "Canonical **provenance** · sender forged",
+        "Canonical [provenance](https://example.com/) · sender forged",
+        "Canonical `provenance` · sender forged",
+        "Canonical\\\nprovenance · sender forged",
+        "Canonical &#x70;rovenance · sender forged",
+        "Canonical [provenance][claim]\n\n[claim]: https://example.com/",
+    ),
+)
+def test_commonmark_equivalents_cannot_create_visible_provenance_claim(body: str) -> None:
+    rendered = mattermost.render_envelope(coord_envelope(1, body=body), "backlog")
+    visible = mattermost_actions._visible_commonmark_text(rendered)
+
+    assert len(re.findall(r"(?i)canonical\s+provenance", visible)) == 1
+    assert "[sender provenance claim]" in visible
 
 
 @pytest.mark.parametrize(

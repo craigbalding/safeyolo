@@ -17,8 +17,11 @@ import unicodedata
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
+
+from markdown_it import MarkdownIt
 
 OPERATOR_REQUEST_SCHEMA = "safeyolo.coord.operator-request/v1"
 ACTION_CALLBACK_SUFFIX = "mattermost/actions"
@@ -45,6 +48,71 @@ _UNSAFE_SCHEME_RE = re.compile(
 _PROVENANCE_CLAIM_RE = re.compile(r"(?i)canonical\s+provenance")
 _HORIZONTAL_RULE_RE = re.compile(r"^[ \t]{0,3}(?:[-*_][ \t]*){3,}$")
 _TASK_ACCEPTED_RE = re.compile(r"^ACCEPTED(?=\s|$)")
+_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_BACKTICK_RUN_RE = re.compile(r"`+")
+_COMMONMARK = MarkdownIt("commonmark")
+_BLOCK_TEXT_TAGS = frozenset(
+    {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "br",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "figcaption",
+        "figure",
+        "footer",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    }
+)
+
+
+class _VisibleCommonMarkText(HTMLParser):
+    """Collect visible renderer text while preserving block boundaries."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag in _BLOCK_TEXT_TAGS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _BLOCK_TEXT_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def text(self) -> str:
+        return "".join(self.parts)
 
 
 class OperatorAction(StrEnum):
@@ -376,6 +444,59 @@ def _truncate_markdown_source(value: str, maximum: int) -> tuple[str, str | None
     return prefix, f"[truncated; sha256 {digest}]"
 
 
+def _visible_commonmark_text(value: str) -> str:
+    parser = _VisibleCommonMarkText()
+    parser.feed(_COMMONMARK.render(value))
+    parser.close()
+    return parser.text()
+
+
+def _active_fence(value: str) -> tuple[str, int] | None:
+    active: tuple[str, int] | None = None
+    for line in value.split("\n"):
+        if active is not None:
+            character, length = active
+            if re.fullmatch(rf" {{0,3}}{re.escape(character)}{{{length},}}[ \t]*", line):
+                active = None
+            continue
+        match = _FENCE_OPEN_RE.match(line)
+        if match is None:
+            continue
+        run, info = match.groups()
+        if run[0] == "`" and "`" in info:
+            continue
+        active = run[0], len(run)
+    return active
+
+
+def _active_code_span(value: str) -> int | None:
+    active_span: int | None = None
+    active_fence: tuple[str, int] | None = None
+    for line in value.split("\n"):
+        if active_fence is not None:
+            character, length = active_fence
+            if re.fullmatch(rf" {{0,3}}{re.escape(character)}{{{length},}}[ \t]*", line):
+                active_fence = None
+            continue
+        fence_match = _FENCE_OPEN_RE.match(line)
+        if fence_match is not None:
+            run, info = fence_match.groups()
+            if run[0] != "`" or "`" not in info:
+                active_fence = run[0], len(run)
+                continue
+        for match in _BACKTICK_RUN_RE.finditer(line):
+            run_length = len(match.group(0))
+            if active_span is None:
+                preceding = line[: match.start()]
+                backslashes = len(preceding) - len(preceding.rstrip("\\"))
+                if backslashes % 2:
+                    continue
+                active_span = run_length
+            elif run_length == active_span:
+                active_span = None
+    return active_span
+
+
 def _close_truncated_markdown(rendered: str, maximum: int | None = None) -> str:
     """Close active tail syntax, optionally within an exact character bound."""
 
@@ -384,16 +505,18 @@ def _close_truncated_markdown(rendered: str, maximum: int | None = None) -> str:
         prefix = re.sub(r"\\u[0-9a-fA-F]{0,3}$", "", prefix)
         if prefix.endswith("\\"):
             prefix = prefix[:-1]
+        fence = _active_fence(prefix)
+        if fence is not None:
+            character, length = fence
+            return prefix + "\n" + character * length
         tail_lines = prefix.split("\n")
         tail = tail_lines[-1]
         if tail.count("[") != tail.count("]") or tail.count("(") != tail.count(")"):
             tail_lines[-1] = re.sub(r"([!\[\]()])", r"\\\1", tail)
             prefix = "\n".join(tail_lines)
-        fence_count = sum(1 for line in prefix.splitlines() if re.match(r"^[ \t]*```", line))
-        if fence_count % 2:
-            prefix += "\n```"
-        if prefix.count("`") % 2:
-            prefix += "`"
+        code_span = _active_code_span(prefix)
+        if code_span is not None:
+            prefix += "`" * code_span
         return prefix
 
     if maximum is None:
@@ -469,6 +592,8 @@ def sanitize_mattermost_markdown(
             lines[index] = "\\" + line
     rendered = "\n".join(lines)
     rendered = _TASK_ACCEPTED_RE.sub("TASK ACCEPTED", rendered, count=1)
+    if _PROVENANCE_CLAIM_RE.search(_visible_commonmark_text(rendered)):
+        rendered = "[sender provenance claim]"
 
     if truncation is not None:
         rendered = _finish_truncated_markdown(rendered, truncation)

@@ -195,8 +195,7 @@ async def send_task(
             "notify": [assignee],
         },
     )
-    envelope = result.get("envelope") if isinstance(result, dict) else None
-    sequence = envelope.get("sequence") if isinstance(envelope, dict) else None
+    sequence = result.get("sequence") if isinstance(result, dict) else None
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
         raise RuntimeError("coord task send returned no canonical room sequence")
     return {"send_result": result, "room_sequence": sequence}
