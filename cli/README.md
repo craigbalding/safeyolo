@@ -1,6 +1,7 @@
 # SafeYolo CLI
 
-Command-line interface for managing the SafeYolo security proxy.
+Command-line interface for managing the SafeYolo host proxy and agent
+sandboxes.
 
 ## Installation
 
@@ -39,7 +40,7 @@ safeyolo doctor
 | `safeyolo start` | Start the host proxy process |
 | `safeyolo stop` | Stop the host proxy process |
 | `safeyolo status` | Show proxy status, addon stats, and memory usage |
-| `safeyolo build` | Build guest rootfs and VM images from source |
+| `safeyolo build` | Build platform-specific guest artifacts from source |
 | `safeyolo check` | Verify setup is working correctly |
 | `safeyolo doctor` | Run diagnostic cascade (config, proxy, addons, sandbox runtime) |
 | `safeyolo demo` | Guided tour of SafeYolo security features |
@@ -51,12 +52,13 @@ safeyolo doctor
 ```bash
 safeyolo start              # Normal start
 safeyolo start --dev        # Dev mode: run proxy from local repo checkout
-safeyolo start --test       # Enable sinkhole routing + test CA (config-driven)
+safeyolo start --test       # Enable sinkhole routing + test certificate authority (CA)
 safeyolo start --no-wait    # Skip waiting for healthy status
 ```
 
-Guest VM images (used to launch agent sandboxes) are built separately with
-`safeyolo build` — see the top-level README.
+Build guest artifacts separately with `safeyolo build`. Linux uses an unpacked
+rootfs tree. macOS uses a kernel, initramfs, and ext4 rootfs image. See the
+top-level README.
 
 **Doctor:**
 
@@ -111,7 +113,12 @@ host, then retry the SafeYolo command.
 | `safeyolo policies` | List approval policies |
 | `safeyolo policies <project>` | Show policy details |
 
-Watch handles both credential routing approvals and risky route grant approvals. On startup, it scans for pending approvals so nothing is missed. Route-based dedup prevents repeated prompts for the same route. Denied requests get a second-chance prompt before final rejection.
+`safeyolo watch` handles these approval states:
+
+- It presents credential-routing approvals and risky-route grant approvals.
+- At startup, it scans for pending approvals.
+- It deduplicates prompts for the same route.
+- Before final rejection, it presents a second prompt for a denied request.
 
 ### Configuration
 
@@ -123,7 +130,9 @@ Watch handles both credential routing approvals and risky route grant approvals.
 
 ### Agent Management
 
-Runs AI agents in isolated sandboxes (Apple VZ microVMs on macOS, rootless gVisor on Linux) with all traffic routed through SafeYolo.
+Runs AI agents in isolated sandboxes. macOS uses Apple Virtualization framework
+(VZ) microVMs. Linux uses rootless gVisor. Both platforms route external
+traffic through SafeYolo.
 
 | Command | Description |
 |---------|-------------|
@@ -191,11 +200,17 @@ safeyolo agent desktop myproject --share tailnet --ttl 15m
 ```
 
 **Host scripts** configure what the agent is. Ready-made examples in `contrib/`:
-- `contrib/claude-host-setup.sh` — Claude Code (stages host auth/extensions, install-on-first-run foreground command)
-- `contrib/codex-host-setup.sh` — OpenAI Codex CLI
+- `contrib/claude-host-setup.sh` — Claude Code; copies host authentication and
+  selected extensions into the persistent agent home.
+- `contrib/codex-host-setup.sh` — OpenAI Codex CLI; copies `~/.codex/` into the
+  persistent agent home.
 - `contrib/codex-coord-host-setup.sh` — supervised Codex coord worker (explicit opt-in)
-- `contrib/mise-shell-host-setup.sh` — BYOA interactive shell with mise
+- `contrib/mise-shell-host-setup.sh` — bring-your-own-agent interactive shell with mise
 - See `contrib/HOST_SCRIPT_GUIDE.md` to write your own.
+
+Files copied into the persistent agent home are mounted at `/home/agent` and
+are readable by the agent process. The service gateway's vault isolation does
+not apply to these deliberately staged coding-harness credentials.
 
 **Notes:**
 - Agent names must be lowercase alphanumeric with hyphens (hostname rules)
@@ -218,7 +233,13 @@ safeyolo agent desktop myproject --share tailnet --ttl 15m
 
 ### Service Gateway
 
-Authorize agents to access external services through the gateway. Services are defined in YAML under `services/` and describe a host, available capabilities, risky routes (with ATT&CK tactics), and auth configuration.
+Authorize agents to access external services through the gateway. Each YAML
+service definition supplies:
+
+- the service host;
+- named capabilities and their allowed routes;
+- risky routes and their MITRE ATT&CK tactics; and
+- the authentication method and injection settings.
 
 | Command | Description |
 |---------|-------------|
@@ -284,7 +305,7 @@ Inspect the merged policy that the proxy enforces at runtime.
 | Command | Description |
 |---------|-------------|
 | `safeyolo policy show` | Show merged policy (policy.toml + addons.yaml) |
-| `safeyolo policy show --compiled` | Show compiled IAM format |
+| `safeyolo policy show --compiled` | Show compiled Identity and Access Management (IAM) format |
 | `safeyolo policy show --section hosts` | Filter output to one section |
 
 ```bash
@@ -311,7 +332,7 @@ Manage hosts, egress posture, and named lists in policy.toml.
 | `safeyolo policy host deny <host>` | Deny all traffic to a host |
 | `safeyolo policy host list` | List all host rules |
 | `safeyolo policy host bypass <host>` | Bypass proxy for a host (no MITM) |
-| `safeyolo policy host add-list <host> --list <name>` | Add a host from a named list |
+| `safeyolo policy host add-list <name> [--rate N] [--egress POSTURE]` | Apply a named list as a host entry |
 
 **Addon list settings:**
 
@@ -360,25 +381,32 @@ eval $(safeyolo cert env)
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo setup check` | Check system prerequisites (KVM/gVisor, network) |
+| `safeyolo setup` | Check and apply platform prerequisites idempotently |
+| `safeyolo setup apparmor` | Apply only the Linux `runsc` AppArmor profile |
+| `safeyolo setup sudoers` | Install the optional legacy rootfs-extraction fallback rules on Linux; current runtime paths do not require these rules |
 
 ## Configuration
 
-Configuration is stored in `./safeyolo/` (project-specific) or `~/.safeyolo/` (global).
+Configuration is stored in `$SAFEYOLO_CONFIG_DIR` when that variable is set.
+Otherwise, SafeYolo uses `~/.safeyolo/`. SafeYolo does not search for a
+project-local `./safeyolo/` directory.
 
 ```
-safeyolo/
+~/.safeyolo/
 ├── config.yaml          # Main configuration
 ├── policy.toml          # Host-centric policy (hosts, credentials, rate limits)
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 ├── services/            # User service definitions (one YAML per service)
-├── logs/                # Audit logs (safeyolo.jsonl)
 ├── certs/               # mitmproxy CA certificate
-├── policies/            # Approved credentials
-└── data/                # Runtime data (admin token, HMAC secret, agent API tokens)
-    ├── vault.yaml.enc   # Encrypted credential vault
-    └── vault.key        # Vault encryption key (auto-generated)
+├── agents/              # Agent metadata, persistent homes, and overlays
+├── policies/            # Reserved policy-data directory
+├── share/               # Installed guest artifacts
+└── data/                # Runtime data, tokens, and encrypted vault files
 ```
+
+Logs default to `$XDG_STATE_HOME/safeyolo/`, or
+`~/.local/state/safeyolo/` when `XDG_STATE_HOME` is unset. Set
+`SAFEYOLO_LOGS_DIR` to override that state directory.
 
 ### config.yaml
 
@@ -435,7 +463,7 @@ addons:
 ## Workflow
 
 1. **Initialize** - Run `safeyolo init` to create configuration
-2. **Start** - Run `safeyolo start` to launch the proxy container
+2. **Start** - Run `safeyolo start` to launch the host proxy process
 3. **Configure agent** - Point your AI coding agent at `http://localhost:8080`
 4. **Watch** - Run `safeyolo watch` to handle credential approval requests
 5. **Monitor** - Use `safeyolo logs -f` to watch activity
@@ -459,7 +487,7 @@ When a credential is blocked:
 |----------|-------------|
 | `SAFEYOLO_ADMIN_TOKEN` | Admin API authentication token |
 | `SAFEYOLO_CONFIG_DIR` | Override config directory location |
-| `SAFEYOLO_TUI` | Set to `true` for mitmproxy TUI mode (default: headless) |
+| `SAFEYOLO_TUI` | Set to `true` for mitmproxy terminal user interface (TUI) mode (default: headless) |
 | `SAFEYOLO_BLOCK` | Set to `true` to enable blocking for all security addons |
 
 ## License

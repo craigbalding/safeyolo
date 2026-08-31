@@ -97,11 +97,12 @@ becomes a code fence.
 
 ## The final manifest is the publication input
 
-Worker observations may lead Relay to material, but candidate collection and
-claim verification happen before generation. The command consumes only the
-final JSON manifest with Relay's authored copy, attribution, and public
-evidence. Raw completion notes, coord envelopes, transcripts, and private
-provenance are not generator inputs and never become publication copy.
+Private worker observations may nominate a topic for Relay to investigate.
+They do not establish a public claim. Before generation, Relay independently
+writes each claim and supports it with public evidence. The command consumes
+only that final JSON manifest. Raw completion notes, coord envelopes,
+transcripts, and other private text are neither copied nor cited, and they are
+never generator inputs.
 
 ## Evidence and hygiene
 

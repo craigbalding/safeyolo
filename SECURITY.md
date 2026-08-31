@@ -2,7 +2,10 @@
 
 SafeYolo is a human-centric security control point for AI agents.
 
-Agents need to be controlled to prevent accidents and limit the blast radius of prompt-injected or malicious agents. SafeYolo sits between them and external systems, giving you scoped control over access to both your local data and remote services — failing closed when anything is ambiguous or out of policy.
+Agents need controls that prevent accidents and limit the effects of prompt
+injection or malicious behavior. SafeYolo sits between agents and external
+systems. It gives the operator scoped control over local-data mounts and remote
+services, and it fails closed when a request is ambiguous or outside policy.
 
 ## Security Model
 
@@ -33,7 +36,14 @@ Agents need to be controlled to prevent accidents and limit the blast radius of 
 
 ### Minimize trust
 
-Grant the minimum access required. Agents run in isolated sandboxes with no external network interface. SafeYolo runs as a host mitmproxy process — no privileged runtime. Admin API binds directly to 127.0.0.1 without hostname or reverse-DNS resolution, so the host-local boundary and proxy readiness do not depend on the host resolver; it also requires bearer-token auth (`secrets.compare_digest`, timing-safe). All processes run as your host uid; on Linux `safeyolo agent run` is zero-sudo.
+Grant the minimum access required. Agents run in isolated sandboxes with no
+external network interface. SafeYolo runs mitmproxy as an unprivileged host
+process. The Admin API binds directly to `127.0.0.1` and does not perform
+hostname or reverse-DNS resolution. The host-local boundary and proxy readiness
+therefore do not depend on the host resolver. The Admin API also requires a
+bearer token and compares it with `secrets.compare_digest`. Host processes run
+as the operator's user ID. On Linux, `safeyolo agent run` does not use host
+`sudo`.
 
 ### Fail closed
 
@@ -63,10 +73,40 @@ Behind the scenes, every request gets a unique ID. Every security decision — c
 Agents call APIs on your behalf, but not every operation carries the same risk. Services are described in terms of capabilities — named groups of related operations like "manage categories" or "read feeds." You grant specific capabilities to each agent; everything else in that service is off-limits. Within a granted capability, a contract constrains exactly which endpoints, methods, and parameters the agent can use. Actions flagged as risky — deleting data, bulk export, changing permissions — require your approval, which you can scope to once, for the session, or permanently. Service files are generated from API specifications and ship with SafeYolo — you don't need to write them yourself, but you can if you like. If a service you use isn't covered yet, open a [GitHub issue](https://github.com/craigbalding/safeyolo/issues) or submit a PR.
 
 **Credential isolation.**
-Agents shouldn't hold the keys to your accounts. SafeYolo lets agents access your services without ever seeing your credentials — it injects credentials at the proxy layer based on policy, so agents make requests and SafeYolo handles authentication. Your keys never enter the agent's environment. Injection requires HTTPS by default so the credential can't be sniffed off the wire; a service YAML can opt in to plain HTTP via `auth.allow_http: true` for backends reachable only through an operator-vouched trusted transport (tailnet, WireGuard, private VLAN, same-host loopback). The gateway does not verify the transport claim — that's the operator's assertion — and every HTTP injection under this flag emits a `gateway.http_injection_allowed` event for the audit trail.
+The service gateway keeps vaulted service credentials outside the agent
+environment. An agent sends a request with a scoped gateway token. After policy
+authorizes that request, the host proxy replaces the token with the vaulted
+credential.
+
+Credential injection requires HTTPS by default. A service YAML file can opt in
+to plain HTTP with `auth.allow_http: true` only for a backend that the operator
+asserts is reachable through trusted transport, such as a tailnet, WireGuard,
+private VLAN, or same-host loopback. The gateway does not verify that transport
+claim. Every HTTP injection under this flag emits a
+`gateway.http_injection_allowed` audit event.
+
+Coding-harness authentication is outside this vault guarantee. The bundled
+Claude Code and Codex host scripts deliberately copy subscription state into
+the persistent agent home. Those files enter the sandbox and are readable by
+the agent process. Operators must treat `--host-script` as an explicit decision
+to share the files that the selected script copies.
 
 **Network and transport controls.**
-Agents have no direct internet access. The sandbox has no external network interface at all — the only path out is a per-agent host-owned socket that routes through SafeYolo. This is *structural* isolation: there are no firewall rules in the enforcement path, so there is no configuration that can weaken it. Identity is stamped by the host-side bridge (each agent's upstream TCP source is bound to a distinct synthetic loopback address) so a compromised agent cannot forge another agent's identity. Non-canonical requests (path tricks, duplicate headers, encoding exploits) are rejected before policy evaluation. Homoglyph detection catches mixed-script domain spoofing. GCRA rate limiting prevents runaway loops.
+Agents have no direct internet access. Each sandbox has no external network
+interface. Its only egress path is a host-owned, per-agent Unix domain socket
+that routes through SafeYolo. No host firewall rule participates in this
+boundary.
+
+The host owns the socket directory named `<ip>_<agent>`. At bind time,
+mitmproxy's `UnixMode` listener derives the agent identity from that path and
+stamps the accepted connection. The agent cannot choose another agent's socket
+path. On Linux, a synthetic loopback address supplies the `<ip>` attribution
+value. It is not an external interface or a direct egress path.
+
+SafeYolo rejects noncanonical paths, duplicate security-sensitive headers, and
+invalid encodings before policy evaluation. Homoglyph detection catches
+mixed-script domain spoofing. Generic Cell Rate Algorithm (GCRA) rate limits
+contain runaway request loops.
 
 **Audit trail.**
 Structured JSONL with unique request IDs, `blocked_by` attribution, credential fingerprints, and full decision reasoning. Designed for grep/jq analysis, not just human reading.

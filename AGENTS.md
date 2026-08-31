@@ -23,6 +23,13 @@ Existing repository documentation, [security boundaries](SECURITY.md), operator
 instructions, and SafeYolo sandbox instructions still apply. Identify the exact
 branch and commit, and the PR when one exists, for work implemented or reviewed.
 
+## Technical writing
+
+Apply the project [technical-writing rule and lossless review
+checklist](docs/technical-writing.md) to every authoritative prose change. Treat
+factual contradictions, stale behavior, missing information, and changed
+security claims as substantive corrections rather than style edits.
+
 ## Coordination
 
 Repository agents using coord follow the SafeYolo

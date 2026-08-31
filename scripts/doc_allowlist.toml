@@ -45,6 +45,7 @@ user_facing_docs = [
     "docs/dispatch-publication.md",
     "docs/factory-proposals.md",
     "docs/security-verification.md",
+    "docs/technical-writing.md",
 ]
 
 # Skill reference files shipped into agent sandboxes. Globs expanded at

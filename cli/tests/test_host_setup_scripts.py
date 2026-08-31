@@ -843,7 +843,7 @@ def test_coord_guidance_requires_a_harness_visible_foreground_wait() -> None:
         assert expected in baseline
 
     for expected in (
-        "Primary foreground idle wait",
+        "primary foreground wait",
         "without returning that cursor as adoptable",
         "Do not use a detached or background shell process",
         "foreground, harness-visible operation",

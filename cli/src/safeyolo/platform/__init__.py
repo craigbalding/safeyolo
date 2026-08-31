@@ -60,11 +60,15 @@ class AgentPlatform(ABC):
     @abstractmethod
     def load_firewall_rules(self, proxy_port: int, admin_port: int,
                             active_subnets: list[str]) -> None:
-        """Load firewall rules allowing only proxy egress."""
+        """Apply any platform egress controls.
+
+        Current platforms use structural isolation and implement this as a
+        no-op. The method remains part of the lifecycle interface.
+        """
 
     @abstractmethod
     def unload_firewall_rules(self) -> None:
-        """Remove all firewall rules for this instance."""
+        """Remove platform egress controls, if the platform created any."""
 
     @abstractmethod
     def agent_rootfs_path(self, name: str) -> Path:
@@ -72,12 +76,13 @@ class AgentPlatform(ABC):
 
         Returns the path whether or not it exists — callers use this to
         check whether `prepare_rootfs` has run for this agent.
-        Darwin: a file (ext4 disk image). Linux: a directory (overlayfs).
+        Darwin returns a per-agent ext4 image. Linux returns the shared
+        unpacked tree or a custom per-agent tree.
         """
 
     @abstractmethod
     def prepare_rootfs(self, name: str) -> Path:
-        """Create agent rootfs from base image. Returns rootfs path."""
+        """Select or create the platform rootfs and return its path."""
 
     @abstractmethod
     def start_sandbox(
@@ -103,12 +108,14 @@ class AgentPlatform(ABC):
         save/restore). Linux ignores them until PR 5 adds gVisor
         checkpoint support.
 
-        ephemeral=True: boot with a tmpfs overlay upper (writes to /
-        are discarded on stop). macOS VZ honors this via kernel
-        cmdline + omitting --overlay; Linux honors this once the
-        disk-backed-overlay task lands (currently the Linux memory
-        overlay is ephemeral-by-default so this flag is structurally
-        a no-op there).
+        ephemeral=True selects a temporary overlay upper. Writes to / are
+        discarded on stop. macOS VZ selects tmpfs through the kernel command
+        line and omits --overlay. Linux selects gVisor's
+        --overlay2=root:memory mode.
+
+        ephemeral=False is the default. Both platforms select a per-agent
+        disk-backed or file-backed overlay, and writes to / persist across
+        stop and run.
         """
 
     @abstractmethod

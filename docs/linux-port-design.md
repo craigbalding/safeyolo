@@ -1,16 +1,16 @@
-# Linux Port: gVisor Agent Runtime
+# Linux port: historical gVisor design record
 
-> **Status** (exp/erofs-vz-phase-a): the rootfs format has changed.
-> What this doc calls "EROFS" now is an **unpacked directory tree**
-> at `~/.safeyolo/share/rootfs-tree/`, used as gVisor's OCI
-> `root.path` directly (no packaging step). Rationale: gVisor's
-> `--overlay2=root:dir=<path>` flag is silently ignored for tree
-> root.path, so the overlay is memory-backed; disk-backed overlay
-> was the EROFS-era design goal. The ext4 image for macOS VZ and
-> the tree for Linux gVisor are built in one pass by
-> `guest/build-rootfs.sh`. See `guest/README.md` for the current
-> artifact layout. The rest of this file still describes the
-> EROFS-era design verbatim for historical context.
+> **Historical document:** This file records the original Linux-port design.
+> It is not the current runtime contract. In the current implementation,
+> gVisor reads the unpacked directory at
+> `~/.safeyolo/share/rootfs-tree/` directly as its Open Container Initiative
+> (OCI) `root.path`. By default, `--overlay2=root:dir=<path>` stores a
+> per-agent, file-backed writable upper. `--ephemeral` selects a memory-backed
+> upper instead. The macOS Virtualization framework (VZ) path still uses an
+> ext4 rootfs image. See [Architecture](ARCHITECTURE.md),
+> [the guest build guide](../guest/README.md), and the current platform source
+> for authoritative behavior. The EROFS sections below remain unchanged as a
+> historical design record.
 
 ## Context
 
@@ -241,7 +241,7 @@ out rather than guarded by rules.
 so a second instance (blackbox test harness or per-operator dev)
 doesn't collide with production's allocation.
 
-### Rootfs (shared EROFS image)
+### Historical rootfs plan: shared EROFS image
 
 macOS per-agent ext4 images are cloned via APFS reflink. Linux ships
 a single read-only EROFS image built by `guest/build-rootfs.sh`:
@@ -414,11 +414,11 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gviso
 sudo apt update && sudo apt install -y runsc uidmap
 ```
 
-## Implementation Status
+## Differences in the current implementation
 
-All sections above describe the implemented design on the
-`feat/proxy-protocol-identity` branch / master (pre-v1). Key
-decisions that landed differently from the original plan:
+The sections above record the original plan and can contain superseded
+mechanisms. Current implementation decisions that differ from that plan
+include:
 
 - **No iptables.** Earlier drafts described iptables as a belt-and-
   braces guard. Structural isolation (no external interface) made
@@ -428,10 +428,11 @@ decisions that landed differently from the original plan:
   assumed sudoers for `ip netns add` / `ip link` / mount. The final
   design eliminates sudo at runtime entirely by running gVisor
   inside an unprivileged userns.
-- **Shared EROFS image instead of overlayfs.** The per-agent
-  overlayfs design was replaced by a single read-only EROFS image
-  with gVisor's sentry providing memory-backed writable overlays.
-  Zero per-agent disk for rootfs; no boot-time uid fix-ups.
+- **Shared unpacked tree with a selected overlay medium.** gVisor reads the
+  shared `rootfs-tree/` as its OCI `root.path`; there is no Linux rootfs image.
+  The default `root:dir=<path>` overlay stores a file-backed writable upper in
+  the agent directory. `--ephemeral` selects `root:memory` and discards rootfs
+  writes on stop.
 - **Same guest-init.sh on both platforms.** The plan to replace
   guest-init with OCI config lost out to keeping a single source
   of truth for CA trust, mise install, and agent launch.

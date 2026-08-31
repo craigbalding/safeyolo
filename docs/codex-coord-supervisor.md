@@ -57,7 +57,7 @@ single-owner lock protect it across supervisor restarts. It contains only:
 - one Codex thread ID;
 - one safe attention cursor;
 - at most 256 recent attention IDs;
-- at most 16 narrow returned objects that are still in flight; and
+- at most 16 narrow returned objects that are still in flight;
 - one process-group PID plus at most 64 PID-reuse-safe descendant identities
   while an invocation is running; and
 - a bounded consecutive-failure count.
@@ -73,19 +73,29 @@ room. A failed preflight, failed or invalid wait, or unavailable dependency is
 not idle and does not advance the cursor. Repeated failures use exponential
 backoff with a cap.
 
-The initial provider and wait phase and the later work phase have separate
+### Deadlines
+
+The initial provider-and-wait phase and the later work phase have separate
 absolute deadlines. The work deadline is set once when a non-empty wait
 completes; later output cannot extend it. The invocation also keeps a hard
-overall bound. On timeout or abnormal exit, the supervisor signals only the
-process group that it created for that Codex invocation while its leader
-fingerprint is still verified. After the leader exits, cleanup never signals
-the numeric process-group ID. It uses PID handles and matching start-time
-fingerprints for recorded descendants. On Linux the supervisor also acts as a
-child subreaper, so repeated recovery does not accumulate orphaned code-mode
-children or zombies. The supervisor requires Linux PID handles and fails
-closed before recovery if the kernel does not provide them. It uses the
-CPython pidfd wrappers when present and the Linux syscalls directly when a
-supported CPython build omits those optional wrappers.
+overall bound.
+
+### Process cleanup
+
+On timeout or abnormal exit, the supervisor signals only the process group
+that it created for that Codex invocation while its leader fingerprint is
+still verified. After the leader exits, cleanup never signals the numeric
+process-group ID. It uses PID handles and matching start-time fingerprints for
+recorded descendants.
+
+On Linux, the supervisor also acts as a child subreaper, so repeated recovery
+does not accumulate orphaned code-mode children or zombies. The supervisor
+requires Linux PID handles and fails closed before recovery if the kernel does
+not provide them. It uses the CPython pidfd wrappers when present and the Linux
+syscalls directly when a supported CPython build omits those optional
+wrappers.
+
+### Restart recovery
 
 On supervisor restart, cleanup opens a PID handle for the recorded leader and
 rechecks its start fingerprint and process-group identity. While that verified

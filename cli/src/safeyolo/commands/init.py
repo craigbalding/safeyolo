@@ -96,7 +96,7 @@ def init(  # DOC: README.md
     if not check_guest_images():
         console.print(
             Panel(
-                "[yellow]Guest VM images not found.[/yellow]\n\n"
+                "[yellow]Guest artifacts not found.[/yellow]\n\n"
                 "Build and install them with:\n"
                 "  safeyolo build",
                 title="Note",

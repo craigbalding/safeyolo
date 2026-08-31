@@ -282,8 +282,10 @@ class TestLifecycleStop:
         mock_platform.stop_sandbox.assert_called_once_with("test-agent")
 
     def test_stop_all_unloads_firewall_rules(self, runner, config_dir):
-        """stop --all calls plat.unload_firewall_rules() (iptables on Linux,
-        no-op on macOS)."""
+        """stop --all preserves the platform egress-control lifecycle hook.
+
+        Current platforms use structural isolation, so the hook is a no-op.
+        """
         mock_platform = _platform()
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
@@ -1837,8 +1839,8 @@ class TestInit:
         assert result.exit_code == 1
         assert "already exists" in result.output.lower()
 
-    def test_warns_when_guest_images_missing(self, runner, tmp_path, monkeypatch):
-        """Warns about missing guest images but continues."""
+    def test_warns_when_guest_artifacts_are_missing(self, runner, tmp_path, monkeypatch):
+        """Warns about missing guest artifacts but continues."""
         cfg = tmp_path / "init-test"
         logs = tmp_path / "init-logs"
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(cfg))
@@ -1853,8 +1855,8 @@ class TestInit:
             result = runner.invoke(app, ["init", "--no-interactive"])
 
         assert result.exit_code == 0
-        assert "guest vm images not found" in result.output.lower()
-        # VM directories should still be created
+        assert "guest artifacts not found" in result.output.lower()
+        # Guest-artifact directories should still be created.
         assert (cfg / "share").exists()
         assert (cfg / "bin").exists()
 

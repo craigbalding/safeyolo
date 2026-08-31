@@ -27,7 +27,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 | Platform | Runtime | Rootfs | Isolation |
 |----------|---------|--------|-----------|
 | macOS (Apple Silicon) | `safeyolo-vm` on Apple Virtualization.framework | per-agent ext4 disk image | Hardware-backed microVM |
-| Linux (x86_64 / arm64) | `runsc` (gVisor) in an unprivileged user namespace | shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; memory-backed writable overlay per sandbox | Sentry-emulated kernel; optional KVM hardware platform |
+| Linux (x86_64 / arm64) | `runsc` (gVisor) in an unprivileged user namespace | shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; a per-agent file-backed overlay persists across stop and run by default; `--ephemeral` selects a memory-backed overlay that is discarded on stop | Sentry-emulated kernel; optional KVM hardware platform |
 
 ### Sandbox Hardening
 
@@ -40,7 +40,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 | Agent and guest-root identities | Starts as uid 1000; Linux may intentionally enter sandbox uid 0 for package installation. Userns maps uid 1000 to the operator and uid 0 to subordinate host uid 100000, never host root | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
 | Capability boundary | The Linux OCI process receives the capabilities needed for guest init and namespace-root package management, but no CAP_SYS_ADMIN; host authority remains bounded by the outer userns and gVisor | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
 | Read-only config share | `/safeyolo` mounted `ro` | [cli/src/safeyolo/vm.py](../cli/src/safeyolo/vm.py) |
-| Read-only rootfs (Linux) | Shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; writable overlay is memory-backed per sandbox, not on disk | [guest/build-rootfs.sh](../guest/build-rootfs.sh) |
+| Rootfs overlay (Linux) | Shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; the default per-agent file-backed overlay persists across stop and run; `--ephemeral` selects a memory-backed overlay that is discarded on stop | [guest/build-rootfs.sh](../guest/build-rootfs.sh), [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
 
 ### Build Verification
 

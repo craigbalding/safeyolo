@@ -160,7 +160,10 @@ The simplest integration is tailing the JSONL log file. Every security decision 
 **Python example:**
 ```python
 import json
+import os
+import time
 from pathlib import Path
+
 
 def tail_events(log_path: Path):
     """Tail JSONL log for events."""
@@ -173,8 +176,16 @@ def tail_events(log_path: Path):
             else:
                 time.sleep(0.1)
 
+logs_dir = os.environ.get("SAFEYOLO_LOGS_DIR")
+if not logs_dir:
+    state_home = Path(
+        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    )
+    logs_dir = state_home / "safeyolo"
+log_path = Path(logs_dir) / "safeyolo.jsonl"
+
 # React to blocked credentials
-for event in tail_events(Path("./safeyolo/logs/safeyolo.jsonl")):
+for event in tail_events(log_path):
     if event.get("event") == "security.credential":
         data = event.get("data", {})
         if data.get("decision") == "block":
@@ -517,6 +528,12 @@ $ curl https://httpbin.org/get
 
 ## Documentation drift protection
 
+All authoritative prose changes must follow the project
+[technical-writing rule and lossless review checklist](technical-writing.md).
+The rule uses Simplified Technical English principles for clarity without
+claiming formal ASD-STE100 compliance. Automated drift checks support that
+review, but they do not judge whether a rewrite is clear or lossless.
+
 User-facing docs listed in `scripts/doc_allowlist.toml` are guarded by
 six pre-commit hooks that fail CI when a claim in a doc no longer matches
 the code. Each mechanism addresses one drift class; together they cover
@@ -587,7 +604,7 @@ Anchors (`# DOC: docs/AGENTS.md#agents-section`) are advisory in v1.
 
 ### Adding a new claim to a user-facing doc
 
-1. **CLI reference** (`safeyolo cmd --flag`) → no action needed; the
+1. **CLI reference** (a `safeyolo` command or option) → no action needed; the
    CLI-flag check catches broken references automatically. If you want
    the reverse binding ("changing this flag reminds me to update the
    doc"), add a `# DOC:` marker per the table above.
@@ -604,8 +621,8 @@ Anchors (`# DOC: docs/AGENTS.md#agents-section`) are advisory in v1.
 5. **Referenced file path** → the link check handles it automatically
    once the path is in a `[text](path)` or `[label]: path`.
 
-Run `pre-commit run --all-files` locally to verify all six checks pass.
-Run `python3 scripts/audit_doc_coverage.py` to see current coverage per
+Run `uv run pre-commit run --all-files` locally to verify all six checks pass.
+Run `uv run python scripts/audit_doc_coverage.py` to see current coverage per
 doc and per security keyword — useful for planning what to mark next.
 
 ### When *not* to add a marker

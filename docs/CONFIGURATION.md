@@ -1,6 +1,8 @@
 # Configuration
 
-SafeYolo configuration lives in `~/.safeyolo/` (global) or `./safeyolo/` (project-specific).
+SafeYolo reads configuration from `$SAFEYOLO_CONFIG_DIR` when that environment
+variable is set. Otherwise, it uses `~/.safeyolo/`. SafeYolo does not search for
+a project-local `./safeyolo/` directory.
 
 ## Directory Structure
 
@@ -10,14 +12,19 @@ SafeYolo configuration lives in `~/.safeyolo/` (global) or `./safeyolo/` (projec
 ├── policy.toml          # Policy: hosts, credentials, rate limits, agents, lists
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 ├── services/            # User service definitions (override builtin services)
-├── certs/               # CA certificate for HTTPS inspection
-├── logs/                # Audit logs (safeyolo.jsonl)
-├── policies/            # Per-project approval policies
-├── agents/              # Agent container configurations
+├── certs/               # Certificate authority (CA) certificate for HTTPS inspection
+├── policies/            # Reserved policy-data directory
+├── agents/              # Agent metadata, persistent homes, and overlays
+├── share/               # Installed guest artifacts
 ├── data/                # Admin token, HMAC secret, agent API tokens
 │   ├── vault.yaml.enc   # Encrypted credential vault
 │   └── vault.key        # Vault encryption key (auto-generated, 0600 permissions)
 ```
+
+SafeYolo stores logs and flow state separately. It uses
+`$SAFEYOLO_LOGS_DIR` when that variable is set. Otherwise, it uses
+`$XDG_STATE_HOME/safeyolo/`, with `~/.local/state/safeyolo/` as the fallback
+when `XDG_STATE_HOME` is unset.
 
 ## config.yaml
 
@@ -50,7 +57,8 @@ modes:
   test_context: block
 ```
 
-Manage `proxy.ignore_hosts` with `safeyolo proxy ignore-host add|list|remove`.
+Manage `proxy.ignore_hosts` with `safeyolo proxy ignore-host add`,
+`safeyolo proxy ignore-host list`, and `safeyolo proxy ignore-host remove`.
 Changes are persisted atomically and applied to a running proxy through the
 operator-only admin API. Wildcards and regular expressions are not accepted.
 
@@ -118,7 +126,7 @@ that one-time host capability with `sudo tailscale set --operator=$USER`.
 
 ## policy.toml
 
-Host-centric policy format in TOML. Everything about one host lives in one place:
+The host-centric policy uses TOML. Put the settings for each host in one entry:
 
 ```toml
 version = "2.0"
@@ -151,21 +159,38 @@ network request consumes it. A host `rate` adds a second, stricter ceiling for
 that host; it does not reserve capacity, and it cannot exceed `budget`.
 
 Each host entry can include:
-- `allow` - credential types allowed (e.g. `["openai:*"]`, `["hmac:a1b2c3d4"]`)
-- `rate` - optional requests per minute for this host; when omitted, the host
-  uses only the remaining global `budget`
-- `egress` - network-level access posture for this host: `allow`, `prompt`, or `deny`
-- `bypass` - addons to skip for this host
-- `expires` - TOML native datetime; the entry is automatically removed after this time
-- `rules` - escape hatch for full IAM expressiveness when needed
 
-The wildcard `"*"` entry sets defaults for unlisted hosts. `unknown_creds = "prompt"` triggers human approval for unrecognized credentials. The `egress` field on the wildcard controls what happens when a request targets a host not listed in `[hosts]` -- `allow` permits it, `prompt` asks the operator, and `deny` blocks it.
+- `allow` — credential types allowed, such as `["openai:*"]` or
+  `["hmac:a1b2c3d4"]`
+- `rate` — optional requests per minute for this host; when omitted, the host
+  uses only the remaining global `budget`
+- `egress` — network-level access posture for this host: `allow`, `prompt`, or
+  `deny`
+- `bypass` — addons to skip for this host
+- `expires` — TOML native datetime; SafeYolo removes the entry after this time
+- `rules` — escape hatch for full Identity and Access Management (IAM)
+  expressiveness when needed
+
+The wildcard `"*"` entry sets defaults for hosts that have no explicit entry.
+Set `unknown_creds = "prompt"` to require operator approval for an unrecognized
+credential.
+
+The wildcard `egress` field controls a request to an unlisted host:
+
+- `allow` permits the request;
+- `prompt` asks the operator; and
+- `deny` blocks the request.
 
 `allowed_hosts` for credential rules are auto-derived from the `[hosts]` section -- you don't need to specify them separately.
 
-> **Note:** The host-centric format compiles to IAM-style rules at load time. The IAM format remains the internal evaluation model. TOML field names are normalized to internal names during loading (`allow` -> `credentials`, `rate` -> `rate_limit`, `unknown_creds` -> `unknown_credentials`, etc.).
+> **Note:** SafeYolo compiles the host-centric format to IAM-style rules at
+> load time. IAM remains the internal evaluation model. During loading,
+> SafeYolo normalizes TOML names: `allow` becomes `credentials`, `rate` becomes
+> `rate_limit`, and `unknown_creds` becomes `unknown_credentials`.
 
-> **Tip:** Run `safeyolo policy show` to see the fully merged policy as the PDP sees it. This includes policy.toml and addons.yaml merged together.
+> **Tip:** Run `safeyolo policy show` to see the fully merged policy as the
+> Policy Decision Point (PDP) evaluates it. This includes `policy.toml` and
+> `addons.yaml` merged together.
 
 > **Migration:** Existing `policy.yaml` files can be migrated with `safeyolo policy migrate`. Both formats are supported; the proxy prefers `.toml` when both exist.
 
@@ -183,7 +208,10 @@ known_bad = "lists/stevenblack-hosts.txt"
 "$known_bad"          = { egress = "deny" }
 ```
 
-At load time, each `$name` entry expands to one permission per host in the file. The `simple_permissions` field in the policy response summarises bulk-expanded entries by action and effect count, so the policy endpoint stays readable even with large lists.
+At load time, SafeYolo expands each `$name` entry to one permission per host in
+the file. In the policy response, `simple_permissions` summarizes the expanded
+entries by action and effect count. The endpoint therefore remains bounded and
+readable for large lists.
 
 ### Expires
 
@@ -422,9 +450,14 @@ safeyolo policy show --section agents
 
 ## Policy Visibility
 
-The `/policy` relay endpoint returns the full baseline policy. For policies with large named lists (e.g. blocklists with tens of thousands of entries), bulk-expanded host permissions are summarised in the `simple_permissions` field as action/effect counts rather than individual entries, keeping the response compact.
+The `/policy` Agent API endpoint returns the full baseline policy. For a large
+named list, `simple_permissions` reports action and effect counts instead of
+listing every expanded host permission.
 
-The `/lookup?host=X` relay endpoint checks what would happen for a specific host, using the calling agent's identity. This is useful for agents to pre-check whether a request would be allowed before attempting it:
+The `/lookup?host=X` Agent API endpoint evaluates one host with the calling
+agent's identity. An agent can use this endpoint before it attempts a request.
+The result covers the network decision for that host; it does not guarantee
+that a later credential-use decision will allow a specific credential.
 
 ```bash
 (
@@ -462,13 +495,18 @@ In `warn` mode, violations are logged but traffic is not blocked. Useful for:
 |----------|-------------|
 | `SAFEYOLO_ADMIN_TOKEN` | Admin API authentication token |
 | `SAFEYOLO_CONFIG_DIR` | Override config directory location |
+| `SAFEYOLO_LOGS_DIR` | Override log and flow-state directory location |
 | `SAFEYOLO_ALLOW_ROOT` | Allow running CLI as root (not recommended) |
-| `SAFEYOLO_TUI` | Set to `true` for mitmproxy TUI in tmux (default: headless mitmdump) |
+| `SAFEYOLO_TUI` | Set to `true` for the mitmproxy terminal user interface (TUI) in tmux (default: headless `mitmdump`) |
 | `SAFEYOLO_BLOCK` | Set to `true` to enable blocking mode for all security addons |
 
 ## Per-Agent Policies
 
-Each agent can have its own policy in `~/.safeyolo/policies/<agent-name>.yaml`. If no per-agent policy exists, the baseline policy applies.
+Define per-agent policy in the `[agents.<name>]` sections of `policy.toml`, as
+shown in [Agents](#agents). Agent host rules take precedence when they match.
+If no agent rule matches, evaluation falls through to the proxy-wide `[hosts]`
+rules. SafeYolo does not load per-agent policy from
+`~/.safeyolo/policies/<agent-name>.yaml`.
 
 ## See Also
 

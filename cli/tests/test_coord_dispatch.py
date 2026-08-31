@@ -435,9 +435,9 @@ def test_dogfood_source_generates_exact_repository_dispatch_and_topic() -> None:
     for generated in files:
         assert expected[generated.relative_path.as_posix()].read_text(encoding="utf-8") == generated.content
     dispatch_text = expected["dispatch/2026-08-29.md"].read_text(encoding="utf-8")
-    assert "Freeze the proposal body" in dispatch_text
-    assert "A SQLite safety lock worked on Linux" in dispatch_text
-    assert "uses SQLite to remember what it has seen" in dispatch_text
-    assert "not a capability SafeYolo ships today" in dispatch_text
+    assert "Freeze proposal text with the revision that selected it" in dispatch_text
+    assert "A process lock conflicted with SQLite on macOS" in dispatch_text
+    assert "uses SQLite to remember processed messages" in dispatch_text
+    assert "does not ship that capability today" in dispatch_text
     assert "coord sequence" not in dispatch_text
     assert "marketing" not in dispatch_text.lower()
