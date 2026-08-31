@@ -7,7 +7,7 @@ Auto-detects KVM availability for best isolation:
 No daemon required. Only needs:
   - runsc binary (single Go binary, ~30MB)
   - iproute2 (standard)
-  - systemd user session (resource limits via cgroup delegation)
+  - systemd user session for optional host-side cgroup resource limits
   - AppArmor profile for runsc (one-time install, allows user namespaces)
   - EROFS rootfs image (built by guest/build-all.sh)
 
@@ -716,6 +716,69 @@ def _wrap_in_systemd_scope(
     ] + cmd
 
 
+def _systemd_user_scope_available(
+    environ: dict[str, str] | None = None,
+    *,
+    pid1_comm: str | None = None,
+) -> tuple[bool, str]:
+    """Return whether a systemd user scope can be used on this host.
+
+    Nested SafeYolo guests intentionally have neither systemd as PID 1 nor a
+    user bus. Avoid invoking systemd-run there: runsc remains a valid direct
+    launcher, but host-side MemoryMax/CPUQuota enforcement is unavailable.
+    """
+    env = os.environ if environ is None else environ
+    if shutil.which("systemd-run") is None:
+        return False, "systemd-run is not installed"
+    if pid1_comm is None:
+        try:
+            pid1_comm = Path("/proc/1/comm").read_text().strip()
+        except OSError:
+            return False, "cannot identify PID 1"
+    if pid1_comm != "systemd":
+        return False, f"PID 1 is {pid1_comm or 'unknown'}, not systemd"
+    if not env.get("DBUS_SESSION_BUS_ADDRESS") and not env.get("XDG_RUNTIME_DIR"):
+        return False, "no systemd user-bus environment is available"
+    if shutil.which("systemctl") is None:
+        return False, "systemctl is not installed"
+    try:
+        probe = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+            env=env,
+        )
+    except subprocess.SubprocessError as exc:
+        return False, f"systemd user-manager probe failed: {exc}"
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout).strip().splitlines()
+        reason = detail[-1] if detail else f"systemctl exited {probe.returncode}"
+        return False, f"systemd user manager is unavailable: {reason}"
+    return True, "systemd user scope available"
+
+
+def _sandbox_launch_command(
+    cmd: list[str],
+    name: str,
+    memory_mb: int,
+    cpus: int,
+) -> list[str]:
+    """Use the normal systemd scope, or direct runsc for a nested lab."""
+    available, reason = _systemd_user_scope_available()
+    if available:
+        return _wrap_in_systemd_scope(cmd, name, memory_mb, cpus)
+    log.warning(
+        "systemd user scope unavailable (%s); starting %s directly. "
+        "Inner MemoryMax and CPUQuota limits are not enforced.",
+        reason,
+        name,
+    )
+    return cmd
+
+
 # ---------------------------------------------------------------------------
 # AgentPlatform implementation
 # ---------------------------------------------------------------------------
@@ -1061,7 +1124,7 @@ class LinuxPlatform(AgentPlatform):
             f"start {cid}"
         )
 
-        cmd = _wrap_in_systemd_scope(
+        cmd = _sandbox_launch_command(
             _nsenter_cmd(upid) + ["bash", "-c", inner],
             name, memory_mb, cpus,
         )

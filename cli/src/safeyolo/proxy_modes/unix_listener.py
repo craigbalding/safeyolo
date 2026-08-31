@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar, Literal
 
@@ -39,6 +41,22 @@ log = logging.getLogger("safeyolo.unix-listener")
 
 def ensure_registered() -> None:
     """Make the import-time UnixMode registration explicit to callers."""
+
+
+def _configured_upstream_mode(agent: str | None = None) -> mode_specs.UpstreamMode | None:
+    """Parse the explicit parent proxy used by a nested SafeYolo instance."""
+    value = os.environ.get("SAFEYOLO_UPSTREAM_PROXY")
+    if not value:
+        return None
+    parsed = mode_specs.ProxyMode.parse(f"upstream:{value}")
+    if not isinstance(parsed, mode_specs.UpstreamMode):  # pragma: no cover
+        raise ValueError("SAFEYOLO_UPSTREAM_PROXY did not produce upstream mode")
+    # ProxyMode.parse is cached. Clone before attaching the UDS identity so
+    # two agent connections never share a mutable attribution attribute.
+    upstream = replace(parsed)
+    if agent is not None:
+        object.__setattr__(upstream, "agent", agent)
+    return upstream
 
 
 class UnixMode(mode_specs.ProxyMode):
@@ -121,8 +139,17 @@ class UnixInstance(AsyncioServerInstance[UnixMode]):
     """Per-agent UDS listener. One instance per socket file."""
 
     def make_top_layer(self, context: Context) -> Layer:
-        # Same top layer as RegularInstance — agent-side HTTP client
-        # issues normal HTTP CONNECT / absolute-form requests.
+        # Keep UnixInstance as the ingress so the synthetic peer derived from
+        # this agent's private socket remains authoritative. When an explicit
+        # parent proxy is configured, switch only the per-connection HTTP
+        # layer to mitmproxy's native upstream mode. This causes both absolute-
+        # form HTTP and HTTPS CONNECT traffic to traverse the parent proxy.
+        upstream = _configured_upstream_mode(self.mode.agent)
+        if upstream is not None:
+            context.client.proxy_mode = upstream
+            return layers.modes.HttpUpstreamProxy(context)
+        # Same top layer as RegularInstance — agent-side HTTP clients issue
+        # normal HTTP CONNECT / absolute-form requests.
         return layers.modes.HttpProxy(context)
 
     async def _start(self) -> None:

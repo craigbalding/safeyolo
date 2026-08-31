@@ -11,6 +11,7 @@ detection, install-line rendering, and mapping behaviour without needing
 a real host of each distro.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -150,10 +151,15 @@ class TestPackageMap:
         # umoci is intentionally excluded from the core-installable-via-pm
         # set — dnf/apk/pacman don't ship it in default repos, so
         # `_ensure_umoci()` handles it separately. See TestPackageMapUmociExclusion.
-        core = {"skopeo", "acl", "jq", "rsync", "tmux"}
+        core = {"skopeo", "acl", "jq", "rsync", "e2fsprogs", "tmux"}
         for pm, deps in LINUX_BUILD_DEPS.items():
             missing = core - set(deps)
             assert not missing, f"{pm} missing core prereqs: {missing}"
+
+    def test_mkfs_ext4_package_is_present_for_every_manager(self):
+        """A fresh-host preflight must cover build-rootfs.sh's mkfs call."""
+        for pm, deps in LINUX_BUILD_DEPS.items():
+            assert "e2fsprogs" in deps, pm
 
 
 class TestMissingDeps:
@@ -178,7 +184,11 @@ class TestMissingDeps:
         )
         monkeypatch.setattr(
             "safeyolo.commands.bootstrap.shutil.which",
-            lambda name: f"/usr/bin/{name}" if name == "dpkg-query" else None,
+            lambda name: (
+                f"/usr/bin/{name}"
+                if name in {"dpkg-query", "mkfs.ext4"}
+                else None
+            ),
         )
         monkeypatch.setattr(
             "safeyolo.commands.bootstrap._package_installed",
@@ -187,6 +197,25 @@ class TestMissingDeps:
         missing, pm = _missing_deps()
         assert missing == []
         assert pm == "apt"
+
+    def test_package_metadata_cannot_hide_missing_mkfs_ext4(self, monkeypatch):
+        monkeypatch.setattr(
+            "safeyolo.commands.bootstrap._platform.system", lambda: "Linux"
+        )
+        monkeypatch.setattr(
+            "safeyolo.commands.bootstrap.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name == "dpkg-query" else None,
+        )
+        monkeypatch.setattr(
+            "safeyolo.commands.bootstrap._package_installed",
+            lambda pm, pkg: True,
+        )
+        monkeypatch.setattr(Path, "is_file", lambda _path: False)
+
+        missing, pm = _missing_deps()
+
+        assert pm == "apt"
+        assert missing == ["e2fsprogs"]
 
     def test_partial_install_reports_the_missing_subset(self, monkeypatch):
         monkeypatch.setattr(

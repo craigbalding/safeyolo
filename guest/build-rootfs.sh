@@ -245,10 +245,48 @@ NODOC
 # (socat for proxy forwarding, openssh-server for `safeyolo agent shell`)
 # depend on, plus the small developer toolkit agents benefit from.
 #
-# /etc/resolv.conf is copied in so apt-get update can resolve
-# deb.debian.org. Cleaned up before packaging so the image doesn't
-# ship the build host's DNS config.
-sudo cp /etc/resolv.conf "$ROOTFS/etc/resolv.conf"
+# A conventional host resolver is useful when the chroot connects directly.
+# A SafeYolo guest deliberately has no /etc/resolv.conf: its build traffic
+# already uses the proxy on loopback, which resolves upstream names. Support
+# both hosts and never synthesize or retain host DNS state in the artifact.
+sudo rm -f "$ROOTFS/etc/resolv.conf"
+if [ -r /etc/resolv.conf ]; then
+    sudo install -D -m 0644 /etc/resolv.conf "$ROOTFS/etc/resolv.conf"
+    echo "Using the build host resolver inside the temporary chroot."
+else
+    echo "No build host resolver found; relying on the configured HTTP proxy."
+fi
+
+# SafeYolo exports an absolute SSL_CERT_FILE that points at the outer proxy's
+# CA. sudo preserves that variable, but the freshly unpacked rootfs does not
+# yet contain the file. Stage it at the same absolute path before the first
+# chroot command so apt/curl keep TLS verification enabled. Restore a file
+# supplied by the base image, or remove the staged file, before packaging.
+BUILD_SSL_CERT_DEST=""
+BUILD_SSL_CERT_BACKUP=""
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -r "$SSL_CERT_FILE" ]; then
+    case "$SSL_CERT_FILE" in
+        /*) ;;
+        *)
+            echo "Error: SSL_CERT_FILE must be absolute: $SSL_CERT_FILE" >&2
+            exit 1
+            ;;
+    esac
+    BUILD_SSL_CERT_DEST=$(realpath -m -- "$ROOTFS$SSL_CERT_FILE")
+    case "$BUILD_SSL_CERT_DEST" in
+        "$ROOTFS"/*) ;;
+        *)
+            echo "Error: SSL_CERT_FILE escapes the temporary rootfs: $SSL_CERT_FILE" >&2
+            exit 1
+            ;;
+    esac
+    if [ -e "$BUILD_SSL_CERT_DEST" ] || [ -L "$BUILD_SSL_CERT_DEST" ]; then
+        BUILD_SSL_CERT_BACKUP="$WORK_DIR/original-ssl-cert"
+        sudo cp -a -- "$BUILD_SSL_CERT_DEST" "$BUILD_SSL_CERT_BACKUP"
+    fi
+    sudo install -D -m 0644 -- "$SSL_CERT_FILE" "$BUILD_SSL_CERT_DEST"
+    echo "Staged the build host TLS CA at $SSL_CERT_FILE inside the temporary chroot."
+fi
 
 echo "=== apt-get update (inside chroot) ==="
 sudo chroot "$ROOTFS" /usr/bin/apt-get update
@@ -292,11 +330,21 @@ echo "=== Running customize-hook ==="
 sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,MISE_TARBALL,GH_TARBALL,SAFEYOLO_GUEST_SRC_DIR \
     bash "$CUSTOMIZE_HOOK_SCRIPT" "$ROOTFS"
 
-# --- Strip DNS config before packing --------------------------------------
-# Shipping /etc/resolv.conf with the build host's nameservers in the
-# rootfs would leak DNS configuration into every agent. guest-init
-# writes a default at boot; the rootfs should ship it empty/absent.
+# --- Strip temporary host network state before packing ---------------------
+# Shipping /etc/resolv.conf or the outer SafeYolo CA would leak host-specific
+# network configuration into every agent. guest-init writes a resolver at
+# boot, and the runtime bind-mounts the correct per-instance proxy CA.
 sudo rm -f "$ROOTFS/etc/resolv.conf"
+if [ -n "$BUILD_SSL_CERT_DEST" ]; then
+    sudo rm -f -- "$BUILD_SSL_CERT_DEST"
+    if [ -n "$BUILD_SSL_CERT_BACKUP" ]; then
+        sudo cp -a -- "$BUILD_SSL_CERT_BACKUP" "$BUILD_SSL_CERT_DEST"
+    elif [ "$SSL_CERT_FILE" = "/usr/local/share/ca-certificates/safeyolo.crt" ]; then
+        # The runtime bind destination is part of the rootfs contract. Keep
+        # the target, but not the outer instance's certificate bytes.
+        sudo install -D -m 0644 /dev/null "$BUILD_SSL_CERT_DEST"
+    fi
+fi
 
 # --- Emit: directory tree for Linux gVisor ------------------------------
 # gVisor's OCI root.path wants a real filesystem directory, and

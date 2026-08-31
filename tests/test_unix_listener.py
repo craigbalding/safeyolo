@@ -66,3 +66,57 @@ class TestUnixMode:
 
         mode = mode_specs.ProxyMode.parse("unix:/tmp/10.200.0.5_bob/proxy.sock")
         assert mode.transport_protocol == "tcp"
+
+
+class TestUnixUpstreamMode:
+    def test_explicit_parent_uses_native_upstream_http_layer(self, monkeypatch):
+        from mitmproxy import connection, options
+        from mitmproxy.proxy import mode_specs
+        from mitmproxy.proxy.context import Context
+        from mitmproxy.proxy.layers import modes
+
+        monkeypatch.setenv("SAFEYOLO_UPSTREAM_PROXY", "http://127.0.0.1:8080")
+        unix_mode = mode_specs.ProxyMode.parse(
+            "unix:/tmp/10.200.0.8_nested-agent/proxy.sock"
+        )
+        client = connection.Client(
+            peername=("10.200.0.8", 0),
+            sockname=("127.0.0.1", 0),
+            proxy_mode=unix_mode,
+        )
+        context = Context(client, options.Options())
+
+        instance = type("Instance", (), {"mode": unix_mode})()
+        layer = unix_listener.UnixInstance.make_top_layer(instance, context)
+
+        assert isinstance(layer, modes.HttpUpstreamProxy)
+        assert isinstance(context.client.proxy_mode, mode_specs.UpstreamMode)
+        assert context.client.proxy_mode.address == ("127.0.0.1", 8080)
+        # The UDS-derived attribution identity remains unchanged.
+        assert context.client.peername == ("10.200.0.8", 0)
+        assert context.client.proxy_mode.agent == "nested-agent"
+
+    def test_no_parent_keeps_regular_http_layer(self, monkeypatch):
+        from mitmproxy import connection, options
+        from mitmproxy.proxy import mode_specs
+        from mitmproxy.proxy.context import Context
+        from mitmproxy.proxy.layers import modes
+
+        monkeypatch.delenv("SAFEYOLO_UPSTREAM_PROXY", raising=False)
+        unix_mode = mode_specs.ProxyMode.parse(
+            "unix:/tmp/10.200.0.9_plain-agent/proxy.sock"
+        )
+        context = Context(
+            connection.Client(
+                peername=("10.200.0.9", 0),
+                sockname=("127.0.0.1", 0),
+                proxy_mode=unix_mode,
+            ),
+            options.Options(),
+        )
+
+        instance = type("Instance", (), {"mode": unix_mode})()
+        layer = unix_listener.UnixInstance.make_top_layer(instance, context)
+
+        assert isinstance(layer, modes.HttpProxy)
+        assert isinstance(context.client.proxy_mode, unix_listener.UnixMode)

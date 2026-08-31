@@ -37,6 +37,10 @@ DEFAULT_CONFIG = {
         "container_name": "safeyolo",
         "ignore_hosts": [],
         "upstream_ca_cert": "",
+        # Optional explicit parent proxy for nested/disposable lab instances.
+        "upstream_proxy": "",
+        # Empty means derive a stable token from this instance's coord ID.
+        "via_token": "",
     },
     "modes": {
         "credential_guard": "block",

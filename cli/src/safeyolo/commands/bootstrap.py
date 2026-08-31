@@ -73,6 +73,8 @@ def _stdout_to_stderr():
 #   jq: used by helper scripts and by this bootstrap for JSON emission.
 #   rsync: `safeyolo build` invokes `sudo rsync -aHAX --numeric-ids --delete ...`
 #     to install the rootfs tree into ~/.safeyolo/share/ preserving ownership.
+#   e2fsprogs: build-rootfs.sh invokes mkfs.ext4 for the macOS VZ artifact even
+#     when the build itself runs on Linux (including a nested Linux lab).
 #   tmux: `safeyolo start` runs the mitmproxy master inside a private tmux
 #     session (see traffic_session.py).
 #
@@ -84,7 +86,8 @@ def _stdout_to_stderr():
 # pacman (Arch): no mmdebstrap; umoci and debootstrap are in AUR (the
 # operator will need an AUR helper — flagged in the install hint).
 LINUX_BUILD_APT_DEPS = (
-    "skopeo", "umoci", "mmdebstrap", "debootstrap", "acl", "jq", "rsync", "tmux",
+    "skopeo", "umoci", "mmdebstrap", "debootstrap", "acl", "jq", "rsync",
+    "e2fsprogs", "tmux",
 )
 
 # umoci is intentionally NOT in dnf / apk / pacman: it doesn't ship in the
@@ -94,9 +97,9 @@ LINUX_BUILD_APT_DEPS = (
 # AUR to make `safeyolo build` work.
 LINUX_BUILD_DEPS = {
     "apt":    LINUX_BUILD_APT_DEPS,
-    "dnf":    ("skopeo", "debootstrap", "acl", "jq", "rsync", "tmux"),
-    "apk":    ("skopeo", "debootstrap", "acl", "jq", "rsync", "tmux"),
-    "pacman": ("skopeo", "debootstrap", "acl", "jq", "rsync", "tmux"),
+    "dnf":    ("skopeo", "debootstrap", "acl", "jq", "rsync", "e2fsprogs", "tmux"),
+    "apk":    ("skopeo", "debootstrap", "acl", "jq", "rsync", "e2fsprogs", "tmux"),
+    "pacman": ("skopeo", "debootstrap", "acl", "jq", "rsync", "e2fsprogs", "tmux"),
 }
 
 # Pinned upstream umoci for hosts whose package manager doesn't have it.
@@ -306,6 +309,16 @@ def _package_installed(pm: str, pkg: str) -> bool:
     return True  # unknown pm: no way to tell → assume present so we don't block
 
 
+def _command_available(name: str) -> bool:
+    """Find a build command, including sbin paths omitted from user PATH."""
+    if shutil.which(name):
+        return True
+    return any(
+        (Path(directory) / name).is_file()
+        for directory in ("/usr/local/sbin", "/usr/sbin", "/sbin")
+    )
+
+
 def _install_command(pm: str, missing: list[str]) -> str:
     """Render the operator-ready install command for the detected manager."""
     pkgs = " ".join(missing)
@@ -339,6 +352,11 @@ def _missing_deps() -> tuple[list[str], str | None]:
         return [], None
     deps = LINUX_BUILD_DEPS.get(pm, ())
     missing = [pkg for pkg in deps if not _package_installed(pm, pkg)]
+    # The package database is not sufficient evidence for this hard builder
+    # requirement: incomplete/minimal images can retain package metadata while
+    # omitting the executable. Never report a satisfied floor without it.
+    if not _command_available("mkfs.ext4") and "e2fsprogs" not in missing:
+        missing.append("e2fsprogs")
     return missing, pm
 
 

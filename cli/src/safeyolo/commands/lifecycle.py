@@ -1,10 +1,12 @@
 """Proxy lifecycle commands: start, stop, status, build."""
 
 import asyncio
+import os
 import platform
 import secrets
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import typer
@@ -633,6 +635,110 @@ def status() -> None:
                 )
 
 
+def _build_output_dir(build_script: Path) -> Path:
+    """Resolve the builder's output directory using its public override."""
+    override = os.environ.get("OUTPUT_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return build_script.parent / "out"
+
+
+def _probe_subordinate_ownership(
+    selected_path: Path,
+    *,
+    non_interactive: bool = False,
+) -> tuple[bool, str]:
+    """Prove the selected filesystem can represent uid/gid 100000.
+
+    Linux rootless runsc consumes a rootfs tree owned by the subordinate root
+    identity. VirtioFS-backed paths inside an outer SafeYolo guest reject that
+    ownership change, so detect it before spending minutes building a rootfs.
+    """
+    selected_path = selected_path.expanduser().resolve()
+    probe_parent = selected_path
+    while not probe_parent.exists() and probe_parent != probe_parent.parent:
+        probe_parent = probe_parent.parent
+    if not probe_parent.is_dir():
+        return False, f"nearest existing path is not a directory: {probe_parent}"
+    if not os.access(probe_parent, os.W_OK | os.X_OK):
+        return False, f"selected path is not writable by the operator: {probe_parent}"
+
+    probe_root = Path(tempfile.mkdtemp(prefix=".safeyolo-subuid-probe-", dir=probe_parent))
+    probe = probe_root / "rootfs-tree"
+    probe.mkdir()
+    sudo = ["sudo"] + (["-n"] if non_interactive else [])
+    changed = False
+    try:
+        result = subprocess.run(
+            sudo + ["chown", "100000:100000", str(probe)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            return False, detail or f"chown exited {result.returncode}"
+        changed = True
+        stat_result = probe.stat()
+        if (stat_result.st_uid, stat_result.st_gid) != (100000, 100000):
+            return False, (
+                "chown returned success but the filesystem reported "
+                f"{stat_result.st_uid}:{stat_result.st_gid}"
+            )
+        return True, "uid/gid 100000 ownership is preserved"
+    except FileNotFoundError as exc:
+        return False, f"required ownership probe command is missing: {exc.filename}"
+    except subprocess.SubprocessError as exc:
+        return False, f"ownership probe failed: {exc}"
+    finally:
+        if changed:
+            subprocess.run(
+                sudo + ["chown", "-R", f"{os.getuid()}:{os.getgid()}", str(probe_root)],
+                capture_output=True,
+                check=False,
+            )
+        try:
+            shutil.rmtree(probe_root)
+        except OSError:
+            subprocess.run(
+                sudo + ["rm", "-rf", "--", str(probe_root)],
+                capture_output=True,
+                check=False,
+            )
+
+
+def _preflight_linux_build_storage(build_script: Path) -> list[tuple[str, Path]]:
+    """Fail with nested-lab guidance when build/install storage is unsuitable."""
+    if platform.system() != "Linux":
+        return []
+    paths = [
+        ("build output", _build_output_dir(build_script)),
+        ("installed share", get_config_dir() / "share"),
+    ]
+    failures = []
+    for label, path in paths:
+        supported, reason = _probe_subordinate_ownership(path)
+        if not supported:
+            failures.append((f"{label}: {reason}", path))
+    return failures
+
+
+def _print_linux_build_storage_failure(failures: list[tuple[str, Path]]) -> None:
+    console.print(
+        "[red]Selected Linux build storage cannot preserve subordinate "
+        "uid/gid 100000.[/red]"
+    )
+    for detail, path in failures:
+        console.print(f"  {detail}\n    path: {path}")
+    console.print(
+        "Use a native guest-local filesystem. For SafeYolo-in-SafeYolo:\n"
+        "  sudo install -d -o $(id -u) -g $(id -g) /var/lib/nested-safeyolo\n"
+        "  export SAFEYOLO_CONFIG_DIR=/var/lib/nested-safeyolo\n"
+        "  export SAFEYOLO_COORD_DATA_DIR=/var/lib/nested-safeyolo/coord\n"
+        "  export OUTPUT_DIR=/var/lib/nested-safeyolo/build"
+    )
+
+
 def _install_guest_artifacts(out_dir: Path, share_dir: Path) -> None:
     """Install built artifacts, preserving Linux rootfs ownership.
 
@@ -702,6 +808,11 @@ def build() -> None:  # DOC: docs/DEVELOPERS.md
         console.print("Run from the SafeYolo repo checkout.")
         raise typer.Exit(1)
 
+    storage_failures = _preflight_linux_build_storage(build_script)
+    if storage_failures:
+        _print_linux_build_storage_failure(storage_failures)
+        raise typer.Exit(1)
+
     console.print("[bold]Building guest VM images...[/bold]")
     console.print("This takes several minutes on first build.\n")
 
@@ -717,7 +828,7 @@ def build() -> None:  # DOC: docs/DEVELOPERS.md
     # Install to ~/.safeyolo/share/
     share_dir = get_config_dir() / "share"
     share_dir.mkdir(parents=True, exist_ok=True)
-    out_dir = build_script.parent / "out"
+    out_dir = _build_output_dir(build_script)
 
     _install_guest_artifacts(out_dir, share_dir)
 

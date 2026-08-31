@@ -20,6 +20,9 @@ Usage:
 """
 
 import logging
+import os
+import re
+import secrets
 
 from mitmproxy import http
 
@@ -29,6 +32,27 @@ from safeyolo.core.utils import find_addon, make_block_response, sanitize_for_lo
 from safeyolo.mitm_addons.request_id import ensure_request_id
 
 log = logging.getLogger("safeyolo.loop-guard")
+_VIA_TOKEN_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
+
+def _process_via_token() -> str:
+    """Return a process-local token when no instance token was supplied.
+
+    The host launcher always supplies a stable per-instance value. The random
+    fallback keeps direct addon use safe without reintroducing a universal
+    token shared by every SafeYolo proxy.
+    """
+    return os.environ.get("SAFEYOLO_VIA_TOKEN") or f"safeyolo-{secrets.token_hex(16)}"
+
+
+def _contains_received_by(via: str, token: str) -> bool:
+    """Match one RFC Via received-by pseudonym, not an arbitrary substring."""
+    wanted = token.casefold()
+    for entry in via.split(","):
+        fields = entry.strip().split()
+        if len(fields) >= 2 and fields[1].casefold() == wanted:
+            return True
+    return False
 
 
 def _resolve_agent(flow: http.HTTPFlow) -> str | None:
@@ -52,14 +76,18 @@ class LoopGuard:
     """Detect and break proxy loops using the Via header (RFC 7230)."""
 
     name = "loop-guard"
-    VIA_TOKEN = "safeyolo"
+
+    def __init__(self, via_token: str | None = None) -> None:
+        self.via_token = _process_via_token() if via_token is None else via_token
+        if not _VIA_TOKEN_RE.fullmatch(self.via_token) or len(self.via_token) > 128:
+            raise ValueError("SafeYolo Via token must be one RFC token of at most 128 characters")
 
     def requestheaders(self, flow: http.HTTPFlow):
         """Detect loop and inject Via token. Runs before all request hooks."""
         via = flow.request.headers.get("via", "")
 
         # Check for loop: our token is already present
-        if self.VIA_TOKEN in via:
+        if _contains_received_by(via, self.via_token):
             # Assign a request_id here — RequestIdGenerator.request() would
             # normally do this but mitmproxy short-circuits `request` hooks
             # once a response is set. Without this the 508 would ship with
@@ -99,7 +127,7 @@ class LoopGuard:
             return
 
         # Inject our Via token for loop detection
-        entry = f"1.1 {self.VIA_TOKEN}"
+        entry = f"1.1 {self.via_token}"
         flow.request.headers["via"] = f"{via}, {entry}" if via else entry
 
 addons = [LoopGuard()]
