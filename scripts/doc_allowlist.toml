@@ -55,4 +55,6 @@ skill_files = [
     "cli/src/safeyolo/agent_context/skills/safeyolo/references/*.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/SKILL.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/references/*.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo-demo-lab/SKILL.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo-demo-lab/references/*.md",
 ]

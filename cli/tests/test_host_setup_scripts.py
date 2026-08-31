@@ -22,6 +22,7 @@ COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
 CODEX_COORD_SUPERVISOR_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor.py"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LAB_CONTROLLER_LINK_TARGET = "/safeyolo/skills/safeyolo-lab-controller"
+DEMO_LAB_LINK_TARGET = "/safeyolo/skills/safeyolo-demo-lab"
 LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
 LAB_COMMAND_TARGET = (
     "/safeyolo/skills/safeyolo-lab-controller/scripts/safeyolo-lab"
@@ -84,6 +85,7 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
         expected_links = {"safeyolo": SKILL_LINK_TARGET}
         if consumer_dir == ".agents":
             expected_links["safeyolo-lab-controller"] = LAB_CONTROLLER_LINK_TARGET
+            expected_links["safeyolo-demo-lab"] = DEMO_LAB_LINK_TARGET
         for name, target in expected_links.items():
             link = agent_home / consumer_dir / "skills" / name
             assert link.is_symlink()
@@ -749,6 +751,28 @@ def test_codex_context_refuses_user_owned_lab_controller_skill(
     assert result.returncode != 0
     assert "Refusing to replace existing user skill" in result.stderr
     assert marker.read_text() == "user-owned lab skill\n"
+
+
+def test_codex_context_refuses_user_owned_demo_lab_skill(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    collision = agent_home / ".agents/skills/safeyolo-demo-lab"
+    collision.mkdir(parents=True)
+    marker = collision / "SKILL.md"
+    marker.write_text("user-owned demo skill\n")
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to replace existing user skill" in result.stderr
+    assert marker.read_text() == "user-owned demo skill\n"
 
 
 def test_codex_context_refuses_user_owned_lab_command(tmp_path: Path) -> None:
