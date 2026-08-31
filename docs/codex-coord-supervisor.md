@@ -83,7 +83,9 @@ the numeric process-group ID. It uses PID handles and matching start-time
 fingerprints for recorded descendants. On Linux the supervisor also acts as a
 child subreaper, so repeated recovery does not accumulate orphaned code-mode
 children or zombies. The supervisor requires Linux PID handles and fails
-closed before recovery if they are unavailable.
+closed before recovery if the kernel does not provide them. It uses the
+CPython pidfd wrappers when present and the Linux syscalls directly when a
+supported CPython build omits those optional wrappers.
 
 On supervisor restart, cleanup opens a PID handle for the recorded leader and
 rechecks its start fingerprint and process-group identity. While that verified

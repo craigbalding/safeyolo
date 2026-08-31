@@ -706,11 +706,11 @@ def test_pidfd_signal_rejects_reused_pid_identity(supervisor_module, monkeypatch
     module = supervisor_module
     sent = []
     closed = []
-    monkeypatch.setattr(module.os, "pidfd_open", lambda pid: 17)
+    monkeypatch.setattr(module, "_pidfd_open", lambda pid: 17)
     monkeypatch.setattr(module, "_process_start_time", lambda pid: "new-unrelated-start")
     monkeypatch.setattr(
-        module.signal,
-        "pidfd_send_signal",
+        module,
+        "_pidfd_send_signal",
         lambda pidfd, signal_number: sent.append((pidfd, signal_number)),
     )
     monkeypatch.setattr(module.os, "close", lambda pidfd: closed.append(pidfd))
@@ -718,6 +718,36 @@ def test_pidfd_signal_rejects_reused_pid_identity(supervisor_module, monkeypatch
     assert module._signal_pid_identity(4242, "old-owned-start", module.signal.SIGTERM) is False
     assert sent == []
     assert closed == [17]
+
+
+def test_pidfd_syscall_fallback_without_cpython_wrappers(supervisor_module, monkeypatch):
+    module = supervisor_module
+    calls = []
+    monkeypatch.delattr(module.os, "pidfd_open", raising=False)
+    monkeypatch.delattr(module.signal, "pidfd_send_signal", raising=False)
+
+    def syscall(number, *arguments):
+        calls.append((number, arguments))
+        return 17 if number == module.SYS_PIDFD_OPEN else 0
+
+    monkeypatch.setattr(module, "_linux_syscall", syscall)
+
+    assert module._pidfd_open(4242) == 17
+    module._pidfd_send_signal(17, module.signal.SIGTERM)
+
+    assert [number for number, _ in calls] == [
+        module.SYS_PIDFD_OPEN,
+        module.SYS_PIDFD_SEND_SIGNAL,
+    ]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="pidfd is Linux-specific")
+def test_pidfd_syscall_fallback_reaches_linux_kernel(supervisor_module, monkeypatch):
+    module = supervisor_module
+    monkeypatch.delattr(module.os, "pidfd_open", raising=False)
+    monkeypatch.delattr(module.signal, "pidfd_send_signal", raising=False)
+
+    module._require_pidfd_support()
 
 
 def test_restart_cleans_a_checkpointed_detached_child(supervisor_module, tmp_path):

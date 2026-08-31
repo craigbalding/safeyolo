@@ -41,6 +41,8 @@ MAX_IN_FLIGHT = 16
 MAX_CANONICAL_BODY_BYTES = 64 * 1024
 MAX_STATE_BYTES = 2 * 1024 * 1024
 MAX_OWNED_DESCENDANTS = 64
+SYS_PIDFD_SEND_SIGNAL = 424
+SYS_PIDFD_OPEN = 434
 
 
 class SupervisorError(RuntimeError):
@@ -789,10 +791,8 @@ def _signal_pid_identity(pid: int, start_time: str, signal_number: int) -> bool:
 
 
 def _open_pidfd_for_identity(pid: int, start_time: str) -> int | None:
-    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
-        return None
     try:
-        pidfd = os.pidfd_open(pid)
+        pidfd = _pidfd_open(pid)
     except OSError:
         return None
     if _process_start_time(pid) != start_time:
@@ -803,28 +803,56 @@ def _open_pidfd_for_identity(pid: int, start_time: str) -> int | None:
 
 def _signal_pidfd(pidfd: int, signal_number: int) -> bool:
     try:
-        signal.pidfd_send_signal(pidfd, signal_number)
+        _pidfd_send_signal(pidfd, signal_number)
     except OSError:
         return False
     return True
 
 
 def _require_pidfd_support() -> None:
-    if (
-        not sys.platform.startswith("linux")
-        or not hasattr(os, "pidfd_open")
-        or not hasattr(signal, "pidfd_send_signal")
-    ):
+    if not sys.platform.startswith("linux"):
         raise SupervisorError("the Codex coord supervisor requires Linux PID handles")
     pidfd: int | None = None
     try:
-        pidfd = os.pidfd_open(os.getpid())
-        signal.pidfd_send_signal(pidfd, 0)
+        pidfd = _pidfd_open(os.getpid())
+        _pidfd_send_signal(pidfd, 0)
     except OSError as exc:
         raise SupervisorError(f"Linux PID handles are unavailable: {exc}") from exc
     finally:
         if pidfd is not None:
             os.close(pidfd)
+
+
+def _pidfd_open(pid: int) -> int:
+    wrapper = getattr(os, "pidfd_open", None)
+    if wrapper is not None:
+        return wrapper(pid)
+    return _linux_syscall(SYS_PIDFD_OPEN, ctypes.c_int(pid), ctypes.c_uint(0))
+
+
+def _pidfd_send_signal(pidfd: int, signal_number: int) -> None:
+    wrapper = getattr(signal, "pidfd_send_signal", None)
+    if wrapper is not None:
+        wrapper(pidfd, signal_number)
+        return
+    _linux_syscall(
+        SYS_PIDFD_SEND_SIGNAL,
+        ctypes.c_int(pidfd),
+        ctypes.c_int(signal_number),
+        ctypes.c_void_p(),
+        ctypes.c_uint(0),
+    )
+
+
+def _linux_syscall(number: int, *arguments: Any) -> int:
+    libc = ctypes.CDLL(None, use_errno=True)
+    syscall = libc.syscall
+    syscall.restype = ctypes.c_long
+    result = syscall(ctypes.c_long(number), *arguments)
+    if result < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return int(result)
 
 
 def _process_start_time(pid: int) -> str | None:
