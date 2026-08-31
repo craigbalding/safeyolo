@@ -47,19 +47,145 @@ stage_safeyolo_context "$AGENT_HOME" codex
 # The curated @codex-coord wrapper opts into a deterministic guest-side
 # supervisor. Normal @codex runs never enter this branch.
 if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
-    : "${SAFEYOLO_CODEX_COORD_ROOMS:?set a comma-separated receive room list for @codex-coord}"
-    : "${SAFEYOLO_CODEX_COORDINATORS:?set a comma-separated coordinator name list for @codex-coord}"
     SUPERVISOR_SRC="$SCRIPT_DIR/codex-coord-supervisor.py"
     if [ ! -f "$SUPERVISOR_SRC" ]; then
         echo "codex-host-setup: expected supervisor at $SUPERVISOR_SRC" >&2
         exit 1
     fi
     install -m 0755 "$SUPERVISOR_SRC" "$AGENT_HOME/.safeyolo/codex-coord-supervisor.py"
-    python3 - \
-        "$AGENT_HOME/.safeyolo/codex-coord-supervisor.json" \
-        "$SAFEYOLO_AGENT_NAME" \
-        "$SAFEYOLO_CODEX_COORD_ROOMS" \
-        "$SAFEYOLO_CODEX_COORDINATORS" <<'PY'
+    if [ -n "${SAFEYOLO_CODEX_FACTORY_SNAPSHOT:-}" ]; then
+        : "${SAFEYOLO_CODEX_FACTORY_ROLE:?set the factory role}"
+        python3 - \
+            "$AGENT_HOME/.safeyolo/codex-coord-supervisor.json" \
+            "$AGENT_HOME/.safeyolo/AGENTS.md" \
+            "$SAFEYOLO_AGENT_NAME" \
+            "$SAFEYOLO_CODEX_FACTORY_SNAPSHOT" \
+            "$SAFEYOLO_CODEX_FACTORY_ROLE" <<'PY'
+import hashlib
+import json
+import os
+import re
+import sys
+import tempfile
+
+config_path, instructions_path, agent_name, snapshot_path, role_name = sys.argv[1:]
+name_re = re.compile(r"[A-Za-z0-9_.-]+")
+type_re = re.compile(r"[A-Z][A-Z0-9_]*")
+if name_re.fullmatch(agent_name) is None or name_re.fullmatch(role_name) is None:
+    raise SystemExit("codex-host-setup: invalid factory agent or role name")
+try:
+    snapshot_bytes = open(snapshot_path, "rb").read()
+    snapshot = json.loads(snapshot_bytes)
+except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"codex-host-setup: cannot read factory snapshot: {exc}")
+if not isinstance(snapshot, dict) or set(snapshot) != {"schema", "name", "room", "roles", "handoffs"}:
+    raise SystemExit("codex-host-setup: invalid factory snapshot shape")
+if snapshot.get("schema") != "safeyolo.factory/v1":
+    raise SystemExit("codex-host-setup: unsupported factory snapshot schema")
+room = snapshot.get("room")
+roles = snapshot.get("roles")
+handoffs = snapshot.get("handoffs")
+if name_re.fullmatch(str(room)) is None or not isinstance(roles, dict) or role_name not in roles:
+    raise SystemExit("codex-host-setup: factory role or room is invalid")
+role = roles[role_name]
+if not isinstance(role, dict) or set(role) != {"agent", "contract", "contract_sha256", "contract_text"}:
+    raise SystemExit("codex-host-setup: factory role binding is invalid")
+if role.get("agent") != agent_name or not isinstance(role.get("contract_text"), str):
+    raise SystemExit("codex-host-setup: factory role is not bound to this agent")
+contract_hash = hashlib.sha256(role["contract_text"].encode()).hexdigest()
+if role.get("contract_sha256") != contract_hash:
+    raise SystemExit("codex-host-setup: factory role contract hash does not match")
+role_agents = {}
+for key, value in roles.items():
+    if name_re.fullmatch(str(key)) is None or not isinstance(value, dict):
+        raise SystemExit("codex-host-setup: invalid factory role map")
+    bound_agent = value.get("agent")
+    if name_re.fullmatch(str(bound_agent)) is None:
+        raise SystemExit("codex-host-setup: invalid factory agent binding")
+    role_agents[key] = bound_agent
+if not isinstance(handoffs, list) or not handoffs:
+    raise SystemExit("codex-host-setup: factory has no handoffs")
+runtime_handoffs = []
+coordinators = []
+for handoff in handoffs:
+    if not isinstance(handoff, dict) or set(handoff) != {"request", "from", "to", "responses"}:
+        raise SystemExit("codex-host-setup: invalid factory handoff")
+    request = handoff.get("request")
+    source = handoff.get("from")
+    destination = handoff.get("to")
+    responses = handoff.get("responses")
+    if (
+        type_re.fullmatch(str(request)) is None
+        or source not in role_agents
+        or destination not in role_agents
+        or not isinstance(responses, list)
+        or not responses
+        or any(type_re.fullmatch(str(item)) is None for item in responses)
+    ):
+        raise SystemExit("codex-host-setup: invalid factory handoff values")
+    runtime_handoffs.append(
+        {
+            "request": request,
+            "from": source,
+            "to": destination,
+            "responses": responses,
+        }
+    )
+    if request == "TASK" and role_agents[source] not in coordinators:
+        coordinators.append(role_agents[source])
+if not coordinators:
+    raise SystemExit("codex-host-setup: factory must declare a TASK coordinator handoff")
+
+config = {
+    "agent_name": agent_name,
+    "rooms": [room],
+    "coordinators": coordinators,
+    "workspace": "/workspace",
+    "factory": {
+        "schema": snapshot["schema"],
+        "name": snapshot["name"],
+        "role": role_name,
+        "roles": role_agents,
+        "handoffs": runtime_handoffs,
+        "contract_sha256": contract_hash,
+    },
+}
+
+
+def atomic_write(path, value):
+    directory = os.path.dirname(path)
+    fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=directory)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+atomic_write(config_path, json.dumps(config, sort_keys=True, separators=(",", ":")) + "\n")
+with open(instructions_path) as handle:
+    baseline = handle.read()
+atomic_write(
+    instructions_path,
+    baseline.rstrip() + "\n\n---\n\n" + role["contract_text"].lstrip(),
+)
+PY
+    else
+        : "${SAFEYOLO_CODEX_COORD_ROOMS:?set a comma-separated receive room list for @codex-coord}"
+        : "${SAFEYOLO_CODEX_COORDINATORS:?set a comma-separated coordinator name list for @codex-coord}"
+        python3 - \
+            "$AGENT_HOME/.safeyolo/codex-coord-supervisor.json" \
+            "$SAFEYOLO_AGENT_NAME" \
+            "$SAFEYOLO_CODEX_COORD_ROOMS" \
+            "$SAFEYOLO_CODEX_COORDINATORS" <<'PY'
 import json
 import os
 import re
@@ -105,6 +231,7 @@ except BaseException:
         pass
     raise
 PY
+    fi
 fi
 
 # --- Write the foreground command --------------------------------------------

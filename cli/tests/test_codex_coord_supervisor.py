@@ -44,12 +44,40 @@ def _config(module: ModuleType, tmp_path: Path, **overrides):
     return module.Config(**values)
 
 
+def _factory_config(module: ModuleType, tmp_path: Path, role: str):
+    agents = {"coordinator": "relay", "owner": "forge", "reviewer": "lens"}
+    return _config(
+        module,
+        tmp_path,
+        agent_name=agents[role],
+        factory_name="backlog",
+        factory_role=role,
+        factory_roles=tuple(agents.items()),
+        factory_handoffs=(
+            module.Handoff(
+                "TASK",
+                "coordinator",
+                "owner",
+                ("DONE", "BLOCKED", "FAILED"),
+            ),
+            module.Handoff(
+                "REVIEW_READY",
+                "owner",
+                "reviewer",
+                ("READY", "CHANGES_REQUIRED", "BLOCKED"),
+            ),
+        ),
+        contract_sha256="a" * 64,
+    )
+
+
 def _resolved(
     attention_id: str,
     *,
     sender: str = "relay",
     body: str = "TASK task=one assignee=forge",
     room_id: str = "room-1",
+    sender_kind: str = "agent",
 ):
     return {
         "edge": {
@@ -61,7 +89,7 @@ def _resolved(
         },
         "object": {
             "msg_id": "message-1",
-            "sender_kind": "agent",
+            "sender_kind": sender_kind,
             "sender_agent_id": f"agent-{sender}",
             "sender_agent_name": sender,
             "content_type": "text/plain",
@@ -90,7 +118,13 @@ def _wait_event(module: ModuleType, state, objects, *, next_cursor=12, status="c
     }
 
 
-def _terminal_event(attention_id: str, *, room_name: str = "backlog", body: str | None = None):
+def _terminal_event(
+    attention_id: str,
+    *,
+    room_name: str = "backlog",
+    body: str | None = None,
+    sender: str = "forge",
+):
     body = body or f"DONE task=one attention_id={attention_id}\nresult=complete"
     return {
         "type": "item.completed",
@@ -103,8 +137,8 @@ def _terminal_event(attention_id: str, *, room_name: str = "backlog", body: str 
                 "structured_content": {
                     "envelope": {
                         "sender_kind": "agent",
-                        "sender_agent_id": "agent-forge",
-                        "sender_agent_name": "forge",
+                        "sender_agent_id": f"agent-{sender}",
+                        "sender_agent_name": sender,
                         "body": body,
                     },
                     "sequence": 13,
@@ -228,6 +262,227 @@ def test_task_for_another_or_ambiguous_assignee_is_not_promoted(supervisor_modul
     consumer.consume(_wait_event(module, state, [_resolved(attention_id, body=body)]))
 
     assert state["in_flight"][0]["requires_terminal"] is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "TASK UPDATE assignee=forge",
+        "TASK task=one assignee=forge extra=true",
+        "TASK assignee=forge task=one",
+        "TASK task=one assignee=forge assignee=forge",
+    ],
+)
+def test_generic_task_header_requires_exact_canonical_form(supervisor_module, tmp_path, body):
+    module = supervisor_module
+    attention_id = "attn-" + "0" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(_config(module, tmp_path), state, state_path, {"room-1": "backlog"})
+
+    consumer.consume(_wait_event(module, state, [_resolved(attention_id, body=body)]))
+
+    assert state["in_flight"][0]["requires_terminal"] is False
+
+
+def test_factory_admits_owner_to_reviewer_request_and_declared_terminal(supervisor_module, tmp_path):
+    module = supervisor_module
+    attention_id = "attn-" + "1" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    config = _factory_config(module, tmp_path, "reviewer")
+    consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
+    body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
+
+    consumer.consume(_wait_event(module, state, [_resolved(attention_id, sender="forge", body=body)]))
+
+    assert state["in_flight"][0]["requires_terminal"] is True
+    response = f"READY issue=#480 pr=#10 head={'a' * 40} attention_id={attention_id}"
+    consumer.consume(_terminal_event(attention_id, body=response, sender="lens"))
+    assert module.load_state(state_path)["in_flight"] == []
+
+
+@pytest.mark.parametrize("response_type", ["READY", "CHANGES_REQUIRED", "BLOCKED"])
+def test_factory_admits_every_reviewer_to_owner_response(supervisor_module, tmp_path, response_type):
+    module = supervisor_module
+    task_attention = "attn-" + "2" * 32
+    review_attention = "attn-" + "3" * 32
+    response_attention = "attn-" + "4" * 32
+    state = module.empty_state()
+    state["in_flight"] = [
+        {
+            "attention_id": task_attention,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 10,
+            "body": "TASK task=issue-480 assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+    state["awaiting_handoff"] = {
+        "room_name": "backlog",
+        "request": "REVIEW_READY",
+        "recipient_agent": "lens",
+        "body": "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
+    }
+    state_path = tmp_path / "state.json"
+    config = _factory_config(module, tmp_path, "owner")
+    consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
+    response = f"{response_type} issue=#480 pr=#10 head={'a' * 40} attention_id={review_attention}"
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [_resolved(response_attention, sender="lens", body=response)],
+        )
+    )
+
+    assert state["awaiting_handoff"] is None
+    assert state["in_flight"][-1]["attention_id"] == response_attention
+    assert state["in_flight"][-1]["requires_terminal"] is False
+
+
+@pytest.mark.parametrize(
+    ("sender", "body", "sender_kind"),
+    [
+        ("peer", "REVIEW_READY issue=#480", "agent"),
+        ("forge", "REVIEW_READY_UPDATE issue=#480", "agent"),
+        ("forge", "REVIEW_READY issue=#480", "user"),
+        ("relay", "TASK UPDATE assignee=lens", "agent"),
+    ],
+)
+def test_factory_rejects_unauthorized_or_malformed_objects(supervisor_module, tmp_path, sender, body, sender_kind):
+    module = supervisor_module
+    attention_id = "attn-" + "5" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(
+        _factory_config(module, tmp_path, "reviewer"),
+        state,
+        state_path,
+        {"room-1": "backlog"},
+    )
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [_resolved(attention_id, sender=sender, body=body, sender_kind=sender_kind)],
+        )
+    )
+
+    assert state["in_flight"] == []
+    assert state["recent_attention_ids"] == [attention_id]
+
+
+def test_factory_rejects_an_other_room_even_for_an_exact_handoff(supervisor_module, tmp_path):
+    module = supervisor_module
+    attention_id = "attn-" + "9" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(
+        _factory_config(module, tmp_path, "reviewer"),
+        state,
+        state_path,
+        {"room-1": "backlog"},
+    )
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [
+                _resolved(
+                    attention_id,
+                    sender="forge",
+                    body="REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
+                    room_id="room-2",
+                )
+            ],
+        )
+    )
+
+    assert state["in_flight"] == []
+    assert state["recent_attention_ids"] == [attention_id]
+
+
+def test_factory_rejects_a_terminal_outside_the_declared_response_set(supervisor_module, tmp_path):
+    module = supervisor_module
+    attention_id = "attn-" + "a" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    config = _factory_config(module, tmp_path, "reviewer")
+    consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
+    body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
+    consumer.consume(_wait_event(module, state, [_resolved(attention_id, sender="forge", body=body)]))
+
+    consumer.consume(
+        _terminal_event(
+            attention_id,
+            body=f"DONE issue=#480 pr=#10 attention_id={attention_id}",
+            sender="lens",
+        )
+    )
+
+    assert module.load_state(state_path)["in_flight"][0]["attention_id"] == attention_id
+    assert consumer.result.terminal_observed is False
+
+
+def test_factory_response_requires_a_correlated_outbound_handoff(supervisor_module, tmp_path):
+    module = supervisor_module
+    attention_id = "attn-" + "6" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(
+        _factory_config(module, tmp_path, "owner"),
+        state,
+        state_path,
+        {"room-1": "backlog"},
+    )
+    body = f"READY issue=#480 pr=#10 head={'a' * 40} attention_id={'attn-' + '7' * 32}"
+
+    consumer.consume(_wait_event(module, state, [_resolved(attention_id, sender="lens", body=body)]))
+
+    assert state["in_flight"] == []
+    assert state["recent_attention_ids"] == [attention_id]
+
+
+def test_factory_outbound_request_suspends_parent_for_next_bounded_wait(supervisor_module, tmp_path):
+    module = supervisor_module
+    task_attention = "attn-" + "8" * 32
+    state = module.empty_state()
+    state["in_flight"] = [
+        {
+            "attention_id": task_attention,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 10,
+            "body": "TASK task=issue-480 assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+    state_path = tmp_path / "state.json"
+    config = _factory_config(module, tmp_path, "owner")
+    consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
+    body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
+    event = _terminal_event(task_attention, body=body)
+    event["item"]["arguments"]["notify"] = ["lens"]
+
+    consumer.consume(event)
+
+    assert state["in_flight"][0]["attention_id"] == task_attention
+    assert state["awaiting_handoff"] == {
+        "room_name": "backlog",
+        "request": "REVIEW_READY",
+        "recipient_agent": "lens",
+        "body": body,
+    }
+    assert consumer.result.handoff_observed is True
+    prompt = module.build_prompt(config, state, {"room-1": "backlog"})
+    assert "Call safeyolo-coord wait_for_coord exactly once" in prompt
 
 
 def test_attention_from_unconfigured_room_is_checkpointed_and_ignored(supervisor_module, tmp_path):
@@ -556,13 +811,17 @@ def test_timeout_cleans_the_owned_process_group(supervisor_module, tmp_path, mon
     state = module.empty_state()
     state_path = tmp_path / "state.json"
 
-    result = module.run_invocation(
-        _config(module, tmp_path, startup_timeout_seconds=1),
-        state,
-        state_path,
-        {"room-1": "backlog"},
-        [],
-    )
+    previous_subreaper = module._set_subreaper()
+    try:
+        result = module.run_invocation(
+            _config(module, tmp_path, startup_timeout_seconds=1),
+            state,
+            state_path,
+            {"room-1": "backlog"},
+            [],
+        )
+    finally:
+        module._set_subreaper(previous_subreaper)
 
     assert result.timed_out is True
     child_pid = int(child_pid_file.read_text())

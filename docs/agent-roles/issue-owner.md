@@ -69,14 +69,20 @@ When the candidate is ready for independent review:
    REVIEW_READY issue=#<issue> pr=#<pr> head=<full-head-sha>
    ```
 
+   Target the reviewer bound by the approved factory snapshot. The supervised
+   adapter records that exact outbound handoff and resumes bounded coord waits
+   for its declared response; do not create a second queue or polling loop.
+
 `REVIEW_READY` identifies the review object. Do not fill it with persuasive
 implementation claims or test transcripts; the reviewer establishes
 correctness from primary evidence.
 
 After sending, enter the multiplexed attention wait. Resolve the canonical
-attention object, act, and re-arm after an empty bounded return. Accept only a
+attention object and act. The supervisor re-arms in a later bounded cycle after
+an empty return. Accept only a
 `READY`, `CHANGES_REQUIRED`, or `BLOCKED` disposition that names the relevant
-PR and exact reviewed HEAD.
+PR and exact reviewed HEAD and carries the review request's canonical
+`attention_id=<id>` correlation token.
 
 - On `CHANGES_REQUIRED`, consume the complete actionable findings from that
   targeted disposition, fix them, push a new candidate, independently verify
