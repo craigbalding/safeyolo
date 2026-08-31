@@ -29,12 +29,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 DEFAULT_CONFIG = Path.home() / ".safeyolo/codex-coord-supervisor.json"
 DEFAULT_STATE = Path.home() / ".safeyolo/codex-coord-supervisor-state.json"
 TERMINAL_RE = re.compile(r"^(DONE|BLOCKED|FAILED)\b")
 TASK_HEADER_RE = re.compile(r"TASK task=([A-Za-z0-9_.-]+) assignee=([A-Za-z0-9_.-]+)")
 ATTENTION_TOKEN_RE = re.compile(r"(?:^|\s)attention_id=(attn-[0-9a-f]{32})(?:\s|$)")
+MESSAGE_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)=([^\s=]+)")
+NON_CORRELATION_FIELDS = frozenset({"assignee", "attention_id"})
 MAX_RECENT_ATTENTION_IDS = 256
 MAX_IN_FLIGHT = 16
 MAX_CANONICAL_BODY_BYTES = 64 * 1024
@@ -250,6 +252,18 @@ def load_state(path: Path) -> dict[str, Any]:
     }
     if isinstance(raw, dict) and raw.get("version") == 1 and set(raw) == version_one_keys:
         raw = {**raw, "version": STATE_VERSION, "awaiting_handoff": None}
+    if isinstance(raw, dict) and raw.get("version") == 2 and set(raw) == version_one_keys | {
+        "awaiting_handoff"
+    }:
+        awaiting = raw.get("awaiting_handoff")
+        if isinstance(awaiting, dict) and set(awaiting) == {
+            "room_name",
+            "request",
+            "recipient_agent",
+            "body",
+        }:
+            awaiting = {**awaiting, "correlation": _request_correlation(awaiting.get("body", ""))}
+        raw = {**raw, "version": STATE_VERSION, "awaiting_handoff": awaiting}
     allowed_keys = version_one_keys | {"awaiting_handoff"}
     if (
         not isinstance(raw, dict)
@@ -323,6 +337,7 @@ def _validate_awaiting_handoff(value: Any) -> None:
         "request",
         "recipient_agent",
         "body",
+        "correlation",
     }:
         raise SupervisorError("supervisor state has invalid awaiting-handoff data")
     for key in ("room_name", "request", "recipient_agent", "body"):
@@ -330,6 +345,21 @@ def _validate_awaiting_handoff(value: Any) -> None:
             raise SupervisorError("supervisor state has invalid awaiting-handoff data")
     if len(value["body"].encode()) > MAX_CANONICAL_BODY_BYTES:
         raise SupervisorError("awaiting-handoff body is too large")
+    correlation = value.get("correlation")
+    if not isinstance(correlation, dict) or not correlation:
+        raise SupervisorError("supervisor state has invalid awaiting-handoff correlation")
+    for key, item in correlation.items():
+        if (
+            not isinstance(key, str)
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", key) is None
+            or key in NON_CORRELATION_FIELDS
+            or not isinstance(item, str)
+            or not item
+            or re.search(r"\s|=", item) is not None
+        ):
+            raise SupervisorError("supervisor state has invalid awaiting-handoff correlation")
+    if correlation != _request_correlation(value["body"]):
+        raise SupervisorError("supervisor state has mismatched awaiting-handoff correlation")
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
@@ -546,6 +576,26 @@ def _body_has_type(body: str, message_type: str, *, task_agent: str | None = Non
     return first_line == message_type or first_line.startswith(message_type + " ")
 
 
+def _message_fields(body: str) -> dict[str, str] | None:
+    tokens = body.split("\n", 1)[0].split()
+    if not tokens:
+        return None
+    fields: dict[str, str] = {}
+    for token in tokens[1:]:
+        match = MESSAGE_FIELD_RE.fullmatch(token)
+        if match is None or match.group(1) in fields:
+            return None
+        fields[match.group(1)] = match.group(2)
+    return fields
+
+
+def _request_correlation(body: str) -> dict[str, str]:
+    fields = _message_fields(body)
+    if fields is None:
+        return {}
+    return {key: value for key, value in fields.items() if key not in NON_CORRELATION_FIELDS}
+
+
 def _role_agents(config: Config) -> dict[str, str]:
     return dict(config.factory_roles)
 
@@ -600,12 +650,16 @@ def _matches_awaiting_handoff(
     if awaiting is None or config.factory_role is None:
         return False
     handoff = _inbound_response(config, sender, body)
+    response_fields = _message_fields(body)
+    expected = awaiting["correlation"]
     return (
         handoff is not None
         and awaiting["room_name"] == room_name
         and awaiting["request"] == handoff.request
         and awaiting["recipient_agent"] == sender
         and ATTENTION_TOKEN_RE.search(body) is not None
+        and response_fields is not None
+        and all(response_fields.get(key) == value for key, value in expected.items())
     )
 
 
@@ -959,11 +1013,15 @@ class EventConsumer:
             recipient = agents[handoff.destination_role]
             if notify != [recipient]:
                 return
+            correlation = _request_correlation(body)
+            if not correlation:
+                raise SupervisorError("factory handoff request has no correlation fields")
             self.state["awaiting_handoff"] = {
                 "room_name": room_name,
                 "request": handoff.request,
                 "recipient_agent": recipient,
                 "body": body,
+                "correlation": correlation,
             }
             self.result.handoff_observed = True
             save_state(self.state_path, self.state)

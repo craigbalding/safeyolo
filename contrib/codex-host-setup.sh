@@ -24,15 +24,17 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 # --- Stage host codex state --------------------------------------------------
 # Codex stores auth + config under ~/.codex/. Copy the whole dir if present.
-# Preserve an existing agent-side config.toml on reapply so harness and MCP
-# configuration created inside the persistent agent home is not clobbered.
+# Preserve existing agent-side authentication and config on reapply so state
+# created inside the persistent agent home is not clobbered.
 # Session transcripts etc. are inside the same tree -- we're choosing to stage
 # the lot because codex doesn't have the same scale of transcript state as
 # Claude Code. If that stops being true, narrow this to specific files.
 if [ -d "$HOME/.codex" ]; then
     while IFS= read -r -d '' host_entry; do
-        if [ "$(basename "$host_entry")" = "config.toml" ] \
-            && [ -f "$AGENT_HOME/.codex/config.toml" ]; then
+        entry_name="$(basename "$host_entry")"
+        agent_entry="$AGENT_HOME/.codex/$entry_name"
+        if { [ "$entry_name" = "auth.json" ] || [ "$entry_name" = "config.toml" ]; } \
+            && { [ -e "$agent_entry" ] || [ -L "$agent_entry" ]; }; then
             continue
         fi
         cp -R "$host_entry" "$AGENT_HOME/.codex/" 2>/dev/null || true

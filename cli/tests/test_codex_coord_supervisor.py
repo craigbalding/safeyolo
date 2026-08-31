@@ -325,6 +325,7 @@ def test_factory_admits_every_reviewer_to_owner_response(supervisor_module, tmp_
         "request": "REVIEW_READY",
         "recipient_agent": "lens",
         "body": "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
+        "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
     }
     state_path = tmp_path / "state.json"
     config = _factory_config(module, tmp_path, "owner")
@@ -342,6 +343,67 @@ def test_factory_admits_every_reviewer_to_owner_response(supervisor_module, tmp_
     assert state["awaiting_handoff"] is None
     assert state["in_flight"][-1]["attention_id"] == response_attention
     assert state["in_flight"][-1]["requires_terminal"] is False
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "READY issue=#999 pr=#10 head=" + "a" * 40,
+        "READY issue=#480 pr=#1 head=" + "a" * 40,
+        "READY issue=#480 pr=#10 head=" + "b" * 40,
+        "READY issue=#480 pr=#10",
+    ],
+)
+def test_factory_rejects_a_response_for_a_different_review_object(
+    supervisor_module,
+    tmp_path,
+    response,
+):
+    module = supervisor_module
+    task_attention = "attn-" + "2" * 32
+    response_attention = "attn-" + "4" * 32
+    request_attention = "attn-" + "3" * 32
+    state = module.empty_state()
+    state["in_flight"] = [
+        {
+            "attention_id": task_attention,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 10,
+            "body": "TASK task=issue-480 assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+    awaiting = {
+        "room_name": "backlog",
+        "request": "REVIEW_READY",
+        "recipient_agent": "lens",
+        "body": "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
+        "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+    }
+    state["awaiting_handoff"] = awaiting
+    state_path = tmp_path / "state.json"
+    config = _factory_config(module, tmp_path, "owner")
+    consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [
+                _resolved(
+                    response_attention,
+                    sender="lens",
+                    body=f"{response} attention_id={request_attention}",
+                )
+            ],
+        )
+    )
+
+    assert state["awaiting_handoff"] == awaiting
+    assert [item["attention_id"] for item in state["in_flight"]] == [task_attention]
+    assert state["recent_attention_ids"] == [response_attention]
 
 
 @pytest.mark.parametrize(
@@ -474,15 +536,37 @@ def test_factory_outbound_request_suspends_parent_for_next_bounded_wait(supervis
     consumer.consume(event)
 
     assert state["in_flight"][0]["attention_id"] == task_attention
-    assert state["awaiting_handoff"] == {
+    expected = {
         "room_name": "backlog",
         "request": "REVIEW_READY",
         "recipient_agent": "lens",
         "body": body,
+        "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
     }
+    assert state["awaiting_handoff"] == expected
+    assert module.load_state(state_path)["awaiting_handoff"] == expected
     assert consumer.result.handoff_observed is True
     prompt = module.build_prompt(config, state, {"room-1": "backlog"})
     assert "Call safeyolo-coord wait_for_coord exactly once" in prompt
+
+
+def test_factory_rejects_persisted_handoff_correlation_that_does_not_match_request(
+    supervisor_module,
+    tmp_path,
+):
+    module = supervisor_module
+    state = module.empty_state()
+    state["awaiting_handoff"] = {
+        "room_name": "backlog",
+        "request": "REVIEW_READY",
+        "recipient_agent": "lens",
+        "body": "REVIEW_READY issue=#480 pr=#485 head=" + "a" * 40,
+        "correlation": {"issue": "#999", "pr": "#1", "head": "b" * 40},
+    }
+    state_path = _write_json(tmp_path / "state.json", state)
+
+    with pytest.raises(module.SupervisorError, match="mismatched awaiting-handoff correlation"):
+        module.load_state(state_path)
 
 
 def test_attention_from_unconfigured_room_is_checkpointed_and_ignored(supervisor_module, tmp_path):

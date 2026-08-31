@@ -78,7 +78,11 @@ class FactoryContract:
 
 
 def _simple_name(label: str, value: Any) -> str:
-    if not isinstance(value, str) or _NAME_RE.fullmatch(value) is None:
+    if (
+        not isinstance(value, str)
+        or _NAME_RE.fullmatch(value) is None
+        or value in {".", ".."}
+    ):
         raise FactoryContractError(f"{label} must be one simple name")
     return value
 
@@ -188,13 +192,29 @@ def factories_dir() -> Path:
     return get_config_dir() / "factories"
 
 
+def _contained_path(root: Path, *parts: str) -> Path:
+    candidate = root.joinpath(*parts).resolve()
+    if not candidate.is_relative_to(root):
+        raise FactoryContractError(f"factory path escapes {root}")
+    return candidate
+
+
+def _factory_root(name: str) -> Path:
+    name = _simple_name("factory name", name)
+    factories = factories_dir().resolve()
+    root = _contained_path(factories, name)
+    if root == factories:
+        raise FactoryContractError(f"factory path escapes {factories}")
+    return root
+
+
 def store_snapshot(contract: FactoryContract) -> tuple[str, Path]:
     payload = contract.snapshot_payload()
     identifier = snapshot_id(payload)
-    root = factories_dir() / contract.name
-    snapshots = root / "snapshots"
+    root = _factory_root(contract.name)
+    snapshots = _contained_path(root, "snapshots")
     snapshots.mkdir(parents=True, exist_ok=True)
-    snapshot_path = snapshots / f"{identifier}.json"
+    snapshot_path = _contained_path(root, "snapshots", f"{identifier}.json")
     encoded = canonical_snapshot(payload)
     try:
         descriptor = os.open(snapshot_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -206,20 +226,20 @@ def store_snapshot(contract: FactoryContract) -> tuple[str, Path]:
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
-    _atomic_write(root / "active", f"{identifier}\n".encode())
+    _atomic_write(_contained_path(root, "active"), f"{identifier}\n".encode())
     return identifier, snapshot_path
 
 
 def load_active_snapshot(name: str) -> tuple[str, Path, dict[str, Any]]:
     name = _simple_name("factory name", name)
-    root = factories_dir() / name
+    root = _factory_root(name)
     try:
-        identifier = (root / "active").read_text().strip()
+        identifier = _contained_path(root, "active").read_text().strip()
     except OSError as exc:
         raise FactoryContractError(f"factory {name!r} has no applied snapshot") from exc
     if re.fullmatch(r"[0-9a-f]{64}", identifier) is None:
         raise FactoryContractError(f"factory {name!r} has an invalid active snapshot pointer")
-    path = root / "snapshots" / f"{identifier}.json"
+    path = _contained_path(root, "snapshots", f"{identifier}.json")
     try:
         payload = json.loads(path.read_text())
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
