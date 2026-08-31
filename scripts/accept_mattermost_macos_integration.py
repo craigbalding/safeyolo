@@ -19,6 +19,7 @@ import sys
 import tempfile
 import tomllib
 import traceback
+from collections.abc import Sequence
 from pathlib import Path
 
 from safeyolo.coord import api as coord_api
@@ -66,20 +67,34 @@ def _exception_chain(exc: BaseException) -> list[BaseException]:
     return chain
 
 
-def _print_failure(step: int, label: str, exc: BaseException) -> None:
+def _sanitize_diagnostic(value: str, secrets: Sequence[str]) -> str:
+    for secret in sorted({item for item in secrets if item}, key=len, reverse=True):
+        value = value.replace(secret, "[REDACTED]")
+    return value
+
+
+def _print_failure(step: int, label: str, exc: BaseException, *, secrets: Sequence[str] = ()) -> None:
     code = f"MM_MACOS_INTEGRATION_STEP_{step}_{type(exc).__name__.upper()}"
-    print(f"FAIL {step}: {label} ({type(exc).__name__}) code={code}", file=sys.stderr, flush=True)
+    summary = _sanitize_diagnostic(
+        f"FAIL {step}: {label} ({type(exc).__name__}) code={code}",
+        secrets,
+    )
+    print(summary, file=sys.stderr, flush=True)
     for depth, item in enumerate(_exception_chain(exc)):
         if isinstance(item, sqlite3.Error):
             sqlite_code = getattr(item, "sqlite_errorcode", "unknown")
             sqlite_name = getattr(item, "sqlite_errorname", "unknown")
             print(
-                f"SQLITE depth={depth} code={sqlite_code} name={sqlite_name} message={item}",
+                _sanitize_diagnostic(
+                    f"SQLITE depth={depth} code={sqlite_code} name={sqlite_name} message={item}",
+                    secrets,
+                ),
                 file=sys.stderr,
                 flush=True,
             )
     print("DIAGNOSTIC TRACEBACK BEGIN", file=sys.stderr, flush=True)
-    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    diagnostic = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    print(_sanitize_diagnostic(diagnostic, secrets), file=sys.stderr, end="", flush=True)
     print("DIAGNOSTIC TRACEBACK END", file=sys.stderr, flush=True)
 
 
@@ -205,13 +220,20 @@ def _write_disposable_config(config: MattermostConfig, path: Path, state_file: P
         os.close(fd)
 
 
-def _run_local_diagnostic(command: list[str], *, timeout: int) -> int:
-    return subprocess.run(
+def _run_local_diagnostic(command: list[str], *, timeout: int, secrets: Sequence[str] = ()) -> int:
+    result = subprocess.run(
         command,
         stdin=subprocess.DEVNULL,
         check=False,
+        capture_output=True,
+        text=True,
         timeout=timeout,
-    ).returncode
+    )
+    if result.stdout:
+        print(_sanitize_diagnostic(result.stdout, secrets), end="", flush=True)
+    if result.stderr:
+        print(_sanitize_diagnostic(result.stderr, secrets), end="", file=sys.stderr, flush=True)
+    return result.returncode
 
 
 async def _append_rendering_fixture(config: MattermostConfig) -> tuple[str, int]:
@@ -321,6 +343,7 @@ def main() -> int:
     root: Path | None = None
     root_identity: tuple[int, int] | None = None
     current_step, current_label = 0, "preflight"
+    diagnostic_secrets: tuple[str, ...] = ()
     succeeded = False
     try:
         if sys.platform != "darwin":
@@ -329,6 +352,7 @@ def main() -> int:
         source_path = _private_regular_config(args.test_config_copy)
         source = load_config(source_path)
         _validate_test_source(source_path, source)
+        diagnostic_secrets = (read_bot_token(source.bot_token_file),)
         if not args.confirm_dedicated_test_channel:
             raise AcceptanceError("dedicated test-channel confirmation is required")
 
@@ -362,7 +386,9 @@ def main() -> int:
         current_step, current_label = 8, "real mattermost check with disposable state/config"
         if (
             _run_local_diagnostic(
-                [str(cli), "coord", "mattermost", "check", "--config", str(temp_config)], timeout=90
+                [str(cli), "coord", "mattermost", "check", "--config", str(temp_config)],
+                timeout=90,
+                secrets=diagnostic_secrets,
             )
             != 0
         ):
@@ -372,7 +398,9 @@ def main() -> int:
         current_step, current_label = 9, "real mattermost baseline run --once on dedicated test mapping"
         if (
             _run_local_diagnostic(
-                [str(cli), "coord", "mattermost", "run", "--once", "--config", str(temp_config)], timeout=180
+                [str(cli), "coord", "mattermost", "run", "--once", "--config", str(temp_config)],
+                timeout=180,
+                secrets=diagnostic_secrets,
             )
             != 0
         ):
@@ -383,7 +411,9 @@ def main() -> int:
         msg_id, sequence = asyncio.run(_append_rendering_fixture(source))
         if (
             _run_local_diagnostic(
-                [str(cli), "coord", "mattermost", "run", "--once", "--config", str(temp_config)], timeout=180
+                [str(cli), "coord", "mattermost", "run", "--once", "--config", str(temp_config)],
+                timeout=180,
+                secrets=diagnostic_secrets,
             )
             != 0
         ):
@@ -401,7 +431,7 @@ def main() -> int:
         )
         succeeded = True
     except (AcceptanceError, MattermostAdapterError, OSError, sqlite3.Error, subprocess.SubprocessError) as exc:
-        _print_failure(current_step, current_label, exc)
+        _print_failure(current_step, current_label, exc, secrets=diagnostic_secrets)
     finally:
         succeeded = _cleanup(root, root_identity) and succeeded
     return 0 if succeeded else 1

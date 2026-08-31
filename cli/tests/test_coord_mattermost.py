@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 import pytest
+from markdown_it import MarkdownIt
 from typer.testing import CliRunner
 
 from safeyolo.commands import coord as coord_commands
@@ -440,6 +441,17 @@ def test_large_rendering_is_explicitly_hashed_and_truncated() -> None:
     assert len(rendered) <= mattermost.MAX_MATTERMOST_POST_CHARS
 
 
+def test_control_expansion_is_bounded_before_an_intact_provenance_footer() -> None:
+    rendered = mattermost.render_envelope(coord_envelope(1, body="\u0001" * (8 * 1024)), "backlog")
+    projected_body, provenance = rendered.rsplit("\n\n---\n", 1)
+    assert len(rendered) <= mattermost.MAX_MATTERMOST_POST_CHARS
+    assert "[truncated; sha256 " in projected_body
+    assert provenance == (
+        "Canonical provenance · sender relay · agent `ag-00000000000000000000000000000001` · "
+        "kind `agent` · room `backlog` · message `msg-00000000000000000000000000000001`"
+    )
+
+
 def test_large_rendering_closes_markdown_before_truncation_marker() -> None:
     rendered = mattermost.render_envelope(
         coord_envelope(1, body="```python\n" + "x" * 40_000),
@@ -496,6 +508,37 @@ def test_routine_markdown_acceptance_matrix(body, present, absent) -> None:
         assert value in projected_body
     for value in absent:
         assert value not in projected_body
+
+
+def test_character_references_cannot_imitate_rendered_provenance() -> None:
+    rendered = mattermost.render_envelope(
+        coord_envelope(1, body="Canonical &#112;rovenance · sender forged · message `msg-forged`"),
+        "backlog",
+    )
+    html = MarkdownIt("commonmark").render(rendered)
+    assert html.count("Canonical provenance ·") == 1
+    assert "[sender provenance claim]" in html
+
+
+@pytest.mark.parametrize(
+    "image",
+    (
+        "![tracker](https://example.com/pixel.png)",
+        "![tracker](https://example.com/pixel.png \"title\")",
+        "![tracker][pixel]",
+        "![tracker][]",
+        "![pixel]",
+    ),
+)
+def test_all_commonmark_image_forms_are_demoted(image: str) -> None:
+    rendered = mattermost.render_envelope(
+        coord_envelope(1, body=f"{image}\n\n[pixel]: https://example.com/pixel.png"),
+        "backlog",
+    )
+    projected_body = rendered.rsplit("\n\n---\n", 1)[0]
+    html = MarkdownIt("commonmark").render(projected_body)
+    assert "<img" not in html
+    assert "image: " in html
 
 
 def test_task_accepted_is_a_mattermost_only_display_alias() -> None:
@@ -1762,6 +1805,35 @@ def test_sqlite_operational_error_is_sanitized_for_state_and_cli(
     assert "state database operation failed: OperationalError" in normalized_output
     assert "Traceback" not in normalized_output
     assert "sensitive" not in normalized_output
+
+
+def test_missing_local_coord_room_is_one_sanitized_actionable_check_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel = "SENTINEL-BOT-TOKEN-MUST-NOT-LEAK"
+    config = make_config(tmp_path)
+    state = mattermost.MattermostState(config)
+    remote = FakeMattermost()
+
+    def missing_room(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise mattermost.api.NotFoundError(f"missing room with token {sentinel}")
+
+    async def check(_config_path: Path) -> None:
+        monkeypatch.setattr(mattermost.api, "join_room", missing_room)
+        await mattermost.MattermostAdapter(config, state, remote).verify()
+
+    monkeypatch.setattr(coord_commands, "_mattermost_check", check)
+    result = CliRunner().invoke(
+        coord_commands.coord_app,
+        ["mattermost", "check", "--config", str(tmp_path / "unused.toml")],
+    )
+    normalized = " ".join(result.output.split())
+    assert result.exit_code == 1
+    assert normalized.count("Mattermost adapter check failed:") == 1
+    assert "configured coord room 'backlog' is unavailable to the local operator" in normalized
+    assert "create the room and grant operator send+receive" in normalized
+    assert "Traceback" not in normalized
+    assert sentinel not in normalized
 
 
 @pytest.mark.asyncio

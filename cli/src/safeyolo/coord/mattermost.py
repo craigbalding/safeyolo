@@ -1346,7 +1346,13 @@ class MattermostAdapter:
             # A read proves the bot token can observe the mapped channel without
             # creating trial traffic. --once exercises create permission.
             await self.client.get_posts(mapping.channel_id, per_page=1)
-            membership = api.join_room(mapping.coord_room, "operator", "operator")
+            try:
+                membership = api.join_room(mapping.coord_room, "operator", "operator")
+            except api.NotFoundError:
+                raise MattermostAdapterError(
+                    f"configured coord room {mapping.coord_room!r} is unavailable to the local operator; "
+                    "create the room and grant operator send+receive before running this check"
+                ) from None
             permissions = membership.get("permissions", [])
             if not isinstance(permissions, list) or not {"send", "receive"}.issubset(permissions):
                 raise MattermostAdapterError(f"local coord operator lacks send+receive on {mapping.coord_room!r}")

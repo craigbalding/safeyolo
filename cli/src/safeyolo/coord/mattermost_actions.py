@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import ipaddress
 import json
 import re
@@ -375,7 +376,52 @@ def _truncate_markdown_source(value: str, maximum: int) -> tuple[str, str | None
     return prefix, f"[truncated; sha256 {digest}]"
 
 
-def sanitize_mattermost_markdown(value: str, *, maximum: int = 8 * 1024) -> str:
+def _close_truncated_markdown(rendered: str, maximum: int | None = None) -> str:
+    """Close active tail syntax, optionally within an exact character bound."""
+
+    def close(prefix: str) -> str:
+        # Do not leave half of a visible control escape at the cut point.
+        prefix = re.sub(r"\\u[0-9a-fA-F]{0,3}$", "", prefix)
+        if prefix.endswith("\\"):
+            prefix = prefix[:-1]
+        tail_lines = prefix.split("\n")
+        tail = tail_lines[-1]
+        if tail.count("[") != tail.count("]") or tail.count("(") != tail.count(")"):
+            tail_lines[-1] = re.sub(r"([!\[\]()])", r"\\\1", tail)
+            prefix = "\n".join(tail_lines)
+        fence_count = sum(1 for line in prefix.splitlines() if re.match(r"^[ \t]*```", line))
+        if fence_count % 2:
+            prefix += "\n```"
+        if prefix.count("`") % 2:
+            prefix += "`"
+        return prefix
+
+    if maximum is None:
+        return close(rendered)
+    prefix = rendered[:maximum]
+    for _ in range(32):
+        closed = close(prefix)
+        if len(closed) <= maximum:
+            return closed
+        overflow = len(closed) - maximum
+        prefix = prefix[: max(0, len(prefix) - max(1, (overflow + 1) // 2))]
+    return ""
+
+
+def _finish_truncated_markdown(rendered: str, marker: str, *, maximum: int | None = None) -> str:
+    suffix = f"\n\n{marker}"
+    if maximum is None:
+        return _close_truncated_markdown(rendered) + suffix
+    prefix_limit = max(0, maximum - len(suffix))
+    return _close_truncated_markdown(rendered[:prefix_limit], prefix_limit) + suffix
+
+
+def sanitize_mattermost_markdown(
+    value: str,
+    *,
+    maximum: int = 8 * 1024,
+    output_maximum: int | None = None,
+) -> str:
     """Keep useful Markdown while removing Mattermost side-effect syntax.
 
     Newlines, headings, lists, code, and ordinary HTTPS links survive. The
@@ -384,7 +430,12 @@ def sanitize_mattermost_markdown(value: str, *, maximum: int = 8 * 1024) -> str:
     provenance boundary added by :func:`compact_fallback`.
     """
 
+    original = value
     value, truncation = _truncate_markdown_source(value, maximum)
+    # Mattermost/CommonMark decodes character references before rendering.
+    # Normalize them before every syntax and provenance check so an entity
+    # cannot recreate active syntax after this sanitizer has inspected it.
+    value = html.unescape(value)
     value = value.replace("\r\n", "\n")
     result: list[str] = []
     for char in value:
@@ -402,6 +453,11 @@ def sanitize_mattermost_markdown(value: str, *, maximum: int = 8 * 1024) -> str:
         else:
             result.append(char)
     rendered = "".join(result)
+    # Every CommonMark image form starts with this opener: inline, full
+    # reference, collapsed reference, and shortcut reference. Demoting the
+    # opener before link handling preserves readable alt text and references
+    # while making an image token structurally impossible.
+    rendered = rendered.replace("![", "[image: ")
     rendered = _MARKDOWN_LINK_RE.sub(_sanitize_markdown_link, rendered)
     rendered = _CHANNEL_LINK_RE.sub("～", rendered)
     rendered = _UNSAFE_SCHEME_RE.sub(lambda match: match.group(0).replace(":", r"\:"), rendered)
@@ -414,20 +470,15 @@ def sanitize_mattermost_markdown(value: str, *, maximum: int = 8 * 1024) -> str:
     rendered = "\n".join(lines)
     rendered = _TASK_ACCEPTED_RE.sub("TASK ACCEPTED", rendered, count=1)
 
-    # Never end a truncated post inside a fenced or inline code span. This is
-    # deliberately conservative; completed source keeps its original syntax.
     if truncation is not None:
-        tail_lines = rendered.split("\n")
-        tail = tail_lines[-1]
-        if tail.count("[") != tail.count("]") or tail.count("(") != tail.count(")"):
-            tail_lines[-1] = re.sub(r"([!\[\]()])", r"\\\1", tail)
-            rendered = "\n".join(tail_lines)
-        fence_count = sum(1 for line in rendered.splitlines() if re.match(r"^[ \t]*```", line))
-        if fence_count % 2:
-            rendered += "\n```"
-        if rendered.count("`") % 2:
-            rendered += "`"
-        rendered += f"\n\n{truncation}"
+        rendered = _finish_truncated_markdown(rendered, truncation)
+    if output_maximum is not None and len(rendered) > output_maximum:
+        digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:16]
+        rendered = _finish_truncated_markdown(
+            rendered,
+            f"[truncated; sha256 {digest}]",
+            maximum=output_maximum,
+        )
     return rendered
 
 
@@ -447,11 +498,11 @@ def compact_fallback(envelope: Mapping[str, Any], room: str) -> str:
         f"room `{_strict_single_line(room, maximum=128)}` · "
         f"message `{_strict_single_line(str(msg_id), maximum=96)}`"
     )
-    rendered = f"{sanitize_mattermost_markdown(body)}\n\n---\n{provenance}"
-    if len(rendered) > 13_500:
-        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
-        rendered = rendered[:13_400] + f"… [truncated; sha256 {digest}]"
-    return rendered
+    separator = "\n\n---\n"
+    maximum = 13_500
+    body_maximum = maximum - len(separator) - len(provenance)
+    projected_body = sanitize_mattermost_markdown(body, output_maximum=body_maximum)
+    return f"{projected_body}{separator}{provenance}"
 
 
 def semantic_attachment(
