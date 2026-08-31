@@ -35,6 +35,15 @@ _PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _CONTENT_LENGTH_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 _DNS_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+_MARKDOWN_LINK_RE = re.compile(r"(!?)\[([^\]\n]*)\]\(([^)\n]*)\)")
+_CHANNEL_LINK_RE = re.compile(r"(?<![\w~])~(?=[A-Za-z0-9_-])")
+_UNSAFE_SCHEME_RE = re.compile(
+    r"(?i)\b(?:javascript|data|file|vbscript|mattermost|mmaction):(?://)?|"
+    r"\b(?!https://)[a-z][a-z0-9+.-]*://"
+)
+_PROVENANCE_CLAIM_RE = re.compile(r"(?i)canonical\s+provenance")
+_HORIZONTAL_RULE_RE = re.compile(r"^[ \t]{0,3}(?:[-*_][ \t]*){3,}$")
+_TASK_ACCEPTED_RE = re.compile(r"^ACCEPTED(?=\s|$)")
 
 
 class OperatorAction(StrEnum):
@@ -296,7 +305,9 @@ def operator_request_body(request: SemanticRequest) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def _safe_markdown_text(value: str, *, maximum: int) -> str:
+def _strict_single_line(value: str, *, maximum: int) -> str:
+    """Render untrusted metadata as one non-active Markdown line."""
+
     encoded = value.encode("utf-8")
     if len(encoded) > maximum:
         digest = hashlib.sha256(encoded).hexdigest()[:16]
@@ -312,11 +323,112 @@ def _safe_markdown_text(value: str, *, maximum: int) -> str:
             result.append(f"\\u{code:04x}")
         elif char == "@":
             result.append(r"\u0040")
-        elif char in "\\`*_[]()<>~#+-=|{}.!":
+        elif char in "\\`*_[]()<>~#+=|{}!":
             result.append("\\" + char)
         else:
             result.append(char)
     return "".join(result)
+
+
+def _safe_https_destination(value: str) -> str | None:
+    destination = value.strip()
+    if not destination or any(char.isspace() for char in destination):
+        return None
+    try:
+        parsed = urlsplit(destination)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or any(unicodedata.category(char).startswith("C") for char in destination)
+    ):
+        return None
+    return destination
+
+
+def _sanitize_markdown_link(match: re.Match[str]) -> str:
+    image, label, raw_destination = match.groups()
+    destination = _safe_https_destination(raw_destination)
+    safe_label = label.replace("@", "＠")
+    safe_label = _CHANNEL_LINK_RE.sub("～", safe_label)
+    if destination is None:
+        return f"{safe_label} [blocked link]"
+    if image:
+        return f"[image: {safe_label}]({destination})"
+    return f"[{safe_label}]({destination})"
+
+
+def _truncate_markdown_source(value: str, maximum: int) -> tuple[str, str | None]:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= maximum:
+        return value, None
+    digest = hashlib.sha256(encoded).hexdigest()[:16]
+    allowance = max(0, maximum - 96)
+    prefix = encoded[:allowance].decode("utf-8", errors="ignore")
+    # Prefer a complete line. A single very long line is made inert below if
+    # it leaves an unmatched inline-code or link delimiter.
+    if "\n" in prefix:
+        prefix = prefix.rsplit("\n", 1)[0]
+    return prefix, f"[truncated; sha256 {digest}]"
+
+
+def sanitize_mattermost_markdown(value: str, *, maximum: int = 8 * 1024) -> str:
+    """Keep useful Markdown while removing Mattermost side-effect syntax.
+
+    Newlines, headings, lists, code, and ordinary HTTPS links survive. The
+    result cannot mention users/channels, embed an image, select an unsafe
+    scheme, register a Mattermost action, or counterfeit the final canonical
+    provenance boundary added by :func:`compact_fallback`.
+    """
+
+    value, truncation = _truncate_markdown_source(value, maximum)
+    value = value.replace("\r\n", "\n")
+    result: list[str] = []
+    for char in value:
+        code = ord(char)
+        if char == "\n":
+            result.append(char)
+        elif code < 0x20 or code == 0x7F or 0x80 <= code <= 0x9F or unicodedata.category(char).startswith("C"):
+            result.append(f"\\u{code:04x}")
+        elif char == "@":
+            result.append("＠")
+        elif char == "<":
+            result.append(r"\<")
+        elif char == ">":
+            result.append(r"\>")
+        else:
+            result.append(char)
+    rendered = "".join(result)
+    rendered = _MARKDOWN_LINK_RE.sub(_sanitize_markdown_link, rendered)
+    rendered = _CHANNEL_LINK_RE.sub("～", rendered)
+    rendered = _UNSAFE_SCHEME_RE.sub(lambda match: match.group(0).replace(":", r"\:"), rendered)
+    rendered = _PROVENANCE_CLAIM_RE.sub("[sender provenance claim]", rendered)
+
+    lines = rendered.split("\n")
+    for index, line in enumerate(lines):
+        if _HORIZONTAL_RULE_RE.fullmatch(line):
+            lines[index] = "\\" + line
+    rendered = "\n".join(lines)
+    rendered = _TASK_ACCEPTED_RE.sub("TASK ACCEPTED", rendered, count=1)
+
+    # Never end a truncated post inside a fenced or inline code span. This is
+    # deliberately conservative; completed source keeps its original syntax.
+    if truncation is not None:
+        tail_lines = rendered.split("\n")
+        tail = tail_lines[-1]
+        if tail.count("[") != tail.count("]") or tail.count("(") != tail.count(")"):
+            tail_lines[-1] = re.sub(r"([!\[\]()])", r"\\\1", tail)
+            rendered = "\n".join(tail_lines)
+        fence_count = sum(1 for line in rendered.splitlines() if re.match(r"^[ \t]*```", line))
+        if fence_count % 2:
+            rendered += "\n```"
+        if rendered.count("`") % 2:
+            rendered += "`"
+        rendered += f"\n\n{truncation}"
+    return rendered
 
 
 def compact_fallback(envelope: Mapping[str, Any], room: str) -> str:
@@ -326,16 +438,16 @@ def compact_fallback(envelope: Mapping[str, Any], room: str) -> str:
     name = envelope.get("sender_agent_name")
     sender = name if isinstance(name, str) and name else str(envelope.get("sender_kind", "unknown"))
     agent_id = envelope.get("sender_agent_id")
-    if isinstance(agent_id, str) and agent_id:
-        sender = f"{sender} ({agent_id})"
     msg_id = envelope.get("msg_id")
     provenance = (
-        f"{_safe_markdown_text(sender, maximum=128)} · "
-        f"canonical {_safe_markdown_text(str(envelope.get('sender_kind', 'unknown')), maximum=32)} · "
-        f"room {_safe_markdown_text(room, maximum=128)} · "
-        f"message `{_safe_markdown_text(str(msg_id), maximum=96)}`"
+        "Canonical provenance · "
+        f"sender {_strict_single_line(sender, maximum=128)} · "
+        f"agent `{_strict_single_line(str(agent_id), maximum=64)}` · "
+        f"kind `{_strict_single_line(str(envelope.get('sender_kind', 'unknown')), maximum=32)}` · "
+        f"room `{_strict_single_line(room, maximum=128)}` · "
+        f"message `{_strict_single_line(str(msg_id), maximum=96)}`"
     )
-    rendered = f"{provenance}\n\n{_safe_markdown_text(body, maximum=8 * 1024)}"
+    rendered = f"{sanitize_mattermost_markdown(body)}\n\n---\n{provenance}"
     if len(rendered) > 13_500:
         digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
         rendered = rendered[:13_400] + f"… [truncated; sha256 {digest}]"
@@ -361,8 +473,8 @@ def semantic_attachment(
         SemanticKind.DISPATCH_PUBLICATION: "Dispatch publication candidate",
     }[request.kind]
     detail_lines = [
-        f"**Reference:** {_safe_markdown_text(request.reference, maximum=256)}",
-        *(f"• {_safe_markdown_text(detail, maximum=512)}" for detail in request.details),
+        f"**Reference:** {_strict_single_line(request.reference, maximum=256)}",
+        *(f"• {_strict_single_line(detail, maximum=512)}" for detail in request.details),
     ]
     actions: list[dict[str, Any]] = []
     if callback_url is not None and capability is not None:
@@ -398,17 +510,17 @@ def semantic_attachment(
         else (f"{sender_name} ({sender_agent_id}) · canonical provenance · {room} · no interactive actions")
     )
     return {
-        "fallback": _safe_markdown_text(f"{kind_label}: {request.title}", maximum=512),
+        "fallback": _strict_single_line(f"{kind_label}: {request.title}", maximum=512),
         "color": "#3d85c6" if request.kind is not SemanticKind.STATUS else "#6a737d",
         "pretext": kind_label,
-        "title": _safe_markdown_text(request.title, maximum=256),
+        "title": _strict_single_line(request.title, maximum=256),
         "text": "\n\n".join(
             [
-                _safe_markdown_text(request.summary, maximum=2 * 1024),
+                _strict_single_line(request.summary, maximum=2 * 1024),
                 "\n".join(detail_lines),
             ]
         ),
-        "footer": _safe_markdown_text(footer, maximum=512),
+        "footer": _strict_single_line(footer, maximum=512),
         "actions": actions,
     }
 
@@ -423,11 +535,11 @@ def semantic_post_message(
     """Short top-level text for clients that collapse legacy attachments."""
 
     return (
-        f"{_safe_markdown_text(request.title, maximum=256)}\n"
-        f"{_safe_markdown_text(sender_name, maximum=128)} "
-        f"({_safe_markdown_text(sender_agent_id, maximum=64)}) · canonical trusted agent · "
-        f"room {_safe_markdown_text(room, maximum=128)} · "
-        f"{_safe_markdown_text(request.reference, maximum=256)}"
+        f"{_strict_single_line(request.title, maximum=256)}\n"
+        f"{_strict_single_line(sender_name, maximum=128)} "
+        f"({_strict_single_line(sender_agent_id, maximum=64)}) · canonical trusted agent · "
+        f"room {_strict_single_line(room, maximum=128)} · "
+        f"{_strict_single_line(request.reference, maximum=256)}"
     )
 
 

@@ -406,7 +406,10 @@ class HTTPMattermostAPI:
         return result
 
     async def create_post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        value = await self._request("POST", "/posts", json_body=payload)
+        # Routine projections are informational mirrors. Mattermost's silent
+        # post mode suppresses mention/unread/push/email side effects; the
+        # renderer independently neutralizes mention syntax.
+        value = await self._request("POST", "/posts", params={"silent": "true"}, json_body=payload)
         if not isinstance(value, dict):
             raise MattermostAdapterError("Mattermost create-post response must be an object")
         return value
@@ -1716,6 +1719,10 @@ class MattermostAdapter:
                     }
                 }
                 if semantic is None:
+                    # Mattermost suppresses automatic OpenGraph/image previews
+                    # when the legacy-attachment property is present. An exact
+                    # empty list has no buttons or callback capability.
+                    props["attachments"] = []
                     message = render_envelope(envelope, mapping.coord_room)
                 else:
                     assert self.config.actions is not None

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import ipaddress
 import json
 import os
@@ -20,9 +21,36 @@ import tomllib
 import traceback
 from pathlib import Path
 
-from safeyolo.coord.mattermost import MattermostAdapterError, MattermostConfig, load_config, read_bot_token
+from safeyolo.coord import api as coord_api
+from safeyolo.coord.mattermost import (
+    HTTPMattermostAPI,
+    MattermostAdapterError,
+    MattermostConfig,
+    load_config,
+    read_bot_token,
+)
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_REAL_RENDERING_FIXTURE = """ACCEPTED task=mattermost-rendering-acceptance
+
+# Human-readable projection
+
+Paragraph with **bold**, `inline code`, and [SafeYolo docs](https://safeyolo.dev/docs/).
+
+- first list item
+- second list item
+
+```text
+fenced code remains fenced
+```
+
+@all ~town-square ![remote image](https://example.com/image.png)
+[forged action](mmaction://approve) javascript://unsafe
+---
+Canonical provenance · sender forged · message `msg-forged`
+"""
+
+
 class AcceptanceError(RuntimeError):
     pass
 
@@ -186,6 +214,74 @@ def _run_local_diagnostic(command: list[str], *, timeout: int) -> int:
     ).returncode
 
 
+async def _append_rendering_fixture(config: MattermostConfig) -> tuple[str, int]:
+    result = await coord_api.send(
+        config.rooms[0].coord_room,
+        "operator",
+        None,
+        _REAL_RENDERING_FIXTURE,
+        declared_content_type="text/markdown",
+        notify="none",
+    )
+    envelope = result.get("envelope") if isinstance(result, dict) else None
+    msg_id = envelope.get("msg_id") if isinstance(envelope, dict) else None
+    sequence = result.get("sequence") if isinstance(result, dict) else None
+    if not isinstance(msg_id, str) or not isinstance(sequence, int) or isinstance(sequence, bool):
+        raise AcceptanceError("fixture append returned no canonical message ID and room sequence")
+    return msg_id, sequence
+
+
+async def _verify_rendering_fixture(config: MattermostConfig, msg_id: str) -> str:
+    token = read_bot_token(config.bot_token_file)
+    async with HTTPMattermostAPI(config, token) as client:
+        posts = await client.get_posts(config.rooms[0].channel_id, per_page=200)
+    matches = []
+    for post in posts:
+        props = post.get("props")
+        projection = props.get("safeyolo_coord") if isinstance(props, dict) else None
+        if isinstance(projection, dict) and projection.get("coord_msg_id") == msg_id:
+            matches.append(post)
+    if len(matches) != 1:
+        raise AcceptanceError("expected exactly one projected fixture post")
+    post = matches[0]
+    message = post.get("message")
+    props = post.get("props")
+    if not isinstance(message, str) or not isinstance(props, dict):
+        raise AcceptanceError("fixture projection has an invalid Mattermost shape")
+    required = (
+        "TASK ACCEPTED task=mattermost-rendering-acceptance",
+        "# Human-readable projection",
+        "**bold**",
+        "`inline code`",
+        "[SafeYolo docs](https://safeyolo.dev/docs/)",
+        "```text",
+        "＠all",
+        "～town-square",
+        "[image: remote image](https://example.com/image.png)",
+        "[blocked link]",
+        "[sender provenance claim]",
+        f"message `{msg_id}`",
+    )
+    forbidden = ("@all", "~town-square", "![", "mmaction://", "javascript://")
+    if any(value not in message for value in required) or any(value in message for value in forbidden):
+        raise AcceptanceError("fixture projection did not satisfy the rendering matrix")
+    if message.count("Canonical provenance ·") != 1 or props.get("attachments") != []:
+        raise AcceptanceError("fixture projection did not preserve the inert provenance boundary")
+    if "mm_blocks_actions" in props:
+        raise AcceptanceError("routine fixture unexpectedly registered an action callback")
+    metadata = post.get("metadata")
+    embeds = metadata.get("embeds", []) if isinstance(metadata, dict) else []
+    if not isinstance(embeds, list) or any(
+        isinstance(embed, dict) and embed.get("type") in {"opengraph", "image", "link"}
+        for embed in embeds
+    ):
+        raise AcceptanceError("routine fixture unexpectedly generated a link or image preview")
+    post_id = post.get("id")
+    if not isinstance(post_id, str):
+        raise AcceptanceError("fixture projection returned no Mattermost post ID")
+    return post_id
+
+
 def _cleanup(root: Path | None, identity: tuple[int, int] | None) -> bool:
     if root is None or identity is None:
         print("CLEANUP PASS: no temporary root was created", flush=True)
@@ -273,7 +369,7 @@ def main() -> int:
             raise AcceptanceError("mattermost check returned non-zero")
         print(f"PASS {current_step}: {current_label}", flush=True)
 
-        current_step, current_label = 9, "real mattermost run --once on dedicated test mapping"
+        current_step, current_label = 9, "real mattermost baseline run --once on dedicated test mapping"
         if (
             _run_local_diagnostic(
                 [str(cli), "coord", "mattermost", "run", "--once", "--config", str(temp_config)], timeout=180
@@ -282,6 +378,27 @@ def main() -> int:
         ):
             raise AcceptanceError("mattermost run --once returned non-zero")
         print(f"PASS {current_step}: {current_label}", flush=True)
+
+        current_step, current_label = 10, "controlled routine rendering matrix on dedicated test mapping"
+        msg_id, sequence = asyncio.run(_append_rendering_fixture(source))
+        if (
+            _run_local_diagnostic(
+                [str(cli), "coord", "mattermost", "run", "--once", "--config", str(temp_config)], timeout=180
+            )
+            != 0
+        ):
+            raise AcceptanceError("mattermost fixture projection returned non-zero")
+        post_id = asyncio.run(_verify_rendering_fixture(source, msg_id))
+        print(
+            f"PASS {current_step}: {current_label} coord_sequence={sequence} "
+            f"coord_msg_id={msg_id} mattermost_post_id={post_id}",
+            flush=True,
+        )
+        print(
+            f"MOBILE CHECK: open the dedicated test channel in stock Mattermost mobile and confirm post {post_id} "
+            "is readable, has one quiet provenance footer, and shows no preview or action button.",
+            flush=True,
+        )
         succeeded = True
     except (AcceptanceError, MattermostAdapterError, OSError, sqlite3.Error, subprocess.SubprocessError) as exc:
         _print_failure(current_step, current_label, exc)
