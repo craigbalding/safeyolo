@@ -46,7 +46,15 @@ def _load_file_or_exit(path: Path) -> FactoryContract:
 def _print_contract(contract: FactoryContract) -> None:
     console.print(f"factory={contract.name} schema=safeyolo.factory/v1 room={contract.room}")
     for role in contract.roles:
-        console.print(f"role={role.name} agent={role.agent} contract={role.contract} sha256={role.contract_sha256}")
+        console.print(
+            f"role={role.name} agent={role.agent} contract={role.contract} "
+            f"source={role.contract_source} bytes={role.contract_bytes} "
+            f"sha256={role.contract_sha256}"
+        )
+    console.print(
+        f"operator_input=operator to={contract.operator_input.destination} "
+        f"types={','.join(contract.operator_input.types)}"
+    )
     for handoff in contract.handoffs:
         responses = ",".join(handoff.responses)
         console.print(f"handoff={handoff.request} from={handoff.source} to={handoff.destination} responses={responses}")
@@ -90,11 +98,29 @@ def run_factory(name: str = typer.Argument(..., help="Applied factory name")) ->
     """Configure and start all existing supervised agents in a snapshot."""
     try:
         identifier, snapshot_path, payload = load_active_snapshot(name)
+        _print_snapshot(identifier, snapshot_path, payload)
         _run_snapshot(snapshot_path, payload)
     except FactoryContractError as exc:
         console.print(f"[red]Cannot run factory:[/red] {exc}")
         raise typer.Exit(1) from exc
     console.print(f"[green]Started factory {name} snapshot={identifier}[/green]")
+
+
+def _print_snapshot(identifier: str, snapshot_path: Path, payload: dict[str, Any]) -> None:
+    console.print(
+        f"factory={payload['name']} schema={payload['schema']} room={payload['room']} "
+        f"snapshot={identifier} snapshot_path={snapshot_path}"
+    )
+    for role_name, role in payload["roles"].items():
+        console.print(
+            f"role={role_name} agent={role['agent']} contract={role['contract']} "
+            f"bytes={role['contract_bytes']} sha256={role['contract_sha256']}"
+        )
+    operator_input = payload["operator_input"]
+    console.print(
+        f"operator_input=operator to={operator_input['to']} "
+        f"types={','.join(operator_input['types'])}"
+    )
 
 
 def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:

@@ -307,6 +307,89 @@ def test_targeting_visibility_feed_and_compatibility(attention_env):
     asyncio.run(scenario())
 
 
+def test_operator_targeting_is_selective_validated_and_restart_safe(attention_env):
+    async def scenario() -> None:
+        await _room("operator-target", operator=True)
+
+        targeted = await api.send(
+            "operator-target",
+            "operator",
+            None,
+            "operator to bob",
+            notify=["bob"],
+        )
+        bob_page = await api.wait_for_attention(
+            AGENTS["bob"], since_sequence=0, timeout_seconds=0.1
+        )
+        bob_edge = _edge_for(bob_page, targeted["envelope"]["msg_id"])
+        assert bob_edge is not None
+        for name in ("alice", "codey"):
+            page = await api.wait_for_attention(
+                AGENTS[name], since_sequence=0, timeout_seconds=0.05
+            )
+            assert _edge_for(page, targeted["envelope"]["msg_id"]) is None
+
+        broadcast = await api.send(
+            "operator-target",
+            "operator",
+            None,
+            "operator to room",
+            notify="room",
+        )
+        for name in ("alice", "bob", "codey"):
+            page = await api.wait_for_attention(
+                AGENTS[name], since_sequence=0, timeout_seconds=0.1, limit=20
+            )
+            assert _edge_for(page, broadcast["envelope"]["msg_id"]) is not None
+        canonical = await api.read_attention(
+            AGENTS["bob"], bob_edge["attention_id"]
+        )
+        assert canonical["object"]["sender_kind"] == "operator"
+        assert canonical["object"]["sender_agent_id"] is None
+        assert canonical["object"]["sender_agent_name"] is None
+
+        for target in ("mallory", "dana"):
+            with pytest.raises(attention.AttentionTargetError):
+                await api.send(
+                    "operator-target",
+                    "operator",
+                    None,
+                    "invalid target",
+                    notify=[target],
+                )
+        api.revoke_grant(
+            "operator-target",
+            "agent",
+            AGENTS["bob"],
+            operation_id=new_operation_id(),
+        )
+        with pytest.raises(attention.AttentionTargetError):
+            await api.send(
+                "operator-target",
+                "operator",
+                None,
+                "revoked target",
+                notify=["bob"],
+            )
+
+        nr.stop_server()
+        nats_client.reset_for_tests()
+        nr.start_server(ready_timeout=8.0)
+        history = await api.read_room(
+            "operator-target", "agent", AGENTS["alice"]
+        )
+        retained = next(
+            message
+            for message in history["messages"]
+            if message["msg_id"] == targeted["envelope"]["msg_id"]
+        )
+        assert retained["sender_kind"] == "operator"
+        assert retained["sender_agent_id"] is None
+        assert retained["sender_agent_name"] is None
+
+    asyncio.run(scenario())
+
+
 def test_puback_recovery_generation_concurrency_and_corruption(
     attention_env, monkeypatch
 ):

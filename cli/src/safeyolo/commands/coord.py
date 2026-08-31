@@ -784,6 +784,12 @@ def chat(
     since: int = typer.Option(
         0, "--since", help="Start displaying messages with sequence > SINCE (0 = all).",
     ),
+    to: str | None = typer.Option(
+        None,
+        "--to",
+        metavar="AGENT",
+        help="Notify only this receive-authorized room member when sending.",
+    ),
 ) -> None:
     """Attach to a room as operator. Interactive by default; --observe for read-only tail.
 
@@ -794,6 +800,9 @@ def chat(
     interactive on one, observe on the other.
     """
     api.bootstrap()
+    if observe and to is not None:
+        console.print("[red]--to requires interactive mode[/]")
+        raise typer.Exit(1)
     try:
         api.join_room(room, "operator", "operator")
     except (api.NotFoundError, api.GrantError) as e:
@@ -818,7 +827,7 @@ def chat(
         if observe:
             _observe_loop(runtime, room, cursor)
         else:
-            _interactive_loop(runtime, room, cursor)
+            _interactive_loop(runtime, room, cursor, target=to)
     except (NatsUnavailable, CoordDataError) as e:
         console.print(f"[red]{_explain_coord_failure(e)}[/]")
         raise typer.Exit(1) from None
@@ -1038,7 +1047,13 @@ def _confirm_send(body: str) -> bool:
         return False
 
 
-def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
+def _interactive_loop(
+    runtime: _ChatRuntime,
+    room: str,
+    cursor: int,
+    *,
+    target: str | None = None,
+) -> None:
     console.print(
         "[dim]--- interactive (empty line polls; :paste/:p clipboard, "
         ":edit/:e in $EDITOR, :q to quit) ---[/]"
@@ -1080,7 +1095,13 @@ def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
             if body is not None:
                 try:
                     result = runtime.run(
-                        api.send(room, "operator", None, body, notify="room")
+                        api.send(
+                            room,
+                            "operator",
+                            None,
+                            body,
+                            notify=[target] if target is not None else "room",
+                        )
                     )
                     if result["attention_status"] == "pending":
                         console.print(

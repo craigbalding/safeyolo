@@ -27,6 +27,16 @@ docs = [
 must_contain = "{size_kib} KiB"
 
 [[assertion]]
+name = "factory-operator-control-size-kib"
+source = "contrib/codex-coord-supervisor.py"
+pattern = 'MAX_OPERATOR_CONTROL_BYTES = (?P<size_kib>\d+) \* 1024'
+docs = [
+    "docs/codex-coord-supervisor.md",
+    "docs/factories/backlog-coordinator.md",
+]
+must_contain = "{size_kib} KiB"
+
+[[assertion]]
 name = "factory-proposal-ledger-size-mib"
 source = "cli/src/safeyolo/coord/factory_proposals.py"
 pattern = 'MAX_LEDGER_BYTES = (?P<size_mib>\d+) \* 1024 \* 1024'
