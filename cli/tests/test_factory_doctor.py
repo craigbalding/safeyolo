@@ -650,3 +650,49 @@ def test_read_only_coord_inspection_observes_uncheckpointed_wal(tmp_path, monkey
             for entry in coord_dir.iterdir()
             if (metadata := entry.stat())
         } == before_metadata
+
+
+def test_read_only_coord_inspection_fails_when_wal_has_no_shared_memory(
+    tmp_path, monkeypatch
+):
+    coord_dir = tmp_path / "coord"
+    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(coord_dir))
+    coord_store.init_schema()
+    with coord_store.connect() as writer:
+        writer.execute(
+            "INSERT INTO rooms(room_id, name, created_at) VALUES (?, ?, ?)",
+            ("rm-backlog", "backlog", 1),
+        )
+        writer.execute(
+            """INSERT INTO memberships(
+                   room_id, principal_kind, principal_id, permissions,
+                   history_visibility, granted_at, revoked_at
+               ) VALUES (?, ?, ?, ?, ?, ?, NULL)""",
+            ("rm-backlog", "operator", "operator", "receive,send", "retained", 1),
+        )
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            "UPDATE memberships SET revoked_at = ? WHERE room_id = ?",
+            (2, "rm-backlog"),
+        )
+
+        database_path = coord_store.db_path()
+        wal_path = Path(f"{database_path}-wal")
+        shm_path = Path(f"{database_path}-shm")
+        assert wal_path.stat().st_size > 0
+        shm_path.unlink()
+        before_entries = {entry.name for entry in coord_dir.iterdir()}
+        before_database = database_path.read_bytes()
+        before_wal = wal_path.read_bytes()
+
+        with pytest.raises(
+            coord_store.SchemaError,
+            match="coord WAL exists without its shared-memory index",
+        ):
+            coord_api.inspect_room_access("backlog", [("operator", "operator")])
+
+        assert {entry.name for entry in coord_dir.iterdir()} == before_entries
+        assert database_path.read_bytes() == before_database
+        assert wal_path.read_bytes() == before_wal
+        assert not shm_path.exists()

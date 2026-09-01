@@ -252,7 +252,10 @@ def connect_readonly():
     uri = path.resolve().as_uri() + "?mode=ro"
     wal_path = Path(f"{path}-wal")
     shm_path = Path(f"{path}-shm")
-    if not (wal_path.is_file() and shm_path.is_file()):
+    wal_exists = wal_path.is_file()
+    if wal_exists and not shm_path.is_file():
+        raise SchemaError("coord WAL exists without its shared-memory index")
+    if not wal_exists:
         uri += "&immutable=1"
     conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=10)
     conn.execute("PRAGMA query_only=ON")
