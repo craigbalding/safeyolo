@@ -161,7 +161,8 @@ def factory_runtime(tmp_path, tmp_config_dir, monkeypatch):
         (staged / "codex-coord-supervisor.json").write_text(
             json.dumps(_expected_supervisor_config(name, role_name, payload)) + "\n"
         )
-        (staged / "AGENTS.md").write_text("# SafeYolo\n\n---\n\n" + role["contract_text"].lstrip())
+        baseline = (REPO_ROOT / "docs/AGENTS.md").read_text()
+        (staged / "AGENTS.md").write_text(baseline.rstrip() + "\n\n---\n\n" + role["contract_text"].lstrip())
         (staged / "codex-coord-supervisor-state.json").write_text(
             json.dumps(
                 {
@@ -194,14 +195,16 @@ def factory_runtime(tmp_path, tmp_config_dir, monkeypatch):
         is_sandbox_running=lambda name: running[name],
         popen_in_sandbox=lambda name, command, user: _Process(process_output[name]),
     )
+
+    class HealthyAdminAPI:
+        def __init__(self, **_kwargs):
+            pass
+
+        def health(self):
+            return {"status": "ok"}
+
     monkeypatch.setattr("safeyolo.factory_doctor.get_platform", lambda: platform)
-    monkeypatch.setattr(
-        "safeyolo.factory_doctor.get_proxy_pid_path",
-        lambda: tmp_config_dir / "data/proxy.pid",
-    )
-    proxy_pid = tmp_config_dir / "data/proxy.pid"
-    proxy_pid.parent.mkdir(exist_ok=True)
-    proxy_pid.write_text(str(os.getpid()))
+    monkeypatch.setattr("safeyolo.factory_doctor.AdminAPI", HealthyAdminAPI)
     monkeypatch.setattr(
         "safeyolo.factory_doctor.coord_nats.status",
         lambda: {"healthy": True, "state": "healthy"},
@@ -233,6 +236,25 @@ def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_ru
     assert "SUMMARY factory=backlog status=PASS" in result.output
     assert "contract_text" not in result.output
     assert "recent_attention_ids" not in result.output
+
+
+def test_factory_doctor_rejects_a_live_unrelated_proxy_pid(cli_runner, factory_runtime, tmp_config_dir, monkeypatch):
+    class UnavailableAdminAPI:
+        def __init__(self, **_kwargs):
+            pass
+
+        def health(self):
+            raise OSError("not the proxy")
+
+    proxy_pid = tmp_config_dir / "data/proxy.pid"
+    proxy_pid.parent.mkdir(exist_ok=True)
+    proxy_pid.write_text(str(os.getpid()))
+    monkeypatch.setattr("safeyolo.factory_doctor.AdminAPI", UnavailableAdminAPI)
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1
+    assert "FAIL component=proxy traffic proxy is not running" in result.output
 
 
 def test_factory_doctor_accepts_a_native_codex_executable(cli_runner, factory_runtime):
@@ -446,6 +468,18 @@ def test_factory_doctor_rejects_noop_staged_artifact(cli_runner, factory_runtime
     assert filename in output
 
 
+def test_factory_doctor_rejects_prepended_staged_instructions(cli_runner, factory_runtime):
+    instructions = factory_runtime["homes"]["forge"] / ".safeyolo/AGENTS.md"
+    instructions.write_text("# Arbitrary developer instructions\n\n" + instructions.read_text())
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1
+    output = " ".join(result.output.split())
+    assert "FAIL component=staging role=owner agent=forge" in output
+    assert "staged role contract does not match" in output
+
+
 def test_factory_doctor_fails_on_corrupt_state_without_changing_it(cli_runner, factory_runtime):
     state = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
     state.write_text('{"version":4,"safe_cursor":"secret payload"}\n')
@@ -502,6 +536,29 @@ def test_read_only_coord_inspection_reports_existing_grants(tmp_path, monkeypatc
             ("rm-test", "operator", "operator", "receive,send", "retained", 1),
         )
 
+    def directory_state() -> dict[str, tuple[int, int, int, int, int, int, int]]:
+        return {
+            entry.name: (
+                metadata.st_mode,
+                metadata.st_ino,
+                metadata.st_uid,
+                metadata.st_gid,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+            for entry in coord_dir.iterdir()
+            if (metadata := entry.stat())
+        }
+
+    before = directory_state()
+    before_directory_metadata = (
+        coord_dir.stat().st_mode,
+        coord_dir.stat().st_mtime_ns,
+        coord_dir.stat().st_ctime_ns,
+    )
+    assert set(before) == {"v0.db"}
+
     result = coord_api.inspect_room_access(
         "backlog",
         [("operator", "operator"), ("agent", "ag-" + "1" * 32)],
@@ -515,6 +572,12 @@ def test_read_only_coord_inspection_reports_existing_grants(tmp_path, monkeypatc
             "agent:ag-" + "1" * 32: [],
         },
     }
+    assert directory_state() == before
+    assert (
+        coord_dir.stat().st_mode,
+        coord_dir.stat().st_mtime_ns,
+        coord_dir.stat().st_ctime_ns,
+    ) == before_directory_metadata
     with coord_store.connect() as conn:
         assert conn.execute("SELECT count(*) FROM rooms").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM memberships").fetchone()[0] == 1

@@ -245,7 +245,10 @@ def connect_readonly():
     path = db_path()
     if not path.is_file():
         raise FileNotFoundError(path)
-    uri = path.resolve().as_uri() + "?mode=ro"
+    # A regular read-only WAL connection can still create -wal and -shm
+    # sidecars. Immutable mode tells SQLite that this diagnostic connection
+    # must not create locks or auxiliary files.
+    uri = path.resolve().as_uri() + "?mode=ro&immutable=1"
     conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=10)
     conn.execute("PRAGMA query_only=ON")
     conn.execute("PRAGMA busy_timeout=5000")

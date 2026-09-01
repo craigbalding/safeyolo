@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .agents_store import load_agent
-from .config import get_agents_dir, get_proxy_pid_path
+from .api import AdminAPI
+from .config import get_agents_dir
 from .coord import api as coord_api
 from .coord import nats_runtime as coord_nats
 from .factory_contract import FactoryContractError, load_active_snapshot
@@ -167,21 +168,16 @@ def _fail(component: str, detail: str, recovery: str) -> FactoryDoctorCheck:
     return FactoryDoctorCheck("FAIL", component, detail, recovery)
 
 
-def _read_only_process_alive(pid_path: Path) -> bool:
+def _proxy_is_healthy() -> bool:
     try:
-        pid = int(pid_path.read_text().strip())
-        if pid <= 1:
-            return False
-        os.kill(pid, 0)
-    except (OSError, ValueError):
+        health = AdminAPI(token="factory-doctor", timeout=2.0).health()
+    except Exception:
         return False
-    return True
+    return health == {"status": "ok"}
 
 
 def _inspect_proxy(checks: list[FactoryDoctorCheck]) -> None:
-    # proxy.is_proxy_running() removes a stale pidfile. A factory doctor must
-    # not perform that cleanup, so use the same process signal without writes.
-    if _read_only_process_alive(get_proxy_pid_path()):
+    if _proxy_is_healthy():
         checks.append(FactoryDoctorCheck("PASS", "proxy", "traffic proxy is running"))
     else:
         checks.append(_fail("proxy", "traffic proxy is not running", "proxy runtime; run `safeyolo start`"))
@@ -515,6 +511,7 @@ def _inspect_staging(
             mcp_server: _bundled_contrib_path("safeyolo-coord-mcp.py"),
             launcher: _bundled_contrib_path("safeyolo-coord-mcp-launcher.sh"),
         }
+        expected_instructions = _expected_staged_instructions(role["contract_text"])
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         checks.append(_fail("staging", f"{label} staged files are unreadable ({type(exc).__name__})", recovery))
         return
@@ -541,7 +538,7 @@ def _inspect_staging(
             _fail("staging", f"{label} supervisor config does not match the active snapshot and role", recovery)
         )
         return
-    if not instructions_text.endswith(role["contract_text"].lstrip()):
+    if instructions_text != expected_instructions:
         checks.append(_fail("staging", f"{label} staged role contract does not match the active snapshot", recovery))
         return
     if not snapshot_path.is_file():
@@ -580,16 +577,25 @@ def _bounded_bytes(path: Path, maximum: int) -> bytes:
     return path.read_bytes()
 
 
-def _bundled_contrib_path(filename: str) -> Path:
+def _bundled_path(directory: str, filename: str) -> Path:
     package = Path(__file__).resolve().parent
     candidates = (
-        package / "contrib" / filename,
-        package.parent.parent.parent / "contrib" / filename,
+        package / directory / filename,
+        package.parent.parent.parent / directory / filename,
     )
     for candidate in candidates:
         if candidate.is_file():
             return candidate
     raise FileNotFoundError(filename)
+
+
+def _bundled_contrib_path(filename: str) -> Path:
+    return _bundled_path("contrib", filename)
+
+
+def _expected_staged_instructions(contract_text: str) -> str:
+    baseline = _bounded_text(_bundled_path("docs", "AGENTS.md"), 2 * 1024 * 1024)
+    return baseline.rstrip() + "\n\n---\n\n" + contract_text.lstrip()
 
 
 def _expected_supervised_command() -> str:
