@@ -41,26 +41,31 @@ task. Other request and response bodies must begin with their exact declared
 type. Canonical envelope identity and the configured room—not names written in
 the body—authorize a handoff.
 
-`operator_input` is the one explicit control edge into the graph. It admits
-only canonical `sender_kind=operator` messages in the configured room, routes
-them only to the named role, and never treats them as agent handoffs. Its types
-cannot overlap a handoff request or response. `factory check`, `apply`, and
-`run` reject a graph in which any role is unreachable from that operator edge;
-old source-only v1 snapshots therefore fail closed instead of starting an
-inert factory.
+`operator_input` is the one explicit direction edge into the graph. It admits
+bounded natural-language messages only when the canonical sender kind is
+`operator`, routes them only to the named role, and never treats them as agent
+handoffs. The declared types are optional operator shorthand rather than a
+natural-language parser; they cannot overlap a handoff request or response.
+`factory check`, `apply`, and `run` reject a graph in which any role is
+unreachable from that operator edge; old source-only v1 snapshots therefore
+fail closed instead of starting an inert factory.
 
-Use operator chat's explicit target when a control is intended to interrupt
-only that role's bound agent:
+Interactive operator chat automatically resolves the coordinator bound by an
+applied factory snapshot for that room. An explicit target overrides that
+resolution:
 
 ```sh
 safeyolo coord chat backlog --to relay
 ```
 
-Without `--to`, operator chat keeps its room-wide wake behavior. The target
-must be an active, receive-authorized room member; unknown, revoked, and
-send-only targets fail before the message is accepted. Targeting changes only
-attention delivery. The operator-authored message remains canonically
-attributed and visible in retained room history.
+Without `--to`, a room with no applied factory keeps its room-wide wake
+behavior. If multiple applied factories bind different coordinators to one
+room, chat fails visibly instead of guessing. The target must be an active,
+receive-authorized room member; unknown, revoked, and send-only targets fail
+before the message is accepted. Targeting changes only attention delivery.
+Send confirmation and operator-visible retained history show the canonical
+attention mode (`targeted`, `room`, or `none`) without exposing recipient IDs
+or unrelated membership. The message remains canonically attributed.
 
 The room brief is a separate operator-authored standing-context channel.
 Canonical `brief_changed` attention updates every receive-authorized factory
@@ -104,13 +109,44 @@ and decoded text. `factory run` prints the bound snapshot path, byte counts,
 hashes, and operator edge before it starts agents, so the operator can compare
 the running object with the approved check output.
 
+## Diagnose an active factory
+
+Inspect the complete active factory before you rely on it:
+
+```sh
+safeyolo factory doctor backlog
+```
+
+The command reads existing host and sandbox state. It does not start, stop,
+repair, apply, or change the factory. Each output line has one status:
+
+- `PASS` means that the component has the expected state.
+- `WARN` means that a role is stopped. A stopped role is valid persistent
+  state, but the factory is not fully running.
+- `FAIL` means that a required component is missing, corrupt, mismatched, or
+  not running. Each failure names a narrow recovery command or file category.
+
+The command checks the active snapshot and role bindings, agent identity and
+storage, workspaces, room membership and grants, the traffic proxy, and the
+managed Coord NATS runtime. It also checks each staged command, supervisor
+configuration, role contract, Codex Model Context Protocol (MCP) binding,
+checkpoint, and running process tree. A healthy traffic proxy does not hide a
+stopped NATS runtime. A running sandbox fails the check if the supervisor,
+Codex process, or Coord MCP server is absent.
+
+The summary is `PASS`, `WARN`, or `FAIL`. `FAIL` returns a nonzero exit status.
+`WARN` returns zero so that an operator can distinguish a deliberately stopped
+factory from corrupt state. The command reports checkpoint counts and process
+identity, but it does not print message bodies, role-contract contents,
+credentials, or inspected payloads.
+
 ## Live upgrade
 
 For a running legacy backlog factory:
 
 1. Stop the existing `relay`, `forge`, and `lens` agents at a safe boundary.
 2. Add the explicit `operator_input` table, then run `factory check` and verify
-   the agents, room, operator types, reachable handoffs, paths, byte counts,
+   the agents, room, operator shorthand, reachable handoffs, paths, byte counts,
    and hashes.
 3. Run `factory apply` and approve that exact resolved snapshot.
 4. Run `factory run backlog`.

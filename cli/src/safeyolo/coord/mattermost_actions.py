@@ -709,6 +709,13 @@ def compact_fallback(envelope: Mapping[str, Any], room: str) -> str:
     sender = name if isinstance(name, str) and name else str(envelope.get("sender_kind", "unknown"))
     agent_id = envelope.get("sender_agent_id")
     msg_id = envelope.get("msg_id")
+    intent = envelope.get("attention_intent")
+    intent_mode = intent.get("mode") if isinstance(intent, Mapping) else None
+    attention_detail = (
+        f" · attention `{intent_mode}`"
+        if intent_mode in {"none", "room", "targeted"}
+        else ""
+    )
     provenance = (
         "Canonical provenance · "
         f"sender {_strict_single_line(sender, maximum=128)} · "
@@ -716,6 +723,7 @@ def compact_fallback(envelope: Mapping[str, Any], room: str) -> str:
         f"kind `{_strict_single_line(str(envelope.get('sender_kind', 'unknown')), maximum=32)}` · "
         f"room `{_strict_single_line(room, maximum=128)}` · "
         f"message `{_strict_single_line(str(msg_id), maximum=96)}`"
+        f"{attention_detail}"
     )
     separator = "\n\n---\n"
     maximum = 13_500

@@ -22,6 +22,7 @@ from ..factory_contract import (
     load_factory_file,
     store_snapshot,
 )
+from ..factory_doctor import inspect_factory
 from .agent import (
     _check_project_ownership,
     _resolve_host_script_path,
@@ -32,7 +33,7 @@ from .agent import (
 console = Console()
 factory_app = typer.Typer(
     name="factory",
-    help="Check, approve, and run supervised coord factories.",
+    help="Check, approve, run, and diagnose supervised coord factories.",
     no_args_is_help=True,
 )
 
@@ -106,6 +107,27 @@ def run_factory(name: str = typer.Argument(..., help="Applied factory name")) ->
         console.print(f"[red]Cannot run factory:[/red] {exc}")
         raise typer.Exit(1) from exc
     console.print(f"[green]Started factory {name} snapshot={identifier}[/green]")
+
+
+@factory_app.command("doctor")
+def doctor_factory(name: str = typer.Argument(..., help="Applied factory name")) -> None:
+    """Inspect an active supervised factory without changing it."""
+    report = inspect_factory(name)
+    for item in report.checks:
+        line = f"{item.status} component={item.component} {item.detail}"
+        if item.recovery is not None:
+            line += f" recovery={item.recovery}"
+        console.print(line)
+    counts = {
+        status: sum(item.status == status for item in report.checks)
+        for status in ("PASS", "WARN", "FAIL")
+    }
+    console.print(
+        f"SUMMARY factory={name} status={report.status} "
+        f"pass={counts['PASS']} warn={counts['WARN']} fail={counts['FAIL']}"
+    )
+    if report.status == "FAIL":
+        raise typer.Exit(1)
 
 
 def _print_snapshot(identifier: str, snapshot_path: Path, payload: dict[str, Any]) -> None:

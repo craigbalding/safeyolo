@@ -17,6 +17,16 @@ from safeyolo.cli import app
 from safeyolo.factory_contract import FactoryContractError, load_active_snapshot, load_factory_file
 from safeyolo.platform import AgentPlatform
 
+BACKLOG_COORDINATOR_CONTRACT = Path(__file__).parents[2] / "docs/factories/backlog-coordinator.md"
+
+
+def test_backlog_coordinator_status_contract_is_low_noise():
+    contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+
+    assert "Send an ordinary answer with no agent attention." in contract
+    assert "Do not expect a new `ACCEPTED` after a Lens disposition." in contract
+    assert "report that the updated candidate is pending" in contract
+
 
 def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> Path:
     (tmp_path / "coordinator.md").write_text("# Coordinator\n\nDelegate exact tasks.\n")
@@ -34,6 +44,8 @@ def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> 
         '[roles.owner]\nagent = "forge"\ncontract = "owner.md"\n\n'
         '[roles.reviewer]\nagent = "lens"\ncontract = "reviewer.md"\n\n'
         '[[handoffs]]\nrequest = "TASK"\nfrom = "coordinator"\nto = "owner"\n'
+        'responses = ["DONE", "BLOCKED", "FAILED"]\n\n'
+        '[[handoffs]]\nrequest = "TASK"\nfrom = "coordinator"\nto = "reviewer"\n'
         'responses = ["DONE", "BLOCKED", "FAILED"]\n\n'
         '[[handoffs]]\nrequest = "REVIEW_READY"\nfrom = "owner"\nto = "reviewer"\n'
         'responses = ["READY", "CHANGES_REQUIRED", "BLOCKED"]\n' + extra
@@ -53,6 +65,7 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     assert "bytes=24" in result.output
     assert "sha256=" in result.output
     assert "operator_input=operator to=coordinator" in result.output
+    assert "handoff=TASK from=coordinator to=reviewer" in result.output
     assert "handoff=REVIEW_READY from=owner to=reviewer" in result.output
 
 

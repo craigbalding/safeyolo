@@ -239,6 +239,41 @@ def connect():
         yield conn
 
 
+@contextmanager
+def connect_readonly():
+    """Open current operational state without creating files or negotiating WAL."""
+    path = db_path()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    # Immutable mode prevents SQLite from creating WAL sidecars for an idle
+    # database, but it also ignores committed changes in an existing WAL. Use
+    # a regular read-only connection when the WAL already exists so the doctor
+    # observes current state without creating the sidecars itself.
+    uri = path.resolve().as_uri() + "?mode=ro"
+    wal_path = Path(f"{path}-wal")
+    shm_path = Path(f"{path}-shm")
+    wal_exists = wal_path.is_file()
+    if wal_exists and not shm_path.is_file():
+        raise SchemaError("coord WAL exists without its shared-memory index")
+    if not wal_exists:
+        uri += "&immutable=1"
+    conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=10)
+    conn.execute("PRAGMA query_only=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.row_factory = sqlite3.Row
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version != CURRENT_SCHEMA_VERSION:
+            raise SchemaError(
+                f"coord schema version {version} is not operational; "
+                f"expected {CURRENT_SCHEMA_VERSION}"
+            )
+        yield conn
+    finally:
+        conn.close()
+
+
 def _user_tables(conn: sqlite3.Connection) -> set[str]:
     return {
         row["name"]
