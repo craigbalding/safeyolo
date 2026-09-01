@@ -1,8 +1,16 @@
 """Tests for the assurance-policy ratchet."""
 
+import tomllib
 from pathlib import Path
 
-from scripts.check_test_assurance import audit_boundary_file, audit_manifest, audit_test_file
+from scripts.check_test_assurance import (
+    audit_boundary_file,
+    audit_factory_acceptance,
+    audit_manifest,
+    audit_test_file,
+    changed_factory_acceptance_ids,
+    update_factory_acceptance,
+)
 
 
 def _audit_source(tmp_path: Path, source: str) -> list[str]:
@@ -138,3 +146,69 @@ value = patch("package.collaborator", autospec=True, return_value=client)
     )
 
     assert issues == []
+
+
+def _factory_manifest(tmp_path: Path) -> tuple[Path, Path]:
+    test_file = tmp_path / "cli/tests/test_factory_example.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text(
+        "import pytest\n\n"
+        "@pytest.mark.parametrize('value', [1])\n"
+        "def test_factory_example(value):\n"
+        "    assert value == 1\n"
+    )
+    manifest = tmp_path / "assurance.toml"
+    manifest.write_text(
+        "[[factory_acceptance]]\n"
+        'id = "FACTORY-EXAMPLE"\n'
+        'description = "The factory example passes."\n'
+        'node = "cli/tests/test_factory_example.py::test_factory_example"\n'
+        f'sha256 = "{"0" * 64}"\n'
+    )
+    return manifest, test_file
+
+
+def test_factory_acceptance_digest_detects_an_edit_and_updates_explicitly(tmp_path):
+    manifest, test_file = _factory_manifest(tmp_path)
+
+    assert any("test changed" in issue for issue in audit_factory_acceptance(manifest, root=tmp_path))
+    assert update_factory_acceptance(manifest, root=tmp_path) == []
+    assert audit_factory_acceptance(manifest, root=tmp_path) == []
+
+    test_file.write_text(test_file.read_text().replace("value == 1", "value > 0"))
+    assert any("test changed" in issue for issue in audit_factory_acceptance(manifest, root=tmp_path))
+
+
+def test_factory_acceptance_update_replaces_a_new_entry_placeholder(tmp_path):
+    manifest, _ = _factory_manifest(tmp_path)
+    manifest.write_text(manifest.read_text().replace("0" * 64, "pending"))
+
+    assert update_factory_acceptance(manifest, root=tmp_path) == []
+    assert audit_factory_acceptance(manifest, root=tmp_path) == []
+
+
+def test_factory_acceptance_reports_a_missing_named_test(tmp_path):
+    manifest, test_file = _factory_manifest(tmp_path)
+    assert update_factory_acceptance(manifest, root=tmp_path) == []
+    test_file.unlink()
+
+    issues = audit_factory_acceptance(manifest, root=tmp_path)
+
+    assert any("test file does not exist" in issue for issue in issues)
+
+
+def test_factory_acceptance_change_report_names_only_changed_ids():
+    before = {
+        "factory_acceptance": [
+            {"id": "FACTORY-ONE", "node": "old", "description": "one", "sha256": "a" * 64},
+            {"id": "FACTORY-TWO", "node": "same", "description": "two", "sha256": "b" * 64},
+        ]
+    }
+    after = tomllib.loads(
+        '[[factory_acceptance]]\nid = "FACTORY-ONE"\nnode = "new"\n'
+        'description = "one"\nsha256 = "' + "c" * 64 + '"\n'
+        '[[factory_acceptance]]\nid = "FACTORY-TWO"\nnode = "same"\n'
+        'description = "two"\nsha256 = "' + "b" * 64 + '"\n'
+    )
+
+    assert changed_factory_acceptance_ids(before, after) == ["FACTORY-ONE"]
