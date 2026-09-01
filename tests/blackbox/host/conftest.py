@@ -130,6 +130,15 @@ def admin_headers():
 
 
 @pytest.fixture(scope="session")
+def agent_headers():
+    """Headers for the agent-scoped API through the proxy."""
+    token_path = _CONFIG_DIR / "data" / "agent_token"
+    if not token_path.exists():
+        pytest.skip("Agent API token not available")
+    return {"Authorization": f"Bearer {token_path.read_text().strip()}"}
+
+
+@pytest.fixture(scope="session")
 def admin_client(admin_headers):
     """HTTP client for admin API (host-side, localhost)."""
     client = httpx.Client(
