@@ -172,6 +172,20 @@ class TestLifecycleStart:
         assert result.exit_code == 0
         assert start_proxy.call_args.kwargs["flow_cache"] == 4321
 
+    def test_flow_cache_bytes_is_forwarded_to_proxy_start(self, runner, config_dir):
+        with (
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,) as start_proxy,
+        ):
+            result = runner.invoke(
+                app,
+                ["start", "--no-wait", "--flow-cache-bytes", "987654"],
+            )
+
+        assert result.exit_code == 0
+        assert start_proxy.call_args.kwargs["flow_cache_bytes"] == 987654
+
     def test_dev_mode_is_forwarded_to_proxy_start(self, runner, config_dir):
         with (
             patch(

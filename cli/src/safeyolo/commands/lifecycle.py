@@ -203,6 +203,12 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
         min=1,
         help="Maximum flows retained in the shared live traffic view",
     ),
+    flow_cache_bytes: int | None = typer.Option(
+        None,
+        "--flow-cache-bytes",
+        min=1,
+        help="Maximum combined body bytes retained in the shared live traffic view",
+    ),
     profile: bool = typer.Option(
         False,
         "--profile",
@@ -275,6 +281,7 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
             proxy_port=proxy_port,
             admin_port=admin_port,
             flow_cache=flow_cache,
+            flow_cache_bytes=flow_cache_bytes,
             dev=dev,
         )
     except Exception as err:
