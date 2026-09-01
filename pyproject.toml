@@ -50,6 +50,7 @@ dependencies = [
     "cryptography>=50.0.0",
     "tomlkit>=0.12.0",
     "nats-py>=2.15,<3",
+    "prompt-toolkit>=3.0,<4",
 ]
 
 [project.scripts]

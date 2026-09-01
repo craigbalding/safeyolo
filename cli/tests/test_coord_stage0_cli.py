@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import subprocess
+import sys
 
 import pytest
 from rich.console import Console
@@ -12,6 +14,22 @@ from typer.testing import CliRunner
 
 from safeyolo.commands import coord, watch
 from safeyolo.core.audit_schema import AuditEvent, EventKind, Severity
+
+
+def test_main_cli_import_does_not_load_prompt_toolkit():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import safeyolo.cli; "
+            "assert 'prompt_toolkit' not in sys.modules",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_room_create_uses_distinct_internal_grant_operation_ids(monkeypatch):
@@ -255,17 +273,28 @@ def test_inventory_resource_unadvertisement_uses_operator_surface(monkeypatch):
     }
 
 
-def test_interactive_send_reports_ambiguous_acceptance_without_safe_retry(
-    monkeypatch,
-):
+def _set_chat_inputs(monkeypatch, *lines):
+    inputs = iter(lines)
+
+    class PromptSession:
+        async def prompt_async(self, _prompt):
+            return next(inputs)
+
+    async def receive_messages(*_args, **_kwargs):
+        await asyncio.Future()
+
+    monkeypatch.setattr("prompt_toolkit.PromptSession", PromptSession)
+    monkeypatch.setattr(coord, "_receive_messages", receive_messages)
+
+
+def test_interactive_send_reports_ambiguous_acceptance_without_safe_retry(monkeypatch):
     output = io.StringIO()
     monkeypatch.setattr(
         coord,
         "console",
         Console(file=output, force_terminal=False, color_system=None),
     )
-    inputs = iter(["possibly accepted", ":q"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+    _set_chat_inputs(monkeypatch, "possibly accepted", ":q")
 
     async def ambiguous_send(*_args, **_kwargs):
         raise coord.NatsPublishOutcomeUnknown("PubAck connection closed")
@@ -293,8 +322,7 @@ def test_interactive_send_uses_explicit_target(monkeypatch):
         "console",
         Console(file=output, force_terminal=False, color_system=None),
     )
-    inputs = iter(["targeted direction", ":q"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+    _set_chat_inputs(monkeypatch, "targeted direction", ":q")
     seen = []
 
     async def send(*_args, **kwargs):

@@ -1,12 +1,12 @@
 """PTY acceptance tests for the operator chat prompt.
 
-The bug these guard against was caused by the terminal line discipline, so
-in-process tests cannot see it: `input()` only misbehaves when it is attached
-to a real tty. Each test drives the loop under an actual pseudo-terminal.
+The terminal line discipline and live prompt redraw both require a real tty.
+Each test therefore drives the production loop under a pseudo-terminal.
 
 The loop and its helpers are extracted from the module by AST rather than
 imported, so these run without the full CLI dependency tree.
 """
+
 from __future__ import annotations
 
 import ast
@@ -17,6 +17,7 @@ import select
 import shutil
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -26,8 +27,17 @@ if not SRC.exists():  # running from a different layout
     SRC = Path(__file__).resolve().parents[1] / "src/safeyolo/commands/coord.py"
 
 WANTED = {
-    "_visible_controls", "_render_body", "_render_message", "_fmt_ts",
-    "_read_clipboard", "_read_editor", "_confirm_send", "_interactive_loop",
+    "_visible_controls",
+    "_render_body",
+    "_render_message",
+    "_fmt_ts",
+    "_read_clipboard",
+    "_read_editor",
+    "_prompt_line",
+    "_confirm_send",
+    "_receive_messages",
+    "_interactive_session",
+    "_interactive_loop",
 }
 
 
@@ -35,16 +45,18 @@ def _extracted_source() -> str:
     """The real functions under test, lifted verbatim from the module."""
     tree = ast.parse(SRC.read_text())
     keep = [
-        n for n in tree.body
-        if (isinstance(n, ast.FunctionDef) and n.name in WANTED)
-        or (isinstance(n, ast.Assign)
-            and getattr(n.targets[0], "id", "").endswith(("_CMDS", "_CONTROLS")))
+        n
+        for n in tree.body
+        if (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in WANTED)
+        or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "").endswith(("_CMDS", "_CONTROLS")))
     ]
     return ast.unparse(ast.Module(body=keep, type_ignores=[]))
 
 
-HARNESS = '''
+HARNESS = """
 import sys, types, datetime, asyncio, os, shlex, shutil, subprocess, tempfile
+from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
@@ -52,30 +64,57 @@ console = Console(force_terminal=True, width=100, color_system="standard")
 UTC = datetime.UTC
 datetime = datetime.datetime
 sent = []
+incoming = os.environ.get("FAKE_INCOMING") == "1"
 class GrantError(Exception): pass
+class NatsUnavailable(Exception): pass
+class CoordDataError(Exception): pass
+class NatsPublishOutcomeUnknown(Exception): pass
 async def _send(room, kind, aid, body, **kwargs):
     sent.append(body); print("SENT<<" + repr(body) + ">>", flush=True)
     print("NOTIFY<<" + repr(kwargs.get("notify")) + ">>", flush=True)
     return {"attention_status": "ready", "attention_intent": {"mode": "room"}}
 async def _read(*a, **k):
+    since = k.get("since_sequence", 0)
+    if incoming and since < 1:
+        return {"messages": [{"sender_kind": "agent", "sender_agent_name": "relay",
+                 "sender_agent_id": "ag-relay", "sent_at": 0, "sequence": 1,
+                 "body": "incoming while typing", "attention_intent": {"mode": "targeted"}}],
+                "next_cursor": 1, "has_more": False}
     return {"messages": [], "next_cursor": 0, "has_more": False}
+async def _wait(*a, **k):
+    if incoming and k.get("since_sequence", 0) < 1:
+        await asyncio.sleep(0.2)
+        return {"messages": [{}]}
+    await asyncio.sleep(3600)
 api = types.SimpleNamespace(MAX_BODY_BYTES=256*1024, GrantError=GrantError,
-                            READ_PAGE_MAX=200, send=_send, read_room=_read)
+                            READ_PAGE_MAX=200, send=_send, read_room=_read,
+                            wait_for_message=_wait)
+_OBSERVE_WAIT_SECONDS = 30.0
 class _ChatRuntime: pass
 class RT:
-    def run(self, coro): return asyncio.new_event_loop().run_until_complete(coro)
+    def __init__(self): self.loop = asyncio.new_event_loop()
+    def run(self, coro): return self.loop.run_until_complete(coro)
 __EXTRACTED__
 _interactive_loop(RT(), "huddle", 0)
 print("LOOP-EXITED", flush=True)
-'''
+"""
 
 
-def _run_under_pty(script: str, keystrokes: bytes, env: dict) -> str:
+def _run_under_pty(
+    script: str,
+    keystrokes: bytes | list[tuple[float, bytes]],
+    env: dict,
+) -> str:
     """Feed `keystrokes` to `script` running on a real pty; return its output."""
     pid, fd = pty.fork()
     if pid == 0:  # child
         os.execve(sys.executable, [sys.executable, "-c", script], env)
-    os.write(fd, keystrokes)
+    if isinstance(keystrokes, bytes):
+        os.write(fd, keystrokes)
+    else:
+        for delay, data in keystrokes:
+            time.sleep(delay)
+            os.write(fd, data)
     out = b""
     while True:
         r, _, _ = select.select([fd], [], [], 5.0)
@@ -110,9 +149,7 @@ def env(tmp_path):
     return e
 
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("printf") is None, reason="needs a shell for the fake clipboard"
-)
+pytestmark = pytest.mark.skipif(shutil.which("printf") is None, reason="needs a shell for the fake clipboard")
 
 
 def test_typed_ctrl_r_is_mangled_by_the_tty(env):
@@ -190,6 +227,26 @@ def test_typed_line_still_sends(env):
     assert "NOTIFY<<'room'>>" in out
     plain = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", out)
     assert "attention=room" in plain
+
+
+def test_incoming_message_preserves_draft_and_send(env):
+    """One process receives while the operator continues editing a draft."""
+    env = {**env, "FAKE_INCOMING": "1"}
+    out = _run_under_pty(
+        _script(),
+        [(0.1, b"draft "), (0.4, b"continues\n"), (0.1, b":q\n")],
+        env,
+    )
+    assert "Traceback" not in out
+    assert "incoming while typing" in out
+    assert _sent(out) == ["draft continues"]
+
+
+def test_ctrl_c_detaches_without_a_traceback(env):
+    out = _run_under_pty(_script(), [(1.0, b"\x03")], env)
+    assert "Traceback" not in out
+    assert "detached" in out
+    assert "LOOP-EXITED" in out
 
 
 def test_every_physical_line_is_guttered():
