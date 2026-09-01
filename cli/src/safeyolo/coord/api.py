@@ -145,6 +145,32 @@ def list_rooms() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def inspect_room_access(
+    room_name: str,
+    principals: list[tuple[str, str]],
+) -> dict[str, Any]:
+    """Read one room and selected active grants without changing Coord state."""
+    with store.connect_readonly() as conn:
+        room_id = _resolve_room(conn, room_name)
+        permissions = {}
+        for kind, principal_id in principals:
+            try:
+                current = _active_permissions(
+                    conn,
+                    room_id,
+                    kind,
+                    principal_id,
+                )
+            except NoMembershipError:
+                current = []
+            permissions[f"{kind}:{principal_id}"] = current
+    return {
+        "room_id": room_id,
+        "room_name": room_name,
+        "permissions": permissions,
+    }
+
+
 def _resolve_room(conn: sqlite3.Connection, name: str) -> str:
     row = conn.execute("SELECT room_id FROM rooms WHERE name = ?", (name,)).fetchone()
     if not row:
