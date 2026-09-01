@@ -25,6 +25,12 @@ to = "owner"
 responses = ["DONE", "BLOCKED", "FAILED"]
 
 [[handoffs]]
+request = "TASK"
+from = "coordinator"
+to = "reviewer"
+responses = ["DONE", "BLOCKED", "FAILED"]
+
+[[handoffs]]
 request = "REVIEW_READY"
 from = "owner"
 to = "reviewer"

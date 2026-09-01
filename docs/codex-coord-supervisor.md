@@ -31,13 +31,14 @@ text are not idle or success evidence. A failed MCP result cannot advance the
 safe cursor.
 
 In factory mode, the approved snapshot may declare one `operator_input` edge.
-Only its destination role admits the declared leading control types, and only
-when coord reports the canonical sender kind as `operator`. Canonical operator
-messages have no agent ID or agent name. The supervisor normalizes those null
-fields only after checking the sender kind, limits the control body to 4 KiB
-of UTF-8, and checkpoints the control as non-terminal input. It never lets
-an operator message impersonate an agent handoff or lets peer text impersonate
-operator control.
+Only its destination role admits bounded natural-language direction, and only
+when coord reports the canonical sender kind as `operator`. Declared leading
+types remain compatibility shorthand; neither the CLI, coord server, nor
+supervisor parses natural language. Canonical operator messages have no agent
+ID or agent name. The supervisor normalizes those null fields only after
+checking the sender kind, limits the body to 4 KiB of UTF-8, and checkpoints it
+as non-terminal input. It never lets an operator message impersonate an agent
+handoff or peer text impersonate operator direction.
 
 Factory workers also admit canonical `brief_changed` attention as trusted
 operator-authored standing context. Preflight refreshes the current brief for
@@ -75,6 +76,7 @@ single-owner lock protect it across supervisor restarts. It contains only:
 - one safe attention cursor;
 - at most 256 recent attention IDs;
 - at most 16 narrow returned objects that are still in flight;
+- at most 16 independently correlated outbound handoffs awaiting responses;
 - one current, bounded brief revision and Markdown body per configured room;
 - one process-group PID plus at most 64 PID-reuse-safe descendant identities
   while an invocation is running; and

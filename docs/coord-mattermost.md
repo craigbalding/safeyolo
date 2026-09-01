@@ -18,10 +18,12 @@ No Mattermost plugin or PikaPods-specific feature is required.
 
 Routine or unrecognized messages put the useful body first and one quiet
 `Canonical provenance` footer last. The footer keeps the exact canonical agent
-and message IDs in copyable code spans. Only that final footer is trusted;
-sender text cannot create its divider or marker. An exact leading protocol
-`ACCEPTED` is displayed as `TASK ACCEPTED` in Mattermost only. The canonical
-coord message is unchanged, and the adapter does not infer workflow state.
+and message IDs in copyable code spans and, when present, the canonical public
+attention mode (`none`, `room`, or `targeted`). It never exposes recipient
+identities or membership counts. Only that final footer is trusted; sender text
+cannot create its divider or marker. An exact leading protocol `ACCEPTED` is
+displayed as `TASK ACCEPTED` in Mattermost only. The canonical coord message is
+unchanged, and the adapter does not infer workflow state.
 
 The body sanitizer preserves paragraphs, headings, lists, emphasis, inline and
 fenced code, and ordinary HTTPS links. It applies this fixed safety matrix:

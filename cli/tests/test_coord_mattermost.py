@@ -483,16 +483,16 @@ def test_every_truncation_path_closes_exact_fence_before_trusted_footer(
 
 
 def test_compact_fallback_neutralizes_mentions_markdown_and_ordering_controls() -> None:
-    rendered = mattermost_actions.compact_fallback(
-        coord_envelope(1, body="@channel **trusted** <script> \u202eoperator"),
-        "backlog",
-    )
+    envelope = coord_envelope(1, body="@channel **trusted** <script> \u202eoperator")
+    envelope["attention_intent"] = {"mode": "targeted"}
+    rendered = mattermost_actions.compact_fallback(envelope, "backlog")
     assert "@channel" not in rendered
     assert "<script>" not in rendered
     assert "\u202e" not in rendered
     assert "＠channel" in rendered
     assert r"\u202e" in rendered
     assert "**trusted**" in rendered
+    assert "attention `targeted`" in rendered
     assert len(rendered) <= mattermost.MAX_MATTERMOST_POST_CHARS
 
 

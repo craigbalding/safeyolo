@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 
+import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -286,13 +287,22 @@ def test_interactive_send_reports_ambiguous_acceptance_without_safe_retry(
 
 
 def test_interactive_send_uses_explicit_target(monkeypatch):
+    output = io.StringIO()
+    monkeypatch.setattr(
+        coord,
+        "console",
+        Console(file=output, force_terminal=False, color_system=None),
+    )
     inputs = iter(["targeted direction", ":q"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
     seen = []
 
     async def send(*_args, **kwargs):
         seen.append(kwargs["notify"])
-        return {"attention_status": "ready"}
+        return {
+            "attention_status": "ready",
+            "attention_intent": {"mode": "targeted"},
+        }
 
     async def read_room(*_args, **_kwargs):
         return {"messages": [], "next_cursor": 0, "has_more": False}
@@ -306,6 +316,49 @@ def test_interactive_send_uses_explicit_target(monkeypatch):
 
     coord._interactive_loop(Runtime(), "r", 0, target="relay")
     assert seen == [["relay"]]
+    assert "attention=targeted target=relay" in output.getvalue()
+
+
+def test_active_factory_coordinator_resolution_is_room_scoped(monkeypatch, tmp_path):
+    factories = tmp_path / "factories"
+    (factories / "backlog").mkdir(parents=True)
+    (factories / "backlog" / "active").write_text("snapshot\n")
+    (factories / "other").mkdir()
+    (factories / "other" / "active").write_text("snapshot\n")
+    monkeypatch.setattr(coord, "factories_dir", lambda: factories)
+
+    def load(name):
+        room = "backlog" if name == "backlog" else "other"
+        return "id", tmp_path / name, {
+            "room": room,
+            "operator_input": {"to": "coordinator"},
+            "roles": {"coordinator": {"agent": "navigator"}},
+        }
+
+    monkeypatch.setattr(coord, "load_active_snapshot", load)
+
+    assert coord._active_factory_coordinator("backlog") == "navigator"
+    assert coord._active_factory_coordinator("unconfigured") is None
+
+
+def test_active_factory_coordinator_ambiguity_fails_closed(monkeypatch, tmp_path):
+    factories = tmp_path / "factories"
+    for name in ("one", "two"):
+        (factories / name).mkdir(parents=True)
+        (factories / name / "active").write_text("snapshot\n")
+    monkeypatch.setattr(coord, "factories_dir", lambda: factories)
+
+    def load(name):
+        return "id", tmp_path / name, {
+            "room": "backlog",
+            "operator_input": {"to": "coordinator"},
+            "roles": {"coordinator": {"agent": f"relay-{name}"}},
+        }
+
+    monkeypatch.setattr(coord, "load_active_snapshot", load)
+
+    with pytest.raises(coord.FactoryContractError, match="multiple active"):
+        coord._active_factory_coordinator("backlog")
 
 
 def test_chat_rejects_target_in_observe_mode(monkeypatch):

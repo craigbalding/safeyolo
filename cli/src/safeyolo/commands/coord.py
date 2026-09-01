@@ -32,6 +32,7 @@ from ..coord.nats_client import (
     NatsPublishOutcomeUnknown,
     NatsUnavailable,
 )
+from ..factory_contract import FactoryContractError, factories_dir, load_active_snapshot
 
 # One-shot CLI commands (room create, grant, revoke) each spin up a
 # fresh event loop with `asyncio.run` — cheap and no lifetime issues.
@@ -223,7 +224,7 @@ def _explain_coord_failure(exc: Exception) -> str:
         detail = "no detail reported (often a timeout misreported as a fault)"
     return (f"coord runtime unreachable: {detail}\n"
             "The NATS runtime backing coord is not answering. Check it is up "
-            "(`safeyolo coord status`), then reattach.")
+            "(`safeyolo status`), then reattach.")
 
 
 def _render_message(m: dict) -> None:
@@ -236,9 +237,13 @@ def _render_message(m: dict) -> None:
         who = m.get("sender_agent_name") or m.get("sender_agent_id") or "?"
     ts = _fmt_ts(m["sent_at"])
     style = "bold yellow" if kind == "operator" else "bold cyan"
+    intent = m.get("attention_intent")
+    intent_label = ""
+    if isinstance(intent, dict) and intent.get("mode") in {"none", "room", "targeted"}:
+        intent_label = f" attention={intent['mode']}"
     console.print(
         f"[{style}]{escape(_visible_controls(who))}[/] "
-        f"[dim]{ts} seq={m['sequence']}[/]"
+        f"[dim]{ts} seq={m['sequence']}{intent_label}[/]"
     )
     _render_body(m["body"])
     console.print()
@@ -774,6 +779,27 @@ class _ChatRuntime:
         self._loop.close()
 
 
+def _active_factory_coordinator(room: str) -> str | None:
+    """Resolve one room's applied factory coordinator without parsing prose."""
+    root = factories_dir()
+    if not root.is_dir():
+        return None
+    coordinators: set[str] = set()
+    for candidate in sorted(root.iterdir(), key=lambda item: item.name):
+        if not candidate.is_dir() or not (candidate / "active").is_file():
+            continue
+        _, _, payload = load_active_snapshot(candidate.name)
+        if payload["room"] != room:
+            continue
+        destination = payload["operator_input"]["to"]
+        coordinators.add(payload["roles"][destination]["agent"])
+    if len(coordinators) > 1:
+        raise FactoryContractError(
+            f"room {room!r} has multiple active factory coordinators; use --to explicitly"
+        )
+    return next(iter(coordinators), None)
+
+
 @coord_app.command()
 def chat(
     room: str = typer.Argument(..., help="Room name"),
@@ -809,7 +835,18 @@ def chat(
         console.print(f"[red]{e}[/]")
         raise typer.Exit(1)
 
+    target = to
+    if not observe and target is None:
+        try:
+            target = _active_factory_coordinator(room)
+        except FactoryContractError as e:
+            console.print(f"[red]{e}[/]")
+            raise typer.Exit(1) from None
+
     console.print(f"[bold]attached to room[/] {room}  (mode={'observe' if observe else 'interactive'})")
+    if target is not None:
+        source = "--to" if to is not None else "active factory coordinator"
+        console.print(f"[dim]operator messages target {target} ({source})[/]")
     console.print("[dim]---[/]")
 
     runtime = _ChatRuntime()
@@ -827,7 +864,7 @@ def chat(
         if observe:
             _observe_loop(runtime, room, cursor)
         else:
-            _interactive_loop(runtime, room, cursor, target=to)
+            _interactive_loop(runtime, room, cursor, target=target)
     except (NatsUnavailable, CoordDataError) as e:
         console.print(f"[red]{_explain_coord_failure(e)}[/]")
         raise typer.Exit(1) from None
@@ -1103,17 +1140,25 @@ def _interactive_loop(
                             notify=[target] if target is not None else "room",
                         )
                     )
+                    intent = result.get("attention_intent")
+                    mode = intent.get("mode") if isinstance(intent, dict) else None
+                    intent_detail = (
+                        f"attention={mode}"
+                        f"{' target=' + target if mode == 'targeted' and target else ''}"
+                        if mode in {"none", "room", "targeted"}
+                        else "attention intent unavailable"
+                    )
                     if result["attention_status"] == "pending":
                         console.print(
-                            "[yellow]message accepted; attention delivery is pending[/]"
+                            f"[yellow]message accepted; {intent_detail}; delivery is pending[/]"
                         )
                     elif result["attention_status"] == "lost":
                         console.print(
-                            "[red]message accepted, but retention removed it "
+                            f"[red]message accepted; {intent_detail}, but retention removed it "
                             "before attention materialization; its attention is lost[/]"
                         )
                     else:
-                        console.print("[dim]message accepted[/]")
+                        console.print(f"[dim]message accepted; {intent_detail}[/]")
                 except ValueError as e:
                     console.print(f"[red]{e}[/]")
                 except api.GrantError as e:
