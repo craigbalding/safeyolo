@@ -629,6 +629,10 @@ def test_factory_rejects_peer_text_that_impersonates_a_brief(
     [
         "ACTIVATE",
         "PRIORITY issue=#480",
+        "READY for the next issue?",
+        "DONE with the current batch?",
+        "BLOCKED on anything?",
+        "TASK task=one assignee=relay",
         "Please take the next ready bug and ask Lens to check the security boundary.",
         "Pause new assignments after the current work finishes.",
     ],
@@ -712,7 +716,6 @@ def test_factory_status_question_creates_no_persisted_workflow_object(
     [
         ("coordinator", "agent", "ACTIVATE"),
         ("owner", "operator", "ACTIVATE"),
-        ("coordinator", "operator", "TASK task=one assignee=relay"),
         ("coordinator", "operator", "   "),
         ("coordinator", "operator", "DIRECTION\n" + "x" * 4096),
     ],

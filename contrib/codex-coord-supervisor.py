@@ -819,19 +819,11 @@ def _operator_input_matches(
     config: Config,
     body: str,
 ) -> bool:
-    first_line = body.split("\n", 1)[0]
-    leading_type = first_line.split(" ", 1)[0]
-    protocol_types = {
-        item
-        for handoff in config.factory_handoffs
-        for item in (handoff.request, *handoff.responses)
-    }
     return (
         config.factory_role is not None
         and config.factory_role == config.factory_operator_role
         and bool(body.strip())
         and len(body.encode()) <= MAX_OPERATOR_CONTROL_BYTES
-        and leading_type not in protocol_types
     )
 
 
