@@ -1073,7 +1073,8 @@ async def _prompt_line(
     """Read one editable line, but stop promptly if the receiver fails."""
     async def stop_if_receiver_finishes() -> None:
         try:
-            await receiver
+            # Cancelling this short-lived monitor must not cancel the receiver.
+            await asyncio.shield(receiver)
         except asyncio.CancelledError:
             return
         except BaseException as error:
