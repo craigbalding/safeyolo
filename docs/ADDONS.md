@@ -660,8 +660,8 @@ complete WebSocket messages.
 
 **Options:**
 ```bash
---set pattern_block_request=false   # Block matching requests
---set pattern_block_response=false  # Block matching responses
+--set pattern_block_request=true   # Block matching requests
+--set pattern_block_response=true  # Block matching responses
 ```
 
 ---
