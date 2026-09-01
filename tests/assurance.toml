@@ -3,6 +3,100 @@
 # boundary: the subject and domain objects are real. Collaborators may be
 # mocked only with autospec/spec_set, and the declared subjects may not be
 # patched. Add files here incrementally as they are migrated from legacy tests.
+#
+# factory_acceptance: each entry names one operator-visible factory behavior
+# and the exact test function that proves it. The digest makes an edit visible;
+# it does not prevent an intentional edit.
+
+[[factory_acceptance]]
+id = "FACTORY-RUN-STARTS-WORKERS"
+description = "Factory run executes each staged worker command after Coord is ready."
+node = "cli/tests/test_factory_contract.py::test_factory_run_executes_staged_worker_commands"
+sha256 = "b9eaef0eb0cc8eb07a8fe2c138e3f7554590efae3e1bd9b8fc9433a7c578bfe2"
+
+[[factory_acceptance]]
+id = "FACTORY-RUN-REQUIRES-COORD"
+description = "Factory run does not start workers when Coord cannot start."
+node = "cli/tests/test_factory_contract.py::test_factory_run_does_not_boot_workers_without_coord"
+sha256 = "095c5bf5ca7d9824ddf67c686924939f8f29bd44bcca5171af1a0962e55ba6f6"
+
+[[factory_acceptance]]
+id = "FACTORY-OPERATOR-CONVERSATION"
+description = "Plain operator text reaches the coordinator and its answer wakes no agent."
+node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_concurrency_and_restart"
+sha256 = "a21e22c0a3c3fed85ae315d57e14e10bb86658ae106a2256e17c53c762fe0319"
+
+[[factory_acceptance]]
+id = "FACTORY-STATUS-LOW-NOISE"
+description = "A coordinator status answer wakes no worker."
+node = "cli/tests/test_factory_contract.py::test_backlog_coordinator_status_contract_is_low_noise"
+sha256 = "1fcac6221c87c0a27c9dd288fda60111225aea3b65d0d22a8b56ad8ca023a3ce"
+
+[[factory_acceptance]]
+id = "FACTORY-CONCURRENT-FORGE-LENS"
+description = "The coordinator can hold one Forge task and one independent Lens task concurrently."
+node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_concurrency_and_restart"
+sha256 = "a21e22c0a3c3fed85ae315d57e14e10bb86658ae106a2256e17c53c762fe0319"
+
+[[factory_acceptance]]
+id = "FACTORY-RESTART-NO-REPLAY"
+description = "Restart preserves outstanding handoffs and does not recreate completed work."
+node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_concurrency_and_restart"
+sha256 = "a21e22c0a3c3fed85ae315d57e14e10bb86658ae106a2256e17c53c762fe0319"
+
+[[factory_acceptance]]
+id = "FACTORY-HANDOFF-AUTHORITY"
+description = "The supervisor rejects unauthorized or malformed factory objects."
+node = "cli/tests/test_codex_coord_supervisor.py::test_factory_rejects_unauthorized_or_malformed_objects"
+sha256 = "56c1d119108f48b5e8197b1377f7c9cb3ac51bd1a449198df081038cac913de3"
+
+[[factory_acceptance]]
+id = "FACTORY-HANDOFF-ROOM"
+description = "The supervisor rejects an exact handoff from the wrong room."
+node = "cli/tests/test_codex_coord_supervisor.py::test_factory_rejects_an_other_room_even_for_an_exact_handoff"
+sha256 = "631785e4c098102937c066a0adbe6e64ef672b775b41984aca76f9d60a2d46ce"
+
+[[factory_acceptance]]
+id = "FACTORY-HANDOFF-CORRELATION"
+description = "A response cannot complete a different review object."
+node = "cli/tests/test_codex_coord_supervisor.py::test_factory_rejects_a_response_for_a_different_review_object"
+sha256 = "4c7125ab26bd5e1edda323fbd0ef5141ea8596a736771edab3bd7e2b574c5307"
+
+[[factory_acceptance]]
+id = "FACTORY-REVIEW-CHANGE-RESUMES-OWNER"
+description = "A Lens disposition resumes Forge's existing task without another ACCEPTED."
+node = "cli/tests/test_codex_coord_supervisor.py::test_factory_admits_every_reviewer_to_owner_response"
+sha256 = "4643b20d9e2b79964d03283d951c2b92ec60bccbeef8936d8ee97f255254196f"
+
+[[factory_acceptance]]
+id = "FACTORY-CHAT-AFTER-SEND"
+description = "One real chat process receives after a send and preserves the current draft."
+node = "cli/tests/test_coord_chat_live.py::test_real_chat_receives_after_operator_sends"
+sha256 = "baf732f7332fccc5feed915c083f70e5792feec76e30b26e62c2dfe716d86925"
+
+[[factory_acceptance]]
+id = "FACTORY-CANDIDATE-PROVENANCE"
+description = "Completion candidate provenance comes only from the canonical Coord envelope."
+node = "cli/tests/test_coord_completion_notes.py::test_provenance_is_only_derived_from_canonical_envelope"
+sha256 = "b74f8f3198b49a5e8bd0e54de5338fc2f6637a65b203fad28467ddb62dcf642a"
+
+[[factory_acceptance]]
+id = "FACTORY-CANDIDATE-REJECTS-AUTHORED-PROVENANCE"
+description = "A completion candidate cannot supply its own provenance fields."
+node = "cli/tests/test_coord_completion_notes.py::test_authored_reserved_provenance_is_rejected"
+sha256 = "452e2e5e9a909fced4a6482f820e0a0903a0b6c429897ea3fc34a0b8af44c424"
+
+[[factory_acceptance]]
+id = "FACTORY-PROPOSAL-OPERATOR-DECISION"
+description = "A factory proposal records only a narrow operator decision and applies no change."
+node = "cli/tests/test_coord_factory_proposals.py::test_operator_outcomes_are_narrow_status_only_transitions"
+sha256 = "f37d4aa673ec36513431837011ca551b2d5740e778a7708ec02206c667910557"
+
+[[factory_acceptance]]
+id = "FACTORY-PROPOSAL-RESTART"
+description = "Restart does not present the same factory proposal revision again."
+node = "cli/tests/test_coord_factory_proposals.py::test_restart_does_not_represent_same_revision"
+sha256 = "947b089ebe43a3b70174f144fa79a7beab149fa8fdd3a67dab96329973ac8b71"
 
 [boundary."tests/test_network_guard.py"]
 subjects = ["NetworkGuard"]
