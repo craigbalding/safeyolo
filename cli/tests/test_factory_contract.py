@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import signal
+import subprocess
+import time
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 
 from safeyolo.cli import app
 from safeyolo.factory_contract import FactoryContractError, load_active_snapshot, load_factory_file
+from safeyolo.platform import AgentPlatform
 
 
 def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> Path:
@@ -141,6 +148,8 @@ def test_factory_run_preserves_each_agents_local_codex_auth(
         auth.write_text(expected_auth[name])
 
     monkeypatch.setattr("safeyolo.commands.factory._run_agent", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("safeyolo.commands.factory.coord_nats.start_server", lambda **_kwargs: 123)
+    monkeypatch.setattr("safeyolo.commands.factory.coord_api.bootstrap", lambda: "sy-test")
     path = _factory_file(tmp_path)
     applied = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
     assert applied.exit_code == 0, applied.output
@@ -150,6 +159,173 @@ def test_factory_run_preserves_each_agents_local_codex_auth(
     assert result.exit_code == 0, result.output
     for name, expected in expected_auth.items():
         assert (get_agent_home_dir(name) / ".codex/auth.json").read_text() == expected
+
+
+def test_factory_run_executes_staged_worker_commands(
+    cli_runner,
+    tmp_path,
+    tmp_config_dir,
+    monkeypatch,
+):
+    """Exercise real factory and agent launch logic with small shell workers."""
+    from safeyolo.agents_store import save_agent
+    from safeyolo.vm import get_agent_home_dir, get_agent_status_dir
+
+    names = ("relay", "forge", "lens")
+    running: set[str] = set()
+    coord_ready = False
+    homes: dict[str, Path] = {}
+    markers: dict[str, Path] = {}
+    rootfs: dict[str, Path] = {}
+
+    for index, name in enumerate(names, start=1):
+        workspace = tmp_path / f"{name}-workspace"
+        workspace.mkdir()
+        save_agent(name, {"agent_id": f"ag-{index:032x}", "folder": str(workspace)})
+        homes[name] = get_agent_home_dir(name)
+        homes[name].mkdir(parents=True)
+        markers[name] = tmp_path / f"{name}.pid"
+        rootfs[name] = tmp_path / f"{name}-rootfs"
+        rootfs[name].mkdir()
+
+    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
+    platform.agent_rootfs_path.side_effect = lambda name: rootfs[name]
+    platform.is_sandbox_running.side_effect = lambda name: name in running
+    platform.setup_networking.side_effect = lambda index: {
+        "host_ip": "127.0.0.1",
+        "guest_ip": f"10.200.0.{index + 1}",
+        "attribution_ip": f"10.200.0.{index + 1}",
+        "subnet": None,
+        "needs_bridge_socket": False,
+    }
+
+    def start_sandbox(**kwargs):
+        assert coord_ready
+        name = kwargs["name"]
+        running.add(name)
+        status = get_agent_status_dir(name)
+        status.mkdir(parents=True, exist_ok=True)
+        (status / "per-run-started").write_text("")
+        return os.getpid()
+
+    def stop_sandbox(name):
+        running.discard(name)
+
+    def stage_worker(*, name, **_kwargs):
+        command = homes[name] / ".safeyolo-command"
+        command.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$$\" > {shlex.quote(str(markers[name]))}\n"
+            "trap 'exit 0' TERM INT\n"
+            "while :; do sleep 1; done\n"
+        )
+        command.chmod(0o755)
+
+    def exec_in_sandbox(name, command, user="agent", interactive=True):
+        assert user == "agent"
+        assert interactive is False
+        local_command = command.replace(
+            "/home/agent/.safeyolo-command",
+            shlex.quote(str(homes[name] / ".safeyolo-command")),
+        )
+        env = {**os.environ, "HOME": str(homes[name])}
+        return subprocess.run(
+            ["bash", "-c", local_command],
+            env=env,
+            timeout=5,
+            check=False,
+        ).returncode
+
+    platform.start_sandbox.side_effect = start_sandbox
+    platform.stop_sandbox.side_effect = stop_sandbox
+    platform.exec_in_sandbox.side_effect = exec_in_sandbox
+
+    monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
+    monkeypatch.setattr("safeyolo.commands.agent.is_proxy_running", lambda: True)
+    monkeypatch.setattr(
+        "safeyolo.commands.agent.reserve_agent_network_slot",
+        lambda name: names.index(name),
+    )
+    monkeypatch.setattr("safeyolo.commands.agent._update_agent_map", lambda *args, **kwargs: None)
+    monkeypatch.setattr("safeyolo.commands.agent.write_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("safeyolo.commands.agent.prepare_config_share", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "safeyolo.sockets.path_for",
+        lambda name, _ip: tmp_path / f"{name}.sock",
+    )
+    monkeypatch.setattr("safeyolo.commands.factory._run_host_script_for_agent", stage_worker)
+
+    def start_coord(*, ready_timeout):
+        nonlocal coord_ready
+        assert ready_timeout == 10.0
+        coord_ready = True
+        return 123
+
+    monkeypatch.setattr("safeyolo.commands.factory.coord_nats.start_server", start_coord)
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.coord_api.bootstrap",
+        lambda: "sy-test" if coord_ready else pytest.fail("coord bootstrap preceded runtime"),
+    )
+
+    path = _factory_file(tmp_path)
+    applied = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
+    assert applied.exit_code == 0, applied.output
+
+    pids: list[int] = []
+    try:
+        result = cli_runner.invoke(app, ["factory", "run", "backlog"])
+
+        assert result.exit_code == 0, result.output
+        assert coord_ready
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not all(marker.exists() for marker in markers.values()):
+            time.sleep(0.01)
+        assert all(marker.exists() for marker in markers.values())
+        pids = [int(marker.read_text()) for marker in markers.values()]
+        for pid in pids:
+            os.kill(pid, 0)
+    finally:
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+
+def test_factory_run_does_not_boot_workers_without_coord(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    payload = {
+        "roles": {
+            "coordinator": {"agent": "relay"},
+            "owner": {"agent": "forge"},
+            "reviewer": {"agent": "lens"},
+        },
+    }
+    launched: list[str] = []
+
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.load_agent",
+        lambda name: {"folder": str(workspace)},
+    )
+    monkeypatch.setattr("safeyolo.commands.factory._check_project_ownership", lambda *_args: None)
+    monkeypatch.setattr("safeyolo.commands.factory._run_host_script_for_agent", lambda **_kwargs: None)
+    monkeypatch.setattr("safeyolo.commands.factory.mutate_agent", lambda *_args: None)
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.coord_nats.start_server",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("nats unavailable")),
+    )
+    monkeypatch.setattr(
+        "safeyolo.commands.factory._run_agent",
+        lambda name, **_kwargs: launched.append(name) or 0,
+    )
+
+    from safeyolo.commands.factory import _run_snapshot
+
+    with pytest.raises(FactoryContractError, match="coord runtime failed to start: nats unavailable"):
+        _run_snapshot(tmp_path / "snapshot.json", payload)
+
+    assert launched == []
 
 
 @pytest.mark.parametrize(

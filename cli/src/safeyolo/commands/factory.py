@@ -13,6 +13,8 @@ from rich.console import Console
 
 from ..agents_store import load_agent, mutate_agent
 from ..config import find_config_dir
+from ..coord import api as coord_api
+from ..coord import nats_runtime as coord_nats
 from ..factory_contract import (
     FactoryContract,
     FactoryContractError,
@@ -161,11 +163,18 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
         except KeyError as exc:
             raise FactoryContractError(f"agent {agent_name!r} was removed during factory setup") from exc
 
+    try:
+        coord_nats.start_server(ready_timeout=10.0)
+        coord_api.bootstrap()
+    except Exception as exc:
+        raise FactoryContractError(f"coord runtime failed to start: {exc}") from exc
+
     for _role_name, agent_name, _metadata in configured:
         exit_code = _run_agent(
             agent_name,
             yolo=True,
             detach=True,
+            run_command_detached=True,
             no_snapshot=True,
         )
         if exit_code != 0:
