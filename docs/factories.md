@@ -109,6 +109,37 @@ and decoded text. `factory run` prints the bound snapshot path, byte counts,
 hashes, and operator edge before it starts agents, so the operator can compare
 the running object with the approved check output.
 
+## Diagnose an active factory
+
+Inspect the complete active factory before you rely on it:
+
+```sh
+safeyolo factory doctor backlog
+```
+
+The command reads existing host and sandbox state. It does not start, stop,
+repair, apply, or change the factory. Each output line has one status:
+
+- `PASS` means that the component has the expected state.
+- `WARN` means that a role is stopped. A stopped role is valid persistent
+  state, but the factory is not fully running.
+- `FAIL` means that a required component is missing, corrupt, mismatched, or
+  not running. Each failure names a narrow recovery command or file category.
+
+The command checks the active snapshot and role bindings, agent identity and
+storage, workspaces, room membership and grants, the traffic proxy, and the
+managed Coord NATS runtime. It also checks each staged command, supervisor
+configuration, role contract, Codex Model Context Protocol (MCP) binding,
+checkpoint, and running process tree. A healthy traffic proxy does not hide a
+stopped NATS runtime. A running sandbox fails the check if the supervisor,
+Codex process, or Coord MCP server is absent.
+
+The summary is `PASS`, `WARN`, or `FAIL`. `FAIL` returns a nonzero exit status.
+`WARN` returns zero so that an operator can distinguish a deliberately stopped
+factory from corrupt state. The command reports checkpoint counts and process
+identity, but it does not print message bodies, role-contract contents,
+credentials, or inspected payloads.
+
 ## Live upgrade
 
 For a running legacy backlog factory:
