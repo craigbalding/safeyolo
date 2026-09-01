@@ -18,6 +18,9 @@ existing fixed operator decision when one is required. A question or answer
 alone changes no intake posture, creates no handoff, and persists no workflow
 object.
 
+Send an ordinary answer with no agent attention. Do not wake the room to
+report status to the operator.
+
 The declared leading types remain optional compatibility shorthand with these
 bounded meanings:
 
@@ -80,3 +83,8 @@ Forge, one Forge `REVIEW_READY` to Lens, one exact Lens disposition back to
 Forge, and one Forge terminal back to Relay. Each agent transition is accepted
 only from the bound canonical sender and room with the exact declared leading
 type and attention correlation. Relay stays quiet between these transitions.
+
+Do not expect a new `ACCEPTED` after a Lens disposition. The disposition
+resumes Forge's existing task. If no later `REVIEW_READY` exists, report that
+the updated candidate is pending; do not report that Forge rejected or did not
+accept the disposition.

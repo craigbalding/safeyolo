@@ -3,15 +3,35 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
+import hashlib
+import os
+import re
+import subprocess
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "tests" / "assurance.toml"
 TEST_ROOTS = (ROOT / "tests", ROOT / "cli" / "tests")
 EXCLUDED_DIRS = {"__pycache__", "uds-networking"}
+FACTORY_ACCEPTANCE_KEYS = {"id", "description", "node", "sha256"}
+FACTORY_ACCEPTANCE_ID = re.compile(r"[A-Z][A-Z0-9-]{2,63}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class FactoryAcceptance:
+    """One named factory behavior and the test that proves it."""
+
+    behavior_id: str
+    description: str
+    node: str
+    sha256: str
 
 
 def _is_true_keyword(call: ast.Call, name: str) -> bool:
@@ -219,13 +239,250 @@ def audit_manifest(manifest: Path = MANIFEST) -> list[str]:
     return issues
 
 
-def main() -> int:
-    issues = audit_repository()
+def _factory_acceptance_entries(
+    manifest: Path,
+    *,
+    allow_placeholder_digest: bool = False,
+) -> tuple[list[FactoryAcceptance], list[str]]:
+    """Load and validate the factory acceptance entries."""
+    config = tomllib.loads(manifest.read_text())
+    raw_entries = config.get("factory_acceptance", [])
+    if not isinstance(raw_entries, list):
+        return [], ["factory_acceptance must be an array of tables"]
+
+    entries: list[FactoryAcceptance] = []
+    issues: list[str] = []
+    seen_ids: set[str] = set()
+    for index, raw in enumerate(raw_entries, start=1):
+        label = f"factory_acceptance entry {index}"
+        if not isinstance(raw, dict) or set(raw) != FACTORY_ACCEPTANCE_KEYS:
+            issues.append(f"{label}: expected exactly {sorted(FACTORY_ACCEPTANCE_KEYS)}")
+            continue
+        behavior_id = raw["id"]
+        description = raw["description"]
+        node = raw["node"]
+        digest = raw["sha256"]
+        if not isinstance(behavior_id, str) or not FACTORY_ACCEPTANCE_ID.fullmatch(behavior_id):
+            issues.append(f"{label}: id must be a stable uppercase identifier")
+            continue
+        if behavior_id in seen_ids:
+            issues.append(f"factory acceptance {behavior_id}: duplicate id")
+            continue
+        seen_ids.add(behavior_id)
+        if not isinstance(description, str) or not description.strip():
+            issues.append(f"factory acceptance {behavior_id}: description is empty")
+            continue
+        if not isinstance(node, str) or node.count("::") != 1:
+            issues.append(f"factory acceptance {behavior_id}: node must identify one test function")
+            continue
+        if not isinstance(digest, str) or (not allow_placeholder_digest and not SHA256.fullmatch(digest)):
+            issues.append(f"factory acceptance {behavior_id}: sha256 is invalid")
+            continue
+        entries.append(FactoryAcceptance(behavior_id, description, node, digest))
+    return entries, issues
+
+
+def _test_function_source(root: Path, node: str) -> str:
+    """Return one top-level pytest function, including its decorators."""
+    relative, function_name = node.split("::", 1)
+    path = (root / relative).resolve()
+    allowed_roots = ((root / "tests").resolve(), (root / "cli" / "tests").resolve())
+    if not any(path.is_relative_to(test_root) for test_root in allowed_roots):
+        raise ValueError("test path is outside the configured test roots")
+    if not path.is_file():
+        raise ValueError(f"test file does not exist: {relative}")
+
+    source = path.read_text()
+    tree = ast.parse(source, filename=str(path))
+    matches = [
+        item
+        for item in tree.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == function_name
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"expected one top-level test function named {function_name}")
+    function = matches[0]
+    first_line = min([function.lineno, *(decorator.lineno for decorator in function.decorator_list)])
+    lines = source.splitlines(keepends=True)
+    return "".join(lines[first_line - 1 : function.end_lineno])
+
+
+def factory_acceptance_digest(root: Path, node: str) -> str:
+    """Return the digest for one exact test function."""
+    source = _test_function_source(root, node)
+    return hashlib.sha256(source.encode()).hexdigest()
+
+
+def audit_factory_acceptance(
+    manifest: Path = MANIFEST,
+    *,
+    root: Path = ROOT,
+) -> list[str]:
+    """Check that every named factory acceptance test is present and unchanged."""
+    entries, issues = _factory_acceptance_entries(manifest)
+    for entry in entries:
+        try:
+            actual = factory_acceptance_digest(root, entry.node)
+        except (OSError, SyntaxError, UnicodeError, ValueError) as error:
+            issues.append(f"factory acceptance {entry.behavior_id}: {error}")
+            continue
+        if actual != entry.sha256:
+            issues.append(
+                f"factory acceptance {entry.behavior_id}: test changed; "
+                "review the behavior, then run "
+                "`uv run python scripts/check_test_assurance.py "
+                "--update-factory-acceptance`"
+            )
+    return issues
+
+
+def update_factory_acceptance(
+    manifest: Path = MANIFEST,
+    *,
+    root: Path = ROOT,
+) -> list[str]:
+    """Refresh only the digests in the factory acceptance manifest."""
+    entries, issues = _factory_acceptance_entries(manifest, allow_placeholder_digest=True)
+    if issues:
+        return issues
+    digests: dict[str, str] = {}
+    for entry in entries:
+        try:
+            digests[entry.behavior_id] = factory_acceptance_digest(root, entry.node)
+        except (OSError, SyntaxError, UnicodeError, ValueError) as error:
+            issues.append(f"factory acceptance {entry.behavior_id}: {error}")
+    if issues:
+        return issues
+
+    output: list[str] = []
+    current_id: str | None = None
+    in_factory_entry = False
+    id_line = re.compile(r'^id = "([A-Z][A-Z0-9-]{2,63})"$')
+    digest_line = re.compile(r'^sha256 = "[^"]*"$')
+    replaced: set[str] = set()
+    for line in manifest.read_text().splitlines(keepends=True):
+        stripped = line.rstrip("\r\n")
+        if stripped == "[[factory_acceptance]]":
+            in_factory_entry = True
+            current_id = None
+        elif stripped.startswith("[["):
+            in_factory_entry = False
+            current_id = None
+        elif in_factory_entry and (match := id_line.fullmatch(stripped)):
+            current_id = match.group(1)
+        elif in_factory_entry and current_id in digests and digest_line.fullmatch(stripped):
+            newline = "\n" if line.endswith("\n") else ""
+            line = f'sha256 = "{digests[current_id]}"{newline}'
+            replaced.add(current_id)
+        output.append(line)
+    missing = sorted(set(digests) - replaced)
+    if missing:
+        return [f"factory acceptance digest line was not found for {item}" for item in missing]
+    manifest.write_text("".join(output))
+    return []
+
+
+def factory_acceptance_nodes(manifest: Path = MANIFEST) -> list[str]:
+    """Return the unique named pytest nodes in manifest order."""
+    entries, issues = _factory_acceptance_entries(manifest)
+    if issues:
+        raise ValueError("; ".join(issues))
+    return list(dict.fromkeys(entry.node for entry in entries))
+
+
+def _acceptance_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    entries = config.get("factory_acceptance", [])
+    if not isinstance(entries, list):
+        return {}
+    return {entry["id"]: entry for entry in entries if isinstance(entry, dict) and isinstance(entry.get("id"), str)}
+
+
+def changed_factory_acceptance_ids(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> list[str]:
+    """Return behavior IDs whose manifest entry changed."""
+    old = _acceptance_map(before)
+    new = _acceptance_map(after)
+    return sorted(key for key in old.keys() | new.keys() if old.get(key) != new.get(key))
+
+
+def report_factory_acceptance_changes(
+    range_spec: str,
+    *,
+    root: Path = ROOT,
+    manifest: Path = MANIFEST,
+) -> list[str]:
+    """Report intentional acceptance-manifest changes without blocking them."""
+    if ".." not in range_spec:
+        return ["factory acceptance range must use BASE..HEAD"]
+    base = range_spec.split("..", 1)[0]
+    relative = manifest.relative_to(root).as_posix()
+    completed = subprocess.run(
+        ["git", "show", f"{base}:{relative}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    before = tomllib.loads(completed.stdout) if completed.returncode == 0 else {}
+    after = tomllib.loads(manifest.read_text())
+    changed = changed_factory_acceptance_ids(before, after)
+    if not changed:
+        return []
+
+    joined = ", ".join(changed)
+    message = f"Factory acceptance changed: {joined}"
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning title=Factory acceptance changed::{message}")
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with Path(summary).open("a") as stream:
+                stream.write("## Factory acceptance changed\n\n")
+                stream.write(f"Behavior IDs: {joined}\n")
+    else:
+        print(message)
+    return []
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--update-factory-acceptance", action="store_true")
+    parser.add_argument("--list-factory-acceptance-nodes", action="store_true")
+    parser.add_argument("--range", dest="range_spec")
+    args = parser.parse_args(argv)
+
+    if args.update_factory_acceptance:
+        issues = update_factory_acceptance()
+        if issues:
+            print("Factory acceptance update failed:")
+            for issue in issues:
+                print(f"  - {issue}")
+            return 1
+        print("Factory acceptance digests updated")
+        return 0
+
+    if args.list_factory_acceptance_nodes:
+        try:
+            print("\n".join(factory_acceptance_nodes()))
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 1
+        return 0
+
+    issues = [*audit_repository(), *audit_factory_acceptance()]
     if issues:
         print("Test assurance violations:")
         for issue in issues:
             print(f"  - {issue}")
         return 1
+    if args.range_spec:
+        issues = report_factory_acceptance_changes(args.range_spec)
+        if issues:
+            print("Test assurance change report failed:")
+            for issue in issues:
+                print(f"  - {issue}")
+            return 1
     print("Test assurance checks passed")
     return 0
 

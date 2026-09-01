@@ -17,6 +17,16 @@ from safeyolo.cli import app
 from safeyolo.factory_contract import FactoryContractError, load_active_snapshot, load_factory_file
 from safeyolo.platform import AgentPlatform
 
+BACKLOG_COORDINATOR_CONTRACT = Path(__file__).parents[2] / "docs/factories/backlog-coordinator.md"
+
+
+def test_backlog_coordinator_status_contract_is_low_noise():
+    contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+
+    assert "Send an ordinary answer with no agent attention." in contract
+    assert "Do not expect a new `ACCEPTED` after a Lens disposition." in contract
+    assert "report that the updated candidate is pending" in contract
+
 
 def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> Path:
     (tmp_path / "coordinator.md").write_text("# Coordinator\n\nDelegate exact tasks.\n")

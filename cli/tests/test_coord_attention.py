@@ -226,6 +226,7 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
             sender_agent_name="alice",
             notify="none",
         )
+        assert answer["attention_intent"] == {"mode": "none"}
         coordinator.consume(
             send_event(
                 answer,
