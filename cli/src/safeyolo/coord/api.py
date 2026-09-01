@@ -911,6 +911,7 @@ async def _publish_prepared_message(
         "envelope": envelope,
         "sequence": sequence,
         "attention_status": attention_status,
+        "attention_intent": manifest.public_intent(),
     }
 
 
@@ -984,6 +985,13 @@ async def read_room(
     for env in envelopes:
         m = {k: v for k, v in env.items() if not k.startswith("_")}
         m["sequence"] = env["_stream_seq"]
+        if principal_kind == "operator":
+            manifest = attention.manifest_for_envelope(env)
+            m["attention_intent"] = (
+                manifest.public_intent()
+                if manifest is not None
+                else {"mode": "room"}
+            )
         messages.append(m)
     messages = _trim_page_to_byte_bound(messages)
     next_cursor = messages[-1]["sequence"] if messages else since_sequence

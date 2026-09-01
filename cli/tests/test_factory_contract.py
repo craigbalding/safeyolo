@@ -35,6 +35,8 @@ def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> 
         '[roles.reviewer]\nagent = "lens"\ncontract = "reviewer.md"\n\n'
         '[[handoffs]]\nrequest = "TASK"\nfrom = "coordinator"\nto = "owner"\n'
         'responses = ["DONE", "BLOCKED", "FAILED"]\n\n'
+        '[[handoffs]]\nrequest = "TASK"\nfrom = "coordinator"\nto = "reviewer"\n'
+        'responses = ["DONE", "BLOCKED", "FAILED"]\n\n'
         '[[handoffs]]\nrequest = "REVIEW_READY"\nfrom = "owner"\nto = "reviewer"\n'
         'responses = ["READY", "CHANGES_REQUIRED", "BLOCKED"]\n' + extra
     )
@@ -53,6 +55,7 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     assert "bytes=24" in result.output
     assert "sha256=" in result.output
     assert "operator_input=operator to=coordinator" in result.output
+    assert "handoff=TASK from=coordinator to=reviewer" in result.output
     assert "handoff=REVIEW_READY from=owner to=reviewer" in result.output
 
 

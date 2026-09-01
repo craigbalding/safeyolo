@@ -173,11 +173,13 @@ for the revoked generation.
 JetStream remains the canonical message store and the recovery source for the
 message's generated attention intent. SafeYolo persists a versioned internal
 attention manifest in NATS headers or equivalent internal JetStream metadata;
-it is not part of the ordinary agent-visible message envelope and
-`read_room()` does not expose target metadata. Every message written by
-Stage-1 code has an internal manifest, including `notify=none` and raw omitted
-`notify`. A missing manifest therefore identifies pre-Stage-1 retained
-history, whose legacy room-wake semantics remain intact. Malformed or
+it is not part of the ordinary agent-visible message envelope. Agent
+`read_room()` calls do not expose target metadata. Operator reads and accepted
+send results expose only the canonical public mode (`none`, `room`, or
+`targeted`), without recipient identities or membership counts. Every message
+written by Stage-1 code has an internal manifest, including `notify=none` and
+raw omitted `notify`. A missing manifest therefore identifies pre-Stage-1
+retained history, whose legacy room-wake semantics remain intact. Malformed or
 unsupported Stage-1 intent is a storage-integrity error and fails loud rather
 than being treated as no notification.
 

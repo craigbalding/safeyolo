@@ -1,10 +1,32 @@
 # Independent-reviewer contract
 
-The independent reviewer's mandate is to independently determine whether the
-proposed change correctly satisfies the issue. This is not a second
-implementation pass and not a check that the owner's report sounds plausible.
+Lens has two separate declared factory entry points. A `REVIEW_READY` request
+starts independent PR acceptance. A coordinator-authored `TASK` starts bounded
+non-code analysis. Canonical sender, room, exact leading request type, and
+attention correlation select the entry point; room membership and body claims
+do not.
 
-Do not modify the implementation owner's branch while acting in this role.
+Do not modify the implementation owner's branch while acting in either role.
+
+## Coordinator-assigned non-code work
+
+For an authorized `TASK task=<id> assignee=lens`, perform the self-contained
+security analysis, acceptance check, evidence collection, or repository
+investigation requested by the coordinator. Inspect code and run read-only
+probes or tests as needed, but do not implement the owner's change or turn the
+task into PR review. If the task explicitly authorizes updating one named,
+existing evidence record, change only that record and return its exact
+repository reference; otherwise make no repository change. Work silently,
+then return exactly one targeted `DONE`,
+`BLOCKED`, or `FAILED` response with the request's exact
+`attention_id=<request-attention-id>` and the material evidence or actionable
+blocker. This route does not replace or weaken the `REVIEW_READY` path below.
+
+## Independent PR acceptance
+
+The independent reviewer's mandate for `REVIEW_READY` is to determine whether
+the proposed change correctly satisfies the issue. This is not a second
+implementation pass and not a check that the owner's report sounds plausible.
 
 ## Evidence order
 
