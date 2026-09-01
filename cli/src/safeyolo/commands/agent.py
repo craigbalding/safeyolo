@@ -384,6 +384,7 @@ def _run_agent(
     extra_mounts: list[str] | None = None,
     extra_ports: list[str] | None = None,
     detach: bool = False,
+    run_command_detached: bool = False,
     no_snapshot: bool = False,
     rename_tmux_window: bool = False,
 ) -> int:
@@ -392,6 +393,8 @@ def _run_agent(
     Shared logic used by both `add` (auto-run) and `run` commands.
 
     detach: Boot VM in background and return after boot confirmation.
+    run_command_detached: start the resolved agent command before returning
+        from a detached run.
     no_snapshot: skip snapshot capture and restore for this run;
         don't touch an existing snapshot on disk either way.
     rename_tmux_window: rename the invoking tmux window to `name` once
@@ -803,6 +806,30 @@ def _run_agent(
         # --- Post-boot (shared by restore and cold-boot success paths) ----
         if plat.is_sandbox_running(name):
             if detach:
+                if run_command_detached:
+                    from ..vm import get_agent_home_dir
+                    command_host = get_agent_home_dir(name) / ".safeyolo-command"
+                    full_cmd = _linux_interactive_command(
+                        command_host,
+                        effective_agent_args,
+                        agent_args,
+                    )
+                    if full_cmd is None:
+                        plat.stop_sandbox(name)
+                        raise RuntimeError("detached agent has no command to run")
+                    launch_cmd = (
+                        f"nohup {full_cmd} >>\"$HOME/.safeyolo-command.log\" "
+                        "2>&1 </dev/null & worker=$!; "
+                        "sleep 0.2; kill -0 \"$worker\""
+                    )
+                    if plat.exec_in_sandbox(
+                        name,
+                        command=launch_cmd,
+                        user="agent",
+                        interactive=False,
+                    ) != 0:
+                        plat.stop_sandbox(name)
+                        raise RuntimeError("detached agent command failed to start")
                 _print_detached_guidance(name)
                 _t("detach return")
                 _timing_emit()
