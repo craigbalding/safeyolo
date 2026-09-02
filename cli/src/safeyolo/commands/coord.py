@@ -13,6 +13,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import UTC, date, datetime
@@ -825,8 +826,23 @@ def chat(
 
     Interactive mode displays incoming messages while the operator types.
     The current draft remains at the prompt. Use --observe only when a
-    read-only room tail is useful.
+    read-only room tail is useful. Interactive mode requires a terminal on
+    both stdin and stdout; use a terminal session for operator sends.
     """
+    if not observe:
+        missing = []
+        if not sys.stdin.isatty():
+            missing.append("stdin")
+        if not sys.stdout.isatty():
+            missing.append("stdout")
+        if missing:
+            typer.echo(
+                "interactive coord chat requires a terminal on "
+                f"{' and '.join(missing)}; piped input is not accepted. "
+                "Use --observe for a non-interactive room tail.",
+                err=True,
+            )
+            raise typer.Exit(2)
     api.bootstrap()
     if observe and to is not None:
         console.print("[red]--to requires interactive mode[/]")
