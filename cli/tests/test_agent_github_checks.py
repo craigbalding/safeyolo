@@ -179,6 +179,24 @@ def test_malformed_intake_reference_fails_before_evidence_is_interpreted() -> No
     assert result["request_errors"][0]["field"] == "request.repository"
 
 
+def test_malformed_optional_intake_facts_are_unavailable() -> None:
+    helper = _load_helper()
+    payload = _intake_payload()
+    payload["evidence"]["repository"]["facts"]["default_branch"] = {"bad": 1}
+    payload["evidence"]["issue"]["facts"]["url"] = 17
+
+    result = helper.evaluate_intake(payload)
+
+    assert result["passed"] is False
+    assert result["outcome"] == "evidence_unavailable"
+    assert result["unavailable_evidence"] == [
+        {"field": "repository.default_branch", "reason": "malformed"},
+        {"field": "issue.url", "reason": "malformed"},
+    ]
+    assert "default_branch" not in result["facts"]["repository"]
+    assert "url" not in result["facts"]["issue"]
+
+
 def test_candidate_success_returns_base_head_tree_issue_and_current_evidence() -> None:
     helper = _load_helper()
 
@@ -253,6 +271,30 @@ def test_malformed_candidate_fact_is_unavailable_and_not_a_mismatch() -> None:
     }
     assert result["failed_conditions"] == []
     assert result["facts"]["evidence_currency"]["review"]["status"] == "unavailable"
+
+
+def test_malformed_optional_candidate_facts_are_unavailable() -> None:
+    helper = _load_helper()
+    payload = _candidate_payload()
+    payload["evidence"]["pull_request"]["facts"].update(
+        state=["open"], draft="no", url={"bad": 1}
+    )
+    payload["evidence"]["linked_issue"]["facts"]["url"] = 17
+
+    result = helper.evaluate_candidate(payload)
+
+    assert result["passed"] is False
+    assert result["outcome"] == "evidence_unavailable"
+    assert result["unavailable_evidence"] == [
+        {"field": "pull_request.state", "reason": "malformed"},
+        {"field": "pull_request.draft", "reason": "malformed"},
+        {"field": "pull_request.url", "reason": "malformed"},
+        {"field": "linked_issue.url", "reason": "malformed"},
+    ]
+    assert "state" not in result["facts"]["pull_request"]
+    assert "draft" not in result["facts"]["pull_request"]
+    assert "url" not in result["facts"]["pull_request"]
+    assert "url" not in result["facts"]["linked_issue"]
 
 
 def test_candidate_requires_an_exact_linked_issue_reference() -> None:

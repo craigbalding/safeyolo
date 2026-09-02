@@ -107,7 +107,7 @@ def _evidence_facts(
     status = block.get("status")
     if status != "ok":
         reason = block.get("reason")
-        if reason not in _UNAVAILABLE_REASONS:
+        if not isinstance(reason, str) or reason not in _UNAVAILABLE_REASONS:
             reason = "unavailable"
         unavailable.append({"field": name, "reason": reason})
         return {}
@@ -158,6 +158,24 @@ def _reject_malformed_fact(
         facts.pop(field)
 
 
+def _is_github_resource_url(
+    value: Any,
+    repository: Any,
+    resource: str,
+    number: Any,
+) -> bool:
+    if (
+        not isinstance(value, str)
+        or not isinstance(repository, str)
+        or not _REPOSITORY_RE.fullmatch(repository)
+        or not _is_int(number)
+        or number < 1
+    ):
+        return False
+    expected = f"https://github.com/{repository}/{resource}/{number}"
+    return value.casefold() == expected.casefold()
+
+
 def evaluate_intake(payload: Any) -> dict[str, Any]:
     """Compare explicit intake expectations with normalized connector evidence."""
     request, errors = _request(payload, "intake")
@@ -179,7 +197,8 @@ def evaluate_intake(payload: Any) -> dict[str, Any]:
             errors.append(
                 {"field": f"request.expectations.{field}", "reason": "must be a string"}
             )
-    if expectations.get("issue_type") not in {None, "issue", "pull_request"}:
+    issue_type = expectations.get("issue_type")
+    if isinstance(issue_type, str) and issue_type not in {"issue", "pull_request"}:
         errors.append(
             {
                 "field": "request.expectations.issue_type",
@@ -239,6 +258,14 @@ def evaluate_intake(payload: Any) -> dict[str, Any]:
         unavailable,
     )
     _reject_malformed_fact(
+        repository,
+        "default_branch",
+        isinstance(repository.get("default_branch"), str)
+        and bool(repository["default_branch"]),
+        "repository",
+        unavailable,
+    )
+    _reject_malformed_fact(
         issue,
         "repository",
         isinstance(issue.get("repository"), str)
@@ -256,7 +283,8 @@ def evaluate_intake(payload: Any) -> dict[str, Any]:
     _reject_malformed_fact(
         issue,
         "type",
-        issue.get("type") in {"issue", "pull_request"},
+        isinstance(issue.get("type"), str)
+        and issue["type"] in {"issue", "pull_request"},
         "issue",
         unavailable,
     )
@@ -268,6 +296,18 @@ def evaluate_intake(payload: Any) -> dict[str, Any]:
             "issue",
             unavailable,
         )
+    _reject_malformed_fact(
+        issue,
+        "url",
+        _is_github_resource_url(
+            issue.get("url"),
+            issue.get("repository"),
+            "issues",
+            issue.get("number"),
+        ),
+        "issue",
+        unavailable,
+    )
     facts = {"repository": repository, "issue": issue}
 
     _mismatch(mismatches, "repository.full_name", request["repository"], repository.get("full_name"))
@@ -410,6 +450,33 @@ def evaluate_candidate(payload: Any) -> dict[str, Any]:
             "pull_request",
             unavailable,
         )
+    _reject_malformed_fact(
+        pull_request,
+        "state",
+        isinstance(pull_request.get("state"), str)
+        and pull_request["state"] in {"open", "closed"},
+        "pull_request",
+        unavailable,
+    )
+    _reject_malformed_fact(
+        pull_request,
+        "draft",
+        isinstance(pull_request.get("draft"), bool),
+        "pull_request",
+        unavailable,
+    )
+    _reject_malformed_fact(
+        pull_request,
+        "url",
+        _is_github_resource_url(
+            pull_request.get("url"),
+            pull_request.get("repository"),
+            "pull",
+            pull_request.get("number"),
+        ),
+        "pull_request",
+        unavailable,
+    )
     for field in ("commit_sha", "tree_sha"):
         _reject_malformed_fact(
             tree,
@@ -436,7 +503,8 @@ def evaluate_candidate(payload: Any) -> dict[str, Any]:
     _reject_malformed_fact(
         issue,
         "type",
-        issue.get("type") in {"issue", "pull_request"},
+        isinstance(issue.get("type"), str)
+        and issue["type"] in {"issue", "pull_request"},
         "linked_issue",
         unavailable,
     )
@@ -448,6 +516,18 @@ def evaluate_candidate(payload: Any) -> dict[str, Any]:
             "linked_issue",
             unavailable,
         )
+    _reject_malformed_fact(
+        issue,
+        "url",
+        _is_github_resource_url(
+            issue.get("url"),
+            issue.get("repository"),
+            "issues",
+            issue.get("number"),
+        ),
+        "linked_issue",
+        unavailable,
+    )
 
     observed_head = pull_request.get("head_sha")
     if tree and observed_head and tree.get("commit_sha") != observed_head:
