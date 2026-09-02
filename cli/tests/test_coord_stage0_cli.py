@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
+import pty
+import select
 import subprocess
 import sys
 
@@ -397,6 +400,73 @@ def test_chat_rejects_target_in_observe_mode(monkeypatch):
     )
     assert result.exit_code == 1
     assert "--to requires interactive mode" in result.output
+
+
+def test_chat_rejects_piped_interactive_input_without_terminal_controls():
+    """Piped input must fail before prompt-toolkit can emit cursor queries."""
+    code = (
+        "import sys; from safeyolo.cli import app; "
+        "sys.argv = ['safeyolo', 'coord', 'chat', 'piped-room']; app()"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        input="operator direction\n",
+        capture_output=True,
+        text=True,
+        env={**os.environ, "SAFEYOLO_ALLOW_ROOT": "1"},
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 2, output
+    assert "interactive coord chat requires a terminal on stdin" in output
+    assert "piped input is not accepted" in output
+    assert "--observe" in output
+    assert "\x1b" not in output
+    assert ";1R" not in output
+
+
+def test_chat_rejects_piped_stdin_with_terminal_stdout():
+    """The stdin pipe case is safe even when output is a real terminal."""
+    code = (
+        "import sys; from safeyolo.cli import app; "
+        "sys.argv = ['safeyolo', 'coord', 'chat', 'piped-room']; app()"
+    )
+    master_fd, slave_fd = pty.openpty()
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-c", code],
+            stdin=subprocess.PIPE,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env={**os.environ, "SAFEYOLO_ALLOW_ROOT": "1"},
+        )
+    finally:
+        os.close(slave_fd)
+
+    assert process.stdin is not None
+    process.stdin.write(b"operator direction\n")
+    process.stdin.close()
+    process.wait(timeout=10)
+
+    output = bytearray()
+    while True:
+        readable, _, _ = select.select([master_fd], [], [], 1.0)
+        if not readable:
+            break
+        try:
+            chunk = os.read(master_fd, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        output.extend(chunk)
+    os.close(master_fd)
+
+    rendered = bytes(output).decode("utf-8", errors="replace")
+    assert process.returncode == 2, rendered
+    assert "interactive coord chat requires a terminal on stdin" in rendered
+    assert "\x1b" not in rendered
+    assert ";1R" not in rendered
 
 
 def test_watch_accepts_coord_event_and_deduplicates_event_id(capsys):
