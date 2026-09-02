@@ -27,11 +27,13 @@ import sqlite3
 
 from safeyolo.coord import nats_runtime as nr
 
-# The historical revision predates the internal dynamic-port test contract.
-# Point its real nats-py client at the candidate-owned server before importing
-# the historical API module. Production defaults in both revisions stay intact.
-nr.NATS_CLIENT_PORT = int(os.environ["SAFEYOLO_NATS_TEST_CLIENT_PORT"])
-nr.NATS_MONITOR_PORT = int(os.environ["SAFEYOLO_NATS_TEST_MONITOR_PORT"])
+# A fixed-port revision cannot read the candidate-owned dynamic endpoint.
+# Point that revision at the selected ports before importing its API module.
+# A dynamic-port revision inherits the test instance and reads its endpoint
+# record. Keep its production constants unchanged so endpoint validation works.
+if not hasattr(nr, "_test_ports_from_pidfile"):
+    nr.NATS_CLIENT_PORT = int(os.environ["SAFEYOLO_NATS_TEST_CLIENT_PORT"])
+    nr.NATS_MONITOR_PORT = int(os.environ["SAFEYOLO_NATS_TEST_MONITOR_PORT"])
 
 from safeyolo.coord import api, store
 
