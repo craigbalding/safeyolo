@@ -248,6 +248,8 @@ def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_ru
     assert result.exit_code == 0, result.output
     assert "PASS component=snapshot" in result.output
     assert "PASS component=coord-nats managed NATS is healthy" in result.output
+    assert result.output.count("PASS component=agent-room ") == 3
+    assert result.output.count("PASS component=agent-room-grant ") == 6
     assert "PASS component=staging role=owner agent=forge" in result.output
     assert "PASS component=processes role=reviewer agent=lens" in result.output
     assert "PASS component=coord-brief room=backlog state=none" in result.output
@@ -349,6 +351,30 @@ def test_factory_doctor_reports_present_brief_metadata_without_body(
     assert "--expected-revision 7" in output
     assert "Private operator meaning" not in result.output
     assert "Do not print this body" not in result.output
+
+
+def test_factory_doctor_reports_missing_agent_room_grant(
+    cli_runner,
+    factory_runtime,
+    monkeypatch,
+):
+    def inspect(room, principals):
+        permissions = {
+            f"{kind}:{principal_id}": ["send", "receive"]
+            for kind, principal_id in principals
+        }
+        if room == "lens-agent":
+            lens = next(key for key in permissions if key.startswith("agent:"))
+            permissions[lens] = ["receive"]
+        return {"room_id": f"room-{room}", "room_name": room, "permissions": permissions}
+
+    monkeypatch.setattr("safeyolo.factory_doctor.coord_api.inspect_room_access", inspect)
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1
+    assert "FAIL component=agent-room-grant role=reviewer agent=lens" in result.output
+    assert "room=lens-agent missing=send" in result.output
 
 
 def test_factory_doctor_rejects_a_live_unrelated_proxy_pid(cli_runner, factory_runtime, tmp_config_dir, monkeypatch):

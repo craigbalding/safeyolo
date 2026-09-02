@@ -7,6 +7,7 @@ import importlib.util
 import json
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -78,6 +79,41 @@ def _factory_config(module: ModuleType, tmp_path: Path, role: str):
         factory_operator_types=("ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"),
         contract_sha256="a" * 64,
     )
+
+
+def test_config_accepts_one_optional_agent_room(supervisor_module, tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agent_name": "lens",
+                "agent_room": "lens-agent",
+                "rooms": ["backlog"],
+                "coordinators": ["relay"],
+            }
+        )
+    )
+
+    config = supervisor_module.Config.load(path)
+
+    assert config.agent_room == "lens-agent"
+
+
+def test_config_rejects_invalid_agent_room(supervisor_module, tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agent_name": "lens",
+                "agent_room": "not a room",
+                "rooms": ["backlog"],
+                "coordinators": ["relay"],
+            }
+        )
+    )
+
+    with pytest.raises(supervisor_module.SupervisorError, match="agent_room"):
+        supervisor_module.Config.load(path)
 
 
 def _resolved(
@@ -668,6 +704,48 @@ def test_factory_admits_canonical_operator_prose_to_coordinator(
     assert '"accepts":"natural_language"' in prompt
 
 
+def test_factory_agent_room_admits_operator_input_to_worker(
+    supervisor_module,
+    tmp_path,
+):
+    module = supervisor_module
+    attention_id = "attn-" + "4" * 32
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    config = _factory_config(
+        module,
+        tmp_path,
+        "reviewer",
+    )
+    config = replace(config, agent_room="lens-agent")
+    consumer = module.EventConsumer(
+        config,
+        state,
+        state_path,
+        {"room-1": "backlog", "room-2": "lens-agent"},
+    )
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [
+                _resolved(
+                    attention_id,
+                    sender_kind="operator",
+                    body="Report your current wait cursor.",
+                    room_id="room-2",
+                )
+            ],
+        )
+    )
+
+    assert state["in_flight"][0]["room_name"] == "lens-agent"
+    assert state["in_flight"][0]["requires_terminal"] is False
+    prompt = module.build_prompt(config, state, consumer.room_ids)
+    assert "direct operator direction" in prompt
+
+
 def test_factory_status_question_creates_no_persisted_workflow_object(
     supervisor_module,
     tmp_path,
@@ -816,10 +894,7 @@ def test_factory_canonical_operator_to_terminal_chain(supervisor_module, tmp_pat
     )
     assert lens_state["in_flight"][0]["requires_terminal"] is True
 
-    ready_body = (
-        f"READY issue=#480 pr=#485 head={'a' * 40} "
-        f"attention_id={review_attention}"
-    )
+    ready_body = f"READY issue=#480 pr=#485 head={'a' * 40} attention_id={review_attention}"
     lens.consume(_terminal_event(review_attention, body=ready_body, sender="lens"))
     assert lens_state["in_flight"] == []
     forge = module.EventConsumer(
@@ -1013,9 +1088,7 @@ def test_factory_tracks_concurrent_forge_and_lens_tasks_across_restart(
     )
 
     assert state["awaiting_handoffs"] == []
-    assert [item["attention_id"] for item in state["in_flight"]] == [
-        forge_response_attention
-    ]
+    assert [item["attention_id"] for item in state["in_flight"]] == [forge_response_attention]
 
 
 def test_factory_rejects_persisted_handoff_correlation_that_does_not_match_request(
@@ -1386,6 +1459,28 @@ def test_preflight_requires_room_receive_authority(supervisor_module, tmp_path, 
 
     with pytest.raises(module.SupervisorError, match="receive permission"):
         module.preflight(_config(module, tmp_path))
+
+
+def test_preflight_joins_factory_and_agent_rooms(supervisor_module, tmp_path, monkeypatch):
+    module = supervisor_module
+    _stage_preflight(monkeypatch, module, tmp_path)
+    joined = []
+
+    def api(path, **kwargs):
+        if path == "/health":
+            return {"agent_api": "ok"}
+        joined.append(path)
+        return {"room_id": f"room-{len(joined)}", "permissions": ["send", "receive"]}
+
+    monkeypatch.setattr(module, "_api_json", api)
+
+    rooms = module.preflight(_config(module, tmp_path, agent_room="forge-agent"))
+
+    assert joined == [
+        "/api/coord/rooms/backlog/join",
+        "/api/coord/rooms/forge-agent/join",
+    ]
+    assert rooms == {"room-1": "backlog", "room-2": "forge-agent"}
 
 
 def test_factory_preflight_hydrates_current_brief_for_restart(
@@ -1804,3 +1899,92 @@ def test_recovery_object_uses_stdin_not_process_arguments(supervisor_module, tmp
     assert result.saw_turn_completed is True
     assert secret_task_text not in argv_file.read_text()
     assert secret_task_text in stdin_file.read_text()
+
+
+def test_agent_room_receives_each_codex_stdout_event(supervisor_module, tmp_path, monkeypatch):
+    module = supervisor_module
+    fake_codex = tmp_path / "fake-codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "print(json.dumps({'type':'thread.started','thread_id':'thread-one'}), flush=True)\n"
+        "print(json.dumps({'type':'turn.started'}), flush=True)\n"
+        "print('provider diagnostic', file=__import__('sys').stderr, flush=True)\n"
+        "print(json.dumps({'type':'turn.completed'}), flush=True)\n"
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("SAFEYOLO_CODEX_BIN", str(fake_codex))
+    sends = []
+
+    def api_json(path, *, method="GET", body=None):
+        sends.append((path, method, body))
+        return {"sequence": len(sends)}
+
+    monkeypatch.setattr(module, "_api_json", api_json)
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+
+    result = module.run_invocation(
+        _config(module, tmp_path, agent_room="forge-agent"),
+        state,
+        state_path,
+        {"room-1": "backlog", "room-2": "forge-agent"},
+        [],
+    )
+
+    assert result.saw_turn_completed is True
+    event_types = [json.loads(call[2]["body"])["type"] for call in sends]
+    assert event_types.count("safeyolo.codex.stderr") == 1
+    assert [event_type for event_type in event_types if event_type != "safeyolo.codex.stderr"] == [
+        "thread.started",
+        "turn.started",
+        "turn.completed",
+    ]
+    stderr_call = sends[event_types.index("safeyolo.codex.stderr")]
+    assert json.loads(stderr_call[2]["body"])["text"] == "provider diagnostic"
+    assert all(call[0] == "/api/coord/rooms/forge-agent/send" for call in sends)
+    assert all(call[2]["notify"] == "none" for call in sends)
+
+
+def test_supervisor_room_event_is_best_effort(supervisor_module, tmp_path, monkeypatch, capsys):
+    module = supervisor_module
+    config = _config(module, tmp_path, agent_room="forge-agent")
+    monkeypatch.setattr(
+        module,
+        "_api_json",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("coord unavailable")),
+    )
+
+    module._send_agent_room_event(config, "safeyolo.supervisor", event="started")
+
+    assert "cannot publish safeyolo.supervisor" in capsys.readouterr().err
+
+
+def test_main_publishes_supervisor_start_and_exit(supervisor_module, tmp_path, monkeypatch):
+    module = supervisor_module
+    config = _config(module, tmp_path, agent_room="forge-agent")
+    events = []
+
+    class Lock:
+        def close(self):
+            pass
+
+    class FakeSupervisor:
+        def __init__(self, *_args):
+            pass
+
+        def cycle(self):
+            return True
+
+    monkeypatch.setattr(module.Config, "load", lambda _path: config)
+    monkeypatch.setattr(module, "_lock_state", lambda _path: Lock())
+    monkeypatch.setattr(module, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(
+        module,
+        "_send_agent_room_event",
+        lambda _config, event_type, **fields: events.append((event_type, fields)),
+    )
+
+    assert module.main(["--once"]) == 0
+    assert events[0][0:2] == ("safeyolo.supervisor", {"event": "started", "pid": module.os.getpid()})
+    assert events[-1] == ("safeyolo.supervisor", {"event": "exited", "exit_code": 0})

@@ -179,6 +179,7 @@ if unreachable:
 
 config = {
     "agent_name": agent_name,
+    "agent_room": f"{agent_name}-agent",
     "rooms": [room],
     "coordinators": coordinators,
     "workspace": "/workspace",
