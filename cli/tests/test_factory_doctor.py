@@ -21,6 +21,7 @@ from safeyolo.factory_doctor import (
     _PROCESS_STAT_MARKER,
     _expected_supervised_command,
     _expected_supervisor_config,
+    _inspect_brief,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -245,6 +246,30 @@ def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_ru
     assert "SUMMARY factory=backlog status=PASS" in result.output
     assert "contract_text" not in result.output
     assert "recent_attention_ids" not in result.output
+
+
+def test_factory_doctor_does_not_invent_next_mode_for_custom_factory(monkeypatch):
+    monkeypatch.setattr(
+        "safeyolo.factory_doctor.coord_api.show_brief",
+        lambda _room: {"revision": 0, "content_hash": None, "markdown": None},
+    )
+    checks = []
+
+    _inspect_brief(
+        checks,
+        {
+            "name": "custom",
+            "room": "custom",
+            "operator_input": {"to": "coordinator", "types": ["START"]},
+        },
+    )
+
+    assert len(checks) == 1
+    assert checks[0].status == "PASS"
+    assert checks[0].detail.startswith("room=custom state=none ")
+    assert "explicit-NEXT-mode" not in checks[0].detail
+    assert "safeyolo coord brief show custom" in checks[0].detail
+    assert "--expected-revision 0" in checks[0].detail
 
 
 def test_factory_doctor_reports_present_brief_metadata_without_body(

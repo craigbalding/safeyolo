@@ -281,11 +281,14 @@ def _inspect_brief(  # DOC: docs/factories.md
     revision = current.get("revision") if isinstance(current, dict) else None
     content_hash = current.get("content_hash") if isinstance(current, dict) else None
     if revision == 0 and content_hash is None:
+        mode = ""
+        if payload["name"] == "backlog" and "NEXT" in payload["operator_input"]["types"]:
+            mode = " explicit-NEXT-mode=valid"
         checks.append(
             FactoryDoctorCheck(
                 "PASS",
                 "coord-brief",
-                f"room={room_name} state=none explicit-NEXT-mode=valid "
+                f"room={room_name} state=none{mode} "
                 f"show=`safeyolo coord brief show {room_name}` "
                 f"set=`safeyolo coord brief set {room_name} --file BRIEF.md "
                 "--expected-revision 0`",
