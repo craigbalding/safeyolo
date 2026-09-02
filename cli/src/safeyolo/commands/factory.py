@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,10 +12,11 @@ from typing import Any
 import typer
 from rich.console import Console
 
-from ..agents_store import load_agent, mutate_agent
+from ..agents_store import get_or_mint_agent_id, load_agent, mutate_agent
 from ..config import find_config_dir
 from ..coord import api as coord_api
 from ..coord import nats_runtime as coord_nats
+from ..coord.identity import new_operation_id
 from ..factory_contract import (
     FactoryContract,
     FactoryContractError,
@@ -252,6 +254,7 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
     try:
         coord_nats.start_server(ready_timeout=10.0)
         coord_api.bootstrap()
+        _ensure_agent_rooms(agent_name for _role_name, agent_name, _metadata in configured)
     except Exception as exc:
         raise FactoryContractError(f"coord runtime failed to start: {exc}") from exc
 
@@ -265,6 +268,27 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
         )
         if exit_code != 0:
             raise FactoryContractError(f"agent {agent_name!r} failed to start (exit {exit_code})")
+
+
+def _ensure_agent_rooms(agent_names: Iterator[str]) -> None:
+    existing = {room["name"] for room in coord_api.list_rooms()}
+    for agent_name in agent_names:
+        room_name = f"{agent_name}-agent"
+        if room_name not in existing:
+            asyncio.run(coord_api.create_room(room_name))
+            existing.add(room_name)
+        coord_api.grant(
+            room_name,
+            "agent",
+            get_or_mint_agent_id(agent_name),
+            operation_id=new_operation_id(),
+        )
+        coord_api.grant(
+            room_name,
+            "operator",
+            "operator",
+            operation_id=new_operation_id(),
+        )
 
 
 @contextmanager

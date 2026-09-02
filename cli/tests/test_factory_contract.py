@@ -193,6 +193,7 @@ def test_factory_run_preserves_each_agents_local_codex_auth(
     monkeypatch.setattr("safeyolo.commands.factory._run_agent", lambda *args, **kwargs: 0)
     monkeypatch.setattr("safeyolo.commands.factory.coord_nats.start_server", lambda **_kwargs: 123)
     monkeypatch.setattr("safeyolo.commands.factory.coord_api.bootstrap", lambda: "sy-test")
+    monkeypatch.setattr("safeyolo.commands.factory._ensure_agent_rooms", lambda _names: None)
     path = _factory_file(tmp_path)
     applied = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
     assert applied.exit_code == 0, applied.output
@@ -309,6 +310,7 @@ def test_factory_run_executes_staged_worker_commands(
         "safeyolo.commands.factory.coord_api.bootstrap",
         lambda: "sy-test" if coord_ready else pytest.fail("coord bootstrap preceded runtime"),
     )
+    monkeypatch.setattr("safeyolo.commands.factory._ensure_agent_rooms", lambda _names: None)
 
     path = _factory_file(tmp_path)
     applied = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
@@ -369,6 +371,41 @@ def test_factory_run_does_not_boot_workers_without_coord(tmp_path, monkeypatch):
         _run_snapshot(tmp_path / "snapshot.json", payload)
 
     assert launched == []
+
+
+def test_factory_ensures_one_operator_agent_room_per_worker(monkeypatch):
+    from safeyolo.commands.factory import _ensure_agent_rooms
+
+    created = []
+    grants = []
+
+    async def create_room(name):
+        created.append(name)
+        return f"room-{name}"
+
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.coord_api.list_rooms",
+        lambda: [{"name": "relay-agent"}],
+    )
+    monkeypatch.setattr("safeyolo.commands.factory.coord_api.create_room", create_room)
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.coord_api.grant",
+        lambda room, kind, principal, **kwargs: grants.append((room, kind, principal)),
+    )
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.get_or_mint_agent_id",
+        lambda name: f"id-{name}",
+    )
+
+    _ensure_agent_rooms(iter(("relay", "forge")))
+
+    assert created == ["forge-agent"]
+    assert grants == [
+        ("relay-agent", "agent", "id-relay"),
+        ("relay-agent", "operator", "operator"),
+        ("forge-agent", "agent", "id-forge"),
+        ("forge-agent", "operator", "operator"),
+    ]
 
 
 @pytest.mark.parametrize(

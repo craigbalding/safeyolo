@@ -12,7 +12,7 @@
 id = "FACTORY-RUN-STARTS-WORKERS"
 description = "Factory run executes each staged worker command after Coord is ready."
 node = "cli/tests/test_factory_contract.py::test_factory_run_executes_staged_worker_commands"
-sha256 = "b9eaef0eb0cc8eb07a8fe2c138e3f7554590efae3e1bd9b8fc9433a7c578bfe2"
+sha256 = "88e6ecaa4808111acb1bea799f1d1fe1e9d3840aa9200c45a3cd196197fc121c"
 
 [[factory_acceptance]]
 id = "FACTORY-RUN-REQUIRES-COORD"
@@ -43,6 +43,12 @@ id = "FACTORY-RESTART-NO-REPLAY"
 description = "Restart preserves outstanding handoffs and does not recreate completed work."
 node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_concurrency_and_restart"
 sha256 = "a21e22c0a3c3fed85ae315d57e14e10bb86658ae106a2256e17c53c762fe0319"
+
+[[factory_acceptance]]
+id = "FACTORY-AGENT-ROOM-BOUNDARY"
+description = "A retained Relay-to-Forge-to-Lens stream survives restart, accepts new events, and keeps a receive-only observer from sending."
+node = "tests/test_agent_api_coord.py::test_nested_factory_agent_rooms_survive_restart_and_reject_observer_send"
+sha256 = "4329279a8573a59e895e97bcc94a96cb80115663efaf7ed5dc180eb67d2084d1"
 
 [[factory_acceptance]]
 id = "FACTORY-HANDOFF-AUTHORITY"

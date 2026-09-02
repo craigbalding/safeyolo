@@ -329,6 +329,57 @@ def _inspect_brief(  # DOC: docs/factories.md
     )
 
 
+def _inspect_agent_room(
+    checks: list[FactoryDoctorCheck],
+    label: str,
+    factory_name: str,
+    agent_name: str,
+    agent_id: str,
+) -> None:
+    room_name = f"{agent_name}-agent"
+    principals = [("operator", "operator"), ("agent", agent_id)]
+    try:
+        room = coord_api.inspect_room_access(room_name, principals)
+    except Exception as exc:
+        checks.append(
+            _fail(
+                "agent-room",
+                f"{label} room={room_name} is unavailable ({type(exc).__name__})",
+                f"agent room; run `safeyolo factory run {factory_name}`",
+            )
+        )
+        return
+    checks.append(
+        FactoryDoctorCheck(
+            "PASS",
+            "agent-room",
+            f"{label} room={room_name} id={room.get('room_id', 'unknown')} exists",
+        )
+    )
+    for principal, subject in (
+        ("operator:operator", "operator"),
+        (f"agent:{agent_id}", agent_name),
+    ):
+        permissions = room["permissions"].get(principal, [])
+        missing = sorted({"send", "receive"} - set(permissions))
+        if missing:
+            checks.append(
+                _fail(
+                    "agent-room-grant",
+                    f"{label} subject={subject} room={room_name} missing={','.join(missing)}",
+                    f"agent-room grants; run `safeyolo factory run {factory_name}`",
+                )
+            )
+        else:
+            checks.append(
+                FactoryDoctorCheck(
+                    "PASS",
+                    "agent-room-grant",
+                    f"{label} subject={subject} room={room_name} send,receive",
+                )
+            )
+
+
 def _inspect_role(
     checks: list[FactoryDoctorCheck],
     *,
@@ -372,6 +423,7 @@ def _inspect_role(
         )
     else:
         checks.append(FactoryDoctorCheck("PASS", "agent-identity", f"{label} id={agent_id}"))
+        _inspect_agent_room(checks, label, name, agent_name, agent_id)
 
     folder = metadata.get("folder")
     try:
@@ -506,6 +558,7 @@ def _expected_supervisor_config(agent_name: str, role_name: str, payload: dict[s
             coordinators.append(candidate)
     return {
         "agent_name": agent_name,
+        "agent_room": f"{agent_name}-agent",
         "rooms": [payload["room"]],
         "coordinators": coordinators,
         "workspace": "/workspace",

@@ -30,6 +30,35 @@ an empty `objects` list and a valid `next_cursor`. Codex exit code 0 and model
 text are not idle or success evidence. A failed MCP result cannot advance the
 safe cursor.
 
+Each factory agent also has a room named `<agent>-agent`. The supervisor sends
+each `codex exec --json` stdout line to that room without attention. The
+operator can send targeted natural-language direction to the agent in the same
+room. Other agents can receive the retained stream when the operator grants
+them receive permission; receive permission does not let them send or steer
+the supervised agent.
+
+The supervisor also sends start, handled-error, trapped-signal, crash, and exit
+events to this room. Codex stderr is retained as labelled stderr events. It
+does not emit idle or heartbeat messages. An abruptly killed supervisor cannot
+report its own death; runtime supervision is a separate concern.
+
+Render the retained stream and continue watching it with:
+
+```bash
+uv run python contrib/watch-agent-room.py <agent>-agent
+```
+
+The default view renders a concise mixed operator and agent timeline. Use
+`--raw` to show each message body unchanged, or `--json` to emit canonical
+Coord messages as JSONL. The rendered view uses colour on a terminal; use
+`--no-color` or `NO_COLOR` for plain output. The default shows the complete
+rendered content after canonical log-safe control-character handling; use
+`--redact` to hide common credential patterns. Raw and JSON modes preserve the
+retained message unless `--redact` is set. Use `--max-text` to opt in to a
+rendered event-text limit. The watcher also supports `--history`, `--once`, and
+`--show-unknown`. File selection, agent-home selection, and filesystem polling
+do not apply because this watcher reads one retained Coord room.
+
 In factory mode, the approved snapshot may declare one `operator_input` edge.
 Only its destination role admits bounded natural-language direction, and only
 when coord reports the canonical sender kind as `operator`. Declared leading
