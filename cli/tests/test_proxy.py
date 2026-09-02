@@ -739,6 +739,23 @@ class TestFlowCacheConfiguration:
         with pytest.raises(ValueError, match="positive integer"):
             resolve_flow_cache(None, {"SAFEYOLO_FLOW_CACHE": value})
 
+    def test_body_bytes_environment_overrides_default(self):
+        from safeyolo.proxy import resolve_flow_cache_bytes
+
+        assert resolve_flow_cache_bytes(None, {"SAFEYOLO_FLOW_CACHE_BYTES": "456"}) == 456
+
+    def test_body_bytes_default_is_one_gibibyte(self):
+        from safeyolo.proxy import resolve_flow_cache_bytes
+
+        assert resolve_flow_cache_bytes(None, {}) == 1024**3
+
+    @pytest.mark.parametrize("value", ["", "invalid", "0", "-1"])
+    def test_invalid_body_bytes_environment_fails(self, value):
+        from safeyolo.proxy import resolve_flow_cache_bytes
+
+        with pytest.raises(ValueError, match="positive integer"):
+            resolve_flow_cache_bytes(None, {"SAFEYOLO_FLOW_CACHE_BYTES": value})
+
 
 class TestBuildCommand:
     """Tests for _build_command() — mitmdump command line construction."""
@@ -786,6 +803,7 @@ class TestBuildCommand:
         assert "listen_host=127.0.0.1" not in cmd
         assert "listen_port=0" not in cmd
         assert "flow_pruner_max=5000" in cmd
+        assert "flow_pruner_max_body_bytes=1073741824" in cmd
 
     def test_explicit_flow_cache_is_forwarded(self, cmd_env):
         from safeyolo.proxy import _build_command
@@ -793,6 +811,13 @@ class TestBuildCommand:
         cmd = _build_command(admin_token="tok", flow_cache=4321, **cmd_env)
 
         assert "flow_pruner_max=4321" in cmd
+
+    def test_explicit_flow_cache_bytes_is_forwarded(self, cmd_env):
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(admin_token="tok", flow_cache_bytes=987654, **cmd_env)
+
+        assert "flow_pruner_max_body_bytes=987654" in cmd
 
     def test_production_addons_are_not_watched_scripts(self, cmd_env):
         """The production command leaves mitmproxy's scripts option empty."""

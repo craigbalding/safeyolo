@@ -64,6 +64,16 @@ class AttentionManifest:
     recipients: tuple[RecipientIntent, ...]
     version: int = MANIFEST_VERSION
 
+    def public_intent(self) -> dict[str, str]:
+        """Describe routing without exposing recipient identities or membership."""
+        if self.mode == "agents":
+            mode = "targeted"
+        elif self.mode in {"room", "legacy_room"}:
+            mode = "room"
+        else:
+            mode = "none"
+        return {"mode": mode}
+
     def to_header(self) -> str:
         return json.dumps(
             {

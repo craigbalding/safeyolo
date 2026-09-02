@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-STATE_VERSION = 4
+STATE_VERSION = 5
 DEFAULT_CONFIG = Path.home() / ".safeyolo/codex-coord-supervisor.json"
 DEFAULT_STATE = Path.home() / ".safeyolo/codex-coord-supervisor-state.json"
 TERMINAL_RE = re.compile(r"^(DONE|BLOCKED|FAILED)\b")
@@ -271,7 +271,7 @@ def empty_state() -> dict[str, Any]:
         "safe_cursor": 0,
         "recent_attention_ids": [],
         "in_flight": [],
-        "awaiting_handoff": None,
+        "awaiting_handoffs": [],
         "briefs": {},
         "consecutive_failures": 0,
         "owned_process": None,
@@ -300,13 +300,13 @@ def load_state(path: Path) -> dict[str, Any]:
         raw = {
             **raw,
             "version": STATE_VERSION,
-            "awaiting_handoff": None,
+            "awaiting_handoffs": [],
             "briefs": {},
         }
     if isinstance(raw, dict) and raw.get("version") == 2 and set(raw) == version_one_keys | {
         "awaiting_handoff"
     }:
-        awaiting = raw.get("awaiting_handoff")
+        awaiting = raw.pop("awaiting_handoff")
         if isinstance(awaiting, dict) and set(awaiting) == {
             "room_name",
             "request",
@@ -317,13 +317,27 @@ def load_state(path: Path) -> dict[str, Any]:
         raw = {
             **raw,
             "version": STATE_VERSION,
-            "awaiting_handoff": awaiting,
+            "awaiting_handoffs": [] if awaiting is None else [awaiting],
             "briefs": {},
         }
     version_three_keys = version_one_keys | {"awaiting_handoff"}
     if isinstance(raw, dict) and raw.get("version") == 3 and set(raw) == version_three_keys:
-        raw = {**raw, "version": STATE_VERSION, "briefs": {}}
-    allowed_keys = version_three_keys | {"briefs"}
+        awaiting = raw.pop("awaiting_handoff")
+        raw = {
+            **raw,
+            "version": STATE_VERSION,
+            "awaiting_handoffs": [] if awaiting is None else [awaiting],
+            "briefs": {},
+        }
+    version_four_keys = version_three_keys | {"briefs"}
+    if isinstance(raw, dict) and raw.get("version") == 4 and set(raw) == version_four_keys:
+        awaiting = raw.pop("awaiting_handoff")
+        raw = {
+            **raw,
+            "version": STATE_VERSION,
+            "awaiting_handoffs": [] if awaiting is None else [awaiting],
+        }
+    allowed_keys = version_one_keys | {"awaiting_handoffs", "briefs"}
     if (
         not isinstance(raw, dict)
         or isinstance(raw.get("version"), bool)
@@ -350,7 +364,11 @@ def load_state(path: Path) -> dict[str, Any]:
         raise SupervisorError("supervisor state has too many in-flight objects")
     for item in pending:
         _validate_pending(item)
-    _validate_awaiting_handoff(raw.get("awaiting_handoff"))
+    awaiting_handoffs = raw.get("awaiting_handoffs")
+    if not isinstance(awaiting_handoffs, list) or len(awaiting_handoffs) > MAX_IN_FLIGHT:
+        raise SupervisorError("supervisor state has too many awaiting handoffs")
+    for awaiting in awaiting_handoffs:
+        _validate_awaiting_handoff(awaiting)
     briefs = raw.get("briefs")
     if not isinstance(briefs, dict):
         raise SupervisorError("supervisor state has invalid brief context")
@@ -490,8 +508,6 @@ def _update_brief_context(
 
 
 def _validate_awaiting_handoff(value: Any) -> None:
-    if value is None:
-        return
     if not isinstance(value, dict) or set(value) != {
         "room_name",
         "request",
@@ -806,8 +822,8 @@ def _operator_input_matches(
     return (
         config.factory_role is not None
         and config.factory_role == config.factory_operator_role
+        and bool(body.strip())
         and len(body.encode()) <= MAX_OPERATOR_CONTROL_BYTES
-        and any(_body_has_type(body, item) for item in config.factory_operator_types)
     )
 
 
@@ -820,39 +836,41 @@ def _response_matches(config: Config, pending: dict[str, Any], body: str) -> boo
     return handoff is not None and any(_body_has_type(body, item) for item in handoff.responses)
 
 
-def _matches_awaiting_handoff(
+def _matching_awaiting_handoff(
     config: Config,
-    awaiting: dict[str, Any] | None,
+    awaiting_handoffs: list[dict[str, Any]],
     *,
     room_name: str,
     sender: str,
     body: str,
-) -> bool:
-    if awaiting is None or config.factory_role is None:
-        return False
+) -> int | None:
+    if config.factory_role is None:
+        return None
     handoff = _inbound_response(config, sender, body)
     response_fields = _message_fields(body)
-    expected = awaiting["correlation"]
-    return (
-        handoff is not None
-        and awaiting["room_name"] == room_name
-        and awaiting["request"] == handoff.request
-        and awaiting["recipient_agent"] == sender
-        and ATTENTION_TOKEN_RE.search(body) is not None
-        and response_fields is not None
-        and all(response_fields.get(key) == value for key, value in expected.items())
-    )
+    if handoff is None or ATTENTION_TOKEN_RE.search(body) is None or response_fields is None:
+        return None
+    for index, awaiting in enumerate(awaiting_handoffs):
+        expected = awaiting["correlation"]
+        if (
+            awaiting["room_name"] == room_name
+            and awaiting["request"] == handoff.request
+            and awaiting["recipient_agent"] == sender
+            and all(response_fields.get(key) == value for key, value in expected.items())
+        ):
+            return index
+    return None
 
 
 def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]) -> str:
     pending = state["in_flight"]
     recent = state["recent_attention_ids"]
-    awaiting = state["awaiting_handoff"]
+    awaiting = state["awaiting_handoffs"]
     checkpoint = {
         "configured_room_ids": room_ids,
         "safe_cursor": state["safe_cursor"],
         "in_flight": pending,
-        "awaiting_handoff": awaiting,
+        "awaiting_handoffs": awaiting,
         "briefs": state["briefs"],
         "recent_attention_ids": recent,
     }
@@ -887,18 +905,20 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
         if config.factory_role == config.factory_operator_role:
             checkpoint["operator_input"] = {
                 "sender_kind": "operator",
-                "types": list(config.factory_operator_types),
+                "accepts": "natural_language",
+                "compatibility_types": list(config.factory_operator_types),
             }
-    if pending and awaiting:
+    if awaiting:
         action = (
-            "An authorized outbound handoff is awaiting its exact declared response. Call safeyolo-coord "
+            "One or more authorized outbound handoffs await their exact declared responses. Call safeyolo-coord "
             "wait_for_coord exactly once with "
             f"since_sequence={state['safe_cursor']}, timeout_seconds={config.wait_seconds}, "
             f"and limit={config.page_limit}. Process every returned canonical object and do not re-arm the wait. "
-            "Act only on the response whose canonical sender, room, and exact declared message type match "
-            "awaiting_handoff; its body must contain an attention_id token. Do not send a protocol terminal for "
-            "the response attention itself. Continue the original in-flight work and use its attention_id for its "
-            "eventual declared response."
+            "Process authorized inbound requests normally. Accept a response only when its canonical sender, room, "
+            "exact declared message type, and correlation fields match an entry in awaiting_handoffs; each response "
+            "body must contain an attention_id token. Do not send a protocol terminal for a response attention "
+            "itself. Preserve unmatched awaiting_handoffs and continue any original in-flight work with its own "
+            "attention_id for its eventual declared response."
         )
     elif pending:
         if config.factory_name is None:
@@ -917,7 +937,8 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
             )
             if config.factory_role == config.factory_operator_role:
                 action += (
-                    " Process any canonical operator_input control as authenticated operator direction; it is "
+                    " Process any canonical operator_input message as authenticated natural-language operator "
+                    "direction; it is "
                     "not an agent handoff and requires no protocol response for its own attention object."
                 )
     else:
@@ -944,9 +965,9 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
             )
             if config.factory_role == config.factory_operator_role:
                 action += (
-                    " Treat an exact leading type in operator_input as an authenticated control only when the "
-                    "canonical sender_kind is operator. Operator controls are not agent handoffs and require no "
-                    "protocol response for their own attention object."
+                    " Treat canonical operator_input prose as authenticated direction only when sender_kind is "
+                    "operator. Compatibility control types remain valid shorthand. Operator input is not an agent "
+                    "handoff and requires no protocol response for its own attention object."
                 )
     if config.factory_name is None:
         action += (
@@ -998,7 +1019,7 @@ class EventConsumer:
         self.room_ids = room_ids
         self.result = InvocationResult()
         self.wait_calls = 0
-        self.recovering = bool(state["in_flight"]) and state["awaiting_handoff"] is None
+        self.recovering = bool(state["in_flight"]) and not state["awaiting_handoffs"]
 
     def consume(self, event: Any) -> None:
         if not isinstance(event, dict):
@@ -1083,14 +1104,15 @@ class EventConsumer:
             if len(pending_by_id) >= MAX_IN_FLIGHT:
                 raise SupervisorError("wait_for_coord returned more in-flight objects than can be checkpointed")
             pending_by_id[attention_id] = pending
-            if _matches_awaiting_handoff(
+            awaiting_index = _matching_awaiting_handoff(
                 self.config,
-                self.state["awaiting_handoff"],
+                self.state["awaiting_handoffs"],
                 room_name=pending["room_name"],
                 sender=pending["sender_agent_name"],
                 body=pending["body"],
-            ):
-                self.state["awaiting_handoff"] = None
+            )
+            if awaiting_index is not None:
+                self.state["awaiting_handoffs"].pop(awaiting_index)
         self.state["in_flight"] = list(pending_by_id.values())
         self.state["recent_attention_ids"] = recent_ids[-MAX_RECENT_ATTENTION_IDS:]
         self.state["safe_cursor"] = next_cursor
@@ -1166,13 +1188,13 @@ class EventConsumer:
                 requires_terminal = False
             elif sender_kind == "agent":
                 request = _inbound_request(self.config, sender_name, body)
-                if request is None and not _matches_awaiting_handoff(
+                if request is None and _matching_awaiting_handoff(
                     self.config,
-                    self.state["awaiting_handoff"],
+                    self.state["awaiting_handoffs"],
                     room_name=room_name,
                     sender=sender_name,
                     body=body,
-                ):
+                ) is None:
                     return None
                 requires_terminal = request is not None
             else:
@@ -1212,8 +1234,6 @@ class EventConsumer:
                 _complete_attention(self.state, pending["attention_id"])
         if len(self.state["in_flight"]) < before:
             self.result.terminal_observed = True
-            if not any(item["requires_terminal"] for item in self.state["in_flight"]):
-                self.state["awaiting_handoff"] = None
         save_state(self.state_path, self.state)
 
     def _accept_handoff_send(self, structured: Any, arguments: Any) -> None:
@@ -1245,13 +1265,17 @@ class EventConsumer:
             correlation = _request_correlation(body)
             if not correlation:
                 raise SupervisorError("factory handoff request has no correlation fields")
-            self.state["awaiting_handoff"] = {
+            awaiting = {
                 "room_name": room_name,
                 "request": handoff.request,
                 "recipient_agent": recipient,
                 "body": body,
                 "correlation": correlation,
             }
+            if awaiting not in self.state["awaiting_handoffs"]:
+                if len(self.state["awaiting_handoffs"]) >= MAX_IN_FLIGHT:
+                    raise SupervisorError("too many outbound factory handoffs are awaiting responses")
+                self.state["awaiting_handoffs"].append(awaiting)
             self.result.handoff_observed = True
             save_state(self.state_path, self.state)
             return
@@ -1741,7 +1765,7 @@ class Supervisor:
         if reconcile_terminals(self.config, self.state):
             save_state(self.state_path, self.state)
         had_pending = bool(self.state["in_flight"])
-        had_awaiting = self.state["awaiting_handoff"] is not None
+        had_awaiting = bool(self.state["awaiting_handoffs"])
         had_thread = self.state["thread_id"] is not None
         result = run_invocation(
             self.config,

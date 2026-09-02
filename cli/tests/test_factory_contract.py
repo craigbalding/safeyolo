@@ -17,6 +17,24 @@ from safeyolo.cli import app
 from safeyolo.factory_contract import FactoryContractError, load_active_snapshot, load_factory_file
 from safeyolo.platform import AgentPlatform
 
+BACKLOG_COORDINATOR_CONTRACT = Path(__file__).parents[2] / "docs/factories/backlog-coordinator.md"
+
+
+def test_backlog_coordinator_status_contract_is_low_noise():
+    contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+
+    assert "Send an ordinary answer with no agent attention." in contract
+    assert "Do not expect a new `ACCEPTED` after a Lens disposition." in contract
+    assert "report that the updated candidate is pending" in contract
+
+
+def test_backlog_coordinator_contract_defines_standing_and_explicit_intake():
+    contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+
+    assert "A suitable trusted brief can authorize standing eligible intake." in contract
+    assert "The absence of a suitable brief is a valid state." in contract
+    assert "must state whether `NEXT` and `PRIORITY` can override" in contract
+
 
 def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> Path:
     (tmp_path / "coordinator.md").write_text("# Coordinator\n\nDelegate exact tasks.\n")
@@ -35,6 +53,8 @@ def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> 
         '[roles.reviewer]\nagent = "lens"\ncontract = "reviewer.md"\n\n'
         '[[handoffs]]\nrequest = "TASK"\nfrom = "coordinator"\nto = "owner"\n'
         'responses = ["DONE", "BLOCKED", "FAILED"]\n\n'
+        '[[handoffs]]\nrequest = "TASK"\nfrom = "coordinator"\nto = "reviewer"\n'
+        'responses = ["DONE", "BLOCKED", "FAILED"]\n\n'
         '[[handoffs]]\nrequest = "REVIEW_READY"\nfrom = "owner"\nto = "reviewer"\n'
         'responses = ["READY", "CHANGES_REQUIRED", "BLOCKED"]\n' + extra
     )
@@ -45,6 +65,7 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     path = _factory_file(tmp_path)
 
     result = cli_runner.invoke(app, ["factory", "check", str(path)])
+    explanation = " ".join(result.output.split())
 
     assert result.exit_code == 0, result.output
     assert "factory=backlog schema=safeyolo.factory/v1 room=backlog" in result.output
@@ -53,7 +74,29 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     assert "bytes=24" in result.output
     assert "sha256=" in result.output
     assert "operator_input=operator to=coordinator" in result.output
+    assert "handoff=TASK from=coordinator to=reviewer" in result.output
     assert "handoff=REVIEW_READY from=owner to=reviewer" in result.output
+    assert "Approval creates an immutable snapshot." in explanation
+    assert (
+        "Inspect those files directly; SafeYolo does not summarize"
+        in explanation
+    )
+    assert "The admitted input words are not workflow definitions." in explanation
+    assert "separate live operator state" in explanation
+    assert (
+        "does not inspect live room state, grants, brief revision, or worker health"
+        in explanation
+    )
+    assert "does not select work or prove live eligibility or readiness" in explanation
+    assert "standing intake can delegate or explicit issue selection is required" in explanation
+    assert "An absent brief is not a static contract error" in explanation
+    assert "safeyolo coord brief show backlog" in explanation
+    assert (
+        "safeyolo coord brief set backlog --file BRIEF.md "
+        "--expected-revision REVISION"
+        in explanation
+    )
+    assert "safeyolo factory doctor backlog" in explanation
 
 
 def test_factory_apply_requires_approval_and_stores_immutable_snapshot(cli_runner, tmp_path, tmp_config_dir):

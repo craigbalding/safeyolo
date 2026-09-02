@@ -41,11 +41,48 @@ from safeyolo.coord import nats_runtime as nr
 # Fixtures (isolated_coord, _binary_cache, nats_env) live in
 # conftest.py and are shared with test_coord_nats_client.py.
 
+_PARALLEL_SERVER = r"""
+import json
+import os
+import time
+from pathlib import Path
+
+from safeyolo.coord import nats_runtime as nr
+
+pid = nr.start_server(ready_timeout=8.0)
+stored = nr._read_pidfile()
+assert stored is not None
+barrier = Path(os.environ["SAFEYOLO_NATS_TEST_BARRIER"])
+(barrier / f"{os.environ['SAFEYOLO_NATS_TEST_INSTANCE']}.ready").write_text("ready\n")
+deadline = time.monotonic() + 8.0
+try:
+    while len(list(barrier.glob("*.ready"))) < 2:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("parallel test peer did not start")
+        time.sleep(0.02)
+    assert nr.is_healthy()
+finally:
+    nr.stop_server()
+print(json.dumps(stored), flush=True)
+"""
+
 
 # ---------- unit ----------
 
 
 class TestPathsAndCredentials:
+    def test_test_mode_refuses_operator_home_state(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", "owned-test")
+        monkeypatch.delenv("SAFEYOLO_COORD_DATA_DIR", raising=False)
+
+        with pytest.raises(RuntimeError, match="default coord state"):
+            nr.nats_root()
+
+        assert not (fake_home / ".safeyolo").exists()
+
     def test_binary_path_is_version_scoped(self, isolated_coord):
         """Reviewer #2: version bump gets a fresh install."""
         assert nr.NATS_VERSION in str(nr.nats_binary_path())
@@ -124,8 +161,8 @@ class TestConfig:
     def test_config_is_loopback_auth_and_sy_local(self, isolated_coord):
         path = nr.write_config("safeyolo-test-name")
         content = path.read_text()
-        assert f"listen: {nr.NATS_LISTEN_HOST}:{nr.NATS_CLIENT_PORT}" in content
-        assert f"http: {nr.NATS_LISTEN_HOST}:{nr.NATS_MONITOR_PORT}" in content
+        assert f"listen: {nr.NATS_LISTEN_HOST}:-1" in content
+        assert f"http: {nr.NATS_LISTEN_HOST}:-1" in content
         assert "server_name: safeyolo-test-name" in content
         assert "SY_LOCAL" in content
         assert "jetstream: enabled" in content
@@ -133,6 +170,18 @@ class TestConfig:
         # Reviewer small fix: no_auth_user directive removed as redundant
         assert "no_auth_user" not in content
         assert path.stat().st_mode & 0o777 == 0o600
+
+    def test_production_ports_remain_fixed_defaults(
+        self, isolated_coord, monkeypatch
+    ):
+        monkeypatch.delenv("SAFEYOLO_NATS_TEST_INSTANCE")
+
+        path = nr.write_config("safeyolo-production-shape")
+        content = path.read_text()
+
+        assert f"listen: {nr.NATS_LISTEN_HOST}:{nr.NATS_CLIENT_PORT}" in content
+        assert f"http: {nr.NATS_LISTEN_HOST}:{nr.NATS_MONITOR_PORT}" in content
+        assert nr.client_url() == "nats://127.0.0.1:4222"
 
     def test_config_references_runtime_credential_environment(self, isolated_coord):
         pw = nr.ensure_credentials()
@@ -392,14 +441,39 @@ class TestReapChild:
 
 class TestLifecycleHappyPath:
     def test_start_verify_stop(self, nats_env):
+        default_before = nr._varz(monitor_port=nr.NATS_MONITOR_PORT)
         pid = nr.start_server(ready_timeout=8.0)
         try:
             assert nr.is_healthy()
             s = nr.status()
+            stored = nr._read_pidfile()
+            assert stored is not None
             assert s["pid"] == pid
-            assert s["server_name"].startswith("safeyolo-")
+            assert s["server_name"].startswith(
+                f"safeyolo-test-{os.environ['SAFEYOLO_NATS_TEST_INSTANCE']}-"
+            )
             assert s["healthy"] is True
             assert s["actual_version"] == nr.NATS_VERSION
+            assert stored["test_instance"] == os.environ[
+                "SAFEYOLO_NATS_TEST_INSTANCE"
+            ]
+            assert stored["client_port"] not in {
+                nr.NATS_CLIENT_PORT,
+                nr.NATS_MONITOR_PORT,
+            }
+            assert stored["monitor_port"] not in {
+                nr.NATS_CLIENT_PORT,
+                nr.NATS_MONITOR_PORT,
+            }
+            assert stored["client_port"] != stored["monitor_port"]
+            assert s["listen"] == (
+                f"{nr.NATS_LISTEN_HOST}:{stored['client_port']}"
+            )
+            assert nr.client_url() == (
+                f"nats://{nr.NATS_LISTEN_HOST}:{stored['client_port']}"
+            )
+            assert nr.nats_root().is_relative_to(nats_env)
+            assert nr._varz(monitor_port=nr.NATS_MONITOR_PORT) == default_before
         finally:
             started = time.monotonic()
             assert nr.stop_server() is True
@@ -407,32 +481,48 @@ class TestLifecycleHappyPath:
             assert elapsed < 2.0, f"same-process stop took {elapsed:.1f}s"
         assert not nr._pid_alive(pid)
         assert nr._varz() is None
+        assert nr._varz(monitor_port=nr.NATS_MONITOR_PORT) == default_before
+        assert list(nr.nats_ports_dir().glob("*.ports")) == []
         with pytest.raises(ChildProcessError):
             os.waitpid(pid, os.WNOHANG)
         assert not nr.is_healthy()
 
     def test_stop_server_started_by_prior_process(self, nats_env):
-        completed = subprocess.run(
+        starter = subprocess.Popen(
             [
                 sys.executable,
                 "-c",
+                "import os; "
                 "from safeyolo.coord import nats_runtime as nr; "
-                "print(nr.start_server(ready_timeout=8.0))",
+                "pid = nr.start_server(ready_timeout=8.0); "
+                "print(pid, flush=True); os.waitpid(pid, 0)",
             ],
-            check=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
-        pid = int(completed.stdout.strip())
-        assert nr._pid_alive(pid)
-        with pytest.raises(ChildProcessError):
-            os.waitpid(pid, os.WNOHANG)
+        try:
+            assert starter.stdout is not None
+            pid = int(starter.stdout.readline().strip())
+            assert nr._pid_alive(pid)
+            with pytest.raises(ChildProcessError):
+                os.waitpid(pid, os.WNOHANG)
 
-        assert nr.stop_server() is True
-        assert not nr._pid_alive(pid)
-        assert nr._varz() is None
-        with pytest.raises(ChildProcessError):
-            os.waitpid(pid, os.WNOHANG)
+            assert nr.stop_server() is True
+            assert not nr._pid_alive(pid)
+            assert nr._varz() is None
+            with pytest.raises(ChildProcessError):
+                os.waitpid(pid, os.WNOHANG)
+            stdout, stderr = starter.communicate(timeout=5)
+            assert starter.returncode == 0, stderr
+            assert stdout == ""
+        finally:
+            with contextlib.suppress(nr.WedgedNatsServer):
+                nr.stop_server()
+            if starter.poll() is None:
+                starter.terminate()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    starter.wait(timeout=5)
 
     def test_second_start_is_idempotent(self, nats_env):
         pid1 = nr.start_server(ready_timeout=8.0)
@@ -444,6 +534,79 @@ class TestLifecycleHappyPath:
 
     def test_stop_when_nothing_running_is_noop(self, nats_env):
         assert nr.stop_server() is False
+
+    @pytest.mark.timeout(30)
+    def test_parallel_test_instances_use_disjoint_real_endpoints(
+        self, tmp_path, _binary_cache
+    ):
+        barrier = tmp_path / "barrier"
+        barrier.mkdir()
+        children = []
+        environments = []
+        for index in range(2):
+            coord_dir = tmp_path / f"coord-{index}"
+            binary = (
+                coord_dir
+                / "nats"
+                / "bin"
+                / nr.NATS_VERSION
+                / "nats-server"
+            )
+            binary.parent.mkdir(parents=True)
+            os.symlink(_binary_cache, binary)
+            environment = os.environ.copy()
+            environment["SAFEYOLO_COORD_DATA_DIR"] = str(coord_dir)
+            environment["SAFEYOLO_NATS_TEST_INSTANCE"] = f"parallel-{index}"
+            environment["SAFEYOLO_NATS_TEST_BARRIER"] = str(barrier)
+            environments.append(environment)
+            children.append(
+                subprocess.Popen(
+                    [sys.executable, "-c", _PARALLEL_SERVER],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=environment,
+                )
+            )
+
+        results = []
+        try:
+            for child in children:
+                stdout, stderr = child.communicate(timeout=20)
+                assert child.returncode == 0, stderr
+                results.append(json.loads(stdout.strip().splitlines()[-1]))
+        finally:
+            for child, environment in zip(children, environments, strict=True):
+                if child.poll() is None:
+                    child.terminate()
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        child.wait(timeout=5)
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        "from safeyolo.coord import nats_runtime as nr; "
+                        "nr.stop_server(); "
+                        "nr.nats_test_endpoints_path().unlink(missing_ok=True)",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                    env=environment,
+                )
+
+        assert results[0]["test_instance"] != results[1]["test_instance"]
+        assert results[0]["server_name"] != results[1]["server_name"]
+        first_ports = {
+            results[0]["client_port"],
+            results[0]["monitor_port"],
+        }
+        second_ports = {
+            results[1]["client_port"],
+            results[1]["monitor_port"],
+        }
+        assert first_ports.isdisjoint(second_ports)
 
 
 class TestFailedStartupDiagnostics:
@@ -488,7 +651,7 @@ class TestFailedStartupDiagnostics:
         real_write = nr._write_pidfile
         captured_pid = {}
 
-        def failing_write(pid, server_name, server_id, binary):
+        def failing_write(pid, server_name, server_id, binary, **_kwargs):
             captured_pid["pid"] = pid
             # Simulate disk full / chmod denied AFTER we know the PID
             raise OSError("simulated disk full")
@@ -565,19 +728,37 @@ class TestBinaryChecksumOnExisting:
 
 
 class TestPortCollisionFastFail:
-    """Adversarial: another process already bound to 4222. nats-server
-    exits immediately with a bind error; we should fast-fail with the
-    log tail rather than hang the full ready_timeout."""
+    """A forced collision still fails fast without using a fixed port."""
 
     def test_port_conflict_causes_fast_fail(self, nats_env):
         import socket
         squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        squatter.bind((nr.NATS_LISTEN_HOST, nr.NATS_CLIENT_PORT))
+        squatter.bind((nr.NATS_LISTEN_HOST, 0))
         squatter.listen(1)
+        collision_port = squatter.getsockname()[1]
+        real_write_config = nr.write_config
+
+        def colliding_config(server_name):
+            path = real_write_config(server_name)
+            content = path.read_text().replace(
+                f"listen: {nr.NATS_LISTEN_HOST}:-1",
+                f"listen: {nr.NATS_LISTEN_HOST}:{collision_port}",
+            )
+            path.write_text(content)
+            return path
+
         try:
             t0 = time.monotonic()
-            with pytest.raises(RuntimeError):
+            with (
+                patch.object(
+                    nr,
+                    "write_config",
+                    autospec=True,
+                    side_effect=colliding_config,
+                ),
+                pytest.raises(RuntimeError),
+            ):
                 nr.start_server(ready_timeout=6.0)
             elapsed = time.monotonic() - t0
             assert elapsed < 4.0, f"port-conflict should fail fast; took {elapsed:.1f}s"

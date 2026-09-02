@@ -32,6 +32,7 @@ log = logging.getLogger("safeyolo.proxy")
 
 ADDON_CHAIN = _mitm_addons.ADDON_CHAIN
 DEFAULT_FLOW_CACHE = 5_000
+DEFAULT_FLOW_CACHE_BYTES = 1024**3
 _VIA_TOKEN_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 
@@ -185,6 +186,27 @@ def resolve_flow_cache(cli_value: int | None, environ: dict[str, str] | None = N
         raise ValueError("SAFEYOLO_FLOW_CACHE must be a positive integer") from exc
     if value <= 0:
         source = "--flow-cache" if cli_value is not None else "SAFEYOLO_FLOW_CACHE"
+        raise ValueError(f"{source} must be a positive integer")
+    return value
+
+
+def resolve_flow_cache_bytes(
+    cli_value: int | None,
+    environ: dict[str, str] | None = None,
+) -> int:
+    """Resolve CLI > environment > default retained-body byte limit."""
+    environment = os.environ if environ is None else environ
+    raw_value: int | str = (
+        cli_value
+        if cli_value is not None
+        else environment.get("SAFEYOLO_FLOW_CACHE_BYTES", DEFAULT_FLOW_CACHE_BYTES)
+    )
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SAFEYOLO_FLOW_CACHE_BYTES must be a positive integer") from exc
+    if value <= 0:
+        source = "--flow-cache-bytes" if cli_value is not None else "SAFEYOLO_FLOW_CACHE_BYTES"
         raise ValueError(f"{source} must be a positive integer")
     return value
 
@@ -552,6 +574,7 @@ def _build_command(
     proxy_port: int = 8080,
     admin_port: int = 9090,
     flow_cache: int = DEFAULT_FLOW_CACHE,
+    flow_cache_bytes: int = DEFAULT_FLOW_CACHE_BYTES,
     test_config: dict | None = None,
     proxy_config: dict | None = None,
 ) -> list[str]:
@@ -572,6 +595,7 @@ def _build_command(
     cmd.extend(["--set", "block_global=false"])
     cmd.extend(["--set", "stream_large_bodies=10m"])
     cmd.extend(["--set", f"flow_pruner_max={flow_cache}"])
+    cmd.extend(["--set", f"flow_pruner_max_body_bytes={flow_cache_bytes}"])
     cmd.extend(["--set", "web_open_browser=false"])
     cmd.extend(["--set", f"web_host={(proxy_config or {}).get('web_host', '127.0.0.1')}"])  # DOC: docs/security-verification.md
     cmd.extend(["--set", f"web_port={(proxy_config or {}).get('web_port', 8081)}"])
@@ -813,6 +837,7 @@ def start_proxy(
     proxy_port: int = 8080,
     admin_port: int = 9090,
     flow_cache: int | None = None,
+    flow_cache_bytes: int | None = None,
     dev: bool = False,
 ) -> None:
     """Start mitmproxy as a host background process."""
@@ -875,6 +900,7 @@ def start_proxy(
     via_token = resolve_via_token(proxy_config)
 
     resolved_flow_cache = resolve_flow_cache(flow_cache)
+    resolved_flow_cache_bytes = resolve_flow_cache_bytes(flow_cache_bytes)
 
     # Build command
     cmd = _build_command(
@@ -886,6 +912,7 @@ def start_proxy(
         proxy_port=proxy_port,
         admin_port=admin_port,
         flow_cache=resolved_flow_cache,
+        flow_cache_bytes=resolved_flow_cache_bytes,
         test_config=test_config,
         proxy_config=proxy_config,
     )
