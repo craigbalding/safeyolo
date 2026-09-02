@@ -670,8 +670,21 @@ complete WebSocket messages.
 
 The WebSocket options accept `true` or `false` and default to warn-only. They
 can therefore be enabled without blocking ordinary HTTP requests, or left
-disabled while HTTP blocking is enabled. SafeYolo's `PATTERN_BLOCK=true`
-startup setting enables all four pattern-block options.
+disabled while HTTP blocking is enabled. For the executable startup path,
+`PATTERN_BLOCK=true` enables HTTP blocking and supplies `true` defaults for
+both WebSocket directions; an explicit
+`PATTERN_BLOCK_WEBSOCKET_REQUEST` or `PATTERN_BLOCK_WEBSOCKET_RESPONSE`
+value overrides that default. `SAFEYOLO_BLOCK=true` has the highest
+precedence and forces all four options to `true`, so it cannot be relaxed by
+directional settings.
+
+Upgrade note for direct mitmproxy users: before the WebSocket-specific
+options were added, `--set pattern_block_request=true` and
+`--set pattern_block_response=true` also controlled WebSocket messages. Those
+generic options now control HTTP only. To preserve WebSocket blocking after
+upgrading, set `pattern_block_websocket_request=true` and/or
+`pattern_block_websocket_response=true` explicitly (or use the startup
+environment variables above).
 
 ---
 
