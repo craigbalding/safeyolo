@@ -28,6 +28,9 @@ _SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
 _MESSAGE_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)=([^\s=]+)")
 _NON_CORRELATION_FIELDS = {"assignee", "attention_id"}
 _MAX_CANONICAL_BODY_BYTES = 64 * 1024
+_BACKLOG_COORDINATOR_CONTRACT_SHA256 = (
+    "4d5e34a03298333bd96486c6dd468a2057b259e4296109c53e3bd770a99b87e3"
+)
 _STATE_KEYS = {
     "version",
     "thread_id",
@@ -282,8 +285,11 @@ def _inspect_brief(  # DOC: docs/factories.md
     content_hash = current.get("content_hash") if isinstance(current, dict) else None
     if revision == 0 and content_hash is None:
         mode = ""
-        if payload["name"] == "backlog" and "NEXT" in payload["operator_input"]["types"]:
-            mode = " explicit-NEXT-mode=valid"
+        operator_input = payload["operator_input"]
+        if payload["name"] == "backlog" and "NEXT" in operator_input["types"]:
+            operator_role = payload["roles"][operator_input["to"]]
+            if operator_role["contract_sha256"] == _BACKLOG_COORDINATOR_CONTRACT_SHA256:
+                mode = " explicit-NEXT-mode=valid"
         checks.append(
             FactoryDoctorCheck(
                 "PASS",

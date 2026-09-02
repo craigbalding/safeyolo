@@ -16,6 +16,7 @@ from safeyolo.coord import api as coord_api
 from safeyolo.coord import store as coord_store
 from safeyolo.factory_contract import load_active_snapshot, load_factory_file, store_snapshot
 from safeyolo.factory_doctor import (
+    _BACKLOG_COORDINATOR_CONTRACT_SHA256,
     _PROCESS_EXECUTABLE_MARKER,
     _PROCESS_EXPECTED_MARKER,
     _PROCESS_STAT_MARKER,
@@ -27,14 +28,24 @@ from safeyolo.factory_doctor import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _factory_file(tmp_path: Path) -> Path:
-    for name in ("coordinator", "owner", "reviewer"):
+def _factory_file(
+    tmp_path: Path,
+    *,
+    coordinator_contract: str | None = None,
+    room: str = "backlog",
+) -> Path:
+    if coordinator_contract is None:
+        coordinator_contract = (
+            REPO_ROOT / "docs/factories/backlog-coordinator.md"
+        ).read_text()
+    (tmp_path / "coordinator.md").write_text(coordinator_contract)
+    for name in ("owner", "reviewer"):
         (tmp_path / f"{name}.md").write_text(f"# {name.title()}\n")
     path = tmp_path / "backlog.toml"
     path.write_text(
         'schema = "safeyolo.factory/v1"\n'
         'name = "backlog"\n'
-        'room = "backlog"\n\n'
+        f'room = "{room}"\n\n'
         "[operator_input]\n"
         'to = "coordinator"\n'
         'types = ["NEXT"]\n\n'
@@ -248,6 +259,14 @@ def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_ru
     assert "recent_attention_ids" not in result.output
 
 
+def test_shipped_backlog_contract_hash_is_pinned():
+    contract = REPO_ROOT / "docs/factories/backlog-coordinator.md"
+
+    assert hashlib.sha256(contract.read_bytes()).hexdigest() == (
+        _BACKLOG_COORDINATOR_CONTRACT_SHA256
+    )
+
+
 def test_factory_doctor_does_not_invent_next_mode_for_custom_factory(monkeypatch):
     monkeypatch.setattr(
         "safeyolo.factory_doctor.coord_api.show_brief",
@@ -270,6 +289,36 @@ def test_factory_doctor_does_not_invent_next_mode_for_custom_factory(monkeypatch
     assert "explicit-NEXT-mode" not in checks[0].detail
     assert "safeyolo coord brief show custom" in checks[0].detail
     assert "--expected-revision 0" in checks[0].detail
+
+
+def test_factory_doctor_does_not_invent_next_mode_for_custom_backlog_contract(
+    tmp_path, monkeypatch
+):
+    custom_contract = "# Custom coordinator\n\nNEXT records a note and never selects work.\n"
+    payload = load_factory_file(
+        _factory_file(
+            tmp_path,
+            coordinator_contract=custom_contract,
+            room="custom-room",
+        )
+    ).snapshot_payload()
+    monkeypatch.setattr(
+        "safeyolo.factory_doctor.coord_api.show_brief",
+        lambda _room: {"revision": 0, "content_hash": None, "markdown": None},
+    )
+    checks = []
+
+    _inspect_brief(checks, payload)
+
+    assert payload["name"] == "backlog"
+    assert payload["operator_input"]["types"] == ["NEXT"]
+    assert payload["roles"]["coordinator"]["contract_sha256"] != (
+        _BACKLOG_COORDINATOR_CONTRACT_SHA256
+    )
+    assert len(checks) == 1
+    assert checks[0].status == "PASS"
+    assert checks[0].detail.startswith("room=custom-room state=none ")
+    assert "explicit-NEXT-mode" not in checks[0].detail
 
 
 def test_factory_doctor_reports_present_brief_metadata_without_body(
