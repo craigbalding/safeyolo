@@ -10,6 +10,9 @@ from typing import Any
 
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9_.-]+$")
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+_ISSUE_STATES = {"closed", "open"}
+_OWNER_TYPES = {"Organization", "User"}
+_VISIBILITIES = {"internal", "private", "public"}
 _UNAVAILABLE_REASONS = {
     "ambiguous",
     "malformed",
@@ -205,6 +208,17 @@ def evaluate_intake(payload: Any) -> dict[str, Any]:
                 "reason": "must be issue or pull_request",
             }
         )
+    bounded_expectations = (
+        ("owner_type", _OWNER_TYPES, "must be Organization or User"),
+        ("visibility", _VISIBILITIES, "must be internal, private, or public"),
+        ("issue_state", _ISSUE_STATES, "must be closed or open"),
+    )
+    for field, allowed, reason in bounded_expectations:
+        value = expectations.get(field)
+        if isinstance(value, str) and value not in allowed:
+            errors.append(
+                {"field": f"request.expectations.{field}", "reason": reason}
+            )
     if "archived" in expectations and not isinstance(expectations["archived"], bool):
         errors.append(
             {"field": "request.expectations.archived", "reason": "must be a boolean"}
@@ -242,14 +256,29 @@ def evaluate_intake(payload: Any) -> dict[str, Any]:
         "repository",
         unavailable,
     )
-    for field in ("owner_login", "owner_type", "visibility"):
-        _reject_malformed_fact(
-            repository,
-            field,
-            isinstance(repository.get(field), str),
-            "repository",
-            unavailable,
-        )
+    _reject_malformed_fact(
+        repository,
+        "owner_login",
+        isinstance(repository.get("owner_login"), str),
+        "repository",
+        unavailable,
+    )
+    _reject_malformed_fact(
+        repository,
+        "owner_type",
+        isinstance(repository.get("owner_type"), str)
+        and repository["owner_type"] in _OWNER_TYPES,
+        "repository",
+        unavailable,
+    )
+    _reject_malformed_fact(
+        repository,
+        "visibility",
+        isinstance(repository.get("visibility"), str)
+        and repository["visibility"] in _VISIBILITIES,
+        "repository",
+        unavailable,
+    )
     _reject_malformed_fact(
         repository,
         "archived",
@@ -288,14 +317,20 @@ def evaluate_intake(payload: Any) -> dict[str, Any]:
         "issue",
         unavailable,
     )
-    for field in ("state", "author_login"):
-        _reject_malformed_fact(
-            issue,
-            field,
-            isinstance(issue.get(field), str),
-            "issue",
-            unavailable,
-        )
+    _reject_malformed_fact(
+        issue,
+        "state",
+        isinstance(issue.get("state"), str) and issue["state"] in _ISSUE_STATES,
+        "issue",
+        unavailable,
+    )
+    _reject_malformed_fact(
+        issue,
+        "author_login",
+        isinstance(issue.get("author_login"), str),
+        "issue",
+        unavailable,
+    )
     _reject_malformed_fact(
         issue,
         "url",
@@ -398,8 +433,10 @@ def evaluate_candidate(payload: Any) -> dict[str, Any]:
         unavailable,
     )
     body = pull_request_source.get("body")
-    if not isinstance(body, str):
+    if "body" not in pull_request_source:
         unavailable.append({"field": "pull_request.body", "reason": "missing"})
+    elif not isinstance(body, str):
+        unavailable.append({"field": "pull_request.body", "reason": "malformed"})
     tree = _require_facts(
         tree_source,
         ("commit_sha", "tree_sha"),
@@ -508,14 +545,20 @@ def evaluate_candidate(payload: Any) -> dict[str, Any]:
         "linked_issue",
         unavailable,
     )
-    for field in ("state", "author_login"):
-        _reject_malformed_fact(
-            issue,
-            field,
-            isinstance(issue.get(field), str),
-            "linked_issue",
-            unavailable,
-        )
+    _reject_malformed_fact(
+        issue,
+        "state",
+        isinstance(issue.get("state"), str) and issue["state"] in _ISSUE_STATES,
+        "linked_issue",
+        unavailable,
+    )
+    _reject_malformed_fact(
+        issue,
+        "author_login",
+        isinstance(issue.get("author_login"), str),
+        "linked_issue",
+        unavailable,
+    )
     _reject_malformed_fact(
         issue,
         "url",

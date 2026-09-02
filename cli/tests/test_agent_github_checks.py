@@ -179,6 +179,47 @@ def test_malformed_intake_reference_fails_before_evidence_is_interpreted() -> No
     assert result["request_errors"][0]["field"] == "request.repository"
 
 
+def test_intake_rejects_out_of_domain_expectations() -> None:
+    helper = _load_helper()
+    invalid_values = {
+        "owner_type": "Robot",
+        "visibility": "banana",
+        "issue_state": "pending",
+    }
+
+    for field, value in invalid_values.items():
+        payload = _intake_payload()
+        payload["request"]["expectations"][field] = value
+
+        result = helper.evaluate_intake(payload)
+
+        assert result["outcome"] == "invalid_request"
+        assert {item["field"] for item in result["request_errors"]} == {
+            f"request.expectations.{field}"
+        }
+
+
+def test_intake_rejects_out_of_domain_normalized_facts() -> None:
+    helper = _load_helper()
+    invalid_facts = (
+        ("repository", "owner_type", "Robot"),
+        ("repository", "visibility", "banana"),
+        ("issue", "state", "pending"),
+    )
+
+    for block, field, value in invalid_facts:
+        payload = _intake_payload()
+        payload["evidence"][block]["facts"][field] = value
+
+        result = helper.evaluate_intake(payload)
+
+        assert result["outcome"] == "evidence_unavailable"
+        assert result["unavailable_evidence"] == [
+            {"field": f"{block}.{field}", "reason": "malformed"}
+        ]
+        assert field not in result["facts"][block]
+
+
 def test_malformed_optional_intake_facts_are_unavailable() -> None:
     helper = _load_helper()
     payload = _intake_payload()
@@ -295,6 +336,42 @@ def test_malformed_optional_candidate_facts_are_unavailable() -> None:
     assert "draft" not in result["facts"]["pull_request"]
     assert "url" not in result["facts"]["pull_request"]
     assert "url" not in result["facts"]["linked_issue"]
+
+
+def test_candidate_rejects_out_of_domain_linked_issue_state() -> None:
+    helper = _load_helper()
+    payload = _candidate_payload()
+    payload["evidence"]["linked_issue"]["facts"]["state"] = "pending"
+
+    result = helper.evaluate_candidate(payload)
+
+    assert result["outcome"] == "evidence_unavailable"
+    assert result["unavailable_evidence"] == [
+        {"field": "linked_issue.state", "reason": "malformed"}
+    ]
+    assert "state" not in result["facts"]["linked_issue"]
+
+
+def test_candidate_distinguishes_missing_and_malformed_body() -> None:
+    helper = _load_helper()
+    missing = _candidate_payload()
+    missing["evidence"]["pull_request"]["facts"].pop("body")
+
+    missing_result = helper.evaluate_candidate(missing)
+
+    assert {tuple(item.values()) for item in missing_result["unavailable_evidence"]} == {
+        ("pull_request.body", "missing")
+    }
+
+    for value in (17, {}, []):
+        malformed = _candidate_payload()
+        malformed["evidence"]["pull_request"]["facts"]["body"] = value
+
+        malformed_result = helper.evaluate_candidate(malformed)
+
+        assert malformed_result["unavailable_evidence"] == [
+            {"field": "pull_request.body", "reason": "malformed"}
+        ]
 
 
 def test_candidate_requires_an_exact_linked_issue_reference() -> None:
