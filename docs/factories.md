@@ -73,6 +73,30 @@ role's bounded checkpoint, and preflight refreshes the current brief after a
 restart. Brief updates are not handoffs: they create no in-flight request,
 need no terminal response, and cause no automatic runtime transition.
 
+## Authority and intake
+
+An approved factory has two different state layers:
+
+- The immutable snapshot binds the room, operator edge, role and agent
+  bindings, declared handoffs, and exact bytes and SHA-256 of every Markdown
+  role contract.
+- The canonical trusted room brief is live operator-authored state. The brief
+  is not part of the snapshot and can change by revision while the snapshot
+  stays the same.
+
+The declared operator types admit messages to the coordinator. The types do
+not define a workflow. Read the exact bound coordinator contract to determine
+what `ACTIVATE`, `RESUME`, `NEXT`, and `PRIORITY` mean. `factory check` prints
+the source path and hash for every role contract. Read each file directly;
+SafeYolo does not generate an interpretation of contract text.
+
+For the shipped backlog factory, `ACTIVATE` and `RESUME` permit intake. They do
+not select an issue by themselves. A suitable trusted brief can authorize
+standing eligible work for proactive delegation. If no suitable brief exists,
+the coordinator waits for an explicit `NEXT issue=#...`. This explicit-`NEXT`
+mode is valid and is not a factory failure. A brief must state whether `NEXT`
+and `PRIORITY` can override its standing filters.
+
 ## Check, approve, and run
 
 Inspect the resolved source path, exact UTF-8 byte count, and SHA-256 of every
@@ -81,6 +105,11 @@ Markdown contract, along with the operator edge and handoffs:
 ```sh
 safeyolo factory check docs/factories/backlog.toml
 ```
+
+The explanation also identifies the immutable snapshot boundary, the live
+brief boundary, the role that receives operator input, and the complete
+role/handoff graph. Static checking does not inspect live room state, grants,
+brief revision, or worker health.
 
 Apply prompts for explicit operator approval and stores the resolved manifest
 plus exact role-contract contents in an immutable, content-addressed snapshot
@@ -108,6 +137,83 @@ The stored snapshot binds each Markdown file's exact bytes, byte count, hash,
 and decoded text. `factory run` prints the bound snapshot path, byte counts,
 hashes, and operator edge before it starts agents, so the operator can compare
 the running object with the approved check output.
+
+## Diagnose an active factory
+
+Inspect the complete active factory before you rely on it:
+
+```sh
+safeyolo factory doctor backlog
+```
+
+The doctor reports the current canonical brief as `state=none` or as its exact
+revision and content hash. It does not print or interpret the brief body. When
+the brief is absent, the doctor reports the valid explicit-`NEXT` mode. The
+output also gives the exact read and optimistic-concurrency update commands:
+
+```sh
+safeyolo coord brief show backlog
+safeyolo coord brief set backlog --file BRIEF.md --expected-revision REVISION
+```
+
+Use revision `0` for the first brief. For an existing brief, use the current
+revision reported by `brief show` or `factory doctor`. SafeYolo accepts
+operator-authored Markdown. SafeYolo does not claim that the Markdown contains
+a valid eligibility policy.
+
+The command reads existing host and sandbox state. It does not start, stop,
+repair, apply, or change the factory. Each output line has one status:
+
+- `PASS` means that the component has the expected state.
+- `WARN` means that a role is stopped. A stopped role is valid persistent
+  state, but the factory is not fully running.
+- `FAIL` means that a required component is missing, corrupt, mismatched, or
+  not running. Each failure names a narrow recovery command or file category.
+
+The command checks the active snapshot and role bindings, agent identity and
+storage, workspaces, room membership and grants, the traffic proxy, and the
+managed Coord NATS runtime. It also checks each staged command, supervisor
+configuration, role contract, Codex Model Context Protocol (MCP) binding,
+checkpoint, and running process tree. A healthy traffic proxy does not hide a
+stopped NATS runtime. A running sandbox fails the check if its supervisor or
+active-turn Coord MCP process is absent. Between bounded turns, the checkpoint
+normally records `owned_process=null`; the running supervisor is then reported
+as healthy without requiring a Codex process. A PID that disappears while the
+read-only process probe runs is likewise reported as a non-disruptive turn
+transition.
+
+The summary is `PASS`, `WARN`, or `FAIL`. `FAIL` returns a nonzero exit status.
+`WARN` returns zero so that an operator can distinguish a deliberately stopped
+factory from corrupt state. The command reports checkpoint counts and process
+identity, but it does not print message bodies, role-contract contents,
+credentials, or inspected payloads.
+
+## Optional backlog eligibility brief
+
+The following short template records the operator's standing selection rules.
+Replace every placeholder with an exact value. The template is Markdown for
+the operator and coordinator; SafeYolo does not parse it as workflow
+configuration.
+
+```markdown
+# Backlog eligibility
+
+- Repository: `<owner>/<repository>`
+- GitHub identity: login `<exact-login>`, stable user ID `<exact-id>`
+- Required identity relationship: `<issue author, assignee, or other exact relationship>`
+- Include: `<exact issue state, labels, or other required filters>`
+- Exclude: `<pull requests, tracking issues, blocked work, and other exclusions>`
+- Maximum concurrent work: `<number>`
+- Immediate revalidation: Recheck every required fact immediately before delegation.
+- Ordering: `<exact default order>`
+- `NEXT` override: `<exact filters that NEXT may override, or none>`
+- `PRIORITY` override: `<exact filters that PRIORITY may override, or none>`
+- Fail-safe: If any required fact cannot be established, do not delegate. Wait for operator direction.
+```
+
+State the identity relationship, not only the identity. State override
+semantics separately for `NEXT` and `PRIORITY`. An override does not bypass an
+unstated filter. Keep no more work in flight than the stated maximum.
 
 ## Live upgrade
 

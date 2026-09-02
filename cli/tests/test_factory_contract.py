@@ -28,6 +28,14 @@ def test_backlog_coordinator_status_contract_is_low_noise():
     assert "report that the updated candidate is pending" in contract
 
 
+def test_backlog_coordinator_contract_defines_standing_and_explicit_intake():
+    contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+
+    assert "A suitable trusted brief can authorize standing eligible intake." in contract
+    assert "The absence of a suitable brief is a valid state." in contract
+    assert "must state whether `NEXT` and `PRIORITY` can override" in contract
+
+
 def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> Path:
     (tmp_path / "coordinator.md").write_text("# Coordinator\n\nDelegate exact tasks.\n")
     (tmp_path / "owner.md").write_text("# Owner\n\nOwn the issue.\n")
@@ -57,6 +65,7 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     path = _factory_file(tmp_path)
 
     result = cli_runner.invoke(app, ["factory", "check", str(path)])
+    explanation = " ".join(result.output.split())
 
     assert result.exit_code == 0, result.output
     assert "factory=backlog schema=safeyolo.factory/v1 room=backlog" in result.output
@@ -67,6 +76,27 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     assert "operator_input=operator to=coordinator" in result.output
     assert "handoff=TASK from=coordinator to=reviewer" in result.output
     assert "handoff=REVIEW_READY from=owner to=reviewer" in result.output
+    assert "Approval creates an immutable snapshot." in explanation
+    assert (
+        "Inspect those files directly; SafeYolo does not summarize"
+        in explanation
+    )
+    assert "The admitted input words are not workflow definitions." in explanation
+    assert "separate live operator state" in explanation
+    assert (
+        "does not inspect live room state, grants, brief revision, or worker health"
+        in explanation
+    )
+    assert "does not select work or prove live eligibility or readiness" in explanation
+    assert "standing intake can delegate or explicit issue selection is required" in explanation
+    assert "An absent brief is not a static contract error" in explanation
+    assert "safeyolo coord brief show backlog" in explanation
+    assert (
+        "safeyolo coord brief set backlog --file BRIEF.md "
+        "--expected-revision REVISION"
+        in explanation
+    )
+    assert "safeyolo factory doctor backlog" in explanation
 
 
 def test_factory_apply_requires_approval_and_stores_immutable_snapshot(cli_runner, tmp_path, tmp_config_dir):
@@ -163,6 +193,7 @@ def test_factory_run_preserves_each_agents_local_codex_auth(
     monkeypatch.setattr("safeyolo.commands.factory._run_agent", lambda *args, **kwargs: 0)
     monkeypatch.setattr("safeyolo.commands.factory.coord_nats.start_server", lambda **_kwargs: 123)
     monkeypatch.setattr("safeyolo.commands.factory.coord_api.bootstrap", lambda: "sy-test")
+    monkeypatch.setattr("safeyolo.commands.factory._ensure_agent_rooms", lambda _names: None)
     path = _factory_file(tmp_path)
     applied = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
     assert applied.exit_code == 0, applied.output
@@ -279,6 +310,7 @@ def test_factory_run_executes_staged_worker_commands(
         "safeyolo.commands.factory.coord_api.bootstrap",
         lambda: "sy-test" if coord_ready else pytest.fail("coord bootstrap preceded runtime"),
     )
+    monkeypatch.setattr("safeyolo.commands.factory._ensure_agent_rooms", lambda _names: None)
 
     path = _factory_file(tmp_path)
     applied = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
@@ -339,6 +371,41 @@ def test_factory_run_does_not_boot_workers_without_coord(tmp_path, monkeypatch):
         _run_snapshot(tmp_path / "snapshot.json", payload)
 
     assert launched == []
+
+
+def test_factory_ensures_one_operator_agent_room_per_worker(monkeypatch):
+    from safeyolo.commands.factory import _ensure_agent_rooms
+
+    created = []
+    grants = []
+
+    async def create_room(name):
+        created.append(name)
+        return f"room-{name}"
+
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.coord_api.list_rooms",
+        lambda: [{"name": "relay-agent"}],
+    )
+    monkeypatch.setattr("safeyolo.commands.factory.coord_api.create_room", create_room)
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.coord_api.grant",
+        lambda room, kind, principal, **kwargs: grants.append((room, kind, principal)),
+    )
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.get_or_mint_agent_id",
+        lambda name: f"id-{name}",
+    )
+
+    _ensure_agent_rooms(iter(("relay", "forge")))
+
+    assert created == ["forge-agent"]
+    assert grants == [
+        ("relay-agent", "agent", "id-relay"),
+        ("relay-agent", "operator", "operator"),
+        ("forge-agent", "agent", "id-forge"),
+        ("forge-agent", "operator", "operator"),
+    ]
 
 
 @pytest.mark.parametrize(

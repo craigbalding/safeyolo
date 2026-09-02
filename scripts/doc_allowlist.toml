@@ -44,6 +44,8 @@ user_facing_docs = [
     "docs/dispatch-generation.md",
     "docs/dispatch-publication.md",
     "docs/factory-proposals.md",
+    "docs/factories.md",
+    "docs/factories/backlog-coordinator.md",
     "docs/security-verification.md",
     "docs/technical-writing.md",
 ]
@@ -53,4 +55,6 @@ user_facing_docs = [
 skill_files = [
     "cli/src/safeyolo/agent_context/skills/safeyolo/SKILL.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo/references/*.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/SKILL.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/references/*.md",
 ]

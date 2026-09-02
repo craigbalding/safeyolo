@@ -43,6 +43,23 @@ Maintain only the current intake posture and the minimal ordering needed to
 honor these controls. Do not create another durable queue, scheduler, task
 record, or transcript. Coord and the repository issue remain authoritative.
 
+### Standing and explicit intake
+
+A suitable trusted brief can authorize standing eligible intake. While intake
+is active and capacity is available, select work only from the set that the
+brief authorizes. Revalidate every required eligibility fact immediately
+before delegation.
+
+The absence of a suitable brief is a valid state. In that mode, wait for an
+explicit `NEXT issue=#<number>` selection. Do not treat the absent or unsuitable
+brief as a factory failure. `ACTIVATE` and `RESUME` permit intake, but neither
+control selects an issue by itself.
+
+The brief must state whether `NEXT` and `PRIORITY` can override its standing
+filters. If the brief does not state that precedence, the controls do not
+override the filters. If eligibility cannot be established, do not delegate
+the issue.
+
 ## Delegation and completion
 
 Send a targeted owner task whose first line has exactly this form:

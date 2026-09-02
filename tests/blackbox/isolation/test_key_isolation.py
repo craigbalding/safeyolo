@@ -8,8 +8,6 @@ No JSON result files, no verifier containers — direct probes only.
 """
 
 import os
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -18,6 +16,47 @@ import pytest
 CERT_TRUST_STORE = Path("/usr/local/share/ca-certificates")
 CONFIG_SHARE = Path("/safeyolo")
 PUBLIC_CERT = CERT_TRUST_STORE / "safeyolo.crt"
+EXPECTED_SSH_HOST_PRIVATE_KEYS = frozenset(
+    {
+        Path("/etc/ssh/ssh_host_ecdsa_key"),
+        Path("/etc/ssh/ssh_host_ed25519_key"),
+        Path("/etc/ssh/ssh_host_rsa_key"),
+    }
+)
+
+
+def _find_unexpected_private_keys(scan_root=Path("/")):
+    """Return private-key marker paths outside the sshd host-key allowlist."""
+    scan_root = Path(scan_root)
+    found = []
+    for root, dirs, files in os.walk(scan_root):
+        root_path = Path(root)
+        relative_root = root_path.relative_to(scan_root)
+        if relative_root.parts[:1] and relative_root.parts[0] in {
+            "dev",
+            "proc",
+            "run",
+            "sys",
+        }:
+            dirs.clear()
+            continue
+        if {"dist-packages", "site-packages"}.intersection(relative_root.parts):
+            dirs.clear()
+            continue
+        for name in files:
+            path = root_path / name
+            guest_path = Path("/") / path.relative_to(scan_root)
+            try:
+                with path.open() as file:
+                    head = file.read(1024)
+                if (
+                    "PRIVATE KEY" in head
+                    and guest_path not in EXPECTED_SSH_HOST_PRIVATE_KEYS
+                ):
+                    found.append(str(guest_path))
+            except (PermissionError, OSError, UnicodeDecodeError):
+                pass
+    return found
 
 
 class TestPublicCertPresent:
@@ -149,61 +188,19 @@ class TestPrivateKeyAbsent:
         )
 
     def test_full_filesystem_scan_for_private_keys(self):
-        """Whole-filesystem scan finds no private key for SafeYolo's CA.
+        """Whole-filesystem scan finds no unexpected private-key material.
 
         What: os.walk from / (skipping /proc, /sys, /dev, /run and
-        third-party site-packages); inspect private-key candidates and
-        assert none has the public key from safeyolo.crt.
+        third-party site-packages); inspect private-key markers and allow only
+        the three exact guest sshd host-key paths.
         Why: The targeted tests above check known-critical paths.
-        This is the catch-all: if SafeYolo's CA key leaked to a surprising
+        This is the catch-all: if any private key leaked to a surprising
         location (/tmp, /var/log, an agent workspace subdir), the
         targeted tests would miss it but this scan would catch it. Guest-local
-        SSH host keys are expected and are not SafeYolo trust material.
+        SSH host keys are expected only at their standard paths.
         """
-        openssl = shutil.which("openssl")
-        if openssl is None:
-            pytest.skip("openssl is required to compare private keys with the trusted CA")
-        trusted = subprocess.run(
-            [openssl, "x509", "-in", str(PUBLIC_CERT), "-pubkey", "-noout"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
-        ).stdout.strip()
-
-        found = []
-        for root, dirs, files in os.walk("/"):
-            # Skip pseudo-filesystems
-            if root.startswith(("/proc", "/sys", "/dev", "/run")):
-                dirs.clear()
-                continue
-            # Skip third-party package directories (contain test fixtures)
-            if "site-packages" in root or "dist-packages" in root:
-                dirs.clear()
-                continue
-            for name in files:
-                path = os.path.join(root, name)
-                try:
-                    with open(path) as fh:
-                        head = fh.read(1024)
-                    if "PRIVATE KEY" in head:
-                        candidate = subprocess.run(
-                            [openssl, "pkey", "-in", path, "-pubout", "-passin", "pass:"],
-                            capture_output=True,
-                            text=True,
-                            timeout=2,
-                            check=False,
-                        )
-                        if candidate.returncode == 0 and candidate.stdout.strip() == trusted:
-                            found.append(path)
-                except (
-                    PermissionError,
-                    OSError,
-                    UnicodeDecodeError,
-                    subprocess.TimeoutExpired,
-                ):
-                    pass
+        found = _find_unexpected_private_keys()
 
         assert not found, (
-            f"SECURITY FAILURE: SafeYolo CA private key found in VM: {found}"
+            f"SECURITY FAILURE: Unexpected private key found in VM: {found}"
         )

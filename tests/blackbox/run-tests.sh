@@ -344,6 +344,9 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo "Starting host listener..."
     CONFIG_SHARE="$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share"
     mkdir -p "$CONFIG_SHARE"
+    install -m 0444 \
+        "$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem" \
+        "$CONFIG_SHARE/guest-only-trust-anchor.crt"
     python3 "$SCRIPT_DIR/harness/host_listener.py" > "$CONFIG_SHARE/host-listener-port" &
     HOST_LISTENER_PID=$!
     # Wait for the port to be written (listener prints it on bind).

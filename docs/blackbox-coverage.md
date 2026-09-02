@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**102 tests across 36 threat categories.**
+**104 tests across 38 threat categories.**
 
 ## Host-side
 
@@ -197,6 +197,18 @@ the sinkhole saw one request.
   - *Consequence if unasserted:* Positive-path check — if allowlisted hosts don't actually
 reach their upstream, the agent loses legitimate connectivity
 and users will disable network_guard to get work done.
+
+#### TestResponseRequestId — SafeYolo owns the correlation header returned to the agent.
+
+**Threat:** An origin-controlled ID can misdirect diagnostics or point to no
+trace at all, breaking the proxy's downstream correlation contract.
+
+- **`test_origin_header_is_replaced_and_resolves_to_trace`** — Origin header is replaced by one canonical, traceable request ID.
+  - *Probe:* Send a traced request to a sinkhole route that returns its own
+X-SafeYolo-Request-Id; assert the client sees one different ID and
+that the returned value resolves through the agent-scoped /trace API.
+  - *Consequence if unasserted:* Without this boundary check, unit tests could pass while the
+loaded proxy still returns an origin-controlled or untraceable ID.
 
 #### TestRateLimiting — Per-host request budgets are enforced without spurious denies.
 
@@ -565,15 +577,15 @@ read every .pem/.crt; assert none contain 'PRIVATE KEY'.
   - *Consequence if unasserted:* Catches the naming-convention dodge — even if the file
 is called .crt (public), it could carry private key content.
 Tests the content, not the name.
-- **`test_full_filesystem_scan_for_private_keys`** — Whole-filesystem scan finds no private key for SafeYolo's CA.
+- **`test_full_filesystem_scan_for_private_keys`** — Whole-filesystem scan finds no unexpected private-key material.
   - *Probe:* os.walk from / (skipping /proc, /sys, /dev, /run and
-third-party site-packages); inspect private-key candidates and
-assert none has the public key from safeyolo.crt.
+third-party site-packages); inspect private-key markers and allow only
+the three exact guest sshd host-key paths.
   - *Consequence if unasserted:* The targeted tests above check known-critical paths.
-This is the catch-all: if SafeYolo's CA key leaked to a surprising
+This is the catch-all: if any private key leaked to a surprising
 location (/tmp, /var/log, an agent workspace subdir), the
 targeted tests would miss it but this scan would catch it. Guest-local
-SSH host keys are expected and are not SafeYolo trust material.
+SSH host keys are expected only at their standard paths.
 
 ### `tests/blackbox/isolation/test_root_containment.py`
 
@@ -602,6 +614,19 @@ downloads.
   - *Consequence if unasserted:* This exercises the filesystem overlay and package database that
 real ``apt`` installs depend on, while keeping acceptance deterministic
 and independent of an external mirror.
+
+#### TestGuestRootTrustIsolation — Guest trust changes cannot widen the host proxy's upstream trust.
+
+**Threat:** Guest root can install packages and local trust anchors. That
+supported capability must remain inside the sandbox. The host proxy must
+continue to authenticate upstream TLS with its own trust store.
+
+- **`test_guest_ca_change_does_not_change_proxy_validation`** — A guest-only trust anchor remains untrusted by the host proxy.
+  - *Probe:* Install the sinkhole's self-signed leaf into the writable guest
+trust store, prove the guest bundle accepts it, then request that
+upstream through SafeYolo and require the host proxy to return 502.
+  - *Consequence if unasserted:* A successful upstream request would show that guest-controlled
+trust changed the proxy's host-side certificate validation boundary.
 
 #### TestGuestRootContainment — Guest root cannot cross the SafeYolo isolation boundary.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,10 +12,11 @@ from typing import Any
 import typer
 from rich.console import Console
 
-from ..agents_store import load_agent, mutate_agent
+from ..agents_store import get_or_mint_agent_id, load_agent, mutate_agent
 from ..config import find_config_dir
 from ..coord import api as coord_api
 from ..coord import nats_runtime as coord_nats
+from ..coord.identity import new_operation_id
 from ..factory_contract import (
     FactoryContract,
     FactoryContractError,
@@ -22,6 +24,7 @@ from ..factory_contract import (
     load_factory_file,
     store_snapshot,
 )
+from ..factory_doctor import inspect_factory
 from .agent import (
     _check_project_ownership,
     _resolve_host_script_path,
@@ -32,7 +35,7 @@ from .agent import (
 console = Console()
 factory_app = typer.Typer(
     name="factory",
-    help="Check, approve, and run supervised coord factories.",
+    help="Check, approve, run, and diagnose supervised coord factories.",
     no_args_is_help=True,
 )
 
@@ -60,6 +63,70 @@ def _print_contract(contract: FactoryContract) -> None:
     for handoff in contract.handoffs:
         responses = ",".join(handoff.responses)
         console.print(f"handoff={handoff.request} from={handoff.source} to={handoff.destination} responses={responses}")
+    _print_contract_explanation(contract)
+
+
+def _print_contract_explanation(  # DOC: docs/factories.md, docs/factories/backlog-coordinator.md
+    contract: FactoryContract,
+) -> None:
+    roles = {role.name: role for role in contract.roles}
+    operator_role = roles[contract.operator_input.destination]
+    console.print("\n[bold]Authority and routing[/bold]")
+    console.print(
+        "Approval creates an immutable snapshot. The snapshot binds this "
+        "routing graph and the exact UTF-8 bytes of every role contract."
+    )
+    console.print(
+        "The role lines above identify each authoritative contract source path "
+        "and SHA-256. Inspect those files directly; SafeYolo does not summarize "
+        "or interpret their text."
+    )
+    console.print(
+        f"The canonical operator edge reaches role={operator_role.name} "
+        f"agent={operator_role.agent} through the admitted inputs "
+        f"{','.join(contract.operator_input.types)}."
+    )
+    console.print(
+        "The admitted input words are not workflow definitions. Their meanings "
+        f"come from the bound role contract source={operator_role.contract_source} "
+        f"sha256={operator_role.contract_sha256}."
+    )
+    for handoff in contract.handoffs:
+        source = roles[handoff.source]
+        destination = roles[handoff.destination]
+        console.print(
+            f"The role={source.name} agent={source.agent} can send "
+            f"request={handoff.request} to role={destination.name} "
+            f"agent={destination.agent}; declared responses are "
+            f"{','.join(handoff.responses)}."
+        )
+    console.print(
+        f"The canonical trusted brief for room={contract.room} is separate live "
+        "operator state. It is not part of the immutable snapshot."
+    )
+    console.print(
+        "This static check does not inspect live room state, grants, brief "
+        "revision, or worker health."
+    )
+    console.print(
+        "Static admission of a control word does not select work or prove live "
+        "eligibility or readiness."
+    )
+    console.print(
+        "Read the bound role contract and live brief to determine whether "
+        "standing intake can delegate or explicit issue selection is required."
+    )
+    console.print(
+        "An absent brief is not a static contract error. A bound role contract "
+        "can intentionally use explicit selection only."
+    )
+    console.print(f"Inspect the live brief: safeyolo coord brief show {contract.room}")
+    console.print(
+        "Set the live brief: "
+        f"safeyolo coord brief set {contract.room} --file BRIEF.md "
+        "--expected-revision REVISION"
+    )
+    console.print(f"Inspect live readiness: safeyolo factory doctor {contract.name}")
 
 
 @factory_app.command("check")
@@ -106,6 +173,27 @@ def run_factory(name: str = typer.Argument(..., help="Applied factory name")) ->
         console.print(f"[red]Cannot run factory:[/red] {exc}")
         raise typer.Exit(1) from exc
     console.print(f"[green]Started factory {name} snapshot={identifier}[/green]")
+
+
+@factory_app.command("doctor")
+def doctor_factory(name: str = typer.Argument(..., help="Applied factory name")) -> None:
+    """Inspect an active supervised factory without changing it."""
+    report = inspect_factory(name)
+    for item in report.checks:
+        line = f"{item.status} component={item.component} {item.detail}"
+        if item.recovery is not None:
+            line += f" recovery={item.recovery}"
+        console.print(line)
+    counts = {
+        status: sum(item.status == status for item in report.checks)
+        for status in ("PASS", "WARN", "FAIL")
+    }
+    console.print(
+        f"SUMMARY factory={name} status={report.status} "
+        f"pass={counts['PASS']} warn={counts['WARN']} fail={counts['FAIL']}"
+    )
+    if report.status == "FAIL":
+        raise typer.Exit(1)
 
 
 def _print_snapshot(identifier: str, snapshot_path: Path, payload: dict[str, Any]) -> None:
@@ -166,6 +254,7 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
     try:
         coord_nats.start_server(ready_timeout=10.0)
         coord_api.bootstrap()
+        _ensure_agent_rooms(agent_name for _role_name, agent_name, _metadata in configured)
     except Exception as exc:
         raise FactoryContractError(f"coord runtime failed to start: {exc}") from exc
 
@@ -179,6 +268,27 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
         )
         if exit_code != 0:
             raise FactoryContractError(f"agent {agent_name!r} failed to start (exit {exit_code})")
+
+
+def _ensure_agent_rooms(agent_names: Iterator[str]) -> None:
+    existing = {room["name"] for room in coord_api.list_rooms()}
+    for agent_name in agent_names:
+        room_name = f"{agent_name}-agent"
+        if room_name not in existing:
+            asyncio.run(coord_api.create_room(room_name))
+            existing.add(room_name)
+        coord_api.grant(
+            room_name,
+            "agent",
+            get_or_mint_agent_id(agent_name),
+            operation_id=new_operation_id(),
+        )
+        coord_api.grant(
+            room_name,
+            "operator",
+            "operator",
+            operation_id=new_operation_id(),
+        )
 
 
 @contextmanager

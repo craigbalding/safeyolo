@@ -26,6 +26,19 @@ password; the password is supplied only in the managed NATS child process's
 environment. Retained JetStream data lives separately under
 `nats/jetstream`.
 
+## Reconcile a running proxy
+
+If the proxy is already running, `safeyolo start` reconciles the managed Coord
+runtime. A healthy NATS process stays running. If the managed NATS process is
+absent, SafeYolo starts it, bootstraps the existing Coord registry, and recovers
+pending attention data. This operation preserves the instance identity,
+credentials, rooms, memberships, control state, and retained JetStream history.
+
+If NATS startup, Coord bootstrap, or attention recovery fails, the command
+reports that Coord is degraded and gives diagnostic commands and log paths. It
+does not restart the proxy, and the proxy remains available. Run `safeyolo
+doctor` and inspect the reported log before you retry.
+
 ## Manual rotation
 
 Rotation is disruptive and has no old/new overlap or grace period. Stop the
@@ -96,6 +109,15 @@ safeyolo coord chat ROOM_NAME
 `safeyolo status` should report `Coord (nats-server)` as healthy. Attach to a
 known room and confirm its pre-rotation messages are present, then enter `:q`
 to detach.
+
+## Interactive chat requires a terminal
+
+The default `safeyolo coord chat ROOM_NAME` mode is an editable prompt and
+requires both standard input and standard output to be terminals. If either
+stream is piped or redirected, the command exits before connecting to Coord
+with an actionable error; it does not consume the input or emit terminal
+cursor-control bytes into the caller's shell. Use `--observe` when a
+non-interactive room tail is needed, or run interactive chat from a terminal.
 
 ## Secret-handling boundary
 

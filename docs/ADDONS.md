@@ -637,7 +637,8 @@ Approvals are stored in the policy file as host entries:
 
 ## pattern_scanner.py
 
-Fast regex scanning for secrets and suspicious patterns.
+Fast regex scanning for secrets and suspicious patterns in HTTP traffic and
+complete WebSocket messages.
 
 **Default: Warn mode**
 
@@ -652,11 +653,38 @@ Fast regex scanning for secrets and suspicious patterns.
 - Jailbreak phrases ("ignore previous instructions")
 - LLM instruction markers
 
+*WebSocket scanning:*
+- Scans complete text and binary messages as body content
+- Applies request rules to client messages and response rules to server messages
+- Drops only the matching message in block mode; the connection stays open
+- WebSocket block mode has independent controls for client and server
+  messages; HTTP options do not change WebSocket behavior.
+
 **Options:**
 ```bash
---set pattern_block_input=false   # Block matching requests
---set pattern_block_output=false  # Block matching responses
+--set pattern_block_request=true   # Block matching requests
+--set pattern_block_response=true  # Block matching responses
+--set pattern_block_websocket_request=true   # Block client messages
+--set pattern_block_websocket_response=true   # Block server messages
 ```
+
+The WebSocket options accept `true` or `false` and default to warn-only. They
+can therefore be enabled without blocking ordinary HTTP requests, or left
+disabled while HTTP blocking is enabled. For the executable startup path,
+`PATTERN_BLOCK=true` enables HTTP blocking and supplies `true` defaults for
+both WebSocket directions; an explicit
+`PATTERN_BLOCK_WEBSOCKET_REQUEST` or `PATTERN_BLOCK_WEBSOCKET_RESPONSE`
+value overrides that default. `SAFEYOLO_BLOCK=true` has the highest
+precedence and forces all four options to `true`, so it cannot be relaxed by
+directional settings.
+
+Upgrade note for direct mitmproxy users: before the WebSocket-specific
+options were added, `--set pattern_block_request=true` and
+`--set pattern_block_response=true` also controlled WebSocket messages. Those
+generic options now control HTTP only. To preserve WebSocket blocking after
+upgrading, set `pattern_block_websocket_request=true` and/or
+`pattern_block_websocket_response=true` explicitly (or use the startup
+environment variables above).
 
 ---
 

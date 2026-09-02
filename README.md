@@ -275,13 +275,27 @@ The `contrib/` directory has ready-made host scripts:
 | Script | Purpose |
 |--------|---------|
 | `contrib/claude-host-setup.sh` | Copies Claude Code authentication and selected user extensions into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context, and launches Claude Code. |
-| `contrib/codex-host-setup.sh` | Copies `~/.codex/` into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context, and launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`). SafeYolo remains the outer boundary. |
+| `contrib/codex-host-setup.sh` | Copies `~/.codex/` into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context including `$safeyolo-lab-controller` and the `safeyolo-lab` guest command, and launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`). SafeYolo remains the outer boundary. |
 | `contrib/codex-coord-host-setup.sh` | Uses the Codex setup above, including copied subscription authentication, then supervises bounded non-interactive turns. See the [supervisor contract](docs/codex-coord-supervisor.md). |
 | `contrib/mise-shell-host-setup.sh` | Opens an interactive shell with mise ready for `mise use -g ...`. |
 
 Without `--host-script`, the sandbox boots to an interactive bash shell in a per-agent persistent home.
 
 Writing your own: see [`contrib/HOST_SCRIPT_GUIDE.md`](contrib/HOST_SCRIPT_GUIDE.md).
+
+The Codex setup includes an inspectable tmux lab for experiments that benefit
+from persistent shells, visible output, and operator control. Enter the agent,
+then run one command from the guest shell at `/home/agent`:
+
+```bash
+safeyolo agent shell codex
+# Inside the guest:
+safeyolo-lab
+```
+
+The guest tmux prefix is `C-a`. Run `safeyolo-lab` again after a disconnect to
+attach to the existing lab. The controller first asks what you want to explore;
+it does not create experiment panes until you describe the work.
 
 ## Custom rootfs
 
@@ -301,9 +315,11 @@ in one progressively disclosed [`safeyolo` skill](cli/src/safeyolo/agent_context
 
 The bundled host scripts stage the baseline under `~/.safeyolo/`. Claude
 receives it through `--append-system-prompt`; Codex receives it as
-`developer_instructions`. The skill itself is refreshed in the read-only
-`/safeyolo` share on every run. The scripts link that managed copy into each
-agent's native skill directory, leaving existing user instructions untouched.
+`developer_instructions`. Bundled skills are refreshed in the read-only
+`/safeyolo` share on every run. The scripts link the applicable managed skills
+into each agent's native skill directory, leaving existing user instructions
+untouched. Both integrations get the operational `safeyolo` skill. Codex also
+gets the `safeyolo-lab-controller` skill and the `safeyolo-lab` command.
 
 ## Controlling Agent Access
 
