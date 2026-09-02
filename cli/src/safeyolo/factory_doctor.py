@@ -139,6 +139,7 @@ def inspect_factory(name: str) -> FactoryDoctorReport:
         return FactoryDoctorReport(name, tuple(checks))
 
     _inspect_room(checks, payload)
+    _inspect_brief(checks, payload)
     try:
         platform = get_platform()
     except Exception as exc:  # platform availability is itself a diagnostic
@@ -259,6 +260,64 @@ def _inspect_room(checks: list[FactoryDoctorCheck], payload: dict[str, Any]) -> 
                     f"{label} room={room_name} send,receive",
                 )
             )
+
+
+def _inspect_brief(  # DOC: docs/factories.md
+    checks: list[FactoryDoctorCheck], payload: dict[str, Any]
+) -> None:
+    room_name = payload["room"]
+    try:
+        current = coord_api.show_brief(room_name)
+    except Exception as exc:
+        checks.append(
+            _fail(
+                "coord-brief",
+                f"room={room_name} brief state is unavailable ({type(exc).__name__})",
+                f"trusted brief; run `safeyolo coord brief show {room_name}`",
+            )
+        )
+        return
+
+    revision = current.get("revision") if isinstance(current, dict) else None
+    content_hash = current.get("content_hash") if isinstance(current, dict) else None
+    if revision == 0 and content_hash is None:
+        checks.append(
+            FactoryDoctorCheck(
+                "PASS",
+                "coord-brief",
+                f"room={room_name} state=none explicit-NEXT-mode=valid "
+                f"show=`safeyolo coord brief show {room_name}` "
+                f"set=`safeyolo coord brief set {room_name} --file BRIEF.md "
+                "--expected-revision 0`",
+            )
+        )
+        return
+    if (
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision <= 0
+        or not isinstance(content_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", content_hash) is None
+    ):
+        checks.append(
+            _fail(
+                "coord-brief",
+                f"room={room_name} brief metadata is invalid",
+                f"trusted brief; run `safeyolo coord brief show {room_name}`",
+            )
+        )
+        return
+    checks.append(
+        FactoryDoctorCheck(
+            "PASS",
+            "coord-brief",
+            f"room={room_name} revision={revision} content_hash={content_hash} "
+            "body=not-inspected meaning=operator-owned "
+            f"show=`safeyolo coord brief show {room_name}` "
+            f"set=`safeyolo coord brief set {room_name} --file BRIEF.md "
+            f"--expected-revision {revision}`",
+        )
+    )
 
 
 def _inspect_role(

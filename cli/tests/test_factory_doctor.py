@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -217,6 +218,10 @@ def factory_runtime(tmp_path, tmp_config_dir, monkeypatch):
             "permissions": {f"{kind}:{principal_id}": ["send", "receive"] for kind, principal_id in principals},
         },
     )
+    monkeypatch.setattr(
+        "safeyolo.factory_doctor.coord_api.show_brief",
+        lambda _room: {"revision": 0, "content_hash": None, "markdown": None},
+    )
     return {
         "homes": homes,
         "running": running,
@@ -233,9 +238,43 @@ def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_ru
     assert "PASS component=coord-nats managed NATS is healthy" in result.output
     assert "PASS component=staging role=owner agent=forge" in result.output
     assert "PASS component=processes role=reviewer agent=lens" in result.output
+    assert "PASS component=coord-brief room=backlog state=none" in result.output
+    assert "explicit-NEXT-mode=valid" in result.output
+    assert "safeyolo coord brief show backlog" in result.output
+    assert "--expected-revision 0" in result.output
     assert "SUMMARY factory=backlog status=PASS" in result.output
     assert "contract_text" not in result.output
     assert "recent_attention_ids" not in result.output
+
+
+def test_factory_doctor_reports_present_brief_metadata_without_body(
+    cli_runner, factory_runtime, monkeypatch
+):
+    markdown = "# Private operator meaning\n\nDo not print this body.\n"
+    content_hash = hashlib.sha256(markdown.encode()).hexdigest()
+    monkeypatch.setattr(
+        "safeyolo.factory_doctor.coord_api.show_brief",
+        lambda _room: {
+            "revision": 7,
+            "content_hash": content_hash,
+            "markdown": markdown,
+        },
+    )
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+    output = " ".join(result.output.split())
+
+    assert result.exit_code == 0, result.output
+    assert (
+        f"PASS component=coord-brief room=backlog revision=7 "
+        f"content_hash={content_hash}"
+        in output
+    )
+    assert "body=not-inspected" in output
+    assert "meaning=operator-owned" in output
+    assert "--expected-revision 7" in output
+    assert "Private operator meaning" not in result.output
+    assert "Do not print this body" not in result.output
 
 
 def test_factory_doctor_rejects_a_live_unrelated_proxy_pid(cli_runner, factory_runtime, tmp_config_dir, monkeypatch):
