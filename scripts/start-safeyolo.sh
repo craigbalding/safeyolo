@@ -246,18 +246,37 @@ else
     MITM_OPTS="${MITM_OPTS} --set credguard_block=false"
 fi
 
-# pattern-scanner: defaults to WARN-ONLY
+# pattern-scanner: defaults to WARN-ONLY. HTTP and WebSocket directions use
+# independent options. PATTERN_BLOCK supplies true defaults for all four;
+# PATTERN_BLOCK_WEBSOCKET_REQUEST/RESPONSE override those defaults. The global
+# SAFEYOLO_BLOCK switch has highest precedence and forces every option true.
 if [ -f "/app/addons/pattern_scanner.py" ]; then
     PATTERN_BLOCK="${PATTERN_BLOCK:-false}"
+    PATTERN_BLOCK_WEBSOCKET_REQUEST="${PATTERN_BLOCK_WEBSOCKET_REQUEST:-}"
+    PATTERN_BLOCK_WEBSOCKET_RESPONSE="${PATTERN_BLOCK_WEBSOCKET_RESPONSE:-}"
     if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
         PATTERN_BLOCK="true"
+        PATTERN_BLOCK_WEBSOCKET_REQUEST="true"
+        PATTERN_BLOCK_WEBSOCKET_RESPONSE="true"
     fi
     if [ "${PATTERN_BLOCK}" = "true" ]; then
         echo "  pattern-scanner: BLOCK"
-        MITM_OPTS="${MITM_OPTS} --set pattern_block_input=true"
-        MITM_OPTS="${MITM_OPTS} --set pattern_block_output=true"
+        MITM_OPTS="${MITM_OPTS} --set pattern_block_request=true"
+        MITM_OPTS="${MITM_OPTS} --set pattern_block_response=true"
+        if [ -z "${PATTERN_BLOCK_WEBSOCKET_REQUEST}" ]; then
+            PATTERN_BLOCK_WEBSOCKET_REQUEST="true"
+        fi
+        if [ -z "${PATTERN_BLOCK_WEBSOCKET_RESPONSE}" ]; then
+            PATTERN_BLOCK_WEBSOCKET_RESPONSE="true"
+        fi
     else
         echo "  pattern-scanner: WARN-ONLY"
+    fi
+    if [ -n "${PATTERN_BLOCK_WEBSOCKET_REQUEST}" ]; then
+        MITM_OPTS="${MITM_OPTS} --set pattern_block_websocket_request=${PATTERN_BLOCK_WEBSOCKET_REQUEST}"
+    fi
+    if [ -n "${PATTERN_BLOCK_WEBSOCKET_RESPONSE}" ]; then
+        MITM_OPTS="${MITM_OPTS} --set pattern_block_websocket_response=${PATTERN_BLOCK_WEBSOCKET_RESPONSE}"
     fi
 fi
 
