@@ -37,34 +37,50 @@ def _time(message: dict[str, Any]) -> str:
     return datetime.now(UTC).strftime("%H:%M:%SZ")
 
 
-def _clean(value: Any, limit: int, *, redact: bool = False) -> str:
+def _redact_text(text: str) -> str:
+    for pattern in TOKEN_PATTERNS:
+        text = pattern.sub("<redacted>", text)
+    text = SECRET_ASSIGNMENT.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}<redacted>",
+        text,
+    )
+
+    def strip_query(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        try:
+            parts = urlsplit(raw)
+        except ValueError:
+            return "<invalid-url>"
+        if not parts.query and not parts.fragment:
+            return raw
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")) + "?<omitted>"
+
+    return URL_PATTERN.sub(strip_query, text)
+
+
+def _redact_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_value(item) for key, item in value.items()}
+    return value
+
+
+def _clean(value: Any, limit: int | None, *, redact: bool = False) -> str:
     text = sanitize_for_log(value, max_len=None)
     if redact:
-        for pattern in TOKEN_PATTERNS:
-            text = pattern.sub("<redacted>", text)
-        text = SECRET_ASSIGNMENT.sub(
-            lambda match: f"{match.group(1)}{match.group(2)}<redacted>",
-            text,
-        )
-
-        def strip_query(match: re.Match[str]) -> str:
-            raw = match.group(0)
-            try:
-                parts = urlsplit(raw)
-            except ValueError:
-                return "<invalid-url>"
-            if not parts.query and not parts.fragment:
-                return raw
-            return urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")) + "?<omitted>"
-
-        text = URL_PATTERN.sub(strip_query, text)
+        text = _redact_text(text)
     text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    if limit is None or len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
 
 
 def _event_line(
     event: dict[str, Any],
-    limit: int,
+    limit: int | None,
     *,
     redact: bool = False,
     show_unknown: bool = False,
@@ -130,7 +146,7 @@ def _event_line(
 
 def _render(
     message: dict[str, Any],
-    limit: int,
+    limit: int | None,
     mode: str = "rendered",
     colour: bool = False,
     redact: bool = False,
@@ -140,12 +156,13 @@ def _render(
     if not isinstance(body, str):
         return
     if mode == "json":
-        print(json.dumps(message, sort_keys=True, separators=(",", ":")), flush=True)
+        shown = _redact_value(message) if redact else message
+        print(json.dumps(shown, sort_keys=True, separators=(",", ":")), flush=True)
         return
     if mode == "raw":
         sender = message.get("sender_agent_name") or message.get("sender_kind") or "unknown"
         print(f"[{_time(message)}] {sender}", flush=True)
-        print(body, flush=True)
+        print(_redact_text(body) if redact else body, flush=True)
         return
     sender_kind = message.get("sender_kind")
     if sender_kind == "agent":
@@ -191,7 +208,7 @@ def _render(
 async def _watch(
     room: str,
     history_count: int,
-    limit: int,
+    limit: int | None,
     mode: str,
     colour: bool,
     redact: bool,
@@ -254,7 +271,12 @@ def main() -> int:
     )
     parser.add_argument("room")
     parser.add_argument("--history", type=int, default=30)
-    parser.add_argument("--max-text", type=int, default=240)
+    parser.add_argument(
+        "--max-text",
+        type=int,
+        default=None,
+        help="Limit rendered event text (default: show complete content)",
+    )
     parser.add_argument("--once", action="store_true", help="Print retained history and exit")
     parser.add_argument("--show-unknown", action="store_true", help="Show unknown Codex event types")
     modes = parser.add_mutually_exclusive_group()
@@ -268,7 +290,7 @@ def main() -> int:
     )
     parser.add_argument("--redact", action="store_true", help="Redact common credential patterns")
     args = parser.parse_args()
-    if args.history < 0 or args.max_text < 40:
+    if args.history < 0 or (args.max_text is not None and args.max_text < 40):
         parser.error("invalid numeric option")
     mode = "json" if args.json else "raw" if args.raw else "rendered"
     colour = mode == "rendered" and sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ

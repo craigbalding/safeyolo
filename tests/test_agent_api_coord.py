@@ -285,6 +285,142 @@ class TestCoordGrantEnforcement:
         assert page["messages"][0]["body"] == "hello bob"
 
 
+def test_nested_factory_agent_rooms_survive_restart_and_reject_observer_send(
+    api, isolated_state
+):
+    """Exercise one Relay-to-Forge-to-Lens chain over retained agent rooms."""
+    from safeyolo.agents_store import get_or_mint_agent_id
+    from safeyolo.commands.factory import _ensure_agent_rooms
+    from safeyolo.coord import nats_client
+    from safeyolo.coord import nats_runtime as nr
+
+    roles = ("relay", "forge", "lens")
+    for name in (*roles, "qa"):
+        _register_agent(name)
+    _setup_room_with_grants("nested-factory", roles)
+    _ensure_agent_rooms(iter(roles))
+    qa_id = get_or_mint_agent_id("qa")
+    for name in roles:
+        _grant(f"{name}-agent", "agent", qa_id, permissions=["receive"])
+
+    def request(name, path, *, method="GET", body=None):
+        with _as_agent(name):
+            flow = _make_flow(path, method=method, body=body)
+            _run(api, flow)
+        return flow
+
+    def send(name, room, body, notify="none"):
+        flow = request(
+            name,
+            f"/api/coord/rooms/{room}/send",
+            method="POST",
+            body={"body": body, "notify": notify},
+        )
+        assert flow.response.status_code == 200
+        return json.loads(flow.response.content)
+
+    def stdout_line(name, text):
+        event = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": text},
+            },
+            separators=(",", ":"),
+        )
+        sent = send(name, f"{name}-agent", event)
+        assert sent["attention_intent"] == {"mode": "none"}
+
+    task = "TASK task=nested-agent-room assignee=forge"
+    task_send = send("relay", "nested-factory", task, ["forge"])
+    stdout_line("relay", task)
+    forge_wait = request(
+        "forge", "/api/coord/attention/wait?since=0&timeout=0.1"
+    )
+    forge_page = json.loads(forge_wait.response.content)
+    task_edge = forge_page["edges"][0]
+    assert task_edge["object_id"] == task_send["envelope"]["msg_id"]
+
+    head = "a" * 40
+    review = (
+        f"REVIEW_READY issue=#1 pr=#2 head={head} "
+        f"attention_id={task_edge['attention_id']}"
+    )
+    review_send = send("forge", "nested-factory", review, ["lens"])
+    stdout_line("forge", review)
+    lens_wait = request(
+        "lens", "/api/coord/attention/wait?since=0&timeout=0.1"
+    )
+    review_edge = json.loads(lens_wait.response.content)["edges"][0]
+    assert review_edge["object_id"] == review_send["envelope"]["msg_id"]
+
+    nr.stop_server()
+    nats_client.reset_for_tests()
+    nr.start_server(ready_timeout=8.0)
+
+    retained = request(
+        "qa", "/api/coord/rooms/forge-agent/messages?since=0&limit=10"
+    )
+    assert retained.response.status_code == 200
+    retained_bodies = [
+        message["body"]
+        for message in json.loads(retained.response.content)["messages"]
+    ]
+    assert any(review in body for body in retained_bodies)
+
+    ready = (
+        f"READY issue=#1 pr=#2 head={head} "
+        f"attention_id={review_edge['attention_id']}"
+    )
+    ready_send = send("lens", "nested-factory", ready, ["forge"])
+    stdout_line("lens", ready)
+    forge_response_wait = request(
+        "forge",
+        f"/api/coord/attention/wait?since={forge_page['next_cursor']}&timeout=0.1",
+    )
+    ready_edges = json.loads(forge_response_wait.response.content)["edges"]
+    assert [edge["object_id"] for edge in ready_edges] == [
+        ready_send["envelope"]["msg_id"]
+    ]
+    done = (
+        "DONE task=nested-agent-room "
+        f"attention_id={task_edge['attention_id']}"
+    )
+    done_send = send("forge", "nested-factory", done, ["relay"])
+    stdout_line("forge", done)
+    relay_wait = request(
+        "relay", "/api/coord/attention/wait?since=0&timeout=0.1"
+    )
+    relay_edges = json.loads(relay_wait.response.content)["edges"]
+    assert [edge["object_id"] for edge in relay_edges] == [
+        done_send["envelope"]["msg_id"]
+    ]
+
+    observed = {}
+    for name in roles:
+        history = request(
+            "qa",
+            f"/api/coord/rooms/{name}-agent/messages?since=0&limit=10",
+        )
+        assert history.response.status_code == 200
+        observed[name] = [
+            message["body"]
+            for message in json.loads(history.response.content)["messages"]
+        ]
+    assert any(task in body for body in observed["relay"])
+    assert any(review in body for body in observed["forge"])
+    assert any(done in body for body in observed["forge"])
+    assert any(ready in body for body in observed["lens"])
+
+    denied = request(
+        "qa",
+        "/api/coord/rooms/forge-agent/send",
+        method="POST",
+        body={"body": "observer must not steer"},
+    )
+    assert denied.response.status_code == 403
+    assert "permission" in denied.response.content.decode().lower()
+
+
 class TestCoordEnvelope:
     def test_bad_content_type_400(self, api, isolated_state):
         _register_agent("alice")

@@ -45,6 +45,12 @@ node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_conc
 sha256 = "a21e22c0a3c3fed85ae315d57e14e10bb86658ae106a2256e17c53c762fe0319"
 
 [[factory_acceptance]]
+id = "FACTORY-AGENT-ROOM-BOUNDARY"
+description = "A retained Relay-to-Forge-to-Lens stream survives restart, accepts new events, and keeps a receive-only observer from sending."
+node = "tests/test_agent_api_coord.py::test_nested_factory_agent_rooms_survive_restart_and_reject_observer_send"
+sha256 = "4329279a8573a59e895e97bcc94a96cb80115663efaf7ed5dc180eb67d2084d1"
+
+[[factory_acceptance]]
 id = "FACTORY-HANDOFF-AUTHORITY"
 description = "The supervisor rejects unauthorized or malformed factory objects."
 node = "cli/tests/test_codex_coord_supervisor.py::test_factory_rejects_unauthorized_or_malformed_objects"

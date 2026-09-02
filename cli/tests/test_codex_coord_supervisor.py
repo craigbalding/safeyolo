@@ -1988,3 +1988,10 @@ def test_main_publishes_supervisor_start_and_exit(supervisor_module, tmp_path, m
     assert module.main(["--once"]) == 0
     assert events[0][0:2] == ("safeyolo.supervisor", {"event": "started", "pid": module.os.getpid()})
     assert events[-1] == ("safeyolo.supervisor", {"event": "exited", "exit_code": 0})
+
+
+def test_signal_interrupt_carries_signal_number(supervisor_module):
+    with pytest.raises(supervisor_module.SignalInterrupt) as caught:
+        supervisor_module._interrupt_for_signal(supervisor_module.signal.SIGTERM, None)
+
+    assert caught.value.signum == supervisor_module.signal.SIGTERM

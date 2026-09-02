@@ -120,6 +120,48 @@ def test_rendered_mode_shows_content_by_default_and_redacts_only_on_request(
     assert watcher_module._clean(value, 240, redact=True) == "token=<redacted>"
 
 
+def test_rendered_mode_shows_more_than_240_characters_unless_limit_is_requested(
+    watcher_module,
+):
+    value = "complete-event-" + "x" * 300
+
+    assert watcher_module._clean(value, None) == value
+    assert watcher_module._clean(value, 240) == value[:239] + "…"
+
+
+def test_command_defaults_to_unlimited_rendered_text(watcher_module, monkeypatch):
+    observed = {}
+
+    async def watch(_room, _history, limit, *_args):
+        observed["limit"] = limit
+
+    monkeypatch.setattr(watcher_module, "_watch", watch)
+    monkeypatch.setattr(
+        watcher_module.sys,
+        "argv",
+        [str(WATCHER_PATH), "forge-agent", "--once"],
+    )
+
+    assert watcher_module.main() == 0
+    assert observed["limit"] is None
+
+
+@pytest.mark.parametrize("mode", ["raw", "json"])
+def test_redaction_applies_to_raw_and_json_modes(watcher_module, capsys, mode):
+    message = {
+        "sent_at": 1_788_342_432_000,
+        "sender_kind": "agent",
+        "sender_agent_name": "lens",
+        "body": "token=hidden-value",
+    }
+
+    watcher_module._render(message, None, mode, redact=True)
+
+    output = capsys.readouterr().out
+    assert "hidden-value" not in output
+    assert "token=<redacted>" in output
+
+
 def test_rendered_mode_sanitizes_terminal_controls_without_changing_raw_mode(watcher_module, capsys):
     body = "diagnostic \x1b[31mred\x1b[0m"
     message = {

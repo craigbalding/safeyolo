@@ -1874,13 +1874,16 @@ def _lock_state(path: Path):
     return handle
 
 
-_received_signal: int | None = None
+class SignalInterrupt(KeyboardInterrupt):
+    """Carry the trapped signal number through the normal shutdown path."""
+
+    def __init__(self, signum: int):
+        super().__init__()
+        self.signum = signum
 
 
 def _interrupt_for_signal(_signum: int, _frame: Any) -> None:
-    global _received_signal
-    _received_signal = _signum
-    raise KeyboardInterrupt
+    raise SignalInterrupt(_signum)
 
 
 def _send_agent_room_event(config: Config, event_type: str, **fields: Any) -> None:
@@ -1905,8 +1908,6 @@ def _send_agent_room_event(config: Config, event_type: str, **fields: Any) -> No
 
 
 def main(argv: list[str] | None = None) -> int:
-    global _received_signal
-    _received_signal = None
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
@@ -1953,8 +1954,8 @@ def main(argv: list[str] | None = None) -> int:
             if delay:
                 print(f"codex-coord-supervisor: retrying in {delay} seconds", file=sys.stderr)
                 time.sleep(delay)
-    except KeyboardInterrupt:
-        signum = _received_signal or signal.SIGINT
+    except KeyboardInterrupt as exc:
+        signum = exc.signum if isinstance(exc, SignalInterrupt) else signal.SIGINT
         exit_code = 128 + signum
         if config is not None:
             _send_agent_room_event(

@@ -54,8 +54,8 @@ Coord messages as JSONL. The rendered view uses colour on a terminal; use
 `--no-color` or `NO_COLOR` for plain output. The default shows the complete
 rendered content after canonical log-safe control-character handling; use
 `--redact` to hide common credential patterns. Raw and JSON modes preserve the
-retained message. The
-watcher also supports `--history`, `--max-text`, `--once`, and
+retained message unless `--redact` is set. Use `--max-text` to opt in to a
+rendered event-text limit. The watcher also supports `--history`, `--once`, and
 `--show-unknown`. File selection, agent-home selection, and filesystem polling
 do not apply because this watcher reads one retained Coord room.
 
