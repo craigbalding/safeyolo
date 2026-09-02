@@ -33,6 +33,20 @@ def _shell_socket_path(name: str) -> Path:
     return get_data_dir() / "shell-sockets" / f"{name}.sock"
 
 
+def _ssh_base_command(key_path: Path, shell_sock: Path) -> list[str]:
+    """Build an agent-specific SSH transport without host connection reuse."""
+    return [
+        "ssh",
+        "-i", str(key_path),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "ControlMaster=no",
+        "-o", "ControlPath=none",
+        "-o", f"ProxyCommand=nc -U {shell_sock}",
+    ]
+
+
 def _ssh_nofile_prelude(user: str) -> str:
     """Raise the limit on the SSH session shell before it runs a payload.
 
@@ -191,14 +205,7 @@ class DarwinPlatform(AgentPlatform):
                 f"is the VM running?"
             )
 
-        cmd = [
-            "ssh",
-            "-i", str(key_path),
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-o", f"ProxyCommand=nc -U {shell_sock}",
-        ]
+        cmd = _ssh_base_command(key_path, shell_sock)
         target = f"{ssh_user}@sandbox"  # hostname is cosmetic
 
         if interactive and not command:
@@ -239,13 +246,7 @@ class DarwinPlatform(AgentPlatform):
                 f"is the VM running?"
             )
 
-        cmd = [
-            "ssh",
-            "-i", str(key_path),
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-o", f"ProxyCommand=nc -U {shell_sock}",
+        cmd = _ssh_base_command(key_path, shell_sock) + [
             f"{ssh_user}@sandbox",
             _wrap_ssh_command(command, user=ssh_user),
         ]
@@ -274,13 +275,7 @@ class DarwinPlatform(AgentPlatform):
                 f"is the VM running?"
             )
 
-        cmd = [
-            "ssh",
-            "-i", str(key_path),
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-o", f"ProxyCommand=nc -U {shell_sock}",
+        cmd = _ssh_base_command(key_path, shell_sock) + [
             f"{ssh_user}@sandbox",
             _wrap_ssh_command(command, user=ssh_user),
         ]
