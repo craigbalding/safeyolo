@@ -68,7 +68,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     MODE_SWITCHABLE = {
         "network-guard": ["network_guard_block"],
         "credential-guard": ["credguard_block"],
-        "pattern-scanner": ["pattern_block_request", "pattern_block_response"],
+        "pattern-scanner": [
+            "pattern_block_request",
+            "pattern_block_response",
+            "pattern_block_websocket_request",
+            "pattern_block_websocket_response",
+        ],
     }
 
     def log_message(self, format, *args):
