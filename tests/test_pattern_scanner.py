@@ -400,6 +400,20 @@ class TestPatternScanner:
         """Test scanner starts with no rules."""
         assert scanner.rules == []
 
+    def test_load_registers_directional_websocket_overrides(self, scanner):
+        """WebSocket block controls are independent boolean options."""
+        registered = []
+
+        class Loader:
+            def add_option(self, **kwargs):
+                registered.append(kwargs)
+
+        scanner.load(Loader())
+
+        options = {entry["name"]: entry for entry in registered}
+        assert options["pattern_block_websocket_request"]["default"] is False
+        assert options["pattern_block_websocket_response"]["default"] is False
+
     def test_load_policy_config_loads_user_rules(self, scanner):
         """Test load_policy_config populates rules from user config."""
         config = {
@@ -1219,6 +1233,49 @@ class TestWebSocketMessageScanning:
         assert flow.metadata["websocket_pattern_matched"] == "project-id"
         log_decision.assert_called_once()
         assert log_decision.call_args.args[1].value == "log"
+
+    @pytest.mark.parametrize(
+        (
+            "from_client",
+            "http_option",
+            "http_enabled",
+            "websocket_option",
+            "websocket_enabled",
+            "expected_dropped",
+        ),
+        [
+            # Explicit false keeps WebSocket messages in warn-only mode.
+            (True, "pattern_block_request", True, "pattern_block_websocket_request", False, False),
+            # Explicit true can block WebSocket traffic while HTTP remains warn-only.
+            (False, "pattern_block_response", False, "pattern_block_websocket_response", True, True),
+        ],
+    )
+    def test_directional_websocket_override_is_independent_of_http_mode(
+        self,
+        scanner,
+        from_client,
+        http_option,
+        http_enabled,
+        websocket_option,
+        websocket_enabled,
+        expected_dropped,
+    ):
+        self.load_rule(scanner, target="both")
+        flow = _websocket_flow(b"PROJ-12345", from_client=from_client)
+        options = {
+            "pattern_block_request": False,
+            "pattern_block_response": False,
+            "pattern_block_websocket_request": False,
+            "pattern_block_websocket_response": False,
+        }
+        options[http_option] = http_enabled
+        options[websocket_option] = websocket_enabled
+
+        with patch("pattern_scanner.ctx", _ctx(**options)):
+            scanner.websocket_message(flow)
+
+        assert flow.websocket is not None
+        assert flow.websocket.messages[-1].dropped is expected_dropped
 
     def test_inspection_error_drops_without_logging_message_content(
         self,
