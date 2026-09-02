@@ -23,6 +23,33 @@ def test_darwin_commands_restore_global_only_mise_after_runtime_environment() ->
     assert platform_source.count(
         "_wrap_ssh_command(command, user=ssh_user)"
     ) == 3
+    assert platform_source.count("_ssh_base_command(key_path, shell_sock)") == 3
+
+
+def test_darwin_ssh_transport_disables_host_connection_reuse(tmp_path) -> None:
+    """An existing SSH master must not bypass the selected agent socket."""
+    key = tmp_path / "id_ed25519"
+    shell_socket = tmp_path / "lens.sock"
+
+    command = darwin._ssh_base_command(key, shell_socket)  # noqa: SLF001
+
+    assert command == [
+        "ssh",
+        "-i",
+        str(key),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
+        "-o",
+        f"ProxyCommand=nc -U {shell_socket}",
+    ]
 
 
 def test_darwin_normal_ssh_session_repairs_its_own_limit() -> None:
