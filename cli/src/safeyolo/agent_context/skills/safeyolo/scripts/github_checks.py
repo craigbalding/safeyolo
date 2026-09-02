@@ -313,7 +313,8 @@ def _links_issue(body: str, repository: str, issue: int) -> bool:
     escaped_repository = re.escape(repository)
     reference_end = r"(?![\w/-])"
     references = (
-        rf"https://github\.com/{escaped_repository}/issues/{issue}{reference_end}",
+        rf"(?<![\w./-])https://github\.com/{escaped_repository}/issues/{issue}"
+        rf"{reference_end}",
         rf"(?<![\w./-]){escaped_repository}#{issue}{reference_end}",
         rf"(?<![\w/#-])#{issue}{reference_end}",
     )
