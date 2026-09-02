@@ -137,6 +137,7 @@ def main() -> int:
             print(f"Not a regular file: {input_path}", file=sys.stderr)
             return 2
     if args.input and args.output:
+        input_path = Path(args.input)
         output_path = Path(args.output)
         if paths_refer_to_same_file(input_path, output_path):
             print("Refusing identical input and output paths", file=sys.stderr)
