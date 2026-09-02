@@ -272,6 +272,31 @@ def test_candidate_requires_an_exact_linked_issue_reference() -> None:
     ]
 
 
+def test_candidate_rejects_malformed_linked_issue_suffixes() -> None:
+    helper = _load_helper()
+    malformed_references = (
+        "https://github.com/different-owner/another-project/issues/27abc",
+        "different-owner/another-project#27abc",
+        "#27abc",
+    )
+
+    for reference in malformed_references:
+        payload = _candidate_payload()
+        payload["evidence"]["pull_request"]["facts"]["body"] = f"See {reference}."
+
+        result = helper.evaluate_candidate(payload)
+
+        assert result["outcome"] == "rule_mismatch"
+        assert result["facts"]["linked_issue_reference"] is False
+        assert result["failed_conditions"] == [
+            {
+                "field": "pull_request.linked_issue_reference",
+                "expected": True,
+                "observed": False,
+            }
+        ]
+
+
 def test_skill_routes_both_helpers_without_replacing_raw_connector_calls() -> None:
     skill = (SKILL_ROOT / "SKILL.md").read_text()
     reference = (SKILL_ROOT / "references/github-checks.md").read_text()

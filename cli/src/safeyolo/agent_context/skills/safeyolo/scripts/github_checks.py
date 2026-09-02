@@ -311,10 +311,11 @@ def evaluate_intake(payload: Any) -> dict[str, Any]:
 
 def _links_issue(body: str, repository: str, issue: int) -> bool:
     escaped_repository = re.escape(repository)
+    reference_end = r"(?![\w/-])"
     references = (
-        rf"https://github\.com/{escaped_repository}/issues/{issue}(?!\d)",
-        rf"(?<![A-Za-z0-9_.-]){escaped_repository}#{issue}(?!\d)",
-        rf"(?<![A-Za-z0-9_/#-])#{issue}(?!\d)",
+        rf"https://github\.com/{escaped_repository}/issues/{issue}{reference_end}",
+        rf"(?<![\w./-]){escaped_repository}#{issue}{reference_end}",
+        rf"(?<![\w/#-])#{issue}{reference_end}",
     )
     return any(re.search(pattern, body, flags=re.IGNORECASE) for pattern in references)
 
