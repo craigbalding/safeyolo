@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 import typer
 from rich.console import Console
@@ -55,11 +56,14 @@ POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.toml
 ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml"
 
 
-def _start_coord_best_effort() -> None:
+_CoordStartOutcome = Literal["healthy", "repaired", "degraded"]
+
+
+def _start_coord_best_effort() -> _CoordStartOutcome:
     """Start the coord message plane (nats-server) and bootstrap the
     coord registry. NEVER blocks the proxy path: a failure here marks
     coord degraded via a logged event and a console warning, then
-    returns. `safeyolo status`/`doctor` will show the substrate as
+    returns ``degraded``. `safeyolo status`/`doctor` will show the substrate as
     unhealthy so the operator knows why their agents can't reach the
     coord API.
 
@@ -70,8 +74,12 @@ def _start_coord_best_effort() -> None:
     request happens to create.
     """
     try:
+        was_healthy = coord_nats.is_healthy()
         pid = coord_nats.start_server(ready_timeout=10.0)
-        console.print(f"[dim]coord message plane started (nats-server PID {pid})[/dim]")
+        state = "already healthy" if was_healthy else "started"
+        console.print(
+            f"[dim]coord message plane {state} (nats-server PID {pid})[/dim]"
+        )
     except Exception as err:  # noqa: BLE001 — coord failure is non-fatal
         write_event(
             "ops.coord_nats_start_failed",
@@ -89,7 +97,7 @@ def _start_coord_best_effort() -> None:
             "[dim]The proxy itself is up and healthy. Check the coord "
             "runtime state with: safeyolo doctor[/dim]"
         )
-        return
+        return "degraded"
 
     # Bootstrap the coord registry (schema + instance_id). Lazy on
     # first coord request would still work, but the #371 contract
@@ -109,7 +117,15 @@ def _start_coord_best_effort() -> None:
             addon="cli.lifecycle",
             details={"error_type": type(err).__name__, "error": str(err)[:500]},
         )
-        return
+        console.print(
+            f"[yellow]coord bootstrap failed ({type(err).__name__}); "
+            "Coord is degraded.[/yellow]"
+        )
+        console.print(
+            "[dim]The proxy remains available. Run safeyolo doctor and inspect "
+            f"{get_logs_dir() / 'safeyolo.jsonl'}.[/dim]"
+        )
+        return "degraded"
 
     try:
         asyncio.run(coord_api.recover_attention())
@@ -124,6 +140,17 @@ def _start_coord_best_effort() -> None:
             addon="cli.lifecycle",
             details={"error_type": type(err).__name__, "error": str(err)[:500]},
         )
+        console.print(
+            f"[yellow]coord attention recovery failed ({type(err).__name__}); "
+            "Coord is degraded.[/yellow]"
+        )
+        console.print(
+            "[dim]The proxy remains available. Run safeyolo doctor and inspect "
+            f"{get_logs_dir() / 'safeyolo.jsonl'}.[/dim]"
+        )
+        return "degraded"
+
+    return "healthy" if was_healthy else "repaired"
 
 
 def _stop_coord_best_effort() -> None:
@@ -241,6 +268,20 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
     # Check if already running
     if is_proxy_running():
         console.print("[yellow]SafeYolo proxy is already running.[/yellow]")
+        _profile_enter("coord message plane reconciliation")
+        coord_outcome = _start_coord_best_effort()
+        if coord_outcome == "healthy":
+            console.print("[dim]Coord dependency is already healthy.[/dim]")
+        elif coord_outcome == "repaired":
+            console.print("[green]Coord dependency repaired.[/green]")
+        else:
+            console.print(
+                "[yellow]SafeYolo proxy remains running, but Coord is degraded.[/yellow]"
+            )
+            console.print(
+                "[dim]Run safeyolo doctor and inspect "
+                f"{get_logs_dir() / 'safeyolo.jsonl'}.[/dim]"
+            )
         raise typer.Exit(0)
 
     # Check guest images (platform-aware).
