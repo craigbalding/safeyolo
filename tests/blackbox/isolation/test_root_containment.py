@@ -18,6 +18,11 @@ from urllib.parse import urlparse
 import pytest
 
 NOFILE_LIMIT = 65536
+GUEST_ONLY_TRUST_ANCHOR = Path("/safeyolo/guest-only-trust-anchor.crt")
+GUEST_TRUST_TARGET = Path(
+    "/usr/local/share/ca-certificates/safeyolo-blackbox-guest-only.crt"
+)
+SYSTEM_TRUST_BUNDLE = Path("/etc/ssl/certs/ca-certificates.crt")
 
 
 def _is_gvisor() -> bool:
@@ -146,6 +151,106 @@ class TestGuestRootCapability:
                     timeout=30,
                     check=False,
                 )
+
+
+class TestGuestRootTrustIsolation:
+    """Guest trust changes cannot widen the host proxy's upstream trust.
+
+    Why: Guest root can install packages and local trust anchors. That
+    supported capability must remain inside the sandbox. The host proxy must
+    continue to authenticate upstream TLS with its own trust store.
+    """
+
+    def test_guest_ca_change_does_not_change_proxy_validation(self):
+        """A guest-only trust anchor remains untrusted by the host proxy.
+
+        What: Install the sinkhole's self-signed leaf into the writable guest
+        trust store, prove the guest bundle accepts it, then request that
+        upstream through SafeYolo and require the host proxy to return 502.
+        Why: A successful upstream request would show that guest-controlled
+        trust changed the proxy's host-side certificate validation boundary.
+        """
+        required = ("curl", "openssl", "update-ca-certificates")
+        missing = [binary for binary in required if shutil.which(binary) is None]
+        assert not missing, (
+            "Default guest is missing trust-boundary tools: "
+            + ", ".join(missing)
+        )
+        assert GUEST_ONLY_TRUST_ANCHOR.is_file(), (
+            f"Harness did not provide {GUEST_ONLY_TRUST_ANCHOR}"
+        )
+        assert SYSTEM_TRUST_BUNDLE.is_file(), (
+            f"Guest trust bundle not found at {SYSTEM_TRUST_BUNDLE}"
+        )
+        assert not GUEST_TRUST_TARGET.exists(), (
+            f"Stale guest trust probe found at {GUEST_TRUST_TARGET}"
+        )
+        proxy = os.environ.get("HTTPS_PROXY", "")
+        assert proxy, "HTTPS_PROXY not set in guest-root shell"
+
+        try:
+            shutil.copyfile(GUEST_ONLY_TRUST_ANCHOR, GUEST_TRUST_TARGET)
+            updated = subprocess.run(
+                ["update-ca-certificates"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert updated.returncode == 0, updated.stderr
+
+            guest_verify = subprocess.run(
+                [
+                    "openssl",
+                    "verify",
+                    "-CAfile",
+                    str(SYSTEM_TRUST_BUNDLE),
+                    str(GUEST_ONLY_TRUST_ANCHOR),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert guest_verify.returncode == 0, (
+                "Guest trust-store update did not take effect: "
+                f"{guest_verify.stderr}"
+            )
+
+            proxied = subprocess.run(
+                [
+                    "curl",
+                    "-sS",
+                    "--max-time",
+                    "15",
+                    "--proxy",
+                    proxy,
+                    "--cacert",
+                    "/usr/local/share/ca-certificates/safeyolo.crt",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{http_code}",
+                    "https://self-signed.test/",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            assert proxied.returncode == 0, proxied.stderr
+            assert proxied.stdout.strip() == "502", (
+                "Guest-only trust changed proxy-side upstream validation: "
+                f"HTTP {proxied.stdout.strip()}"
+            )
+        finally:
+            GUEST_TRUST_TARGET.unlink(missing_ok=True)
+            restored = subprocess.run(
+                ["update-ca-certificates"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert restored.returncode == 0, (
+                f"Failed to restore guest trust store: {restored.stderr}"
+            )
 
 
 class TestGuestRootContainment:

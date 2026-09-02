@@ -144,7 +144,8 @@ See `certs/README.md`.
 | No /dev/mem | Check path | Not found |
 | No eBPF | BPF syscall | Returns -1 |
 | Config share read-only | Write to /safeyolo | EROFS |
-| No private keys | Filesystem scan | No PRIVATE KEY found |
+| No unexpected private keys | Filesystem scan | Only exact guest sshd host-key paths allowed |
+| Guest trust isolation | Add a guest-only trust anchor and call its upstream | Host proxy returns 502 |
 | Public cert present | Check trust store | safeyolo.crt exists |
 
 ## Installation and preparation

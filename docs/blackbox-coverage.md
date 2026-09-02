@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**103 tests across 37 threat categories.**
+**104 tests across 38 threat categories.**
 
 ## Host-side
 
@@ -577,15 +577,15 @@ read every .pem/.crt; assert none contain 'PRIVATE KEY'.
   - *Consequence if unasserted:* Catches the naming-convention dodge — even if the file
 is called .crt (public), it could carry private key content.
 Tests the content, not the name.
-- **`test_full_filesystem_scan_for_private_keys`** — Whole-filesystem scan finds no private key for SafeYolo's CA.
+- **`test_full_filesystem_scan_for_private_keys`** — Whole-filesystem scan finds no unexpected private-key material.
   - *Probe:* os.walk from / (skipping /proc, /sys, /dev, /run and
-third-party site-packages); inspect private-key candidates and
-assert none has the public key from safeyolo.crt.
+third-party site-packages); inspect private-key markers and allow only
+the three exact guest sshd host-key paths.
   - *Consequence if unasserted:* The targeted tests above check known-critical paths.
-This is the catch-all: if SafeYolo's CA key leaked to a surprising
+This is the catch-all: if any private key leaked to a surprising
 location (/tmp, /var/log, an agent workspace subdir), the
 targeted tests would miss it but this scan would catch it. Guest-local
-SSH host keys are expected and are not SafeYolo trust material.
+SSH host keys are expected only at their standard paths.
 
 ### `tests/blackbox/isolation/test_root_containment.py`
 
@@ -614,6 +614,19 @@ downloads.
   - *Consequence if unasserted:* This exercises the filesystem overlay and package database that
 real ``apt`` installs depend on, while keeping acceptance deterministic
 and independent of an external mirror.
+
+#### TestGuestRootTrustIsolation — Guest trust changes cannot widen the host proxy's upstream trust.
+
+**Threat:** Guest root can install packages and local trust anchors. That
+supported capability must remain inside the sandbox. The host proxy must
+continue to authenticate upstream TLS with its own trust store.
+
+- **`test_guest_ca_change_does_not_change_proxy_validation`** — A guest-only trust anchor remains untrusted by the host proxy.
+  - *Probe:* Install the sinkhole's self-signed leaf into the writable guest
+trust store, prove the guest bundle accepts it, then request that
+upstream through SafeYolo and require the host proxy to return 502.
+  - *Consequence if unasserted:* A successful upstream request would show that guest-controlled
+trust changed the proxy's host-side certificate validation boundary.
 
 #### TestGuestRootContainment — Guest root cannot cross the SafeYolo isolation boundary.
 
