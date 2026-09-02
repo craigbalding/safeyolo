@@ -175,8 +175,12 @@ storage, workspaces, room membership and grants, the traffic proxy, and the
 managed Coord NATS runtime. It also checks each staged command, supervisor
 configuration, role contract, Codex Model Context Protocol (MCP) binding,
 checkpoint, and running process tree. A healthy traffic proxy does not hide a
-stopped NATS runtime. A running sandbox fails the check if the supervisor,
-Codex process, or Coord MCP server is absent.
+stopped NATS runtime. A running sandbox fails the check if its supervisor or
+active-turn Coord MCP process is absent. Between bounded turns, the checkpoint
+normally records `owned_process=null`; the running supervisor is then reported
+as healthy without requiring a Codex process. A PID that disappears while the
+read-only process probe runs is likewise reported as a non-disruptive turn
+transition.
 
 The summary is `PASS`, `WARN`, or `FAIL`. `FAIL` returns a nonzero exit status.
 `WARN` returns zero so that an operator can distinguish a deliberately stopped

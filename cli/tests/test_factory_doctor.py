@@ -405,6 +405,70 @@ def test_factory_doctor_accepts_a_native_codex_executable(cli_runner, factory_ru
     assert "PASS component=processes role=owner agent=forge" in result.output
 
 
+def test_factory_doctor_accepts_a_healthy_between_turn_checkpoint(cli_runner, factory_runtime):
+    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
+    state = json.loads(state_path.read_text())
+    state["owned_process"] = None
+    state_path.write_text(json.dumps(state) + "\n")
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert "PASS component=processes role=owner agent=forge bounded supervisor is between Codex turns" in output
+    assert "checkpoint has no active Codex process identity" not in result.output
+
+
+def test_factory_doctor_treats_a_checkpoint_pid_transition_as_healthy(cli_runner, factory_runtime):
+    # The checkpointed Codex can exit between `ps` and the /proc stat read. The
+    # supervisor remains present, so this is a normal bounded-turn transition,
+    # not a reason to stop in-flight work.
+    supervisor = 52
+    factory_runtime["process_output"]["forge"] = (
+        f"{supervisor} 1 {supervisor} python3 /home/agent/.safeyolo/codex-coord-supervisor.py --\n"
+        + _process_identity_sections({supervisor: "/usr/bin/python3.13"})
+        + f"\n{_PROCESS_STAT_MARKER}\n"
+    )
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert "bounded supervisor transition observed during inspection" in output
+    assert "stop and rerun" not in output
+
+
+def test_factory_doctor_accepts_the_mise_npm_codex_shim_tree(cli_runner, factory_runtime):
+    supervisor, codex, mcp = 52, 102, 202
+    command = (
+        f"{supervisor} 1 {supervisor} python3 /home/agent/.safeyolo/codex-coord-supervisor.py --\n"
+        f"{codex} {supervisor} {codex} node /home/agent/.mise/installs/npm-openai-codex/0.152.0/node_modules/@openai/codex/bin/codex.js exec resume thread\n"
+        f"{mcp} {codex} {codex} /home/agent/.safeyolo/venv/bin/python /home/agent/.safeyolo/safeyolo-coord-mcp.py\n"
+    )
+    executables = {
+        supervisor: "/usr/bin/python3.13",
+        codex: "/home/agent/.mise/installs/node/22.23.2/bin/node",
+        mcp: "/usr/bin/python3.13",
+    }
+    factory_runtime["process_output"]["forge"] = (
+        command
+        + _process_identity_sections(
+            executables,
+            codex_command="/home/agent/.mise/shims/codex",
+            codex_executable="/usr/local/bin/mise",
+            node_executable="/home/agent/.mise/installs/node/22.23.2/bin/node",
+        )
+        + f"\n{_PROCESS_STAT_MARKER}\n"
+        + f"{codex} (codex) "
+        + " ".join(["S", str(supervisor), str(codex), *(["0"] * 16), "1234", "0"])
+    )
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 0, result.output
+    assert "PASS component=processes role=owner agent=forge" in result.output
+
+
 def test_factory_doctor_treats_stopped_roles_as_state_not_corruption(cli_runner, factory_runtime):
     factory_runtime["running"].update({"relay": False, "forge": False, "lens": False})
 

@@ -1014,13 +1014,28 @@ def _is_codex_process(command: str, executable: str | None, expected: dict[str, 
     tokens = _command_tokens(command)
     if len(tokens) >= 2 and Path(tokens[0]).name == Path(expected["codex-command"]).name:
         return tokens[1] == "exec" and executable == expected["codex-executable"]
-    return (
-        len(tokens) >= 3
-        and Path(tokens[0]).name in {"node", "nodejs"}
-        and tokens[1] == expected["codex-command"]
-        and tokens[2] == "exec"
-        and executable == expected["node-executable"]
-    )
+    if (
+        len(tokens) < 3
+        or Path(tokens[0]).name not in {"node", "nodejs"}
+        or tokens[2] != "exec"
+        or executable != expected["node-executable"]
+    ):
+        return False
+    entrypoint = tokens[1]
+    command_path = expected["codex-command"]
+    if entrypoint == command_path:
+        return True
+    # mise's npm shim resolves `codex` to a shell wrapper, then execs node
+    # with the package's bin/codex.js entrypoint.  The wrapper and resolved
+    # entrypoint stay inside the same per-agent tool root; accepting only that
+    # root preserves the executable identity check for arbitrary paths.
+    if not entrypoint.startswith("/") or not command_path.startswith("/"):
+        return False
+    command_root = Path(command_path).parent.parent
+    try:
+        return Path(entrypoint).is_relative_to(command_root)
+    except AttributeError:  # pragma: no cover - Python 3.8 compatibility
+        return str(Path(entrypoint)).startswith(f"{command_root}/")
 
 
 def _is_coord_mcp_process(command: str, executable: str | None, expected: dict[str, str]) -> bool:
@@ -1052,11 +1067,9 @@ def _inspect_processes(
     platform: AgentPlatform,
     owned_process: dict[str, Any] | None,
 ) -> None:
-    recovery = "running factory process tree; stop and rerun the factory"
-    if owned_process is None:
-        checks.append(_fail("processes", f"{label} checkpoint has no active Codex process identity", recovery))
-        return
-    owned_pid = owned_process["pid"]
+    recovery = "running factory process tree; rerun `safeyolo factory doctor` after the bounded turn"
+    owned_pid = owned_process["pid"] if owned_process is not None else None
+    stat_path = f"/proc/{owned_pid}/stat" if owned_pid is not None else "/dev/null"
     command = (
         "ps -eo pid=,ppid=,pgid=,args=; "
         f"printf '\\n{_PROCESS_EXECUTABLE_MARKER}\\n'; "
@@ -1075,7 +1088,7 @@ def _inspect_processes(
         "printf 'codex-command=%s\\n' \"$codex_path\"; "
         'printf \'codex-executable=%s\\n\' "$(readlink -f "$codex_path" 2>/dev/null || true)"; '
         'printf \'node-executable=%s\\n\' "$(readlink -f "$node_path" 2>/dev/null || true)"; '
-        f"printf '\\n{_PROCESS_STAT_MARKER}\\n'; cat /proc/{owned_pid}/stat"
+        f"printf '\\n{_PROCESS_STAT_MARKER}\\n'; cat {stat_path} 2>/dev/null || true"
     )
     try:
         process = platform.popen_in_sandbox(agent_name, command, user="agent")
@@ -1114,31 +1127,90 @@ def _inspect_processes(
     except ValueError:
         checks.append(_fail("processes", f"{label} process identity output is invalid", recovery))
         return
-    owned = rows.get(owned_pid)
-    missing: list[str] = []
-    if owned is None or start_time != owned_process["start_time"]:
-        missing.append("checkpointed-codex")
-    else:
-        parent, group, codex_command = owned
-        if group != owned_pid or not _is_codex_process(codex_command, executables.get(owned_pid), expected):
-            missing.append("codex")
-        supervisor = rows.get(parent)
-        if supervisor is None or not _is_supervisor_process(supervisor[2], executables.get(parent), expected):
-            missing.append("supervisor")
-        mcp_running = any(
-            _is_descendant(rows, pid, owned_pid)
+    supervisors = {
+        pid
+        for pid, (_parent, _group, process_command) in rows.items()
+        if _is_supervisor_process(process_command, executables.get(pid), expected)
+    }
+
+    def has_mcp(codex_pid: int) -> bool:
+        return any(
+            _is_descendant(rows, pid, codex_pid)
             and _is_coord_mcp_process(process_command, executables.get(pid), expected)
             for pid, (_parent, _process_group, process_command) in rows.items()
         )
-        if not mcp_running:
-            missing.append("coord-mcp")
-    if missing:
-        checks.append(
-            _fail(
-                "processes",
-                f"{label} missing running={','.join(missing)}",
-                recovery,
+
+    def is_codex(pid: int) -> bool:
+        row = rows.get(pid)
+        return row is not None and row[1] == pid and _is_codex_process(row[2], executables.get(pid), expected)
+
+    # A bounded supervisor owns no Codex process between turns.  The
+    # supervisor itself is the durable health signal in that interval.
+    if owned_process is None:
+        if supervisors:
+            checks.append(
+                FactoryDoctorCheck(
+                    "PASS",
+                    "processes",
+                    f"{label} bounded supervisor is between Codex turns",
+                )
             )
-        )
-    else:
+        else:
+            checks.append(_fail("processes", f"{label} missing running=supervisor", recovery))
+        return
+
+    owned = rows.get(owned_pid)
+    if owned is not None and start_time == owned_process["start_time"]:
+        parent = owned[0]
+        missing: list[str] = []
+        if not is_codex(owned_pid):
+            missing.append("codex")
+        if parent not in supervisors:
+            missing.append("supervisor")
+        if not has_mcp(owned_pid):
+            missing.append("coord-mcp")
+        if missing:
+            checks.append(
+                _fail(
+                    "processes",
+                    f"{label} missing running={','.join(missing)}",
+                    recovery,
+                )
+            )
+            return
         checks.append(FactoryDoctorCheck("PASS", "processes", f"{label} supervisor, Codex, and Coord MCP are running"))
+        return
+
+    # The checkpoint can race a normal bounded-turn handoff: its PID may have
+    # exited after `ps` but before `/proc/<pid>/stat`, or a fresh Codex PID may
+    # already have replaced it.  Keep this a healthy, non-disruptive result as
+    # long as the supervisor remains present and any replacement tree is sound.
+    replacement = next(
+        (
+            pid
+            for pid, (parent, _group, _command) in rows.items()
+            if parent in supervisors and is_codex(pid) and has_mcp(pid)
+        ),
+        None,
+    )
+    if supervisors and (
+        owned is None or start_time is None or start_time != owned_process["start_time"] or replacement is not None
+    ):
+        detail = (
+            f"{label} bounded supervisor changed Codex turns during inspection"
+            if replacement is not None
+            else f"{label} bounded supervisor transition observed during inspection"
+        )
+        checks.append(FactoryDoctorCheck("PASS", "processes", detail))
+        return
+
+    missing = ["checkpointed-codex"]
+    if not supervisors:
+        missing.append("supervisor")
+    checks.append(
+        _fail(
+            "processes",
+            f"{label} missing running={','.join(missing)}",
+            recovery,
+        )
+    )
