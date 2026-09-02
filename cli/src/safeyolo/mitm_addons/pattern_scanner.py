@@ -27,6 +27,7 @@ configuration enables the `secrets` set; operators can configure it via:
 
 Usage:
     mitmdump -s addons/pattern_scanner.py --set pattern_block_request=true
+    mitmdump -s addons/pattern_scanner.py --set pattern_block_websocket_request=true
 """
 
 import logging
@@ -91,6 +92,42 @@ class PatternScanner(SecurityAddon):
             default=False,
             help="Block responses matching patterns (default: log only)",
         )
+        loader.add_option(
+            name="pattern_block_websocket_request",
+            typespec=bool,
+            default=False,
+            help="Block matching WebSocket client messages (default: log only)",
+        )
+        loader.add_option(
+            name="pattern_block_websocket_response",
+            typespec=bool,
+            default=False,
+            help="Block matching WebSocket server messages (default: log only)",
+        )
+
+    @staticmethod
+    def _websocket_block_enabled(direction: str) -> bool:
+        """Return the effective block mode for one WebSocket direction.
+
+        The WebSocket options are independent from HTTP options, so operators
+        can block one transport without blocking the other. ``getattr`` keeps
+        direct/unit callers that provide only the original options compatible
+        while older addon fixtures are migrated.
+        """
+        generic_name = (
+            "pattern_block_request"
+            if direction == "request"
+            else "pattern_block_response"
+        )
+        websocket_name = (
+            "pattern_block_websocket_request"
+            if direction == "request"
+            else "pattern_block_websocket_response"
+        )
+        websocket_value = getattr(ctx.options, websocket_name, None)
+        if websocket_value is None:
+            return bool(getattr(ctx.options, generic_name, False))
+        return bool(websocket_value)
 
     def _load_patterns_from_config(self, sensor_config: dict):
         """Load scan patterns from sensor configuration.
@@ -500,11 +537,7 @@ class PatternScanner(SecurityAddon):
         flow.metadata["websocket_pattern_direction"] = direction
         flow.metadata["websocket_pattern_message_type"] = message_type
 
-        block_enabled = (
-            ctx.options.pattern_block_request
-            if direction == "request"
-            else ctx.options.pattern_block_response
-        )
+        block_enabled = self._websocket_block_enabled(direction)
         if rule.should_block and block_enabled:
             log.warning(
                 "DROPPED: Pattern '%s' matched in WebSocket %s message for %s",

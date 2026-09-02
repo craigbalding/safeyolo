@@ -312,6 +312,8 @@ request()/response()/websocket_message() called
 - Complete WebSocket text and binary messages use body rules
 - Client messages use request rules; server messages use response rules
 - WebSocket blocking drops the matching message and keeps the connection open
+- WebSocket block mode has independent per-direction options; HTTP block
+  options do not change WebSocket behavior
 
 ## Hot Reload
 

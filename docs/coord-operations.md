@@ -110,6 +110,15 @@ safeyolo coord chat ROOM_NAME
 known room and confirm its pre-rotation messages are present, then enter `:q`
 to detach.
 
+## Interactive chat requires a terminal
+
+The default `safeyolo coord chat ROOM_NAME` mode is an editable prompt and
+requires both standard input and standard output to be terminals. If either
+stream is piped or redirected, the command exits before connecting to Coord
+with an actionable error; it does not consume the input or emit terminal
+cursor-control bytes into the caller's shell. Use `--observe` when a
+non-interactive room tail is needed, or run interactive chat from a terminal.
+
 ## Secret-handling boundary
 
 Status, doctor output, lifecycle diagnostics, generated configuration, and

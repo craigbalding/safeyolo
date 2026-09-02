@@ -499,6 +499,23 @@ In `warn` mode, violations are logged but traffic is not blocked. Useful for:
 | `SAFEYOLO_ALLOW_ROOT` | Allow running CLI as root (not recommended) |
 | `SAFEYOLO_TUI` | Set to `true` for the mitmproxy terminal user interface (TUI) in tmux (default: headless `mitmdump`) |
 | `SAFEYOLO_BLOCK` | Set to `true` to enable blocking mode for all security addons |
+| `PATTERN_BLOCK` | Set to `true` to block matching HTTP and WebSocket pattern messages |
+| `PATTERN_BLOCK_WEBSOCKET_REQUEST` | Set to `true` or `false` to block or warn on matching client WebSocket messages |
+| `PATTERN_BLOCK_WEBSOCKET_RESPONSE` | Set to `true` or `false` to block or warn on matching server WebSocket messages |
+
+Pattern blocking precedence is deterministic: `SAFEYOLO_BLOCK=true` forces
+all four pattern options to `true`. Otherwise, `PATTERN_BLOCK=true` enables
+the HTTP request/response options and supplies `true` defaults for both
+WebSocket directions; an explicit `PATTERN_BLOCK_WEBSOCKET_REQUEST` or
+`PATTERN_BLOCK_WEBSOCKET_RESPONSE` value overrides that WebSocket default.
+The directional variables may therefore be set to `false` while
+`PATTERN_BLOCK=true`, but no directional setting can relax
+`SAFEYOLO_BLOCK=true`.
+
+Migration note: direct mitmproxy configurations that previously used only
+`pattern_block_request=true` or `pattern_block_response=true` to block
+WebSocket traffic must add the corresponding WebSocket-specific options
+after upgrading. The generic options now govern HTTP traffic only.
 
 ## Per-Agent Policies
 
