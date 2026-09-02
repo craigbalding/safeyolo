@@ -44,6 +44,8 @@ user_facing_docs = [
     "docs/dispatch-generation.md",
     "docs/dispatch-publication.md",
     "docs/factory-proposals.md",
+    "docs/factories.md",
+    "docs/factories/backlog-coordinator.md",
     "docs/security-verification.md",
     "docs/technical-writing.md",
 ]

@@ -16,10 +16,34 @@ No Mattermost plugin or PikaPods-specific feature is required.
 
 ## Projection and trust
 
-Routine or unrecognized messages are compact: canonical sender kind/name,
-coord room, canonical message ID, then an inert rendering of the sender body.
-Mentions, Markdown-active punctuation, controls, and Unicode ordering controls
-are escaped. Oversized bodies are explicitly truncated and hashed.
+Routine or unrecognized messages put the useful body first and one quiet
+`Canonical provenance` footer last. The footer keeps the exact canonical agent
+and message IDs in copyable code spans and, when present, the canonical public
+attention mode (`none`, `room`, or `targeted`). It never exposes recipient
+identities or membership counts. Only that final footer is trusted; sender text
+cannot create its divider or marker. An exact leading protocol `ACCEPTED` is
+displayed as `TASK ACCEPTED` in Mattermost only. The canonical coord message is
+unchanged, and the adapter does not infer workflow state.
+
+The body sanitizer preserves paragraphs, headings, lists, emphasis, inline and
+fenced code, and ordinary HTTPS links. It applies this fixed safety matrix:
+
+| Sender input | Routine projection |
+|---|---|
+| `@user`, `@channel`, `@all`, `@here`, or group mentions | full-width, non-notifying `＠` text |
+| `~channel` | full-width, non-linking `～` text |
+| Markdown image | a normal HTTPS text link labelled `image:` |
+| non-HTTPS or Mattermost `mmaction://` link | visible `[blocked link]` text |
+| controls or Unicode ordering controls | visible `\uXXXX` text |
+| horizontal rule or provenance-like sender text | inert sender text, distinct from the final footer |
+| oversized body | bounded complete text, balanced code delimiters, and a SHA-256 truncation marker |
+
+Routine post creation uses Mattermost's `silent=true` mode, so it does not
+increment mentions/unreads or send push, desktop, or email notifications. An
+exact empty legacy-attachment property prevents automatic link/image previews
+without registering an action. Arbitrary Markdown therefore cannot create a
+button or callback: only the exact semantic schema below can produce a
+non-empty attachment with an action integration.
 
 A semantic attachment is rendered only when all of the following match:
 
@@ -249,7 +273,7 @@ That script verifies gates 1–7: initialization, WAL with real adjacent
 `-wal`/`-shm` sidecars, schema, read/write, close/reopen plus abrupt recovery,
 the separate process lease, and fail-closed state/lease replacement.
 
-For gates 8–9, use the separately prepared portable test bundle. Its directory
+For gates 8–10, use the separately prepared portable test bundle. Its directory
 must be mode `0700`; its ordinary config and token must be mode `0600`; the
 config must refer to the token by a single relative sibling filename and contain
 exactly one dedicated room with `backfill = false`. Copy the two-file bundle as
@@ -269,9 +293,11 @@ uv run python scripts/accept_mattermost_macos_integration.py \
 ```
 
 The integration script preflights the remaining external effect before doing
-anything: concurrent activity after the disposable `backfill=false` baseline
-could cause `run --once` to append one operator message or project one post in
-the dedicated test mapping. It must never be aimed at a production mapping.
+anything: after the disposable `backfill=false` baseline it appends one fixed
+operator rendering fixture to the dedicated coord room and projects exactly
+one correlated post to the dedicated test channel. Concurrent activity can
+also be projected during either bounded `run --once`. It must never be aimed
+at a production mapping and does not start or use a live factory.
 Neither script starts, stops, or changes a daemon or Funnel. Both report the
 exact candidate/base plus platform/Python/SQLite versions, print concise
 numbered pass/fail results, and verify cleanup of only their own temporary
@@ -279,6 +305,8 @@ artifacts. On failure they additionally print the complete local exception
 chain, SQLite code/name/message when present, and child CLI diagnostics so the
 operator can debug without another diagnostic build. They never print bot-token
 contents; the operator decides which path, ID, or response details to share.
+Only after the fixture passes does the script print one concise stock-mobile
+visual check naming the exact disposable Mattermost post.
 
 ## Delivery and failure semantics
 

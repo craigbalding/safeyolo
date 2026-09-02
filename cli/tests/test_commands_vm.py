@@ -72,14 +72,136 @@ def config_dir(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+class TestCoordStartReconciliation:
+
+    @pytest.mark.parametrize(
+        ("was_healthy", "expected"),
+        [(True, "healthy"), (False, "repaired")],
+    )
+    def test_existing_coord_runtime_is_reconciled(self, was_healthy, expected):
+        from safeyolo.commands.lifecycle import _start_coord_best_effort
+
+        with (
+            patch(
+                "safeyolo.commands.lifecycle.coord_nats.is_healthy",
+                return_value=was_healthy,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.commands.lifecycle.coord_nats.start_server",
+                return_value=123,
+                autospec=True,
+            ) as start_server,
+            patch(
+                "safeyolo.coord.api.bootstrap",
+                return_value="sy-test",
+                autospec=True,
+            ) as bootstrap,
+            patch(
+                "safeyolo.coord.api.recover_attention",
+                autospec=True,
+            ) as recover_attention,
+        ):
+            assert _start_coord_best_effort() == expected
+
+        start_server.assert_called_once_with(ready_timeout=10.0)
+        bootstrap.assert_called_once_with()
+        recover_attention.assert_awaited_once_with()
+
+    @pytest.mark.parametrize("failure_stage", ["nats", "bootstrap", "recovery"])
+    def test_reconciliation_failure_is_degraded(self, failure_stage):
+        from safeyolo.commands.lifecycle import _start_coord_best_effort
+
+        start_error = RuntimeError("start failed") if failure_stage == "nats" else None
+        bootstrap_error = (
+            RuntimeError("bootstrap failed") if failure_stage == "bootstrap" else None
+        )
+        recovery_error = (
+            RuntimeError("recovery failed") if failure_stage == "recovery" else None
+        )
+        with (
+            patch(
+                "safeyolo.commands.lifecycle.coord_nats.is_healthy",
+                return_value=False,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.commands.lifecycle.coord_nats.start_server",
+                return_value=123,
+                side_effect=start_error,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.coord.api.bootstrap",
+                return_value="sy-test",
+                side_effect=bootstrap_error,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.coord.api.recover_attention",
+                side_effect=recovery_error,
+                autospec=True,
+            ),
+            patch("safeyolo.commands.lifecycle.write_event", autospec=True),
+        ):
+            assert _start_coord_best_effort() == "degraded"
+
+
 class TestLifecycleStart:
 
-    def test_already_running_exits_zero(self, runner, config_dir):
-        """If proxy is already running, prints message and exits 0."""
-        with patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,):
+    @pytest.fixture(autouse=True)
+    def mock_coord_start(self):
+        """Keep VM-management unit tests out of the real Coord runtime."""
+        with patch(
+            "safeyolo.commands.lifecycle._start_coord_best_effort",
+            return_value="healthy",
+            autospec=True,
+        ) as start_coord:
+            yield start_coord
+
+    def test_already_running_reconciles_healthy_coord(
+        self, runner, config_dir, mock_coord_start
+    ):
+        """A repeated start reconciles Coord and exits without proxy work."""
+        with (
+            patch(
+                "safeyolo.commands.lifecycle.is_proxy_running",
+                return_value=True,
+                autospec=True,
+            ),
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True) as start_proxy,
+        ):
             result = runner.invoke(app, ["start", "--no-wait"])
         assert result.exit_code == 0
         assert "already running" in result.output.lower()
+        assert "already healthy" in result.output.lower()
+        mock_coord_start.assert_called_once_with()
+        start_proxy.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected"),
+        [("repaired", "dependency repaired"), ("degraded", "coord is degraded")],
+    )
+    def test_already_running_reports_coord_result(
+        self, runner, config_dir, mock_coord_start, outcome, expected
+    ):
+        mock_coord_start.return_value = outcome
+        with (
+            patch(
+                "safeyolo.commands.lifecycle.is_proxy_running",
+                return_value=True,
+                autospec=True,
+            ),
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True) as start_proxy,
+        ):
+            result = runner.invoke(app, ["start", "--no-wait"])
+
+        assert result.exit_code == 0
+        assert expected in result.output.lower()
+        assert "safeyolo is running" not in result.output.lower()
+        start_proxy.assert_not_called()
+        if outcome == "degraded":
+            assert "safeyolo doctor" in result.output.lower()
 
     def test_first_run_bootstraps_config(self, runner, tmp_path, monkeypatch):
         """On first run (no config dir), bootstraps config then starts proxy."""
@@ -171,6 +293,20 @@ class TestLifecycleStart:
 
         assert result.exit_code == 0
         assert start_proxy.call_args.kwargs["flow_cache"] == 4321
+
+    def test_flow_cache_bytes_is_forwarded_to_proxy_start(self, runner, config_dir):
+        with (
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,) as start_proxy,
+        ):
+            result = runner.invoke(
+                app,
+                ["start", "--no-wait", "--flow-cache-bytes", "987654"],
+            )
+
+        assert result.exit_code == 0
+        assert start_proxy.call_args.kwargs["flow_cache_bytes"] == 987654
 
     def test_dev_mode_is_forwarded_to_proxy_start(self, runner, config_dir):
         with (

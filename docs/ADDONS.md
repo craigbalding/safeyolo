@@ -637,7 +637,8 @@ Approvals are stored in the policy file as host entries:
 
 ## pattern_scanner.py
 
-Fast regex scanning for secrets and suspicious patterns.
+Fast regex scanning for secrets and suspicious patterns in HTTP traffic and
+complete WebSocket messages.
 
 **Default: Warn mode**
 
@@ -652,10 +653,15 @@ Fast regex scanning for secrets and suspicious patterns.
 - Jailbreak phrases ("ignore previous instructions")
 - LLM instruction markers
 
+*WebSocket scanning:*
+- Scans complete text and binary messages as body content
+- Applies request rules to client messages and response rules to server messages
+- Drops only the matching message in block mode; the connection stays open
+
 **Options:**
 ```bash
---set pattern_block_input=false   # Block matching requests
---set pattern_block_output=false  # Block matching responses
+--set pattern_block_request=true   # Block matching requests
+--set pattern_block_response=true  # Block matching responses
 ```
 
 ---

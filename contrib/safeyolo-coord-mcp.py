@@ -38,6 +38,7 @@ Environment overrides (rarely needed):
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,9 @@ BASE_URL = os.environ.get(
     "SAFEYOLO_COORD_BASE_URL", "http://_safeyolo.proxy.internal"
 )
 TOKEN_PATH = Path(os.environ.get("SAFEYOLO_COORD_TOKEN_PATH", "/app/agent_token"))
+_COORD_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_TASK_BODY_HEADER_RE = re.compile(r"(?m)^TASK(?:\s|$)")
+_TASK_BODY_FIELD_RE = re.compile(r"(?m)(?:^|[ \t])(?:task|assignee)[ \t]*=")
 
 
 def _token() -> str:
@@ -154,6 +158,47 @@ async def send(
             "notify": notify,
         },
     )
+
+
+@mcp.tool()
+async def send_task(
+    room_name: str,
+    assignee: str,
+    task_id: str,
+    body: str,
+) -> dict[str, Any]:
+    """Send one canonical TASK header and notify exactly its assignee.
+
+    This convenience helper is producer-side validation only. It does not
+    create a task object or change the meaning of manual coord messages.
+    """
+    values = {
+        "room_name": room_name,
+        "assignee": assignee,
+        "task_id": task_id,
+    }
+    for field, value in values.items():
+        if not isinstance(value, str) or not _COORD_NAME_RE.fullmatch(value):
+            raise ValueError(f"{field} is missing or malformed")
+    if not isinstance(body, str) or not body.strip():
+        raise ValueError("body is missing")
+    if _TASK_BODY_HEADER_RE.search(body):
+        raise ValueError("body contains a duplicate TASK header")
+    if _TASK_BODY_FIELD_RE.search(body):
+        raise ValueError("body contains a duplicate required TASK field")
+    message = f"TASK task={task_id} assignee={assignee}\n\n{body}"
+    result = await _post(
+        f"/api/coord/rooms/{room_name}/send",
+        {
+            "body": message,
+            "declared_content_type": "text/markdown",
+            "notify": [assignee],
+        },
+    )
+    sequence = result.get("sequence") if isinstance(result, dict) else None
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        raise RuntimeError("coord task send returned no canonical room sequence")
+    return {"send_result": result, "room_sequence": sequence}
 
 
 @mcp.tool()

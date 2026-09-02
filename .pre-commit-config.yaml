@@ -48,6 +48,13 @@ repos:
         files: ^(tests/blackbox/.*\.py|docs/blackbox-coverage\.md)$
         pass_filenames: false
 
+      - id: test-assurance
+        name: Test assurance contracts
+        entry: uv run python scripts/check_test_assurance.py
+        language: system
+        files: ^(tests/assurance\.toml|tests/.*\.py|cli/tests/.*\.py|scripts/check_test_assurance\.py)$
+        pass_filenames: false
+
       # If a source line carries a `# SKILL: <ref>` or `# DOC: <path>` marker
       # and it is edited or removed, the referenced doc must be in the same
       # diff. Pure declarative additions of a marker are allowed. Handles

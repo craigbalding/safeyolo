@@ -286,11 +286,11 @@ request() called
 
 ### pattern_scanner
 
-Scans request/response content for user-defined patterns.
+Scans HTTP and WebSocket content for user-defined patterns.
 
 **Data Flow:**
 ```
-request()/response() called
+request()/response()/websocket_message() called
     │
     ├── _maybe_reload_patterns()  ← Check policy_hash, reload if changed
     │         │
@@ -299,6 +299,7 @@ request()/response() called
     │                    └── {scan_patterns, addons.pattern_scanner.builtin_sets}
     │
     └── _scan_request_content() / _scan_response_content()
+        / _scan_websocket_message()
               │
               └── Check URL, headers, body based on rule scope
 ```
@@ -308,6 +309,9 @@ request()/response() called
 - Direction filtering: request, response, or both
 - Action modes: block or log
 - Builtin pattern sets: `secrets`, `pii`
+- Complete WebSocket text and binary messages use body rules
+- Client messages use request rules; server messages use response rules
+- WebSocket blocking drops the matching message and keeps the connection open
 
 ## Hot Reload
 

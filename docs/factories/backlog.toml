@@ -1,0 +1,37 @@
+schema = "safeyolo.factory/v1"
+name = "backlog"
+room = "backlog"
+
+[operator_input]
+to = "coordinator"
+types = ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"]
+
+[roles.coordinator]
+agent = "relay"
+contract = "backlog-coordinator.md"
+
+[roles.owner]
+agent = "forge"
+contract = "../agent-roles/issue-owner.md"
+
+[roles.reviewer]
+agent = "lens"
+contract = "../agent-roles/independent-reviewer.md"
+
+[[handoffs]]
+request = "TASK"
+from = "coordinator"
+to = "owner"
+responses = ["DONE", "BLOCKED", "FAILED"]
+
+[[handoffs]]
+request = "TASK"
+from = "coordinator"
+to = "reviewer"
+responses = ["DONE", "BLOCKED", "FAILED"]
+
+[[handoffs]]
+request = "REVIEW_READY"
+from = "owner"
+to = "reviewer"
+responses = ["READY", "CHANGES_REQUIRED", "BLOCKED"]

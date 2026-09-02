@@ -13,6 +13,7 @@ from .commands.cert import cert_app
 from .commands.coord import coord_app
 from .commands.demo import demo
 from .commands.doctor import doctor
+from .commands.factory import factory_app
 from .commands.init import init
 from .commands.lifecycle import build, start, status, stop
 from .commands.logs import logs
@@ -88,6 +89,7 @@ app.command()(traffic)
 app.add_typer(agent_app, name="agent")
 app.add_typer(cert_app, name="cert")
 app.add_typer(coord_app, name="coord")
+app.add_typer(factory_app, name="factory")
 app.add_typer(mount_app, name="mount")
 app.add_typer(policy_app, name="policy")
 app.add_typer(proxy_app, name="proxy")

@@ -406,7 +406,10 @@ class HTTPMattermostAPI:
         return result
 
     async def create_post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        value = await self._request("POST", "/posts", json_body=payload)
+        # Routine projections are informational mirrors. Mattermost's silent
+        # post mode suppresses mention/unread/push/email side effects; the
+        # renderer independently neutralizes mention syntax.
+        value = await self._request("POST", "/posts", params={"silent": "true"}, json_body=payload)
         if not isinstance(value, dict):
             raise MattermostAdapterError("Mattermost create-post response must be an object")
         return value
@@ -1343,7 +1346,13 @@ class MattermostAdapter:
             # A read proves the bot token can observe the mapped channel without
             # creating trial traffic. --once exercises create permission.
             await self.client.get_posts(mapping.channel_id, per_page=1)
-            membership = api.join_room(mapping.coord_room, "operator", "operator")
+            try:
+                membership = api.join_room(mapping.coord_room, "operator", "operator")
+            except api.NotFoundError:
+                raise MattermostAdapterError(
+                    f"configured coord room {mapping.coord_room!r} is unavailable to the local operator; "
+                    "create the room and grant operator send+receive before running this check"
+                ) from None
             permissions = membership.get("permissions", [])
             if not isinstance(permissions, list) or not {"send", "receive"}.issubset(permissions):
                 raise MattermostAdapterError(f"local coord operator lacks send+receive on {mapping.coord_room!r}")
@@ -1716,6 +1725,10 @@ class MattermostAdapter:
                     }
                 }
                 if semantic is None:
+                    # Mattermost suppresses automatic OpenGraph/image previews
+                    # when the legacy-attachment property is present. An exact
+                    # empty list has no buttons or callback capability.
+                    props["attachments"] = []
                     message = render_envelope(envelope, mapping.coord_room)
                 else:
                     assert self.config.actions is not None

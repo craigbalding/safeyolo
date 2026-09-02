@@ -61,6 +61,107 @@ def test_send_explicitly_defaults_to_no_attention(monkeypatch):
     ]
 
 
+def test_send_task_builds_one_header_and_notifies_only_exact_assignee(monkeypatch):
+    module = _load_adapter(monkeypatch)
+    calls = []
+
+    async def post(path, body):
+        calls.append((path, body))
+        return {
+            "envelope": {"msg_id": "msg-" + "a" * 32},
+            "sequence": 41,
+        }
+
+    monkeypatch.setattr(module, "_post", post)
+    result = asyncio.run(
+        module.send_task(
+            "backlog",
+            "forge",
+            "issue-469",
+            "Preserve this paragraph.\n\n- and this list",
+        )
+    )
+
+    assert result == {
+        "send_result": {
+            "envelope": {"msg_id": "msg-" + "a" * 32},
+            "sequence": 41,
+        },
+        "room_sequence": 41,
+    }
+    assert len(calls) == 1
+    assert calls == [
+        (
+            "/api/coord/rooms/backlog/send",
+            {
+                "body": (
+                    "TASK task=issue-469 assignee=forge\n\n"
+                    "Preserve this paragraph.\n\n- and this list"
+                ),
+                "declared_content_type": "text/markdown",
+                "notify": ["forge"],
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("room", "assignee", "task_id", "body", "message"),
+    [
+        ("", "forge", "issue-469", "work", "room_name"),
+        ("backlog", "", "issue-469", "work", "assignee"),
+        ("backlog", "forge extra", "issue-469", "work", "assignee"),
+        ("backlog", "forge", "issue 469", "work", "task_id"),
+        ("backlog", "forge", "issue-469", " \n", "body is missing"),
+        (
+            "backlog",
+            "forge",
+            "issue-469",
+            "TASK task=other assignee=forge\n\nduplicate",
+            "duplicate TASK header",
+        ),
+        (
+            "backlog",
+            "relay",
+            "issue-469",
+            "please notify assignee=forge instead",
+            "duplicate required TASK field",
+        ),
+        (
+            "backlog",
+            "relay",
+            "issue-469",
+            "malformed duplicate assignee =",
+            "duplicate required TASK field",
+        ),
+    ],
+)
+def test_send_task_rejects_missing_malformed_or_duplicate_fields(
+    monkeypatch, room, assignee, task_id, body, message
+):
+    module = _load_adapter(monkeypatch)
+
+    async def unexpected_post(*_args, **_kwargs):
+        raise AssertionError("invalid task must not be sent")
+
+    monkeypatch.setattr(module, "_post", unexpected_post)
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(module.send_task(room, assignee, task_id, body))
+
+
+def test_send_task_requires_canonical_sequence(monkeypatch):
+    module = _load_adapter(monkeypatch)
+
+    async def post(_path, _body):
+        return {
+            "envelope": {"msg_id": "msg-" + "a" * 32, "sequence": 41},
+        }
+
+    monkeypatch.setattr(module, "_post", post)
+    with pytest.raises(RuntimeError, match="canonical room sequence"):
+        asyncio.run(module.send_task("backlog", "forge", "issue-469", "work"))
+
+
 def test_attention_tools_use_identity_derived_routes(monkeypatch):
     module = _load_adapter(monkeypatch)
     calls = []

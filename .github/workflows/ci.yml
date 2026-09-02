@@ -122,7 +122,16 @@ jobs:
         run: uv run python scripts/check_dispatch_site.py
 
       - name: Test assurance contracts
-        run: uv run python scripts/check_test_assurance.py
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE="HEAD~1"
+          fi
+          uv run python scripts/check_test_assurance.py --range "$BASE..HEAD"
 
       - name: Lint with ruff
         run: uv run ruff check cli/src/ tests/ --exclude tests/blackbox/
