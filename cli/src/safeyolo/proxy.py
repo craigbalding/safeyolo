@@ -630,11 +630,25 @@ def _build_command(
     cg_block = force_block or os.environ.get("CREDGUARD_BLOCK", "true").lower() == "true"
     cmd.extend(["--set", f"credguard_block={'true' if cg_block else 'false'}"])
 
-    # pattern-scanner: defaults to WARN-ONLY
+    # pattern-scanner: defaults to WARN-ONLY. HTTP and WebSocket directions
+    # have independent options. PATTERN_BLOCK keeps its historical meaning of
+    # enabling every pattern-block option unless a narrower WebSocket override
+    # is supplied.
     ps_block = force_block or os.environ.get("PATTERN_BLOCK", "false").lower() == "true"
     if ps_block:
-        cmd.extend(["--set", "pattern_block_input=true"])
-        cmd.extend(["--set", "pattern_block_output=true"])
+        cmd.extend(["--set", "pattern_block_request=true"])
+        cmd.extend(["--set", "pattern_block_response=true"])
+    for env_name, option_name in (
+        ("PATTERN_BLOCK_WEBSOCKET_REQUEST", "pattern_block_websocket_request"),
+        ("PATTERN_BLOCK_WEBSOCKET_RESPONSE", "pattern_block_websocket_response"),
+    ):
+        override = os.environ.get(env_name)
+        if force_block:
+            override = "true"
+        elif override is None and ps_block:
+            override = "true"
+        if override is not None:
+            cmd.extend(["--set", f"{option_name}={'true' if override.lower() == 'true' else 'false'}"])
 
     # test-context: defaults to BLOCK (428 soft-reject for missing context).
     # In test mode (blackbox harness), disable blocking so host-side proxy
