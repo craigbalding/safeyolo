@@ -2,7 +2,8 @@
 pattern_scanner.py - User-configurable pattern scanning
 
 A framework for security-conscious users to define custom patterns for detecting
-sensitive data crossing the proxy boundary. Scans URLs, headers, and/or bodies.
+sensitive data crossing the proxy boundary. Scans URLs, headers, HTTP bodies,
+and complete WebSocket messages.
 
 Complements credential_guard:
   credential_guard: Credential ROUTING (is this key going to the right host?)
@@ -31,6 +32,8 @@ Usage:
 import logging
 
 from mitmproxy import ctx, http
+from mitmproxy.websocket import WebSocketMessage
+from wsproto.frame_protocol import Opcode
 
 from safeyolo.core.audit_schema import Decision, Severity
 from safeyolo.core.base import SecurityAddon
@@ -53,11 +56,13 @@ OUTCOME_NO_MATCH = "no_match"
 OUTCOME_MATCH_LOGGED = "match_logged"     # rule matched, warn-only mode
 OUTCOME_MATCH_BLOCKED = "match_blocked"   # rule matched and produced a block
 
+WEBSOCKET_MESSAGE_TYPES = (Opcode.TEXT, Opcode.BINARY)
+
 
 class PatternScanner(SecurityAddon):
-    """User-configurable pattern scanner for URLs, headers, and bodies.
+    """User-configurable scanner for URLs, headers, and message bodies.
 
-    Scans request/response content for policy-defined patterns. The object
+    Scans HTTP and WebSocket content for policy-defined patterns. The object
     starts empty and is populated from user rules and enabled builtin sets.
     """
 
@@ -247,6 +252,85 @@ class PatternScanner(SecurityAddon):
 
         return None, ""
 
+    def _scan_websocket_message(
+        self,
+        message: WebSocketMessage,
+    ) -> tuple[PatternRule | None, str, str]:
+        """Scan one reassembled WebSocket message as body content.
+
+        Mitmproxy exposes complete text and binary messages here, including
+        messages that arrived in multiple frames. Request rules apply to
+        client messages. Response rules apply to server messages.
+        """
+        if message.type not in WEBSOCKET_MESSAGE_TYPES:
+            raise ValueError("unsupported WebSocket message type")
+
+        direction = "request" if message.from_client else "response"
+        message_type = "text" if message.type == Opcode.TEXT else "binary"
+        if message.type == Opcode.TEXT:
+            text = message.content.decode("utf-8")
+        else:
+            # Latin-1 gives each byte a stable code point. This lets existing
+            # ASCII-oriented body rules inspect binary messages without
+            # changing or logging the original content.
+            text = message.content.decode("latin-1")
+
+        rule = self._scan_for_scope(self.rules, "body", text, direction)
+        return rule, direction, message_type
+
+    def _drop_websocket_message(
+        self,
+        flow: http.HTTPFlow,
+        message: WebSocketMessage,
+        *,
+        direction: str,
+        message_type: str,
+        rule: PatternRule | None = None,
+        error_type: str | None = None,
+    ) -> None:
+        """Drop one message and emit content-free audit evidence."""
+        message.drop()
+        self.blocks_total += 1
+        self.stats.blocked += 1
+        flow.metadata["websocket_pattern_dropped"] = True
+
+        if rule is not None:
+            summary = (
+                f"Pattern '{sanitize_for_log(rule.name)}' blocked in "
+                f"WebSocket {direction} message for "
+                f"{sanitize_for_log(flow.request.host)}"
+            )
+            details = {
+                "direction": direction,
+                "rule_name": rule.name,
+                "rule_id": rule.rule_id,
+                "pattern_action": rule.action,
+                "pattern_severity": rule.severity,
+                "location": "websocket_message",
+                "message_type": message_type,
+            }
+        else:
+            summary = (
+                f"WebSocket {direction} message dropped because pattern "
+                f"inspection failed for {sanitize_for_log(flow.request.host)}"
+            )
+            details = {
+                "direction": direction,
+                "location": "websocket_message",
+                "message_type": message_type,
+                "reason": "inspection_error",
+                "error_type": error_type or "Exception",
+            }
+
+        self.log_decision(
+            flow,
+            Decision.DENY,
+            severity=Severity.HIGH,
+            summary=summary,
+            host=flow.request.host,
+            **details,
+        )
+
     @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Scan request for user-defined patterns."""
@@ -375,6 +459,92 @@ class PatternScanner(SecurityAddon):
                 rule_name=rule.name,
                 location=location,
             )
+
+    def websocket_message(self, flow: http.HTTPFlow) -> None:
+        """Inspect the newest reassembled WebSocket message."""
+        websocket = flow.websocket
+        if websocket is None or not websocket.messages:
+            return
+        message = websocket.messages[-1]
+
+        direction = "request" if message.from_client else "response"
+        message_type = getattr(message.type, "name", "unknown").lower()
+        try:
+            self._maybe_reload_patterns()
+            if not self.rules:
+                return
+            rule, direction, message_type = self._scan_websocket_message(message)
+        except Exception as exc:
+            # An inspection error must not turn into uninspected delivery. Log
+            # only the exception type; its message can contain inspected data.
+            log.error(
+                "DROPPED: WebSocket %s message for %s because pattern "
+                "inspection failed (%s)",
+                direction,
+                sanitize_for_log(flow.request.host),
+                type(exc).__name__,
+            )
+            self._drop_websocket_message(
+                flow,
+                message,
+                direction=direction,
+                message_type=message_type,
+                error_type=type(exc).__name__,
+            )
+            return
+
+        if rule is None:
+            return
+
+        flow.metadata["websocket_pattern_matched"] = rule.name
+        flow.metadata["websocket_pattern_direction"] = direction
+        flow.metadata["websocket_pattern_message_type"] = message_type
+
+        block_enabled = (
+            ctx.options.pattern_block_request
+            if direction == "request"
+            else ctx.options.pattern_block_response
+        )
+        if rule.should_block and block_enabled:
+            log.warning(
+                "DROPPED: Pattern '%s' matched in WebSocket %s message for %s",
+                sanitize_for_log(rule.name),
+                direction,
+                sanitize_for_log(flow.request.host),
+            )
+            self._drop_websocket_message(
+                flow,
+                message,
+                direction=direction,
+                message_type=message_type,
+                rule=rule,
+            )
+            return
+
+        log.info(
+            "MATCH: Pattern '%s' matched in WebSocket %s message for %s",
+            sanitize_for_log(rule.name),
+            direction,
+            sanitize_for_log(flow.request.host),
+        )
+        self.log_decision(
+            flow,
+            Decision.LOG,
+            severity=Severity.MEDIUM,
+            summary=(
+                f"Pattern '{sanitize_for_log(rule.name)}' matched in "
+                f"WebSocket {direction} message for "
+                f"{sanitize_for_log(flow.request.host)}"
+            ),
+            host=flow.request.host,
+            direction=direction,
+            rule_name=rule.name,
+            rule_id=rule.rule_id,
+            pattern_action=rule.action,
+            pattern_severity=rule.severity,
+            location="websocket_message",
+            message_type=message_type,
+        )
 
     def get_stats(self) -> dict:
         """Get scanner statistics."""

@@ -11,6 +11,9 @@ from types import SimpleNamespace
 from unittest.mock import create_autospec, patch
 
 import pytest
+from mitmproxy.test import tflow
+from mitmproxy.websocket import WebSocketMessage
+from wsproto.frame_protocol import Opcode
 
 from pdp.client import PolicyClient
 
@@ -20,6 +23,18 @@ pytestmark = pytest.mark.assurance_boundary
 def _ctx(**options):
     """Concrete mitmproxy option state required by one test."""
     return SimpleNamespace(options=SimpleNamespace(**options))
+
+
+def _websocket_flow(
+    content: bytes,
+    *,
+    from_client: bool = True,
+    opcode: Opcode = Opcode.TEXT,
+):
+    flow = tflow.twebsocketflow(messages=False)
+    assert flow.websocket is not None
+    flow.websocket.messages = [WebSocketMessage(opcode, from_client, content)]
+    return flow
 
 
 class TestPatternRule:
@@ -1066,6 +1081,182 @@ class TestResponseSkippedWhenNone:
             scanner.response(flow)
 
         assert flow.metadata.get("pattern_matched_response") is None
+
+
+class TestWebSocketMessageScanning:
+    """Tests for message-level WebSocket pattern inspection."""
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    @staticmethod
+    def load_rule(scanner, *, target="both", action="block", pattern=r"PROJ-\d{5}"):
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "project-id",
+                "pattern": pattern,
+                "target": target,
+                "scope": ["body"],
+                "action": action,
+            }]
+        })
+
+    @pytest.mark.parametrize(
+        ("from_client", "target", "expected_direction"),
+        [
+            (True, "request", "request"),
+            (False, "response", "response"),
+        ],
+    )
+    def test_block_rule_drops_message_in_each_supported_direction(
+        self,
+        scanner,
+        from_client,
+        target,
+        expected_direction,
+        caplog,
+    ):
+        self.load_rule(scanner, target=target)
+        inspected_payload = b"PROJ-12345"
+        flow = _websocket_flow(inspected_payload, from_client=from_client)
+        original_response = flow.response
+
+        with patch(
+            "pattern_scanner.ctx",
+            _ctx(pattern_block_request=True, pattern_block_response=True),
+        ), patch.object(
+            scanner,
+            "log_decision",
+            autospec=True,
+        ) as log_decision, caplog.at_level("WARNING"):
+            scanner.websocket_message(flow)
+
+        assert flow.websocket is not None
+        assert flow.websocket.messages[-1].dropped is True
+        assert flow.metadata["websocket_pattern_direction"] == expected_direction
+        assert flow.metadata["websocket_pattern_matched"] == "project-id"
+        # Message blocking must not replace the successful HTTP upgrade.
+        assert flow.response is original_response
+        assert inspected_payload.decode() not in caplog.text
+        assert inspected_payload.decode() not in repr(log_decision.call_args)
+
+    @pytest.mark.parametrize(
+        ("from_client", "target"),
+        [
+            (True, "response"),
+            (False, "request"),
+        ],
+    )
+    def test_direction_mismatch_does_not_drop_message(
+        self,
+        scanner,
+        from_client,
+        target,
+    ):
+        self.load_rule(scanner, target=target)
+        flow = _websocket_flow(b"PROJ-12345", from_client=from_client)
+
+        with patch(
+            "pattern_scanner.ctx",
+            _ctx(pattern_block_request=True, pattern_block_response=True),
+        ):
+            scanner.websocket_message(flow)
+
+        assert flow.websocket is not None
+        assert flow.websocket.messages[-1].dropped is False
+        assert "websocket_pattern_matched" not in flow.metadata
+
+    @pytest.mark.parametrize("opcode", [Opcode.TEXT, Opcode.BINARY])
+    def test_complete_text_and_binary_messages_use_body_rules(
+        self,
+        scanner,
+        opcode,
+    ):
+        self.load_rule(scanner, target="request", pattern=r"PROJ-12345")
+        # Mitmproxy calls this hook with one complete message after it joins
+        # fragmented frames. The scanner therefore sees the joined content.
+        flow = _websocket_flow(b"PROJ-" + b"12345", opcode=opcode)
+
+        with patch(
+            "pattern_scanner.ctx",
+            _ctx(pattern_block_request=True, pattern_block_response=True),
+        ):
+            scanner.websocket_message(flow)
+
+        assert flow.websocket is not None
+        assert flow.websocket.messages[-1].dropped is True
+        assert flow.metadata["websocket_pattern_message_type"] == opcode.name.lower()
+
+    @pytest.mark.parametrize(
+        ("action", "block_enabled"),
+        [
+            ("log", True),
+            ("block", False),
+        ],
+    )
+    def test_non_blocking_modes_record_without_dropping(
+        self,
+        scanner,
+        action,
+        block_enabled,
+    ):
+        self.load_rule(scanner, target="request", action=action)
+        flow = _websocket_flow(b"PROJ-12345")
+
+        with patch(
+            "pattern_scanner.ctx",
+            _ctx(
+                pattern_block_request=block_enabled,
+                pattern_block_response=True,
+            ),
+        ), patch.object(scanner, "log_decision", autospec=True) as log_decision:
+            scanner.websocket_message(flow)
+
+        assert flow.websocket is not None
+        assert flow.websocket.messages[-1].dropped is False
+        assert flow.metadata["websocket_pattern_matched"] == "project-id"
+        log_decision.assert_called_once()
+        assert log_decision.call_args.args[1].value == "log"
+
+    def test_inspection_error_drops_without_logging_message_content(
+        self,
+        scanner,
+        caplog,
+    ):
+        secret = "payload-must-not-appear"
+        self.load_rule(scanner, target="request", pattern=r"payload")
+        flow = _websocket_flow(secret.encode())
+
+        with patch.object(
+            scanner,
+            "_scan_for_scope",
+            autospec=True,
+            side_effect=RuntimeError(secret),
+        ), patch.object(
+            scanner,
+            "log_decision",
+            autospec=True,
+        ) as log_decision, caplog.at_level("ERROR"):
+            scanner.websocket_message(flow)
+
+        assert flow.websocket is not None
+        assert flow.websocket.messages[-1].dropped is True
+        assert secret not in caplog.text
+        assert secret not in repr(log_decision.call_args)
+        assert log_decision.call_args.kwargs["error_type"] == "RuntimeError"
+
+    def test_invalid_text_message_fails_closed(self, scanner):
+        self.load_rule(scanner, target="request", pattern=r"MATCH")
+        flow = _websocket_flow(b"\xffMATCH", opcode=Opcode.TEXT)
+
+        with patch.object(scanner, "log_decision", autospec=True) as log_decision:
+            scanner.websocket_message(flow)
+
+        assert flow.websocket is not None
+        assert flow.websocket.messages[-1].dropped is True
+        assert log_decision.call_args.kwargs["error_type"] == "UnicodeDecodeError"
 
 
 class TestStats:
