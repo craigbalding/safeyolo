@@ -1062,6 +1062,8 @@ class TestBlockingModes:
         monkeypatch.delenv("NETWORK_GUARD_BLOCK", raising=False)
         monkeypatch.delenv("CREDGUARD_BLOCK", raising=False)
         monkeypatch.delenv("PATTERN_BLOCK", raising=False)
+        monkeypatch.delenv("PATTERN_BLOCK_WEBSOCKET_REQUEST", raising=False)
+        monkeypatch.delenv("PATTERN_BLOCK_WEBSOCKET_RESPONSE", raising=False)
         monkeypatch.delenv("TEST_CONTEXT_BLOCK", raising=False)
 
         cmd = _build_command(admin_token="tok", **cmd_env)
@@ -1069,13 +1071,15 @@ class TestBlockingModes:
 
         assert "network_guard_block=true" in cmd_str
         assert "credguard_block=true" in cmd_str
-        assert "pattern_block_input" not in cmd_str
-        assert "pattern_block_output" not in cmd_str
+        assert "pattern_block_request" not in cmd_str
+        assert "pattern_block_response" not in cmd_str
+        assert "pattern_block_websocket_request" not in cmd_str
+        assert "pattern_block_websocket_response" not in cmd_str
         assert "test_context_block=true" in cmd_str
 
     def test_safeyolo_block_forces_all_to_block(self, cmd_env, monkeypatch):
         """SAFEYOLO_BLOCK=true forces all four addons to block mode,
-        including pattern_block_input and pattern_block_output."""
+        including pattern_block_request and pattern_block_response."""
         from safeyolo.proxy import _build_command
 
         monkeypatch.setenv("SAFEYOLO_BLOCK", "true")
@@ -1089,8 +1093,10 @@ class TestBlockingModes:
 
         assert "network_guard_block=true" in cmd_str
         assert "credguard_block=true" in cmd_str
-        assert "pattern_block_input=true" in cmd_str
-        assert "pattern_block_output=true" in cmd_str
+        assert "pattern_block_request=true" in cmd_str
+        assert "pattern_block_response=true" in cmd_str
+        assert "pattern_block_websocket_request=true" in cmd_str
+        assert "pattern_block_websocket_response=true" in cmd_str
         assert "test_context_block=true" in cmd_str
 
     def test_network_guard_warn_only(self, cmd_env, monkeypatch):
@@ -1118,7 +1124,7 @@ class TestBlockingModes:
         assert "credguard_block=false" in cmd_str
 
     def test_pattern_block_enabled(self, cmd_env, monkeypatch):
-        """PATTERN_BLOCK=true adds pattern_block_input=true and pattern_block_output=true."""
+        """PATTERN_BLOCK=true enables request and response blocking."""
         from safeyolo.proxy import _build_command
 
         monkeypatch.delenv("SAFEYOLO_BLOCK", raising=False)
@@ -1127,22 +1133,42 @@ class TestBlockingModes:
         cmd = _build_command(admin_token="tok", **cmd_env)
         cmd_str = " ".join(cmd)
 
-        assert "pattern_block_input=true" in cmd_str
-        assert "pattern_block_output=true" in cmd_str
+        assert "pattern_block_request=true" in cmd_str
+        assert "pattern_block_response=true" in cmd_str
+        assert "pattern_block_websocket_request=true" in cmd_str
+        assert "pattern_block_websocket_response=true" in cmd_str
 
     def test_pattern_block_default_not_in_command(self, cmd_env, monkeypatch):
-        """When PATTERN_BLOCK is not set, pattern_block_input and
-        pattern_block_output do not appear in the command at all."""
+        """When PATTERN_BLOCK is not set, pattern block options are omitted."""
         from safeyolo.proxy import _build_command
 
         monkeypatch.delenv("SAFEYOLO_BLOCK", raising=False)
         monkeypatch.delenv("PATTERN_BLOCK", raising=False)
+        monkeypatch.delenv("PATTERN_BLOCK_WEBSOCKET_REQUEST", raising=False)
+        monkeypatch.delenv("PATTERN_BLOCK_WEBSOCKET_RESPONSE", raising=False)
 
         cmd = _build_command(admin_token="tok", **cmd_env)
         cmd_str = " ".join(cmd)
 
-        assert "pattern_block_input" not in cmd_str
-        assert "pattern_block_output" not in cmd_str
+        assert "pattern_block_request" not in cmd_str
+        assert "pattern_block_response" not in cmd_str
+        assert "pattern_block_websocket_request" not in cmd_str
+        assert "pattern_block_websocket_response" not in cmd_str
+
+    def test_websocket_pattern_block_overrides(self, cmd_env, monkeypatch):
+        """Directional WebSocket environment knobs reach mitmproxy."""
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.delenv("SAFEYOLO_BLOCK", raising=False)
+        monkeypatch.delenv("PATTERN_BLOCK", raising=False)
+        monkeypatch.setenv("PATTERN_BLOCK_WEBSOCKET_REQUEST", "false")
+        monkeypatch.setenv("PATTERN_BLOCK_WEBSOCKET_RESPONSE", "true")
+
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        cmd_str = " ".join(cmd)
+
+        assert "pattern_block_websocket_request=false" in cmd_str
+        assert "pattern_block_websocket_response=true" in cmd_str
 
     def test_test_context_warn_only(self, cmd_env, monkeypatch):
         """TEST_CONTEXT_BLOCK=false sets test_context_block=false."""
