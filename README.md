@@ -275,7 +275,7 @@ The `contrib/` directory has ready-made host scripts:
 | Script | Purpose |
 |--------|---------|
 | `contrib/claude-host-setup.sh` | Copies Claude Code authentication and selected user extensions into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context, and launches Claude Code. |
-| `contrib/codex-host-setup.sh` | Copies `~/.codex/` into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context including `$safeyolo-lab-controller` and the `safeyolo-lab` guest command, and launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`). SafeYolo remains the outer boundary. |
+| `contrib/codex-host-setup.sh` | Copies `~/.codex/` into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context including `$safeyolo-lab-controller`, `$safeyolo-demo-lab`, and the `safeyolo-lab` guest command, and launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`). SafeYolo remains the outer boundary. |
 | `contrib/codex-coord-host-setup.sh` | Uses the Codex setup above, including copied subscription authentication, then supervises bounded non-interactive turns. See the [supervisor contract](docs/codex-coord-supervisor.md). |
 | `contrib/mise-shell-host-setup.sh` | Opens an interactive shell with mise ready for `mise use -g ...`. |
 
@@ -295,7 +295,8 @@ safeyolo-lab
 
 The guest tmux prefix is `C-a`. Run `safeyolo-lab` again after a disconnect to
 attach to the existing lab. The controller first asks what you want to explore;
-it does not create experiment panes until you describe the work.
+it does not create experiment panes until you describe the work. Ask it to
+teach, tour, or explain SafeYolo to start a learner-focused demonstration.
 
 ## Custom rootfs
 
@@ -319,7 +320,8 @@ receives it through `--append-system-prompt`; Codex receives it as
 `/safeyolo` share on every run. The scripts link the applicable managed skills
 into each agent's native skill directory, leaving existing user instructions
 untouched. Both integrations get the operational `safeyolo` skill. Codex also
-gets the `safeyolo-lab-controller` skill and the `safeyolo-lab` command.
+gets the `safeyolo-lab-controller` and `safeyolo-demo-lab` skills plus the
+`safeyolo-lab` command.
 
 ## Controlling Agent Access
 

@@ -11,8 +11,9 @@ Example integrations. Copy and adapt for your own use.
 | `../docs/AGENTS.md` | Compact always-on agent baseline (environment, guest tools, Agent API health check, security boundaries) |
 | `../cli/src/safeyolo/agent_context/skills/safeyolo/` | Shared Codex/Claude skill for guest tool installation, Agent API, flows, service gateway, plumb, block responses, and troubleshooting |
 | `../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/` | Codex skill and helper scripts for persistent, operator-visible tmux labs |
+| `../cli/src/safeyolo/agent_context/skills/safeyolo-demo-lab/` | Codex teaching skill for learner-focused SafeYolo demonstrations and structured lessons |
 | `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions and the default coord MCP server, injects the baseline, links `/safeyolo`, and writes an install-on-first-run foreground command |
-| `codex-host-setup.sh` | Host setup for OpenAI Codex CLI -- stages user state and the default coord MCP server, injects the baseline, links `$safeyolo` and `$safeyolo-lab-controller`, installs the `safeyolo-lab` guest command, and writes an install-on-first-run foreground command |
+| `codex-host-setup.sh` | Host setup for OpenAI Codex CLI -- stages user state and the default coord MCP server, injects the baseline, links the operational and lab skills, installs the `safeyolo-lab` guest command, and writes an install-on-first-run foreground command |
 | `codex-coord-host-setup.sh` | Opt-in `@codex-coord` setup for a long-lived factory worker; it uses the normal Codex setup and runs bounded non-interactive turns under the guest-side coord supervisor |
 | `codex-coord-supervisor.py` | Small persistent-process supervisor for one Codex thread, structured MCP events, and bounded atomic coord recovery state |
 | `coord-mcp-bootstrap.sh` | Shared idempotent coord MCP staging/registration helper used by the bundled Claude and Codex setup scripts |

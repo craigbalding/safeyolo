@@ -1,0 +1,4 @@
+interface:
+  display_name: "SafeYolo Demo Lab"
+  short_description: "Learn SafeYolo through visible guided experiments"
+  default_prompt: "Use $safeyolo-demo-lab to teach me how SafeYolo works through a visible guided experiment."

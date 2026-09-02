@@ -83,7 +83,7 @@ stage_safeyolo_context() {
     case "$consumer" in
         codex)
             link_dir="$agent_home/.agents/skills"
-            skill_names="safeyolo safeyolo-lab-controller"
+            skill_names="safeyolo safeyolo-lab-controller safeyolo-demo-lab"
             ;;
         claude)
             link_dir="$agent_home/.claude/skills"
