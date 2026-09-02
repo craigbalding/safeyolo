@@ -657,12 +657,21 @@ complete WebSocket messages.
 - Scans complete text and binary messages as body content
 - Applies request rules to client messages and response rules to server messages
 - Drops only the matching message in block mode; the connection stays open
+- WebSocket block mode has independent controls for client and server
+  messages; HTTP options do not change WebSocket behavior.
 
 **Options:**
 ```bash
 --set pattern_block_request=true   # Block matching requests
 --set pattern_block_response=true  # Block matching responses
+--set pattern_block_websocket_request=true   # Block client messages
+--set pattern_block_websocket_response=true   # Block server messages
 ```
+
+The WebSocket options accept `true` or `false` and default to warn-only. They
+can therefore be enabled without blocking ordinary HTTP requests, or left
+disabled while HTTP blocking is enabled. SafeYolo's `PATTERN_BLOCK=true`
+startup setting enables all four pattern-block options.
 
 ---
 
