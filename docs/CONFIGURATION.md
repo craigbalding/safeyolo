@@ -499,6 +499,9 @@ In `warn` mode, violations are logged but traffic is not blocked. Useful for:
 | `SAFEYOLO_ALLOW_ROOT` | Allow running CLI as root (not recommended) |
 | `SAFEYOLO_TUI` | Set to `true` for the mitmproxy terminal user interface (TUI) in tmux (default: headless `mitmdump`) |
 | `SAFEYOLO_BLOCK` | Set to `true` to enable blocking mode for all security addons |
+| `PATTERN_BLOCK` | Set to `true` to block matching HTTP and WebSocket pattern messages |
+| `PATTERN_BLOCK_WEBSOCKET_REQUEST` | Set to `true` or `false` to block or warn on matching client WebSocket messages |
+| `PATTERN_BLOCK_WEBSOCKET_RESPONSE` | Set to `true` or `false` to block or warn on matching server WebSocket messages |
 
 ## Per-Agent Policies
 
