@@ -255,19 +255,27 @@ class RequestIdGenerator:
         agent can always correlate its request without asking the operator
         to search host logs.
 
-        Idempotent: `make_block_response` already stamps this header for
-        block paths that carry the request_id; skipping when present keeps
-        us from clobbering that value on the (unlikely) chance the two
-        differ.
+        SafeYolo owns this header. Assignment replaces every case-insensitive
+        occurrence, including duplicate values supplied by an upstream. A
+        mismatched value on a SafeYolo-generated response is an internal
+        invariant failure, but the canonical metadata value still wins.
         """
         if not flow.response:
             return
         request_id = flow.metadata.get("request_id")
         if not request_id:
             return
-        if RESPONSE_REQUEST_ID_HEADER in flow.response.headers:
-            return
-        flow.response.headers[RESPONSE_REQUEST_ID_HEADER] = request_id
+        existing_values = flow.response.headers.get_all(RESPONSE_REQUEST_ID_HEADER)
+        if flow.metadata.get("blocked_by") and any(
+            value != request_id for value in existing_values
+        ):
+            log.error(
+                "SafeYolo-generated response carried a non-canonical "
+                "X-SafeYolo-Request-Id; replacing it"
+            )
+        flow.response.headers[
+            RESPONSE_REQUEST_ID_HEADER
+        ] = request_id  # SKILL: troubleshooting.md#logs-and-correlation
 
 
 addons = [RequestIdGenerator()]

@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**102 tests across 36 threat categories.**
+**103 tests across 37 threat categories.**
 
 ## Host-side
 
@@ -197,6 +197,18 @@ the sinkhole saw one request.
   - *Consequence if unasserted:* Positive-path check — if allowlisted hosts don't actually
 reach their upstream, the agent loses legitimate connectivity
 and users will disable network_guard to get work done.
+
+#### TestResponseRequestId — SafeYolo owns the correlation header returned to the agent.
+
+**Threat:** An origin-controlled ID can misdirect diagnostics or point to no
+trace at all, breaking the proxy's downstream correlation contract.
+
+- **`test_origin_header_is_replaced_and_resolves_to_trace`** — Origin header is replaced by one canonical, traceable request ID.
+  - *Probe:* Send a traced request to a sinkhole route that returns its own
+X-SafeYolo-Request-Id; assert the client sees one different ID and
+that the returned value resolves through the agent-scoped /trace API.
+  - *Consequence if unasserted:* Without this boundary check, unit tests could pass while the
+loaded proxy still returns an origin-controlled or untraceable ID.
 
 #### TestRateLimiting — Per-host request budgets are enforced without spurious denies.
 
