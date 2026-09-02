@@ -1,6 +1,6 @@
 ---
 name: safeyolo
-description: Operate and troubleshoot from inside a SafeYolo sandbox. Auto-invoke on the first turn that touches any sandbox-side operation, including SafeYolo proxy or TLS failures; policy and credential blocks; HTTP 403/428/429/503/508 responses; X-Blocked-By responses; guest package installation and sudo/setpriv/apt/apk/pip/mise behavior; ptrace / strace / gdb / py-spy / rbspy / perf attach failures and same-uid in-guest debugging; `agent shell --root` or operator recovery paths; optional desktop and operator preview access; Agent API queries; flow inspection; budgets; circuit breakers; service-gateway access; coord work coordination; approvals through `safeyolo watch`; approved legacy plumb collaboration; and general "am I inside a SafeYolo sandbox / what can I do from here / how do I debug this" introspection questions.
+description: Operate and troubleshoot from inside a SafeYolo sandbox. Auto-invoke on the first turn that touches any sandbox-side operation, including SafeYolo proxy or TLS failures; policy and credential blocks; HTTP 403/428/429/503/508 responses; X-Blocked-By responses; guest package installation and sudo/setpriv/apt/apk/pip/mise behavior; ptrace / strace / gdb / py-spy / rbspy / perf attach failures and same-uid in-guest debugging; `agent shell --root` or operator recovery paths; optional desktop and operator preview access; Agent API queries; flow inspection; budgets; circuit breakers; service-gateway access; coord work coordination; repeated GitHub intake or exact-candidate checks through a configured GitHub App connector; approvals through `safeyolo watch`; approved legacy plumb collaboration; and general "am I inside a SafeYolo sandbox / what can I do from here / how do I debug this" introspection questions.
 ---
 
 # Operate inside SafeYolo
@@ -34,6 +34,10 @@ interfaces; do not try to bypass or weaken it.
   coord rooms, delegating or accepting peer work, waiting for attention, or
   choosing between targeted attention and retained room history. It contains
   the current low-chatter coordinator/worker protocol.
+- Read [GitHub composite checks](references/github-checks.md) before using the
+  optional intake or exact-candidate helper through a configured GitHub App
+  connector. It defines explicit inputs, normalized evidence, and failure
+  diagnostics without making either helper a factory policy.
 - Read [Relay Dispatch generation](references/dispatch-generation.md) before
   consuming completion-note nominations for public engineering content or
   rendering a Dispatch or living topic page.
