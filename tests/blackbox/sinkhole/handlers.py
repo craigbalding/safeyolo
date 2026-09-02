@@ -74,7 +74,7 @@ class GenericHandler:
     """Returns 200 OK with request echo for any request."""
 
     def handle(self, request: "CapturedRequest") -> Response:
-        return Response.json_response({
+        response = Response.json_response({
             "received": True,
             "host": request.host,
             "method": request.method,
@@ -82,6 +82,11 @@ class GenericHandler:
             "has_auth": "authorization" in {k.lower() for k in request.headers}
             or "x-api-key" in {k.lower() for k in request.headers},
         })
+        if request.path == "/origin-request-id":
+            response.headers["X-SafeYolo-Request-Id"] = (
+                "req-33333333333333333333333333333333"
+            )
+        return response
 
 
 class FailingHandler:

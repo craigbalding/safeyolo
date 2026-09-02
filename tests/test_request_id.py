@@ -472,19 +472,70 @@ class TestResponseHeaderStamping:
 
         assert flow.response.headers[RESPONSE_REQUEST_ID_HEADER] == rid
 
-    def test_does_not_overwrite_existing_header(self, addon):
-        """If make_block_response already stamped the header, don't clobber."""
+    def test_overwrites_origin_supplied_header(self, addon):
+        """An upstream cannot control SafeYolo's response correlation ID."""
         from mitmproxy import http as mitm_http
         from request_id import RESPONSE_REQUEST_ID_HEADER
 
         flow = tflow.tflow()
         addon.request(flow)
-        preset = "req-preset0000000000000000000000000000"
-        flow.response = mitm_http.Response.make(200, b"ok", {RESPONSE_REQUEST_ID_HEADER: preset})
+        rid = flow.metadata["request_id"]
+        origin_id = "req-33333333333333333333333333333333"
+        flow.response = mitm_http.Response.make(
+            200,
+            b"ok",
+            {RESPONSE_REQUEST_ID_HEADER: origin_id},
+        )
 
         addon.response(flow)
 
-        assert flow.response.headers[RESPONSE_REQUEST_ID_HEADER] == preset
+        assert flow.response.headers.get_all(RESPONSE_REQUEST_ID_HEADER) == [rid]
+
+    def test_replaces_mixed_case_duplicate_origin_headers(self, addon):
+        """Mixed-case duplicate upstream values collapse to one canonical ID."""
+        from mitmproxy import http as mitm_http
+        from request_id import RESPONSE_REQUEST_ID_HEADER
+
+        flow = tflow.tflow()
+        addon.request(flow)
+        rid = flow.metadata["request_id"]
+        flow.response = mitm_http.Response.make(200, b"ok")
+        flow.response.headers.fields = (
+            (b"X-SafeYolo-Request-Id", b"req-11111111111111111111111111111111"),
+            (b"x-safeyolo-request-id", b"req-22222222222222222222222222222222"),
+            (b"Content-Type", b"text/plain"),
+        )
+
+        addon.response(flow)
+
+        assert flow.response.headers.get_all(RESPONSE_REQUEST_ID_HEADER) == [rid]
+        matching_fields = [
+            field
+            for field in flow.response.headers.fields
+            if field[0].lower() == RESPONSE_REQUEST_ID_HEADER.lower().encode()
+        ]
+        assert matching_fields == [(RESPONSE_REQUEST_ID_HEADER.encode(), rid.encode())]
+
+    def test_replaces_mismatched_safeyolo_block_header(self, addon, caplog):
+        """A generated block mismatch is logged and never exposed."""
+        from mitmproxy import http as mitm_http
+        from request_id import RESPONSE_REQUEST_ID_HEADER
+
+        flow = tflow.tflow()
+        addon.request(flow)
+        rid = flow.metadata["request_id"]
+        flow.metadata["blocked_by"] = "test-addon"
+        flow.response = mitm_http.Response.make(
+            403,
+            b"blocked",
+            {RESPONSE_REQUEST_ID_HEADER: "req-44444444444444444444444444444444"},
+        )
+
+        with caplog.at_level(logging.ERROR, logger="safeyolo.request_id"):
+            addon.response(flow)
+
+        assert flow.response.headers.get_all(RESPONSE_REQUEST_ID_HEADER) == [rid]
+        assert "SafeYolo-generated response carried a non-canonical" in caplog.text
 
     def test_no_stamp_when_request_id_absent(self, addon):
         """Response hook is a no-op if the request never got an id (shouldn't

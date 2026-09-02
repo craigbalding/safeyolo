@@ -1,0 +1,4 @@
+interface:
+  display_name: "SafeYolo Lab Controller"
+  short_description: "Run inspectable experiments in persistent tmux panes"
+  default_prompt: "Use $safeyolo-lab-controller to run an inspectable experiment in persistent tmux panes."

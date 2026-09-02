@@ -28,6 +28,48 @@ class TestAccessControl:
         assert len(requests) == 1, f"Expected 1 request, got {len(requests)}"
 
 
+class TestResponseRequestId:
+    """SafeYolo owns the correlation header returned to the agent.
+
+    Why: An origin-controlled ID can misdirect diagnostics or point to no
+    trace at all, breaking the proxy's downstream correlation contract.
+    """
+
+    def test_origin_header_is_replaced_and_resolves_to_trace(
+        self,
+        proxy_client,
+        agent_headers,
+        clear_sinkhole,
+        wait_for_services,
+    ):
+        """Origin header is replaced by one canonical, traceable request ID.
+
+        What: Send a traced request to a sinkhole route that returns its own
+        X-SafeYolo-Request-Id; assert the client sees one different ID and
+        that the returned value resolves through the agent-scoped /trace API.
+        Why: Without this boundary check, unit tests could pass while the
+        loaded proxy still returns an origin-controlled or untraceable ID.
+        """
+        origin_id = "req-33333333333333333333333333333333"
+        response = proxy_client.get(
+            "https://httpbin.org/origin-request-id",
+            headers={"X-SafeYolo-Trace": "1"},
+        )
+
+        assert response.status_code == 200
+        returned_ids = response.headers.get_list("X-SafeYolo-Request-Id")
+        assert len(returned_ids) == 1
+        assert returned_ids[0] != origin_id
+
+        trace = proxy_client.get(
+            "http://_safeyolo.proxy.internal/trace",
+            params={"request_id": returned_ids[0]},
+            headers=agent_headers,
+        )
+        assert trace.status_code == 200, trace.text
+        assert trace.json()["request_id"] == returned_ids[0]
+
+
 class TestRateLimiting:
     """Per-host request budgets are enforced without spurious denies.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,24 +16,36 @@ from safeyolo.coord import api as coord_api
 from safeyolo.coord import store as coord_store
 from safeyolo.factory_contract import load_active_snapshot, load_factory_file, store_snapshot
 from safeyolo.factory_doctor import (
+    _BACKLOG_COORDINATOR_CONTRACT_SHA256,
     _PROCESS_EXECUTABLE_MARKER,
     _PROCESS_EXPECTED_MARKER,
     _PROCESS_STAT_MARKER,
     _expected_supervised_command,
     _expected_supervisor_config,
+    _inspect_brief,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _factory_file(tmp_path: Path) -> Path:
-    for name in ("coordinator", "owner", "reviewer"):
+def _factory_file(
+    tmp_path: Path,
+    *,
+    coordinator_contract: str | None = None,
+    room: str = "backlog",
+) -> Path:
+    if coordinator_contract is None:
+        coordinator_contract = (
+            REPO_ROOT / "docs/factories/backlog-coordinator.md"
+        ).read_text()
+    (tmp_path / "coordinator.md").write_text(coordinator_contract)
+    for name in ("owner", "reviewer"):
         (tmp_path / f"{name}.md").write_text(f"# {name.title()}\n")
     path = tmp_path / "backlog.toml"
     path.write_text(
         'schema = "safeyolo.factory/v1"\n'
         'name = "backlog"\n'
-        'room = "backlog"\n\n'
+        f'room = "{room}"\n\n'
         "[operator_input]\n"
         'to = "coordinator"\n'
         'types = ["NEXT"]\n\n'
@@ -217,6 +230,10 @@ def factory_runtime(tmp_path, tmp_config_dir, monkeypatch):
             "permissions": {f"{kind}:{principal_id}": ["send", "receive"] for kind, principal_id in principals},
         },
     )
+    monkeypatch.setattr(
+        "safeyolo.factory_doctor.coord_api.show_brief",
+        lambda _room: {"revision": 0, "content_hash": None, "markdown": None},
+    )
     return {
         "homes": homes,
         "running": running,
@@ -233,9 +250,105 @@ def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_ru
     assert "PASS component=coord-nats managed NATS is healthy" in result.output
     assert "PASS component=staging role=owner agent=forge" in result.output
     assert "PASS component=processes role=reviewer agent=lens" in result.output
+    assert "PASS component=coord-brief room=backlog state=none" in result.output
+    assert "explicit-NEXT-mode=valid" in result.output
+    assert "safeyolo coord brief show backlog" in result.output
+    assert "--expected-revision 0" in result.output
     assert "SUMMARY factory=backlog status=PASS" in result.output
     assert "contract_text" not in result.output
     assert "recent_attention_ids" not in result.output
+
+
+def test_shipped_backlog_contract_hash_is_pinned():
+    contract = REPO_ROOT / "docs/factories/backlog-coordinator.md"
+
+    assert hashlib.sha256(contract.read_bytes()).hexdigest() == (
+        _BACKLOG_COORDINATOR_CONTRACT_SHA256
+    )
+
+
+def test_factory_doctor_does_not_invent_next_mode_for_custom_factory(monkeypatch):
+    monkeypatch.setattr(
+        "safeyolo.factory_doctor.coord_api.show_brief",
+        lambda _room: {"revision": 0, "content_hash": None, "markdown": None},
+    )
+    checks = []
+
+    _inspect_brief(
+        checks,
+        {
+            "name": "custom",
+            "room": "custom",
+            "operator_input": {"to": "coordinator", "types": ["START"]},
+        },
+    )
+
+    assert len(checks) == 1
+    assert checks[0].status == "PASS"
+    assert checks[0].detail.startswith("room=custom state=none ")
+    assert "explicit-NEXT-mode" not in checks[0].detail
+    assert "safeyolo coord brief show custom" in checks[0].detail
+    assert "--expected-revision 0" in checks[0].detail
+
+
+def test_factory_doctor_does_not_invent_next_mode_for_custom_backlog_contract(
+    tmp_path, monkeypatch
+):
+    custom_contract = "# Custom coordinator\n\nNEXT records a note and never selects work.\n"
+    payload = load_factory_file(
+        _factory_file(
+            tmp_path,
+            coordinator_contract=custom_contract,
+            room="custom-room",
+        )
+    ).snapshot_payload()
+    monkeypatch.setattr(
+        "safeyolo.factory_doctor.coord_api.show_brief",
+        lambda _room: {"revision": 0, "content_hash": None, "markdown": None},
+    )
+    checks = []
+
+    _inspect_brief(checks, payload)
+
+    assert payload["name"] == "backlog"
+    assert payload["operator_input"]["types"] == ["NEXT"]
+    assert payload["roles"]["coordinator"]["contract_sha256"] != (
+        _BACKLOG_COORDINATOR_CONTRACT_SHA256
+    )
+    assert len(checks) == 1
+    assert checks[0].status == "PASS"
+    assert checks[0].detail.startswith("room=custom-room state=none ")
+    assert "explicit-NEXT-mode" not in checks[0].detail
+
+
+def test_factory_doctor_reports_present_brief_metadata_without_body(
+    cli_runner, factory_runtime, monkeypatch
+):
+    markdown = "# Private operator meaning\n\nDo not print this body.\n"
+    content_hash = hashlib.sha256(markdown.encode()).hexdigest()
+    monkeypatch.setattr(
+        "safeyolo.factory_doctor.coord_api.show_brief",
+        lambda _room: {
+            "revision": 7,
+            "content_hash": content_hash,
+            "markdown": markdown,
+        },
+    )
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+    output = " ".join(result.output.split())
+
+    assert result.exit_code == 0, result.output
+    assert (
+        f"PASS component=coord-brief room=backlog revision=7 "
+        f"content_hash={content_hash}"
+        in output
+    )
+    assert "body=not-inspected" in output
+    assert "meaning=operator-owned" in output
+    assert "--expected-revision 7" in output
+    assert "Private operator meaning" not in result.output
+    assert "Do not print this body" not in result.output
 
 
 def test_factory_doctor_rejects_a_live_unrelated_proxy_pid(cli_runner, factory_runtime, tmp_config_dir, monkeypatch):
