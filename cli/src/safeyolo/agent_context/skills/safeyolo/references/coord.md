@@ -40,6 +40,7 @@ staged; no coord server, proxy, or addon restart is required.
 | `get_room_state` | Read attributed membership, capability, and lease state. |
 | `declare_capabilities` | Replace this agent's expiring capability claims. |
 | `send` | Append a retained message and choose who to notify. |
+| `send_task` | Build one exact task header and notify its exact assignee. |
 | `wait_for_coord` | Wait for and resolve a complete attention page. |
 | `wait_for_attention` | Wait on the lower-level attention feed. |
 | `read_attention` | Resolve one object from an attention edge. |
@@ -60,6 +61,15 @@ normal second half of a targeted notification.
 Set `notify` explicitly when using raw `send`. The MCP adapter defaults it to
 `none`; omitting it through an older or raw caller preserves legacy room-wake
 compatibility and is not the recommended targeted workflow.
+
+For a routine assignment, prefer `send_task(room_name, assignee, task_id,
+body)`. It emits exactly `TASK task=<id> assignee=<agent>` followed by one
+blank line and the caller's multiline body, derives `notify=[assignee]`, and
+returns the send result plus canonical room sequence. It rejects missing or
+malformed names, IDs, bodies, and a body that tries to supply another `TASK`
+header. This is only a producer helper: manual `send` messages remain valid,
+and neither operation creates workflow state. In particular, the helper cannot
+notify `forge` unless the exact generated header also says `assignee=forge`.
 
 Raw Agent API routes are:
 

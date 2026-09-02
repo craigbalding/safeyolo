@@ -15,15 +15,18 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+from unittest.mock import patch
 
 import nats
 import pytest
 from nats.errors import Error as NatsError
 from nats.errors import NoServersError
+from typer.testing import CliRunner
 
+from safeyolo.cli import app
 from safeyolo.coord import api, nats_client
 from safeyolo.coord import nats_runtime as nr
-from safeyolo.coord.identity import new_operation_id
+from safeyolo.coord.identity import instance_id_file, new_operation_id
 
 
 def _run(coro):
@@ -243,6 +246,80 @@ def test_instance_id_minted_at_safeyolo_start(nats_env):
         assert content.startswith("sy-"), f"malformed instance_id: {content!r}"
     finally:
         _stop_coord_best_effort()
+
+
+@pytest.mark.timeout(45)
+def test_running_proxy_start_reconciles_coord_and_preserves_state(
+    nats_env, tmp_config_dir
+):
+    """Repeated starts repair only Coord and preserve its durable state."""
+    runner = CliRunner()
+    nats_client.reset_for_tests()
+
+    with (
+        patch(
+            "safeyolo.commands.lifecycle.is_proxy_running",
+            return_value=True,
+            autospec=True,
+        ),
+        patch("safeyolo.commands.lifecycle.start_proxy", autospec=True) as start_proxy,
+    ):
+        repaired = runner.invoke(app, ["start", "--no-wait"])
+        assert repaired.exit_code == 0, repaired.output
+        assert "coord dependency repaired" in repaired.output.lower()
+        assert nr.is_healthy()
+        start_proxy.assert_not_called()
+
+        instance_id = instance_id_file().read_text()
+        _run(api.create_room("start-reconcile"))
+        _grant("start-reconcile", "agent", AGENT_A)
+        _grant("start-reconcile", "agent", AGENT_B)
+        sent = _run(
+            api.send(
+                "start-reconcile",
+                "agent",
+                AGENT_A,
+                "survives repeated start reconciliation",
+                notify="room",
+            )
+        )
+        attention_before = _run(
+            api.wait_for_attention(
+                AGENT_B,
+                since_sequence=0,
+                timeout_seconds=0.1,
+            )
+        )
+        assert len(attention_before["edges"]) == 1
+
+        nr.stop_server()
+        nats_client.reset_for_tests()
+        repaired_again = runner.invoke(app, ["start", "--no-wait"])
+        assert repaired_again.exit_code == 0, repaired_again.output
+        assert "coord dependency repaired" in repaired_again.output.lower()
+        assert instance_id_file().read_text() == instance_id
+
+        page = _run(api.read_room("start-reconcile", "agent", AGENT_B))
+        assert [message["body"] for message in page["messages"]] == [
+            "survives repeated start reconciliation"
+        ]
+        assert page["messages"][0]["sequence"] == sent["sequence"]
+        attention_after = _run(
+            api.wait_for_attention(
+                AGENT_B,
+                since_sequence=0,
+                timeout_seconds=0.1,
+            )
+        )
+        assert attention_after == attention_before
+
+        running = nr._read_pidfile()
+        assert running is not None
+        healthy = runner.invoke(app, ["start", "--no-wait"])
+        assert healthy.exit_code == 0, healthy.output
+        assert "coord dependency is already healthy" in healthy.output.lower()
+        assert nr._read_pidfile() == running
+        start_proxy.assert_not_called()
 
 
 # ---------- 2. Retention truncation is reported to the caller ----------

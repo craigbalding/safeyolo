@@ -32,6 +32,33 @@ The CI assurance check rejects direct generic mocks and mock-producing patches
 without `autospec=True`. Security-sensitive suites enrolled in `assurance.toml`
 also declare their real subjects, which may not be patched.
 
+### Factory acceptance
+
+The `factory_acceptance` entries in `assurance.toml` name the small set of
+operator-visible factory behaviors that must not disappear silently. Each
+entry binds a stable behavior ID to one pytest function and its SHA-256 digest.
+
+Run the named set with this command:
+
+```bash
+uv run pytest $(python3 scripts/check_test_assurance.py \
+  --list-factory-acceptance-nodes) -v --tb=short
+```
+
+Some named tests start a real local NATS server. Stop a live nested factory
+before the command if that factory uses ports 4222 or 8222. The factory state
+files and retained Coord history remain available for the next factory run.
+
+An edited named test makes the assurance check fail. Review the behavior, then
+refresh only the recorded digests:
+
+```bash
+uv run python scripts/check_test_assurance.py --update-factory-acceptance
+```
+
+The digest update is not an approval. Its manifest diff and the GitHub Actions
+notice show which acceptance behaviors changed.
+
 ## Running Tests
 
 Use `uv` (the same tool the CLI ships with):

@@ -2,6 +2,7 @@
 
 import json
 import os
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -25,8 +26,9 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 
 @pytest.fixture
 def isolated_coord(tmp_path, monkeypatch):
-    """Point every coord path helper at a fresh temp dir."""
+    """Give each test its own coord state, NATS identity, and ports."""
     monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", secrets.token_hex(8))
     return tmp_path
 
 
@@ -52,16 +54,21 @@ def _binary_cache(tmp_path_factory):
 
 @pytest.fixture
 def nats_env(isolated_coord, _binary_cache):
-    """Isolated coord dir with the cached nats-server binary symlinked
-    into the versioned path. Any nats-server we spawn is killed on
-    teardown."""
+    """Test-owned state with a real NATS binary and dynamic endpoints.
+
+    Any server started by the test is ownership-verified and stopped during
+    teardown. The fixture never probes or signals the production ports.
+    """
     from safeyolo.coord import nats_runtime as nr
     dest = nr.nats_binary_path()
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.exists():
         os.symlink(_binary_cache, dest)
     yield isolated_coord
-    nr.stop_server()
+    try:
+        nr.stop_server()
+    finally:
+        nr.nats_test_endpoints_path().unlink(missing_ok=True)
 
 
 class _HTTPResponseBoundary:

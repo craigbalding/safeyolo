@@ -84,8 +84,9 @@ Current event prefixes include `traffic.*`, `security.*`, `gateway.*`,
 `allow`, `deny`, `warn`, `require_approval`, `budget_exceeded`, and `log`.
 
 Use `/explain?request_id=req-<32hex>` when a request ID is known. Block
-responses do not currently expose the request ID in a response header, so ask
-the operator to obtain it from `safeyolo logs` when necessary.
+and upstream responses expose SafeYolo's canonical request ID in the
+`X-SafeYolo-Request-Id` response header. When a response cannot carry that
+header, ask the operator to obtain the ID from `safeyolo logs`.
 
 ## Ask the operator
 

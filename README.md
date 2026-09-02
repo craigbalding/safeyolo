@@ -387,6 +387,7 @@ SafeYolo is **pre-v1**. Sandbox runtime is hardware-backed microVMs on macOS and
 - [Mattermost Coord Adapter](docs/coord-mattermost.md)
 - [Coord Completion Notes](docs/coord-completion-notes.md)
 - [Relay Factory Proposals](docs/factory-proposals.md)
+- [Supervised Factories](docs/factories.md)
 - [SafeYolo Dispatch Generation](docs/dispatch-generation.md)
 - [Architecture & Addons](docs/ADDONS.md)
 - [Security & Threat Model](SECURITY.md)

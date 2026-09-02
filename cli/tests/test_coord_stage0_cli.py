@@ -5,12 +5,31 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import subprocess
+import sys
 
+import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
 from safeyolo.commands import coord, watch
 from safeyolo.core.audit_schema import AuditEvent, EventKind, Severity
+
+
+def test_main_cli_import_does_not_load_prompt_toolkit():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import safeyolo.cli; "
+            "assert 'prompt_toolkit' not in sys.modules",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_room_create_uses_distinct_internal_grant_operation_ids(monkeypatch):
@@ -254,17 +273,28 @@ def test_inventory_resource_unadvertisement_uses_operator_surface(monkeypatch):
     }
 
 
-def test_interactive_send_reports_ambiguous_acceptance_without_safe_retry(
-    monkeypatch,
-):
+def _set_chat_inputs(monkeypatch, *lines):
+    inputs = iter(lines)
+
+    class PromptSession:
+        async def prompt_async(self, _prompt):
+            return next(inputs)
+
+    async def receive_messages(*_args, **_kwargs):
+        await asyncio.Future()
+
+    monkeypatch.setattr("prompt_toolkit.PromptSession", PromptSession)
+    monkeypatch.setattr(coord, "_receive_messages", receive_messages)
+
+
+def test_interactive_send_reports_ambiguous_acceptance_without_safe_retry(monkeypatch):
     output = io.StringIO()
     monkeypatch.setattr(
         coord,
         "console",
         Console(file=output, force_terminal=False, color_system=None),
     )
-    inputs = iter(["possibly accepted", ":q"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+    _set_chat_inputs(monkeypatch, "possibly accepted", ":q")
 
     async def ambiguous_send(*_args, **_kwargs):
         raise coord.NatsPublishOutcomeUnknown("PubAck connection closed")
@@ -283,6 +313,90 @@ def test_interactive_send_reports_ambiguous_acceptance_without_safe_retry(
     assert "no caller-visible send idempotency" in normalized
     assert "NOT sent" not in rendered
     assert "message was not accepted" not in rendered
+
+
+def test_interactive_send_uses_explicit_target(monkeypatch):
+    output = io.StringIO()
+    monkeypatch.setattr(
+        coord,
+        "console",
+        Console(file=output, force_terminal=False, color_system=None),
+    )
+    _set_chat_inputs(monkeypatch, "targeted direction", ":q")
+    seen = []
+
+    async def send(*_args, **kwargs):
+        seen.append(kwargs["notify"])
+        return {
+            "attention_status": "ready",
+            "attention_intent": {"mode": "targeted"},
+        }
+
+    async def read_room(*_args, **_kwargs):
+        return {"messages": [], "next_cursor": 0, "has_more": False}
+
+    monkeypatch.setattr(coord.api, "send", send)
+    monkeypatch.setattr(coord.api, "read_room", read_room)
+
+    class Runtime:
+        def run(self, coroutine):
+            return asyncio.run(coroutine)
+
+    coord._interactive_loop(Runtime(), "r", 0, target="relay")
+    assert seen == [["relay"]]
+    assert "attention=targeted target=relay" in output.getvalue()
+
+
+def test_active_factory_coordinator_resolution_is_room_scoped(monkeypatch, tmp_path):
+    factories = tmp_path / "factories"
+    (factories / "backlog").mkdir(parents=True)
+    (factories / "backlog" / "active").write_text("snapshot\n")
+    (factories / "other").mkdir()
+    (factories / "other" / "active").write_text("snapshot\n")
+    monkeypatch.setattr(coord, "factories_dir", lambda: factories)
+
+    def load(name):
+        room = "backlog" if name == "backlog" else "other"
+        return "id", tmp_path / name, {
+            "room": room,
+            "operator_input": {"to": "coordinator"},
+            "roles": {"coordinator": {"agent": "navigator"}},
+        }
+
+    monkeypatch.setattr(coord, "load_active_snapshot", load)
+
+    assert coord._active_factory_coordinator("backlog") == "navigator"
+    assert coord._active_factory_coordinator("unconfigured") is None
+
+
+def test_active_factory_coordinator_ambiguity_fails_closed(monkeypatch, tmp_path):
+    factories = tmp_path / "factories"
+    for name in ("one", "two"):
+        (factories / name).mkdir(parents=True)
+        (factories / name / "active").write_text("snapshot\n")
+    monkeypatch.setattr(coord, "factories_dir", lambda: factories)
+
+    def load(name):
+        return "id", tmp_path / name, {
+            "room": "backlog",
+            "operator_input": {"to": "coordinator"},
+            "roles": {"coordinator": {"agent": f"relay-{name}"}},
+        }
+
+    monkeypatch.setattr(coord, "load_active_snapshot", load)
+
+    with pytest.raises(coord.FactoryContractError, match="multiple active"):
+        coord._active_factory_coordinator("backlog")
+
+
+def test_chat_rejects_target_in_observe_mode(monkeypatch):
+    monkeypatch.setattr(coord.api, "bootstrap", lambda: "sy-test")
+    result = CliRunner().invoke(
+        coord.coord_app,
+        ["chat", "r", "--observe", "--to", "relay"],
+    )
+    assert result.exit_code == 1
+    assert "--to requires interactive mode" in result.output
 
 
 def test_watch_accepts_coord_event_and_deduplicates_event_id(capsys):

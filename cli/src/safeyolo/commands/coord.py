@@ -17,6 +17,7 @@ import tempfile
 import time
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -32,6 +33,10 @@ from ..coord.nats_client import (
     NatsPublishOutcomeUnknown,
     NatsUnavailable,
 )
+from ..factory_contract import FactoryContractError, factories_dir, load_active_snapshot
+
+if TYPE_CHECKING:
+    from prompt_toolkit import PromptSession
 
 # One-shot CLI commands (room create, grant, revoke) each spin up a
 # fresh event loop with `asyncio.run` — cheap and no lifetime issues.
@@ -223,7 +228,7 @@ def _explain_coord_failure(exc: Exception) -> str:
         detail = "no detail reported (often a timeout misreported as a fault)"
     return (f"coord runtime unreachable: {detail}\n"
             "The NATS runtime backing coord is not answering. Check it is up "
-            "(`safeyolo coord status`), then reattach.")
+            "(`safeyolo status`), then reattach.")
 
 
 def _render_message(m: dict) -> None:
@@ -236,9 +241,13 @@ def _render_message(m: dict) -> None:
         who = m.get("sender_agent_name") or m.get("sender_agent_id") or "?"
     ts = _fmt_ts(m["sent_at"])
     style = "bold yellow" if kind == "operator" else "bold cyan"
+    intent = m.get("attention_intent")
+    intent_label = ""
+    if isinstance(intent, dict) and intent.get("mode") in {"none", "room", "targeted"}:
+        intent_label = f" attention={intent['mode']}"
     console.print(
         f"[{style}]{escape(_visible_controls(who))}[/] "
-        f"[dim]{ts} seq={m['sequence']}[/]"
+        f"[dim]{ts} seq={m['sequence']}{intent_label}[/]"
     )
     _render_body(m["body"])
     console.print()
@@ -774,6 +783,27 @@ class _ChatRuntime:
         self._loop.close()
 
 
+def _active_factory_coordinator(room: str) -> str | None:
+    """Resolve one room's applied factory coordinator without parsing prose."""
+    root = factories_dir()
+    if not root.is_dir():
+        return None
+    coordinators: set[str] = set()
+    for candidate in sorted(root.iterdir(), key=lambda item: item.name):
+        if not candidate.is_dir() or not (candidate / "active").is_file():
+            continue
+        _, _, payload = load_active_snapshot(candidate.name)
+        if payload["room"] != room:
+            continue
+        destination = payload["operator_input"]["to"]
+        coordinators.add(payload["roles"][destination]["agent"])
+    if len(coordinators) > 1:
+        raise FactoryContractError(
+            f"room {room!r} has multiple active factory coordinators; use --to explicitly"
+        )
+    return next(iter(coordinators), None)
+
+
 @coord_app.command()
 def chat(
     room: str = typer.Argument(..., help="Room name"),
@@ -784,23 +814,41 @@ def chat(
     since: int = typer.Option(
         0, "--since", help="Start displaying messages with sequence > SINCE (0 = all).",
     ),
+    to: str | None = typer.Option(
+        None,
+        "--to",
+        metavar="AGENT",
+        help="Notify only this receive-authorized room member when sending.",
+    ),
 ) -> None:
     """Attach to a room as operator. Interactive by default; --observe for read-only tail.
 
-    Interactive mode polls only when you press Enter (empty line is a
-    poll-and-print). For live scrolling of incoming messages, run a second
-    terminal pane with `safeyolo coord chat <room> --observe` — that mode
-    polls continuously and prints new messages as they arrive. Two panes:
-    interactive on one, observe on the other.
+    Interactive mode displays incoming messages while the operator types.
+    The current draft remains at the prompt. Use --observe only when a
+    read-only room tail is useful.
     """
     api.bootstrap()
+    if observe and to is not None:
+        console.print("[red]--to requires interactive mode[/]")
+        raise typer.Exit(1)
     try:
         api.join_room(room, "operator", "operator")
     except (api.NotFoundError, api.GrantError) as e:
         console.print(f"[red]{e}[/]")
         raise typer.Exit(1)
 
+    target = to
+    if not observe and target is None:
+        try:
+            target = _active_factory_coordinator(room)
+        except FactoryContractError as e:
+            console.print(f"[red]{e}[/]")
+            raise typer.Exit(1) from None
+
     console.print(f"[bold]attached to room[/] {room}  (mode={'observe' if observe else 'interactive'})")
+    if target is not None:
+        source = "--to" if to is not None else "active factory coordinator"
+        console.print(f"[dim]operator messages target {target} ({source})[/]")
     console.print("[dim]---[/]")
 
     runtime = _ChatRuntime()
@@ -818,7 +866,7 @@ def chat(
         if observe:
             _observe_loop(runtime, room, cursor)
         else:
-            _interactive_loop(runtime, room, cursor)
+            _interactive_loop(runtime, room, cursor, target=target)
     except (NatsUnavailable, CoordDataError) as e:
         console.print(f"[red]{_explain_coord_failure(e)}[/]")
         raise typer.Exit(1) from None
@@ -1017,7 +1065,40 @@ def _read_editor() -> tuple[str | None, str]:
             pass
 
 
-def _confirm_send(body: str) -> bool:
+async def _prompt_line(
+    session: PromptSession,
+    receiver: asyncio.Task,
+    prompt: str,
+) -> str:
+    """Read one editable line, but stop promptly if the receiver fails."""
+    async def stop_if_receiver_finishes() -> None:
+        try:
+            # Cancelling this short-lived monitor must not cancel the receiver.
+            await asyncio.shield(receiver)
+        except asyncio.CancelledError:
+            return
+        except BaseException as error:
+            receiver_error = error
+        else:
+            receiver_error = EOFError()
+
+        while not session.app.is_running:
+            await asyncio.sleep(0)
+        session.app.exit(exception=receiver_error)
+
+    monitor = asyncio.create_task(stop_if_receiver_finishes())
+    try:
+        return await session.prompt_async(prompt)
+    finally:
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
+
+
+async def _confirm_send(
+    session: PromptSession,
+    receiver: asyncio.Task,
+    body: str,
+) -> bool:
     """Preview a composed body and ask before it goes to the room."""
     n_bytes = len(body.encode("utf-8"))
     if n_bytes > api.MAX_BODY_BYTES:
@@ -1033,66 +1114,150 @@ def _confirm_send(body: str) -> bool:
         + Text(_visible_controls(head) + "...", style="dim")
     )
     try:
-        return input("send? [Y/n] ").strip().lower() in ("", "y", "yes")
+        answer = await _prompt_line(session, receiver, "send? [Y/n] ")
+        return answer.strip().lower() in ("", "y", "yes")
     except EOFError:
         return False
 
 
-def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
-    console.print(
-        "[dim]--- interactive (empty line polls; :paste/:p clipboard, "
-        ":edit/:e in $EDITOR, :q to quit) ---[/]"
-    )
-    console.print(
-        f"[dim]tip: for live scrolling, run `safeyolo coord chat {room} "
-        "--observe` in a second pane[/]"
+async def _receive_messages(
+    room: str,
+    cursor: int,
+    render_ready: asyncio.Event,
+) -> None:
+    """Receive and render room messages while the operator prompt is open."""
+    consecutive_failures = 0
+    while True:
+        try:
+            woke = await api.wait_for_message(
+                room,
+                "operator",
+                "operator",
+                since_sequence=cursor,
+                timeout_seconds=_OBSERVE_WAIT_SECONDS,
+                limit=1,
+                exclude_self=False,
+            )
+            if not woke["messages"]:
+                if consecutive_failures:
+                    console.print("[green]coord runtime back; receiving messages[/]")
+                    consecutive_failures = 0
+                continue
+
+            messages = []
+            read_cursor = cursor
+            while True:
+                page = await api.read_room(
+                    room,
+                    "operator",
+                    "operator",
+                    since_sequence=read_cursor,
+                    limit=api.READ_PAGE_MAX,
+                )
+                messages.extend(page["messages"])
+                read_cursor = page["next_cursor"]
+                if not page["has_more"]:
+                    break
+        except NatsUnavailable as e:
+            consecutive_failures += 1
+            if consecutive_failures == 1:
+                console.print(f"[yellow]{_explain_coord_failure(e)}[/]")
+                console.print("[dim]retrying; the prompt remains available[/]")
+            await asyncio.sleep(1.0)
+            continue
+
+        if consecutive_failures:
+            console.print("[green]coord runtime back; receiving messages[/]")
+            consecutive_failures = 0
+
+        # An external editor owns the terminal while it runs. Keep the NATS
+        # loop alive, but wait to print fetched messages until the editor exits.
+        await render_ready.wait()
+        for message in messages:
+            _render_message(message)
+        cursor = read_cursor
+
+
+async def _interactive_session(
+    room: str,
+    cursor: int,
+    *,
+    target: str | None = None,
+) -> None:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.patch_stdout import patch_stdout
+
+    session = PromptSession()
+    render_ready = asyncio.Event()
+    render_ready.set()
+    receiver = asyncio.create_task(
+        _receive_messages(room, cursor, render_ready),
+        name="coord-chat-receiver",
     )
     try:
-        while True:
-            try:
-                line = input("op> ")
-            except EOFError:
-                break
-            command = line.strip()
-            if command == ":q":
-                break
-            body: str | None = None
-            if command in _PASTE_CMDS or command in _EDIT_CMDS:
-                # Typing at the prompt routes bytes through the terminal line
-                # discipline, which eats embedded control characters. Both of
-                # these read the text from somewhere the tty never sees.
-                body, err = (
-                    _read_clipboard() if command in _PASTE_CMDS else _read_editor()
-                )
-                if body is None:
-                    console.print(f"[red]{err}[/]")
-                    body = None
-                else:
-                    body = body.rstrip("\n")
-                    if not body.strip():
-                        console.print("[dim]empty; nothing sent[/]")
-                        body = None
-                    elif not _confirm_send(body):
-                        console.print("[dim]cancelled[/]")
-                        body = None
-            elif command:
-                body = line
-            if body is not None:
+        # Rich writes ANSI styling. raw=True preserves it while prompt_toolkit
+        # moves each incoming write above the editable prompt and redraws the
+        # operator's current draft.
+        with patch_stdout(raw=True):
+            while True:
                 try:
-                    result = runtime.run(
-                        api.send(room, "operator", None, body, notify="room")
+                    line = await _prompt_line(session, receiver, "op> ")
+                except EOFError:
+                    break
+                command = line.strip()
+                if command == ":q":
+                    break
+                body: str | None = None
+                if command in _PASTE_CMDS or command in _EDIT_CMDS:
+                    # Read outside the terminal input path so control bytes in
+                    # a pasted or edited message remain intact.
+                    if command in _PASTE_CMDS:
+                        body, err = await asyncio.to_thread(_read_clipboard)
+                    else:
+                        render_ready.clear()
+                        try:
+                            body, err = await asyncio.to_thread(_read_editor)
+                        finally:
+                            render_ready.set()
+                    if body is None:
+                        console.print(f"[red]{err}[/]")
+                    else:
+                        body = body.rstrip("\n")
+                        if not body.strip():
+                            console.print("[dim]empty; nothing sent[/]")
+                            body = None
+                        elif not await _confirm_send(session, receiver, body):
+                            console.print("[dim]cancelled[/]")
+                            body = None
+                elif command:
+                    body = line
+                if body is None:
+                    continue
+                try:
+                    result = await api.send(
+                        room,
+                        "operator",
+                        None,
+                        body,
+                        notify=[target] if target is not None else "room",
+                    )
+                    intent = result.get("attention_intent")
+                    mode = intent.get("mode") if isinstance(intent, dict) else None
+                    intent_detail = (
+                        f"attention={mode}{' target=' + target if mode == 'targeted' and target else ''}"
+                        if mode in {"none", "room", "targeted"}
+                        else "attention intent unavailable"
                     )
                     if result["attention_status"] == "pending":
-                        console.print(
-                            "[yellow]message accepted; attention delivery is pending[/]"
-                        )
+                        console.print(f"[yellow]message accepted; {intent_detail}; delivery is pending[/]")
                     elif result["attention_status"] == "lost":
                         console.print(
-                            "[red]message accepted, but retention removed it "
-                            "before attention materialization; its attention is lost[/]"
+                            f"[red]message accepted; {intent_detail}, but retention "
+                            "removed it before attention materialization; its attention "
+                            "is lost[/]"
                         )
                     else:
-                        console.print("[dim]message accepted[/]")
+                        console.print(f"[dim]message accepted; {intent_detail}[/]")
                 except ValueError as e:
                     console.print(f"[red]{e}[/]")
                 except api.GrantError as e:
@@ -1106,31 +1271,28 @@ def _interactive_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
                         "idempotency; inspect retained room history before "
                         "deciding whether to send another message.[/]"
                     )
-                    continue
                 except (NatsUnavailable, CoordDataError) as e:
                     console.print(f"[red]{_explain_coord_failure(e)}[/]")
-                    console.print(
-                        "[red]message was not accepted; it was not sent[/]"
-                    )
-                    continue
-            while True:
-                try:
-                    page = runtime.run(api.read_room(
-                        room, "operator", "operator",
-                        since_sequence=cursor, limit=api.READ_PAGE_MAX))
-                except (NatsUnavailable, CoordDataError) as e:
-                    # Keep the prompt alive: the operator can retry with an
-                    # empty line once the runtime is back, without losing the
-                    # session or their cursor.
-                    console.print(f"[red]{_explain_coord_failure(e)}[/]")
-                    break
-                for m in page["messages"]:
-                    _render_message(m)
-                cursor = page["next_cursor"]
-                if not page["has_more"]:
-                    break
+                    console.print("[red]message was not accepted; it was not sent[/]")
+    finally:
+        receiver.cancel()
+        await asyncio.gather(receiver, return_exceptions=True)
+
+
+def _interactive_loop(
+    runtime: _ChatRuntime,
+    room: str,
+    cursor: int,
+    *,
+    target: str | None = None,
+) -> None:
+    console.print(
+        "[dim]--- interactive (live messages; :paste/:p clipboard, "
+        ":edit/:e in $EDITOR, :q to quit) ---[/]"
+    )
+    try:
+        runtime.run(_interactive_session(room, cursor, target=target))
     except KeyboardInterrupt:
-        # Ctrl-C is the normal way to detach from the interactive chat loop.
         pass
     console.print("\n[dim]detached[/]")
 

@@ -22,7 +22,18 @@ _BASELINE_SETUP = r"""
 import asyncio
 import inspect
 import json
+import os
 import sqlite3
+
+from safeyolo.coord import nats_runtime as nr
+
+# A fixed-port revision cannot read the candidate-owned dynamic endpoint.
+# Point that revision at the selected ports before importing its API module.
+# A dynamic-port revision inherits the test instance and reads its endpoint
+# record. Keep its production constants unchanged so endpoint validation works.
+if not hasattr(nr, "_test_ports_from_pidfile"):
+    nr.NATS_CLIENT_PORT = int(os.environ["SAFEYOLO_NATS_TEST_CLIENT_PORT"])
+    nr.NATS_MONITOR_PORT = int(os.environ["SAFEYOLO_NATS_TEST_MONITOR_PORT"])
 
 from safeyolo.coord import api, store
 
@@ -92,6 +103,12 @@ def test_current_master_state_upgrades_through_candidate(
     nr.start_server(ready_timeout=8.0)
     nats_client.reset_for_tests()
     environment = os.environ.copy()
+    active = nr._read_pidfile()
+    assert active is not None
+    environment["SAFEYOLO_NATS_TEST_CLIENT_PORT"] = str(active["client_port"])
+    environment["SAFEYOLO_NATS_TEST_MONITOR_PORT"] = str(
+        active["monitor_port"]
+    )
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(baseline / "cli" / "src"), str(baseline)]
     )

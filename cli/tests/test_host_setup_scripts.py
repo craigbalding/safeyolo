@@ -635,6 +635,87 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     assert command.count("coord-mcp-bootstrap: mcp+httpx install") == 1
 
 
+def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    contract = "# Issue owner\n\nOwn the exact delegated issue.\n"
+    snapshot = {
+        "schema": "safeyolo.factory/v1",
+        "name": "backlog",
+        "room": "backlog",
+        "roles": {
+            "coordinator": {
+                "agent": "relay",
+                "contract": "coordinator.md",
+                "contract_bytes": 6,
+                "contract_sha256": "0" * 64,
+                "contract_text": "unused",
+            },
+            "owner": {
+                "agent": "test-agent",
+                "contract": "owner.md",
+                "contract_bytes": len(contract.encode()),
+                "contract_sha256": __import__("hashlib").sha256(contract.encode()).hexdigest(),
+                "contract_text": contract,
+            },
+            "reviewer": {
+                "agent": "lens",
+                "contract": "reviewer.md",
+                "contract_bytes": 6,
+                "contract_sha256": "0" * 64,
+                "contract_text": "unused",
+            },
+        },
+        "handoffs": [
+            {
+                "request": "TASK",
+                "from": "coordinator",
+                "to": "owner",
+                "responses": ["DONE", "BLOCKED", "FAILED"],
+            },
+            {
+                "request": "REVIEW_READY",
+                "from": "owner",
+                "to": "reviewer",
+                "responses": ["READY", "CHANGES_REQUIRED", "BLOCKED"],
+            },
+        ],
+        "operator_input": {
+            "to": "coordinator",
+            "types": ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"],
+        },
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot))
+
+    _run_setup(
+        "codex-coord-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        extra_env={
+            "SAFEYOLO_CODEX_FACTORY_SNAPSHOT": str(snapshot_path),
+            "SAFEYOLO_CODEX_FACTORY_ROLE": "owner",
+        },
+    )
+
+    config = json.loads((agent_home / ".safeyolo/codex-coord-supervisor.json").read_text())
+    assert config["agent_name"] == "test-agent"
+    assert config["rooms"] == ["backlog"]
+    assert config["coordinators"] == ["relay"]
+    assert config["factory"]["role"] == "owner"
+    assert config["factory"]["roles"] == {
+        "coordinator": "relay",
+        "owner": "test-agent",
+        "reviewer": "lens",
+    }
+    assert config["factory"]["operator_input"] == snapshot["operator_input"]
+    instructions = (agent_home / ".safeyolo/AGENTS.md").read_text()
+    assert instructions.startswith(BASELINE_SOURCE.read_text().rstrip())
+    assert instructions.endswith(contract.lstrip())
+
+
 def test_normal_codex_setup_keeps_interactive_entrypoint(tmp_path: Path) -> None:
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"
