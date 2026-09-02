@@ -68,6 +68,8 @@ class _OptionsBoundary:
     network_guard_block = False
     pattern_block_request = False
     pattern_block_response = False
+    pattern_block_websocket_request = False
+    pattern_block_websocket_response = False
 
     def update(self, **kwargs): ...
 
@@ -294,6 +296,8 @@ class TestGetModes:
             mock_ctx.options.network_guard_block = True
             mock_ctx.options.pattern_block_request = False
             mock_ctx.options.pattern_block_response = False
+            mock_ctx.options.pattern_block_websocket_request = False
+            mock_ctx.options.pattern_block_websocket_response = False
 
             handler = _make_handler(handler_class, "GET", "/modes")
             handler.do_GET()
@@ -1870,5 +1874,8 @@ class TestAdminAPIAddon:
         assert AdminRequestHandler.MODE_SWITCHABLE["credential-guard"] == ["credguard_block"]
         assert AdminRequestHandler.MODE_SWITCHABLE["network-guard"] == ["network_guard_block"]
         assert AdminRequestHandler.MODE_SWITCHABLE["pattern-scanner"] == [
-            "pattern_block_request", "pattern_block_response",
+            "pattern_block_request",
+            "pattern_block_response",
+            "pattern_block_websocket_request",
+            "pattern_block_websocket_response",
         ]
