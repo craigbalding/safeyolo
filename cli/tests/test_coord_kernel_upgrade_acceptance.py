@@ -22,7 +22,16 @@ _BASELINE_SETUP = r"""
 import asyncio
 import inspect
 import json
+import os
 import sqlite3
+
+from safeyolo.coord import nats_runtime as nr
+
+# The historical revision predates the internal dynamic-port test contract.
+# Point its real nats-py client at the candidate-owned server before importing
+# the historical API module. Production defaults in both revisions stay intact.
+nr.NATS_CLIENT_PORT = int(os.environ["SAFEYOLO_NATS_TEST_CLIENT_PORT"])
+nr.NATS_MONITOR_PORT = int(os.environ["SAFEYOLO_NATS_TEST_MONITOR_PORT"])
 
 from safeyolo.coord import api, store
 
@@ -92,6 +101,12 @@ def test_current_master_state_upgrades_through_candidate(
     nr.start_server(ready_timeout=8.0)
     nats_client.reset_for_tests()
     environment = os.environ.copy()
+    active = nr._read_pidfile()
+    assert active is not None
+    environment["SAFEYOLO_NATS_TEST_CLIENT_PORT"] = str(active["client_port"])
+    environment["SAFEYOLO_NATS_TEST_MONITOR_PORT"] = str(
+        active["monitor_port"]
+    )
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(baseline / "cli" / "src"), str(baseline)]
     )

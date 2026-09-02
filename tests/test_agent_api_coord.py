@@ -9,6 +9,7 @@ via the addon (not just via the underlying coord.api).
 import asyncio
 import json
 import os
+import secrets
 from unittest.mock import patch
 
 import pytest
@@ -47,6 +48,7 @@ def isolated_state(tmp_path, monkeypatch, _binary_cache):
     from safeyolo.coord import nats_runtime as nr
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path / "coord"))
+    monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", secrets.token_hex(8))
     (tmp_path / "cfg").mkdir()
     dest = nr.nats_binary_path()
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +59,10 @@ def isolated_state(tmp_path, monkeypatch, _binary_cache):
     # prior test doesn't leak into this event loop.
     nats_client.reset_for_tests()
     yield tmp_path
-    nr.stop_server()
+    try:
+        nr.stop_server()
+    finally:
+        nr.nats_test_endpoints_path().unlink(missing_ok=True)
 
 
 def _await(coro):
