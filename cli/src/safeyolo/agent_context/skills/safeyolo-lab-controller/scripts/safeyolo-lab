@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+resolved_script=$(readlink -f "${BASH_SOURCE[0]}") || {
+  printf 'Unable to resolve the safeyolo-lab command path\n' >&2
+  exit 2
+}
+script_dir=$(cd "$(dirname "$resolved_script")" && pwd)
+skill_dir=$(cd "$script_dir/.." && pwd)
+profile="$skill_dir/assets/tmux-lab.conf"
+controller_runner="$script_dir/run-controller.sh"
+layout_helper="$script_dir/adapt-layout.sh"
+annotation_viewer="$script_dir/show-annotation.sh"
+surface_switcher="$script_dir/switch-surface.sh"
+questions_helper="$script_dir/lesson-questions.sh"
+sources_helper="$script_dir/lesson-sources.sh"
+startup_instructions="$skill_dir/assets/startup-instructions.md"
+session=lab
+
+usage() {
+  cat <<'EOF'
+Usage: safeyolo-lab
+
+Run this command once from /home/agent after `safeyolo agent shell AGENT`.
+It enters the guest lab tmux and starts the controller.
+
+On a later reconnect, run the same command. It attaches to the existing lab.
+It does not start a second controller.
+
+The same command works in a direct terminal and inside a host tmux pane.
+The guest tmux prefix is C-a. Detach with C-a d.
+EOF
+}
+
+case "${1:-}" in
+  '') ;;
+  -h|--help)
+    [ "$#" -eq 1 ] || {
+      usage >&2
+      exit 2
+    }
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+if ! command -v tmux >/dev/null 2>&1; then
+  printf 'tmux is not installed in this SafeYolo guest\n' >&2
+  exit 127
+fi
+if [ ! -r "$profile" ]; then
+  printf 'The tmux profile is not readable: %s\n' "$profile" >&2
+  exit 2
+fi
+if [ ! -x "$controller_runner" ]; then
+  printf 'The controller helper is not executable: %s\n' "$controller_runner" >&2
+  exit 126
+fi
+if [ ! -x "$layout_helper" ]; then
+  printf 'The layout helper is not executable: %s\n' "$layout_helper" >&2
+  exit 126
+fi
+if [ ! -x "$annotation_viewer" ]; then
+  printf 'The annotation viewer is not executable: %s\n' "$annotation_viewer" >&2
+  exit 126
+fi
+if [ ! -x "$surface_switcher" ]; then
+  printf 'The surface switcher is not executable: %s\n' "$surface_switcher" >&2
+  exit 126
+fi
+if [ ! -x "$questions_helper" ]; then
+  printf 'The lesson question helper is not executable: %s\n' "$questions_helper" >&2
+  exit 126
+fi
+if [ ! -x "$sources_helper" ]; then
+  printf 'The lesson source helper is not executable: %s\n' "$sources_helper" >&2
+  exit 126
+fi
+if [ ! -r "$startup_instructions" ]; then
+  printf 'The lab startup instructions are not readable: %s\n' "$startup_instructions" >&2
+  exit 2
+fi
+if [ -n "${TMUX:-}" ]; then
+  if tmux display-message -p '#{socket_path}' >/dev/null 2>&1; then
+    printf 'This shell is already inside guest tmux. Run safeyolo-lab only from the pre-lab guest shell.\n' >&2
+    exit 2
+  fi
+  printf 'Warning: the guest inherited an unusable host tmux identity. The launcher will ignore it.\n' >&2
+  unset TMUX TMUX_PANE
+fi
+
+if tmux has-session -t "$session" 2>/dev/null; then
+  tmux source-file "$profile" || exit
+  tmux set-option -g @safeyolo_lab_layout_script "$layout_helper" || exit
+  tmux set-option -g @safeyolo_lab_annotation_script "$annotation_viewer" || exit
+  tmux set-option -g @safeyolo_lab_surface_script "$surface_switcher" || exit
+  tmux set-option -g @safeyolo_lab_questions_script "$questions_helper" || exit
+  tmux set-option -g @safeyolo_lab_sources_script "$sources_helper" || exit
+  tmux attach-session -t "$session"
+  exit $?
+fi
+
+if tmux list-sessions >/dev/null 2>&1; then
+  tmux source-file "$profile" || exit
+  tmux new-session -d -s "$session" || exit
+else
+  tmux -f "$profile" new-session -d -s "$session" || exit
+fi
+
+tmux set-option -g @safeyolo_lab_layout_script "$layout_helper" || exit
+tmux set-option -g @safeyolo_lab_annotation_script "$annotation_viewer" || exit
+tmux set-option -g @safeyolo_lab_surface_script "$surface_switcher" || exit
+tmux set-option -g @safeyolo_lab_questions_script "$questions_helper" || exit
+tmux set-option -g @safeyolo_lab_sources_script "$sources_helper" || exit
+
+controller_pane=$(tmux display-message -p -t "$session:0.0" '#{pane_id}')
+if [ -z "$controller_pane" ]; then
+  printf 'The lab session exists, but its controller pane is unavailable\n' >&2
+  exit 2
+fi
+
+tmux set-option -p -t "$controller_pane" @safeyolo_lab_role controller || true
+tmux select-pane -t "$controller_pane" -T controller || true
+controller_line=$(printf '%q --startup-file %q' "$controller_runner" "$startup_instructions")
+tmux send-keys -t "$controller_pane" -l -- "$controller_line" || {
+  printf 'The lab session exists, but the controller command could not be injected\n' >&2
+  exit 2
+}
+tmux send-keys -t "$controller_pane" Enter || {
+  printf 'The lab session exists, but the controller command could not be started\n' >&2
+  exit 2
+}
+
+tmux attach-session -t "$session"

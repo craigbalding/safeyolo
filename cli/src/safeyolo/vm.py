@@ -980,31 +980,30 @@ def prepare_config_share(
 
     # SafeYolo-owned agent guidance is served from the read-only per-run share,
     # not copied into the persistent, agent-writable home. Host setup installs
-    # only the native discovery symlink. This makes the skill version match the
-    # CLI that starts the sandbox without rerunning an arbitrary host script.
-    skill_source = Path(__file__).parent / "agent_context" / "skills" / "safeyolo"
-    skill_parent = share_dir / "skills"
-    skill_target = skill_parent / "safeyolo"
-    if not (skill_source / "SKILL.md").is_file():
-        raise VMError(f"Bundled SafeYolo skill is missing from {skill_source}")
-    skill_parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(tempfile.mkdtemp(prefix=".safeyolo-", dir=skill_parent))
-    backup = skill_parent / f".safeyolo-old-{uuid.uuid4().hex}"
+    # only native discovery symlinks. Replace the complete managed skill tree
+    # so additions and removals take effect on the next run without leaving
+    # stale skills behind.
+    skills_source = Path(__file__).parent / "agent_context" / "skills"
+    skills_target = share_dir / "skills"
+    if not (skills_source / "safeyolo" / "SKILL.md").is_file():
+        raise VMError(f"Bundled SafeYolo skill is missing from {skills_source}")
+    temporary = Path(tempfile.mkdtemp(prefix=".skills-", dir=share_dir))
+    backup = share_dir / f".skills-old-{uuid.uuid4().hex}"
     moved_existing = False
     replacement_complete = False
     try:
-        shutil.copytree(skill_source, temporary, dirs_exist_ok=True)
+        shutil.copytree(skills_source, temporary, dirs_exist_ok=True)
         # mkdtemp creates the root as 0700. The config share is read-only in
         # the guest, but the unprivileged agent still needs to traverse it.
         temporary.chmod(0o755)
-        if skill_target.exists() or skill_target.is_symlink():
-            skill_target.rename(backup)
+        if skills_target.exists() or skills_target.is_symlink():
+            skills_target.rename(backup)
             moved_existing = True
-        temporary.rename(skill_target)
+        temporary.rename(skills_target)
         replacement_complete = True
     except Exception:
-        if moved_existing and not skill_target.exists() and backup.exists():
-            backup.rename(skill_target)
+        if moved_existing and not skills_target.exists() and backup.exists():
+            backup.rename(skills_target)
         raise
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
