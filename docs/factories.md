@@ -31,6 +31,7 @@ request = "TASK"
 from = "coordinator"
 to = "owner"
 responses = ["DONE", "BLOCKED", "FAILED"]
+response_to = ["coordinator"]
 ```
 
 Contract paths are explicit and relative to the TOML file. Every role and
@@ -40,6 +41,10 @@ meaning, but its first line must be exactly
 task. Other request and response bodies must begin with their exact declared
 type. Canonical envelope identity and the configured room—not names written in
 the body—authorize a handoff.
+
+`response_to` names every role that the destination must notify when it sends a
+declared response. The source role must be included. Old v1 contracts and
+snapshots without this field retain the original source-only response route.
 
 `operator_input` is the one explicit direction edge into the graph. It admits
 bounded natural-language messages only when the canonical sender kind is
@@ -90,12 +95,11 @@ what `ACTIVATE`, `RESUME`, `NEXT`, and `PRIORITY` mean. `factory check` prints
 the source path and hash for every role contract. Read each file directly;
 SafeYolo does not generate an interpretation of contract text.
 
-For the shipped backlog factory, `ACTIVATE` and `RESUME` permit intake. They do
-not select an issue by themselves. A suitable trusted brief can authorize
-standing eligible work for proactive delegation. If no suitable brief exists,
-the coordinator waits for an explicit `NEXT issue=#...`. This explicit-`NEXT`
-mode is valid and is not a factory failure. A brief must state whether `NEXT`
-and `PRIORITY` can override its standing filters.
+For the shipped backlog factory, `ACTIVATE` and `RESUME` start continuous
+intake. Relay proactively discovers and prioritizes work in the
+operator-authorized repositories. `NEXT` and `PRIORITY` can override ordinary
+ordering for eligible work. A trusted brief may refine standing priorities or
+constraints, but the backlog factory does not require one.
 
 ## Check, approve, and run
 
@@ -148,8 +152,9 @@ safeyolo factory doctor backlog
 
 The doctor reports the current canonical brief as `state=none` or as its exact
 revision and content hash. It does not print or interpret the brief body. When
-the brief is absent, the doctor reports the valid explicit-`NEXT` mode. The
-output also gives the exact read and optimistic-concurrency update commands:
+the brief is absent, the doctor reports the intake behavior bound by the shipped
+coordinator contract. The output also gives the exact read and
+optimistic-concurrency update commands:
 
 ```sh
 safeyolo coord brief show backlog

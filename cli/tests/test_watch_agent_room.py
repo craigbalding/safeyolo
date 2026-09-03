@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 from pathlib import Path
@@ -210,3 +211,70 @@ def test_unknown_events_are_opt_in(watcher_module, capsys):
 )
 def test_renders_supervisor_and_stderr_events(watcher_module, event, label, text):
     assert watcher_module._event_line(event, 240) == (label, text)
+
+
+def test_renders_oversize_command_with_explicit_middle_snip(watcher_module):
+    label, text = watcher_module._event_line(
+        {
+            "type": "safeyolo.codex.oversize",
+            "original_type": "item.completed",
+            "original_bytes": 300000,
+            "omitted_middle_bytes": 38000,
+            "sha256": "a" * 64,
+            "summary": {
+                "type": "command_execution",
+                "command": "rg -n broad-search",
+            },
+            "head": "first bytes",
+            "tail": "last bytes",
+        },
+        240,
+    )
+
+    assert label == "TOOL"
+    assert "completed command rg -n broad-search" in text
+    assert "middle snipped" in text
+    assert "original_bytes=300000" in text
+    assert "omitted_bytes=38000" in text
+    assert "sha256=" + "a" * 64 in text
+
+
+@pytest.mark.asyncio
+async def test_nats_loss_is_visible_and_retries_from_the_same_cursor(
+    watcher_module,
+    monkeypatch,
+    capsys,
+):
+    waits = []
+
+    async def read_room(*_args, **_kwargs):
+        return {"messages": [], "next_cursor": 7, "has_more": False}
+
+    async def wait_for_message(*_args, **kwargs):
+        waits.append(kwargs["since_sequence"])
+        if len(waits) == 1:
+            raise watcher_module.NatsUnavailable("connection refused")
+        raise asyncio.CancelledError
+
+    async def no_delay(_seconds):
+        return None
+
+    monkeypatch.setattr(watcher_module.api, "read_room", read_room)
+    monkeypatch.setattr(watcher_module.api, "wait_for_message", wait_for_message)
+    monkeypatch.setattr(watcher_module.asyncio, "sleep", no_delay)
+
+    with pytest.raises(asyncio.CancelledError):
+        await watcher_module._watch(
+            "lens-agent",
+            0,
+            240,
+            "rendered",
+            False,
+            False,
+            False,
+            False,
+        )
+
+    assert waits == [7, 7]
+    output = capsys.readouterr().out
+    assert "CONN    lost NATS unavailable; cursor=7 retrying in 1s" in output

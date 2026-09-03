@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from safeyolo.coord import api
+from safeyolo.coord.nats_client import NatsUnavailable
 from safeyolo.core.audit_schema import sanitize_for_log
 
 SECRET_ASSIGNMENT = re.compile(
@@ -86,6 +87,57 @@ def _event_line(
     show_unknown: bool = False,
 ) -> tuple[str, str] | None:
     kind = event.get("type")
+    if kind == "safeyolo.codex.oversize":
+        original_type = str(event.get("original_type", "unknown"))
+        summary = event.get("summary")
+        detail = original_type
+        label = "EVENT"
+        if isinstance(summary, dict):
+            item_type = summary.get("type")
+            if item_type in {"command_execution", "local_shell_call"}:
+                phase = original_type.removeprefix("item.")
+                detail = f"{phase} command {summary.get('command', '')}".rstrip()
+                label = "TOOL"
+            elif item_type == "mcp_tool_call":
+                phase = original_type.removeprefix("item.")
+                detail = (
+                    f"{phase} {summary.get('server', 'mcp')}."
+                    f"{summary.get('tool', 'tool')} status={summary.get('status', '?')}"
+                )
+                label = "TOOL"
+            elif item_type == "agent_message":
+                detail = str(summary.get("text", ""))
+                label = "AGENT"
+            elif item_type in {"reasoning", "agent_reasoning"}:
+                detail = str(summary.get("text", ""))
+                label = "THINK"
+            elif item_type in {"function_call", "custom_tool_call"}:
+                detail = (
+                    f"{original_type.removeprefix('item.')} "
+                    f"{summary.get('name') or summary.get('tool') or 'tool'}"
+                )
+                label = "TOOL"
+            elif item_type in {"web_search", "web_search_call"}:
+                detail = f"{original_type.removeprefix('item.')} web_search"
+                label = "TOOL"
+            elif item_type in {"file_change", "file_write", "apply_patch"}:
+                detail = f"{original_type.removeprefix('item.')} {item_type}"
+                label = "TOOL"
+            elif original_type == "safeyolo.codex.stderr":
+                detail = str(summary.get("text", ""))
+                label = "STDERR"
+            elif original_type == "safeyolo.supervisor":
+                action = str(summary.get("event", "event"))
+                detail = f"{action} {summary.get('message', '')}".rstrip()
+                label = "ERROR" if action in {"error", "crashed"} else "SUPERV"
+        marker = (
+            "[middle snipped; "
+            f"original_bytes={event.get('original_bytes', '?')} "
+            f"omitted_bytes={event.get('omitted_middle_bytes', '?')} "
+            f"sha256={event.get('sha256', '?')}]"
+        )
+        detail_limit = max(1, limit - len(marker) - 1)
+        return label, f"{_clean(detail, detail_limit, redact=redact)} {marker}"
     if kind == "safeyolo.codex.stderr":
         return "STDERR", _clean(event.get("text", ""), limit, redact=redact)
     if kind == "safeyolo.supervisor":
@@ -205,6 +257,15 @@ def _render(
     print(f"[{_time(message)}] {shown_label} {text}", flush=True)
 
 
+def _connection_line(state: str, detail: str, *, colour: bool) -> None:
+    label = f"{'CONN':7}"
+    if colour:
+        code = "31;1" if state == "lost" else "32;1"
+        label = f"\033[{code}m{label}\033[0m"
+    now = datetime.now(UTC).strftime("%H:%M:%SZ")
+    print(f"[{now}] {label} {state} {detail}".rstrip(), flush=True)
+
+
 async def _watch(
     room: str,
     history_count: int,
@@ -215,13 +276,30 @@ async def _watch(
     show_unknown: bool,
     once: bool,
 ) -> None:
-    page = await api.read_room(
-        room,
-        "operator",
-        "operator",
-        since_sequence=0,
-        limit=api.READ_PAGE_MAX,
-    )
+    failures = 0
+    while True:
+        try:
+            page = await api.read_room(
+                room,
+                "operator",
+                "operator",
+                since_sequence=0,
+                limit=api.READ_PAGE_MAX,
+            )
+            break
+        except NatsUnavailable as exc:
+            if once:
+                raise
+            failures += 1
+            delay = min(2 ** (failures - 1), 30)
+            _connection_line(
+                "lost",
+                f"NATS unavailable; retrying in {delay}s: {_clean(exc, limit)}",
+                colour=colour,
+            )
+            await asyncio.sleep(delay)
+    if failures:
+        _connection_line("recovered", "retained history is readable", colour=colour)
     history: deque[dict[str, Any]] = deque(page["messages"], maxlen=history_count)
     for message in history:
         _render(message, limit, mode, colour, redact, show_unknown)
@@ -232,30 +310,46 @@ async def _watch(
         print(f"--- watching {room}; Ctrl-C stops ---", flush=True)
 
     while True:
-        woke = await api.wait_for_message(
-            room,
-            "operator",
-            "operator",
-            since_sequence=cursor,
-            timeout_seconds=300,
-            limit=1,
-            exclude_self=False,
-        )
-        if not woke["messages"]:
-            continue
-        while True:
-            page = await api.read_room(
+        try:
+            woke = await api.wait_for_message(
                 room,
                 "operator",
                 "operator",
                 since_sequence=cursor,
-                limit=api.READ_PAGE_MAX,
+                timeout_seconds=300,
+                limit=1,
+                exclude_self=False,
             )
-            for message in page["messages"]:
-                _render(message, limit, mode, colour, redact, show_unknown)
-            cursor = page["next_cursor"]
-            if not page["has_more"]:
-                break
+            if not woke["messages"]:
+                if failures:
+                    _connection_line("recovered", "room wait is healthy", colour=colour)
+                    failures = 0
+                continue
+            while True:
+                page = await api.read_room(
+                    room,
+                    "operator",
+                    "operator",
+                    since_sequence=cursor,
+                    limit=api.READ_PAGE_MAX,
+                )
+                for message in page["messages"]:
+                    _render(message, limit, mode, colour, redact, show_unknown)
+                cursor = page["next_cursor"]
+                if not page["has_more"]:
+                    break
+            if failures:
+                _connection_line("recovered", f"cursor={cursor}", colour=colour)
+                failures = 0
+        except NatsUnavailable as exc:
+            failures += 1
+            delay = min(2 ** (failures - 1), 30)
+            _connection_line(
+                "lost",
+                f"NATS unavailable; cursor={cursor} retrying in {delay}s: {_clean(exc, limit)}",
+                colour=colour,
+            )
+            await asyncio.sleep(delay)
 
 
 def main() -> int:

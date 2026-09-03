@@ -51,7 +51,6 @@ BASE_URL = os.environ.get(
 TOKEN_PATH = Path(os.environ.get("SAFEYOLO_COORD_TOKEN_PATH", "/app/agent_token"))
 _COORD_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _TASK_BODY_HEADER_RE = re.compile(r"(?m)^TASK(?:\s|$)")
-_TASK_BODY_FIELD_RE = re.compile(r"(?m)(?:^|[ \t])(?:task|assignee)[ \t]*=")
 
 
 def _token() -> str:
@@ -150,6 +149,21 @@ async def send(
     `room`, or a list of agent names; addressing affects interruption, not
     room-history visibility.
     """
+    return await _send_canonical(
+        room_name,
+        body,
+        declared_content_type,
+        notify,
+    )
+
+
+async def _send_canonical(
+    room_name: str,
+    body: str,
+    declared_content_type: str,
+    notify: str | list[str],
+) -> dict[str, Any]:
+    """Run the one canonical Coord send operation for all producer helpers."""
     return await _post(
         f"/api/coord/rooms/{room_name}/send",
         {
@@ -184,21 +198,17 @@ async def send_task(
         raise ValueError("body is missing")
     if _TASK_BODY_HEADER_RE.search(body):
         raise ValueError("body contains a duplicate TASK header")
-    if _TASK_BODY_FIELD_RE.search(body):
-        raise ValueError("body contains a duplicate required TASK field")
     message = f"TASK task={task_id} assignee={assignee}\n\n{body}"
-    result = await _post(
-        f"/api/coord/rooms/{room_name}/send",
-        {
-            "body": message,
-            "declared_content_type": "text/markdown",
-            "notify": [assignee],
-        },
+    result = await _send_canonical(
+        room_name,
+        message,
+        "text/markdown",
+        [assignee],
     )
     sequence = result.get("sequence") if isinstance(result, dict) else None
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
         raise RuntimeError("coord task send returned no canonical room sequence")
-    return {"send_result": result, "room_sequence": sequence}
+    return result
 
 
 @mcp.tool()

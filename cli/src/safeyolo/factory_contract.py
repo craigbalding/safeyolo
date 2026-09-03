@@ -41,6 +41,7 @@ class Handoff:
     source: str
     destination: str
     responses: tuple[str, ...]
+    response_to: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ class FactoryContract:
                     "from": handoff.source,
                     "to": handoff.destination,
                     "responses": list(handoff.responses),
+                    "response_to": list(handoff.response_to),
                 }
                 for handoff in self.handoffs
             ],
@@ -183,7 +185,16 @@ def load_factory_file(path: Path) -> FactoryContract:
     inbound_requests: set[tuple[str, str]] = set()
     for index, raw_handoff in enumerate(raw_handoffs):
         label = f"handoffs[{index}]"
-        _exact_keys(label, raw_handoff, {"request", "from", "to", "responses"})
+        if isinstance(raw_handoff, dict) and "response_to" not in raw_handoff:
+            raw_handoff = {
+                **raw_handoff,
+                "response_to": [raw_handoff.get("from")],
+            }
+        _exact_keys(
+            label,
+            raw_handoff,
+            {"request", "from", "to", "responses", "response_to"},
+        )
         request = _message_type(f"{label}.request", raw_handoff["request"])
         source_role = _simple_name(f"{label}.from", raw_handoff["from"])
         destination_role = _simple_name(f"{label}.to", raw_handoff["to"])
@@ -197,17 +208,36 @@ def load_factory_file(path: Path) -> FactoryContract:
         responses = tuple(_message_type(f"{label}.responses", item) for item in responses_raw)
         if len(set(responses)) != len(responses):
             raise FactoryContractError(f"{label}.responses contains a duplicate")
+        response_to_raw = raw_handoff["response_to"]
+        if not isinstance(response_to_raw, list) or not response_to_raw:
+            raise FactoryContractError(f"{label}.response_to must be a non-empty array")
+        response_to = tuple(
+            _simple_name(f"{label}.response_to", item) for item in response_to_raw
+        )
+        if len(set(response_to)) != len(response_to):
+            raise FactoryContractError(f"{label}.response_to contains a duplicate")
+        if any(role not in role_names for role in response_to):
+            raise FactoryContractError(f"{label}.response_to references an unknown role")
+        if source_role not in response_to:
+            raise FactoryContractError(f"{label}.response_to must include the source role")
         route_key = (destination_role, request)
         if route_key in inbound_requests:
             raise FactoryContractError(f"role {destination_role!r} has more than one inbound {request} request")
         inbound_requests.add(route_key)
-        handoffs.append(Handoff(request, source_role, destination_role, responses))
+        handoffs.append(
+            Handoff(request, source_role, destination_role, responses, response_to)
+        )
 
     # A token cannot be both a request and a response for the same receiving
     # role; that would make terminal handling depend on message history.
     for role in roles:
         requests = {handoff.request for handoff in handoffs if handoff.destination == role.name}
-        responses = {response for handoff in handoffs if handoff.source == role.name for response in handoff.responses}
+        responses = {
+            response
+            for handoff in handoffs
+            if role.name in handoff.response_to
+            for response in handoff.responses
+        }
         overlap = requests & responses
         if overlap:
             raise FactoryContractError(f"role {role.name!r} has ambiguous request/response type {sorted(overlap)[0]!r}")
@@ -398,7 +428,15 @@ def _validate_snapshot_payload(payload: dict[str, Any], *, expected_name: str) -
     handoff_edges = []
     handoff_types = set()
     for handoff in handoffs:
-        _exact_keys("snapshot handoff", handoff, {"request", "from", "to", "responses"})
+        if not isinstance(handoff, dict):
+            raise FactoryContractError("snapshot handoff must be an object")
+        handoff_keys = set(handoff)
+        required_handoff_keys = {"request", "from", "to", "responses"}
+        if handoff_keys not in (
+            required_handoff_keys,
+            required_handoff_keys | {"response_to"},
+        ):
+            raise FactoryContractError("snapshot handoff has an invalid shape")
         request = _message_type("snapshot request", handoff["request"])
         if handoff["from"] not in roles or handoff["to"] not in roles:
             raise FactoryContractError("snapshot handoff references an unknown role")
@@ -409,6 +447,15 @@ def _validate_snapshot_payload(payload: dict[str, Any], *, expected_name: str) -
             raise FactoryContractError("snapshot handoff responses are invalid")
         for response in responses:
             handoff_types.add(_message_type("snapshot response", response))
+        response_to = handoff.get("response_to", [handoff["from"]])
+        if (
+            not isinstance(response_to, list)
+            or not response_to
+            or len(set(response_to)) != len(response_to)
+            or any(role not in roles for role in response_to)
+            or handoff["from"] not in response_to
+        ):
+            raise FactoryContractError("snapshot handoff response_to is invalid")
 
     operator_input = _exact_keys(
         "snapshot operator_input",

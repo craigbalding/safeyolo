@@ -29,7 +29,7 @@ _MESSAGE_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)=([^\s=]+)")
 _NON_CORRELATION_FIELDS = {"assignee", "attention_id"}
 _MAX_CANONICAL_BODY_BYTES = 64 * 1024
 _BACKLOG_COORDINATOR_CONTRACT_SHA256 = (
-    "4d5e34a03298333bd96486c6dd468a2057b259e4296109c53e3bd770a99b87e3"
+    "ee9740a2f54202dfb11e81d089612a9a66acb17d7dc0d75e63bf30448844a182"
 )
 _STATE_KEYS = {
     "version",
@@ -289,7 +289,7 @@ def _inspect_brief(  # DOC: docs/factories.md
         if payload["name"] == "backlog" and "NEXT" in operator_input["types"]:
             operator_role = payload["roles"][operator_input["to"]]
             if operator_role["contract_sha256"] == _BACKLOG_COORDINATOR_CONTRACT_SHA256:
-                mode = " explicit-NEXT-mode=valid"
+                mode = " role-contract-intake=valid"
         checks.append(
             FactoryDoctorCheck(
                 "PASS",
@@ -551,8 +551,15 @@ def _inspect_host_script(checks: list[FactoryDoctorCheck], label: str, metadata:
 
 def _expected_supervisor_config(agent_name: str, role_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     role_agents = {key: value["agent"] for key, value in payload["roles"].items()}
+    runtime_handoffs = [
+        {
+            **handoff,
+            "response_to": handoff.get("response_to", [handoff["from"]]),
+        }
+        for handoff in payload["handoffs"]
+    ]
     coordinators: list[str] = []
-    for handoff in payload["handoffs"]:
+    for handoff in runtime_handoffs:
         candidate = role_agents[handoff["from"]]
         if handoff["request"] == "TASK" and candidate not in coordinators:
             coordinators.append(candidate)
@@ -567,14 +574,14 @@ def _expected_supervisor_config(agent_name: str, role_name: str, payload: dict[s
             "name": payload["name"],
             "role": role_name,
             "roles": role_agents,
-            "handoffs": payload["handoffs"],
+            "handoffs": runtime_handoffs,
             "operator_input": payload["operator_input"],
             "contract_sha256": payload["roles"][role_name]["contract_sha256"],
         },
     }
 
 
-def _supervisor_wait_seconds(staged: Any, expected: dict[str, Any]) -> int:
+def _validate_supervisor_config(staged: Any, expected: dict[str, Any]) -> None:
     if not isinstance(staged, dict):
         raise ValueError("supervisor config is not an object")
     allowed = set(expected) | set(_SUPERVISOR_LIMITS)
@@ -588,11 +595,8 @@ def _supervisor_wait_seconds(staged: Any, expected: dict[str, Any]) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
             raise ValueError("supervisor config has an invalid runtime limit")
         values[key] = value
-    if values["startup_timeout_seconds"] <= values["wait_seconds"]:
-        raise ValueError("supervisor startup timeout is too short")
     if values["backoff_max_seconds"] < values["backoff_initial_seconds"]:
         raise ValueError("supervisor backoff bounds are invalid")
-    return values["wait_seconds"]
 
 
 def _inspect_staging(
@@ -653,7 +657,7 @@ def _inspect_staging(
         return
     expected = _expected_supervisor_config(role["agent"], role_name, payload)
     try:
-        wait_seconds = _supervisor_wait_seconds(staged, expected)
+        _validate_supervisor_config(staged, expected)
     except ValueError:
         checks.append(
             _fail("staging", f"{label} supervisor config does not match the active snapshot and role", recovery)
@@ -675,9 +679,14 @@ def _inspect_staging(
     if (
         mcp.get("command") != "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
         or mcp.get("args") != []
-        or isinstance(timeout, bool)
-        or not isinstance(timeout, int | float)
-        or timeout <= wait_seconds
+        or (
+            timeout is not None
+            and (
+                isinstance(timeout, bool)
+                or not isinstance(timeout, int | float)
+                or timeout <= 0
+            )
+        )
     ):
         checks.append(_fail("staging", f"{label} Codex MCP binding or timeout is invalid", recovery))
         return

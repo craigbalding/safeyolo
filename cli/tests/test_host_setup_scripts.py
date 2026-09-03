@@ -20,6 +20,7 @@ COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
 COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
 CODEX_COORD_SUPERVISOR_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor.py"
+CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LAB_CONTROLLER_LINK_TARGET = "/safeyolo/skills/safeyolo-lab-controller"
 LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
@@ -534,10 +535,14 @@ def test_coord_dependency_failure_stops_harness_with_diagnostic(tmp_path: Path) 
         executable.chmod(0o755)
 
     started = tmp_path / "harness-started"
+    command_env = os.environ.copy()
+    for key in list(command_env):
+        if key.startswith(("MISE_", "__MISE_")) or key == "BASH_ENV":
+            command_env.pop(key)
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command")],
         env={
-            **os.environ,
+            **command_env,
             "HOME": str(agent_home),
             "PATH": f"{fake_bin}:/usr/bin:/bin",
             "TEST_HARNESS_STARTED": str(started),
@@ -605,11 +610,15 @@ def test_wheel_manifest_includes_coord_runtime_files() -> None:
     assert force_include["contrib/codex-coord-supervisor.py"] == (
         "safeyolo/contrib/codex-coord-supervisor.py"
     )
+    assert force_include["contrib/codex-coord-supervisor-fake-codex.sh"] == (
+        "safeyolo/contrib/codex-coord-supervisor-fake-codex.sh"
+    )
     assert force_include["docs/AGENTS.md"] == "safeyolo/docs/AGENTS.md"
     assert COORD_BOOTSTRAP_SOURCE.stat().st_mode & 0o111
     assert COORD_LAUNCHER_SOURCE.stat().st_mode & 0o111
     assert COORD_SHIM_SOURCE.stat().st_mode & 0o111
     assert CODEX_COORD_SUPERVISOR_SOURCE.stat().st_mode & 0o111
+    assert CODEX_COORD_FAKE_SOURCE.stat().st_mode & 0o111
 
 
 def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) -> None:
@@ -700,6 +709,7 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
                 "from": "owner",
                 "to": "reviewer",
                 "responses": ["READY", "CHANGES_REQUIRED", "BLOCKED"],
+                "response_to": ["owner", "coordinator"],
             },
         ],
         "operator_input": {
@@ -732,6 +742,10 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
         "reviewer": "lens",
     }
     assert config["factory"]["operator_input"] == snapshot["operator_input"]
+    assert config["factory"]["handoffs"][1]["response_to"] == [
+        "owner",
+        "coordinator",
+    ]
     instructions = (agent_home / ".safeyolo/AGENTS.md").read_text()
     assert instructions.startswith(BASELINE_SOURCE.read_text().rstrip())
     assert instructions.endswith(contract.lstrip())

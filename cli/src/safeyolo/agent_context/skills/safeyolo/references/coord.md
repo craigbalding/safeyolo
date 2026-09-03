@@ -65,11 +65,12 @@ compatibility and is not the recommended targeted workflow.
 For a routine assignment, prefer `send_task(room_name, assignee, task_id,
 body)`. It emits exactly `TASK task=<id> assignee=<agent>` followed by one
 blank line and the caller's multiline body, derives `notify=[assignee]`, and
-returns the send result plus canonical room sequence. It rejects missing or
+returns the same canonical send result as `send`. It rejects missing or
 malformed names, IDs, bodies, and a body that tries to supply another `TASK`
-header. This is only a producer helper: manual `send` messages remain valid,
-and neither operation creates workflow state. In particular, the helper cannot
-notify `forge` unless the exact generated header also says `assignee=forge`.
+header. This is only a producer helper that compiles into the canonical send
+operation. Manual `send` messages remain valid, and neither interface creates
+workflow state. In particular, the helper cannot notify `forge` unless the
+exact generated header also says `assignee=forge`.
 
 Raw Agent API routes are:
 

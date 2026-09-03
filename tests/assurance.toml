@@ -24,7 +24,7 @@ sha256 = "095c5bf5ca7d9824ddf67c686924939f8f29bd44bcca5171af1a0962e55ba6f6"
 id = "FACTORY-OPERATOR-CONVERSATION"
 description = "Plain operator text reaches the coordinator and its answer wakes no agent."
 node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_concurrency_and_restart"
-sha256 = "a21e22c0a3c3fed85ae315d57e14e10bb86658ae106a2256e17c53c762fe0319"
+sha256 = "42a253e6689fa0b9ecf18b3ba7a171f01b5f138a8813d0266eab8c4762f4c780"
 
 [[factory_acceptance]]
 id = "FACTORY-STATUS-LOW-NOISE"
@@ -36,13 +36,13 @@ sha256 = "1fcac6221c87c0a27c9dd288fda60111225aea3b65d0d22a8b56ad8ca023a3ce"
 id = "FACTORY-CONCURRENT-FORGE-LENS"
 description = "The coordinator can hold one Forge task and one independent Lens task concurrently."
 node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_concurrency_and_restart"
-sha256 = "a21e22c0a3c3fed85ae315d57e14e10bb86658ae106a2256e17c53c762fe0319"
+sha256 = "42a253e6689fa0b9ecf18b3ba7a171f01b5f138a8813d0266eab8c4762f4c780"
 
 [[factory_acceptance]]
 id = "FACTORY-RESTART-NO-REPLAY"
 description = "Restart preserves outstanding handoffs and does not recreate completed work."
 node = "cli/tests/test_coord_attention.py::test_nested_factory_conversation_concurrency_and_restart"
-sha256 = "a21e22c0a3c3fed85ae315d57e14e10bb86658ae106a2256e17c53c762fe0319"
+sha256 = "42a253e6689fa0b9ecf18b3ba7a171f01b5f138a8813d0266eab8c4762f4c780"
 
 [[factory_acceptance]]
 id = "FACTORY-AGENT-ROOM-BOUNDARY"

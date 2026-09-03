@@ -28,12 +28,15 @@ def test_backlog_coordinator_status_contract_is_low_noise():
     assert "report that the updated candidate is pending" in contract
 
 
-def test_backlog_coordinator_contract_defines_standing_and_explicit_intake():
+def test_backlog_coordinator_contract_owns_proactive_flow_and_backfill():
     contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
 
-    assert "A suitable trusted brief can authorize standing eligible intake." in contract
-    assert "The absence of a suitable brief is a valid state." in contract
-    assert "must state whether `NEXT` and `PRIORITY` can override" in contract
+    assert "Relay owns productive and resilient factory flow." in contract
+    assert "Do not require the operator to name each issue." in contract
+    assert "When Forge has useful capacity" in contract
+    assert "When Lens has useful capacity" in contract
+    assert "Treat an actionable `BLOCKED` or `FAILED` response as coordinator work." in contract
+    assert "the factory does not require a brief" in contract
 
 
 def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> Path:
@@ -52,11 +55,14 @@ def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> 
         '[roles.owner]\nagent = "forge"\ncontract = "owner.md"\n\n'
         '[roles.reviewer]\nagent = "lens"\ncontract = "reviewer.md"\n\n'
         '[[handoffs]]\nrequest = "TASK"\nfrom = "coordinator"\nto = "owner"\n'
-        'responses = ["DONE", "BLOCKED", "FAILED"]\n\n'
+        'responses = ["DONE", "BLOCKED", "FAILED"]\n'
+        'response_to = ["coordinator"]\n\n'
         '[[handoffs]]\nrequest = "TASK"\nfrom = "coordinator"\nto = "reviewer"\n'
-        'responses = ["DONE", "BLOCKED", "FAILED"]\n\n'
+        'responses = ["DONE", "BLOCKED", "FAILED"]\n'
+        'response_to = ["coordinator"]\n\n'
         '[[handoffs]]\nrequest = "REVIEW_READY"\nfrom = "owner"\nto = "reviewer"\n'
-        'responses = ["READY", "CHANGES_REQUIRED", "BLOCKED"]\n' + extra
+        'responses = ["READY", "CHANGES_REQUIRED", "BLOCKED"]\n'
+        'response_to = ["owner", "coordinator"]\n' + extra
     )
     return path
 
@@ -76,6 +82,7 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     assert "operator_input=operator to=coordinator" in result.output
     assert "handoff=TASK from=coordinator to=reviewer" in result.output
     assert "handoff=REVIEW_READY from=owner to=reviewer" in result.output
+    assert "response_to=owner,coordinator" in result.output
     assert "Approval creates an immutable snapshot." in explanation
     assert (
         "Inspect those files directly; SafeYolo does not summarize"
@@ -88,8 +95,8 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
         in explanation
     )
     assert "does not select work or prove live eligibility or readiness" in explanation
-    assert "standing intake can delegate or explicit issue selection is required" in explanation
-    assert "An absent brief is not a static contract error" in explanation
+    assert "Read the bound role contract to determine intake behavior" in explanation
+    assert "does not by itself disable proactive intake" in explanation
     assert "safeyolo coord brief show backlog" in explanation
     assert (
         "safeyolo coord brief set backlog --file BRIEF.md "
@@ -112,6 +119,7 @@ def test_factory_apply_requires_approval_and_stores_immutable_snapshot(cli_runne
     assert snapshot_path.name == f"{identifier}.json"
     assert snapshot_path.stat().st_mode & 0o777 == 0o600
     assert payload["roles"]["owner"]["contract_text"] == "# Owner\n\nOwn the issue.\n"
+    assert payload["handoffs"][2]["response_to"] == ["owner", "coordinator"]
     first = snapshot_path.read_bytes()
 
     repeated = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
@@ -415,6 +423,22 @@ def test_factory_ensures_one_operator_agent_room_per_worker(monkeypatch):
         (lambda raw: raw.replace('agent = "lens"', 'agent = "forge"'), "more than one role"),
         (lambda raw: raw.replace('request = "REVIEW_READY"', 'request = "review-ready"'), "uppercase"),
         (lambda raw: raw.replace('to = "reviewer"', 'to = "missing"'), "unknown role"),
+        (
+            lambda raw: raw.replace(
+                'response_to = ["coordinator"]',
+                'response_to = ["reviewer"]',
+                1,
+            ),
+            "must include the source role",
+        ),
+        (
+            lambda raw: raw.replace(
+                'response_to = ["coordinator"]',
+                'response_to = ["coordinator", "coordinator"]',
+                1,
+            ),
+            "contains a duplicate",
+        ),
     ],
 )
 def test_factory_contract_rejects_unknown_or_ambiguous_authority(tmp_path, mutation, message):
