@@ -83,11 +83,8 @@ def test_send_task_builds_one_header_and_notifies_only_exact_assignee(monkeypatc
     )
 
     assert result == {
-        "send_result": {
-            "envelope": {"msg_id": "msg-" + "a" * 32},
-            "sequence": 41,
-        },
-        "room_sequence": 41,
+        "envelope": {"msg_id": "msg-" + "a" * 32},
+        "sequence": 41,
     }
     assert len(calls) == 1
     assert calls == [
@@ -120,20 +117,6 @@ def test_send_task_builds_one_header_and_notifies_only_exact_assignee(monkeypatc
             "TASK task=other assignee=forge\n\nduplicate",
             "duplicate TASK header",
         ),
-        (
-            "backlog",
-            "relay",
-            "issue-469",
-            "please notify assignee=forge instead",
-            "duplicate required TASK field",
-        ),
-        (
-            "backlog",
-            "relay",
-            "issue-469",
-            "malformed duplicate assignee =",
-            "duplicate required TASK field",
-        ),
     ],
 )
 def test_send_task_rejects_missing_malformed_or_duplicate_fields(
@@ -147,6 +130,28 @@ def test_send_task_rejects_missing_malformed_or_duplicate_fields(
     monkeypatch.setattr(module, "_post", unexpected_post)
     with pytest.raises(ValueError, match=message):
         asyncio.run(module.send_task(room, assignee, task_id, body))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Return DONE task=issue-469 after validation.",
+        "Explain why assignee=forge is the configured owner.",
+        "A malformed example such as assignee = is ordinary explanatory text.",
+    ],
+)
+def test_send_task_allows_field_like_text_below_the_canonical_header(monkeypatch, body):
+    module = _load_adapter(monkeypatch)
+    calls = []
+
+    async def post(path, payload):
+        calls.append((path, payload))
+        return {"envelope": {"msg_id": "msg-" + "a" * 32}, "sequence": 41}
+
+    monkeypatch.setattr(module, "_post", post)
+    asyncio.run(module.send_task("backlog", "forge", "issue-469", body))
+
+    assert calls[0][1]["body"] == f"TASK task=issue-469 assignee=forge\n\n{body}"
 
 
 def test_send_task_requires_canonical_sequence(monkeypatch):

@@ -20,15 +20,32 @@ supervisor, and the supervisor runs bounded `codex exec --json` turns.
 
 ## Turn contract
 
-The first turn creates one Codex thread. Later turns resume that exact thread.
-Each ordinary turn calls `wait_for_coord` once, processes the complete page,
-sends any required `DONE`, `BLOCKED`, or `FAILED` messages, and exits. It does
-not re-arm the wait. The supervisor starts the next turn.
+The supervisor waits directly on the identity-wide Coord attention feed. It
+resolves the complete returned page before exposing its `next_cursor`, applies
+the configured room, sender, message-type, brief, and handoff checks, and
+atomically checkpoints the result. Empty, brief-only, and irrelevant pages
+re-arm the wait without launching Codex.
 
-The supervisor accepts idle only from a successful structured MCP result with
-an empty `objects` list and a valid `next_cursor`. Codex exit code 0 and model
-text are not idle or success evidence. A failed MCP result cannot advance the
-safe cursor.
+An actionable page launches the first Codex turn and creates one thread. Later
+actionable pages resume that exact thread. Each launched turn receives the
+resolved canonical checkpoint and performs the work. If the role contract
+requires an outbound handoff before the inbound request can complete, the turn
+sends that handoff and exits; the supervisor records its correlation and waits
+outside Codex. Absence of the downstream response at the start of the turn is
+not itself a blocker. Once the request has a genuine terminal outcome, the
+turn sends its declared response to every role in the handoff's `response_to`
+list and exits. It does not call or re-arm
+`wait_for_coord`; waiting is supervisor transport behavior rather than an
+agent task.
+
+The Coord Model Context Protocol (MCP) adapter compiles producer helpers such
+as `send_task` into the same canonical send result as `send`. The supervisor
+normalizes both tool calls into one outbound-send event before it evaluates a
+terminal response or records an outbound handoff. Downstream behavior does not
+depend on which producer interface constructed the message.
+
+A failed wait or canonical-object resolution cannot advance the safe cursor.
+Codex exit code 0 and model text are not work-completion evidence.
 
 Each factory agent also has a room named `<agent>-agent`. The supervisor sends
 each `codex exec --json` stdout line to that room without attention. The
@@ -58,6 +75,13 @@ retained message unless `--redact` is set. Use `--max-text` to opt in to a
 rendered event-text limit. The watcher also supports `--history`, `--once`, and
 `--show-unknown`. File selection, agent-home selection, and filesystem polling
 do not apply because this watcher reads one retained Coord room.
+
+If NATS becomes unavailable, the watcher reports the lost connection and
+retries with bounded exponential backoff from the same cursor. It reports
+recovery after a successful read or wait. A large Codex event is retained as
+one bounded record with a short summary, the beginning and end of the original
+event, its original byte count, and its SHA-256. The watcher marks the omitted
+middle explicitly.
 
 In factory mode, the approved snapshot may declare one `operator_input` edge.
 Only its destination role admits bounded natural-language direction, and only
@@ -116,18 +140,20 @@ credentials, subscription credentials, agent tokens, or room history. Coord
 remains the source of truth. The file is recovery bookkeeping, not a second
 queue.
 
-Every cycle checks the Agent API, the ChatGPT subscription login, the coord
-MCP registration and executable, and receive permission for each configured
-room. A failed preflight, failed or invalid wait, or unavailable dependency is
-not idle and does not advance the cursor. Repeated failures use exponential
-backoff with a cap.
+Startup checks the Agent API, the ChatGPT subscription login, and the coord MCP
+registration and executable. Every later cycle checks Agent API health and
+receive permission for each configured room. A failed preflight, failed or
+invalid wait, or unavailable dependency does not advance the cursor or launch
+Codex. Repeated failures use exponential backoff with a cap. Agent API failures
+retain their bounded path, HTTP status, and retry classification in supervisor
+events. A successful later cycle emits a recovery event.
 
 ### Deadlines
 
-The initial provider-and-wait phase and the later work phase have separate
-absolute deadlines. The work deadline is set once when a non-empty wait
-completes; later output cannot extend it. The invocation also keeps a hard
-overall bound.
+The external attention long poll has its own bounded HTTP timeout. Once work
+is accepted, Codex startup and work have separate absolute deadlines. The work
+deadline is set once when the turn starts; later output cannot extend it. The
+invocation also keeps a hard overall bound.
 
 ### Process cleanup
 
@@ -152,6 +178,12 @@ handle remains open, it snapshots and terminates the live invocation group.
 Recorded descendants that escaped into other groups still use individual PID
 handles and fingerprints.
 
+The upgrade from the model-owned Coord wait to the supervisor-owned wait keeps
+the canonical cursor, pending work, and handoff correlations but starts one
+clean Codex thread. This avoids replaying an interrupted legacy MCP call with a
+missing tool result. Subsequent restarts preserve the healthy external-wait-era
+thread, including across an outbound handoff and its response.
+
 ## Configuration
 
 The host setup writes the private, non-secret configuration file
@@ -161,14 +193,40 @@ snapshot. It contains no inferred workflow state. The defaults are:
 
 | Setting | Default | Purpose |
 |---|---:|---|
-| `wait_seconds` | 300 | One foreground coord wait. |
+| `wait_seconds` | 300 | One supervisor-owned Coord long poll. |
 | `page_limit` | 16 | Maximum returned and in-flight objects. |
-| `startup_timeout_seconds` | 480 | Bound before a successful wait result. |
-| `work_timeout_seconds` | 3600 | Bound after a non-empty page. |
-| `completion_grace_seconds` | 90 | Time for Codex to finish after an empty wait. |
+| `startup_timeout_seconds` | 480 | Bound before a launched Codex turn starts. |
+| `work_timeout_seconds` | 3600 | Bound after a Codex turn starts. |
+| `completion_grace_seconds` | 90 | Compatibility bound for an old thread that returns an empty MCP wait. |
 | `backoff_initial_seconds` | 5 | First retry delay. |
 | `backoff_max_seconds` | 300 | Crash-loop retry cap. |
 
 Stop the agent before you edit these values. Keep `wait_seconds` at or below
-the Agent API maximum of 300 seconds and keep the Codex MCP tool timeout above
-that value. The supervisor rejects invalid or unbounded values.
+the Agent API maximum of 300 seconds. The Codex MCP timeout is independent of
+the supervisor-owned wait. The supervisor rejects invalid or unbounded values.
+
+## Debugging with a fake Codex harness
+
+`--debug` prints bounded supervisor decisions to stderr without publishing
+idle or debug events to Coord. The same mode can be enabled with
+`SAFEYOLO_COORD_SUPERVISOR_DEBUG=1`. `SAFEYOLO_COORD_SUPERVISOR_ONCE=1` is the
+environment equivalent of `--once`, which is useful when the staged command
+owns the supervisor arguments. Debug output reports cursor movement, page and
+accepted-object counts, re-arming, and Codex invocation boundaries; it never
+prints message bodies.
+
+For a nested lab, `contrib/codex-coord-supervisor-fake-codex.sh` can replace
+Codex through `SAFEYOLO_CODEX_BIN`. It satisfies the subscription-login
+preflight, captures each invocation's argv and stdin prompt, and emits minimal
+valid Codex JSONL without making a model request:
+
+```bash
+export SAFEYOLO_CODEX_BIN="$PWD/contrib/codex-coord-supervisor-fake-codex.sh"
+export SAFEYOLO_FAKE_CODEX_CAPTURE_DIR=/tmp/safeyolo-fake-codex
+python3 contrib/codex-coord-supervisor.py --once --debug
+```
+
+Use a disposable nested agent and state file because a real Coord attention
+page is still resolved and checkpointed. Set `SAFEYOLO_FAKE_CODEX_EVENTS` to a
+JSONL file when a test needs events other than the default `thread.started`,
+`turn.started`, and `turn.completed` sequence.

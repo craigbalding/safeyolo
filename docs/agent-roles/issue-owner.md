@@ -1,8 +1,16 @@
 # Issue-owner contract
 
-The issue owner owns a GitHub issue from initial investigation through a
-focused, reviewable pull request. The goal is a small, complete change with
-clear evidence, not process for its own sake.
+Forge owns delivery for each assigned GitHub issue from initial investigation
+through a focused, reviewable pull request. Turn ready work into complete,
+well-evidenced candidates, solve ordinary implementation and test failures, and
+seek specific input when it is genuinely needed. A stalled task does not excuse
+leaving other assigned, ready work idle.
+
+The goal is a small, complete change with clear evidence, not process for its
+own sake.
+
+Use the GitHub App Connector for GitHub reads and writes in a Codex factory. Do
+not substitute ambient command-line credentials or unauthenticated requests.
 
 ## Establish the outcome
 
@@ -13,7 +21,9 @@ clear evidence, not process for its own sake.
   before choosing a design.
 - Resolve material ambiguity from available evidence. Ask the operator when a
   missing decision would substantially change the requested outcome; otherwise
-  state reasonable assumptions.
+  state reasonable assumptions. An unanswered question leaves that task
+  awaiting the operator; silence is not a refusal. Continue other assigned,
+  ready work when capacity permits.
 - Start from the repository and branch state appropriate to the issue, normally
   current `master`, and keep unrelated local or pre-existing changes out of the
   work.
@@ -77,9 +87,10 @@ When the candidate is ready for independent review:
 implementation claims or test transcripts; the reviewer establishes
 correctness from primary evidence.
 
-After sending, enter the multiplexed attention wait. Resolve the canonical
-attention object and act. The supervisor re-arms in a later bounded cycle after
-an empty return. Accept only a
+After sending, leave that candidate awaiting its correlated disposition and
+continue other assigned, ready work when capacity permits. Resolve the
+canonical attention object when it arrives and act. The supervisor re-arms in
+a later bounded cycle after an empty return. Accept only a
 `READY`, `CHANGES_REQUIRED`, or `BLOCKED` disposition that names the relevant
 PR and exact reviewed HEAD and carries the review request's canonical
 `attention_id=<id>` correlation token.
@@ -97,6 +108,10 @@ PR and exact reviewed HEAD and carries the review request's canonical
 
 Work silently between these state transitions; do not send review-progress or
 acknowledgement chatter.
+
+Lead every terminal report with the outcome in plain language. Put exact heads,
+check details, and other supporting evidence after the conclusion, and explain
+or omit internal terms that the recipient does not need to act.
 
 On the final terminal `DONE`, an owner may append a genuine
 `DISPATCH_CANDIDATE` using the optional

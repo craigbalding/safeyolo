@@ -62,7 +62,12 @@ def _print_contract(contract: FactoryContract) -> None:
     )
     for handoff in contract.handoffs:
         responses = ",".join(handoff.responses)
-        console.print(f"handoff={handoff.request} from={handoff.source} to={handoff.destination} responses={responses}")
+        response_to = ",".join(handoff.response_to)
+        console.print(
+            f"handoff={handoff.request} from={handoff.source} "
+            f"to={handoff.destination} responses={responses} "
+            f"response_to={response_to}"
+        )
     _print_contract_explanation(contract)
 
 
@@ -98,7 +103,8 @@ def _print_contract_explanation(  # DOC: docs/factories.md, docs/factories/backl
             f"The role={source.name} agent={source.agent} can send "
             f"request={handoff.request} to role={destination.name} "
             f"agent={destination.agent}; declared responses are "
-            f"{','.join(handoff.responses)}."
+            f"{','.join(handoff.responses)} and notify roles "
+            f"{','.join(handoff.response_to)}."
         )
     console.print(
         f"The canonical trusted brief for room={contract.room} is separate live "
@@ -113,12 +119,12 @@ def _print_contract_explanation(  # DOC: docs/factories.md, docs/factories/backl
         "eligibility or readiness."
     )
     console.print(
-        "Read the bound role contract and live brief to determine whether "
-        "standing intake can delegate or explicit issue selection is required."
+        "Read the bound role contract to determine intake behavior. A live "
+        "brief can refine that behavior."
     )
     console.print(
-        "An absent brief is not a static contract error. A bound role contract "
-        "can intentionally use explicit selection only."
+        "An absent brief is not a static contract error and does not by itself "
+        "disable proactive intake."
     )
     console.print(f"Inspect the live brief: safeyolo coord brief show {contract.room}")
     console.print(

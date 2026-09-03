@@ -119,12 +119,17 @@ coordinators = []
 handoff_types = set()
 handoff_edges = []
 for handoff in handoffs:
-    if not isinstance(handoff, dict) or set(handoff) != {"request", "from", "to", "responses"}:
+    required_handoff_keys = {"request", "from", "to", "responses"}
+    if not isinstance(handoff, dict) or set(handoff) not in (
+        required_handoff_keys,
+        required_handoff_keys | {"response_to"},
+    ):
         raise SystemExit("codex-host-setup: invalid factory handoff")
     request = handoff.get("request")
     source = handoff.get("from")
     destination = handoff.get("to")
     responses = handoff.get("responses")
+    response_to = handoff.get("response_to", [source])
     if (
         type_re.fullmatch(str(request)) is None
         or source not in role_agents
@@ -132,6 +137,11 @@ for handoff in handoffs:
         or not isinstance(responses, list)
         or not responses
         or any(type_re.fullmatch(str(item)) is None for item in responses)
+        or not isinstance(response_to, list)
+        or not response_to
+        or len(set(response_to)) != len(response_to)
+        or any(role not in role_agents for role in response_to)
+        or source not in response_to
     ):
         raise SystemExit("codex-host-setup: invalid factory handoff values")
     runtime_handoffs.append(
@@ -140,6 +150,7 @@ for handoff in handoffs:
             "from": source,
             "to": destination,
             "responses": responses,
+            "response_to": response_to,
         }
     )
     handoff_edges.append((source, destination))

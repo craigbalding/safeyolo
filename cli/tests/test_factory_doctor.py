@@ -253,7 +253,7 @@ def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_ru
     assert "PASS component=staging role=owner agent=forge" in result.output
     assert "PASS component=processes role=reviewer agent=lens" in result.output
     assert "PASS component=coord-brief room=backlog state=none" in result.output
-    assert "explicit-NEXT-mode=valid" in result.output
+    assert "role-contract-intake=valid" in result.output
     assert "safeyolo coord brief show backlog" in result.output
     assert "--expected-revision 0" in result.output
     assert "SUMMARY factory=backlog status=PASS" in result.output
@@ -288,7 +288,7 @@ def test_factory_doctor_does_not_invent_next_mode_for_custom_factory(monkeypatch
     assert len(checks) == 1
     assert checks[0].status == "PASS"
     assert checks[0].detail.startswith("room=custom state=none ")
-    assert "explicit-NEXT-mode" not in checks[0].detail
+    assert "role-contract-intake" not in checks[0].detail
     assert "safeyolo coord brief show custom" in checks[0].detail
     assert "--expected-revision 0" in checks[0].detail
 
@@ -320,7 +320,7 @@ def test_factory_doctor_does_not_invent_next_mode_for_custom_backlog_contract(
     assert len(checks) == 1
     assert checks[0].status == "PASS"
     assert checks[0].detail.startswith("room=custom-room state=none ")
-    assert "explicit-NEXT-mode" not in checks[0].detail
+    assert "role-contract-intake" not in checks[0].detail
 
 
 def test_factory_doctor_reports_present_brief_metadata_without_body(

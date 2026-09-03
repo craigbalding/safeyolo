@@ -106,18 +106,21 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
                 "coordinator",
                 "owner",
                 ("DONE", "BLOCKED", "FAILED"),
+                ("coordinator",),
             ),
             supervisor.Handoff(
                 "TASK",
                 "coordinator",
                 "reviewer",
                 ("DONE", "BLOCKED", "FAILED"),
+                ("coordinator",),
             ),
             supervisor.Handoff(
                 "REVIEW_READY",
                 "owner",
                 "reviewer",
                 ("READY", "CHANGES_REQUIRED", "BLOCKED"),
+                ("owner", "coordinator"),
             ),
         )
 

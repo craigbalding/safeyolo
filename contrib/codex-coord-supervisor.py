@@ -10,6 +10,7 @@ returned but do not yet have a terminal coord result.
 from __future__ import annotations
 
 import argparse
+import copy
 import ctypes
 import fcntl
 import hashlib
@@ -31,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-STATE_VERSION = 5
+STATE_VERSION = 6
 DEFAULT_CONFIG = Path.home() / ".safeyolo/codex-coord-supervisor.json"
 DEFAULT_STATE = Path.home() / ".safeyolo/codex-coord-supervisor-state.json"
 TERMINAL_RE = re.compile(r"^(DONE|BLOCKED|FAILED)\b")
@@ -43,6 +44,7 @@ MAX_RECENT_ATTENTION_IDS = 256
 MAX_IN_FLIGHT = 16
 MAX_CANONICAL_BODY_BYTES = 64 * 1024
 MAX_OPERATOR_CONTROL_BYTES = 4 * 1024
+MAX_AGENT_ROOM_BODY_BYTES = 256 * 1024
 MAX_STATE_BYTES = 2 * 1024 * 1024
 MAX_OWNED_DESCENDANTS = 64
 SYS_PIDFD_SEND_SIGNAL = 424
@@ -53,12 +55,36 @@ class SupervisorError(RuntimeError):
     """A visible, retryable supervisor failure."""
 
 
+class AgentApiRequestError(SupervisorError):
+    """A bounded, classified SafeYolo Agent API failure."""
+
+    def __init__(
+        self,
+        path: str,
+        detail: str,
+        *,
+        status: int | None = None,
+        retry_after: str | None = None,
+    ) -> None:
+        self.path = path
+        self.status = status
+        self.retry_after = retry_after
+        fields = [f"path={path}"]
+        if status is not None:
+            fields.append(f"status={status}")
+        if retry_after is not None:
+            fields.append(f"retry_after={retry_after}")
+        fields.append(f"error={detail}")
+        super().__init__("SafeYolo Agent API request failed " + " ".join(fields))
+
+
 @dataclass(frozen=True)
 class Handoff:
     request: str
     source_role: str
     destination_role: str
     responses: tuple[str, ...]
+    response_roles: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -146,17 +172,17 @@ class Config:
                 raise SupervisorError("factory handoffs must be a non-empty list")
             parsed_handoffs = []
             for handoff in handoffs:
-                if not isinstance(handoff, dict) or set(handoff) != {
-                    "request",
-                    "from",
-                    "to",
-                    "responses",
-                }:
+                required_handoff_keys = {"request", "from", "to", "responses"}
+                if not isinstance(handoff, dict) or set(handoff) not in (
+                    required_handoff_keys,
+                    required_handoff_keys | {"response_to"},
+                ):
                     raise SupervisorError("factory handoff has an invalid shape")
                 request = handoff.get("request")
                 source = handoff.get("from")
                 destination = handoff.get("to")
                 responses = handoff.get("responses")
+                response_roles = handoff.get("response_to", [source])
                 if (
                     not isinstance(request, str)
                     or re.fullmatch(r"[A-Z][A-Z0-9_]*", request) is None
@@ -168,9 +194,22 @@ class Config:
                         not isinstance(response, str) or re.fullmatch(r"[A-Z][A-Z0-9_]*", response) is None
                         for response in responses
                     )
+                    or not isinstance(response_roles, list)
+                    or not response_roles
+                    or len(set(response_roles)) != len(response_roles)
+                    or any(role not in role_map for role in response_roles)
+                    or source not in response_roles
                 ):
                     raise SupervisorError("factory handoff has invalid values")
-                parsed_handoffs.append(Handoff(request, source, destination, tuple(responses)))
+                parsed_handoffs.append(
+                    Handoff(
+                        request,
+                        source,
+                        destination,
+                        tuple(responses),
+                        tuple(response_roles),
+                    )
+                )
             factory_handoffs = tuple(parsed_handoffs)
             operator_input = factory.get("operator_input")
             if not isinstance(operator_input, dict) or set(operator_input) != {"to", "types"}:
@@ -225,8 +264,6 @@ class Config:
             if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
                 raise SupervisorError(f"{key} must be an integer from {minimum} to {maximum}")
             values[key] = value
-        if values["startup_timeout_seconds"] <= values["wait_seconds"]:
-            raise SupervisorError("startup_timeout_seconds must exceed wait_seconds")
         if values["backoff_max_seconds"] < values["backoff_initial_seconds"]:
             raise SupervisorError("backoff_max_seconds must be at least backoff_initial_seconds")
         return cls(
@@ -338,6 +375,12 @@ def load_state(path: Path) -> dict[str, Any]:
             "awaiting_handoffs": [] if awaiting is None else [awaiting],
         }
     allowed_keys = version_one_keys | {"awaiting_handoffs", "briefs"}
+    if isinstance(raw, dict) and raw.get("version") == 5 and set(raw) == allowed_keys:
+        # Version 5 threads can contain an interrupted model-owned Coord wait.
+        # Preserve canonical work state, but cross the external-wait upgrade
+        # boundary with a clean Codex thread so missing tool results are not
+        # replayed forever.
+        raw = {**raw, "version": STATE_VERSION, "thread_id": None}
     if (
         not isinstance(raw, dict)
         or isinstance(raw.get("version"), bool)
@@ -594,7 +637,13 @@ def _validate_pending(item: Any) -> None:
         raise SupervisorError("in-flight object body is too large")
 
 
-def _api_json(path: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> dict[str, Any]:
+def _api_json(
+    path: str,
+    *,
+    method: str = "GET",
+    body: dict[str, Any] | None = None,
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
     token_path = Path(os.environ.get("SAFEYOLO_COORD_TOKEN_PATH", "/app/agent_token"))
     try:
         token = token_path.read_text().strip()
@@ -609,13 +658,39 @@ def _api_json(path: str, *, method: str = "GET", body: dict[str, Any] | None = N
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             result = json.load(response)
-    except (OSError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
-        raise SupervisorError(f"SafeYolo Agent API request failed for {path}: {exc}") from exc
+    except urllib.error.HTTPError as exc:
+        retry_after = exc.headers.get("Retry-After") if exc.headers is not None else None
+        detail = exc.reason or "HTTP request failed"
+        try:
+            encoded = exc.read(16 * 1024)
+            parsed = json.loads(encoded)
+            if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+                detail = parsed["error"]
+                if parsed.get("send_outcome") == "unknown":
+                    detail += " (send outcome unknown)"
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
+        raise AgentApiRequestError(
+            path,
+            _bounded_diagnostic(detail),
+            status=exc.code,
+            retry_after=_bounded_diagnostic(retry_after) if retry_after else None,
+        ) from exc
+    except OSError as exc:
+        raise AgentApiRequestError(path, _bounded_diagnostic(exc)) from exc
+    except json.JSONDecodeError as exc:
+        raise AgentApiRequestError(path, "invalid JSON response") from exc
     if not isinstance(result, dict):
         raise SupervisorError(f"SafeYolo Agent API returned invalid data for {path}")
     return result
+
+
+def _bounded_diagnostic(value: Any, limit: int = 300) -> str:
+    text = str(value).replace("\r", " ").replace("\n", " ")
+    text = "".join(character if character.isprintable() else "?" for character in text)
+    return text[:limit] + ("..." if len(text) > limit else "")
 
 
 def preflight(config: Config, state: dict[str, Any] | None = None) -> dict[str, str]:
@@ -634,12 +709,12 @@ def preflight(config: Config, state: dict[str, Any] | None = None) -> dict[str, 
     if not launcher.is_file() or not os.access(launcher, os.X_OK):
         raise SupervisorError(f"Codex safeyolo-coord MCP launcher is not executable: {launcher}")
     tool_timeout = registration.get("tool_timeout_sec")
-    if (
+    if tool_timeout is not None and (
         isinstance(tool_timeout, bool)
         or not isinstance(tool_timeout, int | float)
-        or tool_timeout <= config.wait_seconds
+        or tool_timeout <= 0
     ):
-        raise SupervisorError("Codex safeyolo-coord MCP timeout must exceed the coord wait")
+        raise SupervisorError("Codex safeyolo-coord MCP timeout must be positive")
 
     codex = os.environ.get("SAFEYOLO_CODEX_BIN", "codex")
     try:
@@ -656,6 +731,20 @@ def preflight(config: Config, state: dict[str, Any] | None = None) -> dict[str, 
     login_status = login.stdout + login.stderr
     if login.returncode != 0 or "Logged in using ChatGPT" not in login_status:
         raise SupervisorError("Codex is not logged in with a ChatGPT subscription")
+
+    return _coord_preflight(config, state, health=health)
+
+
+def _coord_preflight(
+    config: Config,
+    state: dict[str, Any] | None = None,
+    *,
+    health: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    if health is None:
+        health = _api_json("/health")
+        if health.get("agent_api") != "ok":
+            raise SupervisorError("SafeYolo Agent API is not healthy")
 
     room_ids: dict[str, str] = {}
     room_names = config.rooms + ((config.agent_room,) if config.agent_room not in (None, *config.rooms) else ())
@@ -686,6 +775,47 @@ def _history_page(room_name: str, since: int) -> dict[str, Any]:
     query = urllib.parse.urlencode({"since": since, "limit": 100})
     room = urllib.parse.quote(room_name, safe="")
     return _api_json(f"/api/coord/rooms/{room}/messages?{query}")
+
+
+def wait_for_attention_page(config: Config, state: dict[str, Any]) -> dict[str, Any]:
+    """Long-poll and resolve one complete caller-owned attention page."""
+    query = urllib.parse.urlencode(
+        {
+            "since": state["safe_cursor"],
+            "timeout": config.wait_seconds,
+            "limit": config.page_limit,
+        }
+    )
+    page = _api_json(
+        f"/api/coord/attention/wait?{query}",
+        timeout_seconds=config.wait_seconds + 30.0,
+    )
+    edges = page.get("edges")
+    next_cursor = page.get("next_cursor")
+    if not isinstance(edges, list) or len(edges) > config.page_limit:
+        raise SupervisorError("coord attention wait returned an invalid edge page")
+    if (
+        isinstance(next_cursor, bool)
+        or not isinstance(next_cursor, int)
+        or next_cursor < state["safe_cursor"]
+    ):
+        raise SupervisorError("coord attention wait returned an invalid cursor")
+
+    objects = []
+    attention_ids: set[str] = set()
+    for edge in edges:
+        if not isinstance(edge, dict):
+            raise SupervisorError("coord attention wait returned an invalid edge")
+        attention_id = edge.get("attention_id")
+        if not _valid_attention_id(attention_id) or attention_id in attention_ids:
+            raise SupervisorError("coord attention wait returned an invalid attention ID")
+        attention_ids.add(attention_id)
+        resolved = _api_json(f"/api/coord/attention/{attention_id}/object")
+        resolved_edge = resolved.get("edge")
+        if not isinstance(resolved_edge, dict) or resolved_edge.get("attention_id") != attention_id:
+            raise SupervisorError("coord returned a mismatched canonical attention object")
+        objects.append(resolved)
+    return {"objects": objects, "next_cursor": next_cursor}
 
 
 def reconcile_terminals(config: Config, state: dict[str, Any]) -> bool:
@@ -810,6 +940,26 @@ def _inbound_response(config: Config, sender: str, body: str) -> Handoff | None:
     return None
 
 
+def _inbound_observed_response(
+    config: Config,
+    sender: str,
+    body: str,
+) -> Handoff | None:
+    if config.factory_role is None:
+        return None
+    agents = _role_agents(config)
+    for handoff in config.factory_handoffs:
+        if (
+            config.factory_role == handoff.source_role
+            or config.factory_role not in handoff.response_roles
+            or agents[handoff.destination_role] != sender
+        ):
+            continue
+        if any(_body_has_type(body, response) for response in handoff.responses):
+            return handoff
+    return None
+
+
 def _pending_request(config: Config, pending: dict[str, Any]) -> Handoff | None:
     return _inbound_request(config, pending["sender_agent_name"], pending["body"])
 
@@ -833,6 +983,24 @@ def _response_matches(config: Config, pending: dict[str, Any], body: str) -> boo
         return TERMINAL_RE.match(body) is not None
     handoff = _pending_request(config, pending)
     return handoff is not None and any(_body_has_type(body, item) for item in handoff.responses)
+
+
+def _response_targets_match(
+    config: Config,
+    pending: dict[str, Any],
+    notify: Any,
+) -> bool:
+    if config.factory_role is None:
+        return True
+    handoff = _pending_request(config, pending)
+    if (
+        handoff is None
+        or not isinstance(notify, list)
+        or any(not isinstance(agent, str) for agent in notify)
+    ):
+        return False
+    expected = [_role_agents(config)[role] for role in handoff.response_roles]
+    return len(notify) == len(set(notify)) and set(notify) == set(expected)
 
 
 def _matching_awaiting_handoff(
@@ -877,6 +1045,7 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
         agents = _role_agents(config)
         requests = []
         responses = []
+        observed_responses = []
         for handoff in config.factory_handoffs:
             if handoff.destination_role == config.factory_role:
                 requests.append(
@@ -884,10 +1053,24 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
                         "type": handoff.request,
                         "sender": agents[handoff.source_role],
                         "responses": list(handoff.responses),
+                        "response_recipients": [
+                            agents[role] for role in handoff.response_roles
+                        ],
                     }
                 )
             if handoff.source_role == config.factory_role:
                 responses.append(
+                    {
+                        "request": handoff.request,
+                        "sender": agents[handoff.destination_role],
+                        "types": list(handoff.responses),
+                    }
+                )
+            if (
+                config.factory_role in handoff.response_roles
+                and config.factory_role != handoff.source_role
+            ):
+                observed_responses.append(
                     {
                         "request": handoff.request,
                         "sender": agents[handoff.destination_role],
@@ -900,6 +1083,7 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
             "contract_sha256": config.contract_sha256,
             "authorized_requests": requests,
             "authorized_responses": responses,
+            "observed_responses": observed_responses,
         }
         if config.factory_role == config.factory_operator_role:
             checkpoint["operator_input"] = {
@@ -909,32 +1093,26 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
             }
         if config.agent_room is not None:
             checkpoint["agent_room"] = config.agent_room
-    if awaiting:
-        action = (
-            "One or more authorized outbound handoffs await their exact declared responses. Call safeyolo-coord "
-            "wait_for_coord exactly once with "
-            f"since_sequence={state['safe_cursor']}, timeout_seconds={config.wait_seconds}, "
-            f"and limit={config.page_limit}. Process every returned canonical object and do not re-arm the wait. "
-            "Process authorized inbound requests normally. Accept a response only when its canonical sender, room, "
-            "exact declared message type, and correlation fields match an entry in awaiting_handoffs; each response "
-            "body must contain an attention_id token. Do not send a protocol terminal for a response attention "
-            "itself. Preserve unmatched awaiting_handoffs and continue any original in-flight work with its own "
-            "attention_id for its eventual declared response."
-        )
-    elif pending:
+    if pending:
         if config.factory_name is None:
             action = (
-                "Recover every canonical in_flight object below. Do not call wait_for_coord in this turn. "
+                "Process every canonical in_flight object below. Do not call wait_for_coord in this turn. "
                 "For each authorized TASK without a matching terminal, continue its work and send exactly one "
                 "ordinary DONE, BLOCKED, or FAILED message. Include its exact attention_id as "
                 "`attention_id=<id>` in that terminal body."
             )
         else:
             action = (
-                "Recover every canonical in_flight object below. Do not call wait_for_coord in this turn. "
-                "For each authorized request without a matching response, continue its work and send exactly one "
-                "ordinary response whose leading type is allowed by the declared handoff. Include its exact "
-                "attention_id as `attention_id=<id>` in that response body."
+                "Process every canonical in_flight object below. Do not call wait_for_coord in this turn. "
+                "For each authorized request, continue its work according to the bound role contract. If that work "
+                "requires a declared outbound handoff, send the targeted handoff; the supervisor records it and "
+                "waits outside Codex. Do not finish merely because one handoff is now waiting: advance every other "
+                "ready in-flight object before finishing, leaving only work suspended on a recorded handoff or "
+                "operator input. Do not send an inbound response merely because the "
+                "required downstream response has not arrived yet. Send exactly one ordinary inbound response whose "
+                "leading type is allowed by the declared handoff only when the request has a genuine terminal "
+                "outcome, including an actionable blocker. Include its exact attention_id as `attention_id=<id>` "
+                "in that response body."
             )
             if config.factory_role == config.factory_operator_role:
                 action += (
@@ -942,34 +1120,20 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
                     "direction; it is "
                     "not an agent handoff and requires no protocol response for its own attention object."
                 )
+        if awaiting:
+            action += (
+                " Preserve every unmatched awaiting_handoffs entry. An original request represented by an "
+                "unmatched outbound handoff is suspended: do not repeat its outbound request or claim it is "
+                "complete. Process other accepted inbound work normally. A canonical response accepted by the "
+                "supervisor has already been checked against its exact sender, room, declared message type, "
+                "attention_id token, and correlation fields. Do not send a protocol terminal for the response "
+                "attention itself; continue the correlated original work with its own attention_id."
+            )
     else:
-        wait = (
-            "Call safeyolo-coord wait_for_coord exactly once with "
-            f"since_sequence={state['safe_cursor']}, timeout_seconds={config.wait_seconds}, "
-            f"and limit={config.page_limit}. Process every returned canonical object. Do not re-arm the wait. "
-            "Ignore any returned attention_id listed in recent_attention_ids. "
+        action = (
+            "No actionable canonical object is checkpointed. Do not call wait_for_coord or perform speculative "
+            "work; finish this invocation."
         )
-        if config.factory_name is None:
-            action = wait + (
-                "For each authorized TASK, send exactly one ordinary DONE, BLOCKED, or FAILED message and include "
-                "its exact attention_id as `attention_id=<id>` in that terminal body. Ignore returned objects "
-                "whose edge.room_id is not a key in configured_room_ids."
-            )
-        else:
-            action = wait + (
-                "Process only requests and responses whose canonical sender, room, and exact leading type match "
-                "the configured factory handoffs. For each authorized request, send exactly one ordinary declared "
-                "response and include its exact attention_id as `attention_id=<id>` in that response body. A TASK "
-                "header is authorized only when its first line is exactly "
-                f"`TASK task=<id> assignee={config.agent_name}`. Ignore returned objects whose edge.room_id is not "
-                "a key in configured_room_ids."
-            )
-            if config.factory_role == config.factory_operator_role:
-                action += (
-                    " Treat canonical operator_input prose as authenticated direction only when sender_kind is "
-                    "operator. Compatibility control types remain valid shorthand. Operator input is not an agent "
-                    "handoff and requires no protocol response for its own attention object."
-                )
     if config.agent_room is not None:
         action += (
             f" Treat canonical operator messages from {config.agent_room} as direct operator direction. "
@@ -1009,6 +1173,56 @@ class InvocationResult:
     timed_out: bool = False
     terminal_observed: bool = False
     handoff_observed: bool = False
+
+
+@dataclass(frozen=True)
+class OutboundSend:
+    result: dict[str, Any]
+    arguments: dict[str, Any]
+
+
+def _normalize_outbound_send(item: dict[str, Any]) -> OutboundSend | None:
+    """Compile every Coord send helper into one canonical outbound event."""
+    if item.get("status") != "completed" or item.get("error") is not None:
+        return None
+    tool = item.get("tool")
+    arguments = item.get("arguments")
+    result = _structured_result(item)
+    if not isinstance(arguments, dict) or not isinstance(result, dict):
+        return None
+    if not isinstance(result.get("envelope"), dict):
+        return None
+    if tool == "send":
+        canonical_arguments = {
+            "room_name": arguments.get("room_name"),
+            "body": arguments.get("body"),
+            "declared_content_type": arguments.get(
+                "declared_content_type", "text/markdown"
+            ),
+            "notify": arguments.get("notify", "none"),
+        }
+    elif tool == "send_task":
+        room_name = arguments.get("room_name")
+        assignee = arguments.get("assignee")
+        task_id = arguments.get("task_id")
+        detail = arguments.get("body")
+        if not all(
+            isinstance(value, str)
+            for value in (room_name, assignee, task_id, detail)
+        ):
+            return None
+        body = f"TASK task={task_id} assignee={assignee}"
+        if detail:
+            body += f"\n\n{detail}"
+        canonical_arguments = {
+            "room_name": room_name,
+            "body": body,
+            "declared_content_type": "text/markdown",
+            "notify": [assignee],
+        }
+    else:
+        return None
+    return OutboundSend(result, canonical_arguments)
 
 
 class EventConsumer:
@@ -1072,10 +1286,11 @@ class EventConsumer:
                 self._accept_wait(structured, item.get("arguments"))
             except SupervisorError:
                 self.result.wait_failed = True
-        elif tool == "send" and item.get("status") == "completed" and item.get("error") is None:
-            structured = _structured_result(item)
-            self._accept_terminal_send(structured, item.get("arguments"))
-            self._accept_handoff_send(structured, item.get("arguments"))
+        else:
+            outbound = _normalize_outbound_send(item)
+            if outbound is not None:
+                self._accept_terminal_send(outbound.result, outbound.arguments)
+                self._accept_handoff_send(outbound.result, outbound.arguments)
 
     def _accept_wait(self, structured: Any, arguments: Any) -> None:
         if not isinstance(structured, dict) or not isinstance(arguments, dict):
@@ -1088,12 +1303,34 @@ class EventConsumer:
             raise SupervisorError("wait_for_coord used an unexpected page limit")
         objects = structured.get("objects")
         next_cursor = structured.get("next_cursor")
-        if not isinstance(objects, list) or len(objects) > self.config.page_limit:
-            raise SupervisorError("wait_for_coord returned an invalid object page")
-        if isinstance(next_cursor, bool) or not isinstance(next_cursor, int) or next_cursor < self.state["safe_cursor"]:
-            raise SupervisorError("wait_for_coord returned an invalid cursor")
+        self.accept_attention_page(objects, next_cursor)
+        self.result.wait_succeeded = True
+        self.result.wait_was_empty = not objects
 
+    def accept_attention_page(self, objects: Any, next_cursor: Any) -> int:
+        """Validate and durably accept one fully resolved attention page."""
+        if not isinstance(objects, list) or len(objects) > self.config.page_limit:
+            raise SupervisorError("coord returned an invalid resolved object page")
+        if isinstance(next_cursor, bool) or not isinstance(next_cursor, int) or next_cursor < self.state["safe_cursor"]:
+            raise SupervisorError("coord returned an invalid resolved-page cursor")
+
+        live_state = self.state
+        candidate_state = copy.deepcopy(live_state)
+        self.state = candidate_state
+        try:
+            added = self._apply_attention_page(objects, next_cursor)
+            save_state(self.state_path, candidate_state)
+        except BaseException:
+            self.state = live_state
+            raise
+        live_state.clear()
+        live_state.update(candidate_state)
+        self.state = live_state
+        return added
+
+    def _apply_attention_page(self, objects: list[Any], next_cursor: int) -> int:
         pending_by_id = {item["attention_id"]: item for item in self.state["in_flight"]}
+        pending_before = set(pending_by_id)
         recent_ids = list(self.state["recent_attention_ids"])
         recent = set(recent_ids)
         for resolved in objects:
@@ -1122,9 +1359,7 @@ class EventConsumer:
         self.state["in_flight"] = list(pending_by_id.values())
         self.state["recent_attention_ids"] = recent_ids[-MAX_RECENT_ATTENTION_IDS:]
         self.state["safe_cursor"] = next_cursor
-        save_state(self.state_path, self.state)
-        self.result.wait_succeeded = True
-        self.result.wait_was_empty = not objects
+        return len(set(pending_by_id) - pending_before)
 
     def _narrow_resolved_object(self, resolved: Any) -> dict[str, Any] | None:
         if not isinstance(resolved, dict):
@@ -1204,17 +1439,27 @@ class EventConsumer:
                         body=body,
                     )
                     is None
+                    and _inbound_observed_response(
+                        self.config,
+                        sender_name,
+                        body,
+                    )
+                    is None
                 ):
                     return None
                 requires_terminal = request is not None
             else:
                 return None
         else:
-            requires_terminal = (
-                sender_kind == "agent"
-                and sender_name in self.config.coordinators
-                and _is_assigned_task(body, self.config.agent_name)
-            )
+            if sender_kind == "agent":
+                if sender_name not in self.config.coordinators or not _is_assigned_task(
+                    body,
+                    self.config.agent_name,
+                ):
+                    return None
+                requires_terminal = True
+            else:
+                requires_terminal = False
         return {
             "attention_id": attention_id,
             "room_name": room_name,
@@ -1232,6 +1477,7 @@ class EventConsumer:
         if room_name not in self.config.rooms:
             return
         envelope = structured.get("envelope")
+        notify = arguments.get("notify")
         if not isinstance(envelope, dict):
             return
         before = len(self.state["in_flight"])
@@ -1240,6 +1486,7 @@ class EventConsumer:
                 pending["requires_terminal"]
                 and pending["room_name"] == room_name
                 and _canonical_own_response(envelope, self.config, pending)
+                and _response_targets_match(self.config, pending, notify)
             ):
                 _complete_attention(self.state, pending["attention_id"])
         if len(self.state["in_flight"]) < before:
@@ -1259,8 +1506,14 @@ class EventConsumer:
             envelope.get("sender_kind") != "agent"
             or envelope.get("sender_agent_name") != self.config.agent_name
             or envelope.get("body") != body
+            or structured.get("attention_status") not in {"ready", "pending"}
+            or structured.get("attention_intent") != {"mode": "targeted"}
         ):
             return
+        if isinstance(notify, list) and len(notify) == 1:
+            self._record_handoff(room_name, body, notify[0])
+
+    def _record_handoff(self, room_name: str, body: str, recipient: str) -> None:
         agents = _role_agents(self.config)
         for handoff in self.config.factory_handoffs:
             if handoff.source_role != self.config.factory_role or not _body_has_type(
@@ -1269,8 +1522,7 @@ class EventConsumer:
                 task_agent=agents[handoff.destination_role],
             ):
                 continue
-            recipient = agents[handoff.destination_role]
-            if notify != [recipient]:
+            if recipient != agents[handoff.destination_role]:
                 return
             correlation = _request_correlation(body)
             if not correlation:
@@ -1691,9 +1943,9 @@ def run_invocation(
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, "stdout")
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-    phase_timeout = config.work_timeout_seconds if state["in_flight"] else config.startup_timeout_seconds
-    deadline = time.monotonic() + phase_timeout
-    invocation_deadline = deadline if state["in_flight"] else deadline + config.work_timeout_seconds
+    deadline = time.monotonic() + config.startup_timeout_seconds
+    invocation_deadline = deadline + config.work_timeout_seconds
+    turn_deadline_set = False
     post_wait_deadline_set = False
     stdout_buffer = b""
     stderr_buffer = b""
@@ -1731,23 +1983,20 @@ def run_invocation(
                     line, stdout_buffer = stdout_buffer.split(b"\n", 1)
                     if not line.strip():
                         continue
-                    if config.agent_room is not None:
-                        room = urllib.parse.quote(config.agent_room, safe="")
-                        _api_json(
-                            f"/api/coord/rooms/{room}/send",
-                            method="POST",
-                            body={
-                                "body": line.decode(errors="replace"),
-                                "declared_content_type": "text/plain",
-                                "notify": "none",
-                            },
-                        )
+                    decoded = line.decode(errors="replace")
+                    _send_agent_room_body(config, decoded, "safeyolo.codex.stdout")
                     try:
-                        event = json.loads(line)
+                        event = json.loads(decoded)
                     except json.JSONDecodeError:
                         consumer.result.protocol_failed = True
                         continue
                     consumer.consume(event)
+                    if consumer.result.saw_turn_started and not turn_deadline_set:
+                        turn_deadline_set = True
+                        deadline = min(
+                            invocation_deadline,
+                            time.monotonic() + config.work_timeout_seconds,
+                        )
                     if consumer.result.wait_succeeded and not post_wait_deadline_set:
                         post_wait_deadline_set = True
                         if consumer.result.wait_was_empty:
@@ -1760,19 +2009,10 @@ def run_invocation(
             if process.poll() is not None and not events:
                 break
         if stdout_buffer.strip():
-            if config.agent_room is not None:
-                room = urllib.parse.quote(config.agent_room, safe="")
-                _api_json(
-                    f"/api/coord/rooms/{room}/send",
-                    method="POST",
-                    body={
-                        "body": stdout_buffer.decode(errors="replace"),
-                        "declared_content_type": "text/plain",
-                        "notify": "none",
-                    },
-                )
+            decoded = stdout_buffer.decode(errors="replace")
+            _send_agent_room_body(config, decoded, "safeyolo.codex.stdout")
             try:
-                consumer.consume(json.loads(stdout_buffer))
+                consumer.consume(json.loads(decoded))
             except json.JSONDecodeError:
                 consumer.result.protocol_failed = True
         if stderr_buffer:
@@ -1795,26 +2035,89 @@ def run_invocation(
 
 
 class Supervisor:
-    def __init__(self, config: Config, state_path: Path, codex_args: list[str]) -> None:
+    def __init__(
+        self,
+        config: Config,
+        state_path: Path,
+        codex_args: list[str],
+        *,
+        debug: bool = False,
+    ) -> None:
         _require_pidfd_support()
         self.config = config
         self.state_path = state_path
         self.codex_args = codex_args
+        self.debug = debug
         self.state = load_state(state_path)
         cleanup_stale_owned_process(
             self.state,
             self.state_path,
             self.config.terminate_grace_seconds,
         )
+        self._initial_preflight_complete = False
 
     def cycle(self) -> bool:
-        room_ids = preflight(self.config, self.state)
+        if self._initial_preflight_complete:
+            room_ids = _coord_preflight(self.config, self.state)
+        else:
+            room_ids = preflight(self.config, self.state)
+            self._initial_preflight_complete = True
         save_state(self.state_path, self.state)
         if reconcile_terminals(self.config, self.state):
             save_state(self.state_path, self.state)
+
+        recovering_pending = bool(self.state["in_flight"]) and not self.state["awaiting_handoffs"]
+
+        if self.state["awaiting_handoffs"] or not self.state["in_flight"]:
+            _debug_event(
+                self.debug,
+                "wait.begin",
+                cursor=self.state["safe_cursor"],
+                limit=self.config.page_limit,
+                timeout_seconds=self.config.wait_seconds,
+            )
+            page = wait_for_attention_page(self.config, self.state)
+            _debug_event(
+                self.debug,
+                "wait.page",
+                cursor=self.state["safe_cursor"],
+                edges=len(page.get("objects", [])),
+                next_cursor=page.get("next_cursor"),
+            )
+            consumer = EventConsumer(
+                self.config,
+                self.state,
+                self.state_path,
+                room_ids,
+            )
+            accepted = consumer.accept_attention_page(
+                page.get("objects"),
+                page.get("next_cursor"),
+            )
+            _debug_event(
+                self.debug,
+                "wait.accepted",
+                accepted=accepted,
+                awaiting_handoffs=len(self.state["awaiting_handoffs"]),
+                in_flight=len(self.state["in_flight"]),
+                safe_cursor=self.state["safe_cursor"],
+            )
+            if accepted == 0:
+                self.state["consecutive_failures"] = 0
+                save_state(self.state_path, self.state)
+                _debug_event(self.debug, "cycle.rearm")
+                return True
+
         had_pending = bool(self.state["in_flight"])
         had_awaiting = bool(self.state["awaiting_handoffs"])
         had_thread = self.state["thread_id"] is not None
+        _debug_event(
+            self.debug,
+            "invocation.begin",
+            awaiting_handoffs=len(self.state["awaiting_handoffs"]),
+            in_flight=len(self.state["in_flight"]),
+            resume=had_thread,
+        )
         result = run_invocation(
             self.config,
             self.state,
@@ -1829,25 +2132,44 @@ class Supervisor:
         if reconcile_terminals(self.config, self.state):
             save_state(self.state_path, self.state)
 
-        if had_thread and had_pending and not had_awaiting and self.state["in_flight"]:
+        if (
+            had_thread
+            and recovering_pending
+            and had_pending
+            and not had_awaiting
+            and self.state["in_flight"]
+            and not (result.terminal_observed or result.handoff_observed)
+        ):
             # A continuation can start yet remain unusable after an interrupted
             # tool call. One exact-session attempt satisfies the first recovery
             # preference; the next cycle uses the canonical local checkpoint.
             self.state["thread_id"] = None
 
         complete = not self.state["in_flight"]
-        healthy_idle = result.wait_succeeded and result.wait_was_empty
-        healthy_work = result.wait_succeeded and complete and not result.wait_was_empty
         healthy_recovery = had_pending and complete
         canonical_completion = result.terminal_observed or result.handoff_observed or healthy_recovery
+        healthy_turn = result.saw_turn_completed and complete
         success = canonical_completion or (
-            (healthy_idle or healthy_work) and not (result.wait_failed or result.protocol_failed)
+            healthy_turn
+            and not (
+                result.wait_failed
+                or result.protocol_failed
+                or result.timed_out
+            )
         )
         if success:
             self.state["consecutive_failures"] = 0
         else:
             self.state["consecutive_failures"] = min(self.state["consecutive_failures"] + 1, 31)
         save_state(self.state_path, self.state)
+        _debug_event(
+            self.debug,
+            "invocation.end",
+            awaiting_handoffs=len(self.state["awaiting_handoffs"]),
+            in_flight=len(self.state["in_flight"]),
+            success=success,
+            turn_completed=result.saw_turn_completed,
+        )
         return success
 
     def backoff_seconds(self) -> int:
@@ -1882,11 +2204,125 @@ class SignalInterrupt(KeyboardInterrupt):
         self.signum = signum
 
 
+def _debug_event(enabled: bool, event: str, **fields: Any) -> None:
+    if not enabled:
+        return
+    print(
+        "codex-coord-supervisor: debug "
+        + json.dumps({"event": event, **fields}, sort_keys=True, separators=(",", ":")),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def _interrupt_for_signal(_signum: int, _frame: Any) -> None:
     raise SignalInterrupt(_signum)
 
 
-def _send_agent_room_event(config: Config, event_type: str, **fields: Any) -> None:
+def _short_summary_value(value: Any, maximum: int = 4096) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            text = str(value)
+    raw = text.encode("utf-8", errors="replace")
+    if len(raw) <= maximum:
+        return text
+    marker = "...[summary middle omitted]..."
+    marker_bytes = marker.encode()
+    remaining = max(0, maximum - len(marker_bytes))
+    head = raw[: remaining // 2].decode("utf-8", errors="ignore")
+    tail = raw[-(remaining - remaining // 2) :].decode("utf-8", errors="ignore")
+    return head + marker + tail
+
+
+def _codex_event_summary(event: Any) -> dict[str, Any]:
+    if not isinstance(event, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    for key in (
+        "event",
+        "pid",
+        "signal",
+        "exit_code",
+        "error_type",
+        "message",
+        "text",
+        "thread_id",
+    ):
+        if key in event:
+            summary[key] = _short_summary_value(event[key])
+    item = event.get("item")
+    if isinstance(item, dict):
+        for key in ("id", "type", "status", "server", "tool", "name", "command", "text"):
+            if key in item:
+                summary[key] = _short_summary_value(item[key])
+    error = event.get("error")
+    if error is not None:
+        summary["error"] = _short_summary_value(error)
+    return summary
+
+
+def _oversize_agent_room_body(body: str) -> str:
+    raw = body.encode("utf-8", errors="replace")
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        event = json.loads(body)
+    except json.JSONDecodeError:
+        event = None
+    original_type = event.get("type") if isinstance(event, dict) else None
+    if not isinstance(original_type, str):
+        original_type = "unknown"
+    summary = _codex_event_summary(event)
+
+    def render(fragment_bytes: int) -> str:
+        head_requested = (fragment_bytes + 1) // 2
+        tail_requested = fragment_bytes // 2
+        head = raw[:head_requested].decode("utf-8", errors="ignore")
+        tail = (
+            raw[-tail_requested:].decode("utf-8", errors="ignore")
+            if tail_requested
+            else ""
+        )
+        kept_bytes = len(head.encode()) + len(tail.encode())
+        return json.dumps(
+            {
+                "type": "safeyolo.codex.oversize",
+                "original_type": original_type,
+                "original_bytes": len(raw),
+                "omitted_middle_bytes": len(raw) - kept_bytes,
+                "sha256": digest,
+                "summary": summary,
+                "head": head,
+                "tail": tail,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    low = 0
+    high = min(len(raw) - 1, MAX_AGENT_ROOM_BODY_BYTES)
+    best = render(0)
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = render(middle)
+        if len(candidate.encode()) <= MAX_AGENT_ROOM_BODY_BYTES:
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
+def _bounded_agent_room_body(body: str) -> str:
+    if len(body.encode("utf-8", errors="replace")) <= MAX_AGENT_ROOM_BODY_BYTES:
+        return body
+    return _oversize_agent_room_body(body)
+
+
+def _send_agent_room_body(config: Config, body: str, event_type: str) -> None:
     if config.agent_room is None:
         return
     room = urllib.parse.quote(config.agent_room, safe="")
@@ -1895,16 +2331,24 @@ def _send_agent_room_event(config: Config, event_type: str, **fields: Any) -> No
             f"/api/coord/rooms/{room}/send",
             method="POST",
             body={
-                "body": json.dumps({"type": event_type, **fields}, separators=(",", ":")),
+                "body": _bounded_agent_room_body(body),
                 "declared_content_type": "text/plain",
                 "notify": "none",
             },
         )
-    except Exception as exc:  # noqa: BLE001 - telemetry cannot stop supervision
+    except Exception as exc:  # noqa: BLE001 - observability cannot stop supervision
         print(
             f"codex-coord-supervisor: cannot publish {event_type}: {exc}",
             file=sys.stderr,
         )
+
+
+def _send_agent_room_event(config: Config, event_type: str, **fields: Any) -> None:
+    _send_agent_room_body(
+        config,
+        json.dumps({"type": event_type, **fields}, separators=(",", ":")),
+        event_type,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1912,11 +2356,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--once", action="store_true", help="run one supervised cycle")
+    parser.add_argument("--debug", action="store_true", help="trace supervisor decisions to stderr")
     parser.add_argument("codex_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     codex_args = args.codex_args
     if codex_args[:1] == ["--"]:
         codex_args = codex_args[1:]
+    once = args.once or os.environ.get("SAFEYOLO_COORD_SUPERVISOR_ONCE") == "1"
     _set_subreaper()
     signal.signal(signal.SIGTERM, _interrupt_for_signal)
     lock = None
@@ -1931,23 +2377,50 @@ def main(argv: list[str] | None = None) -> int:
             event="started",
             pid=os.getpid(),
         )
-        supervisor = Supervisor(config, args.state, codex_args)
+        supervisor = Supervisor(
+            config,
+            args.state,
+            codex_args,
+            debug=args.debug or os.environ.get("SAFEYOLO_COORD_SUPERVISOR_DEBUG") == "1",
+        )
+        recovering_from_error = False
         while True:
             try:
                 success = supervisor.cycle()
             except SupervisorError as exc:
                 print(f"codex-coord-supervisor: {exc}", file=sys.stderr)
+                error_fields: dict[str, Any] = {
+                    "event": "error",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+                if isinstance(exc, AgentApiRequestError):
+                    error_fields.update(
+                        {
+                            "path": exc.path,
+                            "status": exc.status,
+                            "retry_after": exc.retry_after,
+                        }
+                    )
                 _send_agent_room_event(
                     config,
                     "safeyolo.supervisor",
-                    event="error",
-                    error_type=type(exc).__name__,
-                    message=str(exc),
+                    **error_fields,
                 )
                 supervisor.state["consecutive_failures"] = min(supervisor.state["consecutive_failures"] + 1, 31)
                 save_state(args.state, supervisor.state)
+                recovering_from_error = True
                 success = False
-            if args.once:
+            else:
+                if success and recovering_from_error:
+                    print("codex-coord-supervisor: coordination recovered", file=sys.stderr)
+                    _send_agent_room_event(
+                        config,
+                        "safeyolo.supervisor",
+                        event="recovered",
+                    )
+                    recovering_from_error = False
+            if once:
                 exit_code = 0 if success else 1
                 break
             delay = supervisor.backoff_seconds()
