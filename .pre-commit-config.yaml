@@ -161,3 +161,4 @@ repos:
         exclude: ^cli/src/safeyolo/templates/lists/
       - id: check-merge-conflict
       - id: detect-private-key
+        exclude: ^cli/tests/test_upstream_ca\.py$
