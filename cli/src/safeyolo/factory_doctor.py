@@ -29,7 +29,7 @@ _MESSAGE_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)=([^\s=]+)")
 _NON_CORRELATION_FIELDS = {"assignee", "attention_id"}
 _MAX_CANONICAL_BODY_BYTES = 64 * 1024
 _BACKLOG_COORDINATOR_CONTRACT_SHA256 = (
-    "13f1bfd1a670a1f1d0fe4803784ea35c545a751ecf7c44fceba77027bae0d6e3"
+    "ee9740a2f54202dfb11e81d089612a9a66acb17d7dc0d75e63bf30448844a182"
 )
 _STATE_KEYS = {
     "version",
