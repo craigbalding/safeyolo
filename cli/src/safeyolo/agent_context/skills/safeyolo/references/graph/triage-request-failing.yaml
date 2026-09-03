@@ -107,6 +107,12 @@ nodes:
     keywords: [GOAWAY, PROTOCOL_ERROR, "HTTP/2 protocol error", "header value", whitespace, "RFC 9113", "connection reset"]
     source: authored
 
+  - id: sym.request_timeout_no_response
+    kind: symptom
+    label: "Client timed out before it received an HTTP response"
+    keywords: [timeout, "timed out", "no HTTP response", "connect timeout", "operation timed out"]
+    source: authored
+
   # ---- Evidence (what I check next) ------------------------------------
   - id: ev.check_x_blocked_by
     kind: evidence
@@ -168,6 +174,16 @@ nodes:
   - id: ev.check_circuits
     kind: evidence
     label: "GET /circuits — state for the target host"
+    source: authored
+
+  - id: ev.check_timeout_route
+    kind: evidence
+    label: "Check Agent API health, proxy environment, host lookup, budgets, and circuits for the timed-out host"
+    source: authored
+
+  - id: ev.retry_timeout_with_bounded_curl
+    kind: evidence
+    label: "Send one bounded curl request through the configured proxy to the exact timed-out URL; record status, headers, body, and duration"
     source: authored
 
   - id: ev.check_context_header_and_targets
@@ -258,6 +274,11 @@ nodes:
     label: "SafeYolo/mitmproxy re-encoded a header in a way the upstream rejects"
     source: authored
 
+  - id: cls.timeout_not_policy
+    kind: classification
+    label: "SafeYolo health and policy allow the route; the timeout produced no policy response"
+    source: authored
+
   # Trace-derived classifications. Key on the full state+outcome+reason
   # tuple from /trace so branching is on stable evidence, not free-form
   # interpretation. Literals match constants documented in
@@ -327,6 +348,11 @@ nodes:
     detail: "Common flavours: bad token, OAuth SSO not authorized for org, token scope insufficient, revoked."
     source: authored
 
+  - id: con.timeout_was_transient
+    kind: conclusion
+    label: "The exact URL now responds through the proxy; classify the earlier timeout as transient and retry the original operation once"
+    source: authored
+
   - id: ask.watch_for_approval
     kind: operator_ask
     label: "Ask operator to run `safeyolo watch` and approve the specific host/capability/binding"
@@ -394,6 +420,11 @@ edges:
   - {from: sym.status_503,   to: ev.check_x_blocked_by, kind: next_check}
   - {from: sym.status_508,   to: ev.check_x_blocked_by, kind: next_check}
   - {from: sym.gh_error_after_ok_polls, to: ev.check_status_security_events, kind: next_check}
+  - {from: sym.request_timeout_no_response, to: ev.check_timeout_route, kind: next_check}
+  - {from: ev.check_timeout_route, to: cls.timeout_not_policy, kind: implies, when: "Agent API healthy; proxy variables present; lookup allows; budget remains; circuit is closed"}
+  - {from: cls.timeout_not_policy, to: ev.retry_timeout_with_bounded_curl, kind: next_check}
+  - {from: ev.retry_timeout_with_bounded_curl, to: con.timeout_was_transient, kind: implies, when: "the exact URL returns a normal HTTP response within the bound"}
+  - {from: ev.retry_timeout_with_bounded_curl, to: ask.diag_agent, kind: escalates_to, when: "the exact URL also times out or the proxy route is unavailable"}
 
   # X-Blocked-By presence classifies plane
   - {from: ev.check_x_blocked_by, to: ev.check_response_body_json, kind: next_check, when: "header present"}
@@ -506,3 +537,4 @@ entries:
   - symptom: sym.flow_search_empty
   - symptom: sym.gh_error_after_ok_polls
   - symptom: sym.http2_goaway_header_value
+  - symptom: sym.request_timeout_no_response

@@ -16,6 +16,7 @@ flowchart TD
     sym.flow_search_empty(["/api/flows/search returned count:0 for traffic I know happened"])
     sym.gh_error_after_ok_polls(["gh printed a transport-flavored error after OAuth polls returned 200s"])
     sym.http2_goaway_header_value(["Client HTTP/2 stack reported GOAWAY / PROTOCOL_ERROR with a specific header value in the debug field"])
+    sym.request_timeout_no_response(["Client timed out before it received an HTTP response"])
     ev.check_x_blocked_by["Inspect X-Blocked-By header on the failing response"]
     ev.check_response_body_json["Parse response body for 'type', 'action', 'reflection', 'reason', 'Retry-After'"]
     ev.check_lookup_host["GET /lookup?host=HOST — network:request effect for that host"]
@@ -26,6 +27,8 @@ flowchart TD
     ev.check_trace_request_id["GET /trace?request_id=req-... — per-addon state+outcome+reason for the request pipeline"]
     ev.check_budgets["GET /budgets — remaining for the target host"]
     ev.check_circuits["GET /circuits — state for the target host"]
+    ev.check_timeout_route["Check Agent API health, proxy environment, host lookup, budgets, and circuits for the timed-out host"]
+    ev.retry_timeout_with_bounded_curl["Send one bounded curl request through the configured proxy to the exact timed-out URL; record status, headers, body, and duration"]
     ev.check_context_header_and_targets["Confirm request carried X-SafeYolo-Test-Context AND policy test_context.target_hosts non-empty"]
     ev.check_goaway_debug_string["Read the GOAWAY debug field for the specific reason (header name, value pattern, forbidden chars)"]
     ev.check_client_version_string["Verify the client sends a valid version string (e.g. 'gh --version', 'curl --version') — an empty version can produce a trailing space in a User-Agent template like 'GitHub CLI '"]
@@ -40,6 +43,7 @@ flowchart TD
     cls.header_wire_format_violation{{"Header field reached the upstream in a form the HTTP/2 wire spec forbids (RFC 9113 sec 8.2.1)"}}
     cls.client_sent_bad_header{{"Client itself sent a malformed header value; not a SafeYolo action"}}
     cls.proxy_reencode_bug{{"SafeYolo/mitmproxy re-encoded a header in a way the upstream rejects"}}
+    cls.timeout_not_policy{{"SafeYolo health and policy allow the route; the timeout produced no policy response"}}
     cls.trace_evaluated_normal{{"Addon ran and reported a normal outcome (state=evaluated, addon-specific outcome)"}}
     cls.trace_bypassed_addon_disabled{{"Addon loaded but off via mitmproxy option (state=bypassed, reason=addon_disabled)"}}
     cls.trace_bypassed_policy_disabled{{"Addon loaded but disabled by PDP for this scope (state=bypassed, reason=policy_disabled)"}}
@@ -51,6 +55,7 @@ flowchart TD
     con.self_correct_request(["Self-correct the request (destination / credential / method) and retry"])
     con.honor_retry_after(["Honor Retry-After, back off, retry once budget resets"])
     con.upstream_auth_issue(["Upstream rejected the credential; not a SafeYolo action"])
+    con.timeout_was_transient(["The exact URL now responds through the proxy; classify the earlier timeout as transient and retry the original operation once"])
     ask.watch_for_approval[["Ask operator to run 'safeyolo watch' and approve the specific host/capability/binding"]]
     ask.diag_agent[["Ask operator to run 'safeyolo agent diag <name>' (attribution / bridge / end-to-end route)"]]
     ask.policy_add_host[["Ask operator: 'safeyolo policy host add HOST --agent AGENT'"]]
@@ -67,6 +72,11 @@ flowchart TD
     sym.status_503 -->|"next_check"| ev.check_x_blocked_by
     sym.status_508 -->|"next_check"| ev.check_x_blocked_by
     sym.gh_error_after_ok_polls -->|"next_check"| ev.check_status_security_events
+    sym.request_timeout_no_response -->|"next_check"| ev.check_timeout_route
+    ev.check_timeout_route -->|"implies: Agent API healthy; proxy variables present; lookup allows; budget remains; circuit is closed"| cls.timeout_not_policy
+    cls.timeout_not_policy -->|"next_check"| ev.retry_timeout_with_bounded_curl
+    ev.retry_timeout_with_bounded_curl -->|"implies: the exact URL returns a normal HTTP response within the bound"| con.timeout_was_transient
+    ev.retry_timeout_with_bounded_curl -->|"escalates_to: the exact URL also times out or the proxy route is unavailable"| ask.diag_agent
     ev.check_x_blocked_by -->|"next_check: header present"| ev.check_response_body_json
     ev.check_x_blocked_by -->|"implies: header absent AND status is upstream-shaped (401/403/404/5xx)"| cls.upstream_only
     ev.check_response_body_json -->|"implies: type refers to network_guard or credential_guard route"| cls.policy_block
@@ -132,6 +142,7 @@ flowchart TD
     class sym.flow_search_empty symptom
     class sym.gh_error_after_ok_polls symptom
     class sym.http2_goaway_header_value symptom
+    class sym.request_timeout_no_response symptom
     class ev.check_x_blocked_by evidence
     class ev.check_response_body_json evidence
     class ev.check_lookup_host evidence
@@ -142,6 +153,8 @@ flowchart TD
     class ev.check_trace_request_id evidence
     class ev.check_budgets evidence
     class ev.check_circuits evidence
+    class ev.check_timeout_route evidence
+    class ev.retry_timeout_with_bounded_curl evidence
     class ev.check_context_header_and_targets evidence
     class ev.check_goaway_debug_string evidence
     class ev.check_client_version_string evidence
@@ -156,6 +169,7 @@ flowchart TD
     class cls.header_wire_format_violation classification
     class cls.client_sent_bad_header classification
     class cls.proxy_reencode_bug classification
+    class cls.timeout_not_policy classification
     class cls.trace_evaluated_normal classification
     class cls.trace_bypassed_addon_disabled classification
     class cls.trace_bypassed_policy_disabled classification
@@ -167,6 +181,7 @@ flowchart TD
     class con.self_correct_request conclusion
     class con.honor_retry_after conclusion
     class con.upstream_auth_issue conclusion
+    class con.timeout_was_transient conclusion
     class ask.watch_for_approval operator_ask
     class ask.diag_agent operator_ask
     class ask.policy_add_host operator_ask
@@ -186,3 +201,4 @@ flowchart TD
     style sym.flow_search_empty stroke-width:3px
     style sym.gh_error_after_ok_polls stroke-width:3px
     style sym.http2_goaway_header_value stroke-width:3px
+    style sym.request_timeout_no_response stroke-width:3px
