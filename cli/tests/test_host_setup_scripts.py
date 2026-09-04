@@ -27,6 +27,7 @@ COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
 CODEX_STATE_SOURCE = REPO_ROOT / "contrib/lib/stage-codex-state.py"
 CODEX_COORD_SUPERVISOR_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor.py"
 CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
+REPO_MAP_SOURCE = REPO_ROOT / "cli/src/safeyolo/repo_map.py"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LAB_CONTROLLER_LINK_TARGET = "/safeyolo/skills/safeyolo-lab-controller"
 FACTORY_SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo-factory"
@@ -34,6 +35,7 @@ LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
 LAB_COMMAND_TARGET = (
     "/safeyolo/skills/safeyolo-lab-controller/scripts/safeyolo-lab"
 )
+REPO_MAP_COMMAND_TARGET = "/home/agent/.safeyolo/repo-map"
 
 
 def _load_codex_state_module():
@@ -112,6 +114,12 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
         if consumer_dir == ".agents":
             expected_links["safeyolo-lab-controller"] = LAB_CONTROLLER_LINK_TARGET
             expected_links["safeyolo-factory"] = FACTORY_SKILL_LINK_TARGET
+            repo_map = agent_home / ".safeyolo/repo-map"
+            assert repo_map.read_bytes() == REPO_MAP_SOURCE.read_bytes()
+            assert repo_map.stat().st_mode & 0o111
+            repo_map_command = agent_home / ".local/bin/repo-map"
+            assert repo_map_command.is_symlink()
+            assert os.readlink(repo_map_command) == REPO_MAP_COMMAND_TARGET
         for name, target in expected_links.items():
             link = agent_home / consumer_dir / "skills" / name
             assert link.is_symlink()
@@ -1593,6 +1601,50 @@ def test_codex_context_refuses_user_owned_lab_command(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "Refusing to replace existing command" in result.stderr
     assert command.read_text() == "user-owned command\n"
+
+
+def test_codex_context_refuses_user_owned_repo_map_command(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    command = agent_home / ".local/bin/repo-map"
+    command.parent.mkdir(parents=True)
+    command.write_text("user-owned command\n")
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to replace existing command" in result.stderr
+    assert command.read_text() == "user-owned command\n"
+
+
+def test_codex_context_stages_standalone_repo_map(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    command = agent_home / ".safeyolo/repo-map"
+    result = subprocess.run(
+        [str(command), str(REPO_ROOT / "cli/src/safeyolo/coord")],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith(
+        "# repo-map scope=cli/src/safeyolo/coord mode=detail "
+    )
+    assert "cli/src/safeyolo/coord/api.py" in result.stdout
+    assert "async def send(" in result.stdout
 
 
 def test_codex_context_refuses_incomplete_lab_bashrc_block(tmp_path: Path) -> None:

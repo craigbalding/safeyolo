@@ -25,7 +25,7 @@ DoctorStatus = Literal["PASS", "WARN", "FAIL"]
 _AGENT_ID_RE = re.compile(r"ag-[0-9a-f]{32}")
 _SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
 _BACKLOG_COORDINATOR_CONTRACT_SHA256 = (
-    "aa2bf5fbe373f8329b5881382dd10634964d74ac3c5c5068cb17a66323447e20"
+    "e04a452500e7b838956ed219383c9d8f2dd29a1fb94a2fb31ca495556cc4658e"
 )
 _SUPERVISOR_LIMITS = {
     "wait_seconds": (1, 300, 300),
