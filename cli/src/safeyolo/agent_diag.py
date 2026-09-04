@@ -242,6 +242,7 @@ def _check_command_supervisor(name: str) -> Check:
     from .agent_command_supervisor import (
         SupervisorStateError,
         read_command_supervisor_state,
+        sanitize_terminal_text,
         supervisor_process_is_live,
     )
 
@@ -273,10 +274,12 @@ def _check_command_supervisor(name: str) -> Check:
         )
     if lifecycle == "restarting":
         last_exit = state.get("last_exit_code")
-        stderr = str(state.get("last_stderr", "")).strip().replace("\n", " | ")
+        stderr = sanitize_terminal_text(str(state.get("last_stderr", ""))).strip().replace("\n", " | ")
         evidence = f"last exit={last_exit}"
         if stderr:
             evidence += f" stderr={stderr[:500]}"
+        if state.get("last_stderr_truncated"):
+            evidence += f" stderr_bytes={state.get('last_stderr_bytes', '?')} (tail truncated)"
         return Check(
             "Command supervisor",
             "WARN",
@@ -284,10 +287,12 @@ def _check_command_supervisor(name: str) -> Check:
             f"safeyolo agent diag {name} or safeyolo agent stop {name}",
         )
     if lifecycle == "failed":
-        stderr = str(state.get("last_stderr", "")).strip().replace("\n", " | ")
+        stderr = sanitize_terminal_text(str(state.get("last_stderr", ""))).strip().replace("\n", " | ")
         evidence = f"exit={state.get('last_exit_code', state.get('last_exit_signal', '?'))}"
         if stderr:
             evidence += f" stderr={stderr[:500]}"
+        if state.get("last_stderr_truncated"):
+            evidence += f" stderr_bytes={state.get('last_stderr_bytes', '?')} (tail truncated)"
         return Check(
             "Command supervisor",
             "FAIL",

@@ -199,10 +199,51 @@ fi
 # Keep Bash as PID 1 after the kernel check. A physical VZ test reported a low
 # limit after the final idle exec. A child can wait without replacing PID 1.
 # The wait command also reaps the child when it exits.
+COMMAND_SUPERVISOR_PID=
+COMMAND_SUPERVISOR_STATE=/home/agent/.safeyolo-command-supervisor.json
+COMMAND_SUPERVISOR_STOP=/home/agent/.safeyolo-command-supervisor.stop
+COMMAND_SUPERVISOR_SCRIPT=/run/safeyolo/guest-command-supervisor.py
+if [ ! -x "$COMMAND_SUPERVISOR_SCRIPT" ]; then
+    COMMAND_SUPERVISOR_SCRIPT=/safeyolo/guest-command-supervisor.py
+fi
+
+command_supervisor_terminal() {
+    [ -f "$COMMAND_SUPERVISOR_STATE" ] &&
+        grep -Eq '"state":"(failed|stopped)"' "$COMMAND_SUPERVISOR_STATE"
+}
+
+command_supervisor_live() {
+    [ -n "$COMMAND_SUPERVISOR_PID" ] || return 1
+    kill -0 "$COMMAND_SUPERVISOR_PID" 2>/dev/null || return 1
+    ! ps -p "$COMMAND_SUPERVISOR_PID" -o stat= 2>/dev/null | grep -q '^Z'
+}
+
+start_command_supervisor_if_needed() {
+    [ "${SAFEYOLO_COMMAND_SUPERVISED:-}" = "1" ] || return 0
+    [ -x "$COMMAND_SUPERVISOR_SCRIPT" ] || return 0
+    [ -f "$COMMAND_SUPERVISOR_STOP" ] && return 0
+    command_supervisor_terminal && return 0
+    if command_supervisor_live; then
+        return 0
+    fi
+    if [ -n "$COMMAND_SUPERVISOR_PID" ]; then
+        wait "$COMMAND_SUPERVISOR_PID" 2>/dev/null || true
+        COMMAND_SUPERVISOR_PID=
+    fi
+    # PID 1 is the durable owner: if this child is killed, the next loop
+    # iteration starts a fresh runtime supervisor. The supervisor records its
+    # command PID and start token so a replacement fences an orphan before
+    # resuming the preserved checkpoint.
+    setsid su agent -s /bin/bash -c \
+        "exec python3 '$COMMAND_SUPERVISOR_SCRIPT'" >/dev/null 2>&1 < /dev/null &
+    COMMAND_SUPERVISOR_PID=$!
+    echo "[per-run] started guest command supervisor (pid=$COMMAND_SUPERVISOR_PID)" > /dev/console 2>/dev/null || true
+}
+
 keep_pid1_alive() {
     while :; do
-        sleep 2147483647 &
-        wait "$!" || true
+        start_command_supervisor_if_needed
+        sleep 0.25
     done
 }
 

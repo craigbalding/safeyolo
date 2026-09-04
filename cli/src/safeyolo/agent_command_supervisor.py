@@ -1,14 +1,15 @@
-"""Runtime supervision for a detached agent command.
+"""State and testable policy for detached agent-command supervision.
 
-The VM and the command running inside it have different lifetimes.  This
-module owns the latter: a small host-side process starts the configured
-command, retries unexpected exits with bounded backoff, and records enough
-state for the normal CLI diagnostics to explain what happened.  It deliberately
-does not create or consume Coord work and it never restarts the sandbox.
+The VM and the command running inside it have different lifetimes.  The
+production owner is guest PID 1, which launches the standalone supervisor from
+the config share.  This module publishes the shared state and retains the
+same policy as a testable host-side model; it never creates or consumes Coord
+work and it never restarts the sandbox.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -22,7 +23,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
+from typing import BinaryIO, TextIO
 
 from .config import get_agent_command_supervisor_state_path
 
@@ -30,9 +31,11 @@ SCHEMA_VERSION = 1
 MAX_STATE_BYTES = 128 * 1024
 MAX_STDERR_BYTES = 16 * 1024
 MAX_FAILURES = 5
+STABLE_INTERVAL_SECONDS = 60.0
 INITIAL_BACKOFF_SECONDS = 0.25
 MAX_BACKOFF_SECONDS = 10.0
 STOP_WAIT_SECONDS = 5.0
+READ_CHUNK_BYTES = 4096
 _NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 log = logging.getLogger("safeyolo.agent-command-supervisor")
 
@@ -68,6 +71,51 @@ def _bounded_text(value: str | None, limit: int = MAX_STDERR_BYTES) -> str:
     # or shell error, while the beginning is often startup noise.
     encoded = value.encode("utf-8", errors="replace")[-limit:]
     return encoded.decode("utf-8", errors="replace")
+
+
+_ANSI_RE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
+)
+
+
+def sanitize_terminal_text(value: str) -> str:
+    """Keep diagnostics printable without allowing terminal control input."""
+    value = _ANSI_RE.sub("", value)
+    return "".join(
+        char if char in "\n\t\r" or ord(char) >= 32 else f"\\x{ord(char):02x}"
+        for char in value
+    )
+
+
+class _CapturedOutput:
+    """Bounded tail plus complete byte accounting for one command attempt."""
+
+    def __init__(self) -> None:
+        self._tail = bytearray()
+        self.total_bytes = 0
+        self.digest = hashlib.sha256()
+
+    def add(self, value: str | bytes) -> None:
+        encoded = (
+            value.encode("utf-8", errors="replace")
+            if isinstance(value, str)
+            else value
+        )
+        self.total_bytes += len(encoded)
+        self.digest.update(encoded)
+        self._tail.extend(encoded)
+        if len(self._tail) > MAX_STDERR_BYTES:
+            del self._tail[: len(self._tail) - MAX_STDERR_BYTES]
+
+    @property
+    def text(self) -> str:
+        return sanitize_terminal_text(
+            bytes(self._tail).decode("utf-8", errors="replace")
+        )
+
+    @property
+    def truncated(self) -> bool:
+        return self.total_bytes > MAX_STDERR_BYTES
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -119,7 +167,14 @@ def _supervisor_is_ours(state: dict) -> bool:
 
 
 def supervisor_process_is_live(state: dict) -> bool:
-    """Return whether persisted supervisor identity still matches the OS."""
+    """Return whether the persisted runtime owner still reports liveness."""
+    if state.get("runtime_owner") == "guest-pid1":
+        heartbeat = state.get("heartbeat_at")
+        return (
+            state.get("state") == "running"
+            and isinstance(heartbeat, (int, float))
+            and 0 <= time.time() - heartbeat <= 5.0
+        )
     return _supervisor_is_ours(state)
 
 
@@ -139,6 +194,16 @@ def _base_state(name: str, command: str) -> dict:
         "last_exit_signal": None,
         "last_exit_reason": None,
         "last_stderr": "",
+        "last_stderr_bytes": 0,
+        "last_stderr_truncated": False,
+        "last_stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        "last_uptime_seconds": None,
+        "attempt_started_at": None,
+        "failure_window_started_at": None,
+        "heartbeat_at": None,
+        "runtime_owner": "guest-pid1",
+        "command_pid": None,
+        "command_start_token": None,
         "next_restart_at": None,
     }
 
@@ -153,31 +218,35 @@ def _update_state(name: str, **changes: object) -> dict:
     return current
 
 
-def _drain(stream: TextIO | None, output: list[str], stop: threading.Event) -> None:
+def _drain(
+    stream: TextIO | BinaryIO | None,
+    output: _CapturedOutput | None,
+    stop: threading.Event,
+) -> None:
     if stream is None:
         return
     try:
         while True:
-            chunk = stream.readline()
+            # Fixed-size reads prevent a newline-free diagnostic record from
+            # allocating without bound before the tail can be capped.
+            chunk = stream.read(READ_CHUNK_BYTES)
             if not chunk:
                 break
             if output is not None:
-                output.append(chunk)
-                while sum(len(item.encode("utf-8", errors="replace")) for item in output) > MAX_STDERR_BYTES:
-                    output.pop(0)
+                output.add(chunk)
     except (OSError, ValueError):
         pass
     finally:
         stop.set()
 
 
-def _collect_output(process: subprocess.Popen[str]) -> tuple[int, str]:
+def _collect_output(process: subprocess.Popen[str]) -> tuple[int, _CapturedOutput]:
     """Drain both pipes so a verbose command cannot deadlock its supervisor."""
-    stderr: list[str] = []
+    stderr = _CapturedOutput()
     stdout_done = threading.Event()
     stderr_done = threading.Event()
     stdout_thread = threading.Thread(
-        target=_drain, args=(process.stdout, [], stdout_done), daemon=True
+        target=_drain, args=(process.stdout, None, stdout_done), daemon=True
     )
     stderr_thread = threading.Thread(
         target=_drain, args=(process.stderr, stderr, stderr_done), daemon=True
@@ -187,7 +256,7 @@ def _collect_output(process: subprocess.Popen[str]) -> tuple[int, str]:
     returncode = process.wait()
     stdout_thread.join(timeout=1)
     stderr_thread.join(timeout=1)
-    return returncode, _bounded_text("".join(stderr))
+    return returncode, stderr
 
 
 class CommandSupervisor:
@@ -200,8 +269,9 @@ class CommandSupervisor:
         *,
         platform,
         sleep: Callable[[float], None] = time.sleep,
-        now: Callable[[], float] = time.monotonic,
+        now: Callable[[], float] = time.time,
         max_failures: int = MAX_FAILURES,
+        stable_interval_seconds: float = STABLE_INTERVAL_SECONDS,
     ) -> None:
         _validate_name(name)
         if not command.strip():
@@ -212,6 +282,7 @@ class CommandSupervisor:
         self.sleep = sleep
         self.now = now
         self.max_failures = max_failures
+        self.stable_interval_seconds = stable_interval_seconds
         self.stop_requested = threading.Event()
         self.child: subprocess.Popen[str] | None = None
 
@@ -227,29 +298,65 @@ class CommandSupervisor:
     def _stop_marker_exists(self) -> bool:
         return _stop_path(self.name).exists()
 
-    def _record_exit(self, returncode: int, stderr: str) -> None:
+    def _record_exit(
+        self,
+        returncode: int,
+        stderr: _CapturedOutput,
+        uptime_seconds: float,
+    ) -> None:
         signal_number = -returncode if returncode < 0 else None
         exit_code = returncode if returncode >= 0 else None
+        intentional = self.stop_requested.is_set() or self._stop_marker_exists()
+        reason = "intentional-stop" if intentional else (
+            "command-exit-clean" if returncode == 0 else
+            "command-signal" if returncode < 0 else "command-exit-nonzero"
+        )
         _update_state(
             self.name,
             last_exit_code=exit_code,
             last_exit_signal=signal_number,
-            last_exit_reason="intentional-stop"
-            if self.stop_requested.is_set() or self._stop_marker_exists()
-            else "command-exit",
-            last_stderr=_bounded_text(stderr),
+            last_exit_reason=reason,
+            last_stderr=stderr.text,
+            last_stderr_bytes=stderr.total_bytes,
+            last_stderr_truncated=stderr.truncated,
+            last_stderr_sha256=stderr.digest.hexdigest(),
+            last_uptime_seconds=uptime_seconds,
         )
 
     def run(self) -> int:
-        failures = 0
-        restart_count = 0
+        current = _read_state(self.name)
+        failures = int((current or {}).get("consecutive_failures", 0) or 0)
+        restart_count = int((current or {}).get("restart_count", 0) or 0)
+        failure_window_started_at = (current or {}).get("failure_window_started_at")
+        if current and current.get("state") == "running":
+            previous_started = current.get("attempt_started_at")
+            previous_uptime = (
+                max(0.0, self.now() - previous_started)
+                if isinstance(previous_started, (int, float))
+                else 0.0
+            )
+            if previous_uptime >= self.stable_interval_seconds:
+                failures = 0
+            failures += 1
+            failure_window_started_at = failure_window_started_at or self.now()
+            _update_state(
+                self.name,
+                last_exit_reason="supervisor-restarted",
+                last_uptime_seconds=previous_uptime,
+                command_pid=None,
+                command_start_token=None,
+                consecutive_failures=failures,
+                failure_window_started_at=failure_window_started_at,
+            )
+            if failures >= self.max_failures:
+                _update_state(self.name, state="failed", next_restart_at=None)
+                return 1
         try:
             while True:
                 if self.stop_requested.is_set() or self._stop_marker_exists():
                     _update_state(
                         self.name,
                         state="stopped",
-                        last_exit_reason="intentional-stop",
                         next_restart_at=None,
                     )
                     return 0
@@ -260,21 +367,27 @@ class CommandSupervisor:
                     )
                     if self.child.stdin is not None:
                         self.child.stdin.close()
+                    attempt_started_at = self.now()
                     _update_state(
                         self.name,
                         state="running",
                         restart_count=restart_count,
                         consecutive_failures=failures,
+                        attempt_started_at=attempt_started_at,
+                        heartbeat_at=self.now(),
                         next_restart_at=None,
                     )
                     returncode, stderr = _collect_output(self.child)
                 except Exception as exc:  # noqa: BLE001 - runtime boundary
                     returncode = 1
-                    stderr = f"{type(exc).__name__}: {exc}"
+                    stderr = _CapturedOutput()
+                    stderr.add(f"{type(exc).__name__}: {exc}")
+                    attempt_started_at = locals().get("attempt_started_at", self.now())
                 finally:
                     self.child = None
 
-                self._record_exit(returncode, stderr)
+                uptime_seconds = max(0.0, self.now() - attempt_started_at)
+                self._record_exit(returncode, stderr, uptime_seconds)
                 if self.stop_requested.is_set() or self._stop_marker_exists():
                     _update_state(
                         self.name,
@@ -282,15 +395,11 @@ class CommandSupervisor:
                         next_restart_at=None,
                     )
                     return 0
-                if returncode == 0:
-                    _update_state(
-                        self.name,
-                        state="exited",
-                        consecutive_failures=0,
-                        next_restart_at=None,
-                    )
-                    return 0
-
+                if uptime_seconds >= self.stable_interval_seconds:
+                    failures = 0
+                    failure_window_started_at = self.now()
+                else:
+                    failure_window_started_at = failure_window_started_at or self.now()
                 failures += 1
                 restart_count += 1
                 if failures >= self.max_failures:
@@ -313,6 +422,7 @@ class CommandSupervisor:
                     state="restarting",
                     restart_count=restart_count,
                     consecutive_failures=failures,
+                    failure_window_started_at=failure_window_started_at,
                     next_restart_at=restart_at,
                 )
                 self.sleep(delay)
@@ -361,44 +471,23 @@ def _run_supervisor(name: str) -> int:
 
 
 def start_command_supervisor(name: str, command: str) -> None:
-    """Start one independent host-side supervisor for a detached command."""
+    """Publish a command for the already-running guest PID 1 owner.
+
+    The state file is on the persistent home share.  Guest PID 1 notices it
+    and owns the supervisor process, so the host CLI and its transport can
+    exit without orphaning a recovery authority.
+    """
     _validate_name(name)
     if not command.strip():
         raise ValueError("detached agent has no command to run")
     existing = _read_state(name)
     if existing and existing.get("state") in {"starting", "running", "restarting"}:
-        if _supervisor_is_ours(existing):
+        if supervisor_process_is_live(existing) or _supervisor_is_ours(existing):
             raise RuntimeError(f"agent command supervisor already running for {name}")
         raise RuntimeError(f"stale command supervisor state for {name}; stop it first")
     state = _base_state(name, command)
     _stop_path(name).unlink(missing_ok=True)
     _write_json(_state_path(name), state)
-    try:
-        process = subprocess.Popen(
-            [sys.executable, "-m", "safeyolo.agent_command_supervisor", "--run", name],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
-    except OSError:
-        _update_state(
-            name,
-            state="failed",
-            last_exit_reason="supervisor-start-failed",
-            last_stderr="host runtime supervisor could not be started",
-        )
-        raise
-    # The child records its own PID/token. This avoids a parent/child race in
-    # which a very short command exits before the parent can publish identity.
-    if process.poll() is not None and process.returncode != 0:
-        _update_state(
-            name,
-            state="failed",
-            last_exit_reason="supervisor-start-failed",
-            last_stderr=f"host supervisor exited {process.returncode}",
-        )
 
 
 def request_command_supervisor_stop(name: str, *, timeout: float = STOP_WAIT_SECONDS) -> bool:
@@ -408,6 +497,10 @@ def request_command_supervisor_stop(name: str, *, timeout: float = STOP_WAIT_SEC
     if state is None:
         return True
     _write_json(_stop_path(name), {"requested_at": _now(), "name": name})
+    if state.get("state") in {"stopped", "failed", "exited"}:
+        if state.get("state") != "stopped":
+            _update_state(name, state="stopped", next_restart_at=None)
+        return True
     pid = state.get("supervisor_pid")
     if _supervisor_is_ours(state):
         try:
@@ -416,7 +509,10 @@ def request_command_supervisor_stop(name: str, *, timeout: float = STOP_WAIT_SEC
             pass
         except OSError:
             return False
-    elif state.get("state") in {"running", "restarting"}:
+    elif (
+        state.get("runtime_owner") != "guest-pid1"
+        and state.get("state") in {"running", "restarting"}
+    ):
         return False
 
     deadline = time.monotonic() + timeout

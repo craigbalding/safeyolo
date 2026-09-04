@@ -258,8 +258,14 @@ def get_agent_map_path() -> Path:
 
 
 def get_agent_command_supervisor_state_path(name: str) -> Path:
-    """Get the bounded host-runtime state path for a detached command."""
-    return get_agents_dir() / name / "command-supervisor.json"
+    """Get the state path shared with the guest runtime owner.
+
+    Detached commands are supervised by the guest's PID 1 lifecycle, not by
+    an unowned host child.  The persistent home share is visible to both
+    sides, so the state and stop fence remain available when the host CLI or
+    its transport connection disappears.
+    """
+    return get_agents_dir() / name / "home" / ".safeyolo-command-supervisor.json"
 
 
 def get_bridge_sockets_dir() -> Path:

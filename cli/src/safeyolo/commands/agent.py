@@ -51,6 +51,7 @@ from ..vm import (
     build_custom_rootfs,
     clone_custom_rootfs,
     get_agent_config_share_dir,
+    get_agent_home_dir,
     get_agent_status_dir,
     prepare_config_share,
     stage_guest_desktop_launcher,
@@ -466,10 +467,21 @@ def _run_agent(
 
     # Extra env for yolo mode
     extra_env = {}
+    detached_command_path = get_agent_home_dir(name) / ".safeyolo-command"
+    detached_command_is_configured = (
+        detach
+        and detached_command_path.is_file()
+        and os.access(detached_command_path, os.X_OK)
+    )
     if yolo:
         extra_env["SAFEYOLO_YOLO_MODE"] = "1"
     if detach:
         extra_env["SAFEYOLO_DETACH"] = "1"
+    if detached_command_is_configured:
+        # The guest's PID 1 owns the runtime supervisor.  This marker is
+        # staged before boot so both Linux/gVisor and macOS/VZ use the same
+        # durable ownership boundary.
+        extra_env["SAFEYOLO_COMMAND_SUPERVISED"] = "1"
     import sys as _sys
     if _sys.platform == "linux" and not detach:
         extra_env["SAFEYOLO_HOST_TERMINAL"] = "1"
@@ -807,7 +819,6 @@ def _run_agent(
         # --- Post-boot (shared by restore and cold-boot success paths) ----
         if plat.is_sandbox_running(name):
             if detach:
-                from ..vm import get_agent_home_dir
                 command_host = get_agent_home_dir(name) / ".safeyolo-command"
                 full_cmd = _linux_interactive_command(
                     command_host,
@@ -843,7 +854,6 @@ def _run_agent(
                 # /home/agent/.safeyolo-command if present (written by
                 # the host script into the persistent home), else drops
                 # to an interactive bash login.
-                from ..vm import get_agent_home_dir
                 command_host = get_agent_home_dir(name) / ".safeyolo-command"
                 full_cmd = _linux_interactive_command(
                     command_host,
