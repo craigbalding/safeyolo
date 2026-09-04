@@ -86,10 +86,11 @@ sbom = [
 # NOTE: `uv tool install --editable .` does NOT apply these — `[tool.uv]`
 # in the target's pyproject is only read when uv is resolving for the
 # project itself (uv sync, uv run). For `uv tool install` the pins must
-# be passed on the CLI (see the top-level `Makefile` `install` target,
-# which does exactly that). Keep this list in sync with `Makefile`
-# UV_OVERRIDES.
+# be passed on the CLI (see `install.sh`, which does exactly that). Keep this
+# list in sync with `install.sh` UV_OVERRIDES.
 override-dependencies = [
+    # Temporary h2 security fix; mitmproxy 12.2.3 still declares h2<=4.3.0.
+    "h2>=4.4.1",
     # CVE-2026-27205: flask XSS (mitmproxy allows 3.1.3 on main, pending release)
     "flask>=3.1.3",
     # GHSA-x3rm-644c-6f6g / GHSA-w4q6-m4r4-cjx7: Pygments ReDoS in GUID matching
