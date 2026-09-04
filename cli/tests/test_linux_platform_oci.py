@@ -735,6 +735,34 @@ def test_wait_for_runsc_stop_returns_immediately_after_state_transition(monkeypa
     assert linux._wait_for_runsc_stop([], "runsc", "/run", "agent") is True
 
 
+@pytest.mark.parametrize(
+    ("process_state", "expected"),
+    [("Z", "stopped"), ("S", "running"), (None, "running")],
+)
+def test_runsc_container_status_checks_reported_sentry_process(
+    monkeypatch, process_state, expected
+):
+    from safeyolo.platform import linux
+
+    result = subprocess.CompletedProcess(
+        ["runsc", "state"],
+        0,
+        '{"status": "running", "pid": 4242}',
+        "",
+    )
+    monkeypatch.setattr(linux, "_run", lambda *args, **kwargs: result)
+    monkeypatch.setattr(
+        linux,
+        "_proc_process_state",
+        lambda pid: process_state if pid == 4242 else pytest.fail("wrong pid"),
+    )
+
+    assert (
+        linux._runsc_container_status([], "runsc", "/run", "agent")
+        == expected
+    )
+
+
 def test_wait_for_runsc_stop_reports_timeout_while_still_running(monkeypatch):
     from safeyolo.platform import linux
 

@@ -199,6 +199,22 @@ fi
 # Keep Bash as PID 1 after the kernel check. A physical VZ test reported a low
 # limit after the final idle exec. A child can wait without replacing PID 1.
 # The wait command also reaps the child when it exits.
+PID1_IDLE_CHILD=""
+
+graceful_shutdown() {
+    trap - TERM INT
+    if [ -n "${PID1_IDLE_CHILD:-}" ]; then
+        kill "$PID1_IDLE_CHILD" 2>/dev/null || true
+        wait "$PID1_IDLE_CHILD" 2>/dev/null || true
+        PID1_IDLE_CHILD=""
+    fi
+    exit 0
+}
+
+# runsc sends TERM to PID 1 during a graceful stop. Bash does not exit from
+# the idle wait on TERM by default when it is PID 1, so handle it explicitly.
+trap graceful_shutdown TERM INT
+
 COMMAND_SUPERVISOR_PID=
 COMMAND_SUPERVISOR_STATE=/home/agent/.safeyolo-command-supervisor.json
 COMMAND_SUPERVISOR_STOP=/home/agent/.safeyolo-command-supervisor.stop
@@ -254,7 +270,10 @@ start_command_supervisor_if_needed() {
 keep_pid1_alive() {
     while :; do
         start_command_supervisor_if_needed
-        sleep 0.25
+        sleep 0.25 &
+        PID1_IDLE_CHILD=$!
+        wait "$PID1_IDLE_CHILD" || true
+        PID1_IDLE_CHILD=""
     done
 }
 
