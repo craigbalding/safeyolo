@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import subprocess
 import tomllib
 from importlib.metadata import version
 from pathlib import Path
@@ -133,8 +135,7 @@ COMMON_HEADERS = [
 async def test_http2_malformed_headers_stop_at_connection_boundary() -> None:
     """Reject duplicate Host and conflicting content-length before hooks/upstream."""
     cases = (
-        COMMON_HEADERS
-        + [(b"host", b"example.test"), (b"host", b"example.test")],
+        COMMON_HEADERS + [(b"host", b"example.test"), (b"host", b"example.test")],
         COMMON_HEADERS + [(b"content-length", b"1"), (b"content-length", b"2")],
     )
 
@@ -168,3 +169,64 @@ def test_runtime_h2_version_and_override_declarations_are_synchronized() -> None
 
     assert install_overrides == project_overrides
     assert project_overrides[0] == "h2==4.4.1"
+
+
+def test_pipx_fallback_executable_forces_and_verifies_h2(tmp_path: Path) -> None:
+    """The documented pipx recovery path upgrades an existing h2 runtime."""
+    fake_pipx = tmp_path / "pipx"
+    state_dir = tmp_path / "pipx-state"
+    state_dir.mkdir()
+    (state_dir / "installed").touch()
+    (state_dir / "h2-version").write_text("4.3.0")
+    call_log = tmp_path / "pipx-calls"
+    fake_pipx.write_text(
+        """#!/usr/bin/env python3
+import os
+import pathlib
+import sys
+
+state = pathlib.Path(os.environ["FAKE_PIPX_STATE"])
+version_file = state / "h2-version"
+log = pathlib.Path(os.environ["FAKE_PIPX_LOG"])
+args = sys.argv[1:]
+with log.open("a") as stream:
+    stream.write(" ".join(args) + "\\n")
+
+if args[:3] == ["runpip", "mitmproxy", "--version"]:
+    raise SystemExit(0 if (state / "installed").exists() else 1)
+if args[:1] == ["install"]:
+    (state / "installed").touch()
+    version_file.write_text("4.3.0")
+    raise SystemExit(0)
+if args[:3] == ["inject", "--force", "mitmproxy"]:
+    if "h2==4.4.1" not in args:
+        raise SystemExit("missing exact h2 override")
+    version_file.write_text("4.4.1")
+    raise SystemExit(0)
+if args[:4] == ["runpip", "mitmproxy", "show", "h2"]:
+    print("Name: h2")
+    print(f"Version: {version_file.read_text()}")
+    raise SystemExit(0)
+raise SystemExit(f"unexpected pipx invocation: {args!r}")
+"""
+    )
+    fake_pipx.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment["PATH"] = f"{tmp_path}{os.pathsep}{environment['PATH']}"
+    environment["FAKE_PIPX_STATE"] = str(state_dir)
+    environment["FAKE_PIPX_LOG"] = str(call_log)
+    result = subprocess.run(
+        [str(PROJECT_ROOT / "scripts/install-mitmproxy-pipx.sh")],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (state_dir / "h2-version").read_text() == "4.4.1"
+    calls = call_log.read_text().splitlines()
+    assert any(
+        call.startswith("inject --force mitmproxy h2==4.4.1") for call in calls
+    )
+    assert any(call == "runpip mitmproxy show h2" for call in calls)
