@@ -57,7 +57,7 @@ def _factory_setup_commands(name: str, payload: dict[str, Any] | None = None) ->
     lines = [
         'Recovery order (use "$PWD" or replace it with each agent\'s workspace):',
         "Run from a host session already logged in to Codex with a ChatGPT subscription; "
-        "@codex stages that host's ~/.codex authentication and config for the agent.",
+        + "@codex stages that host's ~/.codex authentication and config for the agent.",
     ]
     for agent in agents:
         lines.append(f'  safeyolo agent add {agent} "$PWD" --host-script @codex --no-run')
