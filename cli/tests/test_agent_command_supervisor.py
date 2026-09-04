@@ -113,7 +113,7 @@ def test_unexpected_exit_restarts_same_command_without_restarting_sandbox(tmp_co
             # the operator stop arrives before that attempt is launched.
             supervisor._write_json(
                 get_agent_command_supervisor_state_path("demo").with_name(
-                    "command-supervisor.stop"
+                    ".safeyolo-command-supervisor.stop"
                 ),
                 {"name": "demo", "requested_at": "test"},
             )
@@ -297,7 +297,7 @@ def test_restart_reconciles_checkpointed_terminal_without_duplicate_response(
         assert coord.load_state(coord_state_path)["in_flight"] == []
         supervisor._write_json(
             get_agent_command_supervisor_state_path("demo").with_name(
-                "command-supervisor.stop"
+                ".safeyolo-command-supervisor.stop"
             ),
             {"name": "demo", "requested_at": "test"},
         )
@@ -341,7 +341,7 @@ def test_restart_reconciles_checkpointed_terminal_without_duplicate_response(
 
 def test_guest_owner_restarts_command_and_retains_bounded_evidence(tmp_path):
     state_path = tmp_path / "command-supervisor.json"
-    stop_path = tmp_path / "command-supervisor.stop"
+    stop_path = tmp_path / ".safeyolo-command-supervisor.stop"
     count_path = tmp_path / "attempts"
     cwd_path = tmp_path / "cwd"
     command = (
@@ -385,7 +385,7 @@ def test_guest_owner_restarts_command_and_retains_bounded_evidence(tmp_path):
 
 def test_guest_owner_stop_marker_interrupts_live_command(tmp_path):
     state_path = tmp_path / "command-supervisor.json"
-    stop_path = tmp_path / "command-supervisor.stop"
+    stop_path = tmp_path / ".safeyolo-command-supervisor.stop"
     artifact, _ = _stage_guest_supervisor_artifact(tmp_path)
     supervisor._write_json(
         state_path,
@@ -425,7 +425,7 @@ def test_guest_owner_stop_marker_interrupts_live_command(tmp_path):
 
 def test_guest_pid1_path_restarts_command_and_reconciles_checkpoint_once(tmp_path):
     state_path = tmp_path / "command-supervisor.json"
-    stop_path = tmp_path / "command-supervisor.stop"
+    stop_path = tmp_path / ".safeyolo-command-supervisor.stop"
     attempts_path = tmp_path / "attempts"
     started_path = tmp_path / "started"
     output_path = tmp_path / "responses"
@@ -586,7 +586,7 @@ def test_stop_intent_prevents_restart_after_command_crash(tmp_config_dir):
     def request_stop(_delay: float) -> None:
         supervisor._write_json(
             get_agent_command_supervisor_state_path("demo").with_name(
-                "command-supervisor.stop"
+                ".safeyolo-command-supervisor.stop"
             ),
             {"name": "demo", "requested_at": "test"},
         )
@@ -607,6 +607,27 @@ def test_start_publishes_command_for_guest_pid1_owner(tmp_config_dir):
 
     assert _state(tmp_config_dir, "demo")["command"] == "exec worker"
     assert _state(tmp_config_dir, "demo")["runtime_owner"] == "guest-pid1"
+
+
+def test_start_replaces_a_fenced_guest_owned_run(tmp_config_dir):
+    _seed_state(tmp_config_dir, "demo", "exec old-worker")
+    state_path = get_agent_command_supervisor_state_path("demo")
+    state = _state(tmp_config_dir, "demo")
+    state.update(
+        state="running",
+        runtime_owner="guest-pid1",
+        supervisor_pid=999999,
+        heartbeat_at=time.time(),
+    )
+    supervisor._write_json(state_path, state)
+    stop_path = state_path.with_name(".safeyolo-command-supervisor.stop")
+    supervisor._write_json(stop_path, {"name": "demo", "requested_at": "test"})
+
+    supervisor.start_command_supervisor("demo", "exec new-worker")
+
+    assert _state(tmp_config_dir, "demo")["command"] == "exec new-worker"
+    assert _state(tmp_config_dir, "demo")["state"] == "starting"
+    assert not stop_path.exists()
 
 
 def test_agent_stop_records_intent_even_when_sandbox_is_already_gone(
@@ -642,7 +663,7 @@ def test_guest_owned_stop_fence_does_not_block_sandbox_cleanup(tmp_config_dir):
 
     assert supervisor.request_command_supervisor_stop("demo") is True
     assert get_agent_command_supervisor_state_path("demo").with_name(
-        "command-supervisor.stop"
+        ".safeyolo-command-supervisor.stop"
     ).exists()
 
 

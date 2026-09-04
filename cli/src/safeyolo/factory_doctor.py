@@ -25,7 +25,7 @@ DoctorStatus = Literal["PASS", "WARN", "FAIL"]
 _AGENT_ID_RE = re.compile(r"ag-[0-9a-f]{32}")
 _SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
 _BACKLOG_COORDINATOR_CONTRACT_SHA256 = (
-    "91fd784fbb25dd05e3fb2daae5ef1fcc141ceeb987f41358477b3409628f3776"
+    "aa2bf5fbe373f8329b5881382dd10634964d74ac3c5c5068cb17a66323447e20"
 )
 _SUPERVISOR_LIMITS = {
     "wait_seconds": (1, 300, 300),
@@ -41,7 +41,8 @@ _COMMAND_HEREDOC_START = 'cat > "$AGENT_HOME/.safeyolo-command" <<\'EOF\'\n'
 _COMMAND_HEREDOC_END = '\nEOF\nchmod +x "$AGENT_HOME/.safeyolo-command"'
 _INTERACTIVE_CODEX_EXEC = 'exec codex "${args[@]}" "$@"\n'
 _SUPERVISED_CODEX_EXEC = (
-    'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py" '
+    'exec "$HOME/.safeyolo/venv/bin/python" '
+    '"$HOME/.safeyolo/codex-coord-supervisor.py" '
     '-- "${supervised_args[@]}" "$@"\n'
 )
 _COORD_INSTALL_BLOCK = (
@@ -927,9 +928,9 @@ def _is_supervisor_process(command: str, executable: str | None, expected: dict[
     tokens = _command_tokens(command)
     return (
         len(tokens) >= 2
-        and tokens[0] == "python3"
+        and tokens[0] == "/home/agent/.safeyolo/venv/bin/python"
         and tokens[1] == "/home/agent/.safeyolo/codex-coord-supervisor.py"
-        and executable == expected["python3"]
+        and executable == expected["mcp-python"]
     )
 
 

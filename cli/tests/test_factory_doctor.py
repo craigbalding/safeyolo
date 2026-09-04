@@ -104,7 +104,8 @@ def _healthy_process_output(index: int, *, include_mcp: bool = True, native_code
     codex_command = "/opt/codex/bin/codex" if native_codex else "/home/agent/.local/bin/codex"
     codex_executable = codex_command if native_codex else "/home/agent/.local/lib/codex.js"
     lines = [
-        f"{supervisor} 1 {supervisor} python3 /home/agent/.safeyolo/codex-coord-supervisor.py -- --flag",
+        f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/venv/bin/python "
+        "/home/agent/.safeyolo/codex-coord-supervisor.py -- --flag",
         (
             f"{codex} {supervisor} {codex} {codex_command} exec resume thread"
             if native_codex
@@ -511,7 +512,8 @@ def test_factory_doctor_treats_a_checkpoint_pid_transition_as_healthy(cli_runner
     # not a reason to stop in-flight work.
     supervisor = 52
     factory_runtime["process_output"]["forge"] = (
-        f"{supervisor} 1 {supervisor} python3 /home/agent/.safeyolo/codex-coord-supervisor.py --\n"
+        f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/venv/bin/python "
+        "/home/agent/.safeyolo/codex-coord-supervisor.py --\n"
         + _process_identity_sections({supervisor: "/usr/bin/python3.13"})
         + f"\n{_PROCESS_STAT_MARKER}\n"
     )
@@ -527,7 +529,8 @@ def test_factory_doctor_treats_a_checkpoint_pid_transition_as_healthy(cli_runner
 def test_factory_doctor_accepts_the_mise_npm_codex_shim_tree(cli_runner, factory_runtime):
     supervisor, codex, mcp = 52, 102, 202
     command = (
-        f"{supervisor} 1 {supervisor} python3 /home/agent/.safeyolo/codex-coord-supervisor.py --\n"
+        f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/venv/bin/python "
+        "/home/agent/.safeyolo/codex-coord-supervisor.py --\n"
         f"{codex} {supervisor} {codex} node /home/agent/.mise/installs/npm-openai-codex/0.152.0/node_modules/@openai/codex/bin/codex.js exec resume thread\n"
         f"{mcp} {codex} {codex} /home/agent/.safeyolo/venv/bin/python /home/agent/.safeyolo/safeyolo-coord-mcp.py\n"
     )
@@ -566,7 +569,8 @@ def test_factory_doctor_accepts_native_codex_execed_by_mise_npm_launcher(
         "@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex"
     )
     command = (
-        f"{supervisor} 1 {supervisor} python3 /home/agent/.safeyolo/codex-coord-supervisor.py --\n"
+        f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/venv/bin/python "
+        "/home/agent/.safeyolo/codex-coord-supervisor.py --\n"
         f"{codex} {supervisor} {codex} {native} exec resume --json thread\n"
         f"{mcp} {codex} {codex} /home/agent/.safeyolo/venv/bin/python "
         "/home/agent/.safeyolo/safeyolo-coord-mcp.py\n"
@@ -824,7 +828,8 @@ def test_factory_doctor_rejects_arbitrary_executables_with_valid_process_relatio
 def test_factory_doctor_rejects_noop_staged_command_and_artifacts(cli_runner, factory_runtime):
     home = factory_runtime["homes"]["forge"]
     (home / ".safeyolo-command").write_text(
-        '#!/bin/sh\n# exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"\nexit 0\n'
+        '#!/bin/sh\n# exec "$HOME/.safeyolo/venv/bin/python" '
+        '"$HOME/.safeyolo/codex-coord-supervisor.py"\nexit 0\n'
     )
     for filename in (
         "codex-coord-supervisor.py",

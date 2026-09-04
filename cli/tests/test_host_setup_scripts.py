@@ -1098,7 +1098,10 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     }
     assert config_path.stat().st_mode & 0o777 == 0o600
     assert (agent_home / ".safeyolo/codex-coord-supervisor.py").stat().st_mode & 0o111
-    assert 'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"' in command
+    assert (
+        'exec "$HOME/.safeyolo/venv/bin/python" '
+        '"$HOME/.safeyolo/codex-coord-supervisor.py"' in command
+    )
     assert "--dangerously-bypass-approvals-and-sandbox" in command
     assert command.count("coord-mcp-bootstrap: mcp+httpx install") == 1
 
@@ -1227,7 +1230,7 @@ def test_normal_codex_setup_keeps_interactive_entrypoint(tmp_path: Path) -> None
 
     command = (agent_home / ".safeyolo-command").read_text()
     assert 'exec codex "${args[@]}" "$@"' in command
-    assert 'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"' not in command
+    assert '"$HOME/.safeyolo/codex-coord-supervisor.py"' not in command
     assert not (agent_home / ".safeyolo/codex-coord-supervisor.json").exists()
 
 

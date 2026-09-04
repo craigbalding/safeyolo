@@ -393,7 +393,8 @@ with open(path) as handle:
     body = handle.read()
 interactive = 'exec codex "${args[@]}" "$@"\n'
 supervised = (
-    'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py" '
+    'exec "$HOME/.safeyolo/venv/bin/python" '
+    '"$HOME/.safeyolo/codex-coord-supervisor.py" '
     '-- "${supervised_args[@]}" "$@"\n'
 )
 if body.count(interactive) != 1:

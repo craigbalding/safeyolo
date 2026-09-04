@@ -131,6 +131,11 @@ of the above, stop and invoke the skill first.
   available for deliberate context and catch-up, not as a mandatory second
   half of a notification. Use the installed `safeyolo` skill for details.
 
+A supervised factory turn whose injected role contract already supplies the
+needed Coord and GitHub rules does not, by itself, require loading the full
+`safeyolo` skill or its references. Load them when setup, failure, ambiguity,
+or a non-routine operation requires detail not present in the injected context.
+
 ## Installing tools
 
 Prefer mise for language runtimes and project CLIs so installs persist under
