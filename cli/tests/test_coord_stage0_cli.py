@@ -350,12 +350,12 @@ def test_interactive_send_uses_explicit_target(monkeypatch):
     assert "attention=targeted target=relay" in output.getvalue()
 
 
-def test_active_factory_coordinator_resolution_is_room_scoped(monkeypatch, tmp_path):
+def test_approved_factory_coordinator_resolution_is_room_scoped(monkeypatch, tmp_path):
     factories = tmp_path / "factories"
     (factories / "backlog").mkdir(parents=True)
-    (factories / "backlog" / "active").write_text("snapshot\n")
+    (factories / "backlog" / "approved").write_text("snapshot\n")
     (factories / "other").mkdir()
-    (factories / "other" / "active").write_text("snapshot\n")
+    (factories / "other" / "approved").write_text("snapshot\n")
     monkeypatch.setattr(coord, "factories_dir", lambda: factories)
 
     def load(name):
@@ -366,17 +366,17 @@ def test_active_factory_coordinator_resolution_is_room_scoped(monkeypatch, tmp_p
             "roles": {"coordinator": {"agent": "navigator"}},
         }
 
-    monkeypatch.setattr(coord, "load_active_snapshot", load)
+    monkeypatch.setattr(coord, "load_approved_snapshot", load)
 
-    assert coord._active_factory_coordinator("backlog") == "navigator"
-    assert coord._active_factory_coordinator("unconfigured") is None
+    assert coord._approved_factory_coordinator("backlog") == "navigator"
+    assert coord._approved_factory_coordinator("unconfigured") is None
 
 
-def test_active_factory_coordinator_ambiguity_fails_closed(monkeypatch, tmp_path):
+def test_approved_factory_coordinator_ambiguity_fails_closed(monkeypatch, tmp_path):
     factories = tmp_path / "factories"
     for name in ("one", "two"):
         (factories / name).mkdir(parents=True)
-        (factories / name / "active").write_text("snapshot\n")
+        (factories / name / "approved").write_text("snapshot\n")
     monkeypatch.setattr(coord, "factories_dir", lambda: factories)
 
     def load(name):
@@ -386,10 +386,10 @@ def test_active_factory_coordinator_ambiguity_fails_closed(monkeypatch, tmp_path
             "roles": {"coordinator": {"agent": f"relay-{name}"}},
         }
 
-    monkeypatch.setattr(coord, "load_active_snapshot", load)
+    monkeypatch.setattr(coord, "load_approved_snapshot", load)
 
-    with pytest.raises(coord.FactoryContractError, match="multiple active"):
-        coord._active_factory_coordinator("backlog")
+    with pytest.raises(coord.FactoryContractError, match="multiple approved"):
+        coord._approved_factory_coordinator("backlog")
 
 
 def test_chat_rejects_target_in_observe_mode(monkeypatch):

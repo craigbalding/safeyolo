@@ -14,7 +14,13 @@ from safeyolo.agents_store import load_agent, save_agent
 from safeyolo.cli import app
 from safeyolo.coord import api as coord_api
 from safeyolo.coord import store as coord_store
-from safeyolo.factory_contract import load_active_snapshot, load_factory_file, store_snapshot
+from safeyolo.factory_contract import (
+    approve_snapshot,
+    canonical_snapshot,
+    load_approved_snapshot,
+    load_factory_file,
+    snapshot_id,
+)
 from safeyolo.factory_doctor import (
     _BACKLOG_COORDINATOR_CONTRACT_SHA256,
     _PROCESS_EXECUTABLE_MARKER,
@@ -129,8 +135,8 @@ def _healthy_process_output(index: int, *, include_mcp: bool = True, native_code
 
 @pytest.fixture
 def factory_runtime(tmp_path, tmp_config_dir, monkeypatch):
-    store_snapshot(load_factory_file(_factory_file(tmp_path)))
-    _identifier, snapshot_path, payload = load_active_snapshot("backlog")
+    approve_snapshot(load_factory_file(_factory_file(tmp_path)))
+    _identifier, snapshot_path, payload = load_approved_snapshot("backlog")
     host_script = REPO_ROOT / "contrib/codex-coord-host-setup.sh"
     running = {"relay": True, "forge": True, "lens": True}
     process_output: dict[str, str] = {}
@@ -179,7 +185,7 @@ def factory_runtime(tmp_path, tmp_config_dir, monkeypatch):
         (staged / "codex-coord-supervisor-state.json").write_text(
             json.dumps(
                 {
-                    "version": 5,
+                    "version": 6,
                     "thread_id": "thread-1",
                     "safe_cursor": 7,
                     "recent_attention_ids": [],
@@ -242,6 +248,20 @@ def factory_runtime(tmp_path, tmp_config_dir, monkeypatch):
     }
 
 
+def _select_distinct_approved_snapshot(factory_runtime) -> tuple[Path, str]:
+    """Leave staged roles on one valid snapshot and approve a later one."""
+    original_path = factory_runtime["snapshot_path"]
+    payload = json.loads(original_path.read_text())
+    payload["roles"]["owner"]["contract_text"] = "# Owner\n\nApproved revision.\n"
+    contract = payload["roles"]["owner"]["contract_text"].encode()
+    payload["roles"]["owner"]["contract_bytes"] = len(contract)
+    payload["roles"]["owner"]["contract_sha256"] = hashlib.sha256(contract).hexdigest()
+    identifier = snapshot_id(payload)
+    original_path.with_name(f"{identifier}.json").write_bytes(canonical_snapshot(payload))
+    (original_path.parents[1] / "approved").write_text(identifier + "\n")
+    return original_path, identifier
+
+
 def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_runtime):
     result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
 
@@ -259,6 +279,54 @@ def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_ru
     assert "SUMMARY factory=backlog status=PASS" in result.output
     assert "contract_text" not in result.output
     assert "recent_attention_ids" not in result.output
+
+
+def test_factory_doctor_validates_staged_identity_before_reporting_drift(cli_runner, factory_runtime):
+    original_path, approved_identifier = _select_distinct_approved_snapshot(factory_runtime)
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    staged_identifier = snapshot_id(json.loads(original_path.read_text()))
+    assert output.count("WARN component=staging") == 3
+    assert f"approved_snapshot={approved_identifier}" in output
+    assert f"staged_snapshot={staged_identifier}" in output
+    assert "runtime process identity is checked separately" in output
+    assert "running supervisor remains on the staged snapshot" not in output
+
+
+def test_factory_doctor_rejects_an_unresolvable_staged_snapshot(cli_runner, factory_runtime):
+    original_path, _approved_identifier = _select_distinct_approved_snapshot(factory_runtime)
+    original_path.write_bytes(original_path.read_bytes().replace(b'"room":"backlog"', b'"room":"tampered"'))
+    before = original_path.read_bytes()
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1, result.output
+    output = " ".join(result.output.split())
+    assert output.count("FAIL component=staging") == 3
+    assert "staged snapshot" in output
+    assert "unavailable or invalid" in output
+    assert "staged artifacts are valid" not in output
+    assert original_path.read_bytes() == before
+
+
+def test_factory_doctor_does_not_hide_invalid_staged_binding_behind_drift_warning(
+    cli_runner, factory_runtime
+):
+    _original_path, _approved_identifier = _select_distinct_approved_snapshot(factory_runtime)
+    config_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor.json"
+    config = json.loads(config_path.read_text())
+    config["rooms"] = ["wrong-room"]
+    config_path.write_text(json.dumps(config) + "\n")
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1, result.output
+    output = " ".join(result.output.split())
+    assert "FAIL component=staging role=owner agent=forge" in output
+    assert "supervisor config does not match the declared staged snapshot and role" in output
 
 
 def test_shipped_backlog_contract_hash_is_pinned():
@@ -375,6 +443,24 @@ def test_factory_doctor_reports_missing_agent_room_grant(
     assert result.exit_code == 1
     assert "FAIL component=agent-room-grant role=reviewer agent=lens" in result.output
     assert "room=lens-agent missing=send" in result.output
+    assert "safeyolo factory run backlog" in " ".join(result.output.split())
+
+
+def test_factory_doctor_reports_missing_shared_room_recovery(
+    cli_runner,
+    factory_runtime,
+    monkeypatch,
+):
+    def unavailable(_room, _principals):
+        raise RuntimeError("room missing")
+
+    monkeypatch.setattr("safeyolo.factory_doctor.coord_api.inspect_room_access", unavailable)
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1
+    assert "FAIL component=coord-room room or required membership is unavailable" in result.output
+    assert "repair with `safeyolo factory run backlog`" in " ".join(result.output.split())
 
 
 def test_factory_doctor_rejects_a_live_unrelated_proxy_pid(cli_runner, factory_runtime, tmp_config_dir, monkeypatch):
@@ -456,6 +542,45 @@ def test_factory_doctor_accepts_the_mise_npm_codex_shim_tree(cli_runner, factory
             executables,
             codex_command="/home/agent/.mise/shims/codex",
             codex_executable="/usr/local/bin/mise",
+            node_executable="/usr/local/bin/mise",
+        )
+        + f"\n{_PROCESS_STAT_MARKER}\n"
+        + f"{codex} (codex) "
+        + " ".join(["S", str(supervisor), str(codex), *(["0"] * 16), "1234", "0"])
+    )
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 0, result.output
+    assert "PASS component=processes role=owner agent=forge" in result.output
+
+
+def test_factory_doctor_accepts_native_codex_execed_by_mise_npm_launcher(
+    cli_runner,
+    factory_runtime,
+):
+    supervisor, codex, mcp = 52, 102, 202
+    native = (
+        "/home/agent/.mise/installs/npm-openai-codex/0.152.0/node_modules/.mise/"
+        "@openai+codex-linux-arm64@0.152.0-linux-arm64/node_modules/"
+        "@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex"
+    )
+    command = (
+        f"{supervisor} 1 {supervisor} python3 /home/agent/.safeyolo/codex-coord-supervisor.py --\n"
+        f"{codex} {supervisor} {codex} {native} exec resume --json thread\n"
+        f"{mcp} {codex} {codex} /home/agent/.safeyolo/venv/bin/python "
+        "/home/agent/.safeyolo/safeyolo-coord-mcp.py\n"
+    )
+    factory_runtime["process_output"]["forge"] = (
+        command
+        + _process_identity_sections(
+            {
+                supervisor: "/usr/bin/python3.13",
+                codex: native,
+                mcp: "/usr/bin/python3.13",
+            },
+            codex_command="/home/agent/.mise/shims/codex",
+            codex_executable="/usr/local/bin/mise",
             node_executable="/home/agent/.mise/installs/node/22.23.2/bin/node",
         )
         + f"\n{_PROCESS_STAT_MARKER}\n"
@@ -502,6 +627,38 @@ def test_factory_doctor_accepts_supervisor_compatible_legacy_checkpoints(cli_run
     assert state_path.read_bytes() == before
 
 
+def test_factory_doctor_reports_version_five_work_that_must_be_drained(
+    cli_runner,
+    factory_runtime,
+):
+    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
+    state = json.loads(state_path.read_text())
+    state["version"] = 5
+    state["in_flight"] = [
+        {
+            "attention_id": "attn-" + "6" * 32,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 11,
+            "body": "TASK task=one assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+    state_path.write_text(json.dumps(state) + "\n")
+    before = state_path.read_bytes()
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1, result.output
+    assert "FAIL component=checkpoint role=owner agent=forge" in result.output
+    output = " ".join(result.output.split())
+    assert "drain" in output
+    assert "safeyolo factory check FACTORY.toml" in output
+    assert "safeyolo factory approve FACTORY.toml --yes" in output
+    assert state_path.read_bytes() == before
+
+
 def test_factory_doctor_accepts_current_concurrent_awaiting_handoffs(cli_runner, factory_runtime):
     state_path = factory_runtime["homes"]["relay"] / ".safeyolo/codex-coord-supervisor-state.json"
     state = json.loads(state_path.read_text())
@@ -510,12 +667,19 @@ def test_factory_doctor_accepts_current_concurrent_awaiting_handoffs(cli_runner,
             "room_name": "backlog",
             "request": "REVIEW_READY",
             "recipient_agent": reviewer,
-            "body": f"REVIEW_READY issue=#{issue} pr=#{pr} head={head}",
-            "correlation": {"issue": f"#{issue}", "pr": f"#{pr}", "head": head},
+            "body": (
+                "REVIEW_READY "
+                f"target=https://github.com/craigbalding/safeyolo/pull/{pr}/commits/{head}"
+            ),
+            "correlation": {
+                "target": (
+                    f"https://github.com/craigbalding/safeyolo/pull/{pr}/commits/{head}"
+                )
+            },
         }
-        for reviewer, issue, pr, head in (
-            ("lens", 508, 518, "a" * 40),
-            ("audit", 509, 519, "b" * 40),
+        for reviewer, pr, head in (
+            ("lens", 518, "a" * 40),
+            ("audit", 519, "b" * 40),
         )
     ]
     state_path.write_text(json.dumps(state) + "\n")
@@ -538,6 +702,28 @@ def test_factory_doctor_rejects_null_current_awaiting_handoff(cli_runner, factor
     assert result.exit_code == 1
     assert "FAIL component=checkpoint role=owner agent=forge checkpoint is invalid" in result.output
     assert state_path.read_bytes() == before
+
+
+def test_factory_doctor_rejects_old_in_flight_task_protocol(cli_runner, factory_runtime):
+    state_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
+    state = json.loads(state_path.read_text())
+    state["in_flight"] = [
+        {
+            "attention_id": "attn-" + "5" * 32,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 11,
+            "body": "TASK task=one assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+    state_path.write_text(json.dumps(state) + "\n")
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1
+    assert "FAIL component=checkpoint role=owner agent=forge checkpoint is invalid" in result.output
 
 
 @pytest.mark.parametrize(
@@ -698,7 +884,7 @@ def test_factory_doctor_fails_on_corrupt_state_without_changing_it(cli_runner, f
     assert state.stat().st_mtime_ns == before_stat.st_mtime_ns
 
 
-def test_factory_doctor_rejects_a_tampered_active_snapshot(cli_runner, factory_runtime):
+def test_factory_doctor_rejects_a_tampered_approved_snapshot(cli_runner, factory_runtime):
     snapshot = factory_runtime["snapshot_path"]
     original = snapshot.read_bytes()
     tampered = original.replace(b"# Owner", b"# Tampered owner")
@@ -707,7 +893,7 @@ def test_factory_doctor_rejects_a_tampered_active_snapshot(cli_runner, factory_r
     result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
 
     assert result.exit_code == 1
-    assert "FAIL component=snapshot active snapshot is invalid" in result.output
+    assert "FAIL component=snapshot approved snapshot is invalid" in result.output
     assert "SUMMARY factory=backlog status=FAIL" in result.output
     assert snapshot.read_bytes() == tampered
 

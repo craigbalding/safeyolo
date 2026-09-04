@@ -1026,6 +1026,7 @@ def prepare_config_share(
         ("guest-init.sh", "guest-init"),
         ("guest-init-static.sh", "guest-init-static"),
         ("guest-init-per-run.sh", "guest-init-per-run"),
+        ("guest-command-supervisor.py", "guest-command-supervisor.py"),
         ("guest-proxy-forwarder.sh", "guest-proxy-forwarder"),
         ("guest-shell-bridge.sh", "guest-shell-bridge"),
         ("guest-diag.py", "guest-diag"),

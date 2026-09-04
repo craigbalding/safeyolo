@@ -104,6 +104,9 @@ if role.get("contract_bytes") != len(role["contract_text"].encode()):
     raise SystemExit("codex-host-setup: factory role contract byte count does not match")
 if role.get("contract_sha256") != contract_hash:
     raise SystemExit("codex-host-setup: factory role contract hash does not match")
+snapshot_id = hashlib.sha256(
+    (json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+).hexdigest()
 role_agents = {}
 for key, value in roles.items():
     if name_re.fullmatch(str(key)) is None or not isinstance(value, dict):
@@ -202,6 +205,7 @@ config = {
         "handoffs": runtime_handoffs,
         "operator_input": {"to": operator_role, "types": operator_types},
         "contract_sha256": contract_hash,
+        "snapshot_id": snapshot_id,
     },
 }
 

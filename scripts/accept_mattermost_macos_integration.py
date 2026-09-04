@@ -32,7 +32,7 @@ from safeyolo.coord.mattermost import (
 )
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_REAL_RENDERING_FIXTURE = """ACCEPTED task=mattermost-rendering-acceptance
+_REAL_RENDERING_FIXTURE = """ACCEPTED target=https://example.test/acceptance/mattermost-rendering
 
 # Human-readable projection
 
@@ -271,7 +271,7 @@ async def _verify_rendering_fixture(config: MattermostConfig, msg_id: str) -> st
     if not isinstance(message, str) or not isinstance(props, dict):
         raise AcceptanceError("fixture projection has an invalid Mattermost shape")
     required = (
-        "TASK ACCEPTED task=mattermost-rendering-acceptance",
+        "TASK ACCEPTED target=https://example.test/acceptance/mattermost-rendering",
         "# Human-readable projection",
         "**bold**",
         "`inline code`",

@@ -51,6 +51,26 @@ def _attribution_ip_conflicts(
     return {ip: names for ip, names in by_ip.items() if len(names) > 1}
 
 
+def _command_supervisor_status(name: str) -> str:
+    """Return a compact, read-only command-supervisor status for status."""
+    from ..agent_command_supervisor import (
+        SupervisorStateError,
+        read_command_supervisor_state,
+        supervisor_process_is_live,
+    )
+
+    try:
+        state = read_command_supervisor_state(name)
+    except SupervisorStateError:
+        return "invalid state"
+    if state is None:
+        return "no command"
+    lifecycle = state.get("state", "unknown")
+    if lifecycle == "running" and not supervisor_process_is_live(state):
+        return "failed (supervisor absent)"
+    return str(lifecycle)
+
+
 # Path to bundled templates in package
 POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.toml"
 ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml"
@@ -459,6 +479,7 @@ def stop_all() -> None:
 
     console.print("[bold]Stopping SafeYolo...[/bold]")
 
+    from ..agent_command_supervisor import request_command_supervisor_stop
     from ..config import get_agents_dir
     from ..platform import get_platform
 
@@ -470,6 +491,12 @@ def stop_all() -> None:
         for agent_dir in agents_dir.iterdir():
             if agent_dir.is_dir():
                 name = agent_dir.name
+                if not request_command_supervisor_stop(name):
+                    console.print(
+                        f"  [yellow]Could not stop command supervisor for {name}; "
+                        "leaving its sandbox running.[/yellow]"
+                    )
+                    continue
                 if plat.is_sandbox_running(name):
                     console.print(f"  Stopping {name}...")
                     plat.stop_sandbox(name)
@@ -662,12 +689,28 @@ def status() -> None:
             agent_table = Table(title="Running Agents", show_header=True)
             agent_table.add_column("Name", style="bold")
             agent_table.add_column("IP")
+            agent_table.add_column("Command")
 
             for name, ip in sorted(running):
                 rendered_ip = (
                     f"[red]{ip} · CONFLICT[/red]" if ip in conflicts else ip
                 )
-                agent_table.add_row(name, rendered_ip)
+                command_state = _command_supervisor_status(name)
+                command_style = (
+                    "red"
+                    if command_state.startswith("failed") or command_state == "invalid state"
+                    else "yellow"
+                    if command_state in {"restarting", "starting"}
+                    else "green"
+                    if command_state in {"running", "exited", "stopped"}
+                    else ""
+                )
+                rendered_command = (
+                    f"[{command_style}]{command_state}[/{command_style}]"
+                    if command_style
+                    else command_state
+                )
+                agent_table.add_row(name, rendered_ip, rendered_command)
 
             console.print()
             console.print(agent_table)

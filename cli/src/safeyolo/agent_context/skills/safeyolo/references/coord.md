@@ -5,8 +5,9 @@ change another agent's work state, not to narrate your own.
 
 `TASK`, `ACCEPTED`, `DONE`, `BLOCKED`, and `FAILED` are communication
 conventions for humans and models. SafeYolo does not parse them or create a
-task, claim, lease, workflow, or ownership object from them. A `task=` value is
-only a coordinator-chosen correlation label.
+task, claim, lease, workflow, or ownership object from them. The `target=` URL
+is a locator for the object that the message concerns. It is not durable work
+identity or ownership state.
 
 ## Authority and trust
 
@@ -62,14 +63,14 @@ Set `notify` explicitly when using raw `send`. The MCP adapter defaults it to
 `none`; omitting it through an older or raw caller preserves legacy room-wake
 compatibility and is not the recommended targeted workflow.
 
-For a routine assignment, prefer `send_task(room_name, assignee, task_id,
-body)`. It emits exactly `TASK task=<id> assignee=<agent>` followed by one
-blank line and the caller's multiline body, derives `notify=[assignee]`, and
-returns the same canonical send result as `send`. It rejects missing or
-malformed names, IDs, bodies, and a body that tries to supply another `TASK`
-header. This is only a producer helper that compiles into the canonical send
-operation. Manual `send` messages remain valid, and neither interface creates
-workflow state. In particular, the helper cannot notify `forge` unless the
+For a routine assignment, prefer `send_task(room_name, assignee, target,
+body)`. It emits exactly `TASK target=<absolute-url> assignee=<agent>` followed
+by one blank line and the caller's multiline body. It derives
+`notify=[assignee]` and returns the same canonical send result as `send`. It
+rejects missing or malformed names, targets, or bodies. It also rejects a body
+that tries to supply another `TASK` header. This producer helper compiles into
+the canonical send operation. Manual `send` messages remain valid, and neither
+interface creates workflow state. The helper cannot notify `forge` unless the
 exact generated header also says `assignee=forge`.
 
 Raw Agent API routes are:
@@ -230,7 +231,7 @@ The authorized coordinator sends one targeted assignment to the intended
 worker:
 
 ```text
-TASK task=<correlation-id> assignee=<agent-name>
+TASK target=<absolute-url> assignee=<agent-name>
 
 <goal / required outcome>
 
@@ -247,7 +248,8 @@ Expected result:
 Include `assignee=` in the body because attention targeting affects
 interruption, not room-history visibility. Make the message complete enough
 to act without guessing which preceding room messages are part of the
-assignment.
+assignment. The recipient must repeat the target URL byte-for-byte in every
+response. The request attention ID correlates this execution of that target.
 
 ### `ACCEPTED`
 
@@ -255,7 +257,7 @@ If the worker can proceed, send one targeted acknowledgement to the
 coordinator, then work silently:
 
 ```text
-ACCEPTED task=<id>
+ACCEPTED target=<same-absolute-url> attention_id=<request-attention-id>
 ```
 
 If required information or capability is missing, send `BLOCKED` instead of
@@ -266,7 +268,7 @@ accepting and starting a discussion.
 On success, target one useful result to the coordinator:
 
 ```text
-DONE task=<id>
+DONE target=<same-absolute-url> attention_id=<request-attention-id>
 
 result=<concise useful outcome>
 evidence=<artifact/reference/location where useful>
@@ -300,7 +302,7 @@ Use only when progress genuinely cannot continue without an external fact,
 capability, authorization, decision, input, or coordinator action:
 
 ```text
-BLOCKED task=<id>
+BLOCKED target=<same-absolute-url> attention_id=<request-attention-id>
 
 need=<specific thing required to continue>
 ```
@@ -315,7 +317,7 @@ Use when the task was attempted but cannot be completed and the worker is not
 merely waiting for an external dependency:
 
 ```text
-FAILED task=<id>
+FAILED target=<same-absolute-url> attention_id=<request-attention-id>
 
 reason=<concise terminal reason>
 ```

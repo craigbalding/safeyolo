@@ -623,10 +623,13 @@ def test_all_commonmark_image_forms_are_demoted(image: str) -> None:
 
 
 def test_task_accepted_is_a_mattermost_only_display_alias() -> None:
-    canonical = "ACCEPTED task=issue-469 attention_id=attn-" + "a" * 32
+    canonical = (
+        "ACCEPTED target=https://example.test/work/469 attention_id=attn-"
+        + "a" * 32
+    )
     rendered = mattermost.render_envelope(coord_envelope(1, body=canonical), "backlog")
-    assert rendered.startswith("TASK ACCEPTED task=issue-469")
-    assert canonical == "ACCEPTED task=issue-469 attention_id=attn-" + "a" * 32
+    assert rendered.startswith("TASK ACCEPTED target=https://example.test/work/469")
+    assert canonical.endswith("attention_id=attn-" + "a" * 32)
 
 
 @pytest.mark.asyncio

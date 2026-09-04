@@ -1,0 +1,254 @@
+# Factory graph: classify an observed live-factory problem before changing it.
+#
+# Bind the operator's observed symptom, gather current evidence, distinguish the
+# owning layer, and stop at one bounded correction or operator ask. Do not use
+# this graph to turn every failure into a contract edit or blanket restart.
+
+see_also:
+  - graph: contract-review
+    when: "runtime evidence points to a contract, authority, or handoff defect"
+  - graph: nested-mvp
+    when: "the failure needs a controlled reproduction before changing production"
+
+nodes:
+  # ---- Symptoms ------------------------------------------------------
+  - id: sym.runtime_doctor_failure
+    kind: symptom
+    label: "`factory doctor` reports one or more FAIL results"
+    keywords: [doctor, FAIL, process, checkpoint, NATS, snapshot]
+    source: authored
+
+  - id: sym.runtime_factory_quiet
+    kind: symptom
+    label: "The factory appears quiet although eligible useful work should exist"
+    detail: "Absence of agent messages is not by itself proof of healthy idle state or process death."
+    keywords: [idle, quiet, no messages, stopped work, throughput]
+    source: authored
+
+  - id: sym.runtime_bad_handoff
+    kind: symptom
+    label: "A task, review, response, or operator message did not reach the intended role"
+    keywords: [handoff, attention, target, routing, missed message]
+    source: authored
+
+  - id: sym.runtime_agent_failure
+    kind: symptom
+    label: "A supervised agent exited, trapped, restarted, or emits repeated stderr/errors"
+    keywords: [exit, crash, restart, stderr, supervisor]
+    source: authored
+
+  - id: sym.runtime_edit_ignored
+    kind: symptom
+    label: "A factory TOML or role-contract edit had no effect on running behavior"
+    keywords: [edit ignored, stale contract, snapshot, approve, run, restart]
+    source: authored
+
+  - id: sym.runtime_agent_unproductive
+    kind: symptom
+    label: "The agent is alive and receiving work but repeatedly chooses an unproductive action"
+    keywords: [agent behavior, loops, guesses, poor feedback, unproductive]
+    source: authored
+
+  # ---- Evidence ------------------------------------------------------
+  - id: ev.runtime_check_source
+    kind: evidence
+    label: "Run `factory check` on the intended source and retain resolved paths, roles, routes, bytes, and hashes"
+    source: authored
+
+  - id: ev.runtime_doctor
+    kind: evidence
+    label: "Run `factory doctor` and retain each component result plus the summary"
+    source: authored
+
+  - id: ev.runtime_compare_snapshot
+    kind: evidence
+    label: "Compare checked source hashes with the approved snapshot and each supervisor-staged snapshot"
+    source: authored
+
+  - id: ev.runtime_read_brief
+    kind: evidence
+    label: "Read current brief revision/body when present; distinguish direction from contract responsibility"
+    source: authored
+
+  - id: ev.runtime_check_coord
+    kind: evidence
+    label: "Check Coord/NATS health, room membership, send/receive grants, canonical sender/target, attention, and retained handoffs"
+    source: authored
+
+  - id: ev.runtime_check_lifecycle
+    kind: evidence
+    label: "Inspect supervisor checkpoint plus start, exit, trap, restart, and stderr lifecycle evidence"
+    source: authored
+
+  - id: ev.runtime_check_contract_edge
+    kind: evidence
+    label: "Read the exact supervisor-staged contracts and TOML edge governing the failed transition"
+    source: authored
+
+  - id: ev.runtime_check_capability
+    kind: evidence
+    label: "Verify the role can access the approved tool, environment, credential, and data its contract requires"
+    source: authored
+
+  - id: ev.runtime_check_agent_session
+    kind: evidence
+    label: "Inspect the relevant retained agent output/session around the canonical work object"
+    detail: "Prefer private agent-room output when available; operator-provided excerpts are sufficient for bounded diagnosis."
+    source: authored
+
+  - id: ev.runtime_retest_transition
+    kind: evidence
+    label: "After correction, re-run the smallest representative transition and then check end-to-end progress"
+    source: authored
+
+  # ---- Classifications -----------------------------------------------
+  - id: cls.runtime_snapshot_drift
+    kind: classification
+    label: "Source/approved/running mismatch: the factory uses different contract bytes"
+    source: authored
+
+  - id: cls.runtime_contract_defect
+    kind: classification
+    label: "Contract defect: required ownership, authority, context, response, or recovery is absent or contradictory"
+    source: authored
+
+  - id: cls.runtime_routing_defect
+    kind: classification
+    label: "Routing defect: canonical room, membership, grant, target, attention, or declared handoff is wrong"
+    source: authored
+
+  - id: cls.runtime_dependency_failure
+    kind: classification
+    label: "Runtime dependency failure: Coord/NATS, proxy, supervisor, process, storage, or MCP path is unhealthy"
+    source: authored
+
+  - id: cls.runtime_recovery_defect
+    kind: classification
+    label: "Recovery defect: failure was detected but useful work did not resume or state was lost/duplicated"
+    source: authored
+
+  - id: cls.runtime_capability_mismatch
+    kind: classification
+    label: "Capability mismatch: the assigned role cannot perform a responsibility with operator-approved resources"
+    source: authored
+
+  - id: cls.runtime_agent_behavior
+    kind: classification
+    label: "Agent-behavior defect: running contract, routes, runtime, and capabilities support the task, but the agent's choices do not"
+    source: authored
+
+  - id: cls.runtime_evidence_incomplete
+    kind: classification
+    label: "Current evidence cannot distinguish healthy quiescence, missed work, or process failure"
+    source: authored
+
+  # ---- Conclusions ---------------------------------------------------
+  - id: con.runtime_run_approved_snapshot
+    kind: conclusion
+    label: "Check and approve the intended snapshot, then run it to update the factory"
+    source: authored
+
+  - id: con.runtime_fix_contract
+    kind: conclusion
+    label: "Use the cross-contract review graph and make the smallest coherent contract-set correction"
+    source: authored
+
+  - id: con.runtime_fix_route
+    kind: conclusion
+    label: "Correct the exact room/grant/target/handoff mismatch and retest that transition"
+    source: authored
+
+  - id: con.runtime_fix_dependency
+    kind: conclusion
+    label: "Repair the named dependency without changing unrelated contracts or restarting healthy components"
+    source: authored
+
+  - id: con.runtime_fix_recovery
+    kind: conclusion
+    label: "Correct the recovery boundary that lost, duplicated, or failed to resume canonical work"
+    source: authored
+
+  - id: con.runtime_supply_capability
+    kind: conclusion
+    label: "Use an already approved tool/environment or propose the narrow additional operator-approved capability"
+    source: authored
+
+  - id: con.runtime_improve_agent_guidance
+    kind: conclusion
+    label: "Ground the correction in specific session evidence and exact code/contract references; do not add unrelated gates"
+    source: authored
+
+  - id: con.runtime_verify_end_to_end
+    kind: conclusion
+    label: "Verify the direct symptom and end-to-end factory progress; record what remains unproven"
+    source: authored
+
+  # ---- Operator asks -------------------------------------------------
+  - id: ask.runtime_offer_observation
+    kind: operator_ask
+    label: "Offer optional receive access to relevant factory/private rooms, or ask for exact retained excerpts"
+    source: authored
+
+  - id: ask.runtime_approve_capability
+    kind: operator_ask
+    label: "Ask for the narrow resource/capability only after the approved toolbox is genuinely insufficient"
+    source: authored
+
+edges:
+  # Capture source and live-state evidence for every ambiguous symptom.
+  - {from: sym.runtime_doctor_failure, to: ev.runtime_doctor, kind: next_check}
+  - {from: sym.runtime_factory_quiet, to: ev.runtime_doctor, kind: next_check}
+  - {from: sym.runtime_factory_quiet, to: ev.runtime_check_coord, kind: next_check}
+  - {from: sym.runtime_factory_quiet, to: ev.runtime_check_lifecycle, kind: next_check}
+  - {from: sym.runtime_factory_quiet, to: ev.runtime_read_brief, kind: next_check, when: "a live brief exists"}
+  - {from: sym.runtime_bad_handoff, to: ev.runtime_check_coord, kind: next_check}
+  - {from: sym.runtime_bad_handoff, to: ev.runtime_check_contract_edge, kind: next_check}
+  - {from: sym.runtime_agent_failure, to: ev.runtime_check_lifecycle, kind: next_check}
+  - {from: sym.runtime_edit_ignored, to: ev.runtime_check_source, kind: next_check}
+  - {from: sym.runtime_edit_ignored, to: ev.runtime_compare_snapshot, kind: next_check}
+  - {from: sym.runtime_agent_unproductive, to: ev.runtime_check_agent_session, kind: next_check}
+  - {from: sym.runtime_agent_unproductive, to: ev.runtime_check_contract_edge, kind: next_check}
+  - {from: sym.runtime_agent_unproductive, to: ev.runtime_check_capability, kind: next_check}
+  - {from: sym.runtime_agent_unproductive, to: ev.runtime_read_brief, kind: next_check, when: "a live brief might be directing the behavior"}
+  - {from: ev.runtime_check_source, to: ev.runtime_compare_snapshot, kind: next_check}
+  - {from: ev.runtime_read_brief, to: ev.runtime_check_contract_edge, kind: next_check, when: "compare live direction with the running role responsibility"}
+
+  # Exact evidence identifies the owning layer.
+  - {from: ev.runtime_compare_snapshot, to: cls.runtime_snapshot_drift, kind: implies, when: "source, approved, or supervisor-staged hashes differ"}
+  - {from: ev.runtime_check_contract_edge, to: cls.runtime_contract_defect, kind: implies, when: "the running contract omits or contradicts the required behavior"}
+  - {from: ev.runtime_check_coord, to: cls.runtime_routing_defect, kind: implies, when: "room/grant/envelope target/attention or TOML route does not match the intended edge"}
+  - {from: ev.runtime_doctor, to: cls.runtime_dependency_failure, kind: implies, when: "a concrete runtime component is unhealthy or mismatched"}
+  - {from: ev.runtime_check_lifecycle, to: cls.runtime_dependency_failure, kind: implies, when: "the required supervisor/process/MCP path is absent or repeatedly failing"}
+  - {from: ev.runtime_check_lifecycle, to: cls.runtime_recovery_defect, kind: implies, when: "failure is recorded but canonical work is lost, duplicated, or never resumed"}
+  - {from: ev.runtime_check_capability, to: cls.runtime_capability_mismatch, kind: implies, when: "the responsibility cannot be met with available approved resources"}
+  - {from: ev.runtime_check_agent_session, to: cls.runtime_agent_behavior, kind: implies, when: "the task arrived and feasible contract/capability paths exist, but agent choices remain unproductive"}
+  - {from: ev.runtime_check_lifecycle, to: cls.runtime_evidence_incomplete, kind: implies, when: "no lifecycle evidence establishes whether the agent is alive or exited"}
+  - {from: cls.runtime_evidence_incomplete, to: ask.runtime_offer_observation, kind: escalates_to}
+
+  # One classification, one narrow correction.
+  - {from: cls.runtime_snapshot_drift, to: con.runtime_run_approved_snapshot, kind: implies}
+  - {from: cls.runtime_contract_defect, to: con.runtime_fix_contract, kind: implies}
+  - {from: cls.runtime_routing_defect, to: con.runtime_fix_route, kind: implies}
+  - {from: cls.runtime_dependency_failure, to: con.runtime_fix_dependency, kind: implies}
+  - {from: cls.runtime_recovery_defect, to: con.runtime_fix_recovery, kind: implies}
+  - {from: cls.runtime_capability_mismatch, to: con.runtime_supply_capability, kind: implies}
+  - {from: cls.runtime_capability_mismatch, to: ask.runtime_approve_capability, kind: escalates_to, when: "no approved resource can satisfy the responsibility"}
+  - {from: cls.runtime_agent_behavior, to: con.runtime_improve_agent_guidance, kind: implies}
+
+  # Retest the corrected edge and its downstream effect.
+  - {from: con.runtime_run_approved_snapshot, to: ev.runtime_retest_transition, kind: next_check}
+  - {from: con.runtime_fix_contract, to: ev.runtime_retest_transition, kind: next_check}
+  - {from: con.runtime_fix_route, to: ev.runtime_retest_transition, kind: next_check}
+  - {from: con.runtime_fix_dependency, to: ev.runtime_retest_transition, kind: next_check}
+  - {from: con.runtime_fix_recovery, to: ev.runtime_retest_transition, kind: next_check}
+  - {from: con.runtime_supply_capability, to: ev.runtime_retest_transition, kind: next_check}
+  - {from: con.runtime_improve_agent_guidance, to: ev.runtime_retest_transition, kind: next_check}
+  - {from: ev.runtime_retest_transition, to: con.runtime_verify_end_to_end, kind: implies, when: "the direct transition and downstream progress now succeed"}
+
+entries:
+  - symptom: sym.runtime_doctor_failure
+  - symptom: sym.runtime_factory_quiet
+  - symptom: sym.runtime_bad_handoff
+  - symptom: sym.runtime_agent_failure
+  - symptom: sym.runtime_edit_ignored
+  - symptom: sym.runtime_agent_unproductive

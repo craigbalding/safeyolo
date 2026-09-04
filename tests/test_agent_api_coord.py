@@ -290,15 +290,16 @@ def test_nested_factory_agent_rooms_survive_restart_and_reject_observer_send(
 ):
     """Exercise one Relay-to-Forge-to-Lens chain over retained agent rooms."""
     from safeyolo.agents_store import get_or_mint_agent_id
-    from safeyolo.commands.factory import _ensure_agent_rooms
+    from safeyolo.commands.factory import _ensure_factory_rooms
+    from safeyolo.coord import api as coord_api
     from safeyolo.coord import nats_client
     from safeyolo.coord import nats_runtime as nr
 
     roles = ("relay", "forge", "lens")
     for name in (*roles, "qa"):
         _register_agent(name)
-    _setup_room_with_grants("nested-factory", roles)
-    _ensure_agent_rooms(iter(roles))
+    coord_api.bootstrap()
+    _ensure_factory_rooms("nested-factory", iter(roles))
     qa_id = get_or_mint_agent_id("qa")
     for name in roles:
         _grant(f"{name}-agent", "agent", qa_id, permissions=["receive"])
@@ -330,7 +331,8 @@ def test_nested_factory_agent_rooms_survive_restart_and_reject_observer_send(
         sent = send(name, f"{name}-agent", event)
         assert sent["attention_intent"] == {"mode": "none"}
 
-    task = "TASK task=nested-agent-room assignee=forge"
+    issue_target = "https://github.com/craigbalding/safeyolo/issues/1"
+    task = f"TASK target={issue_target} assignee=forge"
     task_send = send("relay", "nested-factory", task, ["forge"])
     stdout_line("relay", task)
     forge_wait = request(
@@ -341,10 +343,10 @@ def test_nested_factory_agent_rooms_survive_restart_and_reject_observer_send(
     assert task_edge["object_id"] == task_send["envelope"]["msg_id"]
 
     head = "a" * 40
-    review = (
-        f"REVIEW_READY issue=#1 pr=#2 head={head} "
-        f"attention_id={task_edge['attention_id']}"
+    review_target = (
+        "https://github.com/craigbalding/safeyolo/pull/2/commits/" + head
     )
+    review = f"REVIEW_READY target={review_target}"
     review_send = send("forge", "nested-factory", review, ["lens"])
     stdout_line("forge", review)
     lens_wait = request(
@@ -367,10 +369,7 @@ def test_nested_factory_agent_rooms_survive_restart_and_reject_observer_send(
     ]
     assert any(review in body for body in retained_bodies)
 
-    ready = (
-        f"READY issue=#1 pr=#2 head={head} "
-        f"attention_id={review_edge['attention_id']}"
-    )
+    ready = f"READY target={review_target} attention_id={review_edge['attention_id']}"
     ready_send = send("lens", "nested-factory", ready, ["forge"])
     stdout_line("lens", ready)
     forge_response_wait = request(
@@ -381,10 +380,7 @@ def test_nested_factory_agent_rooms_survive_restart_and_reject_observer_send(
     assert [edge["object_id"] for edge in ready_edges] == [
         ready_send["envelope"]["msg_id"]
     ]
-    done = (
-        "DONE task=nested-agent-room "
-        f"attention_id={task_edge['attention_id']}"
-    )
+    done = f"DONE target={issue_target} attention_id={task_edge['attention_id']}"
     done_send = send("forge", "nested-factory", done, ["relay"])
     stdout_line("forge", done)
     relay_wait = request(

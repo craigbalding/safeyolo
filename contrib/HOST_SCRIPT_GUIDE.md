@@ -70,10 +70,10 @@ stage_safeyolo_context "$SAFEYOLO_AGENT_HOME" codex
 The helper stages the baseline under `~/.safeyolo/` and links applicable
 read-only, per-run skill trees under the agent's skill directory. Both Claude
 and Codex get `/safeyolo/skills/safeyolo`. Codex also gets
-`/safeyolo/skills/safeyolo-lab-controller` and the `safeyolo-lab` guest
-command. The helper refuses to overwrite a user-owned skill or command with a
-managed name. Custom standalone scripts may instead stage their own
-instructions.
+`/safeyolo/skills/safeyolo-lab-controller`,
+`/safeyolo/skills/safeyolo-factory`, and the `safeyolo-lab` guest command. The
+helper refuses to overwrite a user-owned skill or command with a managed name.
+Custom standalone scripts may instead stage their own instructions.
 
 Sketch:
 
@@ -112,8 +112,18 @@ with it.
 Don't write `sleep infinity`, `wait`, `tail -f /dev/null`, or another
 non-interactive daemon as the command. To keep the sandbox alive in the
 background for a later `safeyolo agent shell <name>` connection, use
-`safeyolo agent run <name> --detach`; the guest's built-in keep-alive handles
-that cleanly, with no `.safeyolo-command` required.
+`safeyolo agent run <name> --detach` without a `.safeyolo-command`.
+
+When a detached run has a `.safeyolo-command`, SafeYolo publishes that command
+to a runtime supervisor owned by guest PID 1. The owner survives loss of the
+CLI transport and re-owns the supervisor if it is killed; it restarts every
+unexpected exit, including a clean exit, with bounded backoff. A stable run
+resets the crash-loop window. Exit classification, byte-counted/truncated
+stderr, and a sanitized tail are retained without allowing unbounded output.
+It does not restart the sandbox or consume Coord work. Inspect it with
+`safeyolo agent diag <name>` or `safeyolo status`; `safeyolo agent stop <name>`
+records stop intent before stopping the sandbox, so an intentional operator
+stop fences recovery.
 
 If you press Ctrl-C during the attached Linux session, SafeYolo detaches the
 terminal and leaves the sandbox running. Reconnect with `safeyolo agent shell
