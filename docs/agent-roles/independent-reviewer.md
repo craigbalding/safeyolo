@@ -193,10 +193,10 @@ terms that the recipient does not need to act.
 
 ## Coord disposition
 
-This role specialises the generic SafeYolo
-[coord work protocol](../../cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md).
-Review the exact `REVIEW_READY` candidate independently and work silently; do
-not send chatty review-progress updates.
+The protocol below is self-contained for routine review dispositions; do not
+reload supporting Coord references unless setup, failure, or ambiguity requires
+them. Review the exact `REVIEW_READY` candidate independently and work silently;
+do not send chatty review-progress updates.
 
 When the pass is complete, send one self-contained disposition. Notify every
 response recipient in the bound factory handoff. The backlog factory binds the

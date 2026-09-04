@@ -89,8 +89,8 @@ claim that it substitutes for independent review.
 
 ## Coord review loop
 
-This role specialises the generic SafeYolo
-[coord work protocol](../../cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md).
+The protocol below is self-contained for routine review handoffs; do not reload
+supporting Coord references unless setup, failure, or ambiguity requires them.
 Use coord only with the reviewer designated for this issue; room membership
 alone does not designate one.
 

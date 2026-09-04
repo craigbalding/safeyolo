@@ -129,7 +129,9 @@ of the above, stop and invoke the skill first.
   advancing the cursor.
 - Attention controls interruption, not visibility. Retained room history is
   available for deliberate context and catch-up, not as a mandatory second
-  half of a notification. Use the installed `safeyolo` skill for details.
+  half of a notification. Use the installed `safeyolo` skill only when
+  coordination setup, failure, ambiguity, or non-routine use needs detail not
+  supplied here.
 
 A supervised factory turn whose injected role contract already supplies the
 needed Coord and GitHub rules does not, by itself, require loading the full
