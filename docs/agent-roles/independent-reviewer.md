@@ -37,6 +37,13 @@ and body claims do not.
 
 Do not modify the implementation owner's branch while acting in either role.
 
+The trusted room brief may bind current locations for instance resources such
+as a read-only implementation repository or acceptance environment. A binding
+does not change this contract or grant a capability that the operator has not
+approved. When the brief binds a read-only implementation repository, use it
+as the ordinary source for both entry points and materialize any revision to be
+tested in Lens's own writable workspace.
+
 ## Coordinator-assigned independent work
 
 For an authorized `TASK target=<absolute-url> assignee=lens`, resolve its target
@@ -86,8 +93,8 @@ evidence merely because the author produced it.
   App Connector. Resolve pull-request metadata once for each immutable review
   target and read the linked issue once on first involvement. Reuse unchanged
   requirements, acceptance reasoning, and prior findings across later heads.
-- When an operator-approved read-only implementation repository is mounted,
-  materialize the exact target commit from it into Lens's own writable
+- When the trusted brief binds an operator-approved read-only implementation
+  repository, materialize the exact target commit from it into Lens's own writable
   workspace. Verify that the local commit equals both the immutable target and
   the connector-reported pull-request head. Never test Forge's live working
   tree directly. Use local Git for source, diff, filenames, history, and base
