@@ -40,6 +40,50 @@ def test_map_contains_compact_python_symbols(tmp_path):
     assert result.symbols == 3
 
 
+def test_detailed_map_shows_python_type_and_internal_module_relationships(tmp_path):
+    repository = _repository(tmp_path)
+    (repository / "pkg/app.py").write_text(
+        "from dataclasses import dataclass\n"
+        "from pathlib import Path\n"
+        "from safeyolo.coord import api\n"
+        "from .models import Result, WorkTarget\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Service(BaseService):\n"
+        "    current: WorkTarget | None\n"
+        "    @property\n"
+        "    def ready(self) -> bool:\n"
+        "        return self.current is not None\n"
+        "    async def run(self: 'Service', target: WorkTarget, *, force: bool = False) -> Result:\n"
+        "        return Result()\n"
+    )
+
+    result = build_repo_map(repository / "pkg/app.py")
+
+    assert "uses from safeyolo.coord import api" in result.text
+    assert "uses from .models import Result, WorkTarget" in result.text
+    assert "pathlib" not in result.text
+    assert "@dataclass(frozen=True)" in result.text
+    assert "class Service(BaseService) @7" in result.text
+    assert "current: WorkTarget | None @8" in result.text
+    assert "@property\n    def ready() -> bool @10" in result.text
+    assert (
+        "async def run(target: WorkTarget, *, force: bool) -> Result @12"
+        in result.text
+    )
+
+
+def test_detailed_map_bounds_internal_import_statements(tmp_path):
+    repository = _repository(tmp_path)
+    (repository / "pkg/app.py").write_text(
+        "".join(f"import safeyolo.module_{index}\n" for index in range(10))
+    )
+
+    result = build_repo_map(repository / "pkg/app.py")
+
+    assert result.text.count("  uses import safeyolo.module_") == 8
+    assert "  uses +2 internal imports" in result.text
+
+
 def test_map_contains_shell_functions(tmp_path):
     repository = _repository(tmp_path)
     with (repository / "scripts/start.sh").open("a") as script:

@@ -32,6 +32,7 @@ class RepoMap:
 _SOURCE_SUFFIXES = {".c", ".h", ".py", ".sh", ".swift", ".toml", ".yaml", ".yml"}
 _SOURCE_NAMES = {"AGENTS.md", "Makefile", "README.md", "SECURITY.md", "uv.lock"}
 _OVERVIEW_SYMBOL_LIMIT = 4
+_DETAIL_IMPORT_LIMIT = 8
 _SHELL_FUNCTION = re.compile(
     r"^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*\))?"
     r"|([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\))\s*\{"
@@ -92,23 +93,63 @@ def _source_files(root: Path, scope: Path) -> list[Path]:
     return sorted(paths, key=lambda item: item.as_posix())
 
 
+def _argument_name(argument: ast.arg) -> str:
+    if argument.annotation is None:
+        return argument.arg
+    return f"{argument.arg}: {ast.unparse(argument.annotation)}"
+
+
 def _argument_names(arguments: ast.arguments, *, method: bool) -> str:
     positional = [*arguments.posonlyargs, *arguments.args]
-    names = [argument.arg for argument in positional]
-    if method and names and names[0] in {"self", "cls"}:
+    omit_receiver = method and bool(positional) and positional[0].arg in {"self", "cls"}
+    names = [_argument_name(argument) for argument in positional]
+    if omit_receiver:
         names.pop(0)
     if arguments.posonlyargs:
-        boundary = len(arguments.posonlyargs) - (1 if method and positional[0].arg in {"self", "cls"} else 0)
+        boundary = len(arguments.posonlyargs) - (1 if omit_receiver else 0)
         if boundary > 0:
             names.insert(boundary, "/")
     if arguments.vararg:
-        names.append(f"*{arguments.vararg.arg}")
+        names.append(f"*{_argument_name(arguments.vararg)}")
     elif arguments.kwonlyargs:
         names.append("*")
-    names.extend(argument.arg for argument in arguments.kwonlyargs)
+    names.extend(_argument_name(argument) for argument in arguments.kwonlyargs)
     if arguments.kwarg:
-        names.append(f"**{arguments.kwarg.arg}")
+        names.append(f"**{_argument_name(arguments.kwarg)}")
     return ", ".join(names)
+
+
+def _return_annotation(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    if node.returns is None:
+        return ""
+    return f" -> {ast.unparse(node.returns)}"
+
+
+def _decorators(node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    return [f"@{ast.unparse(decorator)}" for decorator in node.decorator_list]
+
+
+def _internal_imports(module: ast.Module) -> list[str]:
+    imports: list[str] = []
+    for node in module.body:
+        if isinstance(node, ast.Import):
+            names = [
+                alias
+                for alias in node.names
+                if alias.name == "safeyolo" or alias.name.startswith("safeyolo.")
+            ]
+            if names:
+                imports.append(ast.unparse(ast.Import(names=names)))
+        elif isinstance(node, ast.ImportFrom) and (
+            node.level
+            or node.module == "safeyolo"
+            or (node.module or "").startswith("safeyolo.")
+        ):
+            imports.append(ast.unparse(node))
+    if len(imports) > _DETAIL_IMPORT_LIMIT:
+        omitted = len(imports) - _DETAIL_IMPORT_LIMIT
+        return [*imports[:_DETAIL_IMPORT_LIMIT], f"+{omitted} internal imports"]
+    return imports
 
 
 def _python_symbols(path: Path, *, overview: bool) -> tuple[list[str], int]:
@@ -120,19 +161,36 @@ def _python_symbols(path: Path, *, overview: bool) -> tuple[list[str], int]:
 
     lines: list[str] = []
     count = 0
+    if not overview:
+        lines.extend(f"  uses {statement}" for statement in _internal_imports(module))
     for node in module.body:
         if isinstance(node, ast.ClassDef):
             if overview and node.name.startswith("_"):
                 continue
-            lines.append(f"  class {node.name} @{node.lineno}")
+            if not overview:
+                lines.extend(f"  {decorator}" for decorator in _decorators(node))
+            bases = ""
+            if not overview and node.bases:
+                bases = f"({', '.join(ast.unparse(base) for base in node.bases)})"
+            lines.append(f"  class {node.name}{bases} @{node.lineno}")
             count += 1
             if overview:
                 continue
             for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                    annotation = ast.unparse(child.annotation)
+                    lines.append(f"    {child.target.id}: {annotation} @{child.lineno}")
+                    count += 1
+                elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    lines.extend(
+                        f"    {decorator}" for decorator in _decorators(child)
+                    )
                     prefix = "async " if isinstance(child, ast.AsyncFunctionDef) else ""
                     args = _argument_names(child.args, method=True)
-                    lines.append(f"    {prefix}def {child.name}({args}) @{child.lineno}")
+                    returns = _return_annotation(child)
+                    lines.append(
+                        f"    {prefix}def {child.name}({args}){returns} @{child.lineno}"
+                    )
                     count += 1
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if overview and node.name.startswith("_"):
@@ -141,8 +199,10 @@ def _python_symbols(path: Path, *, overview: bool) -> tuple[list[str], int]:
             if overview:
                 lines.append(f"  {prefix}def {node.name} @{node.lineno}")
             else:
+                lines.extend(f"  {decorator}" for decorator in _decorators(node))
                 args = _argument_names(node.args, method=False)
-                lines.append(f"  {prefix}def {node.name}({args}) @{node.lineno}")
+                returns = _return_annotation(node)
+                lines.append(f"  {prefix}def {node.name}({args}){returns} @{node.lineno}")
             count += 1
     return lines, count
 
