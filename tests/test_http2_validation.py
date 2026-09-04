@@ -171,6 +171,33 @@ def test_runtime_h2_version_and_override_declarations_are_synchronized() -> None
     assert project_overrides[0] == "h2==4.4.1"
 
 
+def test_first_party_install_guidance_uses_secure_helpers() -> None:
+    """Keep operator-facing install and recovery guidance on hardened paths."""
+    guidance = (
+        PROJECT_ROOT / "README.md",
+        PROJECT_ROOT / "cli" / "README.md",
+        PROJECT_ROOT / "cli" / "src" / "safeyolo" / "proxy.py",
+        PROJECT_ROOT / "cli" / "src" / "safeyolo" / "commands" / "agent.py",
+        PROJECT_ROOT / "cli" / "tests" / "uds-networking" / "test_linux_new_arch.sh",
+    )
+    raw_uv_tool = re.compile(r"\buv\s+tool\s+install\b")
+    raw_pipx_mitmproxy = re.compile(r"\bpipx\s+install\s+mitmproxy\b")
+
+    for path in guidance:
+        content = path.read_text()
+        assert not raw_uv_tool.search(content), f"raw uv-tool guidance in {path}"
+        assert not raw_pipx_mitmproxy.search(content), f"raw pipx guidance in {path}"
+
+    assert "./install.sh" in (PROJECT_ROOT / "README.md").read_text()
+    assert "./install.sh" in (PROJECT_ROOT / "cli" / "README.md").read_text()
+    assert "./install.sh reinstall" in (
+        PROJECT_ROOT / "cli" / "src" / "safeyolo" / "proxy.py"
+    ).read_text()
+    assert "scripts/install-mitmproxy-pipx.sh" in (
+        PROJECT_ROOT / "cli" / "tests" / "uds-networking" / "test_linux_new_arch.sh"
+    ).read_text()
+
+
 def test_pipx_fallback_executable_forces_and_verifies_h2(tmp_path: Path) -> None:
     """The documented pipx recovery path upgrades an existing h2 runtime."""
     fake_pipx = tmp_path / "pipx"
