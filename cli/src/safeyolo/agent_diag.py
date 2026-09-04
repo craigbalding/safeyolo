@@ -237,6 +237,79 @@ def _check_sandbox_running(name: str) -> Check:
                  f"safeyolo agent run {name}")
 
 
+def _check_command_supervisor(name: str) -> Check:
+    """Report detached-command supervision without changing runtime state."""
+    from .agent_command_supervisor import (
+        SupervisorStateError,
+        read_command_supervisor_state,
+        supervisor_process_is_live,
+    )
+
+    try:
+        state = read_command_supervisor_state(name)
+    except SupervisorStateError as exc:
+        return Check(
+            "Command supervisor",
+            "FAIL",
+            str(exc),
+            f"safeyolo agent stop {name} && safeyolo agent run {name} --detach",
+        )
+    if state is None:
+        return Check(
+            "Command supervisor",
+            "PASS",
+            "no detached command configured",
+        )
+
+    lifecycle = state.get("state")
+    if lifecycle == "running":
+        if supervisor_process_is_live(state):
+            return Check("Command supervisor", "PASS", "running")
+        return Check(
+            "Command supervisor",
+            "FAIL",
+            "state says running but the supervisor process is absent or its identity changed",
+            f"safeyolo agent stop {name} && safeyolo agent run {name} --detach",
+        )
+    if lifecycle == "restarting":
+        last_exit = state.get("last_exit_code")
+        stderr = str(state.get("last_stderr", "")).strip().replace("\n", " | ")
+        evidence = f"last exit={last_exit}"
+        if stderr:
+            evidence += f" stderr={stderr[:500]}"
+        return Check(
+            "Command supervisor",
+            "WARN",
+            f"restarting (attempt {state.get('restart_count', '?')}); {evidence}",
+            f"safeyolo agent diag {name} or safeyolo agent stop {name}",
+        )
+    if lifecycle == "failed":
+        stderr = str(state.get("last_stderr", "")).strip().replace("\n", " | ")
+        evidence = f"exit={state.get('last_exit_code', state.get('last_exit_signal', '?'))}"
+        if stderr:
+            evidence += f" stderr={stderr[:500]}"
+        return Check(
+            "Command supervisor",
+            "FAIL",
+            f"crash loop exhausted restart budget; {evidence}",
+            f"safeyolo agent stop {name} && safeyolo agent run {name} --detach",
+        )
+    if lifecycle == "stopped":
+        return Check("Command supervisor", "PASS", "stopped intentionally")
+    if lifecycle == "exited":
+        return Check(
+            "Command supervisor",
+            "PASS",
+            f"command exited normally (code {state.get('last_exit_code', 0)})",
+        )
+    return Check(
+        "Command supervisor",
+        "WARN",
+        f"{lifecycle or 'starting'}",
+        f"safeyolo agent diag {name}",
+    )
+
+
 def _check_proxy_transport(
     name: str,
     entry: dict,
@@ -411,6 +484,10 @@ def run_agent_diag(name: str) -> int:
     _print(r1)
     if r1.status == "FAIL":
         return _summarise(checks)
+
+    command_check = _check_command_supervisor(name)
+    checks.append(command_check)
+    _print(command_check)
 
     r2, entry = _check_agent_map(name)
     checks.append(r2)

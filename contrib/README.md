@@ -46,6 +46,16 @@ SAFEYOLO_CODEX_COORDINATORS=relay \
 See [the supervised worker contract](../docs/codex-coord-supervisor.md) before
 you enable this mode.
 
+## Detached command supervision
+
+`safeyolo agent run <name> --detach` with a configured
+`$SAFEYOLO_AGENT_HOME/.safeyolo-command` uses a host-side runtime supervisor.
+It restarts unexpected command exits with bounded backoff, records exit and
+stderr evidence, and exposes `running`, `restarting`, `failed`, `exited`, and
+`stopped` through `safeyolo agent diag` and `safeyolo status`. It never restarts
+the sandbox and is independent of the Coord event room. `safeyolo agent stop`
+records durable stop intent before sandbox cleanup, suppressing restart.
+
 ## The Integration Pattern
 
 SafeYolo integrations work by tailing the JSONL log:

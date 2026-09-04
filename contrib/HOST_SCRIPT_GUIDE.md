@@ -112,8 +112,15 @@ with it.
 Don't write `sleep infinity`, `wait`, `tail -f /dev/null`, or another
 non-interactive daemon as the command. To keep the sandbox alive in the
 background for a later `safeyolo agent shell <name>` connection, use
-`safeyolo agent run <name> --detach`; the guest's built-in keep-alive handles
-that cleanly, with no `.safeyolo-command` required.
+`safeyolo agent run <name> --detach` without a `.safeyolo-command`.
+
+When a detached run has a `.safeyolo-command`, SafeYolo starts that command
+under an independent host-side runtime supervisor. The supervisor restarts
+unexpected nonzero exits with bounded backoff, records the last exit and a
+bounded stderr tail, and stops retrying after a crash loop. It does not restart
+the sandbox or consume Coord work. Inspect it with `safeyolo agent diag <name>`
+or `safeyolo status`; `safeyolo agent stop <name>` records stop intent before
+stopping the sandbox, so an intentional operator stop is not restarted.
 
 If you press Ctrl-C during the attached Linux session, SafeYolo detaches the
 terminal and leaves the sandbox running. Reconnect with `safeyolo agent shell

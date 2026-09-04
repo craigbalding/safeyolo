@@ -257,6 +257,11 @@ def get_agent_map_path() -> Path:
     return get_data_dir() / "agent_map.json"
 
 
+def get_agent_command_supervisor_state_path(name: str) -> Path:
+    """Get the bounded host-runtime state path for a detached command."""
+    return get_agents_dir() / name / "command-supervisor.json"
+
+
 def get_bridge_sockets_dir() -> Path:
     """Per-agent UDS directories (`<ip>_<agent>/proxy.sock`) live here.
 

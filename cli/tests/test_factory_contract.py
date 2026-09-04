@@ -15,12 +15,7 @@ import pytest
 from click import unstyle
 
 from safeyolo.cli import app
-from safeyolo.factory_contract import (
-    FactoryContractError,
-    approve_snapshot,
-    load_approved_snapshot,
-    load_factory_file,
-)
+from safeyolo.factory_contract import FactoryContractError, load_approved_snapshot, load_factory_file
 from safeyolo.factory_doctor import FactoryDoctorCheck, FactoryDoctorReport
 from safeyolo.platform import AgentPlatform
 
@@ -168,27 +163,9 @@ def test_factory_approve_requires_approval_and_stores_immutable_snapshot(
     assert repeated.exit_code == 0
     assert snapshot_path.read_bytes() == first
 
-    compatibility = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
-    assert compatibility.exit_code == 0, compatibility.output
-    assert "deprecated; use factory approve" in compatibility.output
-    assert snapshot_path.read_bytes() == first
-
-
-def test_legacy_active_pointer_is_read_without_mutation(tmp_path, tmp_config_dir):
-    from safeyolo.factory_contract import load_active_snapshot
-
-    identifier, snapshot_path = approve_snapshot(load_factory_file(_factory_file(tmp_path)))
-    root = snapshot_path.parents[1]
-    (root / "approved").unlink()
-    (root / "active").write_text(identifier + "\n")
-    before = (root / "active").read_bytes()
-
-    loaded_identifier, loaded_path, _payload = load_active_snapshot("backlog")
-
-    assert loaded_identifier == identifier
-    assert loaded_path == snapshot_path
-    assert (root / "active").read_bytes() == before
-    assert not (root / "approved").exists()
+    removed = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
+    assert removed.exit_code == 2
+    assert "No such command 'apply'" in removed.output
 
 
 @pytest.mark.parametrize("name", [".", ".."])
@@ -368,6 +345,24 @@ def test_factory_run_executes_staged_worker_commands(
             check=False,
         ).returncode
 
+    def start_command_supervisor(name, command):
+        # The factory test uses a fake platform, so exercise the new
+        # host-supervisor boundary with a local equivalent of its sandbox
+        # command rather than accidentally invoking the real runsc platform.
+        local_command = command.replace(
+            "/home/agent/.safeyolo-command",
+            shlex.quote(str(homes[name] / ".safeyolo-command")),
+        )
+        env = {**os.environ, "HOME": str(homes[name])}
+        worker = subprocess.Popen(
+            ["bash", "-c", local_command],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pids.append(worker.pid)
+
     platform.start_sandbox.side_effect = start_sandbox
     platform.stop_sandbox.side_effect = stop_sandbox
     platform.exec_in_sandbox.side_effect = exec_in_sandbox
@@ -386,6 +381,10 @@ def test_factory_run_executes_staged_worker_commands(
         lambda name, _ip: tmp_path / f"{name}.sock",
     )
     monkeypatch.setattr("safeyolo.commands.factory._run_host_script_for_agent", stage_worker)
+    monkeypatch.setattr(
+        "safeyolo.agent_command_supervisor.start_command_supervisor",
+        start_command_supervisor,
+    )
 
     def start_coord(*, ready_timeout):
         nonlocal coord_ready

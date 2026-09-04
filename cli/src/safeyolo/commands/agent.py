@@ -372,6 +372,7 @@ def _print_detached_guidance(name: str) -> None:
     console.print("  Agent running (detached)")
     console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
     console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
+    console.print(f"  Diagnose: [bold]safeyolo agent diag {name}[/bold]")
 
 
 def _run_agent(
@@ -817,19 +818,16 @@ def _run_agent(
                     if full_cmd is None:
                         plat.stop_sandbox(name)
                         raise RuntimeError("detached agent has no command to run")
-                    launch_cmd = (
-                        f"nohup {full_cmd} >>\"$HOME/.safeyolo-command.log\" "
-                        "2>&1 </dev/null & worker=$!; "
-                        "sleep 0.2; kill -0 \"$worker\""
-                    )
-                    if plat.exec_in_sandbox(
-                        name,
-                        command=launch_cmd,
-                        user="agent",
-                        interactive=False,
-                    ) != 0:
+                    # Keep command recovery in the host runtime. A command
+                    # crash must not restart or recreate the sandbox, and a
+                    # retained Coord task must remain in the guest checkpoint.
+                    from ..agent_command_supervisor import start_command_supervisor
+
+                    try:
+                        start_command_supervisor(name, full_cmd)
+                    except Exception:
                         plat.stop_sandbox(name)
-                        raise RuntimeError("detached agent command failed to start")
+                        raise RuntimeError("detached agent command supervisor failed to start")
                 _print_detached_guidance(name)
                 _t("detach return")
                 _timing_emit()
@@ -1466,6 +1464,19 @@ def remove(
     from ..platform import get_platform
     plat = get_platform()
 
+    # Mark the command supervisor before touching the sandbox. If the host
+    # supervisor cannot be identified and stopped, leave everything intact so
+    # a command cannot be restarted after its agent is being removed.
+    from ..agent_command_supervisor import request_command_supervisor_stop
+
+    if not request_command_supervisor_stop(name):
+        console.print(
+            f"[red]Could not stop the command supervisor for {name}.[/red]\n"
+            "The agent was not removed to prevent an automatic restart. "
+            f"Run `safeyolo agent diag {name}` and retry."
+        )
+        raise typer.Exit(1)
+
     # Read the persistent network slot before removing agent metadata. Current
     # platforms have no host-side interface to tear down, but preserving the
     # platform contract here avoids reintroducing name-order allocation.
@@ -1520,7 +1531,12 @@ def run(  # DOC: README.md, docs/AGENTS.md
     ),
     yolo: bool = typer.Option(True, "--yolo/--no-yolo", help="Auto-accept mode (skips permission prompts)"),
     fresh: bool = typer.Option(False, "--fresh", help="Ignore user_default_args, start fresh session"),
-    detach: bool = typer.Option(False, "--detach", "-d", help="Boot VM in background and return (use 'agent shell' to connect)"),
+    detach: bool = typer.Option(
+        False,
+        "--detach",
+        "-d",
+        help="Boot VM in background; a configured command is runtime-supervised",
+    ),
     mount: list[str] = typer.Option(
         [],
         "--mount",
@@ -2042,7 +2058,7 @@ def diag(
     Runs through the hops from the agent out to mitmproxy and back,
     checking each link:
         agent map entry → proxy socket → attribution IP →
-        mitmproxy process → VM process → proxy transport →
+        mitmproxy process → VM process → command supervisor → proxy transport →
         authenticated Agent API + source attribution
 
     Exits 0 if everything checks out, 1 if any link is broken. Output
@@ -2077,8 +2093,20 @@ def stop(
     from ..platform import get_platform
     plat = get_platform()
 
+    # Stop intent is durable and must reach the runtime supervisor even when
+    # the sandbox has already disappeared.
+    from ..agent_command_supervisor import request_command_supervisor_stop
+
+    if not request_command_supervisor_stop(name):
+        console.print(
+            f"[red]Could not stop the command supervisor for {name}.[/red]\n"
+            "The sandbox was left intact to prevent an automatic restart. "
+            f"Run `safeyolo agent diag {name}` and retry."
+        )
+        raise typer.Exit(1)
+
     if not plat.is_sandbox_running(name):
-        console.print(f"Agent '{name}' is not running.")
+        console.print(f"Agent '{name}' sandbox is not running; command supervisor stopped.")
         raise typer.Exit(0)
 
     console.print(f"Stopping {name}...")
