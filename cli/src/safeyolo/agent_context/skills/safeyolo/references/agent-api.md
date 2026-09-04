@@ -264,9 +264,10 @@ The FlowStore is a **permanent audit record** kept on the operator's
 host (bounded by disk, not by retention time). The agent has no
 filesystem access to it; the only reachable interface is `/api/flows/*`
 on the Agent API. `/api/flows/search` returning `count: 0` means the
-recording preconditions were not met (or the query is agent-scoped and
-this agent did not originate the traffic), never that the records
-expired.
+recording preconditions were not met, the evidence is outside this agent's
+`evidence_owner` query scope, or an operator has removed the records; it does
+not indicate who initiated the traffic. Delegated operator traffic can remain
+agent-queryable while recording `initiator=operator`.
 
 In the normal per-agent configuration, flow results and bodies are scoped to
 the calling agent by service-discovery attribution.
@@ -288,7 +289,7 @@ Trusted operator actions use `attribution_status=delegated` and
 provenance marker is produced by the host-side `operator-provenance` addon;
 request headers and guest metadata cannot set it. When trusted identity is
 unavailable or conflicting, the request and response remain in JSONL with
-`attribution_status` and bounded provenance, and FlowStore omits them because
+`details.attribution.attribution_status` and bounded provenance, and FlowStore omits them because
 the records have no safe agent partition. The service-discovery addon also
 emits a dedicated operator-visible event for each unavailable or conflicting
 identity. Attribution is captured at the request boundary and reused by the
@@ -297,6 +298,11 @@ becomes available later, the original attribution is retained for correlation,
 a linked `security.agent_identity_late_change` event records the bounded
 before/after facts for operators, and FlowStore quarantines the flow rather
 than reassigning or storing it under a new owner.
+
+Audit JSONL keeps `schema_version=1` compatibility for strict existing readers:
+the five attribution fields are nested under the existing `details.attribution`
+object on the wire. Current readers using `parse_audit_event` lift them back to
+the first-class attribution fields.
 
 | Method | Path | Purpose |
 |---|---|---|

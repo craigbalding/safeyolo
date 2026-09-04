@@ -1442,6 +1442,53 @@ class TestCompleteContext:
 
 
 class TestSchemaMigration:
+    def test_reopen_preserves_v2_ownerless_attribution(self, tmp_path):
+        path = tmp_path / "v2-quarantine.sqlite3"
+        store = FlowStore(db_path=str(path), compress_bodies=False)
+        store.init_db()
+        store.record_flow(_make_record(
+            request_id="req-v2-conflict",
+            agent_id=None,
+            evidence_owner=None,
+            attribution_status="conflict",
+            attribution_provenance_json={
+                "uds_agent": "agent-a",
+                "ip_map_agent": "agent-b",
+                "reason": "uds_ip_map_mismatch",
+            },
+        ))
+        store.record_flow(_make_record(
+            request_id="req-v2-unavailable",
+            agent_id=None,
+            evidence_owner=None,
+            attribution_status="unavailable",
+            attribution_provenance_json={"reason": "no_trusted_identity"},
+        ))
+        before = [
+            dict(row)
+            for row in store._conn.execute(
+                """SELECT request_id, agent_id, evidence_owner,
+                          initiator, attribution_status,
+                          attribution_provenance_json
+                   FROM flows ORDER BY request_id"""
+            )
+        ]
+        store.close()
+
+        reopened = FlowStore(db_path=str(path), compress_bodies=False)
+        reopened.init_db()
+        after = [
+            dict(row)
+            for row in reopened._conn.execute(
+                """SELECT request_id, agent_id, evidence_owner,
+                          initiator, attribution_status,
+                          attribution_provenance_json
+                   FROM flows ORDER BY request_id"""
+            )
+        ]
+        assert after == before
+        reopened.close()
+
     def test_legacy_database_migrates_idempotently_without_evidence_loss(self, tmp_path):
         from safeyolo.storage import flow_store as module
 

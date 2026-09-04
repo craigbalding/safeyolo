@@ -427,19 +427,23 @@ class FlowStore:
 
         # Version-1 rows used agent_id as the implicit evidence owner. Preserve
         # that query scope while making the missing attribution provenance
-        # explicit instead of pretending transport details were recorded.
-        self._conn.execute(
-            """UPDATE flows
-               SET evidence_owner = agent_id,
-                   attribution_status = CASE
-                       WHEN agent_id IS NOT NULL THEN 'resolved'
-                       ELSE 'unavailable'
-                   END,
-                   initiator = 'unknown',
-                   attribution_provenance_json =
-                       '{"migration":"flow_store_v1","transport_identity":"unknown"}'
-               WHERE evidence_owner IS NULL"""
-        )
+        # explicit instead of pretending transport details were recorded. Do
+        # not run this on an already-v2 database: ownerless conflict and
+        # unavailable rows are intentional quarantined evidence and must remain
+        # operator-only across reopen.
+        if version < SCHEMA_VERSION:
+            self._conn.execute(
+                """UPDATE flows
+                   SET evidence_owner = agent_id,
+                       attribution_status = CASE
+                           WHEN agent_id IS NOT NULL THEN 'resolved'
+                           ELSE 'unavailable'
+                       END,
+                       initiator = 'unknown',
+                       attribution_provenance_json =
+                           '{"migration":"flow_store_v1","transport_identity":"unknown"}'
+                   WHERE evidence_owner IS NULL"""
+            )
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def record_flow(self, record: dict) -> int:

@@ -128,14 +128,6 @@ def test_request_writes_schema_valid_event_with_trusted_identity(logger_with_log
             "summary": "POST api.example.com/v1/data",
             "request_id": "req-1",
             "agent": "agent-a",
-            "evidence_owner": "agent-a",
-            "trusted_transport_identity": "agent-a",
-            "initiator": "unknown",
-            "attribution_status": "resolved",
-            "attribution_provenance": {
-                "transport_source": "uds",
-                "uds_agent": "agent-a",
-            },
             "host": "api.example.com",
             "addon": "request-logger",
             "details": {
@@ -143,6 +135,16 @@ def test_request_writes_schema_valid_event_with_trusted_identity(logger_with_log
                 "path": "/v1/data",
                 "size": 5,
                 "client": "192.0.2.10",
+                "attribution": {
+                    "evidence_owner": "agent-a",
+                    "trusted_transport_identity": "agent-a",
+                    "initiator": "unknown",
+                    "attribution_status": "resolved",
+                    "attribution_provenance": {
+                        "transport_source": "uds",
+                        "uds_agent": "agent-a",
+                    },
+                },
             },
         }
     ]
@@ -170,10 +172,11 @@ def test_untrusted_metadata_is_removed_from_audit_attribution(logger_with_log):
     flow.metadata["agent"] = "spoofed-agent"
     addon.request(flow)
     event = _events(path)[0]
+    attribution = event["details"]["attribution"]
     assert "agent" not in event
-    assert event["attribution_status"] == "unavailable"
-    assert event["initiator"] == "unknown"
-    assert event["attribution_provenance"] == {"reason": "no_trusted_identity"}
+    assert attribution["attribution_status"] == "unavailable"
+    assert attribution["initiator"] == "unknown"
+    assert attribution["attribution_provenance"] == {"reason": "no_trusted_identity"}
     assert "agent" not in flow.metadata
     assert flow.metadata["agent_identity_status"] == "unavailable"
 
@@ -188,12 +191,13 @@ def test_delegated_operator_traffic_keeps_transport_owner_but_not_agent_initiato
     addon.request(flow)
 
     event = _events(path)[0]
+    attribution = event["details"]["attribution"]
     assert event["agent"] == "agent-a"
-    assert event["evidence_owner"] == "agent-a"
-    assert event["trusted_transport_identity"] == "agent-a"
-    assert event["initiator"] == "operator"
-    assert event["attribution_status"] == "delegated"
-    assert event["attribution_provenance"]["delegation"] == "operator-provenance"
+    assert attribution["evidence_owner"] == "agent-a"
+    assert attribution["trusted_transport_identity"] == "agent-a"
+    assert attribution["initiator"] == "operator"
+    assert attribution["attribution_status"] == "delegated"
+    assert attribution["attribution_provenance"]["delegation"] == "operator-provenance"
 
 
 def test_conflicting_trusted_sources_are_operator_only(logger_with_log):
@@ -210,11 +214,12 @@ def test_conflicting_trusted_sources_are_operator_only(logger_with_log):
         addon.request(flow)
 
     event = _events(path)[0]
+    attribution = event["details"]["attribution"]
     assert "agent" not in event
-    assert event["attribution_status"] == "conflict"
-    assert "evidence_owner" not in event
-    assert "trusted_transport_identity" not in event
-    assert event["attribution_provenance"] == {
+    assert attribution["attribution_status"] == "conflict"
+    assert "evidence_owner" not in attribution
+    assert "trusted_transport_identity" not in attribution
+    assert attribution["attribution_provenance"] == {
         "uds_agent": "agent-a",
         "ip_map_agent": "agent-b",
         "reason": "uds_ip_map_mismatch",
@@ -251,9 +256,10 @@ def test_request_response_share_snapshot_when_ip_map_changes(logger_with_log):
         addon.response(flow)
 
     traffic = [event for event in _events(path) if event["event"].startswith("traffic.")]
-    assert traffic[0]["evidence_owner"] == traffic[1]["evidence_owner"] == "agent-a"
-    assert traffic[0]["trusted_transport_identity"] == traffic[1]["trusted_transport_identity"] == "agent-a"
-    assert traffic[0]["attribution_status"] == traffic[1]["attribution_status"] == "resolved"
+    traffic_attribution = [event["details"]["attribution"] for event in traffic]
+    assert traffic_attribution[0]["evidence_owner"] == traffic_attribution[1]["evidence_owner"] == "agent-a"
+    assert traffic_attribution[0]["trusted_transport_identity"] == traffic_attribution[1]["trusted_transport_identity"] == "agent-a"
+    assert traffic_attribution[0]["attribution_status"] == traffic_attribution[1]["attribution_status"] == "resolved"
     assert traffic[1]["details"]["attribution_quarantined"] is True
 
     late = next(event for event in _events(path) if event["event"] == "security.agent_identity_late_change")
@@ -262,8 +268,8 @@ def test_request_response_share_snapshot_when_ip_map_changes(logger_with_log):
     assert late["request_id"] == "req-late-change"
     assert late["decision"] == "log"
     assert late["details"]["quarantined"] is True
-    assert late["attribution_provenance"]["snapshot_agent"] == "agent-a"
-    assert late["attribution_provenance"]["current_status"] == "conflict"
+    assert late["details"]["attribution"]["attribution_provenance"]["snapshot_agent"] == "agent-a"
+    assert late["details"]["attribution"]["attribution_provenance"]["current_status"] == "conflict"
 
 
 def test_response_duration_and_counter_are_exact(logger_with_log):
@@ -278,6 +284,16 @@ def test_response_duration_and_counter_are_exact(logger_with_log):
         "status": 200,
         "size": 3,
         "ms": 75.0,
+        "attribution": {
+            "evidence_owner": "agent-a",
+            "trusted_transport_identity": "agent-a",
+            "initiator": "unknown",
+            "attribution_status": "resolved",
+            "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "agent-a",
+            },
+        },
     }
     assert event["agent"] == "agent-a"
     assert addon.responses_total == 1

@@ -251,7 +251,12 @@ def test_late_identity_change_between_gate_and_build_is_quarantined(recorder):
             discovery._ip_to_name["192.0.2.20"] = "agent-b"
             return original_build(current_flow, flow_state)
 
-        with patch.object(addon, "_build_record", side_effect=mutate_before_build):
+        with patch.object(
+            addon,
+            "_build_record",
+            autospec=True,
+            side_effect=mutate_before_build,
+        ):
             addon.response(flow)
 
     assert store.search_flows({}) == []
