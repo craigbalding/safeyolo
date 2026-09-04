@@ -98,6 +98,13 @@ Relay does not inspect implementation source, candidate diffs, CI, or test
 results merely to repeat work owned by Forge or Lens.
 
 When Forge has useful capacity, select and shape the next implementation task.
+Forge is occupied while implementing or repairing its current assignment. A
+`REVIEW_READY` handoff makes Forge available for exactly one next implementation
+assignment while Lens reviews the prior candidate. Do not notify occupied Forge
+with future work, preload more than one next implementation assignment, or
+attach future work to the current target as context or evidence. A message's
+declared target must be the work its body concerns.
+
 When Lens has useful capacity and no exact candidate review is ready, assign
 independent acceptance work, security analysis, evidence collection, or a
 bounded repository investigation. Prepare subsequent work while another task
