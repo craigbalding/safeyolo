@@ -415,3 +415,80 @@ class TestAgentConfigFolder:
         assert "was removed while its host script was running" in result.output
         assert load_agent("worker") == {}
         run_agent.assert_not_called()
+
+
+class TestAgentConfigMemory:
+    def test_persists_memory_and_warns_running_agent_needs_restart(
+        self, cli_runner, tmp_config_dir, tmp_path
+    ):
+        folder = tmp_path / "project"
+        folder.mkdir()
+        _setup_agent(tmp_config_dir, folder)
+
+        platform = _platform(running=True)
+        with (
+            patch(
+                "safeyolo.platform.get_platform",
+                return_value=platform,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.commands.agent.write_event", autospec=True
+            ) as write_event,
+        ):
+            result = cli_runner.invoke(
+                app, ["agent", "config", "worker", "--memory", "8192"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert load_agent("worker")["memory_mb"] == 8192
+        assert "running sandbox is unchanged" in result.output
+        assert "stop and run" in result.output
+        assert write_event.call_args.kwargs["details"] == {
+            "changes": ["memory_mb"]
+        }
+
+    def test_show_displays_effective_default_memory(
+        self, cli_runner, tmp_config_dir, tmp_path
+    ):
+        folder = tmp_path / "project"
+        folder.mkdir()
+        _setup_agent(tmp_config_dir, folder)
+
+        result = cli_runner.invoke(app, ["agent", "config", "worker", "--show"])
+
+        assert result.exit_code == 0, result.output
+        assert "4096 MiB (default)" in result.output
+
+    def test_effectively_unchanged_default_is_noop(
+        self, cli_runner, tmp_config_dir, tmp_path
+    ):
+        folder = tmp_path / "project"
+        folder.mkdir()
+        before = _setup_agent(tmp_config_dir, folder)
+
+        with patch(
+            "safeyolo.commands.agent.write_event", autospec=True
+        ) as write_event:
+            result = cli_runner.invoke(
+                app, ["agent", "config", "worker", "--memory", "4096"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Memory unchanged" in result.output
+        assert load_agent("worker") == before
+        write_event.assert_not_called()
+
+    def test_non_positive_memory_is_rejected_without_mutation(
+        self, cli_runner, tmp_config_dir, tmp_path
+    ):
+        folder = tmp_path / "project"
+        folder.mkdir()
+        before = _setup_agent(tmp_config_dir, folder)
+
+        result = cli_runner.invoke(
+            app, ["agent", "config", "worker", "--memory", "0"]
+        )
+
+        assert result.exit_code != 0
+        assert load_agent("worker") == before
