@@ -1826,9 +1826,24 @@ def test_factory_skill_is_codex_scoped_and_self_contained() -> None:
 def test_safeyolo_acceptance_graph_tool_hashes_match_sources() -> None:
     graph_path = SKILL_SOURCE / "references/graph/accept-safeyolo.yaml"
     graph = yaml.safe_load(graph_path.read_text())
-    tools = [node["tool"] for node in graph["nodes"] if "tool" in node]
+    tool_nodes = {node["id"]: node["tool"] for node in graph["nodes"] if "tool" in node}
+    tools = list(tool_nodes.values())
 
     assert tools
+    assert {
+        "ev.accept_python_lane",
+        "ev.accept_policy_chaos_lane",
+        "ev.accept_proxy_lane",
+        "ev.accept_runsc_lane",
+        "ev.accept_vz_lane",
+        "ev.accept_coord_lane",
+        "ev.accept_factory_recovery_lab",
+        "ev.accept_nested_linux_lane",
+        "ev.accept_rootfs_lane",
+        "ev.accept_uds_lane",
+        "ev.accept_ruff_lane",
+        "ev.accept_codeql_lane",
+    } <= tool_nodes.keys()
     for tool in tools:
         assert tool["obtain_from"]
         assert tool["verify"]
