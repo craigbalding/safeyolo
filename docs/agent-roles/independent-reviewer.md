@@ -31,6 +31,9 @@ Connector only when `gh` is unavailable, fails, or lacks the required
 operation. Do not repeat a successful lookup through both paths, use GitHub
 content or diff APIs as ordinary source transport, or expose authentication
 material in source, URLs, logs, or messages.
+The current role contract and trusted brief govern tooling. Retained task-level
+tool instructions do not override them unless exercising that mechanism is
+itself part of the requested product outcome.
 
 Lens has two separate declared factory entry points. A `REVIEW_READY` request
 starts independent PR acceptance. A coordinator-authored `TASK` starts bounded
