@@ -31,6 +31,7 @@ class RepoMap:
 
 _SOURCE_SUFFIXES = {".c", ".h", ".py", ".sh", ".swift", ".toml", ".yaml", ".yml"}
 _SOURCE_NAMES = {"AGENTS.md", "Makefile", "README.md", "SECURITY.md", "uv.lock"}
+_OVERVIEW_SYMBOL_LIMIT = 4
 _SHELL_FUNCTION = re.compile(
     r"^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*\))?"
     r"|([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\))\s*\{"
@@ -168,6 +169,18 @@ def _omit_from_overview(path: Path) -> bool:
     )
 
 
+def _overview_line(relative: Path, symbols: list[str], count: int) -> str:
+    """Render one bounded, token-dense line for a directory map."""
+
+    if "tests" in relative.parts or relative.name.startswith("test_"):
+        return relative.as_posix()
+    shown = [symbol.strip() for symbol in symbols[:_OVERVIEW_SYMBOL_LIMIT]]
+    if count > len(shown):
+        shown.append(f"+{count - len(shown)} symbols")
+    suffix = f" | {'; '.join(shown)}" if shown else ""
+    return f"{relative.as_posix()}{suffix}"
+
+
 def build_repo_map(path: Path | str = ".") -> RepoMap:
     """Build a deterministic structural map for ``path`` within its Git tree."""
 
@@ -178,8 +191,8 @@ def build_repo_map(path: Path | str = ".") -> RepoMap:
     root = _repository_root(requested)
     scope = _relative_scope(root, requested)
     files = _source_files(root, scope)
-    overview = scope == Path(".")
-    if overview:
+    overview = requested.is_dir()
+    if scope == Path("."):
         files = [path for path in files if not _omit_from_overview(path)]
 
     output: list[str] = []
@@ -192,8 +205,11 @@ def build_repo_map(path: Path | str = ".") -> RepoMap:
             symbols, count = _shell_symbols(absolute)
         else:
             symbols, count = [], 0
-        output.append(relative.as_posix())
-        output.extend(symbols)
+        if overview:
+            output.append(_overview_line(relative, symbols, count))
+        else:
+            output.append(relative.as_posix())
+            output.extend(symbols)
         symbol_count += count
 
     elapsed_ms = round((time.perf_counter() - started) * 1000)
@@ -260,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         if index:
             print()
         scope = "." if result.scope == Path(".") else result.scope.as_posix()
-        mode = "overview" if result.scope == Path(".") else "detail"
+        mode = "overview" if paths[index].is_dir() else "detail"
         print(
             f"# repo-map scope={scope} mode={mode} files={result.files} "
             f"symbols={result.symbols} elapsed_ms={result.elapsed_ms}"

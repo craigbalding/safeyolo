@@ -31,7 +31,7 @@ def _repository(tmp_path: Path) -> Path:
 def test_map_contains_compact_python_symbols(tmp_path):
     repository = _repository(tmp_path)
 
-    result = build_repo_map(repository / "pkg")
+    result = build_repo_map(repository / "pkg/app.py")
 
     assert "pkg/app.py\n  class Service @1" in result.text
     assert "    async def run(target, *, force) @2" in result.text
@@ -45,7 +45,7 @@ def test_map_contains_shell_functions(tmp_path):
     with (repository / "scripts/start.sh").open("a") as script:
         script.write("if { true; }; then\n  true\nfi\n")
 
-    result = build_repo_map(repository / "scripts")
+    result = build_repo_map(repository / "scripts/start.sh")
 
     assert "scripts/start.sh\n  function start_service() @1" in result.text
     assert "function if" not in result.text
@@ -76,6 +76,34 @@ def test_map_scope_limits_files(tmp_path):
     assert "scripts/start.sh" not in result.text
 
 
+def test_directory_map_uses_one_bounded_line_per_file(tmp_path):
+    repository = _repository(tmp_path)
+    (repository / "pkg/many.py").write_text(
+        "".join(f"def symbol_{index}():\n    pass\n" for index in range(9))
+    )
+
+    result = build_repo_map(repository / "pkg")
+
+    lines = result.text.splitlines()
+    assert len(lines) == 2
+    assert lines[0].startswith("pkg/app.py | class Service @1; def create @5")
+    assert lines[1].endswith("+5 symbols")
+    assert "async def run" not in result.text
+
+
+def test_directory_map_lists_test_files_without_every_test_symbol(tmp_path):
+    repository = _repository(tmp_path)
+    (repository / "tests").mkdir()
+    (repository / "tests/test_many.py").write_text(
+        "".join(f"def test_case_{index}():\n    pass\n" for index in range(20))
+    )
+
+    result = build_repo_map(repository / "tests")
+
+    assert result.text == "tests/test_many.py"
+    assert result.symbols == 20
+
+
 def test_map_reads_uncommitted_and_untracked_source(tmp_path):
     repository = _repository(tmp_path)
     (repository / "pkg/app.py").write_text("def changed():\n    pass\n")
@@ -85,7 +113,7 @@ def test_map_reads_uncommitted_and_untracked_source(tmp_path):
 
     assert "def changed @1" in result.text
     assert "def create" not in result.text
-    assert "pkg/new.py\n  def untracked @1" in result.text
+    assert "pkg/new.py | def untracked @1" in result.text
 
 
 def test_command_reports_scope_and_observability(tmp_path, capsys):
@@ -96,7 +124,7 @@ def test_command_reports_scope_and_observability(tmp_path, capsys):
 
     assert exit_code == 0
     assert output.startswith(
-        "# repo-map scope=pkg mode=detail files=1 symbols=3 elapsed_ms="
+        "# repo-map scope=pkg mode=overview files=1 symbols=2 elapsed_ms="
     )
     assert "pkg/app.py" in output
 
@@ -110,8 +138,8 @@ def test_command_accepts_multiple_scopes(tmp_path, capsys):
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "# repo-map scope=pkg mode=detail" in output
-    assert "# repo-map scope=scripts mode=detail" in output
+    assert "# repo-map scope=pkg mode=overview" in output
+    assert "# repo-map scope=scripts mode=overview" in output
     assert "pkg/app.py" in output
     assert "scripts/start.sh" in output
 
@@ -123,7 +151,7 @@ def test_command_compacts_overlapping_scopes(tmp_path, capsys):
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "# repo-map scope=pkg mode=detail" in output
+    assert "# repo-map scope=pkg mode=overview" in output
     assert "scope=." not in output
     assert output.count("pkg/app.py") == 1
 
