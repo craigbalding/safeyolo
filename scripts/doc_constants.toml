@@ -17,6 +17,13 @@ must_contain = "{size_mb} MiB"
 forbidden = ["20% + 50MB headroom", "20%+50MB headroom"]
 
 [[assertion]]
+name = "default-agent-memory-mib"
+source = "cli/src/safeyolo/commands/agent.py"
+pattern = 'DEFAULT_AGENT_MEMORY_MB = (?P<memory_mb>\d+)'
+docs = ["README.md"]
+must_contain = "defaults to {memory_mb} MiB"
+
+[[assertion]]
 name = "coord-completion-trailer-size-kib"
 source = "cli/src/safeyolo/coord/completion_notes.py"
 pattern = 'MAX_TRAILER_BYTES = (?P<size_kib>\d+) \* 1024'

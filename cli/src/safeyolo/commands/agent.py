@@ -64,7 +64,7 @@ from .tmux import associate_agent_pane, rename_window_for_agent
 log = logging.getLogger("safeyolo.agent")
 console = Console()
 
-
+DEFAULT_AGENT_MEMORY_MB = 4096
 
 agent_app = typer.Typer(
     name="agent",
@@ -118,6 +118,14 @@ def _validate_instance_name(name: str) -> None:
 def _load_agent_metadata(name: str) -> dict:
     """Load agent metadata from policy.toml [agents] section."""
     return _store_load_agent(name)
+
+
+def _effective_agent_memory_mb(metadata: dict) -> int:
+    """Return a validated per-agent memory allocation in MiB."""
+    value = metadata.get("memory_mb", DEFAULT_AGENT_MEMORY_MB)
+    if type(value) is not int or value <= 0:
+        raise ValueError("agent memory_mb must be a positive integer")
+    return value
 
 
 def _resolve_preview_tailnet_port(
@@ -571,7 +579,11 @@ def _run_agent(
     # passthrough  -- --no-snapshot or unsupported platform; cold-boot
     #                with no snapshot interaction.
     cpus_for_run = 4
-    memory_for_run = 4096
+    try:
+        memory_for_run = _effective_agent_memory_mb(metadata)
+    except ValueError as err:
+        console.print(f"[red]Invalid agent configuration:[/red] {err}")
+        raise typer.Exit(1)
     snapshot_version: dict | None = None
     snapshot_mode = "passthrough"
     if no_snapshot and platform_supports_snapshot():
@@ -2177,6 +2189,12 @@ def config(
         "--user-default-args",
         help="Set default args for agent CLI (use '' to clear)",
     ),
+    memory: int = typer.Option(
+        None,
+        "--memory",
+        min=1,
+        help="Set memory in MiB for future runs",
+    ),
     add_mount: list[str] = typer.Option(
         [],
         "--add-mount",
@@ -2219,6 +2237,7 @@ def config(
 
         safeyolo agent config boris --show
         safeyolo agent config boris --folder ~/code/boris
+        safeyolo agent config boris --memory 8192
         safeyolo agent config boris --user-default-args="--continue"
         safeyolo agent config boris --add-mount ~/data:/data
         safeyolo agent config boris --add-mount ~/refs:/refs:ro
@@ -2237,6 +2256,7 @@ def config(
 
     has_updates = (
         folder is not None
+        or memory is not None
         or user_default_args is not None
         or add_mount
         or remove_mount
@@ -2252,6 +2272,13 @@ def config(
         table.add_column("Setting", style="bold")
         table.add_column("Value")
         table.add_row("Folder", metadata.get("folder", "?"))
+        configured_memory = metadata.get("memory_mb")
+        table.add_row(
+            "Memory",
+            f"{configured_memory} MiB"
+            if configured_memory is not None
+            else f"{DEFAULT_AGENT_MEMORY_MB} MiB (default)",
+        )
         host_script = metadata.get("host_script")
         if host_script:
             table.add_row("Host script", host_script)
@@ -2304,14 +2331,21 @@ def config(
     parsed_mounts = [_parse_mount(spec) for spec in add_mount]
     parsed_ports = [_parse_port(spec) for spec in add_port]
 
-    folder_sandbox_running: bool | None = None
-    if normalized_folder is not None and metadata.get("folder") != normalized_folder:
+    sandbox_running: bool | None = None
+    runtime_change_requested = (
+        normalized_folder is not None
+        and metadata.get("folder") != normalized_folder
+    ) or (
+        memory is not None
+        and metadata.get("memory_mb", DEFAULT_AGENT_MEMORY_MB) != memory
+    )
+    if runtime_change_requested:
         # Check before committing so a broken platform installation cannot
         # leave a successfully persisted folder paired with a failed command
         # and missing audit record.
         from ..platform import get_platform
 
-        folder_sandbox_running = get_platform().is_sandbox_running(name)
+        sandbox_running = get_platform().is_sandbox_running(name)
 
     def apply_updates(current) -> tuple[list[str], list[tuple[str, str]]]:
         changes: list[str] = []
@@ -2323,6 +2357,14 @@ def config(
                 changes.append("folder")
             else:
                 messages.append(("dim", f"Folder unchanged for {name}"))
+
+        if memory is not None:
+            old_memory = current.get("memory_mb", DEFAULT_AGENT_MEMORY_MB)
+            if old_memory != memory:
+                current["memory_mb"] = memory
+                changes.append("memory_mb")
+            else:
+                messages.append(("dim", f"Memory unchanged for {name}"))
 
         if user_default_args is not None:
             old_args = current.get("user_default_args")
@@ -2413,13 +2455,23 @@ def config(
 
     if "folder" in changes:
         console.print(f"[green]Set persistent folder for {name}:[/green] {normalized_folder}")
-        if folder_sandbox_running:
+        if sandbox_running:
             console.print(
                 "[yellow]The running sandbox is unchanged:[/yellow] its current "
                 "/workspace stays mounted until you stop and run the agent again."
             )
         else:
             console.print("The new folder will be mounted at /workspace on the next run.")
+
+    if "memory_mb" in changes:
+        console.print(f"[green]Set memory for {name}:[/green] {memory} MiB")
+        if sandbox_running:
+            console.print(
+                "[yellow]The running sandbox is unchanged:[/yellow] stop and run "
+                "the agent again to apply the new memory allocation."
+            )
+        else:
+            console.print("The new memory allocation will apply on the next run.")
 
     if not changed:
         return

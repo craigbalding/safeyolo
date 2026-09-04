@@ -249,6 +249,18 @@ current `/workspace` until stop/restart. In contrast, the `--folder` option on
 `agent run` overrides `/workspace` for that run only and does not change the
 saved folder.
 
+Memory allocation is also persistent per agent and defaults to 4096 MiB. Set
+it in MiB, then stop and run an active agent to apply the new allocation:
+
+```bash
+safeyolo agent config work --memory 8192
+safeyolo agent stop work
+safeyolo agent run work
+```
+
+Changing memory does not recreate the agent or alter its workspace, persistent
+home, configuration, or overlay.
+
 Agents can collaborate through SafeYolo's retained coord rooms. Operators who
 run that message plane should use the [coord operations
 runbook](docs/coord-operations.md) for its managed NATS credential lifecycle,
