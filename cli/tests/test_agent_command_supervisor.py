@@ -158,10 +158,11 @@ def test_agent_stop_records_intent_even_when_sandbox_is_already_gone(
     platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
     platform.is_sandbox_running.return_value = False
     with (
-        patch("safeyolo.platform.get_platform", return_value=platform),
+        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
         patch(
             "safeyolo.agent_command_supervisor.request_command_supervisor_stop",
             return_value=True,
+            autospec=True,
         ) as request_stop,
     ):
         result = CliRunner().invoke(app, ["agent", "stop", "demo"])
