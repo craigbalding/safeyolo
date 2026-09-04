@@ -24,8 +24,10 @@ If material validation needs a tool outside the trusted-base inventory, ask the
 operator for that specific tool, source, and version and retain the work as
 `awaiting_operator`. All downloads remain subject to SafeYolo policy.
 
-Use the GitHub App Connector for GitHub reads and writes in a Codex factory. Do
-not substitute ambient command-line credentials or unauthenticated requests.
+Use the GitHub App Connector for authoritative repository and work-item
+identity, issue and pull-request metadata, checks, and GitHub mutations. Public
+Git over HTTPS may transport public Git objects through SafeYolo. Do not use
+ambient command-line credentials or `gh`.
 
 Lens has two separate declared factory entry points. A `REVIEW_READY` request
 starts independent PR acceptance. A coordinator-authored `TASK` starts bounded
@@ -81,8 +83,18 @@ evidence merely because the author produced it.
 ## Establish the review target
 
 - Resolve the immutable pull-request commit URL in `target` through the GitHub
-  App Connector. Read the linked issue, materially relevant comments, and
-  relevant design material.
+  App Connector. Resolve pull-request metadata once for each immutable review
+  target and read the linked issue once on first involvement. Reuse unchanged
+  requirements, acceptance reasoning, and prior findings across later heads.
+- When an operator-approved read-only implementation repository is mounted,
+  materialize the exact target commit from it into Lens's own writable
+  workspace. Verify that the local commit equals both the immutable target and
+  the connector-reported pull-request head. Never test Forge's live working
+  tree directly. Use local Git for source, diff, filenames, history, and base
+  comparisons; do not use GitHub content or diff APIs as ordinary source
+  transport. If the mounted repository does not contain the exact object, use
+  an approved public Git transport fallback when available and disclose the
+  continuity failure rather than abandoning an otherwise feasible review.
 - Independently assess whether the issue's intended outcome and acceptance
   criteria are credible and complete against repository behaviour,
   authoritative design material, and material risks. Do not shape acceptance
@@ -91,7 +103,9 @@ evidence merely because the author produced it.
   explanation of the implementation.
 - Identify important invariants, likely failure modes, and material edge cases.
 - Record the exact target URL under review. If the owner pushes fixes, review
-  the new immutable target rather than carrying the earlier conclusion forward.
+  the new immutable target, compare it with the prior target, and reassess the
+  affected boundaries and unresolved findings. Retain still-valid evidence
+  instead of restarting the entire review without a material reason.
 
 ## Challenge the implementation
 
@@ -104,6 +118,10 @@ evidence merely because the author produced it.
 - Run appropriate existing tests independently. Add or run temporary targeted
   probes when useful to challenge material assumptions without changing the
   owner's branch.
+- Give independent validation a purpose distinct from Forge's focused
+  development tests and the repository's broad CI matrix. Do not mechanically
+  replay either when a narrower adversarial, boundary, or failure probe can
+  challenge the material claim.
 - Challenge claims that a failed check is pre-existing or unrelated against an
   equivalent current-base run or equally direct canonical evidence. Do not
   convert an unexplained failure into a review limitation.
@@ -132,6 +150,13 @@ evidence merely because the author produced it.
 Distinguish acceptance or correctness defects from optional improvements and
 style preferences. Do not demand speculative abstractions, unrelated cleanup,
 or a broader solution than the issue requires.
+
+Before returning `READY`, inspect a compact exact-head check summary and the
+pull request's merge-rule and security-review state. A successful CodeQL
+analysis job proves that analysis and upload completed; it does not prove that
+the uploaded result contains no merge-blocking alert. Read detailed logs or
+annotations only when a failed or blocking result needs diagnosis. Pending
+checks are non-terminal state, not a reason for immediate identical polling.
 
 ## Report a disposition
 

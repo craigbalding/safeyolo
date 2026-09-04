@@ -10,20 +10,24 @@ work idle.
 The goal is a small, complete change with clear evidence, not process for its
 own sake.
 
-Use the GitHub App Connector for GitHub reads and writes in a Codex factory. Do
-not substitute ambient command-line credentials or unauthenticated requests.
+Use the GitHub App Connector for authoritative repository and work-item
+identity, issue and pull-request metadata, checks, and GitHub mutations. Public
+Git over HTTPS may transport public Git objects through SafeYolo. Do not use
+ambient command-line credentials or `gh`.
 
 ## Establish the outcome
 
-- Resolve the assigned `target` URL through the GitHub App Connector.
-- For an issue target, read the full issue and all materially relevant comments
-  before coding.
-- For a pull-request target, read its description, diff, materially relevant
-  discussion, checks, and exact current head. Read its corresponding issue.
-  Treat that issue as the required outcome and the pull request as the starting
-  candidate, not as evidence that the outcome is already satisfied.
-- Derive the requested outcome, acceptance criteria, and important constraints
-  from the issue and any authoritative design material it references.
+- Treat Relay's self-contained task as the authoritative assignment. It must
+  contain the intended outcome, credible acceptance criteria, material
+  constraints, and canonical target. Do not routinely reread the issue or pull
+  request to reconstruct those facts. Use the GitHub App Connector when a
+  material fact is missing, the authoritative content changed, or an ambiguity
+  cannot be resolved locally.
+- For a pull-request target, verify its exact current head and corresponding
+  issue. Treat that issue as the required outcome and the pull request as the
+  starting candidate, not as evidence that the outcome is already satisfied.
+- Derive the requested outcome from the task and any authoritative design
+  material it references.
 - Prefer updating and completing the existing pull request. If its branch
   cannot be updated, create a continuation from the exact candidate head in the
   authorized repository and cross-link its pull request, the original pull
@@ -39,6 +43,11 @@ not substitute ambient command-line credentials or unauthenticated requests.
   head. Otherwise, start from the repository and branch state appropriate to
   the issue, normally current `master`. Keep unrelated local or pre-existing
   changes out of the work.
+- At task start, incrementally refresh the existing repository and then inspect,
+  branch, diff, and modify through local Git. A full clone is recovery when the
+  existing repository cannot be made trustworthy; it is not ordinary setup.
+  Do not use GitHub pull-request, diff, patch, changed-filename, commit-diff, or
+  file-content APIs as source transport.
 
 ## Implement the smallest complete change
 
@@ -62,10 +71,10 @@ not substitute ambient command-line credentials or unauthenticated requests.
   correctness.
 - Exercise the real system boundary when the issue depends on it; do not mock
   away the behaviour that needs proving.
-- Run focused tests while developing, then the appropriate wider repository
-  checks before declaring the candidate ready. Scale validation to the risk and
-  behaviour changed; trivial changes do not require ceremony unrelated to their
-  failure modes.
+- Run focused tests while developing. Repository CI is the ordinary broad
+  regression execution for a published head; do not routinely reproduce its
+  complete matrix locally. Run wider local checks when the change's risk or an
+  observed failure makes them useful, and state their distinct purpose.
 - Diagnose a failed check before excluding it from the candidate evidence. Call
   it pre-existing or unrelated only when the same failure is established on an
   equivalent current-base run or by equally direct canonical evidence. A
@@ -87,9 +96,13 @@ alone does not designate one.
 
 When the candidate is ready for independent review:
 
-1. Commit and push the complete intended change and ensure a reviewable PR
-   exists.
+1. Commit the complete intended change, publish it through the GitHub App
+   Connector, and ensure a reviewable PR exists.
 2. Determine and independently verify the exact current pull-request head.
+   Fetch that published commit into the existing local Git object database so
+   the reviewer's approved read-only repository mount can supply the exact
+   review target. This is immutable Git-object transport, not a second source
+   reconstruction.
    Construct its canonical immutable URL:
    `https://github.com/<owner>/<repository>/pull/<number>/commits/<full-head-sha>`.
 3. Send one targeted handoff to the designated reviewer:
@@ -116,8 +129,11 @@ review target and carries the review request's canonical `attention_id=<id>`
 correlation token.
 
 - On `CHANGES_REQUIRED`, consume the complete actionable findings from that
-  targeted disposition, fix them, push a new candidate, independently verify
-  its immutable target URL, send a fresh `REVIEW_READY`, and wait again.
+  targeted disposition, reuse still-valid local evidence, inspect the material
+  delta, fix it, publish a new candidate, independently verify its immutable
+  target URL, send a fresh `REVIEW_READY`, and wait again. Do not reread the
+  issue, full pull request, review history, or CI logs unless a specific missing
+  fact requires it.
   Mandatory findings must not be hidden in preceding unnotified room history or
   another channel.
 - On `READY`, verify that the commit in the reviewed target URL is still the
