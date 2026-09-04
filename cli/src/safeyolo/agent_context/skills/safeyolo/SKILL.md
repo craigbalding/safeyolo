@@ -74,13 +74,13 @@ do not reload Coord or GitHub references already supplied by the role contract.
 
 Read only the reference needed for the current task.
 
-## Triage graphs
+## Troubleshooting and acceptance graphs
 
-For fast-turn triage, use the graphs in [`references/graph/`](references/graph/)
-as decision aids rather than re-deriving SafeYolo's plane story every time.
+Use the graphs in [`references/graph/`](references/graph/) as decision aids
+rather than re-deriving SafeYolo's plane and acceptance stories every time.
 Each `.yaml` is the source of truth; the sibling `.mmd` is a mermaid render
-for a human operator watching over my shoulder. Every symptom node carries
-a `keywords:` list so binding an observed symptom to an entry can be
+for a human operator watching over my shoulder. Every symptom node carries a
+`keywords:` list so binding an observation or claim to an entry can be
 keyword-matched, not eye-matched.
 
 **Manifest** — pick the graph whose entry-question fits, then bind a symptom
@@ -97,6 +97,7 @@ inside it:
 | [`triage-guest-tools-and-sudo.yaml`](references/graph/triage-guest-tools-and-sudo.yaml) | "sudo / apt / mise / package install failing" |
 | [`triage-kernel-observability.yaml`](references/graph/triage-kernel-observability.yaml) | "perf / eBPF / bpftrace / ftrace / kprobe / uprobe doesn't work inside the guest" |
 | [`triage-desktop-preview.yaml`](references/graph/triage-desktop-preview.yaml) | "The operator can't see what I'm showing / desktop isn't working" |
+| [`accept-safeyolo.yaml`](references/graph/accept-safeyolo.yaml) | "Which trusted tool proves this SafeYolo acceptance claim?" |
 
 Graphs cross-reference each other via a top-level `see_also:` block when a
 symptom overlaps concerns — check the target graph before authoring a new
@@ -105,8 +106,9 @@ edge in the current one.
 **Traversal protocol I follow when using a graph in-context:**
 
 1. State the entry-node match out loud so the reader can see the bind.
-2. At each `evidence` node, state which endpoint or operator command
-   yields the value I'm reading.
+2. At each `evidence` node, state which endpoint, probe, or operator command
+   yields the value I'm reading. For executable acceptance evidence, obey its
+   `tool` trust and invocation annotation.
 3. Follow `implies` / `rules_out` edges by the evidence value.
 4. Land on a `conclusion` or `operator_ask` and stop.
 5. **Graph gap:** if the evidence I have is not covered by an outgoing

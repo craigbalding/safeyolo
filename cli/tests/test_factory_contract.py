@@ -52,6 +52,8 @@ def test_backlog_coordinator_contract_owns_proactive_flow_and_backfill():
     assert "When Lens has useful capacity" in contract
     assert "Treat an actionable `BLOCKED` or `FAILED` response as coordinator work." in contract
     assert "the factory does not require a brief" in contract
+    assert "product acceptance graph" in contract
+    assert "Assign one bounded path, not the whole graph" in contract
 
 
 def test_backlog_reviewer_contract_binds_install_trust_and_complexity_checks():
@@ -62,6 +64,9 @@ def test_backlog_reviewer_contract_binds_install_trust_and_complexity_checks():
     assert "Run deterministic post-change quality analysis" in contract
     assert "--select C901,PLR0911,PLR0912,PLR0913,PLR0915" in contract
     assert "A tool finding is evidence, not an automatic veto" in contract
+    assert "maintains reusable acceptance capability" in contract
+    assert "product acceptance graph" in contract
+    assert "rather than from a candidate as self-authorization" in contract
 
 
 def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> Path:

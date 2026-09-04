@@ -1823,6 +1823,25 @@ def test_factory_skill_is_codex_scoped_and_self_contained() -> None:
         assert mmd_path.is_file()
 
 
+def test_safeyolo_acceptance_graph_tool_hashes_match_sources() -> None:
+    graph_path = SKILL_SOURCE / "references/graph/accept-safeyolo.yaml"
+    graph = yaml.safe_load(graph_path.read_text())
+    tools = [node["tool"] for node in graph["nodes"] if "tool" in node]
+
+    assert tools
+    for tool in tools:
+        assert tool["obtain_from"]
+        assert tool["verify"]
+        assert tool["run"]
+        assert tool["capture"]
+        for source in tool["sources"]:
+            source_path = Path(source["path"])
+            assert not source_path.is_absolute()
+            assert ".." not in source_path.parts
+            content = (REPO_ROOT / source_path).read_bytes()
+            assert hashlib.sha256(content).hexdigest() == source["sha256"]
+
+
 def test_baseline_explains_guest_privilege_without_implying_host_root() -> None:
     """The always-on launch prompt must teach the supported package path."""
     content = BASELINE_SOURCE.read_text()

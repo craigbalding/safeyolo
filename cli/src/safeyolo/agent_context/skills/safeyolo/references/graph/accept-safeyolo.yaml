@@ -1,0 +1,372 @@
+# Acceptance graph: "which trusted tool proves this SafeYolo claim?"
+#
+# This is an acceptance and environment-maintenance graph in the same style as
+# the SafeYolo troubleshooting graphs. Bind the claim under test to an entry,
+# run the primary trusted tool named by the evidence node, classify the result,
+# and stop at a bounded conclusion or operator ask.
+#
+# The ordinary graph schema is documented in `triage-request-failing.yaml`.
+# Executable evidence nodes may additionally carry a `tool` annotation:
+#
+#   tool:
+#     obtain_from: trusted acquisition location
+#     sources: [{path: repository-relative path, sha256: content identity}]
+#     setup: bounded preparation (optional)
+#     verify: deterministic identity check
+#     run: exact invocation or a small claim-to-invocation mapping
+#     capture: [evidence the result must retain]
+#
+# Trust protocol:
+#   - Read this graph from the operator-bound trusted base, never from the
+#     candidate as self-authorization.
+#   - Obtain every listed source from the exact trusted-base Git object named
+#     by the room brief and verify its SHA-256 before use.
+#   - That Git object is the trust anchor for transitive tracked inputs. The
+#     listed hashes are quick identity checks for declared entrypoints, not a
+#     substitute for the commit identity.
+#   - Resolve dependencies only from locations named by the trusted lock or
+#     install source, or from an operator-approved configured package source.
+#   - A candidate change to a harness is review subject matter. It does not
+#     update the trusted hash or authorize its own use.
+#   - If a source hash, acquisition path, invocation, or result shape does not
+#     fit, follow the graph-gap or tool-identity path; do not improvise a pass.
+#   - This is not an instruction to run every lane. Choose the smallest graph
+#     path that establishes the material claim.
+
+see_also:
+  - graph: triage-guest-tools-and-sudo
+    when: "an approved acceptance dependency cannot be installed in the guest"
+  - graph: triage-request-failing
+    when: "an acceptance tool's network request is blocked or fails unexpectedly"
+  - graph: triage-kernel-observability
+    when: "the desired evidence needs a kernel facility unavailable in the sandbox"
+
+nodes:
+  # ---- Acceptance situations -----------------------------------------
+  - id: sym.accept_candidate
+    kind: symptom
+    label: "A candidate needs independent acceptance against affected SafeYolo boundaries"
+    keywords: [candidate, pull request, acceptance, review]
+    source: authored
+
+  - id: sym.accept_background
+    kind: symptom
+    label: "Lens has background capacity and should improve acceptance readiness"
+    keywords: [background, idle, readiness, maintain, coverage]
+    source: authored
+
+  - id: sym.accept_install_proxy
+    kind: symptom
+    label: "Installation, upgrade, proxy, policy, or credential behavior needs acceptance"
+    keywords: [install, upgrade, proxy, policy, credential]
+    source: authored
+
+  - id: sym.accept_agent_isolation
+    kind: symptom
+    label: "Agent lifecycle, guest privilege, persistence, or isolation needs acceptance"
+    keywords: [agent, lifecycle, sandbox, isolation, persistence, guest root]
+    source: authored
+
+  - id: sym.accept_coord
+    kind: symptom
+    label: "Coord, NATS, retention, or schema upgrade behavior needs acceptance"
+    keywords: [coord, NATS, JetStream, retention, schema, upgrade]
+    source: authored
+
+  - id: sym.accept_factory_recovery
+    kind: symptom
+    label: "Factory supervisor and useful-work recovery needs acceptance"
+    keywords: [factory, supervisor, restart, crash, recovery, dirty checkout]
+    source: authored
+
+  - id: sym.accept_nested_linux
+    kind: symptom
+    label: "SafeYolo-in-SafeYolo composition on Linux needs acceptance"
+    keywords: [nested SafeYolo, Linux, runsc, composition]
+    source: authored
+
+  - id: sym.accept_macos_vz
+    kind: symptom
+    label: "The physical Apple Silicon VZ boundary needs acceptance"
+    keywords: [macOS, Apple Silicon, VZ, virtualisation]
+    source: authored
+
+  - id: sym.accept_static_quality
+    kind: symptom
+    label: "Changed code needs deterministic repository quality checks"
+    keywords: [lint, static analysis, complexity, code smell, pre-commit]
+    source: authored
+
+  # ---- Selection and trusted evidence --------------------------------
+  - id: ev.accept_select_boundary
+    kind: evidence
+    label: "Choose one material affected, stale, failed, or currently unproven boundary"
+    detail: |
+      For candidate review, start with the claimed behavior and changed system
+      boundary. For background work, prefer a recent failure, a missing real
+      boundary, or a trusted tool that no longer runs. Do not run broad suites
+      merely to fill time.
+    source: authored
+
+  - id: ev.accept_blackbox_lane
+    kind: evidence
+    label: "Use the supported blackbox lane for install/proxy or real platform isolation"
+    detail: |
+      The lane exercises the supported install path and real proxy or sandbox
+      boundaries. Select only the relevant invocation. `proxy` covers install,
+      proxy, network guard, credential guard, and upstream TLS. `systrap` and
+      `kvm` add Linux agent lifecycle and isolation. `vz` requires an approved
+      physical Apple Silicon host; a hosted macOS runner is not equivalent.
+    source: tests/blackbox/run-lane.sh
+    tool:
+      obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
+      sources:
+        - path: install.sh
+          sha256: abe01951e28d7aecc9d2726def4dccd5518e58704639bc261252a3990e05e977
+        - path: tests/blackbox/run-lane.sh
+          sha256: 091934297a817e2f9a82b8e9c2277582d6885869aa2dac8ac6b2479b1efeb820
+        - path: tests/blackbox/run-tests.sh
+          sha256: 430504dc2407be4acb28972243849d654322a0a35f56306218322f17944e43eb
+      setup: "Use an operator-approved host or sandbox for the selected lane and the repository's declared locked dependencies."
+      verify: "sha256sum install.sh tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh"
+      run:
+        install_proxy: "./tests/blackbox/run-lane.sh proxy"
+        linux_software_isolation: "./tests/blackbox/run-lane.sh systrap"
+        linux_kvm_isolation: "./tests/blackbox/run-lane.sh kvm"
+        macos_vz: "./tests/blackbox/run-lane.sh vz"
+      capture: [trusted base, selected lane, platform assertion, exit status, failing boundary]
+
+  - id: ev.accept_coord_lane
+    kind: evidence
+    label: "Use the focused real-NATS Coord retention and two-revision upgrade acceptance"
+    detail: |
+      These tests own an isolated dynamic-port NATS instance and exercise real
+      JetStream and schema migration behavior. They are stronger evidence for
+      Coord durability than mocked API tests.
+    source: cli/tests/test_coord_kernel_upgrade_acceptance.py
+    tool:
+      obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
+      sources:
+        - path: cli/tests/test_coord_kernel_upgrade_acceptance.py
+          sha256: c92ee94eba54e99b58d99e29e799919835d543a24b21c3808d51feaa9f997086
+        - path: cli/tests/test_coord_jetstream_acceptance.py
+          sha256: 457659f3b8a75c485c591b4049554c01e2febebed258c340c610748273a8921e
+      setup: "Use the trusted base's locked Python environment; the tests allocate their own NATS ports."
+      verify: "sha256sum cli/tests/test_coord_kernel_upgrade_acceptance.py cli/tests/test_coord_jetstream_acceptance.py"
+      run: "uv run pytest -q cli/tests/test_coord_kernel_upgrade_acceptance.py cli/tests/test_coord_jetstream_acceptance.py"
+      capture: [trusted base, Python version, NATS endpoint ownership, schema before and after, exit status]
+
+  - id: ev.accept_supervisor_contract_lane
+    kind: evidence
+    label: "Use focused supervisor and doctor tests for deterministic state-machine coverage"
+    detail: |
+      This proves parsing, checkpoint, process-identity, restart-policy, and
+      doctor contracts. It does not prove that a real restarted coding agent
+      resumes the same dirty checkout; follow the live recovery node for that
+      claim.
+    source: cli/tests/test_codex_coord_supervisor.py
+    tool:
+      obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
+      sources:
+        - path: cli/tests/test_codex_coord_supervisor.py
+          sha256: e1f375549b4ba258996ac855913f8d0fbfd8265e0a4f7a7db9c5717c60ef0666
+        - path: cli/tests/test_agent_command_supervisor.py
+          sha256: c826bd2f974cc6299d9bd365cf0c703a0c746d97596ee038819b5e6b4caf228d
+        - path: cli/tests/test_factory_doctor.py
+          sha256: cc5361b29614c2f9eebfa63dab3ffcc6b18863b017c00c9e5f25db1f3ff3d61e
+      setup: "Use the trusted base's locked Python environment."
+      verify: "sha256sum cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py cli/tests/test_factory_doctor.py"
+      run: "uv run pytest -q cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py cli/tests/test_factory_doctor.py"
+      capture: [trusted base, focused test selection, exit status, exact failing test]
+
+  - id: ev.accept_factory_recovery_lab
+    kind: evidence
+    label: "Use a controlled nested lab to prove real supervisor and checkout recovery"
+    detail: |
+      The lab controller provides labeled panes, identity-checked fault
+      injection, evidence capture, and teardown. The repository does not yet
+      contain a bounded reusable scenario that proves a restarted supervisor
+      resumes the same task, branch, index, and dirty files. Until that gap is
+      filled, perform the controlled procedure explicitly and classify the
+      missing scenario as a coverage gap rather than treating unit tests as
+      equivalent evidence.
+    source: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/safeyolo-lab
+    tool:
+      obtain_from: "the safeyolo-lab-controller skill staged from the exact operator-approved trusted-base SafeYolo Git object"
+      sources:
+        - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/safeyolo-lab
+          sha256: c0f2dc3314c3e1325c2d9e10d5c84e605dbd413ed1e10cbe81c6fe3fea25a4ee
+        - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/capture-evidence.sh
+          sha256: 5f990bdc860c18e8c7e8312d875d767febb32dceb2ed2f5328a596703ebb3990
+        - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/lab-snapshot.sh
+          sha256: 83267d87867b13f82e1cc41dbc34bf081c1116cc2c54ec6d16fead857bf64b63
+      setup: "Use one disposable nested factory with a single durable Forge checkout and retained evidence directory."
+      verify: "sha256sum cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/{safeyolo-lab,capture-evidence.sh,lab-snapshot.sh}"
+      run: "safeyolo-lab"
+      capture: [task target, branch, index and working-tree hashes, old and new process identities, resumed agent action]
+
+  - id: ev.accept_nested_linux_lane
+    kind: evidence
+    label: "Use the repository's real SafeYolo-in-SafeYolo Linux acceptance lane"
+    detail: |
+      This builds and starts an isolated inner SafeYolo through the outer proxy,
+      proves loop handling, starts a real agent, and verifies bundled Coord MCP
+      connectivity. It owns a dedicated guest-local lab root and must not point
+      at the mounted working checkout.
+    source: tests/nested-linux/acceptance.sh
+    tool:
+      obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
+      sources:
+        - path: tests/nested-linux/acceptance.sh
+          sha256: 226301055603e4a2123a30821debc831e279ce3af27d2d29acad644d54951679
+      setup: "Use an approved Linux SafeYolo agent with guest sudo and sufficient disk/memory; preserve the outer proxy variables."
+      verify: "sha256sum tests/nested-linux/acceptance.sh"
+      run: "SAFEYOLO_NESTED_ACCEPT=1 ./tests/nested-linux/acceptance.sh"
+      capture: [trusted base, outer and inner platform, inner agent identity, proxy loop result, Coord MCP result, exit status]
+
+  - id: ev.accept_static_lane
+    kind: evidence
+    label: "Use the trusted repository pre-commit configuration for changed-file static checks"
+    detail: |
+      Run only against the material changed files. The current configuration is
+      the primary deterministic code-quality tool. If the claim needs a
+      complexity or architecture check that is not configured here, record a
+      graph gap; do not install an unlisted analyzer and call it authoritative.
+    source: .pre-commit-config.yaml
+    tool:
+      obtain_from: "the exact operator-approved trusted-base SafeYolo Git object and its declared locked hook sources"
+      sources:
+        - path: .pre-commit-config.yaml
+          sha256: 802f279395812ff087e09ad750e4f36226e10e4dfb1de29c0a87bab487eb826c
+      setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."
+      verify: "sha256sum .pre-commit-config.yaml"
+      run: "uv run pre-commit run --files <material-changed-files>"
+      capture: [trusted base, changed-file list, hook identities, exit status, exact finding]
+
+  - id: ev.accept_classify_result
+    kind: evidence
+    label: "Classify what the trusted probe actually established"
+    detail: |
+      Separate a product defect from a broken acceptance environment, an
+      unavailable approved resource, a changed/untrusted tool, and a missing
+      real boundary. A command exiting zero is evidence only for the claims its
+      exercised boundary actually covers.
+    source: authored
+
+  # ---- Classifications ------------------------------------------------
+  - id: cls.accept_claim_proven
+    kind: classification
+    label: "The trusted probe exercised the material boundary and produced current passing evidence"
+    source: authored
+
+  - id: cls.accept_product_defect
+    kind: classification
+    label: "The trusted probe reached the intended boundary and exposed a product or candidate defect"
+    source: authored
+
+  - id: cls.accept_environment_defect
+    kind: classification
+    label: "The approved acceptance environment or its trusted dependencies are unhealthy"
+    source: authored
+
+  - id: cls.accept_tool_identity_mismatch
+    kind: classification
+    label: "The available tool source or hash does not match the trusted-base graph"
+    source: authored
+
+  - id: cls.accept_coverage_gap
+    kind: classification
+    label: "No current trusted probe exercises the material real-system boundary"
+    source: authored
+
+  - id: cls.accept_resource_missing
+    kind: classification
+    label: "The correct probe needs an operator-approved resource not currently bound to Lens"
+    source: authored
+
+  # ---- Conclusions and operator asks ---------------------------------
+  - id: con.accept_record_evidence
+    kind: conclusion
+    label: "Record the exact evidence and keep the reusable environment ready"
+    source: authored
+
+  - id: con.accept_report_defect
+    kind: conclusion
+    label: "Report the concrete defect with boundary, reproducer, and exact evidence"
+    source: authored
+
+  - id: con.accept_repair_environment
+    kind: conclusion
+    label: "Repair the approved acceptance environment, then rerun the same trusted probe"
+    source: authored
+
+  - id: con.accept_extend_harness
+    kind: conclusion
+    label: "Build the smallest reusable trusted probe that closes this graph gap"
+    source: authored
+
+  - id: ask.accept_trusted_tool_update
+    kind: operator_ask
+    label: "Ask the operator to approve the specific new tool source/version/hash"
+    source: authored
+
+  - id: ask.accept_resource
+    kind: operator_ask
+    label: "Ask the operator for the specific missing platform, service, or capability"
+    source: authored
+
+edges:
+  - {from: sym.accept_candidate, to: ev.accept_select_boundary, kind: next_check, when: "identify the candidate's material claims and affected boundaries"}
+  - {from: sym.accept_background, to: ev.accept_select_boundary, kind: next_check, when: "choose one recent, stale, failed, or unproven useful boundary"}
+
+  - {from: ev.accept_select_boundary, to: ev.accept_blackbox_lane, kind: next_check, when: "install, proxy, policy, credential, lifecycle, isolation, or VZ is material"}
+  - {from: ev.accept_select_boundary, to: ev.accept_coord_lane, kind: next_check, when: "Coord retention, JetStream, or schema upgrade is material"}
+  - {from: ev.accept_select_boundary, to: ev.accept_supervisor_contract_lane, kind: next_check, when: "supervisor or factory state-machine behavior is material"}
+  - {from: ev.accept_select_boundary, to: ev.accept_factory_recovery_lab, kind: next_check, when: "real crash and useful-work recovery is material"}
+  - {from: ev.accept_select_boundary, to: ev.accept_nested_linux_lane, kind: next_check, when: "nested Linux composition is material"}
+  - {from: ev.accept_select_boundary, to: ev.accept_static_lane, kind: next_check, when: "changed-file deterministic quality is material"}
+
+  - {from: sym.accept_install_proxy, to: ev.accept_blackbox_lane, kind: next_check, when: "select the proxy lane"}
+  - {from: sym.accept_agent_isolation, to: ev.accept_blackbox_lane, kind: next_check, when: "select the approved systrap or KVM lane"}
+  - {from: sym.accept_coord, to: ev.accept_coord_lane, kind: next_check, when: "use isolated real-NATS tests"}
+  - {from: sym.accept_factory_recovery, to: ev.accept_supervisor_contract_lane, kind: next_check, when: "first establish deterministic supervisor contracts"}
+  - {from: ev.accept_supervisor_contract_lane, to: ev.accept_factory_recovery_lab, kind: next_check, when: "the claim includes a real restart or useful-work continuity"}
+  - {from: sym.accept_nested_linux, to: ev.accept_nested_linux_lane, kind: next_check, when: "an approved Linux agent is available"}
+  - {from: sym.accept_macos_vz, to: ev.accept_blackbox_lane, kind: next_check, when: "an approved physical Apple Silicon VZ host is available"}
+  - {from: sym.accept_macos_vz, to: cls.accept_resource_missing, kind: implies, when: "only a hosted macOS runner or no VZ host is available"}
+  - {from: sym.accept_static_quality, to: ev.accept_static_lane, kind: next_check, when: "the trusted configured hooks cover the claim"}
+  - {from: sym.accept_static_quality, to: cls.accept_coverage_gap, kind: implies, when: "the needed deterministic analysis is not configured"}
+
+  - {from: ev.accept_blackbox_lane, to: ev.accept_classify_result, kind: next_check, when: "selected lane completes or fails"}
+  - {from: ev.accept_coord_lane, to: ev.accept_classify_result, kind: next_check, when: "focused acceptance completes or fails"}
+  - {from: ev.accept_supervisor_contract_lane, to: ev.accept_classify_result, kind: next_check, when: "focused tests complete and no real restart claim remains"}
+  - {from: ev.accept_factory_recovery_lab, to: ev.accept_classify_result, kind: next_check, when: "the controlled recovery observation completes"}
+  - {from: ev.accept_factory_recovery_lab, to: cls.accept_coverage_gap, kind: implies, when: "no bounded repeatable real-recovery scenario exists"}
+  - {from: ev.accept_nested_linux_lane, to: ev.accept_classify_result, kind: next_check, when: "nested acceptance completes or fails"}
+  - {from: ev.accept_static_lane, to: ev.accept_classify_result, kind: next_check, when: "configured hooks complete or expose an uncovered analysis need"}
+
+  - {from: ev.accept_classify_result, to: cls.accept_claim_proven, kind: implies, when: "the correct trusted tool exercised the material boundary and passed"}
+  - {from: ev.accept_classify_result, to: cls.accept_product_defect, kind: implies, when: "the trusted tool reached the boundary and reproduced incorrect behavior"}
+  - {from: ev.accept_classify_result, to: cls.accept_environment_defect, kind: implies, when: "setup or a previously approved dependency is broken"}
+  - {from: ev.accept_classify_result, to: cls.accept_tool_identity_mismatch, kind: implies, when: "source path or SHA-256 differs from the trusted graph"}
+  - {from: ev.accept_classify_result, to: cls.accept_coverage_gap, kind: implies, when: "the probe did not exercise the claim's real boundary"}
+  - {from: ev.accept_classify_result, to: cls.accept_resource_missing, kind: implies, when: "the correct probe requires a resource outside Lens's approved bindings"}
+
+  - {from: cls.accept_claim_proven, to: con.accept_record_evidence, kind: implies, when: "evidence names the exact source, revision, boundary, and result"}
+  - {from: cls.accept_product_defect, to: con.accept_report_defect, kind: implies, when: "the reproducer is specific and repeatable"}
+  - {from: cls.accept_environment_defect, to: con.accept_repair_environment, kind: implies, when: "repair uses already approved resources and trusted dependencies"}
+  - {from: cls.accept_tool_identity_mismatch, to: con.accept_repair_environment, kind: implies, when: "the exact listed source can be restored from the bound trusted base"}
+  - {from: cls.accept_tool_identity_mismatch, to: ask.accept_trusted_tool_update, kind: escalates_to, when: "the trusted source cannot be restored from the bound base"}
+  - {from: cls.accept_coverage_gap, to: con.accept_extend_harness, kind: implies, when: "the missing probe can be built with approved resources and repository tooling"}
+  - {from: cls.accept_resource_missing, to: ask.accept_resource, kind: escalates_to, when: "name the exact resource and evidence it enables"}
+
+entries:
+  - symptom: sym.accept_candidate
+  - symptom: sym.accept_background
+  - symptom: sym.accept_install_proxy
+  - symptom: sym.accept_agent_isolation
+  - symptom: sym.accept_coord
+  - symptom: sym.accept_factory_recovery
+  - symptom: sym.accept_nested_linux
+  - symptom: sym.accept_macos_vz
+  - symptom: sym.accept_static_quality

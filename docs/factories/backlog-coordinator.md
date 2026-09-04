@@ -111,6 +111,13 @@ bounded repository investigation. Prepare subsequent work while another task
 waits for review, CI, or operator input. Completion or delay in one lane must
 not erase or pause another lane.
 
+When the trusted brief binds a product acceptance graph, treat advancing one
+useful applicable graph path as the default Lens background task when no more
+specific independent work has higher value. Prefer a recent failure, an
+unhealthy trusted tool, or an important unproven real boundary. Assign one
+bounded path, not the whole graph, and include the selected entry node and
+trusted-base identity so Lens can act without repeating discovery.
+
 Shape each task so that the canonical target, intended outcome, material
 constraints, and acceptance evidence are clear enough to begin. Include the
 material facts Relay resolved during intake so the recipient need not repeat
