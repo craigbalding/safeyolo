@@ -5,7 +5,12 @@ from __future__ import annotations
 from mitmproxy import ctx, flow, http
 
 from safeyolo.core.audit_schema import EventKind, Severity
-from safeyolo.core.identity import attribute_traffic, attribution_fields, resolve_agent_identity
+from safeyolo.core.identity import (
+    attribute_traffic,
+    attribution_fields,
+    flow_attribution,
+    flow_identity,
+)
 from safeyolo.core.utils import find_addon, write_event
 
 ORIGIN = "operator"
@@ -81,10 +86,13 @@ class OperatorProvenance:
         details = {"action": action, "source_flow_id": source_flow_id}
         if resulting_flow_id is not None:
             details["resulting_flow_id"] = resulting_flow_id
-        attribution = attribute_traffic(
-            item,
-            resolve_agent_identity(item, find_addon("service-discovery")),
-        )
+        discovery = find_addon("service-discovery")
+        attribution = flow_attribution(item, discovery)
+        if item.metadata.get("origin") == ORIGIN:
+            # An edit/kill/revert audit can happen after the original request
+            # snapshot. Preserve its owner, but reflect this separately
+            # trusted operator action in the admin event.
+            attribution = attribute_traffic(item, flow_identity(item, discovery))
         write_event(
             "admin.traffic_operator_action",
             kind=EventKind.ADMIN,

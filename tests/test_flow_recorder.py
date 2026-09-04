@@ -234,6 +234,31 @@ def test_record_build_failure_is_best_effort_and_counted(recorder):
     assert addon.get_stats()["recorded"] == 0
 
 
+def test_late_identity_change_between_gate_and_build_is_quarantined(recorder):
+    """The gate/build pair cannot store evidence after ownership changes."""
+    from service_discovery import ServiceDiscovery
+
+    addon, store = recorder
+    discovery = ServiceDiscovery()
+    discovery._ip_to_name = {"192.0.2.20": "agent-a"}
+    flow = _flow()
+
+    with patch("safeyolo.core.utils.find_addon", autospec=True, return_value=discovery), \
+         patch("safeyolo.core.utils.write_event", autospec=True):
+        original_build = addon._build_record
+
+        def mutate_before_build(current_flow, flow_state):
+            discovery._ip_to_name["192.0.2.20"] = "agent-b"
+            return original_build(current_flow, flow_state)
+
+        with patch.object(addon, "_build_record", side_effect=mutate_before_build):
+            addon.response(flow)
+
+    assert store.search_flows({}) == []
+    assert addon.get_stats()["skipped"] == 1
+    assert addon.get_stats()["errors"] == 0
+
+
 def test_writer_backpressure_and_write_failures_surface_in_stats(recorder):
     addon, _ = recorder
     writer = create_autospec(_FlowWriter, instance=True, spec_set=True)

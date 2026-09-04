@@ -14,12 +14,11 @@ from threading import Lock
 
 from mitmproxy import ctx, http
 
-from safeyolo.core.audit_schema import Decision, EventKind, Severity
+from safeyolo.core.audit_schema import AttributionStatus, Decision, EventKind, Severity
 from safeyolo.core.identity import (
-    IdentityStatus,
-    attribute_traffic,
     attribution_fields,
-    resolve_agent_identity,
+    flow_identity,
+    snapshot_flow_attribution,
 )
 from safeyolo.core.utils import sanitize_for_log, write_event
 
@@ -123,33 +122,33 @@ class ServiceDiscovery:
 
     def request(self, flow: http.HTTPFlow):
         """Resolve and stamp one trusted identity for downstream consumers."""
-        identity = resolve_agent_identity(flow, self)
-        if identity.is_resolved:
+        attribution = snapshot_flow_attribution(flow, self)
+        if attribution.evidence_owner:
             with self._lock:
-                self._last_seen[identity.agent] = time.time()
+                self._last_seen[attribution.evidence_owner] = time.time()
             return
 
-        if identity.status is IdentityStatus.CONFLICT:
-            attribution = attribute_traffic(flow, identity)
+        identity = flow_identity(flow, self)
+
+        if attribution.status is AttributionStatus.CONFLICT:
             write_event(
                 "security.agent_identity_conflict",
                 kind=EventKind.SECURITY,
                 severity=Severity.CRITICAL,
                 summary="Trusted agent identity sources disagree",
-                decision=Decision.DENY,
+                decision=Decision.LOG,
                 request_id=flow.metadata.get("request_id"),
                 **attribution_fields(attribution),
                 addon=self.name,
                 details=identity.conflict_details(),
             )
-        elif identity.status is IdentityStatus.UNAVAILABLE:
-            attribution = attribute_traffic(flow, identity)
+        elif attribution.status is AttributionStatus.UNAVAILABLE:
             write_event(
                 "security.agent_identity_unavailable",
                 kind=EventKind.SECURITY,
                 severity=Severity.MEDIUM,
                 summary="Traffic has no trusted agent identity",
-                decision=Decision.WARN,
+                decision=Decision.LOG,
                 request_id=flow.metadata.get("request_id"),
                 **attribution_fields(attribution),
                 addon=self.name,

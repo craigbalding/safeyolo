@@ -235,6 +235,37 @@ def test_missing_response_emits_ops_event_without_response_counter(logger_with_l
     assert addon.blocks_total == 0
 
 
+def test_request_response_share_snapshot_when_ip_map_changes(logger_with_log):
+    """A late trusted-source change is linked and quarantines storage scope."""
+    from service_discovery import ServiceDiscovery
+
+    addon, path = logger_with_log
+    discovery = ServiceDiscovery()
+    discovery._ip_to_name = {"192.0.2.10": "agent-a"}
+    flow = _flow()
+    flow.metadata["request_id"] = "req-late-change"
+
+    with patch("request_logger.find_addon", autospec=True, return_value=discovery):
+        addon.request(flow)
+        discovery._ip_to_name["192.0.2.10"] = "agent-b"
+        addon.response(flow)
+
+    traffic = [event for event in _events(path) if event["event"].startswith("traffic.")]
+    assert traffic[0]["evidence_owner"] == traffic[1]["evidence_owner"] == "agent-a"
+    assert traffic[0]["trusted_transport_identity"] == traffic[1]["trusted_transport_identity"] == "agent-a"
+    assert traffic[0]["attribution_status"] == traffic[1]["attribution_status"] == "resolved"
+    assert traffic[1]["details"]["attribution_quarantined"] is True
+
+    late = next(event for event in _events(path) if event["event"] == "security.agent_identity_late_change")
+    assert "agent" not in late
+    assert "evidence_owner" not in late
+    assert late["request_id"] == "req-late-change"
+    assert late["decision"] == "log"
+    assert late["details"]["quarantined"] is True
+    assert late["attribution_provenance"]["snapshot_agent"] == "agent-a"
+    assert late["attribution_provenance"]["current_status"] == "conflict"
+
+
 def test_response_duration_and_counter_are_exact(logger_with_log):
     addon, path = logger_with_log
     flow = _flow(response_content=b"abc")

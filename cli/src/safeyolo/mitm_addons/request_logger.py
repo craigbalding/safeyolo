@@ -24,10 +24,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from pdp import get_policy_client
 from safeyolo.core.audit_schema import EventKind, Severity
 from safeyolo.core.identity import (
+    LATE_ATTRIBUTION_CHANGE_KEY,
     TrafficAttribution,
-    attribute_traffic,
     attribution_fields,
-    resolve_agent_identity,
+    flow_attribution,
 )
 from safeyolo.core.utils import find_addon, sanitize_for_log, write_event
 
@@ -194,10 +194,18 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
 
         return False
 
-    def _attribution(self, flow: http.HTTPFlow) -> TrafficAttribution:
-        """Return trusted ownership plus explicitly separate actor facts."""
-        identity = resolve_agent_identity(flow, find_addon("service-discovery"))
-        return attribute_traffic(flow, identity)
+    def _attribution(
+        self,
+        flow: http.HTTPFlow,
+        *,
+        check_late_change: bool = False,
+    ) -> TrafficAttribution:
+        """Return the request-boundary attribution for this flow."""
+        return flow_attribution(
+            flow,
+            find_addon("service-discovery"),
+            check_late_change=check_late_change,
+        )
 
     @staticmethod
     def _attribution_fields(attribution: TrafficAttribution) -> dict:
@@ -215,6 +223,10 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
         # request_id set by request_id.py addon
         request_id = flow.metadata.get("request_id")
 
+        # Capture trusted ownership before any quiet-host early return.  The
+        # same snapshot is used by the terminal response event.
+        attribution = self._attribution(flow)
+
         parsed = urlparse(flow.request.pretty_url)
         host = parsed.hostname or ""
         path = parsed.path
@@ -226,7 +238,6 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
             flow.metadata["quieted"] = True
             return
 
-        attribution = self._attribution(flow)
         write_event(
             "traffic.request",
             kind=EventKind.TRAFFIC,
@@ -253,13 +264,20 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
 
         request_id = flow.metadata.get("request_id")
         start_time = flow.metadata.get("start_time")
-        attribution = self._attribution(flow)
+        attribution = self._attribution(flow, check_late_change=True)
+        late_change = LATE_ATTRIBUTION_CHANGE_KEY in flow.metadata
 
         # Missing response is an operational problem, not a traffic event.
         # Emit a distinct ops.response_missing and do not fake a traffic.response.
         if flow.response is None:
             parsed = urlparse(flow.request.pretty_url)
             host = parsed.hostname or ""
+            details = {
+                "method": flow.request.method,
+                "path": parsed.path,
+            }
+            if late_change:
+                details["attribution_quarantined"] = True
             write_event(
                 "ops.response_missing",
                 kind=EventKind.OPS,
@@ -269,10 +287,7 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
                 request_id=request_id,
                 **self._attribution_fields(attribution),
                 addon=self.name,
-                details={
-                    "method": flow.request.method,
-                    "path": parsed.path,
-                },
+                details=details,
             )
             return
 
@@ -295,6 +310,11 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
             "size": len(flow.response.content or b""),
             "ms": duration_ms,
         }
+        if late_change:
+            # Keep the terminal event correlated to the stable request
+            # attribution; the linked operator-only late-change event carries
+            # the conflicting live source and causes FlowStore quarantine.
+            resp_details["attribution_quarantined"] = True
 
         if blocked_by:
             resp_details["blocked_by"] = blocked_by

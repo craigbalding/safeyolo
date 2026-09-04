@@ -12,11 +12,15 @@ from request_id import RequestIdGenerator
 from service_discovery import ServiceDiscovery
 from service_gateway import ServiceGateway, TokenBinding
 
+from safeyolo.core.audit_schema import Decision
 from safeyolo.core.identity import (
+    LATE_ATTRIBUTION_CHANGE_KEY,
     AttributionStatus,
     IdentityStatus,
     TrafficInitiator,
     attribute_traffic,
+    detect_late_attribution_change,
+    flow_attribution,
     resolve_agent_identity,
 )
 from safeyolo.core.service_loader import (
@@ -126,6 +130,7 @@ def test_service_discovery_does_not_overwrite_uds_map_conflict():
     assert flow.metadata["agent_identity_status"] == "conflict"
     assert flow.metadata["agent_identity_conflict"]["reason"] == "uds_ip_map_mismatch"
     assert audit.call_args.args[0] == "security.agent_identity_conflict"
+    assert audit.call_args.kwargs["decision"] is Decision.LOG
     assert audit.call_args.kwargs["attribution_status"] == "conflict"
     assert audit.call_args.kwargs["details"] == {
         "reason": "uds_ip_map_mismatch",
@@ -265,6 +270,25 @@ def test_attribution_conflict_keeps_trusted_sources_operator_only():
         "ip_map_agent": "bob",
         "reason": "uds_ip_map_mismatch",
     }
+
+
+def test_late_identity_discovery_stays_quarantined_and_unavailable():
+    discovery = _discovery()
+    flow = _flow()
+    flow.metadata["request_id"] = "req-late-discovery"
+
+    snapshot = flow_attribution(flow, discovery)
+    discovery._ip_to_name["10.0.0.5"] = "alice"
+
+    with patch("safeyolo.core.utils.write_event", autospec=True) as audit:
+        assert detect_late_attribution_change(flow, discovery) is True
+
+    assert snapshot.status is AttributionStatus.UNAVAILABLE
+    assert snapshot.evidence_owner is None
+    assert flow.metadata[LATE_ATTRIBUTION_CHANGE_KEY]["quarantined"] is True
+    assert audit.call_args.args[0] == "security.agent_identity_late_change"
+    assert audit.call_args.kwargs["attribution_status"] == "unavailable"
+    assert audit.call_args.kwargs["evidence_owner"] is None
 
 
 def test_agent_api_ownership_fails_closed_without_trusted_identity():

@@ -37,9 +37,9 @@ from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Sev
 from safeyolo.core.identity import (
     AgentIdentity,
     IdentityStatus,
-    attribute_traffic,
     attribution_fields,
-    resolve_agent_identity,
+    flow_attribution,
+    flow_identity,
 )
 from safeyolo.core.trace import (
     REASON_POLICY_DISABLED,
@@ -135,7 +135,7 @@ class SecurityAddon:
 
     def resolve_agent_identity(self, flow: http.HTTPFlow) -> AgentIdentity:
         """Resolve and stamp this flow's identity from trusted sources."""
-        return resolve_agent_identity(flow, self._resolve_service_discovery())
+        return flow_identity(flow, self._resolve_service_discovery())
 
     def is_bypassed(self, flow: http.HTTPFlow) -> bool:
         """Check if addon is bypassed for this request.
@@ -208,7 +208,10 @@ class SecurityAddon:
         """
         event_type = f"security.{self._option_prefix()}"
 
-        attribution = attribute_traffic(flow, self.resolve_agent_identity(flow))
+        # Audit uses the same request-boundary attribution as traffic logging
+        # and FlowStore.  It must not re-resolve a mutable IP map at decision
+        # time and produce a second identity for the same request.
+        attribution = flow_attribution(flow, self._resolve_service_discovery())
         write_event(
             event_type,
             kind=EventKind.SECURITY,

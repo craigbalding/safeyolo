@@ -291,7 +291,12 @@ unavailable or conflicting, the request and response remain in JSONL with
 `attribution_status` and bounded provenance, and FlowStore omits them because
 the records have no safe agent partition. The service-discovery addon also
 emits a dedicated operator-visible event for each unavailable or conflicting
-identity.
+identity. Attribution is captured at the request boundary and reused by the
+terminal response and policy audit events. If a trusted source changes or
+becomes available later, the original attribution is retained for correlation,
+a linked `security.agent_identity_late_change` event records the bounded
+before/after facts for operators, and FlowStore quarantines the flow rather
+than reassigning or storing it under a new owner.
 
 | Method | Path | Purpose |
 |---|---|---|
