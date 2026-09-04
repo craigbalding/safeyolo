@@ -121,6 +121,7 @@ class Config:
     factory_operator_role: str | None = None
     factory_operator_types: tuple[str, ...] = ()
     contract_sha256: str | None = None
+    snapshot_id: str | None = None
     workspace: str = "/workspace"
     wait_seconds: int = 300
     page_limit: int = 16
@@ -155,9 +156,10 @@ class Config:
         factory_operator_role = None
         factory_operator_types: tuple[str, ...] = ()
         contract_sha256 = None
+        snapshot_id = None
         factory = raw.get("factory")
         if factory is not None:
-            if not isinstance(factory, dict) or set(factory) != {
+            required_factory_keys = {
                 "schema",
                 "name",
                 "role",
@@ -165,7 +167,11 @@ class Config:
                 "handoffs",
                 "operator_input",
                 "contract_sha256",
-            }:
+            }
+            if not isinstance(factory, dict) or set(factory) not in (
+                required_factory_keys,
+                required_factory_keys | {"snapshot_id"},
+            ):
                 raise SupervisorError("factory config has an invalid shape")
             if factory.get("schema") != "safeyolo.factory/v1":
                 raise SupervisorError("factory config has an unsupported schema")
@@ -265,6 +271,12 @@ class Config:
             contract_sha256 = factory.get("contract_sha256")
             if not isinstance(contract_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", contract_sha256) is None:
                 raise SupervisorError("factory contract hash is invalid")
+            snapshot_id = factory.get("snapshot_id")
+            if snapshot_id is not None and (
+                not isinstance(snapshot_id, str)
+                or re.fullmatch(r"[0-9a-f]{64}", snapshot_id) is None
+            ):
+                raise SupervisorError("factory snapshot ID is invalid")
         workspace = raw.get("workspace", "/workspace")
         if not isinstance(workspace, str) or not workspace.startswith("/"):
             raise SupervisorError("workspace must be an absolute path")
@@ -299,6 +311,7 @@ class Config:
             factory_operator_role=factory_operator_role,
             factory_operator_types=factory_operator_types,
             contract_sha256=contract_sha256,
+            snapshot_id=snapshot_id,
             workspace=workspace,
             **values,
         )
@@ -1199,6 +1212,7 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
             "name": config.factory_name,
             "role": config.factory_role,
             "contract_sha256": config.contract_sha256,
+            "snapshot_id": config.snapshot_id,
             "authorized_requests": requests,
             "authorized_responses": responses,
             "observed_responses": observed_responses,

@@ -14,7 +14,13 @@ from safeyolo.agents_store import load_agent, save_agent
 from safeyolo.cli import app
 from safeyolo.coord import api as coord_api
 from safeyolo.coord import store as coord_store
-from safeyolo.factory_contract import approve_snapshot, load_approved_snapshot, load_factory_file
+from safeyolo.factory_contract import (
+    approve_snapshot,
+    canonical_snapshot,
+    load_approved_snapshot,
+    load_factory_file,
+    snapshot_id,
+)
 from safeyolo.factory_doctor import (
     _BACKLOG_COORDINATOR_CONTRACT_SHA256,
     _PROCESS_EXECUTABLE_MARKER,
@@ -242,6 +248,20 @@ def factory_runtime(tmp_path, tmp_config_dir, monkeypatch):
     }
 
 
+def _select_distinct_approved_snapshot(factory_runtime) -> tuple[Path, str]:
+    """Leave staged roles on one valid snapshot and approve a later one."""
+    original_path = factory_runtime["snapshot_path"]
+    payload = json.loads(original_path.read_text())
+    payload["roles"]["owner"]["contract_text"] = "# Owner\n\nApproved revision.\n"
+    contract = payload["roles"]["owner"]["contract_text"].encode()
+    payload["roles"]["owner"]["contract_bytes"] = len(contract)
+    payload["roles"]["owner"]["contract_sha256"] = hashlib.sha256(contract).hexdigest()
+    identifier = snapshot_id(payload)
+    original_path.with_name(f"{identifier}.json").write_bytes(canonical_snapshot(payload))
+    (original_path.parents[1] / "approved").write_text(identifier + "\n")
+    return original_path, identifier
+
+
 def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_runtime):
     result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
 
@@ -259,6 +279,54 @@ def test_factory_doctor_reports_a_healthy_running_factory(cli_runner, factory_ru
     assert "SUMMARY factory=backlog status=PASS" in result.output
     assert "contract_text" not in result.output
     assert "recent_attention_ids" not in result.output
+
+
+def test_factory_doctor_validates_staged_identity_before_reporting_drift(cli_runner, factory_runtime):
+    original_path, approved_identifier = _select_distinct_approved_snapshot(factory_runtime)
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    staged_identifier = snapshot_id(json.loads(original_path.read_text()))
+    assert output.count("WARN component=staging") == 3
+    assert f"approved_snapshot={approved_identifier}" in output
+    assert f"staged_snapshot={staged_identifier}" in output
+    assert "runtime process identity is checked separately" in output
+    assert "running supervisor remains on the staged snapshot" not in output
+
+
+def test_factory_doctor_rejects_an_unresolvable_staged_snapshot(cli_runner, factory_runtime):
+    original_path, _approved_identifier = _select_distinct_approved_snapshot(factory_runtime)
+    original_path.write_bytes(original_path.read_bytes().replace(b'"room":"backlog"', b'"room":"tampered"'))
+    before = original_path.read_bytes()
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1, result.output
+    output = " ".join(result.output.split())
+    assert output.count("FAIL component=staging") == 3
+    assert "staged snapshot" in output
+    assert "unavailable or invalid" in output
+    assert "staged artifacts are valid" not in output
+    assert original_path.read_bytes() == before
+
+
+def test_factory_doctor_does_not_hide_invalid_staged_binding_behind_drift_warning(
+    cli_runner, factory_runtime
+):
+    _original_path, _approved_identifier = _select_distinct_approved_snapshot(factory_runtime)
+    config_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor.json"
+    config = json.loads(config_path.read_text())
+    config["rooms"] = ["wrong-room"]
+    config_path.write_text(json.dumps(config) + "\n")
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1, result.output
+    output = " ".join(result.output.split())
+    assert "FAIL component=staging role=owner agent=forge" in output
+    assert "supervisor config does not match the declared staged snapshot and role" in output
 
 
 def test_shipped_backlog_contract_hash_is_pinned():

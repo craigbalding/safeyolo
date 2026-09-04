@@ -89,6 +89,10 @@ An approved factory has three distinct state layers:
 - Each running role uses the exact snapshot last staged into that agent by
   `factory run`. Until the next run, this can differ from the newly approved
   snapshot.
+- `factory doctor` reports both identities only after validating the staged
+  snapshot and its role, supervisor, command, and MCP bindings. A difference is
+  a staged-versus-approved warning, not evidence of the running process's
+  identity; process health is reported separately.
 - The canonical trusted room brief is live operator-authored state. The brief
   is not part of the snapshot and can change by revision while the snapshot
   stays the same.
@@ -170,6 +174,12 @@ the same explicit approval:
 safeyolo factory approve docs/factories/backlog.toml
 safeyolo factory approve docs/factories/backlog.toml --yes
 ```
+
+Existing installations may continue to invoke the hidden `factory apply`
+compatibility alias. It performs the same immutable snapshot selection and
+does not mutate live rooms, grants, agents, or processes. The `active` pointer
+from the pre-approve layout is read as a migration fallback without rewriting
+it; use `factory approve` to select a new snapshot explicitly.
 
 Run loads and verifies only the approved snapshot, configures the already-created
 agents through the existing `@codex-coord` host setup, stages each approved

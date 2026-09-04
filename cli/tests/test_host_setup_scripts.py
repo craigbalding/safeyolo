@@ -1,5 +1,6 @@
 """Executable regression tests for first-party agent host setup scripts."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -747,6 +748,10 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
         "reviewer": "lens",
     }
     assert config["factory"]["operator_input"] == snapshot["operator_input"]
+    expected_snapshot_id = hashlib.sha256(
+        (json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    ).hexdigest()
+    assert config["factory"]["snapshot_id"] == expected_snapshot_id
     assert config["factory"]["handoffs"][1]["response_to"] == [
         "owner",
         "coordinator",

@@ -18,7 +18,7 @@ from .api import AdminAPI
 from .config import get_agents_dir
 from .coord import api as coord_api
 from .coord import nats_runtime as coord_nats
-from .factory_contract import FactoryContractError, load_approved_snapshot
+from .factory_contract import FactoryContractError, load_approved_snapshot, load_snapshot, snapshot_id
 from .platform import AgentPlatform, get_platform
 
 DoctorStatus = Literal["PASS", "WARN", "FAIL"]
@@ -564,6 +564,7 @@ def _expected_supervisor_config(agent_name: str, role_name: str, payload: dict[s
             "handoffs": runtime_handoffs,
             "operator_input": payload["operator_input"],
             "contract_sha256": payload["roles"][role_name]["contract_sha256"],
+            "snapshot_id": snapshot_id(payload),
         },
     }
 
@@ -623,7 +624,6 @@ def _inspect_staging(
             mcp_server: _bundled_contrib_path("safeyolo-coord-mcp.py"),
             launcher: _bundled_contrib_path("safeyolo-coord-mcp-launcher.sh"),
         }
-        expected_instructions = _expected_staged_instructions(role["contract_text"])
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         checks.append(_fail("staging", f"{label} staged files are unreadable ({type(exc).__name__})", recovery))
         return
@@ -642,16 +642,50 @@ def _inspect_staging(
     if mismatched:
         checks.append(_fail("staging", f"{label} staged artifact does not match={','.join(mismatched)}", recovery))
         return
-    expected = _expected_supervisor_config(role["agent"], role_name, payload)
+
+    staged_factory = staged.get("factory") if isinstance(staged, dict) else None
+    staged_identifier = staged_factory.get("snapshot_id") if isinstance(staged_factory, dict) else None
+    if not isinstance(staged_identifier, str) or re.fullmatch(r"[0-9a-f]{64}", staged_identifier) is None:
+        checks.append(
+            _fail(
+                "staging",
+                f"{label} supervisor config has no valid staged snapshot identity",
+                recovery,
+            )
+        )
+        return
+    try:
+        _staged_identifier, _staged_snapshot_path, staged_payload = load_snapshot(name, staged_identifier)
+    except (FactoryContractError, OSError) as exc:
+        checks.append(
+            _fail(
+                "staging",
+                f"{label} staged snapshot {staged_identifier} is unavailable or invalid ({type(exc).__name__})",
+                recovery,
+            )
+        )
+        return
+    staged_role = staged_payload.get("roles", {}).get(role_name)
+    if not isinstance(staged_role, dict) or staged_role.get("agent") != role["agent"]:
+        checks.append(
+            _fail(
+                "staging",
+                f"{label} staged snapshot {staged_identifier} does not bind role {role_name} to agent {role['agent']}",
+                recovery,
+            )
+        )
+        return
+    expected = _expected_supervisor_config(role["agent"], role_name, staged_payload)
     try:
         _validate_supervisor_config(staged, expected)
     except ValueError:
         checks.append(
-            _fail("staging", f"{label} supervisor config does not match the approved snapshot and role", recovery)
+            _fail("staging", f"{label} supervisor config does not match the declared staged snapshot and role", recovery)
         )
         return
+    expected_instructions = _expected_staged_instructions(staged_role["contract_text"])
     if instructions_text != expected_instructions:
-        checks.append(_fail("staging", f"{label} staged role contract does not match the approved snapshot", recovery))
+        checks.append(_fail("staging", f"{label} staged role contract does not match staged snapshot {staged_identifier}", recovery))
         return
     if not snapshot_path.is_file():
         checks.append(_fail("staging", f"{label} bound snapshot is missing", recovery))
@@ -677,7 +711,26 @@ def _inspect_staging(
     ):
         checks.append(_fail("staging", f"{label} Codex MCP binding or timeout is invalid", recovery))
         return
-    checks.append(FactoryDoctorCheck("PASS", "staging", f"{label} command, supervisor, role, and MCP binding match"))
+    approved_identifier = snapshot_id(payload)
+    if staged_identifier != approved_identifier:
+        checks.append(
+            FactoryDoctorCheck(
+                "WARN",
+                "staging",
+                f"{label} approved_snapshot={approved_identifier} staged_snapshot={staged_identifier}; "
+                "staged artifacts are valid, while runtime process identity is checked separately",
+                recovery,
+            )
+        )
+    else:
+        checks.append(
+            FactoryDoctorCheck(
+                "PASS",
+                "staging",
+                f"{label} approved_snapshot={approved_identifier} staged_snapshot={staged_identifier} "
+                "command, supervisor, role, and MCP binding match",
+            )
+        )
 
 
 def _bounded_text(path: Path, maximum: int) -> str:

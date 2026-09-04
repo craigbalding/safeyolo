@@ -206,6 +206,19 @@ def approve_factory(
     console.print(f"snapshot_path={path}")
 
 
+@factory_app.command("apply", hidden=True)
+def apply_factory(
+    file: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Approve this exact resolved snapshot without prompting."),
+) -> None:
+    """Compatibility alias for installations that still invoke ``factory apply``."""
+    console.print(
+        "[yellow]factory apply is deprecated; use factory approve. "
+        "This compatibility path only selects an immutable snapshot.[/yellow]"
+    )
+    approve_factory(file, yes)
+
+
 @factory_app.command("run")
 def run_factory(
     name: str = typer.Argument(
@@ -254,7 +267,9 @@ def doctor_factory(name: str = typer.Argument(..., help="Approved factory name")
         line = f"{item.status} component={item.component} {item.detail}"
         if item.recovery is not None:
             line += f" recovery={item.recovery}"
-        console.print(line)
+        # Keep content-addressed identities copyable when output is piped or
+        # captured on a narrow terminal; a wrapped SHA is not actionable.
+        console.print(line, soft_wrap=True)
     counts = {
         status: sum(item.status == status for item in report.checks)
         for status in ("PASS", "WARN", "FAIL")

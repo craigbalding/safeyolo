@@ -15,7 +15,12 @@ import pytest
 from click import unstyle
 
 from safeyolo.cli import app
-from safeyolo.factory_contract import FactoryContractError, load_approved_snapshot, load_factory_file
+from safeyolo.factory_contract import (
+    FactoryContractError,
+    approve_snapshot,
+    load_approved_snapshot,
+    load_factory_file,
+)
 from safeyolo.factory_doctor import FactoryDoctorCheck, FactoryDoctorReport
 from safeyolo.platform import AgentPlatform
 
@@ -163,9 +168,27 @@ def test_factory_approve_requires_approval_and_stores_immutable_snapshot(
     assert repeated.exit_code == 0
     assert snapshot_path.read_bytes() == first
 
-    removed = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
-    assert removed.exit_code == 2
-    assert "No such command 'apply'" in removed.output
+    compatibility = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
+    assert compatibility.exit_code == 0, compatibility.output
+    assert "deprecated; use factory approve" in compatibility.output
+    assert snapshot_path.read_bytes() == first
+
+
+def test_legacy_active_pointer_is_read_without_mutation(tmp_path, tmp_config_dir):
+    from safeyolo.factory_contract import load_active_snapshot
+
+    identifier, snapshot_path = approve_snapshot(load_factory_file(_factory_file(tmp_path)))
+    root = snapshot_path.parents[1]
+    (root / "approved").unlink()
+    (root / "active").write_text(identifier + "\n")
+    before = (root / "active").read_bytes()
+
+    loaded_identifier, loaded_path, _payload = load_active_snapshot("backlog")
+
+    assert loaded_identifier == identifier
+    assert loaded_path == snapshot_path
+    assert (root / "active").read_bytes() == before
+    assert not (root / "approved").exists()
 
 
 @pytest.mark.parametrize("name", [".", ".."])
