@@ -16,6 +16,9 @@ SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo"
 LAB_CONTROLLER_SOURCE = (
     REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller"
 )
+FACTORY_SKILL_SOURCE = (
+    REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-factory"
+)
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
 COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
@@ -23,6 +26,7 @@ CODEX_COORD_SUPERVISOR_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor.py"
 CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LAB_CONTROLLER_LINK_TARGET = "/safeyolo/skills/safeyolo-lab-controller"
+FACTORY_SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo-factory"
 LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
 LAB_COMMAND_TARGET = (
     "/safeyolo/skills/safeyolo-lab-controller/scripts/safeyolo-lab"
@@ -85,6 +89,7 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
         expected_links = {"safeyolo": SKILL_LINK_TARGET}
         if consumer_dir == ".agents":
             expected_links["safeyolo-lab-controller"] = LAB_CONTROLLER_LINK_TARGET
+            expected_links["safeyolo-factory"] = FACTORY_SKILL_LINK_TARGET
         for name, target in expected_links.items():
             link = agent_home / consumer_dir / "skills" / name
             assert link.is_symlink()
@@ -846,6 +851,28 @@ def test_codex_context_refuses_user_owned_lab_controller_skill(
     assert marker.read_text() == "user-owned lab skill\n"
 
 
+def test_codex_context_refuses_user_owned_factory_skill(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    collision = agent_home / ".agents/skills/safeyolo-factory"
+    collision.mkdir(parents=True)
+    marker = collision / "SKILL.md"
+    marker.write_text("user-owned factory skill\n")
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to replace existing user skill" in result.stderr
+    assert marker.read_text() == "user-owned factory skill\n"
+
+
 def test_codex_context_refuses_user_owned_lab_command(tmp_path: Path) -> None:
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"
@@ -1014,6 +1041,33 @@ def test_lab_controller_skill_is_codex_scoped_and_self_contained() -> None:
         path = LAB_CONTROLLER_SOURCE / "scripts" / script
         assert path.is_file()
         assert path.stat().st_mode & 0o111
+
+
+def test_factory_skill_is_codex_scoped_and_self_contained() -> None:
+    content = (FACTORY_SKILL_SOURCE / "SKILL.md").read_text()
+    _, frontmatter, body = content.split("---", 2)
+    metadata = yaml.safe_load(frontmatter)
+
+    assert set(metadata) == {"name", "description"}
+    assert metadata["name"] == "safeyolo-factory"
+    assert "SafeYolo supervised factories" in metadata["description"]
+    for reference in (
+        "design.md",
+        "contract-review.md",
+        "operations.md",
+    ):
+        assert f"references/{reference}" in body
+        assert (FACTORY_SKILL_SOURCE / "references" / reference).is_file()
+
+    for graph in (
+        "contract-review",
+        "runtime-triage",
+        "nested-mvp",
+    ):
+        yaml_path = FACTORY_SKILL_SOURCE / "references/graph" / f"{graph}.yaml"
+        mmd_path = FACTORY_SKILL_SOURCE / "references/graph" / f"{graph}.mmd"
+        assert yaml_path.is_file()
+        assert mmd_path.is_file()
 
 
 def test_baseline_explains_guest_privilege_without_implying_host_root() -> None:

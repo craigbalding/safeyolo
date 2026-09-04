@@ -14,10 +14,11 @@ from unittest.mock import create_autospec
 import pytest
 
 from safeyolo.cli import app
-from safeyolo.factory_contract import FactoryContractError, load_active_snapshot, load_factory_file
+from safeyolo.factory_contract import FactoryContractError, load_approved_snapshot, load_factory_file
 from safeyolo.platform import AgentPlatform
 
 BACKLOG_COORDINATOR_CONTRACT = Path(__file__).parents[2] / "docs/factories/backlog-coordinator.md"
+BACKLOG_REVIEWER_CONTRACT = Path(__file__).parents[2] / "docs/agent-roles/independent-reviewer.md"
 
 
 def test_backlog_coordinator_status_contract_is_low_noise():
@@ -32,11 +33,21 @@ def test_backlog_coordinator_contract_owns_proactive_flow_and_backfill():
     contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
 
     assert "Relay owns productive and resilient factory flow." in contract
-    assert "Do not require the operator to name each issue." in contract
+    assert "Do not require the operator to name each work item." in contract
     assert "When Forge has useful capacity" in contract
     assert "When Lens has useful capacity" in contract
     assert "Treat an actionable `BLOCKED` or `FAILED` response as coordinator work." in contract
     assert "the factory does not require a brief" in contract
+
+
+def test_backlog_reviewer_contract_binds_install_trust_and_complexity_checks():
+    contract = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
+
+    assert "trusted base revision's tracked lockfiles" in contract
+    assert "it does not grant itself standing approval" in contract
+    assert "Run deterministic post-change quality analysis" in contract
+    assert "--select C901,PLR0911,PLR0912,PLR0913,PLR0915" in contract
+    assert "A tool finding is evidence, not an automatic veto" in contract
 
 
 def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> Path:
@@ -106,32 +117,42 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     assert "safeyolo factory doctor backlog" in explanation
 
 
-def test_factory_apply_requires_approval_and_stores_immutable_snapshot(cli_runner, tmp_path, tmp_config_dir):
+def test_factory_approve_requires_approval_and_stores_immutable_snapshot(
+    cli_runner,
+    tmp_path,
+    tmp_config_dir,
+):
     path = _factory_file(tmp_path)
 
-    denied = cli_runner.invoke(app, ["factory", "apply", str(path)], input="n\n")
+    denied = cli_runner.invoke(app, ["factory", "approve", str(path)], input="n\n")
     assert denied.exit_code == 1
     assert not (tmp_config_dir / "factories").exists()
 
-    applied = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
-    assert applied.exit_code == 0, applied.output
-    identifier, snapshot_path, payload = load_active_snapshot("backlog")
+    approved = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
+    assert approved.exit_code == 0, approved.output
+    identifier, snapshot_path, payload = load_approved_snapshot("backlog")
+    assert (snapshot_path.parents[1] / "approved").read_text() == f"{identifier}\n"
+    assert not (snapshot_path.parents[1] / "active").exists()
     assert snapshot_path.name == f"{identifier}.json"
     assert snapshot_path.stat().st_mode & 0o777 == 0o600
     assert payload["roles"]["owner"]["contract_text"] == "# Owner\n\nOwn the issue.\n"
     assert payload["handoffs"][2]["response_to"] == ["owner", "coordinator"]
     first = snapshot_path.read_bytes()
 
-    repeated = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
+    repeated = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
     assert repeated.exit_code == 0
     assert snapshot_path.read_bytes() == first
 
+    removed = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
+    assert removed.exit_code == 2
+    assert "No such command 'apply'" in removed.output
+
 
 @pytest.mark.parametrize("name", [".", ".."])
-def test_factory_apply_rejects_dot_path_names(cli_runner, tmp_path, tmp_config_dir, name):
+def test_factory_approve_rejects_dot_path_names(cli_runner, tmp_path, tmp_config_dir, name):
     path = _factory_file(tmp_path, name=name)
 
-    result = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
+    result = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
 
     assert result.exit_code == 1
     assert "one simple name" in result.output
@@ -139,7 +160,7 @@ def test_factory_apply_rejects_dot_path_names(cli_runner, tmp_path, tmp_config_d
 
 
 def test_factory_snapshot_storage_rejects_a_symlink_escape(tmp_path, tmp_config_dir):
-    from safeyolo.factory_contract import store_snapshot
+    from safeyolo.factory_contract import approve_snapshot
 
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -148,15 +169,20 @@ def test_factory_snapshot_storage_rejects_a_symlink_escape(tmp_path, tmp_config_
     (factories / "backlog").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(FactoryContractError, match="factory path escapes"):
-        store_snapshot(load_factory_file(_factory_file(tmp_path)))
+        approve_snapshot(load_factory_file(_factory_file(tmp_path)))
 
     assert list(outside.iterdir()) == []
 
 
-def test_factory_run_uses_only_the_active_verified_snapshot(cli_runner, tmp_path, tmp_config_dir, monkeypatch):
+def test_factory_run_uses_only_the_approved_verified_snapshot(
+    cli_runner,
+    tmp_path,
+    tmp_config_dir,
+    monkeypatch,
+):
     path = _factory_file(tmp_path)
-    applied = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
-    assert applied.exit_code == 0
+    approved = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
+    assert approved.exit_code == 0
     calls = []
     monkeypatch.setattr(
         "safeyolo.commands.factory._run_snapshot",
@@ -201,10 +227,13 @@ def test_factory_run_preserves_each_agents_local_codex_auth(
     monkeypatch.setattr("safeyolo.commands.factory._run_agent", lambda *args, **kwargs: 0)
     monkeypatch.setattr("safeyolo.commands.factory.coord_nats.start_server", lambda **_kwargs: 123)
     monkeypatch.setattr("safeyolo.commands.factory.coord_api.bootstrap", lambda: "sy-test")
-    monkeypatch.setattr("safeyolo.commands.factory._ensure_agent_rooms", lambda _names: None)
+    monkeypatch.setattr(
+        "safeyolo.commands.factory._ensure_factory_rooms",
+        lambda _room, _names: None,
+    )
     path = _factory_file(tmp_path)
-    applied = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
-    assert applied.exit_code == 0, applied.output
+    approved = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
+    assert approved.exit_code == 0, approved.output
 
     result = cli_runner.invoke(app, ["factory", "run", "backlog"])
 
@@ -318,11 +347,14 @@ def test_factory_run_executes_staged_worker_commands(
         "safeyolo.commands.factory.coord_api.bootstrap",
         lambda: "sy-test" if coord_ready else pytest.fail("coord bootstrap preceded runtime"),
     )
-    monkeypatch.setattr("safeyolo.commands.factory._ensure_agent_rooms", lambda _names: None)
+    monkeypatch.setattr(
+        "safeyolo.commands.factory._ensure_factory_rooms",
+        lambda _room, _names: None,
+    )
 
     path = _factory_file(tmp_path)
-    applied = cli_runner.invoke(app, ["factory", "apply", str(path), "--yes"])
-    assert applied.exit_code == 0, applied.output
+    approved = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
+    assert approved.exit_code == 0, approved.output
 
     pids: list[int] = []
     try:
@@ -381,8 +413,50 @@ def test_factory_run_does_not_boot_workers_without_coord(tmp_path, monkeypatch):
     assert launched == []
 
 
-def test_factory_ensures_one_operator_agent_room_per_worker(monkeypatch):
-    from safeyolo.commands.factory import _ensure_agent_rooms
+def test_factory_run_does_not_boot_workers_when_room_provisioning_fails(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    payload = {
+        "room": "backlog",
+        "roles": {
+            "coordinator": {"agent": "relay"},
+            "owner": {"agent": "forge"},
+            "reviewer": {"agent": "lens"},
+        },
+    }
+    launched: list[str] = []
+
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.load_agent",
+        lambda name: {"folder": str(workspace)},
+    )
+    monkeypatch.setattr("safeyolo.commands.factory._check_project_ownership", lambda *_args: None)
+    monkeypatch.setattr("safeyolo.commands.factory._run_host_script_for_agent", lambda **_kwargs: None)
+    monkeypatch.setattr("safeyolo.commands.factory.mutate_agent", lambda *_args: None)
+    monkeypatch.setattr("safeyolo.commands.factory.coord_nats.start_server", lambda **_kwargs: 123)
+    monkeypatch.setattr("safeyolo.commands.factory.coord_api.bootstrap", lambda: "sy-test")
+    monkeypatch.setattr(
+        "safeyolo.commands.factory._ensure_factory_rooms",
+        lambda _room, _names: (_ for _ in ()).throw(RuntimeError("grant failed")),
+    )
+    monkeypatch.setattr(
+        "safeyolo.commands.factory._run_agent",
+        lambda name, **_kwargs: launched.append(name) or 0,
+    )
+
+    from safeyolo.commands.factory import _run_snapshot
+
+    with pytest.raises(FactoryContractError, match="coord runtime failed to start: grant failed"):
+        _run_snapshot(tmp_path / "snapshot.json", payload)
+
+    assert launched == []
+
+
+def test_factory_ensures_shared_and_private_rooms_before_workers_start(monkeypatch):
+    from safeyolo.commands.factory import _ensure_factory_rooms
 
     created = []
     grants = []
@@ -405,15 +479,64 @@ def test_factory_ensures_one_operator_agent_room_per_worker(monkeypatch):
         lambda name: f"id-{name}",
     )
 
-    _ensure_agent_rooms(iter(("relay", "forge")))
+    _ensure_factory_rooms("backlog", iter(("relay", "forge")))
 
-    assert created == ["forge-agent"]
+    assert created == ["backlog", "forge-agent"]
     assert grants == [
+        ("backlog", "operator", "operator"),
+        ("backlog", "agent", "id-relay"),
+        ("backlog", "agent", "id-forge"),
         ("relay-agent", "agent", "id-relay"),
         ("relay-agent", "operator", "operator"),
         ("forge-agent", "agent", "id-forge"),
         ("forge-agent", "operator", "operator"),
     ]
+
+
+def test_factory_reuses_existing_shared_room_and_preserves_other_grants(monkeypatch):
+    from safeyolo.commands.factory import _ensure_factory_rooms
+
+    created = []
+    grants = []
+
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.coord_api.list_rooms",
+        lambda: [{"name": "backlog"}, {"name": "relay-agent"}],
+    )
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.coord_api.create_room",
+        lambda name: created.append(name),
+    )
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.coord_api.grant",
+        lambda room, kind, principal, **kwargs: grants.append((room, kind, principal)),
+    )
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.get_or_mint_agent_id",
+        lambda name: f"id-{name}",
+    )
+
+    _ensure_factory_rooms("backlog", iter(("relay",)))
+
+    assert created == []
+    assert grants[:2] == [
+        ("backlog", "operator", "operator"),
+        ("backlog", "agent", "id-relay"),
+    ]
+
+
+def test_factory_room_cannot_reuse_a_bound_agents_private_room(
+    cli_runner,
+    tmp_path,
+):
+    path = _factory_file(tmp_path)
+    path.write_text(path.read_text().replace('room = "backlog"', 'room = "relay-agent"'))
+
+    result = cli_runner.invoke(app, ["factory", "check", str(path)])
+
+    assert result.exit_code == 1
+    assert "conflicts with a bound" in result.output
+    assert "agent's private room" in result.output
 
 
 @pytest.mark.parametrize(
@@ -449,16 +572,16 @@ def test_factory_contract_rejects_unknown_or_ambiguous_authority(tmp_path, mutat
         load_factory_file(path)
 
 
-def test_active_snapshot_rejects_tampering(tmp_path, tmp_config_dir):
-    from safeyolo.factory_contract import store_snapshot
+def test_approved_snapshot_rejects_tampering(tmp_path, tmp_config_dir):
+    from safeyolo.factory_contract import approve_snapshot
 
-    identifier, snapshot_path = store_snapshot(load_factory_file(_factory_file(tmp_path)))
+    identifier, snapshot_path = approve_snapshot(load_factory_file(_factory_file(tmp_path)))
     payload = json.loads(snapshot_path.read_text())
     payload["room"] = "other"
     snapshot_path.write_text(json.dumps(payload))
 
     with pytest.raises(FactoryContractError, match="content hash"):
-        load_active_snapshot("backlog")
+        load_approved_snapshot("backlog")
     assert identifier in snapshot_path.name
 
 
@@ -495,19 +618,22 @@ def test_factory_run_rejects_a_legacy_source_only_snapshot(
     tmp_path,
     tmp_config_dir,
 ):
-    from safeyolo.factory_contract import canonical_snapshot, snapshot_id, store_snapshot
+    from safeyolo.factory_contract import approve_snapshot, canonical_snapshot, snapshot_id
 
-    _identifier, snapshot_path = store_snapshot(load_factory_file(_factory_file(tmp_path)))
+    _identifier, snapshot_path = approve_snapshot(load_factory_file(_factory_file(tmp_path)))
     payload = json.loads(snapshot_path.read_text())
     payload.pop("operator_input")
     legacy_identifier = snapshot_id(payload)
     legacy_path = snapshot_path.with_name(f"{legacy_identifier}.json")
     legacy_path.write_bytes(canonical_snapshot(payload))
-    (snapshot_path.parents[1] / "active").write_text(legacy_identifier + "\n")
+    (snapshot_path.parents[1] / "approved").write_text(legacy_identifier + "\n")
 
     result = cli_runner.invoke(app, ["factory", "run", "backlog"])
 
     assert result.exit_code == 1
     assert "snapshot has no operator_input" in result.output
     assert "cannot be" in result.output
-    assert "activated; check and apply a reachable contract" in result.output
+    assert (
+        "cannot be run; check and approve a reachable contract"
+        in " ".join(result.output.split())
+    )

@@ -18,6 +18,15 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUPERVISOR_PATH = REPO_ROOT / "contrib/codex-coord-supervisor.py"
 FAKE_CODEX_PATH = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
+WORK_ONE_TARGET = "https://example.test/work/one"
+ISSUE_480_TARGET = "https://github.com/craigbalding/safeyolo/issues/480"
+SECURITY_TARGET = "https://example.test/checks/security"
+FORGE_WORK_TARGET = "https://example.test/work/forge"
+LENS_WORK_TARGET = "https://example.test/work/lens"
+
+
+def _review_target(pr: int = 10, head: str = "a" * 40) -> str:
+    return f"https://github.com/craigbalding/safeyolo/pull/{pr}/commits/{head}"
 
 
 @pytest.fixture(scope="module")
@@ -126,7 +135,7 @@ def _resolved(
     attention_id: str,
     *,
     sender: str = "relay",
-    body: str = "TASK task=one assignee=forge",
+    body: str = f"TASK target={WORK_ONE_TARGET} assignee=forge",
     room_id: str = "room-1",
     sender_kind: str = "agent",
 ):
@@ -204,7 +213,9 @@ def _terminal_event(
     sender: str = "forge",
     notify: str | list[str] | None = None,
 ):
-    body = body or f"DONE task=one attention_id={attention_id}\nresult=complete"
+    body = body or (
+        f"DONE target={WORK_ONE_TARGET} attention_id={attention_id}\nresult=complete"
+    )
     arguments = {"room_name": room_name, "body": body}
     if notify is not None:
         arguments["notify"] = notify
@@ -242,13 +253,13 @@ def _terminal_event(
 
 def _send_task_event(
     *,
-    task_id: str = "issue-480",
+    target: str = ISSUE_480_TARGET,
     assignee: str = "forge",
     detail: str = "Implement the issue.",
     room_name: str = "backlog",
     sender: str = "relay",
 ):
-    body = f"TASK task={task_id} assignee={assignee}"
+    body = f"TASK target={target} assignee={assignee}"
     if detail:
         body += f"\n\n{detail}"
     return {
@@ -260,7 +271,7 @@ def _send_task_event(
             "arguments": {
                 "room_name": room_name,
                 "assignee": assignee,
-                "task_id": task_id,
+                "target": target,
                 "body": detail,
             },
             "result": {
@@ -284,7 +295,7 @@ def _send_task_event(
 
 def test_send_and_send_task_normalize_to_one_outbound_event(supervisor_module):
     module = supervisor_module
-    body = "TASK task=issue-480 assignee=forge\n\nImplement the issue."
+    body = f"TASK target={ISSUE_480_TARGET} assignee=forge\n\nImplement the issue."
     direct = _terminal_event(
         "attn-" + "0" * 32,
         body=body,
@@ -406,9 +417,9 @@ def test_peer_task_is_not_promoted_to_authorized_work(supervisor_module, tmp_pat
 @pytest.mark.parametrize(
     "body",
     [
-        "TASK task=one assignee=lens",
-        "TASK task=one",
-        "TASK task=one assignee=forge assignee=forge",
+        f"TASK target={WORK_ONE_TARGET} assignee=lens",
+        f"TASK target={WORK_ONE_TARGET}",
+        f"TASK target={WORK_ONE_TARGET} assignee=forge assignee=forge",
     ],
 )
 def test_task_for_another_or_ambiguous_assignee_is_not_promoted(supervisor_module, tmp_path, body):
@@ -428,9 +439,11 @@ def test_task_for_another_or_ambiguous_assignee_is_not_promoted(supervisor_modul
     "body",
     [
         "TASK UPDATE assignee=forge",
-        "TASK task=one assignee=forge extra=true",
-        "TASK assignee=forge task=one",
-        "TASK task=one assignee=forge assignee=forge",
+        f"TASK target={WORK_ONE_TARGET} assignee=forge extra=true",
+        f"TASK assignee=forge target={WORK_ONE_TARGET}",
+        f"TASK target={WORK_ONE_TARGET} assignee=forge assignee=forge",
+        "TASK target=not-a-url assignee=forge",
+        "TASK task=one assignee=forge",
     ],
 )
 def test_generic_task_header_requires_exact_canonical_form(supervisor_module, tmp_path, body):
@@ -446,6 +459,51 @@ def test_generic_task_header_requires_exact_canonical_form(supervisor_module, tm
     assert state["recent_attention_ids"] == [attention_id]
 
 
+def test_target_query_values_survive_assignment_and_terminal_correlation(
+    supervisor_module,
+    tmp_path,
+):
+    module = supervisor_module
+    attention_id = "attn-" + "7" * 32
+    target = "https://example.test/work/one?kind=issue&id=480"
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(
+        _config(module, tmp_path),
+        state,
+        state_path,
+        {"room-1": "backlog"},
+    )
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [_resolved(attention_id, body=f"TASK target={target} assignee=forge")],
+        )
+    )
+    assert state["in_flight"][0]["attention_id"] == attention_id
+
+    consumer.consume(
+        _terminal_event(
+            attention_id,
+            body=(
+                "DONE target=https://example.test/work/one?kind=issue&id=481 "
+                f"attention_id={attention_id}"
+            ),
+        )
+    )
+    assert state["in_flight"][0]["attention_id"] == attention_id
+
+    consumer.consume(
+        _terminal_event(
+            attention_id,
+            body=f"DONE target={target} attention_id={attention_id}",
+        )
+    )
+    assert state["in_flight"] == []
+
+
 def test_factory_review_response_must_notify_every_declared_recipient(
     supervisor_module,
     tmp_path,
@@ -456,12 +514,13 @@ def test_factory_review_response_must_notify_every_declared_recipient(
     state_path = tmp_path / "state.json"
     config = _factory_config(module, tmp_path, "reviewer")
     consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
-    body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
+    target = _review_target()
+    body = f"REVIEW_READY target={target}"
 
     consumer.consume(_wait_event(module, state, [_resolved(attention_id, sender="forge", body=body)]))
 
     assert state["in_flight"][0]["requires_terminal"] is True
-    response = f"READY issue=#480 pr=#10 head={'a' * 40} attention_id={attention_id}"
+    response = f"READY target={target} attention_id={attention_id}"
     consumer.consume(
         _terminal_event(
             attention_id,
@@ -490,7 +549,7 @@ def test_factory_admits_coordinator_non_code_task_to_reviewer(supervisor_module,
     state_path = tmp_path / "state.json"
     config = _factory_config(module, tmp_path, "reviewer")
     consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
-    body = "TASK task=security-check assignee=lens"
+    body = f"TASK target={SECURITY_TARGET} assignee=lens"
 
     consumer.consume(
         _wait_event(
@@ -501,7 +560,7 @@ def test_factory_admits_coordinator_non_code_task_to_reviewer(supervisor_module,
     )
 
     assert state["in_flight"][0]["requires_terminal"] is True
-    response = f"DONE task=security-check attention_id={attention_id}"
+    response = f"DONE target={SECURITY_TARGET} attention_id={attention_id}"
     consumer.consume(
         _terminal_event(
             attention_id,
@@ -527,7 +586,7 @@ def test_factory_admits_every_reviewer_to_owner_response(supervisor_module, tmp_
             "sender_agent_name": "relay",
             "sender_agent_id": "agent-relay",
             "sequence": 10,
-            "body": "TASK task=issue-480 assignee=forge",
+            "body": f"TASK target={ISSUE_480_TARGET} assignee=forge",
             "requires_terminal": True,
         }
     ]
@@ -536,14 +595,14 @@ def test_factory_admits_every_reviewer_to_owner_response(supervisor_module, tmp_
             "room_name": "backlog",
             "request": "REVIEW_READY",
             "recipient_agent": "lens",
-            "body": "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
-            "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+            "body": f"REVIEW_READY target={_review_target()}",
+            "correlation": {"target": _review_target()},
         }
     ]
     state_path = tmp_path / "state.json"
     config = _factory_config(module, tmp_path, "owner")
     consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
-    response = f"{response_type} issue=#480 pr=#10 head={'a' * 40} attention_id={review_attention}"
+    response = f"{response_type} target={_review_target()} attention_id={review_attention}"
 
     consumer.consume(
         _wait_event(
@@ -561,10 +620,10 @@ def test_factory_admits_every_reviewer_to_owner_response(supervisor_module, tmp_
 @pytest.mark.parametrize(
     "response",
     [
-        "READY issue=#999 pr=#10 head=" + "a" * 40,
-        "READY issue=#480 pr=#1 head=" + "a" * 40,
-        "READY issue=#480 pr=#10 head=" + "b" * 40,
-        "READY issue=#480 pr=#10",
+        f"READY target={_review_target(pr=11)}",
+        f"READY target={_review_target(head='b' * 40)}",
+        "READY target=not-a-url",
+        f"READY target={_review_target()} extra=true",
     ],
 )
 def test_factory_rejects_a_response_for_a_different_review_object(
@@ -584,7 +643,7 @@ def test_factory_rejects_a_response_for_a_different_review_object(
             "sender_agent_name": "relay",
             "sender_agent_id": "agent-relay",
             "sequence": 10,
-            "body": "TASK task=issue-480 assignee=forge",
+            "body": f"TASK target={ISSUE_480_TARGET} assignee=forge",
             "requires_terminal": True,
         }
     ]
@@ -592,8 +651,8 @@ def test_factory_rejects_a_response_for_a_different_review_object(
         "room_name": "backlog",
         "request": "REVIEW_READY",
         "recipient_agent": "lens",
-        "body": "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
-        "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+        "body": f"REVIEW_READY target={_review_target()}",
+        "correlation": {"target": _review_target()},
     }
     state["awaiting_handoffs"] = [awaiting]
     state_path = tmp_path / "state.json"
@@ -622,9 +681,9 @@ def test_factory_rejects_a_response_for_a_different_review_object(
 @pytest.mark.parametrize(
     ("sender", "body", "sender_kind"),
     [
-        ("peer", "REVIEW_READY issue=#480", "agent"),
+        ("peer", f"REVIEW_READY target={_review_target()}", "agent"),
         ("forge", "REVIEW_READY_UPDATE issue=#480", "agent"),
-        ("forge", "REVIEW_READY issue=#480", "user"),
+        ("forge", f"REVIEW_READY target={_review_target()}", "user"),
         ("relay", "TASK UPDATE assignee=lens", "agent"),
     ],
 )
@@ -672,7 +731,7 @@ def test_factory_rejects_an_other_room_even_for_an_exact_handoff(supervisor_modu
                 _resolved(
                     attention_id,
                     sender="forge",
-                    body="REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
+                    body=f"REVIEW_READY target={_review_target()}",
                     room_id="room-2",
                 )
             ],
@@ -784,7 +843,7 @@ def test_factory_rejects_peer_text_that_impersonates_a_brief(
         "READY for the next issue?",
         "DONE with the current batch?",
         "BLOCKED on anything?",
-        "TASK task=one assignee=relay",
+        f"TASK target={WORK_ONE_TARGET} assignee=relay",
         "Please take the next ready bug and ask Lens to check the security boundary.",
         "Pause new assignments after the current work finishes.",
     ],
@@ -985,7 +1044,7 @@ def test_factory_canonical_operator_to_terminal_chain(supervisor_module, tmp_pat
     assert relay_state["in_flight"][0]["requires_terminal"] is False
     relay.consume({"type": "turn.completed"})
 
-    task_body = "TASK task=issue-480 assignee=forge\n\nImplement the issue."
+    task_body = f"TASK target={ISSUE_480_TARGET} assignee=forge\n\nImplement the issue."
     task_send = _send_task_event()
     relay.consume(task_send)
     assert relay_state["awaiting_handoffs"][0]["request"] == "TASK"
@@ -998,7 +1057,8 @@ def test_factory_canonical_operator_to_terminal_chain(supervisor_module, tmp_pat
     )
     assert forge_state["in_flight"][0]["requires_terminal"] is True
 
-    review_body = f"REVIEW_READY issue=#480 pr=#485 head={'a' * 40}"
+    review_target = _review_target(pr=485)
+    review_body = f"REVIEW_READY target={review_target}"
     review_send = _terminal_event(
         task_attention,
         body=review_body,
@@ -1015,7 +1075,7 @@ def test_factory_canonical_operator_to_terminal_chain(supervisor_module, tmp_pat
     )
     assert lens_state["in_flight"][0]["requires_terminal"] is True
 
-    ready_body = f"READY issue=#480 pr=#485 head={'a' * 40} attention_id={review_attention}"
+    ready_body = f"READY target={review_target} attention_id={review_attention}"
     lens.consume(
         _terminal_event(
             review_attention,
@@ -1059,7 +1119,7 @@ def test_factory_canonical_operator_to_terminal_chain(supervisor_module, tmp_pat
     assert relay_state["in_flight"][-1]["requires_terminal"] is False
     relay.consume({"type": "turn.completed"})
 
-    done_body = f"DONE task=issue-480 attention_id={task_attention}"
+    done_body = f"DONE target={ISSUE_480_TARGET} attention_id={task_attention}"
     forge.consume(
         _terminal_event(
             task_attention,
@@ -1109,8 +1169,8 @@ def test_factory_send_task_requires_matching_targeted_envelope(supervisor_module
             "room_name": "backlog",
             "request": "TASK",
             "recipient_agent": "forge",
-            "body": "TASK task=issue-480 assignee=forge\n\nImplement the issue.",
-            "correlation": {"task": "issue-480"},
+            "body": f"TASK target={ISSUE_480_TARGET} assignee=forge\n\nImplement the issue.",
+            "correlation": {"target": ISSUE_480_TARGET},
         }
     ]
     assert consumer.result.handoff_observed is True
@@ -1123,13 +1183,14 @@ def test_factory_rejects_a_terminal_outside_the_declared_response_set(supervisor
     state_path = tmp_path / "state.json"
     config = _factory_config(module, tmp_path, "reviewer")
     consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
-    body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
+    target = _review_target()
+    body = f"REVIEW_READY target={target}"
     consumer.consume(_wait_event(module, state, [_resolved(attention_id, sender="forge", body=body)]))
 
     consumer.consume(
         _terminal_event(
             attention_id,
-            body=f"DONE issue=#480 pr=#10 attention_id={attention_id}",
+            body=f"DONE target={target} attention_id={attention_id}",
             sender="lens",
             notify=["forge", "relay"],
         )
@@ -1150,7 +1211,7 @@ def test_factory_response_requires_a_correlated_outbound_handoff(supervisor_modu
         state_path,
         {"room-1": "backlog"},
     )
-    body = f"READY issue=#480 pr=#10 head={'a' * 40} attention_id={'attn-' + '7' * 32}"
+    body = f"READY target={_review_target()} attention_id={'attn-' + '7' * 32}"
 
     consumer.consume(_wait_event(module, state, [_resolved(attention_id, sender="lens", body=body)]))
 
@@ -1169,14 +1230,14 @@ def test_factory_outbound_request_suspends_parent_for_next_bounded_wait(supervis
             "sender_agent_name": "relay",
             "sender_agent_id": "agent-relay",
             "sequence": 10,
-            "body": "TASK task=issue-480 assignee=forge",
+            "body": f"TASK target={ISSUE_480_TARGET} assignee=forge",
             "requires_terminal": True,
         }
     ]
     state_path = tmp_path / "state.json"
     config = _factory_config(module, tmp_path, "owner")
     consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
-    body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
+    body = f"REVIEW_READY target={_review_target()}"
     event = _terminal_event(task_attention, body=body, notify=["lens"])
 
     consumer.consume(event)
@@ -1187,7 +1248,7 @@ def test_factory_outbound_request_suspends_parent_for_next_bounded_wait(supervis
         "request": "REVIEW_READY",
         "recipient_agent": "lens",
         "body": body,
-        "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+        "correlation": {"target": _review_target()},
     }
     assert state["awaiting_handoffs"] == [expected]
     assert module.load_state(state_path)["awaiting_handoffs"] == [expected]
@@ -1207,7 +1268,7 @@ def test_factory_prompt_directs_required_outbound_handoff_before_terminal(superv
             "sender_agent_name": "relay",
             "sender_agent_id": "agent-relay",
             "sequence": 10,
-            "body": "TASK task=issue-480 assignee=forge",
+            "body": f"TASK target={ISSUE_480_TARGET} assignee=forge",
             "requires_terminal": True,
         }
     ]
@@ -1223,6 +1284,8 @@ def test_factory_prompt_directs_required_outbound_handoff_before_terminal(superv
     assert "advance every other ready in-flight object before finishing" in prompt
     assert "Do not send an inbound response merely because the required downstream response has not arrived" in prompt
     assert "only when the request has a genuine terminal outcome" in prompt
+    assert "Repeat the request's exact target" in prompt
+    assert "in the leading response header" in prompt
 
 
 def test_factory_tracks_concurrent_forge_and_lens_tasks_across_restart(
@@ -1236,14 +1299,14 @@ def test_factory_tracks_concurrent_forge_and_lens_tasks_across_restart(
     config = _factory_config(module, tmp_path, "coordinator")
     consumer = module.EventConsumer(config, state, state_path, room_ids)
 
-    forge_body = "TASK task=forge-work assignee=forge"
+    forge_body = f"TASK target={FORGE_WORK_TARGET} assignee=forge"
     forge_send = _terminal_event(
         "attn-" + "1" * 32,
         body=forge_body,
         sender="relay",
         notify=["forge"],
     )
-    lens_body = "TASK task=lens-work assignee=lens"
+    lens_body = f"TASK target={LENS_WORK_TARGET} assignee=lens"
     lens_send = _terminal_event(
         "attn-" + "2" * 32,
         body=lens_body,
@@ -1265,7 +1328,7 @@ def test_factory_tracks_concurrent_forge_and_lens_tasks_across_restart(
     wrong_room = "attn-" + "4" * 32
     lens_response_attention = "attn-" + "5" * 32
     lens_request_attention = "attn-" + "6" * 32
-    lens_done = f"DONE task=lens-work attention_id={lens_request_attention}"
+    lens_done = f"DONE target={LENS_WORK_TARGET} attention_id={lens_request_attention}"
     consumer.consume(
         _wait_event(
             module,
@@ -1274,7 +1337,7 @@ def test_factory_tracks_concurrent_forge_and_lens_tasks_across_restart(
                 _resolved(
                     wrong_sender,
                     sender="lens",
-                    body=f"DONE task=forge-work attention_id={lens_request_attention}",
+                    body=f"DONE target={FORGE_WORK_TARGET} attention_id={lens_request_attention}",
                 ),
                 _resolved(
                     wrong_room,
@@ -1295,7 +1358,7 @@ def test_factory_tracks_concurrent_forge_and_lens_tasks_across_restart(
     consumer = module.EventConsumer(config, state, state_path, room_ids)
     forge_response_attention = "attn-" + "7" * 32
     forge_request_attention = "attn-" + "8" * 32
-    forge_done = f"DONE task=forge-work attention_id={forge_request_attention}"
+    forge_done = f"DONE target={FORGE_WORK_TARGET} attention_id={forge_request_attention}"
     consumer.consume(
         _wait_event(
             module,
@@ -1323,8 +1386,8 @@ def test_factory_rejects_persisted_handoff_correlation_that_does_not_match_reque
             "room_name": "backlog",
             "request": "REVIEW_READY",
             "recipient_agent": "lens",
-            "body": "REVIEW_READY issue=#480 pr=#485 head=" + "a" * 40,
-            "correlation": {"issue": "#999", "pr": "#1", "head": "b" * 40},
+            "body": f"REVIEW_READY target={_review_target(pr=485)}",
+            "correlation": {"target": _review_target(pr=486)},
         }
     ]
     state_path = _write_json(tmp_path / "state.json", state)
@@ -1370,7 +1433,7 @@ def test_canonical_history_recovers_terminal_lost_after_send(supervisor_module, 
             "sender_agent_name": "relay",
             "sender_agent_id": "agent-relay",
             "sequence": 11,
-            "body": "TASK task=one assignee=forge",
+            "body": f"TASK target={WORK_ONE_TARGET} assignee=forge",
             "requires_terminal": True,
         }
     ]
@@ -1383,7 +1446,7 @@ def test_canonical_history_recovers_terminal_lost_after_send(supervisor_module, 
                     "sender_kind": "agent",
                     "sender_agent_id": "agent-forge",
                     "sender_agent_name": "forge",
-                    "body": f"DONE task=one attention_id={attention_id}",
+                    "body": f"DONE target={WORK_ONE_TARGET} attention_id={attention_id}",
                 }
             ],
             "next_cursor": 12,
@@ -1396,26 +1459,26 @@ def test_canonical_history_recovers_terminal_lost_after_send(supervisor_module, 
     assert state["recent_attention_ids"] == [attention_id]
 
 
-def test_terminal_requires_exact_attention_id(supervisor_module):
+def test_terminal_requires_exact_target_and_attention_id(supervisor_module):
     module = supervisor_module
     pending = {
         "attention_id": "attn-" + "1" * 32,
-        "body": "TASK issue=#471 task=first assignee=forge",
+        "body": f"TASK target={WORK_ONE_TARGET} assignee=forge",
     }
 
-    assert module._terminal_matches(pending, "DONE issue=#471 task=first") is False
-    assert module._terminal_matches(pending, "DONE issue=#471 task=second") is False
+    assert module._terminal_matches(pending, f"DONE target={WORK_ONE_TARGET}") is False
+    assert module._terminal_matches(pending, "DONE target=https://example.test/work/two") is False
     assert (
         module._terminal_matches(
             pending,
-            f"DONE issue=#471 task=first attention_id={'attn-' + '2' * 32}",
+            f"DONE target={WORK_ONE_TARGET} attention_id={'attn-' + '2' * 32}",
         )
         is False
     )
     assert (
         module._terminal_matches(
             pending,
-            f"DONE issue=#471 task=other attention_id={'attn-' + '1' * 32}",
+            f"DONE target={WORK_ONE_TARGET} attention_id={'attn-' + '1' * 32}",
         )
         is True
     )
@@ -1452,7 +1515,9 @@ def test_one_correlation_label_cannot_complete_two_attentions(supervisor_module,
     consumer = module.EventConsumer(_config(module, tmp_path), state, state_path, {"room-1": "backlog"})
     consumer.consume(_wait_event(module, state, [_resolved(first), _resolved(second)], next_cursor=13))
 
-    consumer.consume(_terminal_event(first, body="DONE task=one\nresult=complete"))
+    consumer.consume(
+        _terminal_event(first, body=f"DONE target={WORK_ONE_TARGET}\nresult=complete")
+    )
 
     assert {item["attention_id"] for item in module.load_state(state_path)["in_flight"]} == {
         first,
@@ -1471,7 +1536,7 @@ def test_recovery_prompt_uses_checkpoint_and_skips_wait(supervisor_module, tmp_p
             "sender_agent_name": "relay",
             "sender_agent_id": "agent-relay",
             "sequence": 11,
-            "body": "TASK task=one assignee=forge",
+            "body": f"TASK target={WORK_ONE_TARGET} assignee=forge",
             "requires_terminal": True,
         }
     ]
@@ -1507,7 +1572,7 @@ def test_unavailable_resume_preserves_work_and_starts_fresh_next(
             "sender_agent_name": "relay",
             "sender_agent_id": "agent-relay",
             "sequence": 11,
-            "body": "TASK task=one assignee=forge",
+            "body": f"TASK target={WORK_ONE_TARGET} assignee=forge",
             "requires_terminal": True,
         }
     ]
@@ -1547,7 +1612,7 @@ def test_recovered_work_preserves_thread_after_successful_handoff(
             "sender_agent_name": "relay",
             "sender_agent_id": "agent-relay",
             "sequence": 11,
-            "body": "TASK task=issue-480 assignee=forge",
+            "body": f"TASK target={ISSUE_480_TARGET} assignee=forge",
             "requires_terminal": True,
         }
     ]
@@ -1561,8 +1626,8 @@ def test_recovered_work_preserves_thread_after_successful_handoff(
                 "room_name": "backlog",
                 "request": "REVIEW_READY",
                 "recipient_agent": "lens",
-                "body": "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
-                "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+                "body": f"REVIEW_READY target={_review_target()}",
+                "correlation": {"target": _review_target()},
             }
         ]
         return module.InvocationResult(
@@ -1772,7 +1837,7 @@ def test_new_external_work_preserves_thread_after_outbound_handoff(
                 _resolved(
                     attention_id,
                     sender="relay",
-                    body="TASK task=issue-480 assignee=forge",
+                    body=f"TASK target={ISSUE_480_TARGET} assignee=forge",
                 )
             ],
             "next_cursor": 1,
@@ -1785,8 +1850,8 @@ def test_new_external_work_preserves_thread_after_outbound_handoff(
                 "room_name": "backlog",
                 "request": "REVIEW_READY",
                 "recipient_agent": "lens",
-                "body": "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
-                "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+                "body": f"REVIEW_READY target={_review_target()}",
+                "correlation": {"target": _review_target()},
             }
         ]
         return module.InvocationResult(
@@ -1973,6 +2038,25 @@ def test_checkpoint_rejects_unknown_fields(supervisor_module, tmp_path):
         module.load_state(_write_json(tmp_path / "secret-state.json", state))
 
 
+def test_checkpoint_rejects_old_in_flight_task_protocol(supervisor_module, tmp_path):
+    module = supervisor_module
+    state = module.empty_state()
+    state["in_flight"] = [
+        {
+            "attention_id": "attn-" + "5" * 32,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 11,
+            "body": "TASK task=one assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+
+    with pytest.raises(module.SupervisorError, match="unsupported request protocol"):
+        module.load_state(_write_json(tmp_path / "old-protocol-state.json", state))
+
+
 def test_version_three_checkpoint_migrates_with_empty_brief_context(
     supervisor_module,
     tmp_path,
@@ -2002,8 +2086,8 @@ def test_version_four_checkpoint_migrates_one_awaiting_handoff(
         "room_name": "backlog",
         "request": "REVIEW_READY",
         "recipient_agent": "lens",
-        "body": "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
-        "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+        "body": f"REVIEW_READY target={_review_target()}",
+        "correlation": {"target": _review_target()},
     }
     state.pop("awaiting_handoffs")
 
@@ -2028,7 +2112,7 @@ def test_version_five_checkpoint_starts_a_clean_thread_but_preserves_work(
             "sender_agent_name": "relay",
             "sender_agent_id": "agent-relay",
             "sequence": 11,
-            "body": "TASK task=one assignee=forge",
+            "body": f"TASK target={WORK_ONE_TARGET} assignee=forge",
             "requires_terminal": True,
         }
     ]
@@ -2038,6 +2122,52 @@ def test_version_five_checkpoint_starts_a_clean_thread_but_preserves_work(
     assert migrated["version"] == module.STATE_VERSION
     assert migrated["thread_id"] is None
     assert migrated["in_flight"] == state["in_flight"]
+
+
+def test_inspect_state_uses_runtime_migration_without_mutating_checkpoint(
+    supervisor_module,
+    tmp_path,
+    capsys,
+):
+    module = supervisor_module
+    state = module.empty_state()
+    state["version"] = 5
+    state["thread_id"] = "legacy-wait-thread"
+    state["in_flight"] = [
+        {
+            "attention_id": "attn-" + "5" * 32,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 11,
+            "body": f"TASK target={WORK_ONE_TARGET} assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+    state_path = _write_json(tmp_path / "v5-state.json", state)
+    before = state_path.read_bytes()
+
+    assert module.main(["--inspect-state", str(state_path)]) == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {
+        "consecutive_failures": 0,
+        "in_flight": 1,
+        "owned_process": None,
+        "safe_cursor": 0,
+        "version": module.STATE_VERSION,
+    }
+    assert state_path.read_bytes() == before
+
+
+def test_inspect_state_rejects_missing_checkpoint(supervisor_module, tmp_path, capsys):
+    module = supervisor_module
+
+    assert module.main(["--inspect-state", str(tmp_path / "missing.json")]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "supervisor state does not exist" in captured.err
 
 
 def _stage_preflight(monkeypatch, module, tmp_path, *, tool_timeout=330, login="Logged in using ChatGPT"):
@@ -2237,7 +2367,7 @@ def test_work_deadline_does_not_slide_on_later_stdout(supervisor_module, tmp_pat
         "      'edge':{'attention_id':'attn-' + '3' * 32,'room_id':'room-1',\n"
         "              'kind':'message','object_id':'message-1','revision_or_sequence':1},\n"
         "      'object':{'sender_agent_id':'agent-relay','sender_agent_name':'relay',\n"
-        "                'body':'TASK task=one assignee=forge','sequence':1}\n"
+        "                'body':'TASK target=https://example.test/work/one assignee=forge','sequence':1}\n"
         "    }],'next_cursor':1}},\n"
         "    'error':None,\n"
         "    'status':'completed'\n"
@@ -2399,6 +2529,7 @@ def test_restart_cleans_a_checkpointed_detached_child(supervisor_module, tmp_pat
     module = supervisor_module
     child = module.subprocess.Popen(["sleep", "60"], start_new_session=True)
     state = module.empty_state()
+    state["thread_id"] = "interrupted-thread"
     state_path = tmp_path / "state.json"
     state["owned_process"] = {
         "pid": 999_999_999,
@@ -2410,7 +2541,9 @@ def test_restart_cleans_a_checkpointed_detached_child(supervisor_module, tmp_pat
     module.cleanup_stale_owned_process(state, state_path, grace=1)
     child.wait(timeout=2)
 
-    assert module.load_state(state_path)["owned_process"] is None
+    persisted = module.load_state(state_path)
+    assert persisted["owned_process"] is None
+    assert persisted["thread_id"] is None
 
 
 def test_restart_cleans_uncheckpointed_same_group_child(supervisor_module, tmp_path):
@@ -2535,7 +2668,11 @@ def test_recovery_object_uses_stdin_not_process_arguments(supervisor_module, tmp
     assert secret_task_text in stdin_file.read_text()
 
 
-def test_agent_room_receives_each_codex_stdout_event(supervisor_module, tmp_path, monkeypatch):
+def test_agent_room_receives_each_codex_stdout_event_and_coalesces_stderr_chunk(
+    supervisor_module,
+    tmp_path,
+    monkeypatch,
+):
     module = supervisor_module
     fake_codex = tmp_path / "fake-codex"
     fake_codex.write_text(
@@ -2543,7 +2680,8 @@ def test_agent_room_receives_each_codex_stdout_event(supervisor_module, tmp_path
         "import json\n"
         "print(json.dumps({'type':'thread.started','thread_id':'thread-one'}), flush=True)\n"
         "print(json.dumps({'type':'turn.started'}), flush=True)\n"
-        "print('provider diagnostic', file=__import__('sys').stderr, flush=True)\n"
+        "__import__('sys').stderr.write('provider diagnostic one\\nprovider diagnostic two\\n')\n"
+        "__import__('sys').stderr.flush()\n"
         "print(json.dumps({'type':'turn.completed'}), flush=True)\n"
     )
     fake_codex.chmod(0o755)
@@ -2575,7 +2713,9 @@ def test_agent_room_receives_each_codex_stdout_event(supervisor_module, tmp_path
         "turn.completed",
     ]
     stderr_call = sends[event_types.index("safeyolo.codex.stderr")]
-    assert json.loads(stderr_call[2]["body"])["text"] == "provider diagnostic"
+    assert json.loads(stderr_call[2]["body"])["text"] == (
+        "provider diagnostic one\nprovider diagnostic two\n"
+    )
     assert all(call[0] == "/api/coord/rooms/forge-agent/send" for call in sends)
     assert all(call[2]["notify"] == "none" for call in sends)
 
@@ -2741,3 +2881,54 @@ def test_signal_interrupt_carries_signal_number(supervisor_module):
         supervisor_module._interrupt_for_signal(supervisor_module.signal.SIGTERM, None)
 
     assert caught.value.signum == supervisor_module.signal.SIGTERM
+
+
+def test_signal_during_invocation_discards_only_interrupted_thread(
+    supervisor_module,
+    tmp_path,
+    monkeypatch,
+):
+    module = supervisor_module
+    fake_codex = tmp_path / "fake-codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env python3\n"
+        "import time\n"
+        "time.sleep(60)\n"
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("SAFEYOLO_CODEX_BIN", str(fake_codex))
+    attention_id = "attn-" + "9" * 32
+    state = module.empty_state()
+    state["thread_id"] = "interrupted-thread"
+    state["in_flight"] = [
+        {
+            "attention_id": attention_id,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 11,
+            "body": f"TASK target={WORK_ONE_TARGET} assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+    state_path = tmp_path / "state.json"
+    module.save_state(state_path, state)
+
+    def interrupt(*_args):
+        raise module.SignalInterrupt(module.signal.SIGTERM)
+
+    monkeypatch.setattr(module, "_checkpoint_owned_descendants", interrupt)
+
+    with pytest.raises(module.SignalInterrupt):
+        module.run_invocation(
+            _config(module, tmp_path),
+            state,
+            state_path,
+            {"room-1": "backlog"},
+            [],
+        )
+
+    persisted = module.load_state(state_path)
+    assert persisted["thread_id"] is None
+    assert persisted["in_flight"][0]["attention_id"] == attention_id
+    assert persisted["owned_process"] is None

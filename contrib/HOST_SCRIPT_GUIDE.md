@@ -70,10 +70,10 @@ stage_safeyolo_context "$SAFEYOLO_AGENT_HOME" codex
 The helper stages the baseline under `~/.safeyolo/` and links applicable
 read-only, per-run skill trees under the agent's skill directory. Both Claude
 and Codex get `/safeyolo/skills/safeyolo`. Codex also gets
-`/safeyolo/skills/safeyolo-lab-controller` and the `safeyolo-lab` guest
-command. The helper refuses to overwrite a user-owned skill or command with a
-managed name. Custom standalone scripts may instead stage their own
-instructions.
+`/safeyolo/skills/safeyolo-lab-controller`,
+`/safeyolo/skills/safeyolo-factory`, and the `safeyolo-lab` guest command. The
+helper refuses to overwrite a user-owned skill or command with a managed name.
+Custom standalone scripts may instead stage their own instructions.
 
 Sketch:
 

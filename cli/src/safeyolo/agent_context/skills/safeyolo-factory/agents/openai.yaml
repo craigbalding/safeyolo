@@ -1,0 +1,4 @@
+interface:
+  display_name: "SafeYolo Factory"
+  short_description: "Design, review, and troubleshoot SafeYolo factories"
+  default_prompt: "Use $safeyolo-factory to design or review this SafeYolo factory."

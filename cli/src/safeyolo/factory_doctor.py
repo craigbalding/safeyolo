@@ -1,13 +1,13 @@
-"""Read-only health inspection for an active supervised factory."""
+"""Read-only health inspection for an approved supervised factory."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import shlex
 import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,31 +18,15 @@ from .api import AdminAPI
 from .config import get_agents_dir
 from .coord import api as coord_api
 from .coord import nats_runtime as coord_nats
-from .factory_contract import FactoryContractError, load_active_snapshot
+from .factory_contract import FactoryContractError, load_approved_snapshot
 from .platform import AgentPlatform, get_platform
 
 DoctorStatus = Literal["PASS", "WARN", "FAIL"]
 _AGENT_ID_RE = re.compile(r"ag-[0-9a-f]{32}")
-_ATTENTION_ID_RE = re.compile(r"attn-[0-9a-f]{32}")
 _SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
-_MESSAGE_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)=([^\s=]+)")
-_NON_CORRELATION_FIELDS = {"assignee", "attention_id"}
-_MAX_CANONICAL_BODY_BYTES = 64 * 1024
 _BACKLOG_COORDINATOR_CONTRACT_SHA256 = (
-    "ee9740a2f54202dfb11e81d089612a9a66acb17d7dc0d75e63bf30448844a182"
+    "91fd784fbb25dd05e3fb2daae5ef1fcc141ceeb987f41358477b3409628f3776"
 )
-_STATE_KEYS = {
-    "version",
-    "thread_id",
-    "safe_cursor",
-    "recent_attention_ids",
-    "in_flight",
-    "awaiting_handoffs",
-    "briefs",
-    "consecutive_failures",
-    "owned_process",
-}
-_MAX_STATE_BYTES = 2 * 1024 * 1024
 _SUPERVISOR_LIMITS = {
     "wait_seconds": (1, 300, 300),
     "page_limit": (1, 16, 16),
@@ -113,18 +97,18 @@ class FactoryDoctorReport:
 
 
 def inspect_factory(name: str) -> FactoryDoctorReport:
-    """Inspect one active factory without starting or changing anything."""
+    """Inspect one approved factory without starting or changing anything."""
     checks: list[FactoryDoctorCheck] = []
     payload: dict[str, Any] | None = None
     snapshot_path: Path | None = None
     try:
-        identifier, snapshot_path, payload = load_active_snapshot(name)
+        identifier, snapshot_path, payload = load_approved_snapshot(name)
     except (FactoryContractError, OSError) as exc:
         checks.append(
             _fail(
                 "snapshot",
-                f"active snapshot is invalid ({type(exc).__name__})",
-                "factory snapshot; run `safeyolo factory check FILE` then `safeyolo factory apply FILE`",
+                f"approved snapshot is invalid ({type(exc).__name__})",
+                "factory snapshot; run `safeyolo factory check FILE` then `safeyolo factory approve FILE`",
             )
         )
     else:
@@ -132,7 +116,7 @@ def inspect_factory(name: str) -> FactoryDoctorReport:
             FactoryDoctorCheck(
                 "PASS",
                 "snapshot",
-                f"active snapshot={identifier} schema={payload['schema']}",
+                f"approved snapshot={identifier} schema={payload['schema']}",
             )
         )
 
@@ -660,11 +644,11 @@ def _inspect_staging(
         _validate_supervisor_config(staged, expected)
     except ValueError:
         checks.append(
-            _fail("staging", f"{label} supervisor config does not match the active snapshot and role", recovery)
+            _fail("staging", f"{label} supervisor config does not match the approved snapshot and role", recovery)
         )
         return
     if instructions_text != expected_instructions:
-        checks.append(_fail("staging", f"{label} staged role contract does not match the active snapshot", recovery))
+        checks.append(_fail("staging", f"{label} staged role contract does not match the approved snapshot", recovery))
         return
     if not snapshot_path.is_file():
         checks.append(_fail("staging", f"{label} bound snapshot is missing", recovery))
@@ -754,216 +738,74 @@ def _inspect_checkpoint(
     path = home / ".safeyolo/codex-coord-supervisor-state.json"
     recovery = f"supervisor checkpoint for {label}; run `safeyolo factory run {name}`"
     try:
-        state = _bounded_json(path, _MAX_STATE_BYTES)
-        summary = _validate_checkpoint(state)
-    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        summary, owned = _inspect_checkpoint_with_supervisor(path)
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError) as exc:
         checks.append(_fail("checkpoint", f"{label} checkpoint is invalid ({type(exc).__name__})", recovery))
         return None
     checks.append(FactoryDoctorCheck("PASS", "checkpoint", f"{label} {summary}"))
-    owned = state.get("owned_process")
-    return owned if isinstance(owned, dict) else None
+    return owned
 
 
-def _request_correlation(body: str) -> dict[str, str]:
-    tokens = body.split("\n", 1)[0].split()
-    if not tokens:
-        return {}
-    fields = {}
-    for token in tokens[1:]:
-        match = _MESSAGE_FIELD_RE.fullmatch(token)
-        if match is None or match.group(1) in fields:
-            return {}
-        fields[match.group(1)] = match.group(2)
-    return {key: value for key, value in fields.items() if key not in _NON_CORRELATION_FIELDS}
-
-
-def _validate_in_flight(item: Any) -> None:
-    keys = {
-        "attention_id",
-        "room_name",
-        "sender_agent_name",
-        "sender_agent_id",
-        "sequence",
-        "body",
-        "requires_terminal",
-    }
-    if not isinstance(item, dict) or set(item) != keys:
-        raise ValueError("invalid in-flight object")
-    if not isinstance(item["attention_id"], str) or _ATTENTION_ID_RE.fullmatch(item["attention_id"]) is None:
-        raise ValueError("invalid in-flight attention ID")
-    if any(not isinstance(item[key], str) for key in ("room_name", "sender_agent_name", "sender_agent_id", "body")):
-        raise ValueError("invalid in-flight fields")
+def _inspect_checkpoint_with_supervisor(  # DOC: docs/factories.md
+    path: Path,
+) -> tuple[str, dict[str, Any] | None]:
+    supervisor = _bundled_contrib_path("codex-coord-supervisor.py")
+    result = subprocess.run(
+        [sys.executable, str(supervisor), "--inspect-state", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError("supervisor rejected checkpoint")
+    try:
+        state = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("supervisor returned an invalid checkpoint summary") from exc
+    if not isinstance(state, dict) or set(state) != {
+        "version",
+        "safe_cursor",
+        "in_flight",
+        "consecutive_failures",
+        "owned_process",
+    }:
+        raise ValueError("supervisor returned an invalid checkpoint summary")
+    version = state["version"]
+    cursor = state["safe_cursor"]
+    in_flight = state["in_flight"]
+    failures = state["consecutive_failures"]
     if (
-        isinstance(item["sequence"], bool)
-        or not isinstance(item["sequence"], int)
-        or item["sequence"] < 0
-        or not isinstance(item["requires_terminal"], bool)
-        or len(item["body"].encode()) > _MAX_CANONICAL_BODY_BYTES
-    ):
-        raise ValueError("invalid in-flight values")
-
-
-def _validate_awaiting_handoff(value: Any) -> None:
-    if value is None:
-        raise ValueError("invalid awaiting handoff")
-    keys = {"room_name", "request", "recipient_agent", "body", "correlation"}
-    if not isinstance(value, dict) or set(value) != keys:
-        raise ValueError("invalid awaiting handoff")
-    if (
-        any(
-            not isinstance(value[key], str) or not value[key]
-            for key in ("room_name", "request", "recipient_agent", "body")
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version <= 0
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (cursor, in_flight, failures)
         )
-        or len(value["body"].encode()) > _MAX_CANONICAL_BODY_BYTES
     ):
-        raise ValueError("invalid awaiting handoff")
-    correlation = value["correlation"]
-    if not isinstance(correlation, dict) or not correlation:
-        raise ValueError("invalid awaiting correlation")
-    for key, item in correlation.items():
-        if (
-            not isinstance(key, str)
-            or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", key) is None
-            or key in _NON_CORRELATION_FIELDS
-            or not isinstance(item, str)
-            or not item
-            or re.search(r"\s|=", item) is not None
-        ):
-            raise ValueError("invalid awaiting correlation")
-    if correlation != _request_correlation(value["body"]):
-        raise ValueError("mismatched awaiting correlation")
-
-
-def _validate_brief(room_name: Any, current: Any) -> None:
-    keys = {"room_id", "object_id", "revision", "markdown", "content_hash"}
-    if (
-        not isinstance(room_name, str)
-        or _SIMPLE_NAME_RE.fullmatch(room_name) is None
-        or not isinstance(current, dict)
-        or set(current) != keys
-    ):
-        raise ValueError("invalid brief context")
-    markdown = current["markdown"]
-    if (
-        not isinstance(current["room_id"], str)
-        or not current["room_id"]
-        or not isinstance(current["object_id"], str)
-        or not current["object_id"]
-        or isinstance(current["revision"], bool)
-        or not isinstance(current["revision"], int)
-        or current["revision"] <= 0
-        or not isinstance(markdown, str)
-        or len(markdown.encode()) > _MAX_CANONICAL_BODY_BYTES
-        or not isinstance(current["content_hash"], str)
-        or re.fullmatch(r"[0-9a-f]{64}", current["content_hash"]) is None
-        or hashlib.sha256(markdown.encode()).hexdigest() != current["content_hash"]
-    ):
-        raise ValueError("invalid brief context")
-
-
-def _validate_checkpoint(state: Any) -> str:
-    if not isinstance(state, dict):
-        raise ValueError("unsupported checkpoint schema")
-    legacy_keys = _STATE_KEYS - {"awaiting_handoffs", "briefs"}
-    if state.get("version") == 1 and set(state) == legacy_keys:
-        state = {**state, "version": 5, "awaiting_handoffs": [], "briefs": {}}
-    elif state.get("version") == 2 and set(state) == legacy_keys | {"awaiting_handoff"}:
-        awaiting = state.get("awaiting_handoff")
-        if isinstance(awaiting, dict) and set(awaiting) == {
-            "room_name",
-            "request",
-            "recipient_agent",
-            "body",
-        }:
-            awaiting = {**awaiting, "correlation": _request_correlation(awaiting.get("body", ""))}
-        state = {
-            **state,
-            "version": 5,
-            "awaiting_handoffs": [] if awaiting is None else [awaiting],
-            "briefs": {},
-        }
-        state.pop("awaiting_handoff")
-    elif state.get("version") == 3 and set(state) == legacy_keys | {"awaiting_handoff"}:
-        awaiting = state.get("awaiting_handoff")
-        state = {
-            **state,
-            "version": 5,
-            "awaiting_handoffs": [] if awaiting is None else [awaiting],
-            "briefs": {},
-        }
-        state.pop("awaiting_handoff")
-    elif state.get("version") == 4 and set(state) == legacy_keys | {"awaiting_handoff", "briefs"}:
-        awaiting = state.get("awaiting_handoff")
-        state = {
-            **state,
-            "version": 5,
-            "awaiting_handoffs": [] if awaiting is None else [awaiting],
-        }
-        state.pop("awaiting_handoff")
-    if set(state) != _STATE_KEYS or state.get("version") != 5:
-        raise ValueError("unsupported checkpoint schema")
-    thread_id = state.get("thread_id")
-    if thread_id is not None and (not isinstance(thread_id, str) or not thread_id):
-        raise ValueError("invalid thread ID")
-    cursor = state.get("safe_cursor")
-    failures = state.get("consecutive_failures")
-    recent = state.get("recent_attention_ids")
-    in_flight = state.get("in_flight")
-    if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
-        raise ValueError("invalid safe cursor")
-    if isinstance(failures, bool) or not isinstance(failures, int) or failures < 0:
-        raise ValueError("invalid failure counter")
-    if (
-        not isinstance(recent, list)
-        or len(recent) > 256
-        or any(not isinstance(item, str) or _ATTENTION_ID_RE.fullmatch(item) is None for item in recent)
-    ):
-        raise ValueError("invalid attention deduplication data")
-    if not isinstance(in_flight, list) or len(in_flight) > 16:
-        raise ValueError("invalid in-flight work")
-    for item in in_flight:
-        _validate_in_flight(item)
-    awaiting_handoffs = state.get("awaiting_handoffs")
-    if not isinstance(awaiting_handoffs, list) or len(awaiting_handoffs) > 16:
-        raise ValueError("invalid awaiting handoffs")
-    for awaiting in awaiting_handoffs:
-        _validate_awaiting_handoff(awaiting)
-    briefs = state.get("briefs")
-    if not isinstance(briefs, dict):
-        raise ValueError("invalid brief context")
-    for room_name, current in briefs.items():
-        _validate_brief(room_name, current)
-    owned = state.get("owned_process")
+        raise ValueError("supervisor returned an invalid checkpoint summary")
+    owned = state["owned_process"]
+    if owned is not None and not isinstance(owned, dict):
+        raise ValueError("supervisor returned an invalid checkpoint summary")
     identity = "none"
     if owned is not None:
-        if not isinstance(owned, dict) or set(owned) != {"pid", "start_time", "descendants"}:
-            raise ValueError("invalid process identity")
         pid = owned.get("pid")
         start = owned.get("start_time")
-        descendants = owned.get("descendants")
         if (
             isinstance(pid, bool)
             or not isinstance(pid, int)
             or pid <= 1
             or not isinstance(start, str)
             or not start.isdigit()
-            or not isinstance(descendants, list)
-            or len(descendants) > 64
         ):
-            raise ValueError("invalid process identity")
-        for child in descendants:
-            if (
-                not isinstance(child, dict)
-                or set(child) != {"pid", "start_time"}
-                or isinstance(child.get("pid"), bool)
-                or not isinstance(child.get("pid"), int)
-                or child["pid"] <= 1
-                or not isinstance(child.get("start_time"), str)
-                or not child["start_time"].isdigit()
-            ):
-                raise ValueError("invalid child process identity")
+            raise ValueError("supervisor returned an invalid checkpoint summary")
         identity = f"pid={pid} start={start}"
-    return f"safe_cursor={cursor} in_flight={len(in_flight)} failures={failures} process={identity}"
+    summary = (
+        f"safe_cursor={cursor} in_flight={in_flight} "
+        f"failures={failures} process={identity}"
+    )
+    return summary, owned
 
 
 def _process_rows(
@@ -1022,12 +864,26 @@ def _is_supervisor_process(command: str, executable: str | None, expected: dict[
 def _is_codex_process(command: str, executable: str | None, expected: dict[str, str]) -> bool:
     tokens = _command_tokens(command)
     if len(tokens) >= 2 and Path(tokens[0]).name == Path(expected["codex-command"]).name:
-        return tokens[1] == "exec" and executable == expected["codex-executable"]
+        if tokens[1] != "exec" or executable is None:
+            return False
+        if executable == expected["codex-executable"]:
+            return True
+        # Current npm Codex launchers exec the platform-native `codex` binary.
+        # A mise shim therefore resolves to mise itself while /proc/<pid>/exe
+        # points at the native binary below the same per-agent tool root.
+        if Path(executable).name != Path(expected["codex-command"]).name:
+            return False
+        return _path_is_within_codex_tool_root(executable, expected["codex-command"])
     if (
         len(tokens) < 3
         or Path(tokens[0]).name not in {"node", "nodejs"}
         or tokens[2] != "exec"
-        or executable != expected["node-executable"]
+    ):
+        return False
+    if executable != expected["node-executable"] and not (
+        executable is not None
+        and Path(executable).name in {"node", "nodejs"}
+        and _path_is_within_codex_tool_root(executable, expected["codex-command"])
     ):
         return False
     entrypoint = tokens[1]
@@ -1040,11 +896,17 @@ def _is_codex_process(command: str, executable: str | None, expected: dict[str, 
     # root preserves the executable identity check for arbitrary paths.
     if not entrypoint.startswith("/") or not command_path.startswith("/"):
         return False
+    return _path_is_within_codex_tool_root(entrypoint, command_path)
+
+
+def _path_is_within_codex_tool_root(path: str, command_path: str) -> bool:
+    if not path.startswith("/") or not command_path.startswith("/"):
+        return False
     command_root = Path(command_path).parent.parent
     try:
-        return Path(entrypoint).is_relative_to(command_root)
+        return Path(path).is_relative_to(command_root)
     except AttributeError:  # pragma: no cover - Python 3.8 compatibility
-        return str(Path(entrypoint)).startswith(f"{command_root}/")
+        return str(Path(path)).startswith(f"{command_root}/")
 
 
 def _is_coord_mcp_process(command: str, executable: str | None, expected: dict[str, str]) -> bool:

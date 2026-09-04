@@ -34,7 +34,7 @@ from ..coord.nats_client import (
     NatsPublishOutcomeUnknown,
     NatsUnavailable,
 )
-from ..factory_contract import FactoryContractError, factories_dir, load_active_snapshot
+from ..factory_contract import FactoryContractError, factories_dir, load_approved_snapshot
 
 if TYPE_CHECKING:
     from prompt_toolkit import PromptSession
@@ -784,23 +784,23 @@ class _ChatRuntime:
         self._loop.close()
 
 
-def _active_factory_coordinator(room: str) -> str | None:
-    """Resolve one room's applied factory coordinator without parsing prose."""
+def _approved_factory_coordinator(room: str) -> str | None:
+    """Resolve one room's approved factory coordinator without parsing prose."""
     root = factories_dir()
     if not root.is_dir():
         return None
     coordinators: set[str] = set()
     for candidate in sorted(root.iterdir(), key=lambda item: item.name):
-        if not candidate.is_dir() or not (candidate / "active").is_file():
+        if not candidate.is_dir() or not (candidate / "approved").is_file():
             continue
-        _, _, payload = load_active_snapshot(candidate.name)
+        _, _, payload = load_approved_snapshot(candidate.name)
         if payload["room"] != room:
             continue
         destination = payload["operator_input"]["to"]
         coordinators.add(payload["roles"][destination]["agent"])
     if len(coordinators) > 1:
         raise FactoryContractError(
-            f"room {room!r} has multiple active factory coordinators; use --to explicitly"
+            f"room {room!r} has multiple approved factory coordinators; use --to explicitly"
         )
     return next(iter(coordinators), None)
 
@@ -856,14 +856,14 @@ def chat(
     target = to
     if not observe and target is None:
         try:
-            target = _active_factory_coordinator(room)
+            target = _approved_factory_coordinator(room)
         except FactoryContractError as e:
             console.print(f"[red]{e}[/]")
             raise typer.Exit(1) from None
 
     console.print(f"[bold]attached to room[/] {room}  (mode={'observe' if observe else 'interactive'})")
     if target is not None:
-        source = "--to" if to is not None else "active factory coordinator"
+        source = "--to" if to is not None else "approved factory coordinator"
         console.print(f"[dim]operator messages target {target} ({source})[/]")
     console.print("[dim]---[/]")
 

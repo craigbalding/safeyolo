@@ -1,0 +1,232 @@
+# Factory graph: prove one contract claim in a controlled nested factory.
+#
+# The graph keeps the experiment thin: one representative task, minimum
+# topology, observable success and failure/recovery, smallest correction, then
+# complete-set review. The lab is evidence, not a second production runtime.
+
+see_also:
+  - graph: contract-review
+    when: "the experiment exposes a missing or contradictory contract transition"
+  - graph: runtime-triage
+    when: "the experiment exposes a SafeYolo runtime, routing, or recovery defect"
+
+nodes:
+  # ---- Proving situations --------------------------------------------
+  - id: sym.mvp_new_design
+    kind: symptom
+    label: "A new factory design needs its first end-to-end ground-truth run"
+    keywords: [nested factory, MVP, prove, new design, end to end]
+    source: authored
+
+  - id: sym.mvp_revised_contract
+    kind: symptom
+    label: "A contract correction needs a focused regression run"
+    keywords: [contract change, regression, rerun, verify fix]
+    source: authored
+
+  - id: sym.mvp_failure_hypothesis
+    kind: symptom
+    label: "A live-factory failure needs controlled reproduction without disturbing production"
+    keywords: [reproduce, fault injection, production, isolate failure]
+    source: authored
+
+  # ---- Evidence ------------------------------------------------------
+  - id: ev.mvp_state_claim
+    kind: evidence
+    label: "State the single factory claim under test and what observation would refute it"
+    source: authored
+
+  - id: ev.mvp_choose_task
+    kind: evidence
+    label: "Choose one small representative task that exercises the intended handoffs and evidence"
+    detail: "Do not overspecify the contract toward the fixture."
+    source: authored
+
+  - id: ev.mvp_choose_topology
+    kind: evidence
+    label: "Select the minimum agents, roles, approved capabilities, and concurrent processes needed for that claim"
+    source: authored
+
+  - id: ev.mvp_offer_capacity
+    kind: evidence
+    label: "Offer a read-only disk and memory estimate using actual selected-agent and host state"
+    detail: "Advisory only: distinguish shared base, sparse allocation, persistent growth, configured ceilings, and observed use."
+    source: authored
+
+  - id: ev.mvp_prepare_lab
+    kind: evidence
+    label: "Use `$safeyolo-lab-controller` to create labeled operator-visible panes, evidence paths, and teardown state"
+    source: authored
+
+  - id: ev.mvp_verify_baseline
+    kind: evidence
+    label: "Check the exact nested factory sources, approved and supervisor-staged snapshots, rooms/grants, runtime health, and clean baseline"
+    source: authored
+
+  - id: ev.mvp_run_success
+    kind: evidence
+    label: "Run the representative task end to end and capture canonical handoffs, agent output, evidence, and timing"
+    source: authored
+
+  - id: ev.mvp_run_failure
+    kind: evidence
+    label: "Inject one relevant reversible failure or restart and capture detection, retained work, and recovery"
+    source: authored
+
+  - id: ev.mvp_compare_actual
+    kind: evidence
+    label: "Compare actual transitions with the contract graph and the stated claim"
+    source: authored
+
+  - id: ev.mvp_check_harness_influence
+    kind: evidence
+    label: "Determine whether fake harnesses, watchers, fixtures, or lab controls caused the observed result"
+    source: authored
+
+  - id: ev.mvp_capture_snag
+    kind: evidence
+    label: "Record each material snag with UTC evidence, owning layer, and the smallest plausible correction"
+    source: authored
+
+  - id: ev.mvp_rerun
+    kind: evidence
+    label: "After correction and complete-set review, rerun the same claim before adding another capability"
+    source: authored
+
+  # ---- Classifications -----------------------------------------------
+  - id: cls.mvp_bounded_pass
+    kind: classification
+    label: "The stated success and failure/recovery observations match the contract for this task and topology"
+    source: authored
+
+  - id: cls.mvp_contract_mismatch
+    kind: classification
+    label: "Actual agent collaboration exposes a missing, contradictory, or impractical contract transition"
+    source: authored
+
+  - id: cls.mvp_runtime_defect
+    kind: classification
+    label: "Contracts permit the transition, but routing, supervisor, Coord/NATS, process, or recovery behavior prevents it"
+    source: authored
+
+  - id: cls.mvp_agent_behavior
+    kind: classification
+    label: "The task arrived through a feasible path, but the model's choices did not fulfill the role responsibility"
+    source: authored
+
+  - id: cls.mvp_harness_artifact
+    kind: classification
+    label: "The observed pass or failure is caused by the lab harness/fixture rather than the factory behavior under test"
+    source: authored
+
+  - id: cls.mvp_capacity_tight
+    kind: classification
+    label: "Estimated host headroom is too uncertain or tight for the proposed concurrent topology"
+    source: authored
+
+  - id: cls.mvp_evidence_insufficient
+    kind: classification
+    label: "The observation does not establish or refute the stated factory claim"
+    source: authored
+
+  # ---- Conclusions ---------------------------------------------------
+  - id: con.mvp_record_proof_boundary
+    kind: conclusion
+    label: "Record exactly what the run proved and did not prove; a bounded MVP pass is not production certification"
+    source: authored
+
+  - id: con.mvp_smallest_contract_diff
+    kind: conclusion
+    label: "Make the smallest coherent contract correction, then re-review the complete contract set"
+    source: authored
+
+  - id: con.mvp_fix_runtime
+    kind: conclusion
+    label: "Repair the diagnosed runtime layer without embedding the lab harness into production architecture"
+    source: authored
+
+  - id: con.mvp_improve_role_guidance
+    kind: conclusion
+    label: "Use exact session evidence and contract/code references to improve role guidance without fixture-specific rules"
+    source: authored
+
+  - id: con.mvp_fix_experiment
+    kind: conclusion
+    label: "Correct the harness or evidence collection, restore baseline, and repeat the same claim"
+    source: authored
+
+  - id: con.mvp_reduce_topology
+    kind: conclusion
+    label: "Offer fewer concurrent agents, reused mounts, or shorter evidence retention and update the estimate"
+    source: authored
+
+  - id: con.mvp_teardown
+    kind: conclusion
+    label: "Restore injected faults, stop only created resources, and identify retained homes, overlays, rooms, and evidence"
+    source: authored
+
+  # ---- Operator asks -------------------------------------------------
+  - id: ask.mvp_capacity_choice
+    kind: operator_ask
+    label: "Show assumptions and alternatives; let the operator choose whether or how to proceed"
+    source: authored
+
+  - id: ask.mvp_approved_resource
+    kind: operator_ask
+    label: "Ask for the narrow missing resource only when the experiment cannot use an already approved one"
+    source: authored
+
+edges:
+  # Define one falsifiable claim before constructing the lab.
+  - {from: sym.mvp_new_design, to: ev.mvp_state_claim, kind: next_check}
+  - {from: sym.mvp_revised_contract, to: ev.mvp_state_claim, kind: next_check}
+  - {from: sym.mvp_failure_hypothesis, to: ev.mvp_state_claim, kind: next_check}
+  - {from: ev.mvp_state_claim, to: ev.mvp_choose_task, kind: next_check}
+  - {from: ev.mvp_choose_task, to: ev.mvp_choose_topology, kind: next_check}
+  - {from: ev.mvp_choose_topology, to: ev.mvp_offer_capacity, kind: next_check}
+  - {from: ev.mvp_offer_capacity, to: cls.mvp_capacity_tight, kind: implies, when: "selected topology has inadequate or materially uncertain headroom"}
+  - {from: cls.mvp_capacity_tight, to: con.mvp_reduce_topology, kind: implies}
+  - {from: cls.mvp_capacity_tight, to: ask.mvp_capacity_choice, kind: escalates_to}
+  - {from: ev.mvp_offer_capacity, to: ev.mvp_prepare_lab, kind: next_check, when: "proceed with the operator's chosen topology; the estimate is advisory, not a gate"}
+
+  # Build an inspectable baseline, then exercise success and recovery.
+  - {from: ev.mvp_prepare_lab, to: ev.mvp_verify_baseline, kind: next_check}
+  - {from: ev.mvp_verify_baseline, to: ask.mvp_approved_resource, kind: escalates_to, when: "a required resource is unavailable and no approved substitute exists"}
+  - {from: ev.mvp_verify_baseline, to: ev.mvp_run_success, kind: next_check, when: "baseline is healthy"}
+  - {from: ev.mvp_run_success, to: ev.mvp_run_failure, kind: next_check, when: "the success path reached its intended terminal result"}
+  - {from: ev.mvp_run_success, to: ev.mvp_compare_actual, kind: next_check, when: "the success path deviated or stopped"}
+  - {from: ev.mvp_run_failure, to: ev.mvp_compare_actual, kind: next_check}
+  - {from: ev.mvp_compare_actual, to: ev.mvp_check_harness_influence, kind: next_check}
+
+  # Classify from observed transitions, not from the desired outcome.
+  - {from: ev.mvp_check_harness_influence, to: cls.mvp_harness_artifact, kind: implies, when: "the fixture or lab mechanism caused the material behavior"}
+  - {from: ev.mvp_compare_actual, to: cls.mvp_contract_mismatch, kind: implies, when: "the contract omits, contradicts, or makes the observed necessary transition impractical"}
+  - {from: ev.mvp_compare_actual, to: cls.mvp_runtime_defect, kind: implies, when: "the contract permits the transition but the runtime prevents or loses it"}
+  - {from: ev.mvp_compare_actual, to: cls.mvp_agent_behavior, kind: implies, when: "runtime and contract paths are feasible but agent choices miss the responsibility"}
+  - {from: ev.mvp_compare_actual, to: cls.mvp_evidence_insufficient, kind: implies, when: "captured evidence cannot establish the decisive transition"}
+  - {from: ev.mvp_compare_actual, to: cls.mvp_bounded_pass, kind: implies, when: "success plus failure/recovery match the stated claim and no harness artifact explains the result"}
+
+  # Every defect becomes a snag and one smallest correction.
+  - {from: cls.mvp_contract_mismatch, to: ev.mvp_capture_snag, kind: next_check}
+  - {from: cls.mvp_runtime_defect, to: ev.mvp_capture_snag, kind: next_check}
+  - {from: cls.mvp_agent_behavior, to: ev.mvp_capture_snag, kind: next_check}
+  - {from: cls.mvp_harness_artifact, to: ev.mvp_capture_snag, kind: next_check}
+  - {from: cls.mvp_evidence_insufficient, to: ev.mvp_capture_snag, kind: next_check}
+  - {from: ev.mvp_capture_snag, to: con.mvp_smallest_contract_diff, kind: implies, when: "classification is contract_mismatch"}
+  - {from: ev.mvp_capture_snag, to: con.mvp_fix_runtime, kind: implies, when: "classification is runtime_defect"}
+  - {from: ev.mvp_capture_snag, to: con.mvp_improve_role_guidance, kind: implies, when: "classification is agent_behavior"}
+  - {from: ev.mvp_capture_snag, to: con.mvp_fix_experiment, kind: implies, when: "classification is harness_artifact or evidence_insufficient"}
+  - {from: con.mvp_smallest_contract_diff, to: ev.mvp_rerun, kind: next_check, when: "complete contract-set review passes"}
+  - {from: con.mvp_fix_runtime, to: ev.mvp_rerun, kind: next_check}
+  - {from: con.mvp_improve_role_guidance, to: ev.mvp_rerun, kind: next_check, when: "complete contract-set review passes"}
+  - {from: con.mvp_fix_experiment, to: ev.mvp_rerun, kind: next_check}
+  - {from: ev.mvp_rerun, to: ev.mvp_compare_actual, kind: next_check}
+
+  # A pass records its limits and tears down explicitly.
+  - {from: cls.mvp_bounded_pass, to: con.mvp_record_proof_boundary, kind: implies}
+  - {from: con.mvp_record_proof_boundary, to: con.mvp_teardown, kind: implies}
+
+entries:
+  - symptom: sym.mvp_new_design
+  - symptom: sym.mvp_revised_contract
+  - symptom: sym.mvp_failure_hypothesis

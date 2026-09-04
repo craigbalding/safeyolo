@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Render triage-graph YAML files under
-`cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/*.yaml`
-to sibling `.mmd` (mermaid) files so the human operator can see them at a
-glance.
+"""Render graph YAML files under first-party skill `references/graph/`
+directories to sibling `.mmd` (mermaid) files so the human operator can see
+them at a glance.
 
 The YAML is the source of truth; the .mmd is a derived render for
 readability. Runs deterministically -- same YAML in, same bytes out --
@@ -24,7 +23,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GRAPH_DIR = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo/references/graph"
+SKILLS_DIR = REPO_ROOT / "cli/src/safeyolo/agent_context/skills"
 
 SHAPE = {
     "symptom": ("([", "])"),          # rounded
@@ -120,11 +119,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not GRAPH_DIR.is_dir():
-        print(f"render-skill-graph: no graph dir at {GRAPH_DIR}", file=sys.stderr)
+    if not SKILLS_DIR.is_dir():
+        print(f"render-skill-graph: no skills dir at {SKILLS_DIR}", file=sys.stderr)
         return 0
 
-    yaml_files = sorted(GRAPH_DIR.glob("*.yaml"))
+    yaml_files = sorted(SKILLS_DIR.glob("*/references/graph/*.yaml"))
     if not yaml_files:
         print("render-skill-graph: no graphs found")
         return 0
@@ -136,7 +135,8 @@ def main() -> int:
 
         errors = _check_referential_integrity(graph)
         if errors:
-            print(f"{yaml_path.name}: referential integrity errors:", file=sys.stderr)
+            relative_path = yaml_path.relative_to(REPO_ROOT)
+            print(f"{relative_path}: referential integrity errors:", file=sys.stderr)
             for err in errors:
                 print(f"  {err}", file=sys.stderr)
             exit_code = 1
@@ -148,13 +148,18 @@ def main() -> int:
             existing = mmd_path.read_text() if mmd_path.exists() else ""
             if existing != rendered:
                 print(
-                    f"render-skill-graph: {mmd_path.name} is stale; run scripts/render_skill_graph.py",
+                    "render-skill-graph: "
+                    f"{mmd_path.relative_to(REPO_ROOT)} is stale; "
+                    "run scripts/render_skill_graph.py",
                     file=sys.stderr,
                 )
                 exit_code = 1
         else:
             mmd_path.write_text(rendered)
-            print(f"rendered {mmd_path.name} ({len(graph['nodes'])} nodes, {len(graph.get('edges', []))} edges)")
+            print(
+                f"rendered {mmd_path.relative_to(REPO_ROOT)} "
+                f"({len(graph['nodes'])} nodes, {len(graph.get('edges', []))} edges)"
+            )
 
     return exit_code
 

@@ -22,14 +22,23 @@ class _MCPServer:
         pass
 
 
+class _ToolError(Exception):
+    pass
+
+
 def _load_adapter(monkeypatch):
     mcp_package = types.ModuleType("mcp")
     server_package = types.ModuleType("mcp.server")
     server_module = types.ModuleType("mcp.server.mcpserver")
+    exceptions_module = types.ModuleType("mcp.server.mcpserver.exceptions")
     server_module.MCPServer = _MCPServer
+    exceptions_module.ToolError = _ToolError
     monkeypatch.setitem(sys.modules, "mcp", mcp_package)
     monkeypatch.setitem(sys.modules, "mcp.server", server_package)
     monkeypatch.setitem(sys.modules, "mcp.server.mcpserver", server_module)
+    monkeypatch.setitem(
+        sys.modules, "mcp.server.mcpserver.exceptions", exceptions_module
+    )
 
     path = Path(__file__).resolve().parents[2] / "contrib/safeyolo-coord-mcp.py"
     spec = importlib.util.spec_from_file_location("coord_mcp_adapter_test", path)
@@ -37,6 +46,23 @@ def _load_adapter(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_http_rejection_is_an_anticipated_tool_error_with_bounded_detail(monkeypatch):
+    module = _load_adapter(monkeypatch)
+    response = module.httpx.Response(
+        422,
+        json={"error": "invalid content type " + "x" * 4096},
+        request=module.httpx.Request("POST", "http://coord.test/send"),
+    )
+
+    with pytest.raises(module.ToolError) as caught:
+        module._raise_for_status(response)
+
+    message = str(caught.value)
+    assert message.startswith("coord API 422: invalid content type ")
+    assert message.endswith("...")
+    assert len(message.removeprefix("coord API 422: ")) == 2048
 
 
 def test_send_explicitly_defaults_to_no_attention(monkeypatch):
@@ -77,7 +103,7 @@ def test_send_task_builds_one_header_and_notifies_only_exact_assignee(monkeypatc
         module.send_task(
             "backlog",
             "forge",
-            "issue-469",
+            "https://github.com/craigbalding/safeyolo/issues/469?view=full",
             "Preserve this paragraph.\n\n- and this list",
         )
     )
@@ -92,7 +118,8 @@ def test_send_task_builds_one_header_and_notifies_only_exact_assignee(monkeypatc
             "/api/coord/rooms/backlog/send",
             {
                 "body": (
-                    "TASK task=issue-469 assignee=forge\n\n"
+                    "TASK target=https://github.com/craigbalding/safeyolo/issues/469?view=full "
+                    "assignee=forge\n\n"
                     "Preserve this paragraph.\n\n- and this list"
                 ),
                 "declared_content_type": "text/markdown",
@@ -103,24 +130,26 @@ def test_send_task_builds_one_header_and_notifies_only_exact_assignee(monkeypatc
 
 
 @pytest.mark.parametrize(
-    ("room", "assignee", "task_id", "body", "message"),
+    ("room", "assignee", "target", "body", "message"),
     [
-        ("", "forge", "issue-469", "work", "room_name"),
-        ("backlog", "", "issue-469", "work", "assignee"),
-        ("backlog", "forge extra", "issue-469", "work", "assignee"),
-        ("backlog", "forge", "issue 469", "work", "task_id"),
-        ("backlog", "forge", "issue-469", " \n", "body is missing"),
+        ("", "forge", "https://example.test/work/469", "work", "room_name"),
+        ("backlog", "", "https://example.test/work/469", "work", "assignee"),
+        ("backlog", "forge extra", "https://example.test/work/469", "work", "assignee"),
+        ("backlog", "forge", "issue-469", "work", "target"),
+        ("backlog", "forge", "https://example.test/work 469", "work", "target"),
+        ("backlog", "forge", "https://[bad", "work", "target"),
+        ("backlog", "forge", "https://example.test/work/469", " \n", "body is missing"),
         (
             "backlog",
             "forge",
-            "issue-469",
-            "TASK task=other assignee=forge\n\nduplicate",
+            "https://example.test/work/469",
+            "TASK target=https://example.test/work/other assignee=forge\n\nduplicate",
             "duplicate TASK header",
         ),
     ],
 )
 def test_send_task_rejects_missing_malformed_or_duplicate_fields(
-    monkeypatch, room, assignee, task_id, body, message
+    monkeypatch, room, assignee, target, body, message
 ):
     module = _load_adapter(monkeypatch)
 
@@ -129,13 +158,13 @@ def test_send_task_rejects_missing_malformed_or_duplicate_fields(
 
     monkeypatch.setattr(module, "_post", unexpected_post)
     with pytest.raises(ValueError, match=message):
-        asyncio.run(module.send_task(room, assignee, task_id, body))
+        asyncio.run(module.send_task(room, assignee, target, body))
 
 
 @pytest.mark.parametrize(
     "body",
     [
-        "Return DONE task=issue-469 after validation.",
+        "Return DONE target=https://example.test/work/469 after validation.",
         "Explain why assignee=forge is the configured owner.",
         "A malformed example such as assignee = is ordinary explanatory text.",
     ],
@@ -149,9 +178,10 @@ def test_send_task_allows_field_like_text_below_the_canonical_header(monkeypatch
         return {"envelope": {"msg_id": "msg-" + "a" * 32}, "sequence": 41}
 
     monkeypatch.setattr(module, "_post", post)
-    asyncio.run(module.send_task("backlog", "forge", "issue-469", body))
+    target = "https://example.test/work/469?kind=issue&id=469"
+    asyncio.run(module.send_task("backlog", "forge", target, body))
 
-    assert calls[0][1]["body"] == f"TASK task=issue-469 assignee=forge\n\n{body}"
+    assert calls[0][1]["body"] == f"TASK target={target} assignee=forge\n\n{body}"
 
 
 def test_send_task_requires_canonical_sequence(monkeypatch):
@@ -164,7 +194,14 @@ def test_send_task_requires_canonical_sequence(monkeypatch):
 
     monkeypatch.setattr(module, "_post", post)
     with pytest.raises(RuntimeError, match="canonical room sequence"):
-        asyncio.run(module.send_task("backlog", "forge", "issue-469", "work"))
+        asyncio.run(
+            module.send_task(
+                "backlog",
+                "forge",
+                "https://example.test/work/469",
+                "work",
+            )
+        )
 
 
 def test_attention_tools_use_identity_derived_routes(monkeypatch):

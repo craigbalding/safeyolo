@@ -37,10 +37,10 @@ response_to = ["coordinator"]
 Contract paths are explicit and relative to the TOML file. Every role and
 message type is declared literally. `TASK` retains its generic delegation
 meaning, but its first line must be exactly
-`TASK task=<id> assignee=<agent>`; text such as `TASK UPDATE` is data, not a
-task. Other request and response bodies must begin with their exact declared
-type. Canonical envelope identity and the configured room—not names written in
-the body—authorize a handoff.
+`TASK target=<absolute-url> assignee=<agent>`; text such as `TASK UPDATE` is
+data, not a task. Other request and response bodies must begin with their exact
+declared type and target. Canonical envelope identity and the configured
+room—not names written in the body—authorize a handoff.
 
 `response_to` names every role that the destination must notify when it sends a
 declared response. The source role must be included. Old v1 contracts and
@@ -51,20 +51,20 @@ bounded natural-language messages only when the canonical sender kind is
 `operator`, routes them only to the named role, and never treats them as agent
 handoffs. The declared types are optional operator shorthand rather than a
 natural-language parser; they cannot overlap a handoff request or response.
-`factory check`, `apply`, and `run` reject a graph in which any role is
+`factory check`, `approve`, and `run` reject a graph in which any role is
 unreachable from that operator edge; old source-only v1 snapshots therefore
 fail closed instead of starting an inert factory.
 
 Interactive operator chat automatically resolves the coordinator bound by an
-applied factory snapshot for that room. An explicit target overrides that
+approved factory snapshot for that room. An explicit target overrides that
 resolution:
 
 ```sh
 safeyolo coord chat backlog --to relay
 ```
 
-Without `--to`, a room with no applied factory keeps its room-wide wake
-behavior. If multiple applied factories bind different coordinators to one
+Without `--to`, a room with no approved factory keeps its room-wide wake
+behavior. If multiple approved factories bind different coordinators to one
 room, chat fails visibly instead of guessing. The target must be an active,
 receive-authorized room member; unknown, revoked, and send-only targets fail
 before the message is accepted. Targeting changes only attention delivery.
@@ -80,11 +80,15 @@ need no terminal response, and cause no automatic runtime transition.
 
 ## Authority and intake
 
-An approved factory has two different state layers:
+An approved factory has three distinct state layers:
 
-- The immutable snapshot binds the room, operator edge, role and agent
+- The approved immutable snapshot binds the room, operator edge, role and agent
   bindings, declared handoffs, and exact bytes and SHA-256 of every Markdown
-  role contract.
+  role contract. Approval selects the snapshot that the next `factory run`
+  will use; it does not alter running agents.
+- Each running role uses the exact snapshot last staged into that agent by
+  `factory run`. Until the next run, this can differ from the newly approved
+  snapshot.
 - The canonical trusted room brief is live operator-authored state. The brief
   is not part of the snapshot and can change by revision while the snapshot
   stays the same.
@@ -115,36 +119,42 @@ brief boundary, the role that receives operator input, and the complete
 role/handoff graph. Static checking does not inspect live room state, grants,
 brief revision, or worker health.
 
-Apply prompts for explicit operator approval and stores the resolved manifest
+Approve prompts for explicit operator approval, stores the resolved manifest
 plus exact role-contract contents in an immutable, content-addressed snapshot
-under `~/.safeyolo/factories/`. `--yes` is the non-interactive form of that
-explicit approval:
+under `~/.safeyolo/factories/`, and selects that snapshot for the next run.
+It does not change a running factory. `--yes` is the non-interactive form of
+the same explicit approval:
 
 ```sh
-safeyolo factory apply docs/factories/backlog.toml
-safeyolo factory apply docs/factories/backlog.toml --yes
+safeyolo factory approve docs/factories/backlog.toml
+safeyolo factory approve docs/factories/backlog.toml --yes
 ```
 
-Run loads and verifies only the active snapshot, configures the already-created
+Run loads and verifies only the approved snapshot, configures the already-created
 agents through the existing `@codex-coord` host setup, stages each approved
-role contract, and starts all roles detached:
+role contract, provisions the declared shared Coord room and its required
+operator and role grants, and starts all roles detached:
 
 ```sh
 safeyolo factory run backlog
 ```
 
 `factory run` never creates agents. Create the named agents first with their
-normal workspace and credentials. A factory does not live-reload: editing the
-TOML or Markdown files changes nothing in running workers.
+normal workspace and credentials. Room provisioning is idempotent: an existing
+room keeps its history and unrelated observer grants, while missing
+send/receive grants for the operator and bound role agents are restored. The
+declared shared room cannot reuse a bound agent's private `<agent>-agent` room.
+If Coord provisioning fails, no role is started. A factory does not live-reload:
+editing the TOML or Markdown files changes nothing in running workers.
 
 The stored snapshot binds each Markdown file's exact bytes, byte count, hash,
 and decoded text. `factory run` prints the bound snapshot path, byte counts,
 hashes, and operator edge before it starts agents, so the operator can compare
 the running object with the approved check output.
 
-## Diagnose an active factory
+## Diagnose an approved or running factory
 
-Inspect the complete active factory before you rely on it:
+Inspect the approved snapshot and current runtime before you rely on them:
 
 ```sh
 safeyolo factory doctor backlog
@@ -167,7 +177,7 @@ operator-authored Markdown. SafeYolo does not claim that the Markdown contains
 a valid eligibility policy.
 
 The command reads existing host and sandbox state. It does not start, stop,
-repair, apply, or change the factory. Each output line has one status:
+repair, approve, or change the factory. Each output line has one status:
 
 - `PASS` means that the component has the expected state.
 - `WARN` means that a role is stopped. A stopped role is valid persistent
@@ -175,7 +185,7 @@ repair, apply, or change the factory. Each output line has one status:
 - `FAIL` means that a required component is missing, corrupt, mismatched, or
   not running. Each failure names a narrow recovery command or file category.
 
-The command checks the active snapshot and role bindings, agent identity and
+The command checks the approved snapshot and role bindings, agent identity and
 storage, workspaces, room membership and grants, the traffic proxy, and the
 managed Coord NATS runtime. It also checks each staged command, supervisor
 configuration, role contract, Codex Model Context Protocol (MCP) binding,
@@ -185,7 +195,8 @@ active-turn Coord MCP process is absent. Between bounded turns, the checkpoint
 normally records `owned_process=null`; the running supervisor is then reported
 as healthy without requiring a Codex process. A PID that disappears while the
 read-only process probe runs is likewise reported as a non-disruptive turn
-transition.
+transition. Doctor validates checkpoints through the same bundled supervisor
+decoder that runs them, so checkpoint migrations have one implementation.
 
 The summary is `PASS`, `WARN`, or `FAIL`. `FAIL` returns a nonzero exit status.
 `WARN` returns zero so that an operator can distinguish a deliberately stopped
@@ -228,17 +239,17 @@ For a running legacy backlog factory:
 2. Add the explicit `operator_input` table, then run `factory check` and verify
    the agents, room, operator shorthand, reachable handoffs, paths, byte counts,
    and hashes.
-3. Run `factory apply` and approve that exact resolved snapshot.
+3. Run `factory approve` for that exact resolved snapshot.
 4. Run `factory run backlog`.
 
 The supervisor upgrades its existing checkpoint in memory and keeps the
 thread, safe cursor, recent attention IDs, in-flight canonical objects, and
 current trusted room brief context.
-The active Markdown contract and routing table come from the immutable
-snapshot. To change either, stop the agents, check and apply a new snapshot,
+The running Markdown contract and routing table come from the immutable
+snapshot. To change either, stop the agents, check and approve a new snapshot,
 then run the factory again.
 
-Rollback is also snapshot-based: stop all roles, restore or re-apply the last
+Rollback is also snapshot-based: stop all roles, restore or re-approve the last
 known-good factory file and role Markdown, verify the newly produced exact
 snapshot details, then run it. A legacy snapshot without `operator_input`
 cannot be restarted. If Relay cannot receive the operator edge, keep the

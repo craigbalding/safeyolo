@@ -177,6 +177,12 @@ def load_factory_file(path: Path) -> FactoryContract:
             )
         )
 
+    private_room_names = {f"{role.agent}-agent" for role in roles}
+    if room in private_room_names:
+        raise FactoryContractError(
+            f"factory room {room!r} conflicts with a bound agent's private room"
+        )
+
     raw_handoffs = raw["handoffs"]
     if not isinstance(raw_handoffs, list) or not raw_handoffs:
         raise FactoryContractError("handoffs must be a non-empty array of tables")
@@ -334,7 +340,7 @@ def _factory_root(name: str) -> Path:
     return root
 
 
-def store_snapshot(contract: FactoryContract) -> tuple[str, Path]:
+def approve_snapshot(contract: FactoryContract) -> tuple[str, Path]:
     payload = contract.snapshot_payload()
     identifier = snapshot_id(payload)
     root = _factory_root(contract.name)
@@ -352,19 +358,19 @@ def store_snapshot(contract: FactoryContract) -> tuple[str, Path]:
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
-    _atomic_write(_contained_path(root, "active"), f"{identifier}\n".encode())
+    _atomic_write(_contained_path(root, "approved"), f"{identifier}\n".encode())
     return identifier, snapshot_path
 
 
-def load_active_snapshot(name: str) -> tuple[str, Path, dict[str, Any]]:
+def load_approved_snapshot(name: str) -> tuple[str, Path, dict[str, Any]]:
     name = _simple_name("factory name", name)
     root = _factory_root(name)
     try:
-        identifier = _contained_path(root, "active").read_text().strip()
+        identifier = _contained_path(root, "approved").read_text().strip()
     except OSError as exc:
-        raise FactoryContractError(f"factory {name!r} has no applied snapshot") from exc
+        raise FactoryContractError(f"factory {name!r} has no approved snapshot") from exc
     if re.fullmatch(r"[0-9a-f]{64}", identifier) is None:
-        raise FactoryContractError(f"factory {name!r} has an invalid active snapshot pointer")
+        raise FactoryContractError(f"factory {name!r} has an invalid approved snapshot pointer")
     path = _contained_path(root, "snapshots", f"{identifier}.json")
     try:
         payload = json.loads(path.read_text())
@@ -381,7 +387,7 @@ def load_active_snapshot(name: str) -> tuple[str, Path, dict[str, Any]]:
 def _validate_snapshot_payload(payload: dict[str, Any], *, expected_name: str) -> None:
     if isinstance(payload, dict) and "operator_input" not in payload:
         raise FactoryContractError(
-            "factory snapshot has no operator_input and cannot be activated; check and apply a reachable contract"
+            "factory snapshot has no operator_input and cannot be run; check and approve a reachable contract"
         )
     _exact_keys(
         "snapshot",
