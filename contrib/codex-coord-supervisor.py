@@ -355,8 +355,9 @@ def _require_drained_upgrade(version: int, raw: dict[str, Any]) -> None:
             "in-flight request and awaiting handoff reaches its terminal response, "
             "verify `safeyolo factory doctor FACTORY` reports "
             "`in_flight=0 awaiting_handoffs=0`, stop the old roles, rerun "
-            "`safeyolo factory check FACTORY`, approve the exact target-only snapshot, "
-            "then run `safeyolo factory run FACTORY`"
+            "`safeyolo factory check FACTORY.toml`, approve that exact snapshot with "
+            "`safeyolo factory approve FACTORY.toml --yes`, then run "
+            "`safeyolo factory run FACTORY`"
         )
 
 

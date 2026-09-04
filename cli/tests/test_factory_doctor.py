@@ -559,14 +559,13 @@ def test_factory_doctor_accepts_supervisor_compatible_legacy_checkpoints(cli_run
     assert state_path.read_bytes() == before
 
 
-def test_factory_doctor_accepts_version_five_checkpoint_with_legacy_work_without_mutating_it(
+def test_factory_doctor_reports_version_five_work_that_must_be_drained(
     cli_runner,
     factory_runtime,
 ):
     state_path = factory_runtime["homes"]["forge"] / ".safeyolo/codex-coord-supervisor-state.json"
     state = json.loads(state_path.read_text())
     state["version"] = 5
-    state["thread_id"] = "legacy-wait-thread"
     state["in_flight"] = [
         {
             "attention_id": "attn-" + "6" * 32,
@@ -578,22 +577,17 @@ def test_factory_doctor_accepts_version_five_checkpoint_with_legacy_work_without
             "requires_terminal": True,
         }
     ]
-    state["awaiting_handoffs"] = [
-        {
-            "room_name": "backlog",
-            "request": "REVIEW_READY",
-            "recipient_agent": "lens",
-            "body": "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
-            "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
-        }
-    ]
     state_path.write_text(json.dumps(state) + "\n")
     before = state_path.read_bytes()
 
     result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
 
-    assert result.exit_code == 0, result.output
-    assert "PASS component=checkpoint role=owner agent=forge" in result.output
+    assert result.exit_code == 1, result.output
+    assert "FAIL component=checkpoint role=owner agent=forge" in result.output
+    output = " ".join(result.output.split())
+    assert "drain" in output
+    assert "safeyolo factory check FACTORY.toml" in output
+    assert "safeyolo factory approve FACTORY.toml --yes" in output
     assert state_path.read_bytes() == before
 
 

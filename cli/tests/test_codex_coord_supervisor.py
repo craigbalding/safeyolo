@@ -2202,6 +2202,8 @@ def test_inspect_state_rejects_pending_pre_target_checkpoint_without_mutation(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "not drained" in captured.err
+    assert "safeyolo factory check FACTORY.toml" in captured.err
+    assert "safeyolo factory approve FACTORY.toml --yes" in captured.err
     assert state_path.read_bytes() == before
 
 

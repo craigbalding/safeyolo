@@ -743,7 +743,8 @@ def _inspect_checkpoint(
         f"supervisor checkpoint for {label}; for a version 1-5 upgrade, keep the "
         f"old factory running until `safeyolo factory doctor {name}` verifies "
         f"in_flight=0 and awaiting_handoffs=0, stop the drained roles, then run "
-        f"`safeyolo factory check {name}`, approve the exact snapshot, and "
+        f"`safeyolo factory check FACTORY.toml`, approve that exact snapshot with "
+        f"`safeyolo factory approve FACTORY.toml --yes`, and run "
         f"`safeyolo factory run {name}`"
     )
     try:
