@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
+from click import unstyle
 
 from safeyolo.cli import app
 from safeyolo.factory_contract import FactoryContractError, load_approved_snapshot, load_factory_file
@@ -127,7 +128,7 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
 
 def test_factory_run_help_exposes_fresh_setup_order(cli_runner):
     result = cli_runner.invoke(app, ["factory", "run", "--help"])
-    output = " ".join(result.output.split())
+    output = " ".join(unstyle(result.output).split())
 
     assert result.exit_code == 0, result.output
     assert "safeyolo agent add AGENT FOLDER --no-run" in output
