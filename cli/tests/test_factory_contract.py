@@ -131,7 +131,9 @@ def test_factory_run_help_exposes_fresh_setup_order(cli_runner):
     output = " ".join(unstyle(result.output).split())
 
     assert result.exit_code == 0, result.output
-    assert "safeyolo agent add AGENT FOLDER --no-run" in output
+    assert "safeyolo agent add AGENT FOLDER --host-script @codex-coord --no-run" in output
+    assert "logged in to Codex with a ChatGPT subscription" in output
+    assert "authentication and config into the agent home" in output
     assert output.index("factory check") < output.index("factory approve") < output.index("factory run NAME")
 
 
@@ -499,7 +501,8 @@ def test_factory_run_missing_agent_prints_ordered_executable_recovery(
 
     assert result.exit_code == 1, result.output
     assert "Started factory" not in result.output
-    assert 'safeyolo agent add relay "$PWD" --no-run' in output
+    assert 'safeyolo agent add relay "$PWD" --host-script @codex-coord --no-run' in output
+    assert "logged in to Codex with a ChatGPT subscription" in output
     assert output.index("agent add relay") < output.index("factory check")
     assert output.index("factory check") < output.index("factory approve") < output.index("factory run backlog")
 

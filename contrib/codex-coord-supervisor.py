@@ -39,8 +39,32 @@ TERMINAL_RE = re.compile(r"^(DONE|BLOCKED|FAILED)\b")
 TASK_HEADER_RE = re.compile(
     r"TASK target=(\S+) assignee=([A-Za-z0-9_.-]+)"
 )  # DOC: cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md
+LEGACY_TASK_HEADER_RE = re.compile(
+    r"TASK task=([A-Za-z0-9_.-]+) assignee=([A-Za-z0-9_.-]+)"
+)
 ATTENTION_TOKEN_RE = re.compile(r"(?:^|\s)attention_id=(attn-[0-9a-f]{32})(?:\s|$)")
 MESSAGE_FIELD_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+LEGACY_PROTOCOL = "task-v5"
+PENDING_KEYS = frozenset(
+    {
+        "attention_id",
+        "room_name",
+        "sender_agent_name",
+        "sender_agent_id",
+        "sequence",
+        "body",
+        "requires_terminal",
+    }
+)
+AWAITING_KEYS = frozenset(
+    {
+        "room_name",
+        "request",
+        "recipient_agent",
+        "body",
+        "correlation",
+    }
+)
 MAX_RECENT_ATTENTION_IDS = 256
 MAX_IN_FLIGHT = 16
 MAX_CANONICAL_BODY_BYTES = 64 * 1024
@@ -313,6 +337,7 @@ def empty_state() -> dict[str, Any]:
         "in_flight": [],
         "awaiting_handoffs": [],
         "briefs": {},
+        "accept_legacy_protocol": False,
         "consecutive_failures": 0,
         "owned_process": None,
     }
@@ -336,14 +361,22 @@ def load_state(path: Path) -> dict[str, Any]:
         "consecutive_failures",
         "owned_process",
     }
-    if isinstance(raw, dict) and raw.get("version") == 1 and set(raw) == version_one_keys:
+    compatibility_key = "accept_legacy_protocol"
+    if isinstance(raw, dict) and raw.get("version") == 1 and set(raw) in (
+        version_one_keys,
+        version_one_keys | {compatibility_key},
+    ):
         raw = {
             **raw,
             "version": STATE_VERSION,
             "awaiting_handoffs": [],
             "briefs": {},
+            "accept_legacy_protocol": False,
         }
-    if isinstance(raw, dict) and raw.get("version") == 2 and set(raw) == version_one_keys | {"awaiting_handoff"}:
+    if isinstance(raw, dict) and raw.get("version") == 2 and set(raw) in (
+        version_one_keys | {"awaiting_handoff"},
+        version_one_keys | {"awaiting_handoff", compatibility_key},
+    ):
         awaiting = raw.pop("awaiting_handoff")
         if isinstance(awaiting, dict) and set(awaiting) == {
             "room_name",
@@ -357,31 +390,56 @@ def load_state(path: Path) -> dict[str, Any]:
             "version": STATE_VERSION,
             "awaiting_handoffs": [] if awaiting is None else [awaiting],
             "briefs": {},
+            "accept_legacy_protocol": False,
         }
     version_three_keys = version_one_keys | {"awaiting_handoff"}
-    if isinstance(raw, dict) and raw.get("version") == 3 and set(raw) == version_three_keys:
+    if isinstance(raw, dict) and raw.get("version") == 3 and set(raw) in (
+        version_three_keys,
+        version_three_keys | {compatibility_key},
+    ):
         awaiting = raw.pop("awaiting_handoff")
         raw = {
             **raw,
             "version": STATE_VERSION,
             "awaiting_handoffs": [] if awaiting is None else [awaiting],
             "briefs": {},
+            "accept_legacy_protocol": False,
         }
     version_four_keys = version_three_keys | {"briefs"}
-    if isinstance(raw, dict) and raw.get("version") == 4 and set(raw) == version_four_keys:
+    if isinstance(raw, dict) and raw.get("version") == 4 and set(raw) in (
+        version_four_keys,
+        version_four_keys | {compatibility_key},
+    ):
         awaiting = raw.pop("awaiting_handoff")
         raw = {
             **raw,
             "version": STATE_VERSION,
             "awaiting_handoffs": [] if awaiting is None else [awaiting],
+            "accept_legacy_protocol": False,
         }
-    allowed_keys = version_one_keys | {"awaiting_handoffs", "briefs"}
-    if isinstance(raw, dict) and raw.get("version") == 5 and set(raw) == allowed_keys:
+    allowed_keys = version_one_keys | {"awaiting_handoffs", "briefs", compatibility_key}
+    # State version 6 was already shipped before the target-only protocol
+    # field was added. Treat that existing shape as current protocol state.
+    if isinstance(raw, dict) and raw.get("version") == STATE_VERSION and set(raw) == allowed_keys - {
+        "accept_legacy_protocol"
+    }:
+        raw = {**raw, "accept_legacy_protocol": False}
+    if isinstance(raw, dict) and raw.get("version") == 5 and set(raw) in (
+        allowed_keys - {"accept_legacy_protocol"},
+        allowed_keys,
+    ):
         # Version 5 threads can contain an interrupted model-owned Coord wait.
         # Preserve canonical work state, but cross the external-wait upgrade
         # boundary with a clean Codex thread so missing tool results are not
         # replayed forever.
-        raw = {**raw, "version": STATE_VERSION, "thread_id": None}
+        raw = {
+            **raw,
+            "version": STATE_VERSION,
+            "thread_id": None,
+            "in_flight": [_migrate_version_five_pending(item) for item in raw["in_flight"]],
+            "awaiting_handoffs": [_migrate_version_five_awaiting(item) for item in raw["awaiting_handoffs"]],
+            "accept_legacy_protocol": True,
+        }
     if (
         not isinstance(raw, dict)
         or isinstance(raw.get("version"), bool)
@@ -418,6 +476,8 @@ def load_state(path: Path) -> dict[str, Any]:
         raise SupervisorError("supervisor state has invalid brief context")
     for room_name, current in briefs.items():
         _validate_brief_context(room_name, current)
+    if not isinstance(raw.get("accept_legacy_protocol"), bool):
+        raise SupervisorError("supervisor state has invalid protocol compatibility state")
     owned_process = raw.get("owned_process")
     if owned_process is not None:
         if not isinstance(owned_process, dict) or set(owned_process) != {
@@ -566,27 +626,19 @@ def _update_brief_context(
 
 
 def _validate_awaiting_handoff(value: Any) -> None:
-    if not isinstance(value, dict) or set(value) != {
-        "room_name",
-        "request",
-        "recipient_agent",
-        "body",
-        "correlation",
-    }:
+    legacy = isinstance(value, dict) and set(value) == AWAITING_KEYS | {"legacy_protocol"}
+    if not isinstance(value, dict) or set(value) not in (AWAITING_KEYS, AWAITING_KEYS | {"legacy_protocol"}):
         raise SupervisorError("supervisor state has invalid awaiting-handoff data")
+    if legacy and value.get("legacy_protocol") != LEGACY_PROTOCOL:
+        raise SupervisorError("awaiting-handoff uses an unsupported legacy protocol")
     for key in ("room_name", "request", "recipient_agent", "body"):
         if not isinstance(value.get(key), str) or not value[key]:
             raise SupervisorError("supervisor state has invalid awaiting-handoff data")
     if len(value["body"].encode()) > MAX_CANONICAL_BODY_BYTES:
         raise SupervisorError("awaiting-handoff body is too large")
     correlation = value.get("correlation")
-    if (
-        not isinstance(correlation, dict)
-        or set(correlation) != {"target"}
-        or not _valid_target_url(correlation.get("target"))
-    ):
-        raise SupervisorError("supervisor state has invalid awaiting-handoff correlation")
-    if correlation != _request_correlation(value["body"]):
+    expected = _legacy_request_correlation(value["body"]) if legacy else _request_correlation(value["body"])
+    if not expected or correlation != expected:
         raise SupervisorError("supervisor state has mismatched awaiting-handoff correlation")
 
 
@@ -620,18 +672,85 @@ def _valid_attention_id(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"attn-[0-9a-f]{32}", value) is not None
 
 
+def _legacy_task_parts(body: Any) -> tuple[str, str] | None:
+    if not isinstance(body, str):
+        return None
+    match = LEGACY_TASK_HEADER_RE.fullmatch(body.split("\n", 1)[0])
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _legacy_terminal_parts(body: Any) -> tuple[str, str, str] | None:
+    if not isinstance(body, str):
+        return None
+    first_line = body.split("\n", 1)[0]
+    message_type = first_line.split(" ", 1)[0] if first_line else ""
+    if message_type not in {"DONE", "BLOCKED", "FAILED"}:
+        return None
+    fields = _message_fields(body)
+    if fields is None or set(fields) != {"task", "attention_id"}:
+        return None
+    task = fields["task"]
+    attention_id = fields["attention_id"]
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", task) is None or not _valid_attention_id(attention_id):
+        return None
+    return message_type, task, attention_id
+
+
+def _legacy_request_correlation(body: Any) -> dict[str, str]:
+    """Extract the pre-target correlation fields from a v5 message header."""
+    if not isinstance(body, str):
+        return {}
+    fields = _message_fields(body)
+    if fields is None:
+        return {}
+    message_type = body.split("\n", 1)[0].split(" ", 1)[0]
+    if message_type == "TASK":
+        parts = _legacy_task_parts(body)
+        return {"task": parts[0]} if parts is not None else {}
+    fields.pop("attention_id", None)
+    return fields
+
+
+def _legacy_response_header(body: Any) -> bool:
+    if not isinstance(body, str):
+        return False
+    fields = _message_fields(body)
+    return (
+        fields is not None
+        and _valid_attention_id(fields.get("attention_id"))
+        and bool(_legacy_request_correlation(body))
+    )
+
+
+def _migrate_version_five_pending(item: Any) -> Any:
+    if (
+        isinstance(item, dict)
+        and set(item) == PENDING_KEYS
+        and not _request_correlation(item.get("body", ""))
+        and _legacy_request_correlation(item.get("body", ""))
+    ):
+        return {**item, "legacy_protocol": LEGACY_PROTOCOL}
+    return item
+
+
+def _migrate_version_five_awaiting(item: Any) -> Any:
+    if (
+        isinstance(item, dict)
+        and set(item) == AWAITING_KEYS
+        and not _request_correlation(item.get("body", ""))
+    ):
+        return {**item, "legacy_protocol": LEGACY_PROTOCOL}
+    return item
+
+
 def _validate_pending(item: Any) -> None:
-    keys = {
-        "attention_id",
-        "room_name",
-        "sender_agent_name",
-        "sender_agent_id",
-        "sequence",
-        "body",
-        "requires_terminal",
-    }
-    if not isinstance(item, dict) or set(item) != keys:
+    legacy = isinstance(item, dict) and set(item) == PENDING_KEYS | {"legacy_protocol"}
+    if not isinstance(item, dict) or set(item) not in (PENDING_KEYS, PENDING_KEYS | {"legacy_protocol"}):
         raise SupervisorError("supervisor state has an invalid in-flight object")
+    if legacy and item.get("legacy_protocol") != LEGACY_PROTOCOL:
+        raise SupervisorError("in-flight object has an unsupported legacy protocol")
     if not _valid_attention_id(item.get("attention_id")):
         raise SupervisorError("in-flight object has an invalid attention ID")
     for key in ("room_name", "sender_agent_name", "sender_agent_id", "body"):
@@ -644,7 +763,9 @@ def _validate_pending(item: Any) -> None:
         raise SupervisorError("in-flight object has an invalid terminal flag")
     if len(item["body"].encode()) > MAX_CANONICAL_BODY_BYTES:
         raise SupervisorError("in-flight object body is too large")
-    if item["requires_terminal"] and not _request_correlation(item["body"]):
+    if legacy and not _legacy_request_correlation(item["body"]):
+        raise SupervisorError("in-flight object uses an unsupported legacy protocol")
+    if item["requires_terminal"] and not legacy and not _request_correlation(item["body"]):
         raise SupervisorError("in-flight object uses an unsupported request protocol")
 
 
@@ -898,6 +1019,16 @@ def _valid_target_url(value: Any) -> bool:
 
 
 def _terminal_matches(pending: dict[str, Any], body: str) -> bool:
+    if pending.get("legacy_protocol") == LEGACY_PROTOCOL:
+        fields = _message_fields(body)
+        request = _legacy_request_correlation(pending.get("body", ""))
+        return (
+            fields is not None
+            and _valid_attention_id(fields.get("attention_id"))
+            and fields.pop("attention_id") == pending["attention_id"]
+            and bool(request)
+            and fields == request
+        )
     attention_match = ATTENTION_TOKEN_RE.search(body)
     fields = _message_fields(body)
     expected = _request_correlation(pending.get("body", ""))
@@ -961,7 +1092,34 @@ def _role_agents(config: Config) -> dict[str, str]:
     return dict(config.factory_roles)
 
 
-def _inbound_request(config: Config, sender: str, body: str) -> Handoff | None:
+def _legacy_body_has_type(body: str, message_type: str, *, task_agent: str | None = None) -> bool:
+    if message_type == "TASK":
+        parts = _legacy_task_parts(body)
+        return parts is not None and (task_agent is None or parts[1] == task_agent)
+    return _body_has_type(body, message_type) and bool(_legacy_request_correlation(body))
+
+
+def _legacy_inbound_request(config: Config, sender: str, body: str) -> Handoff | None:
+    if config.factory_role is None:
+        return None
+    agents = _role_agents(config)
+    for handoff in config.factory_handoffs:
+        if (
+            handoff.destination_role == config.factory_role
+            and agents[handoff.source_role] == sender
+            and _legacy_body_has_type(body, handoff.request, task_agent=agents[handoff.destination_role])
+        ):
+            return handoff
+    return None
+
+
+def _inbound_request(
+    config: Config,
+    sender: str,
+    body: str,
+    *,
+    allow_legacy: bool = False,
+) -> Handoff | None:
     if config.factory_role is None:
         return None
     agents = _role_agents(config)
@@ -971,6 +1129,24 @@ def _inbound_request(config: Config, sender: str, body: str) -> Handoff | None:
             and agents[handoff.source_role] == sender
             and _body_has_type(body, handoff.request, task_agent=config.agent_name)
             and bool(_request_correlation(body))
+        ):
+            return handoff
+    return _legacy_inbound_request(config, sender, body) if allow_legacy else None
+
+
+def _legacy_pending_request(config: Config, pending: dict[str, Any]) -> Handoff | None:
+    if config.factory_role is None or pending.get("legacy_protocol") != LEGACY_PROTOCOL:
+        return None
+    agents = _role_agents(config)
+    for handoff in config.factory_handoffs:
+        if (
+            handoff.destination_role == config.factory_role
+            and agents[handoff.source_role] == pending.get("sender_agent_name")
+            and _legacy_body_has_type(
+                pending.get("body", ""),
+                handoff.request,
+                task_agent=agents[handoff.destination_role],
+            )
         ):
             return handoff
     return None
@@ -988,10 +1164,24 @@ def _inbound_response(config: Config, sender: str, body: str) -> Handoff | None:
     return None
 
 
+def _legacy_inbound_response(config: Config, sender: str, body: str) -> Handoff | None:
+    if config.factory_role is None or not _legacy_response_header(body):
+        return None
+    agents = _role_agents(config)
+    for handoff in config.factory_handoffs:
+        if handoff.source_role != config.factory_role or agents[handoff.destination_role] != sender:
+            continue
+        if any(_body_has_type(body, response) for response in handoff.responses):
+            return handoff
+    return None
+
+
 def _inbound_observed_response(
     config: Config,
     sender: str,
     body: str,
+    *,
+    allow_legacy: bool = False,
 ) -> Handoff | None:
     if config.factory_role is None:
         return None
@@ -1003,13 +1193,18 @@ def _inbound_observed_response(
             or agents[handoff.destination_role] != sender
         ):
             continue
-        if any(_body_has_type(body, response) for response in handoff.responses) and _valid_response_header(body):
+        if any(_body_has_type(body, response) for response in handoff.responses) and (
+            _valid_response_header(body)
+            or (allow_legacy and _legacy_response_header(body))
+        ):
             return handoff
     return None
 
 
 def _pending_request(config: Config, pending: dict[str, Any]) -> Handoff | None:
-    return _inbound_request(config, pending["sender_agent_name"], pending["body"])
+    return _inbound_request(config, pending["sender_agent_name"], pending["body"]) or _legacy_pending_request(
+        config, pending
+    )
 
 
 def _operator_input_matches(
@@ -1071,17 +1266,31 @@ def _matching_awaiting_handoff(
 ) -> int | None:
     if config.factory_role is None:
         return None
-    handoff = _inbound_response(config, sender, body)
-    response_fields = _message_fields(body)
-    if handoff is None or response_fields is None:
-        return None
     for index, awaiting in enumerate(awaiting_handoffs):
+        legacy = awaiting.get("legacy_protocol") == LEGACY_PROTOCOL
+        handoff = (
+            _legacy_inbound_response(config, sender, body)
+            if legacy
+            else _inbound_response(config, sender, body)
+        )
+        response_fields = _message_fields(body)
+        if handoff is None or response_fields is None:
+            continue
         expected = awaiting["correlation"]
+        if legacy:
+            if not _valid_attention_id(response_fields.get("attention_id")):
+                continue
+            response_fields.pop("attention_id")
+            actual = response_fields
+        else:
+            actual = {
+                key: value for key, value in response_fields.items() if key != "attention_id"
+            }
         if (
             awaiting["room_name"] == room_name
             and awaiting["request"] == handoff.request
             and awaiting["recipient_agent"] == sender
-            and all(response_fields.get(key) == value for key, value in expected.items())
+            and actual == expected
         ):
             return index
     return None
@@ -1177,6 +1386,22 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
                     " Process any canonical operator_input message as authenticated natural-language operator "
                     "direction; it is "
                     "not an agent handoff and requires no protocol response for its own attention object."
+                )
+            legacy_pending = [
+                item
+                for item in pending
+                if item.get("legacy_protocol") == LEGACY_PROTOCOL
+            ]
+            if legacy_pending:
+                action += (
+                    " A migrated version-5 legacy request remains pending. Continue it using its preserved "
+                    "correlation and complete it with the legacy response header plus "
+                    "`attention_id=<id>` (or BLOCKED/FAILED); do not invent a target URL for that legacy object."
+                )
+            if state.get("accept_legacy_protocol"):
+                action += (
+                    " This checkpoint was migrated from version 5; accept and preserve old-format messages "
+                    "until the migrated work drains, while using target URLs for all new work."
                 )
         if awaiting:
             action += (
@@ -1486,7 +1711,12 @@ class EventConsumer:
                 request = None
                 requires_terminal = False
             elif sender_kind == "agent":
-                request = _inbound_request(self.config, sender_name, body)
+                request = _inbound_request(
+                    self.config,
+                    sender_name,
+                    body,
+                    allow_legacy=self.state.get("accept_legacy_protocol", False),
+                )
                 if (
                     request is None
                     and _matching_awaiting_handoff(
@@ -1501,6 +1731,7 @@ class EventConsumer:
                         self.config,
                         sender_name,
                         body,
+                        allow_legacy=self.state.get("accept_legacy_protocol", False),
                     )
                     is None
                 ):
@@ -1518,7 +1749,7 @@ class EventConsumer:
                 requires_terminal = True
             else:
                 requires_terminal = False
-        return {
+        pending = {
             "attention_id": attention_id,
             "room_name": room_name,
             "sender_agent_name": sender_name,
@@ -1527,6 +1758,15 @@ class EventConsumer:
             "body": body,
             "requires_terminal": requires_terminal,
         }
+        if (
+            self.config.factory_name is not None
+            and self.state.get("accept_legacy_protocol", False)
+            and request is not None
+            and not _request_correlation(body)
+            and _legacy_request_correlation(body)
+        ):
+            pending["legacy_protocol"] = LEGACY_PROTOCOL
+        return pending
 
     def _accept_terminal_send(self, structured: Any, arguments: Any) -> None:
         if not isinstance(structured, dict) or not isinstance(arguments, dict):
@@ -1574,15 +1814,23 @@ class EventConsumer:
     def _record_handoff(self, room_name: str, body: str, recipient: str) -> None:
         agents = _role_agents(self.config)
         for handoff in self.config.factory_handoffs:
-            if handoff.source_role != self.config.factory_role or not _body_has_type(
+            if handoff.source_role != self.config.factory_role:
+                continue
+            current = _body_has_type(
                 body,
                 handoff.request,
                 task_agent=agents[handoff.destination_role],
-            ):
+            )
+            legacy = self.state.get("accept_legacy_protocol", False) and _legacy_body_has_type(
+                body,
+                handoff.request,
+                task_agent=agents[handoff.destination_role],
+            )
+            if not current and not legacy:
                 continue
             if recipient != agents[handoff.destination_role]:
                 return
-            correlation = _request_correlation(body)
+            correlation = _request_correlation(body) if current else _legacy_request_correlation(body)
             if not correlation:
                 raise SupervisorError("factory handoff request has no correlation fields")
             awaiting = {
@@ -1592,6 +1840,8 @@ class EventConsumer:
                 "body": body,
                 "correlation": correlation,
             }
+            if legacy and not current:
+                awaiting["legacy_protocol"] = LEGACY_PROTOCOL
             if awaiting not in self.state["awaiting_handoffs"]:
                 if len(self.state["awaiting_handoffs"]) >= MAX_IN_FLIGHT:
                     raise SupervisorError("too many outbound factory handoffs are awaiting responses")

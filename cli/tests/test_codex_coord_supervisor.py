@@ -2057,6 +2057,188 @@ def test_checkpoint_rejects_old_in_flight_task_protocol(supervisor_module, tmp_p
         module.load_state(_write_json(tmp_path / "old-protocol-state.json", state))
 
 
+def test_version_five_checkpoint_migrates_legacy_in_flight_task(supervisor_module, tmp_path):
+    module = supervisor_module
+    state = module.empty_state()
+    state["version"] = 5
+    state["thread_id"] = "legacy-wait-thread"
+    attention_id = "attn-" + "6" * 32
+    state["in_flight"] = [
+        {
+            "attention_id": attention_id,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 11,
+            "body": "TASK task=one assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+
+    migrated = module.load_state(_write_json(tmp_path / "v5-legacy-state.json", state))
+
+    assert migrated["version"] == module.STATE_VERSION
+    assert migrated["thread_id"] is None
+    assert migrated["in_flight"][0]["body"] == state["in_flight"][0]["body"]
+    assert migrated["in_flight"][0]["attention_id"] == attention_id
+    assert migrated["in_flight"][0]["legacy_protocol"] == "task-v5"
+
+
+def test_migrated_legacy_task_accepts_legacy_completion(supervisor_module, tmp_path):
+    module = supervisor_module
+    state = module.empty_state()
+    state["version"] = 5
+    attention_id = "attn-" + "7" * 32
+    state["in_flight"] = [
+        {
+            "attention_id": attention_id,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 11,
+            "body": "TASK task=one assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+    state_path = _write_json(tmp_path / "v5-legacy-state.json", state)
+    migrated = module.load_state(state_path)
+    consumer = module.EventConsumer(
+        _config(module, tmp_path),
+        migrated,
+        state_path,
+        {"room-1": "backlog"},
+    )
+
+    consumer.consume(
+        _terminal_event(
+            attention_id,
+            body=f"DONE task=one attention_id={attention_id}",
+        )
+    )
+
+    assert module.load_state(state_path)["in_flight"] == []
+
+
+def test_version_five_checkpoint_migrates_legacy_awaiting_correlation(
+    supervisor_module,
+    tmp_path,
+):
+    module = supervisor_module
+    state = module.empty_state()
+    state["version"] = 5
+    state.pop("accept_legacy_protocol")
+    review_body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
+    state["awaiting_handoffs"] = [
+        {
+            "room_name": "backlog",
+            "request": "REVIEW_READY",
+            "recipient_agent": "lens",
+            "body": review_body,
+            "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+        }
+    ]
+
+    migrated = module.load_state(_write_json(tmp_path / "v5-awaiting-state.json", state))
+
+    assert migrated["accept_legacy_protocol"] is True
+    assert migrated["awaiting_handoffs"][0]["legacy_protocol"] == "task-v5"
+    assert migrated["awaiting_handoffs"][0]["correlation"] == state["awaiting_handoffs"][0]["correlation"]
+
+
+def test_migrated_legacy_review_can_drain_for_downstream_role(
+    supervisor_module,
+    tmp_path,
+):
+    module = supervisor_module
+    state = module.empty_state()
+    state["version"] = 5
+    state.pop("accept_legacy_protocol")
+    state_path = _write_json(tmp_path / "v5-review-state.json", state)
+    state = module.load_state(state_path)
+    consumer = module.EventConsumer(
+        _factory_config(module, tmp_path, "reviewer"),
+        state,
+        state_path,
+        {"room-1": "backlog"},
+    )
+    review_attention = "attn-" + "8" * 32
+    response_attention = "attn-" + "9" * 32
+    review_body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
+    response_body = "READY issue=#480 pr=#10 head=" + "a" * 40 + f" attention_id={review_attention}"
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [_resolved(review_attention, sender="forge", body=review_body)],
+        )
+    )
+    assert state["in_flight"][0]["legacy_protocol"] == "task-v5"
+
+    consumer.consume(
+        _terminal_event(
+            response_attention,
+            body=response_body,
+            sender="lens",
+            notify=["forge", "relay"],
+        )
+    )
+
+    assert state["in_flight"] == []
+
+
+def test_migrated_legacy_awaiting_response_resumes_owner(
+    supervisor_module,
+    tmp_path,
+):
+    module = supervisor_module
+    state = module.empty_state()
+    state["version"] = 5
+    state.pop("accept_legacy_protocol")
+    review_body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
+    state["awaiting_handoffs"] = [
+        {
+            "room_name": "backlog",
+            "request": "REVIEW_READY",
+            "recipient_agent": "lens",
+            "body": review_body,
+            "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+        }
+    ]
+    state_path = _write_json(tmp_path / "v5-owner-state.json", state)
+    state = module.load_state(state_path)
+    consumer = module.EventConsumer(
+        _factory_config(module, tmp_path, "owner"),
+        state,
+        state_path,
+        {"room-1": "backlog"},
+    )
+    response_attention = "attn-" + "a" * 32
+    request_attention = "attn-" + "b" * 32
+    response_body = "READY issue=#480 pr=#10 head=" + "a" * 40 + f" attention_id={request_attention}"
+
+    consumer.consume(
+        _wait_event(
+            module,
+            state,
+            [_resolved(response_attention, sender="lens", body=response_body)],
+        )
+    )
+
+    assert state["awaiting_handoffs"] == []
+    assert state["in_flight"] == [
+        {
+            "attention_id": response_attention,
+            "room_name": "backlog",
+            "sender_agent_name": "lens",
+            "sender_agent_id": "agent-lens",
+            "sequence": 11,
+            "body": response_body,
+            "requires_terminal": False,
+        }
+    ]
+
+
 def test_version_three_checkpoint_migrates_with_empty_brief_context(
     supervisor_module,
     tmp_path,

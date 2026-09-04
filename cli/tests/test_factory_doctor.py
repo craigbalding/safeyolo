@@ -559,7 +559,7 @@ def test_factory_doctor_accepts_supervisor_compatible_legacy_checkpoints(cli_run
     assert state_path.read_bytes() == before
 
 
-def test_factory_doctor_accepts_version_five_checkpoint_without_mutating_it(
+def test_factory_doctor_accepts_version_five_checkpoint_with_legacy_work_without_mutating_it(
     cli_runner,
     factory_runtime,
 ):
@@ -567,6 +567,26 @@ def test_factory_doctor_accepts_version_five_checkpoint_without_mutating_it(
     state = json.loads(state_path.read_text())
     state["version"] = 5
     state["thread_id"] = "legacy-wait-thread"
+    state["in_flight"] = [
+        {
+            "attention_id": "attn-" + "6" * 32,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 11,
+            "body": "TASK task=one assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+    state["awaiting_handoffs"] = [
+        {
+            "room_name": "backlog",
+            "request": "REVIEW_READY",
+            "recipient_agent": "lens",
+            "body": "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40,
+            "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+        }
+    ]
     state_path.write_text(json.dumps(state) + "\n")
     before = state_path.read_bytes()
 

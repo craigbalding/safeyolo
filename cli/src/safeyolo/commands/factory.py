@@ -56,9 +56,11 @@ def _factory_setup_commands(name: str, payload: dict[str, Any] | None = None) ->
     )
     lines = [
         'Recovery order (use "$PWD" or replace it with each agent\'s workspace):',
+        "Run from a host session already logged in to Codex with a ChatGPT subscription; "
+        "@codex-coord stages that host's ~/.codex authentication and config for the agent.",
     ]
     for agent in agents:
-        lines.append(f'  safeyolo agent add {agent} "$PWD" --no-run')
+        lines.append(f'  safeyolo agent add {agent} "$PWD" --host-script @codex-coord --no-run')
     lines.extend(
         [
             "  safeyolo factory check FACTORY.toml",
@@ -209,7 +211,7 @@ def run_factory(
     name: str = typer.Argument(
         ...,
         help=(
-            "Approved factory name. Fresh setup order is: agent add --no-run, "
+            "Approved factory name. Fresh setup order is: agent add --host-script @codex-coord --no-run, "
             "factory check, factory approve, factory run."
         ),
     ),
@@ -218,10 +220,14 @@ def run_factory(
 
     Fresh setup order:
 
-        safeyolo agent add AGENT FOLDER --no-run
+        safeyolo agent add AGENT FOLDER --host-script @codex-coord --no-run
         safeyolo factory check FACTORY.toml
         safeyolo factory approve FACTORY.toml --yes
         safeyolo factory run NAME
+
+    Run the add command from a host session already logged in to Codex with a
+    ChatGPT subscription. The ``@codex-coord`` host setup stages the host's
+    ``~/.codex`` authentication and config into the agent home.
 
     ``factory run`` provisions the declared Coord rooms and grants before it
     starts any role, then waits for every role supervisor to pass the same

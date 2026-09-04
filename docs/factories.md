@@ -107,16 +107,18 @@ constraints, but the backlog factory does not require one.
 
 ## Fresh setup, check, approve, and run
 
-The shortest discoverable setup path is deliberately ordered. Register every
-agent first, validate the immutable contract, approve that exact snapshot, and
-only then run the factory. `--no-run` leaves agent creation separate from
-factory startup; each agent still needs its normal workspace and Codex
-subscription credentials before the factory can pass operational preflight.
+The shortest discoverable setup path is deliberately ordered. Before running
+it, log in to Codex with a ChatGPT subscription on the host. Register every
+agent with the bundled `@codex-coord` host setup, which stages the host's
+`~/.codex` authentication and config into the agent's persistent home, then
+validate the immutable contract, approve that exact snapshot, and only then run
+the factory. `--no-run` leaves agent creation separate from factory startup;
+the host setup cannot create a subscription login that is absent on the host.
 
 ```sh
-safeyolo agent add relay "$PWD" --no-run
-safeyolo agent add forge "$PWD" --no-run
-safeyolo agent add lens "$PWD" --no-run
+safeyolo agent add relay "$PWD" --host-script @codex-coord --no-run
+safeyolo agent add forge "$PWD" --host-script @codex-coord --no-run
+safeyolo agent add lens "$PWD" --host-script @codex-coord --no-run
 safeyolo factory check docs/factories/backlog.toml
 safeyolo factory approve docs/factories/backlog.toml --yes
 safeyolo factory run backlog
@@ -137,7 +139,7 @@ safeyolo factory doctor backlog
 
 Correct the specific component named by `factory doctor`, then rerun
 `safeyolo factory run backlog`. A missing agent is recovered with
-`safeyolo agent add NAME "$PWD" --no-run`; a missing workspace is recovered
+`safeyolo agent add NAME "$PWD" --host-script @codex-coord --no-run`; a missing workspace is recovered
 with `safeyolo agent config NAME --folder "$PWD"`. Room and grant recovery is
 the idempotent `safeyolo factory run backlog` command itself. Factory run does
 not claim success until every role supervisor passes the doctor checks for the
@@ -285,9 +287,14 @@ For a running legacy backlog factory:
 3. Run `factory approve` for that exact resolved snapshot.
 4. Run `factory run backlog`.
 
-The supervisor upgrades its existing checkpoint in memory and keeps the
-thread, safe cursor, recent attention IDs, in-flight canonical objects, and
-current trusted room brief context.
+The supervisor upgrades its existing checkpoint in memory and starts the next
+turn from a clean Codex thread, while keeping the safe cursor, recent attention
+IDs, in-flight canonical objects, awaiting handoffs, and current trusted room
+brief context. Version-5 `TASK task=<id> assignee=<agent>` and other old-format
+requests are preserved with their legacy task or review correlation until they
+reach their declared terminal response; the migrated turn accepts the matching
+legacy completion header because those objects have no target URL. New work
+continues to require target URLs.
 The running Markdown contract and routing table come from the immutable
 snapshot. To change either, stop the agents, check and approve a new snapshot,
 then run the factory again.
