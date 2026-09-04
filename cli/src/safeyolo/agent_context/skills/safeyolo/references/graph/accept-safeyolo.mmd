@@ -21,6 +21,9 @@ flowchart TD
     sym.accept_macos_vz(["The physical Apple Silicon VZ boundary needs acceptance"])
     sym.accept_static_quality(["Changed code needs deterministic repository quality checks"])
     sym.accept_security_analysis(["Changed production Python needs deterministic security and data-flow analysis"])
+    sym.accept_state_integrity(["State transitions or interfaces may admit impossible, partial, or confused states"])
+    sym.accept_race_risk(["Concurrency, shared resources, ordering, or state leakage needs stress evidence"])
+    sym.accept_dependency_security(["The exact locked Python runtime dependency closure needs vulnerability review"])
     ev.accept_select_boundary["Choose one material affected, stale, failed, or currently unproven boundary"]
     ev.accept_python_lane["Use focused pytest, pytest-cov, and Hypothesis for Python behavior"]
     ev.accept_policy_chaos_lane["Use the Hypothesis-backed policy transaction chaos runner"]
@@ -34,6 +37,11 @@ flowchart TD
     ev.accept_rootfs_lane["Use skopeo, umoci, chroot package installation, and ext4 tooling through the trusted rootfs builder"]
     ev.accept_uds_lane["Use current blackbox UDS transport plus focused socket and attribution pytest"]
     ev.accept_ruff_lane["Use Ruff and the trusted pre-commit hooks for changed-file quality and complexity checks"]
+    ev.accept_mypy_lane["Use mypy to challenge affected state and interface contracts"]
+    ev.accept_concurrency_stress_lane["Use pytest-repeat and pytest-xdist to stress ordering and shared-state assumptions"]
+    ev.accept_semgrep_lane["Use the local tested Semgrep rules for high-signal SafeYolo security invariants"]
+    ev.accept_dependency_audit_lane["Use pip-audit on an exact hash-bearing export of runtime dependencies"]
+    ev.accept_radon_lane["Use Radon for an independent complexity and maintainability view"]
     ev.accept_codeql_lane["Use the checksum-pinned local CodeQL bundle for production Python security and data-flow analysis"]
     ev.accept_classify_result["Classify what the trusted probe actually established"]
     cls.accept_claim_proven{{"The trusted probe exercised the material boundary and produced current passing evidence"}}
@@ -63,6 +71,11 @@ flowchart TD
     ev.accept_select_boundary -->|"next_check: rootfs construction, package inventory, or image contents are material"| ev.accept_rootfs_lane
     ev.accept_select_boundary -->|"next_check: UDS transport, attribution, or proxy-only egress is material"| ev.accept_uds_lane
     ev.accept_select_boundary -->|"next_check: changed-file quality or complexity is material"| ev.accept_ruff_lane
+    ev.accept_select_boundary -->|"next_check: state shape, optionality, or interface contracts are material"| ev.accept_mypy_lane
+    ev.accept_select_boundary -->|"next_check: ordering, cleanup, shared resources, or intermittent behavior are material"| ev.accept_concurrency_stress_lane
+    ev.accept_select_boundary -->|"next_check: a local high-signal security invariant is material"| ev.accept_semgrep_lane
+    ev.accept_select_boundary -->|"next_check: the exact runtime dependency closure needs current vulnerability evidence"| ev.accept_dependency_audit_lane
+    ev.accept_select_boundary -->|"next_check: structural complexity or maintainability regression is material"| ev.accept_radon_lane
     ev.accept_select_boundary -->|"next_check: security, taint, or data-flow analysis is material"| ev.accept_codeql_lane
     sym.accept_install_proxy -->|"next_check: exercise the installed real proxy and sinkhole boundary"| ev.accept_proxy_lane
     sym.accept_python_behavior -->|"next_check: select the smallest existing pytest or Hypothesis node"| ev.accept_python_lane
@@ -81,10 +94,20 @@ flowchart TD
     sym.accept_macos_vz -->|"next_check: an approved physical Apple Silicon VZ host is available"| ev.accept_vz_lane
     sym.accept_macos_vz -->|"implies: only a hosted macOS runner or no VZ host is available"| cls.accept_resource_missing
     sym.accept_static_quality -->|"next_check: lint, changed-file hooks, or configured complexity rules cover the claim"| ev.accept_ruff_lane
+    sym.accept_static_quality -->|"next_check: an independent numeric complexity comparison would sharpen review"| ev.accept_radon_lane
+    sym.accept_static_quality -->|"next_check: the change affects typed state or interface contracts"| ev.accept_mypy_lane
     sym.accept_static_quality -->|"next_check: security or interprocedural data-flow analysis is material"| ev.accept_codeql_lane
     sym.accept_static_quality -->|"implies: the needed architecture fitness rule is not configured"| cls.accept_coverage_gap
     sym.accept_security_analysis -->|"next_check: the changed code is production Python on a supported CodeQL platform"| ev.accept_codeql_lane
+    sym.accept_security_analysis -->|"next_check: the trusted local rules cover the changed security boundary"| ev.accept_semgrep_lane
+    sym.accept_security_analysis -->|"next_check: the risk is in the locked runtime dependency closure"| ev.accept_dependency_audit_lane
     sym.accept_security_analysis -->|"implies: only a platform without a pinned native CodeQL bundle is available"| cls.accept_resource_missing
+    sym.accept_state_integrity -->|"next_check: challenge impossible or confused states at Python interfaces"| ev.accept_mypy_lane
+    sym.accept_state_integrity -->|"next_check: state transitions need generated dynamic sequences"| ev.accept_policy_chaos_lane
+    sym.accept_state_integrity -->|"next_check: a focused state-transition regression can be exercised directly"| ev.accept_python_lane
+    sym.accept_race_risk -->|"next_check: bounded repeated or multi-process stress can expose the suspected coupling"| ev.accept_concurrency_stress_lane
+    sym.accept_race_risk -->|"next_check: policy transaction interleavings or crash stages are material"| ev.accept_policy_chaos_lane
+    sym.accept_dependency_security -->|"next_check: audit the exact locked product runtime closure"| ev.accept_dependency_audit_lane
     ev.accept_python_lane -->|"next_check: focused tests complete or fail"| ev.accept_classify_result
     ev.accept_policy_chaos_lane -->|"next_check: the chaos report completes or records a finding/infrastructure error"| ev.accept_classify_result
     ev.accept_proxy_lane -->|"next_check: the real proxy lane completes or fails"| ev.accept_classify_result
@@ -98,6 +121,11 @@ flowchart TD
     ev.accept_rootfs_lane -->|"next_check: the clean rootfs build and artifact inspection complete or fail"| ev.accept_classify_result
     ev.accept_uds_lane -->|"next_check: the current UDS system or focused probe completes or fails"| ev.accept_classify_result
     ev.accept_ruff_lane -->|"next_check: configured hooks and selected Ruff rules complete"| ev.accept_classify_result
+    ev.accept_mypy_lane -->|"next_check: base and candidate type-contract findings are comparable"| ev.accept_classify_result
+    ev.accept_concurrency_stress_lane -->|"next_check: the bounded repeated or parallel sample completes or exposes a failure"| ev.accept_classify_result
+    ev.accept_semgrep_lane -->|"next_check: trusted local rule tests and the selected scan complete"| ev.accept_classify_result
+    ev.accept_dependency_audit_lane -->|"next_check: the exact closure is queried or the feed/cache path fails concretely"| ev.accept_classify_result
+    ev.accept_radon_lane -->|"next_check: base and candidate complexity evidence is comparable"| ev.accept_classify_result
     ev.accept_codeql_lane -->|"next_check: CodeQL analyzes the source or produces a concrete unsupported/infrastructure result"| ev.accept_classify_result
     ev.accept_classify_result -->|"implies: the correct trusted tool exercised the material boundary and passed"| cls.accept_claim_proven
     ev.accept_classify_result -->|"implies: the trusted tool reached the boundary and reproduced incorrect behavior"| cls.accept_product_defect
@@ -127,6 +155,9 @@ flowchart TD
     class sym.accept_macos_vz symptom
     class sym.accept_static_quality symptom
     class sym.accept_security_analysis symptom
+    class sym.accept_state_integrity symptom
+    class sym.accept_race_risk symptom
+    class sym.accept_dependency_security symptom
     class ev.accept_select_boundary evidence
     class ev.accept_python_lane evidence
     class ev.accept_policy_chaos_lane evidence
@@ -140,6 +171,11 @@ flowchart TD
     class ev.accept_rootfs_lane evidence
     class ev.accept_uds_lane evidence
     class ev.accept_ruff_lane evidence
+    class ev.accept_mypy_lane evidence
+    class ev.accept_concurrency_stress_lane evidence
+    class ev.accept_semgrep_lane evidence
+    class ev.accept_dependency_audit_lane evidence
+    class ev.accept_radon_lane evidence
     class ev.accept_codeql_lane evidence
     class ev.accept_classify_result evidence
     class cls.accept_claim_proven classification
@@ -170,3 +206,6 @@ flowchart TD
     style sym.accept_macos_vz stroke-width:3px
     style sym.accept_static_quality stroke-width:3px
     style sym.accept_security_analysis stroke-width:3px
+    style sym.accept_state_integrity stroke-width:3px
+    style sym.accept_race_risk stroke-width:3px
+    style sym.accept_dependency_security stroke-width:3px

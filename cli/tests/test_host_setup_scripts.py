@@ -1641,10 +1641,10 @@ def test_codex_context_stages_standalone_repo_map(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith(
-        "# repo-map scope=cli/src/safeyolo/coord mode=detail "
+        "# repo-map scope=cli/src/safeyolo/coord mode=overview "
     )
     assert "cli/src/safeyolo/coord/api.py" in result.stdout
-    assert "async def send(" in result.stdout
+    assert "class NotFoundError @" in result.stdout
 
 
 def test_codex_context_refuses_incomplete_lab_bashrc_block(tmp_path: Path) -> None:
@@ -1826,10 +1826,26 @@ def test_factory_skill_is_codex_scoped_and_self_contained() -> None:
 def test_safeyolo_acceptance_graph_tool_hashes_match_sources() -> None:
     graph_path = SKILL_SOURCE / "references/graph/accept-safeyolo.yaml"
     graph = yaml.safe_load(graph_path.read_text())
+    project = tomllib.loads(
+        (REPO_ROOT / "tools" / "acceptance" / "pyproject.toml").read_text()
+    )
+    acceptance_dependencies = {
+        requirement.split(">=", 1)[0]
+        for group in ("static", "stress")
+        for requirement in project["dependency-groups"][group]
+    }
     tool_nodes = {node["id"]: node["tool"] for node in graph["nodes"] if "tool" in node}
     tools = list(tool_nodes.values())
 
     assert tools
+    assert {
+        "mypy",
+        "pip-audit",
+        "pytest-repeat",
+        "pytest-xdist",
+        "radon",
+        "semgrep",
+    } <= acceptance_dependencies
     assert {
         "ev.accept_python_lane",
         "ev.accept_policy_chaos_lane",
@@ -1842,6 +1858,11 @@ def test_safeyolo_acceptance_graph_tool_hashes_match_sources() -> None:
         "ev.accept_rootfs_lane",
         "ev.accept_uds_lane",
         "ev.accept_ruff_lane",
+        "ev.accept_mypy_lane",
+        "ev.accept_concurrency_stress_lane",
+        "ev.accept_semgrep_lane",
+        "ev.accept_dependency_audit_lane",
+        "ev.accept_radon_lane",
         "ev.accept_codeql_lane",
     } <= tool_nodes.keys()
     for tool in tools:

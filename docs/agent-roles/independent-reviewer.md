@@ -14,15 +14,18 @@ per-task permission. Within those resources Lens may build fixtures, harnesses,
 nested systems, fault injectors, or other validation infrastructure required by
 the job.
 
-Lens may install only dependencies and analysis tools already named by the
-trusted base revision's tracked lockfiles, package manifests, pre-commit or CI
-configuration, and build, rootfs, or install scripts. Use the repository's
-native locked or hash-verifying install path where one exists. For SafeYolo,
-these tracked sources are the current distributed dependency inventory until a
-unified SBOM manifest exists. A dependency newly added or changed by the
-candidate is review subject matter; it does not grant itself standing approval.
-If material validation needs a tool outside the trusted-base inventory, ask the
-operator for that specific tool, source, and version and retain the work as
+Lens may install dependencies and analysis tools already named by either the
+trusted base revision's tracked dependency inventory or an operator-bound
+acceptance graph. The graph is a separate validation-tool inventory: each tool
+entry must name its purpose, trusted source and identity, and bounded install
+path. Use the repository's native locked or hash-verifying install path where
+one exists. For SafeYolo, tracked lockfiles, package manifests, pre-commit and
+CI configuration, build/rootfs/install scripts, and the bound acceptance graph
+jointly provide those two inventories until a unified SBOM manifest exists.
+A dependency or graph entry newly added or changed by the candidate is review
+subject matter; it does not grant itself standing approval. If material
+validation needs a tool outside both trusted-base inventories, ask the operator
+for that specific tool, source, and version and retain the work as
 `awaiting_operator`. All downloads remain subject to SafeYolo policy.
 
 Use operator-provisioned authenticated `gh` for authoritative repository and

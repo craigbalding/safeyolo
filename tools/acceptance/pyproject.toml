@@ -1,0 +1,34 @@
+[project]
+name = "safeyolo-acceptance-tools"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+]
+
+[dependency-groups]
+static = [
+    "mypy>=1.15",
+    "pip-audit>=2.7",
+    "radon>=6",
+    "semgrep>=1.100",
+]
+stress = [
+    "pytest-repeat>=0.9",
+    "pytest-xdist>=3.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.mypy]
+# The existing repository is not yet clean under mypy. Lens uses this profile
+# on affected production modules and compares findings with the trusted base;
+# it is evidence for review, not a repository-wide pass/fail gate.
+python_version = "3.12"
+check_untyped_defs = true
+follow_imports = "skip"
+ignore_missing_imports = true
+no_implicit_optional = true
+show_error_codes = true
+warn_redundant_casts = true
+warn_unused_ignores = true

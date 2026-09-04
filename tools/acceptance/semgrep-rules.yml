@@ -1,0 +1,26 @@
+rules:
+  - id: safeyolo-production-tls-verification-disabled
+    message: Production code must not disable TLS certificate verification.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern: $CALL(..., verify=False, ...)
+
+  - id: safeyolo-production-shell-true
+    message: Avoid shell=True in production subprocess calls; pass an argv list.
+    severity: WARNING
+    languages: [python]
+    patterns:
+      - pattern: subprocess.$CALL(..., shell=True, ...)
+
+  - id: safeyolo-unsafe-tempfile-name
+    message: tempfile.mktemp is race-prone; create the file or directory atomically.
+    severity: ERROR
+    languages: [python]
+    pattern: tempfile.mktemp(...)
+
+  - id: safeyolo-unsafe-yaml-load
+    message: Use yaml.safe_load for data that is not trusted Python object input.
+    severity: ERROR
+    languages: [python]
+    pattern: yaml.load($DATA)

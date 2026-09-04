@@ -59,7 +59,10 @@ def test_backlog_coordinator_contract_owns_proactive_flow_and_backfill():
 def test_backlog_reviewer_contract_binds_install_trust_and_complexity_checks():
     contract = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
 
-    assert "trusted base revision's tracked lockfiles" in contract
+    assert "trusted base revision's tracked dependency inventory" in contract
+    assert "operator-bound acceptance graph" in contract
+    assert "separate validation-tool inventory" in contract
+    assert "outside both trusted-base inventories" in contract
     assert "it does not grant itself standing approval" in contract
     assert "Run deterministic post-change quality analysis" in contract
     assert "--select C901,PLR0911,PLR0912,PLR0913,PLR0915" in contract
