@@ -15,10 +15,18 @@ import pytest
 
 from safeyolo.cli import app
 from safeyolo.factory_contract import FactoryContractError, load_approved_snapshot, load_factory_file
+from safeyolo.factory_doctor import FactoryDoctorCheck, FactoryDoctorReport
 from safeyolo.platform import AgentPlatform
 
 BACKLOG_COORDINATOR_CONTRACT = Path(__file__).parents[2] / "docs/factories/backlog-coordinator.md"
 BACKLOG_REVIEWER_CONTRACT = Path(__file__).parents[2] / "docs/agent-roles/independent-reviewer.md"
+
+
+def _passing_factory_report(name: str = "backlog") -> FactoryDoctorReport:
+    return FactoryDoctorReport(
+        name,
+        (FactoryDoctorCheck("PASS", "operational-preflight", "all checks pass"),),
+    )
 
 
 def test_backlog_coordinator_status_contract_is_low_noise():
@@ -117,6 +125,15 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     assert "safeyolo factory doctor backlog" in explanation
 
 
+def test_factory_run_help_exposes_fresh_setup_order(cli_runner):
+    result = cli_runner.invoke(app, ["factory", "run", "--help"])
+    output = " ".join(result.output.split())
+
+    assert result.exit_code == 0, result.output
+    assert "safeyolo agent add AGENT FOLDER --no-run" in output
+    assert output.index("factory check") < output.index("factory approve") < output.index("factory run NAME")
+
+
 def test_factory_approve_requires_approval_and_stores_immutable_snapshot(
     cli_runner,
     tmp_path,
@@ -188,6 +205,10 @@ def test_factory_run_uses_only_the_approved_verified_snapshot(
         "safeyolo.commands.factory._run_snapshot",
         lambda snapshot_path, payload: calls.append((snapshot_path, payload)),
     )
+    monkeypatch.setattr(
+        "safeyolo.commands.factory._wait_for_operational_preflight",
+        lambda _name: _passing_factory_report(),
+    )
 
     result = cli_runner.invoke(app, ["factory", "run", "backlog"])
 
@@ -230,6 +251,10 @@ def test_factory_run_preserves_each_agents_local_codex_auth(
     monkeypatch.setattr(
         "safeyolo.commands.factory._ensure_factory_rooms",
         lambda _room, _names: None,
+    )
+    monkeypatch.setattr(
+        "safeyolo.commands.factory._wait_for_operational_preflight",
+        lambda _name: _passing_factory_report(),
     )
     path = _factory_file(tmp_path)
     approved = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
@@ -351,6 +376,10 @@ def test_factory_run_executes_staged_worker_commands(
         "safeyolo.commands.factory._ensure_factory_rooms",
         lambda _room, _names: None,
     )
+    monkeypatch.setattr(
+        "safeyolo.commands.factory._wait_for_operational_preflight",
+        lambda _name: _passing_factory_report(),
+    )
 
     path = _factory_file(tmp_path)
     approved = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
@@ -407,7 +436,7 @@ def test_factory_run_does_not_boot_workers_without_coord(tmp_path, monkeypatch):
 
     from safeyolo.commands.factory import _run_snapshot
 
-    with pytest.raises(FactoryContractError, match="coord runtime failed to start: nats unavailable"):
+    with pytest.raises(FactoryContractError, match="Coord runtime failed before room/grant provisioning"):
         _run_snapshot(tmp_path / "snapshot.json", payload)
 
     assert launched == []
@@ -449,10 +478,77 @@ def test_factory_run_does_not_boot_workers_when_room_provisioning_fails(
 
     from safeyolo.commands.factory import _run_snapshot
 
-    with pytest.raises(FactoryContractError, match="coord runtime failed to start: grant failed"):
+    with pytest.raises(FactoryContractError, match="Coord room/grant provisioning failed"):
         _run_snapshot(tmp_path / "snapshot.json", payload)
 
     assert launched == []
+
+
+def test_factory_run_missing_agent_prints_ordered_executable_recovery(
+    cli_runner,
+    tmp_path,
+    tmp_config_dir,
+):
+    path = _factory_file(tmp_path)
+    approved = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
+    assert approved.exit_code == 0, approved.output
+
+    result = cli_runner.invoke(app, ["factory", "run", "backlog"])
+    output = " ".join(result.output.split())
+
+    assert result.exit_code == 1, result.output
+    assert "Started factory" not in result.output
+    assert 'safeyolo agent add relay "$PWD" --no-run' in output
+    assert output.index("agent add relay") < output.index("factory check")
+    assert output.index("factory check") < output.index("factory approve") < output.index("factory run backlog")
+
+
+def test_factory_run_requires_operational_preflight_before_success(
+    cli_runner,
+    tmp_path,
+    tmp_config_dir,
+    monkeypatch,
+):
+    path = _factory_file(tmp_path)
+    approved = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
+    assert approved.exit_code == 0, approved.output
+
+    report = FactoryDoctorReport(
+        "backlog",
+        (FactoryDoctorCheck("FAIL", "supervisor", "role supervisor is not running"),),
+    )
+    monkeypatch.setattr("safeyolo.commands.factory._run_snapshot", lambda *_args: None)
+    monkeypatch.setattr("safeyolo.commands.factory.inspect_factory", lambda _name: report)
+    monkeypatch.setattr("safeyolo.commands.factory._FACTORY_PREFLIGHT_TIMEOUT_SECONDS", 0)
+
+    result = cli_runner.invoke(app, ["factory", "run", "backlog"])
+
+    assert result.exit_code == 1, result.output
+    assert "Started factory" not in result.output
+    assert "operational preflight did not pass" in result.output
+    assert "safeyolo factory doctor backlog" in result.output
+    assert "safeyolo factory run backlog" in result.output
+
+
+def test_factory_run_waits_for_supervisors_then_accepts_pass(
+    monkeypatch,
+):
+    from safeyolo.commands.factory import _wait_for_operational_preflight
+
+    reports = iter(
+        (
+            FactoryDoctorReport(
+                "backlog",
+                (FactoryDoctorCheck("WARN", "supervisor", "starting"),),
+            ),
+            _passing_factory_report(),
+        )
+    )
+    monkeypatch.setattr("safeyolo.commands.factory.inspect_factory", lambda _name: next(reports))
+    monkeypatch.setattr("safeyolo.commands.factory.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("safeyolo.commands.factory._FACTORY_PREFLIGHT_TIMEOUT_SECONDS", 1)
+
+    assert _wait_for_operational_preflight("backlog").status == "PASS"
 
 
 def test_factory_ensures_shared_and_private_rooms_before_workers_start(monkeypatch):

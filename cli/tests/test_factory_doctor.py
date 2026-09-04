@@ -375,6 +375,24 @@ def test_factory_doctor_reports_missing_agent_room_grant(
     assert result.exit_code == 1
     assert "FAIL component=agent-room-grant role=reviewer agent=lens" in result.output
     assert "room=lens-agent missing=send" in result.output
+    assert "safeyolo factory run backlog" in " ".join(result.output.split())
+
+
+def test_factory_doctor_reports_missing_shared_room_recovery(
+    cli_runner,
+    factory_runtime,
+    monkeypatch,
+):
+    def unavailable(_room, _principals):
+        raise RuntimeError("room missing")
+
+    monkeypatch.setattr("safeyolo.factory_doctor.coord_api.inspect_room_access", unavailable)
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1
+    assert "FAIL component=coord-room room or required membership is unavailable" in result.output
+    assert "repair with `safeyolo factory run backlog`" in " ".join(result.output.split())
 
 
 def test_factory_doctor_rejects_a_live_unrelated_proxy_pid(cli_runner, factory_runtime, tmp_config_dir, monkeypatch):

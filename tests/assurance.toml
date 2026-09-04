@@ -12,19 +12,19 @@
 id = "FACTORY-RUN-STARTS-WORKERS"
 description = "Factory run executes each staged worker command after Coord is ready."
 node = "cli/tests/test_factory_contract.py::test_factory_run_executes_staged_worker_commands"
-sha256 = "2bd903e4813bdfcd37cb11c772a65a134cdb9d3e3801b6a88c9a57cc8a32b7d4"
+sha256 = "972919fbfa5d05ba2c6df2e780de9af5769fdfbfdcab6947072558d48d1518a9"
 
 [[factory_acceptance]]
 id = "FACTORY-RUN-REQUIRES-COORD"
 description = "Factory run does not start workers when Coord cannot start."
 node = "cli/tests/test_factory_contract.py::test_factory_run_does_not_boot_workers_without_coord"
-sha256 = "095c5bf5ca7d9824ddf67c686924939f8f29bd44bcca5171af1a0962e55ba6f6"
+sha256 = "6ae0795d5c337798f04512ef4a3f4ba22a7e1a56798614c41ed0bfe64045ea15"
 
 [[factory_acceptance]]
 id = "FACTORY-RUN-REQUIRES-ROOM-PROVISIONING"
 description = "Factory run does not start workers when shared-room provisioning fails."
 node = "cli/tests/test_factory_contract.py::test_factory_run_does_not_boot_workers_when_room_provisioning_fails"
-sha256 = "b1ddd4898cd89dfbaf5d3489ed75da5c2de1fce9cd075ca5296ae2e9acabad56"
+sha256 = "04d8da9a6ef5195e5bb1adb0decf532b83e2e1c69fb912d7d71552369dbe31e2"
 
 [[factory_acceptance]]
 id = "FACTORY-OPERATOR-CONVERSATION"

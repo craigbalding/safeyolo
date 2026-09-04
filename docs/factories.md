@@ -105,6 +105,45 @@ operator-authorized repositories. `NEXT` and `PRIORITY` can override ordinary
 ordering for eligible work. A trusted brief may refine standing priorities or
 constraints, but the backlog factory does not require one.
 
+## Fresh setup, check, approve, and run
+
+The shortest discoverable setup path is deliberately ordered. Register every
+agent first, validate the immutable contract, approve that exact snapshot, and
+only then run the factory. `--no-run` leaves agent creation separate from
+factory startup; each agent still needs its normal workspace and Codex
+subscription credentials before the factory can pass operational preflight.
+
+```sh
+safeyolo agent add relay "$PWD" --no-run
+safeyolo agent add forge "$PWD" --no-run
+safeyolo agent add lens "$PWD" --no-run
+safeyolo factory check docs/factories/backlog.toml
+safeyolo factory approve docs/factories/backlog.toml --yes
+safeyolo factory run backlog
+```
+
+Use the role agent names from the factory file for another contract. The
+workspace argument may be changed per agent. `factory run` is the step that
+creates or verifies the shared Coord room and each private agent room and
+restores the required operator and role send/receive grants. It does this
+before starting any role supervisor.
+
+When a setup step fails, follow the commands printed by the CLI in order. The
+read-only diagnosis is always available as:
+
+```sh
+safeyolo factory doctor backlog
+```
+
+Correct the specific component named by `factory doctor`, then rerun
+`safeyolo factory run backlog`. A missing agent is recovered with
+`safeyolo agent add NAME "$PWD" --no-run`; a missing workspace is recovered
+with `safeyolo agent config NAME --folder "$PWD"`. Room and grant recovery is
+the idempotent `safeyolo factory run backlog` command itself. Factory run does
+not claim success until every role supervisor passes the doctor checks for the
+approved snapshot, agent identity/storage/workspace, rooms and grants, proxy,
+NATS, staged supervisor/MCP/contract files, checkpoint, and process tree.
+
 ## Check, approve, and run
 
 Inspect the resolved source path, exact UTF-8 byte count, and SHA-256 of every
@@ -133,7 +172,8 @@ safeyolo factory approve docs/factories/backlog.toml --yes
 Run loads and verifies only the approved snapshot, configures the already-created
 agents through the existing `@codex-coord` host setup, stages each approved
 role contract, provisions the declared shared Coord room and its required
-operator and role grants, and starts all roles detached:
+operator and role grants, starts all roles detached, and waits for operational
+preflight:
 
 ```sh
 safeyolo factory run backlog
@@ -144,8 +184,11 @@ normal workspace and credentials. Room provisioning is idempotent: an existing
 room keeps its history and unrelated observer grants, while missing
 send/receive grants for the operator and bound role agents are restored. The
 declared shared room cannot reuse a bound agent's private `<agent>-agent` room.
-If Coord provisioning fails, no role is started. A factory does not live-reload:
-editing the TOML or Markdown files changes nothing in running workers.
+If Coord provisioning fails, no role is started. If a role launch or
+operational preflight fails, the command returns an actionable doctor and
+rerun sequence instead of printing `Started factory`. A factory does not
+live-reload: editing the TOML or Markdown files changes nothing in running
+workers.
 
 The stored snapshot binds each Markdown file's exact bytes, byte count, hash,
 and decoded text. `factory run` prints the bound snapshot path, byte counts,

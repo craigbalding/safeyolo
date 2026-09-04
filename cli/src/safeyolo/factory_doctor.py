@@ -217,7 +217,8 @@ def _inspect_room(checks: list[FactoryDoctorCheck], payload: dict[str, Any]) -> 
             _fail(
                 "coord-room",
                 f"room or required membership is unavailable ({type(exc).__name__})",
-                f"Coord room and grants for room={room_name}",
+                f"inspect with `safeyolo factory doctor {payload['name']}`; "
+                f"repair with `safeyolo factory run {payload['name']}`",
             )
         )
         return
@@ -236,7 +237,8 @@ def _inspect_room(checks: list[FactoryDoctorCheck], payload: dict[str, Any]) -> 
                 _fail(
                     "coord-grant",
                     f"{label} room={room_name} missing={','.join(missing)}",
-                    f"Coord grants for {label} in room={room_name}",
+                    f"inspect with `safeyolo factory doctor {payload['name']}`; "
+                    f"repair with `safeyolo factory run {payload['name']}`",
                 )
             )
         else:
@@ -392,7 +394,8 @@ def _inspect_role(
             _fail(
                 "agent-identity",
                 f"{label} is not configured",
-                f"agent identity; run `safeyolo agent add {agent_name}`",
+                f"run `safeyolo agent add {agent_name} \"$PWD\" --no-run`, "
+                f"then `safeyolo factory run {name}`",
             )
         )
         return
