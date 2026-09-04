@@ -79,6 +79,68 @@ def test_renders_wait_event_without_full_tool_result(watcher_module):
     assert "payload" not in detail
 
 
+@pytest.mark.parametrize(
+    ("item", "shown"),
+    [
+        (
+            {
+                "type": "web_search",
+                "query": "site:developers.openai.com/codex rules",
+                "action": {
+                    "type": "search",
+                    "query": "site:developers.openai.com/codex rules",
+                },
+            },
+            "query=site:developers.openai.com/codex rules",
+        ),
+        (
+            {
+                "type": "web_search",
+                "query": "summarized",
+                "action": {
+                    "type": "search",
+                    "queries": ["first query", "second query"],
+                },
+            },
+            "queries=first query | second query",
+        ),
+        (
+            {
+                "type": "web_search",
+                "query": "https://developers.openai.com/codex/rules",
+                "action": {"type": "other"},
+            },
+            "url=https://developers.openai.com/codex/rules",
+        ),
+    ],
+)
+def test_renders_web_search_destination_or_query(watcher_module, item, shown):
+    assert watcher_module._event_line(
+        {"type": "item.completed", "item": item},
+        None,
+    ) == ("TOOL", f"completed web_search {shown}")
+
+
+def test_web_search_url_uses_optional_redaction(watcher_module):
+    event = {
+        "type": "item.completed",
+        "item": {
+            "type": "web_search",
+            "action": {
+                "type": "open",
+                "url": "https://example.test/page?token=secret-value",
+            },
+        },
+    }
+
+    assert "?token=secret-value" in watcher_module._event_line(event, None)[1]
+    assert "?\u003comitted\u003e" in watcher_module._event_line(
+        event,
+        None,
+        redact=True,
+    )[1]
+
+
 def test_raw_mode_preserves_message_body(watcher_module, capsys):
     body = '{"type":"turn.started","extra":"preserve spacing"}'
 

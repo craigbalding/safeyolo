@@ -79,6 +79,37 @@ def _clean(value: Any, limit: int | None, *, redact: bool = False) -> str:
     return text[: limit - 1] + "…"
 
 
+def _web_search_detail(
+    item: dict[str, Any],
+    phase: str,
+    limit: int | None,
+    *,
+    redact: bool,
+) -> str:
+    """Render the useful destination or query from a Codex web event."""
+
+    action = item.get("action")
+    action = action if isinstance(action, dict) else {}
+    action_queries = action.get("queries")
+    if isinstance(action_queries, list):
+        queries = [value for value in action_queries if isinstance(value, str) and value]
+    else:
+        queries = []
+    query = action.get("query") or item.get("query")
+    url = action.get("url") or item.get("url")
+    if not isinstance(url, str) or not url:
+        url = query if isinstance(query, str) and query.startswith(("http://", "https://")) else ""
+
+    detail = f"{phase} web_search"
+    if url:
+        detail += f" url={url}"
+    elif queries:
+        detail += " queries=" + " | ".join(queries)
+    elif isinstance(query, str) and query:
+        detail += f" query={query}"
+    return _clean(detail, limit, redact=redact)
+
+
 def _event_line(
     event: dict[str, Any],
     limit: int | None,
@@ -118,7 +149,12 @@ def _event_line(
                 )
                 label = "TOOL"
             elif item_type in {"web_search", "web_search_call"}:
-                detail = f"{original_type.removeprefix('item.')} web_search"
+                detail = _web_search_detail(
+                    summary,
+                    original_type.removeprefix("item."),
+                    limit,
+                    redact=redact,
+                )
                 label = "TOOL"
             elif item_type in {"file_change", "file_write", "apply_patch"}:
                 detail = f"{original_type.removeprefix('item.')} {item_type}"
@@ -188,7 +224,7 @@ def _event_line(
             if item_type in {"function_call_output", "custom_tool_call_output"}:
                 return "TOOL", f"{phase} result {item.get('call_id', '')}".strip()
             if item_type in {"web_search", "web_search_call"}:
-                return "TOOL", f"{phase} web_search"
+                return "TOOL", _web_search_detail(item, phase, limit, redact=redact)
             if item_type in {"file_change", "file_write", "apply_patch"}:
                 return "TOOL", f"{phase} {item_type}"
     if not show_unknown:
