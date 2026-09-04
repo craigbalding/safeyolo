@@ -16,7 +16,6 @@ import os
 import re
 import signal
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -440,36 +439,6 @@ class CommandSupervisor:
             return 1
 
 
-def _run_supervisor(name: str) -> int:
-    state = _read_state(name)
-    if state is None:
-        return 1
-    from .platform import get_platform
-
-    supervisor = CommandSupervisor(
-        name,
-        state["command"],
-        platform=get_platform(),
-    )
-    signal.signal(signal.SIGTERM, supervisor.request_stop)
-    signal.signal(signal.SIGINT, supervisor.request_stop)
-    _write_json(
-        _state_path(name),
-        {
-            **state,
-            "supervisor_pid": os.getpid(),
-            "supervisor_start_token": _process_token(os.getpid()),
-            "state": "starting",
-            "updated_at": _now(),
-        },
-    )
-    result = supervisor.run()
-    # Keep the final state useful after the process itself exits. A stale PID
-    # is intentionally retained only as evidence; diagnostics verify its
-    # token before describing a live supervisor.
-    return result
-
-
 def start_command_supervisor(name: str, command: str) -> None:
     """Publish a command for the already-running guest PID 1 owner.
 
@@ -530,15 +499,3 @@ def request_command_supervisor_stop(name: str, *, timeout: float = STOP_WAIT_SEC
 def clear_command_supervisor_stop(name: str) -> None:
     """Remove a stop marker only as part of starting a new run."""
     _stop_path(name).unlink(missing_ok=True)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) == 2 and args[0] == "--run":
-        return _run_supervisor(args[1])
-    print("usage: python -m safeyolo.agent_command_supervisor --run AGENT", file=sys.stderr)
-    return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
