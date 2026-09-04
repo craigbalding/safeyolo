@@ -7,7 +7,6 @@ import io
 import json
 import os
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
@@ -80,6 +79,26 @@ def _seed_state(tmp_config_dir, name: str, command: str) -> None:
 
 def _state(tmp_config_dir, name: str) -> dict:
     return json.loads(get_agent_command_supervisor_state_path(name).read_text())
+
+
+def _stage_guest_supervisor_artifact(tmp_path: Path) -> tuple[Path, Path]:
+    """Run the guest artifact in an isolated test workspace.
+
+    The shipped artifact must use the guest mount at ``/workspace``.  The
+    GitHub host running this test does not provide that mount, so only the
+    copied test artifact receives an equivalent temporary directory.
+    """
+    script = Path(__file__).resolve().parents[1] / "src/safeyolo/guest-command-supervisor.py"
+    source = script.read_text()
+    assert source.count('cwd="/workspace"') == 1
+    artifact_dir = tmp_path / "isolated-config-share"
+    artifact_dir.mkdir()
+    workspace = tmp_path / "guest-workspace"
+    workspace.mkdir()
+    artifact = artifact_dir / script.name
+    artifact.write_text(source.replace('cwd="/workspace"', f"cwd={str(workspace)!r}"))
+    artifact.chmod(artifact.stat().st_mode | 0o111)
+    return artifact, workspace
 
 
 def test_unexpected_exit_restarts_same_command_without_restarting_sandbox(tmp_config_dir):
@@ -342,12 +361,7 @@ def test_guest_owner_restarts_command_and_retains_bounded_evidence(tmp_path):
             "runtime_owner": "guest-pid1",
         },
     )
-    script = Path(__file__).resolve().parents[1] / "src/safeyolo/guest-command-supervisor.py"
-    artifact_dir = tmp_path / "isolated-config-share"
-    artifact_dir.mkdir()
-    artifact = artifact_dir / script.name
-    shutil.copy2(script, artifact)
-    artifact.chmod(artifact.stat().st_mode | 0o111)
+    artifact, workspace = _stage_guest_supervisor_artifact(tmp_path)
     result = subprocess.run(
         [sys.executable, str(artifact)],
         env={
@@ -361,7 +375,7 @@ def test_guest_owner_restarts_command_and_retains_bounded_evidence(tmp_path):
 
     assert result.returncode == 0
     assert count_path.read_text() == "2"
-    assert cwd_path.read_text() == "/workspace\n"
+    assert cwd_path.read_text() == f"{workspace}\n"
     state = json.loads(state_path.read_text())
     assert state["state"] == "stopped"
     assert state["restart_count"] == 1
@@ -372,12 +386,7 @@ def test_guest_owner_restarts_command_and_retains_bounded_evidence(tmp_path):
 def test_guest_owner_stop_marker_interrupts_live_command(tmp_path):
     state_path = tmp_path / "command-supervisor.json"
     stop_path = tmp_path / "command-supervisor.stop"
-    script = Path(__file__).resolve().parents[1] / "src/safeyolo/guest-command-supervisor.py"
-    artifact_dir = tmp_path / "isolated-config-share"
-    artifact_dir.mkdir()
-    artifact = artifact_dir / script.name
-    shutil.copy2(script, artifact)
-    artifact.chmod(artifact.stat().st_mode | 0o111)
+    artifact, _ = _stage_guest_supervisor_artifact(tmp_path)
     supervisor._write_json(
         state_path,
         {
@@ -468,12 +477,7 @@ checkpoint.write_text(json.dumps(data))
 stop.write_text(json.dumps({"name": "demo", "requested_at": "worker"}))
 """.lstrip()
     )
-    script = Path(__file__).resolve().parents[1] / "src/safeyolo/guest-command-supervisor.py"
-    artifact_dir = tmp_path / "isolated-config-share"
-    artifact_dir.mkdir()
-    artifact = artifact_dir / script.name
-    shutil.copy2(script, artifact)
-    artifact.chmod(artifact.stat().st_mode | 0o111)
+    artifact, _ = _stage_guest_supervisor_artifact(tmp_path)
     supervisor._write_json(
         state_path,
         {
