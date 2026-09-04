@@ -1424,7 +1424,7 @@ class TestRunAgent:
         associate.assert_called_once_with("test-agent")
 
     def _committed_launch_patches(
-        self, folder, rootfs, *, snapshot_supported=False
+        self, folder, rootfs, *, metadata=None, snapshot_supported=False
     ):
         """Mock every step from `_run_agent` entry through `prepare_config_share`
         as successful, and cut off execution at `write_event("agent.started")`
@@ -1448,7 +1448,7 @@ class TestRunAgent:
             patch.object(platform_module, "get_platform", return_value=fake_platform, autospec=True,),
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
-                return_value={"folder": str(folder)},
+                return_value=metadata or {"folder": str(folder)},
             autospec=True,
             ),
             patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
@@ -1557,6 +1557,52 @@ class TestRunAgent:
                     item.stop()
 
         assert compute.call_args.kwargs["workspace_path"] == transient.resolve()
+
+    @pytest.mark.parametrize(
+        ("configured_memory", "expected_memory"),
+        [(None, 4096), (8192, 8192)],
+    )
+    def test_snapshot_fingerprint_receives_effective_agent_memory(
+        self, config_dir, tmp_path, configured_memory, expected_memory
+    ):
+        folder = tmp_path / "project"
+        rootfs = tmp_path / "rootfs"
+        folder.mkdir()
+        rootfs.mkdir()
+        metadata = {"folder": str(folder)}
+        if configured_memory is not None:
+            metadata["memory_mb"] = configured_memory
+
+        from safeyolo.commands.agent import _run_agent
+
+        patches = self._committed_launch_patches(
+            folder,
+            rootfs,
+            metadata=metadata,
+            snapshot_supported=True,
+        )
+        with (
+            patch(
+                "safeyolo.commands.agent.compute_snapshot_version",
+                return_value={"snapshot_schema": 3},
+                autospec=True,
+            ) as compute,
+            patch(
+                "safeyolo.commands.agent.is_snapshot_valid",
+                return_value=True,
+                autospec=True,
+            ),
+        ):
+            for item in patches:
+                item.start()
+            try:
+                with pytest.raises(RuntimeError, match="stop after rename boundary"):
+                    _run_agent("committed")
+            finally:
+                for item in patches:
+                    item.stop()
+
+        assert compute.call_args.kwargs["memory_mb"] == expected_memory
 
     def test_run_agent_network_reservation_failure_does_not_rename(
         self, config_dir, tmp_path
@@ -1788,7 +1834,7 @@ class TestRunAgent:
         assert result.exit_code == 1
         assert "already running" in result.output.lower()
 
-    def test_run_forwards_persistent_and_transient_mounts_to_boot(
+    def test_run_forwards_persistent_config_and_transient_mounts_to_boot(
         self, config_dir, tmp_path, capsys,
     ):
         """Public mount settings must reach both config staging and runtime."""
@@ -1811,6 +1857,7 @@ class TestRunAgent:
 
         metadata = {
             "folder": str(project),
+            "memory_mb": 8192,
             "mounts": [
                 f"{persistent}:/proj/toolage",
                 f"{readonly}:/refs:ro",
@@ -1867,6 +1914,7 @@ class TestRunAgent:
         assert "10.200.0.2" not in output
         assert prepare.call_args.kwargs["host_mounts"] == expected
         assert platform.start_sandbox.call_args.kwargs["extra_shares"] == expected
+        assert platform.start_sandbox.call_args.kwargs["memory_mb"] == 8192
 
     @pytest.mark.parametrize(
         ("session_result", "expect_detach"),
