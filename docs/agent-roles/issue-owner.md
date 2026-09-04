@@ -53,11 +53,14 @@ itself part of the requested product outcome.
   head. Otherwise, start from the repository and branch state appropriate to
   the issue, normally current `master`. Keep unrelated local or pre-existing
   changes out of the work.
-- At task start, incrementally refresh the existing repository and then inspect,
-  branch, diff, and modify through local Git. A full clone is recovery when the
-  existing repository cannot be made trustworthy; it is not ordinary setup.
-  Do not use GitHub pull-request, diff, patch, changed-filename, commit-diff, or
-  file-content APIs as source transport.
+- Forge's configured workspace is one persistent repository checkout. Perform
+  each task on its branch in that checkout. Its current branch, index, and
+  working tree are durable work state: after a restart, inspect and resume that
+  state before refreshing or switching branches.
+- At task start, incrementally refresh the persistent repository and then
+  inspect, branch, diff, and modify through local Git. Do not use GitHub
+  pull-request, diff, patch, changed-filename, commit-diff, or file-content APIs
+  as source transport.
 - When the implementation area is unfamiliar, use the available `repo-map`
   capability for initial orientation. Follow current invocation guidance in
   the trusted room brief and reuse still-current output before broad discovery.

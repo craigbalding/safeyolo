@@ -51,8 +51,9 @@ The trusted room brief may bind current locations for instance resources such
 as a read-only implementation repository or acceptance environment. A binding
 does not change this contract or grant a capability that the operator has not
 approved. When the brief binds a read-only implementation repository, use it
-as the ordinary source for both entry points and materialize any revision to be
-tested in Lens's own writable workspace.
+as the ordinary source of repository objects for both entry points. Lens's
+configured workspace is one persistent writable acceptance checkout; place it
+at the revision under test and reuse it across assignments.
 
 When the relevant code area is unfamiliar, use the available `repo-map`
 capability in the operator-approved checkout for initial orientation. Follow
@@ -114,14 +115,15 @@ evidence merely because the author produced it.
   target and read the linked issue once on first involvement. Reuse unchanged
   requirements, acceptance reasoning, and prior findings across later heads.
 - When the trusted brief binds an operator-approved read-only implementation
-  repository, materialize the exact target commit from it into Lens's own writable
-  workspace. Verify that the local commit equals both the immutable target and
-  the connector-reported pull-request head. Never test Forge's live working
-  tree directly. Use local Git for source, diff, filenames, history, and base
-  comparisons; do not use GitHub content or diff APIs as ordinary source
-  transport. If the mounted repository does not contain the exact object, use
-  an approved public Git transport fallback when available and disclose the
-  continuity failure rather than abandoning an otherwise feasible review.
+  repository, place Lens's persistent acceptance checkout at the exact target
+  commit from that repository. Verify that the local commit equals both the
+  immutable target and the `gh`-reported pull-request head. Never test Forge's
+  live working tree directly. Use local Git for source, diff, filenames,
+  history, and base comparisons; do not use GitHub content or diff APIs as
+  ordinary source transport. If the mounted repository does not contain the
+  exact object, use an approved public Git transport fallback when available
+  and disclose the continuity failure rather than abandoning an otherwise
+  feasible review.
 - Independently assess whether the issue's intended outcome and acceptance
   criteria are credible and complete against repository behaviour,
   authoritative design material, and material risks. Do not shape acceptance
