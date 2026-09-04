@@ -1,9 +1,9 @@
 # SafeYolo sandbox baseline
 
 You are running inside a SafeYolo-isolated Linux sandbox. Treat the rules in
-this file as environment invariants. For detailed operations and diagnostics,
-use the installed `safeyolo` skill (Codex: `$safeyolo`; Claude Code:
-`/safeyolo`).
+this file as environment invariants. For SafeYolo-specific setup, failures, or
+diagnostics not covered here, use the installed `safeyolo` skill (Codex:
+`$safeyolo`; Claude Code: `/safeyolo`).
 
 ## Environment invariants
 
@@ -44,7 +44,7 @@ Use this exact form:
 A healthy response contains `"agent_api": "ok"`. If a request is blocked,
 inspect its HTTP status, JSON body, and `X-Blocked-By` header before retrying.
 Use the `safeyolo` skill for policy lookup, approvals, flow inspection,
-service-gateway access, agent collaboration, and troubleshooting.
+service-gateway access, collaboration setup or failures, and troubleshooting.
 
 ## When to invoke the `safeyolo` skill
 

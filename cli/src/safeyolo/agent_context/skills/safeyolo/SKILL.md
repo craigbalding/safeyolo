@@ -1,12 +1,20 @@
 ---
 name: safeyolo
-description: Operate and troubleshoot from inside a SafeYolo sandbox. Auto-invoke on the first turn that touches SafeYolo proxy or TLS failures; policy and credential blocks; HTTP 403/428/429/503/508 responses; X-Blocked-By responses; guest package installation and sudo/setpriv/apt/apk/pip/mise behavior; ptrace / strace / gdb / py-spy / rbspy / perf attach failures and same-uid in-guest debugging; `agent shell --root` or operator recovery paths; optional desktop and operator preview access; Agent API, flow, budget, circuit-breaker, service-gateway, Coord, or GitHub helper setup, failure, diagnosis, or ambiguity; approvals through `safeyolo watch`; approved legacy plumb collaboration; and general "am I inside a SafeYolo sandbox / what can I do from here / how do I debug this" introspection questions. Routine supervised factory handoffs and GitHub work already covered by an injected role contract do not alone trigger this skill.
+description: Diagnose and resolve SafeYolo boundary failures and operate advanced SafeYolo facilities when the task explicitly concerns them. Use for proxy/TLS failures; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; operator recovery shells; desktop preview; Agent API policy, flow, budget, circuit-breaker, or service-gateway operations; approvals; legacy plumb; and sandbox introspection. Do not invoke for ordinary commands in a healthy sandbox, routine factory handoffs, or normal GitHub App Connector work already specified by injected instructions.
 ---
 
 # Operate inside SafeYolo
 
 Treat SafeYolo as the outer security boundary. Diagnose through its agent-side
 interfaces; do not try to bypass or weaken it.
+
+## Routine supervised factory fast path
+
+When injected developer instructions already contain the role's Coord and
+GitHub rules, follow those instructions without loading this skill merely for
+confidence. If this skill was required for a real setup, failure, ambiguity,
+or non-routine operation, read only the reference needed for that condition;
+do not reload Coord or GitHub references already supplied by the role contract.
 
 ## Start with evidence
 
