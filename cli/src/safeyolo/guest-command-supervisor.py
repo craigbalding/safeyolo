@@ -197,6 +197,7 @@ class GuestSupervisor:
 
     def run(self) -> int:
         heartbeat_stop = threading.Event()
+        stop_watcher_stop = threading.Event()
 
         def heartbeat() -> None:
             while not heartbeat_stop.wait(1.0):
@@ -209,11 +210,22 @@ class GuestSupervisor:
 
         heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
         heartbeat_thread.start()
+
+        def stop_watcher() -> None:
+            while not stop_watcher_stop.wait(0.1):
+                if STOP.exists():
+                    self.request_stop()
+                    return
+
+        stop_watcher_thread = threading.Thread(target=stop_watcher, daemon=True)
+        stop_watcher_thread.start()
         try:
             return self._run_loop()
         finally:
             heartbeat_stop.set()
+            stop_watcher_stop.set()
             heartbeat_thread.join(timeout=1.0)
+            stop_watcher_thread.join(timeout=1.0)
 
     def _run_loop(self) -> int:
         failures = 0
@@ -268,6 +280,7 @@ class GuestSupervisor:
             try:
                 self.child = subprocess.Popen(
                     ["/bin/bash", "-lc", state["command"]],
+                    cwd="/workspace",
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,

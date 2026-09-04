@@ -470,6 +470,11 @@ def request_command_supervisor_stop(name: str, *, timeout: float = STOP_WAIT_SEC
         if state.get("state") != "stopped":
             _update_state(name, state="stopped", next_restart_at=None)
         return True
+    if state.get("runtime_owner") == "guest-pid1":
+        # The fence is durable in the shared home. Agent stop/remove can now
+        # stop the sandbox immediately; guest PID 1 also observes the marker
+        # and signals its child, but a slow command must not block cleanup.
+        return True
     pid = state.get("supervisor_pid")
     if _supervisor_is_ours(state):
         try:

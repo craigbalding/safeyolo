@@ -218,9 +218,20 @@ command_supervisor_live() {
     ! ps -p "$COMMAND_SUPERVISOR_PID" -o stat= 2>/dev/null | grep -q '^Z'
 }
 
+stop_command_supervisor_if_requested() {
+    [ -f "$COMMAND_SUPERVISOR_STOP" ] || return 0
+    if command_supervisor_live; then
+        # The durable stop fence is written by the host before it stops the
+        # sandbox. Signal the live guest owner too so a direct recovery-shell
+        # stop reaches the command without waiting for the command to exit.
+        kill -TERM "$COMMAND_SUPERVISOR_PID" 2>/dev/null || true
+    fi
+}
+
 start_command_supervisor_if_needed() {
     [ "${SAFEYOLO_COMMAND_SUPERVISED:-}" = "1" ] || return 0
     [ -x "$COMMAND_SUPERVISOR_SCRIPT" ] || return 0
+    stop_command_supervisor_if_requested
     [ -f "$COMMAND_SUPERVISOR_STOP" ] && return 0
     command_supervisor_terminal && return 0
     if command_supervisor_live; then
