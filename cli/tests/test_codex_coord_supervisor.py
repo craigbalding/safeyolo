@@ -1288,6 +1288,18 @@ def test_factory_prompt_directs_required_outbound_handoff_before_terminal(superv
     assert "in the leading response header" in prompt
 
 
+def test_factory_prompt_does_not_force_a_routine_skill_reload(supervisor_module, tmp_path):
+    module = supervisor_module
+    prompt = module.build_prompt(
+        _factory_config(module, tmp_path, "owner"),
+        module.empty_state(),
+        {"room-1": "backlog"},
+    )
+
+    assert "Use the bound role contract and canonical MCP results" in prompt
+    assert "Use the safeyolo skill" not in prompt
+
+
 def test_factory_tracks_concurrent_forge_and_lens_tasks_across_restart(
     supervisor_module,
     tmp_path,

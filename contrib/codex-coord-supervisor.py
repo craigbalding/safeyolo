@@ -1287,7 +1287,7 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
     return (
         "You are in one deterministic, supervised SafeYolo factory cycle. Continue the existing factory role and "
         "context. Coord is authoritative. Do not create another queue, scheduler, task record, or transcript. "
-        "Use the safeyolo skill and canonical MCP results. Do not decide success from prose or process status. "
+        "Use the bound role contract and canonical MCP results. Do not decide success from prose or process status. "
         + action
         + " Finish this invocation after the work above. Supervisor checkpoint:\n"
         + json.dumps(checkpoint, sort_keys=True, separators=(",", ":"))
