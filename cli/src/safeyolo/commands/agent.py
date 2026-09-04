@@ -807,17 +807,14 @@ def _run_agent(
         # --- Post-boot (shared by restore and cold-boot success paths) ----
         if plat.is_sandbox_running(name):
             if detach:
-                if run_command_detached:
-                    from ..vm import get_agent_home_dir
-                    command_host = get_agent_home_dir(name) / ".safeyolo-command"
-                    full_cmd = _linux_interactive_command(
-                        command_host,
-                        effective_agent_args,
-                        agent_args,
-                    )
-                    if full_cmd is None:
-                        plat.stop_sandbox(name)
-                        raise RuntimeError("detached agent has no command to run")
+                from ..vm import get_agent_home_dir
+                command_host = get_agent_home_dir(name) / ".safeyolo-command"
+                full_cmd = _linux_interactive_command(
+                    command_host,
+                    effective_agent_args,
+                    agent_args,
+                )
+                if full_cmd is not None:
                     # Keep command recovery in the host runtime. A command
                     # crash must not restart or recreate the sandbox, and a
                     # retained Coord task must remain in the guest checkpoint.
@@ -828,6 +825,9 @@ def _run_agent(
                     except Exception:
                         plat.stop_sandbox(name)
                         raise RuntimeError("detached agent command supervisor failed to start")
+                elif run_command_detached:
+                    plat.stop_sandbox(name)
+                    raise RuntimeError("detached agent has no command to run")
                 _print_detached_guidance(name)
                 _t("detach return")
                 _timing_emit()
