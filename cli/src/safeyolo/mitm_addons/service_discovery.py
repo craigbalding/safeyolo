@@ -15,7 +15,12 @@ from threading import Lock
 from mitmproxy import ctx, http
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
-from safeyolo.core.identity import IdentityStatus, resolve_agent_identity
+from safeyolo.core.identity import (
+    IdentityStatus,
+    attribute_traffic,
+    attribution_fields,
+    resolve_agent_identity,
+)
 from safeyolo.core.utils import sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.discovery")
@@ -125,6 +130,7 @@ class ServiceDiscovery:
             return
 
         if identity.status is IdentityStatus.CONFLICT:
+            attribution = attribute_traffic(flow, identity)
             write_event(
                 "security.agent_identity_conflict",
                 kind=EventKind.SECURITY,
@@ -132,8 +138,22 @@ class ServiceDiscovery:
                 summary="Trusted agent identity sources disagree",
                 decision=Decision.DENY,
                 request_id=flow.metadata.get("request_id"),
+                **attribution_fields(attribution),
                 addon=self.name,
-                details=flow.metadata.get("agent_identity_conflict"),
+                details=identity.conflict_details(),
+            )
+        elif identity.status is IdentityStatus.UNAVAILABLE:
+            attribution = attribute_traffic(flow, identity)
+            write_event(
+                "security.agent_identity_unavailable",
+                kind=EventKind.SECURITY,
+                severity=Severity.MEDIUM,
+                summary="Traffic has no trusted agent identity",
+                decision=Decision.WARN,
+                request_id=flow.metadata.get("request_id"),
+                **attribution_fields(attribution),
+                addon=self.name,
+                details={"reason": identity.reason},
             )
 
     def get_agents(self) -> dict:

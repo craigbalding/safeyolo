@@ -271,6 +271,28 @@ expired.
 In the normal per-agent configuration, flow results and bodies are scoped to
 the calling agent by service-discovery attribution.
 
+Each recorded flow carries an attribution spine in addition to the legacy
+`agent_id` alias:
+
+- `evidence_owner` identifies the agent query scope.
+- `trusted_transport_identity` identifies the reconciled UDS or IP-map agent.
+- `initiator` identifies a known actor. A transport identity alone does not
+  prove that the agent initiated the request, so ordinary agent traffic uses
+  `unknown`.
+- `attribution_status` is `resolved` or `delegated` for stored agent-owned
+  records.
+- `attribution_provenance_json` contains bounded trusted source facts.
+
+Trusted operator actions use `attribution_status=delegated` and
+`initiator=operator` while retaining the UDS evidence owner. The operator
+provenance marker is produced by the host-side `operator-provenance` addon;
+request headers and guest metadata cannot set it. When trusted identity is
+unavailable or conflicting, the request and response remain in JSONL with
+`attribution_status` and bounded provenance, and FlowStore omits them because
+the records have no safe agent partition. The service-discovery addon also
+emits a dedicated operator-visible event for each unavailable or conflicting
+identity.
+
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` or `POST` | `/api/flows/search` | Search flow metadata with simple query parameters or JSON filters |

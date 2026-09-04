@@ -23,7 +23,12 @@ from mitmproxy import http
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from pdp import get_policy_client
 from safeyolo.core.audit_schema import EventKind, Severity
-from safeyolo.core.identity import resolve_agent_identity
+from safeyolo.core.identity import (
+    TrafficAttribution,
+    attribute_traffic,
+    attribution_fields,
+    resolve_agent_identity,
+)
 from safeyolo.core.utils import find_addon, sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.request-logger")
@@ -189,10 +194,15 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
 
         return False
 
-    def _agent_for_evidence(self, flow: http.HTTPFlow) -> str | None:
-        """Return only a trusted, reconciled agent identity for audit evidence."""
+    def _attribution(self, flow: http.HTTPFlow) -> TrafficAttribution:
+        """Return trusted ownership plus explicitly separate actor facts."""
         identity = resolve_agent_identity(flow, find_addon("service-discovery"))
-        return identity.agent if identity.is_resolved else None
+        return attribute_traffic(flow, identity)
+
+    @staticmethod
+    def _attribution_fields(attribution: TrafficAttribution) -> dict:
+        """Translate the shared attribution model to audit-event fields."""
+        return attribution_fields(attribution)
 
     def request(self, flow: http.HTTPFlow):
         """Log incoming request."""
@@ -216,7 +226,7 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
             flow.metadata["quieted"] = True
             return
 
-        agent = self._agent_for_evidence(flow)
+        attribution = self._attribution(flow)
         write_event(
             "traffic.request",
             kind=EventKind.TRAFFIC,
@@ -224,7 +234,7 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
             summary=f"{flow.request.method} {sanitize_for_log(host)}{sanitize_for_log(path)}",
             host=host,
             request_id=request_id,
-            agent=agent,
+            **self._attribution_fields(attribution),
             addon=self.name,
             details={
                 "method": flow.request.method,
@@ -243,7 +253,7 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
 
         request_id = flow.metadata.get("request_id")
         start_time = flow.metadata.get("start_time")
-        agent = self._agent_for_evidence(flow)
+        attribution = self._attribution(flow)
 
         # Missing response is an operational problem, not a traffic event.
         # Emit a distinct ops.response_missing and do not fake a traffic.response.
@@ -257,7 +267,7 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
                 summary=f"no response for {flow.request.method} {sanitize_for_log(host)}{sanitize_for_log(parsed.path)}",
                 host=host,
                 request_id=request_id,
-                agent=agent,
+                **self._attribution_fields(attribution),
                 addon=self.name,
                 details={
                     "method": flow.request.method,
@@ -306,7 +316,7 @@ class RequestLogger:  # DOC: SECURITY.md, README.md
             summary=f"{status_code} {sanitize_for_log(host)}{sanitize_for_log(parsed.path)}{block_suffix}",
             host=host,
             request_id=request_id,
-            agent=agent,
+            **self._attribution_fields(attribution),
             addon=self.name,
             details=resp_details,
         )

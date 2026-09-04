@@ -217,6 +217,8 @@ class TestSchemaInit:
         idx_names = [i["name"] for i in indexes]
         assert "idx_flows_engagement_ts" in idx_names
         assert "idx_flows_engagement_agent_ts" in idx_names
+        assert "idx_flows_evidence_owner_ts" in idx_names
+        assert "idx_flows_attribution_status_ts" in idx_names
         assert "idx_flows_engagement_test_ts" in idx_names
         assert "idx_flows_engagement_host_path" in idx_names
         assert "idx_flows_engagement_status_ts" in idx_names
@@ -269,6 +271,42 @@ class TestRecordFlow:
         assert result["flow_state"] == "completed"
         assert result["host"] == "app.example.com"
         assert result["status_code"] == 200
+
+    def test_record_persists_explicit_attribution_spine(self, store):
+        flow_id = store.record_flow(_make_record(
+            request_id="req-attribution001",
+            evidence_owner="agent-1",
+            trusted_transport_identity="agent-1",
+            initiator="operator",
+            attribution_status="delegated",
+            attribution_provenance_json={
+                "transport_source": "uds",
+                "delegation": "operator-provenance",
+            },
+        ))
+
+        result = store.get_flow(flow_id)
+        assert result["evidence_owner"] == "agent-1"
+        assert result["trusted_transport_identity"] == "agent-1"
+        assert result["initiator"] == "operator"
+        assert result["attribution_status"] == "delegated"
+        assert json.loads(result["attribution_provenance_json"]) == {
+            "transport_source": "uds",
+            "delegation": "operator-provenance",
+        }
+        assert store.search_flows({"attribution_status": "delegated"})[0]["id"] == flow_id
+
+    def test_legacy_record_gets_compatibility_attribution(self, store):
+        flow_id = store.record_flow(_make_record(request_id="req-attribution002"))
+
+        result = store.get_flow(flow_id)
+        assert result["evidence_owner"] == "agent-1"
+        assert result["trusted_transport_identity"] is None
+        assert result["initiator"] == "unknown"
+        assert result["attribution_status"] == "resolved"
+        assert json.loads(result["attribution_provenance_json"]) == {
+            "compatibility": "implicit_agent_id",
+        }
 
     def test_record_blocked_flow(self, store):
         record = _make_record(
@@ -1411,6 +1449,8 @@ class TestSchemaMigration:
         legacy_schema = module._CREATE_FLOWS_TABLE
         for column in module._CONTEXT_COLUMNS:
             legacy_schema = legacy_schema.replace(f"    {column} TEXT,\n", "")
+        for column in module._ATTRIBUTION_COLUMNS:
+            legacy_schema = legacy_schema.replace(f"    {column} TEXT,\n", "")
         conn = sqlite3.connect(path)
         conn.execute(legacy_schema)
         conn.execute(module._CREATE_FTS_TABLE)
@@ -1444,6 +1484,14 @@ class TestSchemaMigration:
         row = migrated.get_flow(1)
         assert row["context_json"] == '{"extra":"preserved"}'
         assert row["intent"] is None
+        assert row["evidence_owner"] == "cody"
+        assert row["trusted_transport_identity"] is None
+        assert row["initiator"] == "unknown"
+        assert row["attribution_status"] == "resolved"
+        assert json.loads(row["attribution_provenance_json"]) == {
+            "migration": "flow_store_v1",
+            "transport_identity": "unknown",
+        }
         assert row["tags"][0]["value"] == "kept"
         assert migrated.get_response_body(1)["body"] == b"legacy-body"
         assert len(migrated.search_bodies({"engagement_id": "engagement", "query": "legacy-body"})) == 1

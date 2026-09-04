@@ -14,7 +14,10 @@ from typing import Protocol
 
 from mitmproxy import http
 
+from safeyolo.core.audit_schema import AttributionStatus, TrafficInitiator
+
 _NON_IDENTITIES = frozenset({"", "unknown", "default"})
+_ATTRIBUTION_VALUE_MAX_LEN = 128
 
 
 class AgentLookup(Protocol):
@@ -46,6 +49,105 @@ class AgentIdentity:
     @property
     def is_resolved(self) -> bool:
         return self.status is IdentityStatus.RESOLVED
+
+    def provenance(self) -> dict[str, str]:
+        """Return bounded trusted source facts.
+
+        The pre-stamped ``agent`` metadata is intentionally absent. It can be
+        useful when explaining a conflict, but it is not a provenance source
+        and must not be copied into an attribution field.
+        """
+        result: dict[str, str] = {}
+        if self.source:
+            result["transport_source"] = _bounded(self.source)
+        if self.uds_agent:
+            result["uds_agent"] = _bounded(self.uds_agent)
+        if self.mapped_agent:
+            result["ip_map_agent"] = _bounded(self.mapped_agent)
+        if self.reason:
+            result["reason"] = _bounded(self.reason)
+        return result
+
+    def conflict_details(self) -> dict[str, str]:
+        """Return a bounded operator diagnostic for a trusted-source conflict."""
+        result: dict[str, str] = {}
+        for key, value in (
+            ("reason", self.reason),
+            ("uds_agent", self.uds_agent),
+            ("mapped_agent", self.mapped_agent),
+            ("metadata_agent", self.metadata_agent),
+        ):
+            if value is not None:
+                result[key] = _bounded(value)
+        return result
+
+
+@dataclass(frozen=True)
+class TrafficAttribution:
+    """Separate evidence ownership from transport identity and initiator."""
+
+    evidence_owner: str | None
+    trusted_transport_identity: str | None
+    initiator: TrafficInitiator
+    status: AttributionStatus
+    provenance: dict[str, str]
+
+    @property
+    def agent(self) -> str | None:
+        """Compatibility alias for the former audit/storage agent field."""
+        return self.evidence_owner
+
+
+def _bounded(value: object, maximum: int = _ATTRIBUTION_VALUE_MAX_LEN) -> str:
+    """Return a bounded text value for attribution diagnostics."""
+    return str(value)[:maximum]
+
+
+def attribution_fields(attribution: TrafficAttribution) -> dict[str, object]:
+    """Return the shared attribution fields used by audit and storage writers."""
+    return {
+        "agent": attribution.agent,
+        "evidence_owner": attribution.evidence_owner,
+        "trusted_transport_identity": attribution.trusted_transport_identity,
+        "initiator": attribution.initiator.value,
+        "attribution_status": attribution.status.value,
+        "attribution_provenance": attribution.provenance,
+    }
+
+
+def attribute_traffic(
+    flow: http.HTTPFlow,
+    identity: AgentIdentity | None = None,
+) -> TrafficAttribution:
+    """Build observability attribution from trusted identity and host marks.
+
+    ``origin=operator`` is written by the trusted operator-provenance addon;
+    it is not accepted from request headers or other guest-controlled input.
+    All other traffic keeps an unknown initiator because UDS/IP-map identity
+    alone proves the evidence owner, not who caused the request.
+    """
+    identity = identity or resolve_agent_identity(flow)
+    provenance = identity.provenance()
+    operator_mark = flow.metadata.get("origin") == "operator"
+    if operator_mark:
+        provenance["delegation"] = "operator-provenance"
+
+    if identity.status is IdentityStatus.CONFLICT:
+        status = AttributionStatus.CONFLICT
+    elif identity.status is IdentityStatus.UNAVAILABLE:
+        status = AttributionStatus.UNAVAILABLE
+    elif operator_mark:
+        status = AttributionStatus.DELEGATED
+    else:
+        status = AttributionStatus.RESOLVED
+
+    return TrafficAttribution(
+        evidence_owner=identity.agent if identity.is_resolved else None,
+        trusted_transport_identity=identity.agent if identity.is_resolved else None,
+        initiator=TrafficInitiator.OPERATOR if operator_mark else TrafficInitiator.UNKNOWN,
+        status=status,
+        provenance=provenance,
+    )
 
 
 def _identity(value: object) -> str | None:
@@ -168,11 +270,6 @@ def resolve_agent_identity(
             flow.metadata.pop("agent", None)
             flow.metadata.pop("agent_identity_source", None)
             if result.status is IdentityStatus.CONFLICT:
-                flow.metadata["agent_identity_conflict"] = {
-                    "reason": result.reason,
-                    "uds_agent": result.uds_agent,
-                    "mapped_agent": result.mapped_agent,
-                    "metadata_agent": result.metadata_agent,
-                }
+                flow.metadata["agent_identity_conflict"] = result.conflict_details()
 
     return result

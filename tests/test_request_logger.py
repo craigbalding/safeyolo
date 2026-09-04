@@ -128,6 +128,14 @@ def test_request_writes_schema_valid_event_with_trusted_identity(logger_with_log
             "summary": "POST api.example.com/v1/data",
             "request_id": "req-1",
             "agent": "agent-a",
+            "evidence_owner": "agent-a",
+            "trusted_transport_identity": "agent-a",
+            "initiator": "unknown",
+            "attribution_status": "resolved",
+            "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "agent-a",
+            },
             "host": "api.example.com",
             "addon": "request-logger",
             "details": {
@@ -163,8 +171,54 @@ def test_untrusted_metadata_is_removed_from_audit_attribution(logger_with_log):
     addon.request(flow)
     event = _events(path)[0]
     assert "agent" not in event
+    assert event["attribution_status"] == "unavailable"
+    assert event["initiator"] == "unknown"
+    assert event["attribution_provenance"] == {"reason": "no_trusted_identity"}
     assert "agent" not in flow.metadata
     assert flow.metadata["agent_identity_status"] == "unavailable"
+
+
+def test_delegated_operator_traffic_keeps_transport_owner_but_not_agent_initiator(
+    logger_with_log,
+):
+    addon, path = logger_with_log
+    flow = _flow()
+    flow.metadata["origin"] = "operator"
+
+    addon.request(flow)
+
+    event = _events(path)[0]
+    assert event["agent"] == "agent-a"
+    assert event["evidence_owner"] == "agent-a"
+    assert event["trusted_transport_identity"] == "agent-a"
+    assert event["initiator"] == "operator"
+    assert event["attribution_status"] == "delegated"
+    assert event["attribution_provenance"]["delegation"] == "operator-provenance"
+
+
+def test_conflicting_trusted_sources_are_operator_only(logger_with_log):
+    from service_discovery import ServiceDiscovery
+
+    addon, path = logger_with_log
+    discovery = ServiceDiscovery()
+    discovery._ip_to_name = {"192.0.2.10": "agent-b"}
+    flow = _flow()
+
+    with patch(
+        "request_logger.find_addon", autospec=True, return_value=discovery
+    ):
+        addon.request(flow)
+
+    event = _events(path)[0]
+    assert "agent" not in event
+    assert event["attribution_status"] == "conflict"
+    assert "evidence_owner" not in event
+    assert "trusted_transport_identity" not in event
+    assert event["attribution_provenance"] == {
+        "uds_agent": "agent-a",
+        "ip_map_agent": "agent-b",
+        "reason": "uds_ip_map_mismatch",
+    }
 
 
 def test_missing_response_emits_ops_event_without_response_counter(logger_with_log):

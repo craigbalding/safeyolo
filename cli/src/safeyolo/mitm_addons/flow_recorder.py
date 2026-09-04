@@ -118,13 +118,19 @@ class FlowRecorder:
         # Reconcile the trusted UDS/IP-map sources here even if an earlier
         # addon failed to stamp identity; unresolved and conflicting flows
         # cannot safely be placed in an agent-scoped evidence store.
-        from safeyolo.core.identity import resolve_agent_identity
+        attribution = self._attribution(flow)
+        if not attribution.evidence_owner:
+            return False
+        return True
+
+    @staticmethod
+    def _attribution(flow: http.HTTPFlow):
+        """Resolve the same trusted attribution used by audit logging."""
+        from safeyolo.core.identity import attribute_traffic, resolve_agent_identity
         from safeyolo.core.utils import find_addon
 
         identity = resolve_agent_identity(flow, find_addon("service-discovery"))
-        if not identity.is_resolved:
-            return False
-        return True
+        return attribute_traffic(flow, identity)
 
     def _build_record(self, flow: http.HTTPFlow, flow_state: str) -> dict:
         """Extract flow data into a record dict for FlowStore."""
@@ -137,9 +143,13 @@ class FlowRecorder:
         ts_end = int(time.time() * 1000)
         duration_ms = ts_end - ts_start
 
-        # Identity
-        # _should_record has already reconciled and stamped a trusted identity.
-        agent = flow.metadata["agent"]
+        # Identity. _should_record has already reconciled a trusted identity,
+        # but resolve again so the persisted record contains the complete,
+        # explicit attribution spine.
+        attribution = self._attribution(flow)
+        if attribution.evidence_owner is None:
+            raise ValueError("cannot record flow without a trusted evidence owner")
+        agent = attribution.evidence_owner
         engagement_id = agent
         agent_id = agent
         source_id = get_client_ip(flow)
@@ -199,6 +209,11 @@ class FlowRecorder:
             "duration_ms": duration_ms,
             "engagement_id": engagement_id,
             "agent_id": agent_id,
+            "evidence_owner": attribution.evidence_owner,
+            "trusted_transport_identity": attribution.trusted_transport_identity,
+            "initiator": attribution.initiator.value,
+            "attribution_status": attribution.status.value,
+            "attribution_provenance_json": json.dumps(attribution.provenance),
             "source_id": source_id,
             "run": context.get("run"),
             "test": context.get("test"),

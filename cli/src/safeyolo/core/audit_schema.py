@@ -122,6 +122,24 @@ class ApprovalType(StrEnum):
     PLUMB = "plumb"
 
 
+class AttributionStatus(StrEnum):
+    """Status of evidence attribution, independent of enforcement."""
+
+    RESOLVED = "resolved"
+    DELEGATED = "delegated"
+    UNAVAILABLE = "unavailable"
+    CONFLICT = "conflict"
+
+
+class TrafficInitiator(StrEnum):
+    """Best-known actor that initiated traffic."""
+
+    AGENT = "agent"
+    OPERATOR = "operator"
+    EXTERNAL = "external"
+    UNKNOWN = "unknown"
+
+
 # =============================================================================
 # Approval request
 # =============================================================================
@@ -159,7 +177,12 @@ class AuditEvent(BaseModel):
     severity: Severity                      # for watch rendering
     summary: str = Field(..., min_length=1) # human-readable one-liner; must not be empty
     request_id: str | None = None           # correlation
-    agent: str | None = None                # agent identity
+    agent: str | None = None                # compatibility display alias
+    evidence_owner: str | None = None       # agent query/evidence scope
+    trusted_transport_identity: str | None = None
+    initiator: TrafficInitiator | None = None
+    attribution_status: AttributionStatus | None = None
+    attribution_provenance: dict[str, Any] | None = None
     addon: str | None = None                # emitting addon
     decision: Decision | None = None        # only for security/gateway events
     host: str | None = None                 # always "host", never "domain"

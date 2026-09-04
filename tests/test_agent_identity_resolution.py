@@ -12,7 +12,13 @@ from request_id import RequestIdGenerator
 from service_discovery import ServiceDiscovery
 from service_gateway import ServiceGateway, TokenBinding
 
-from safeyolo.core.identity import IdentityStatus, resolve_agent_identity
+from safeyolo.core.identity import (
+    AttributionStatus,
+    IdentityStatus,
+    TrafficInitiator,
+    attribute_traffic,
+    resolve_agent_identity,
+)
 from safeyolo.core.service_loader import (
     AuthConfig,
     Capability,
@@ -113,11 +119,19 @@ def test_service_discovery_does_not_overwrite_uds_map_conflict():
     discovery = _discovery("bob")
     flow = _flow(uds_agent="alice")
 
-    discovery.request(flow)
+    with patch("service_discovery.write_event", autospec=True) as audit:
+        discovery.request(flow)
 
     assert "agent" not in flow.metadata
     assert flow.metadata["agent_identity_status"] == "conflict"
     assert flow.metadata["agent_identity_conflict"]["reason"] == "uds_ip_map_mismatch"
+    assert audit.call_args.args[0] == "security.agent_identity_conflict"
+    assert audit.call_args.kwargs["attribution_status"] == "conflict"
+    assert audit.call_args.kwargs["details"] == {
+        "reason": "uds_ip_map_mismatch",
+        "uds_agent": "alice",
+        "mapped_agent": "bob",
+    }
 
 
 def test_real_request_chain_carries_one_identity_into_gateway(tmp_path):
@@ -200,6 +214,57 @@ def test_metadata_conflict_remains_terminal_across_request_chain(tmp_path):
     body = json.loads(flow.response.content)
     assert body["reason_codes"] == ["AGENT_IDENTITY_CONFLICT"]
     assert "agent" not in flow.metadata
+
+
+def test_attribution_separates_delegated_initiator_from_evidence_owner():
+    flow = _flow(uds_agent="alice")
+    flow.metadata["origin"] = "operator"
+
+    identity = resolve_agent_identity(flow, _discovery("alice"))
+    attribution = attribute_traffic(flow, identity)
+
+    assert attribution.evidence_owner == "alice"
+    assert attribution.trusted_transport_identity == "alice"
+    assert attribution.initiator is TrafficInitiator.OPERATOR
+    assert attribution.status is AttributionStatus.DELEGATED
+    assert attribution.provenance == {
+        "transport_source": "uds",
+        "uds_agent": "alice",
+        "ip_map_agent": "alice",
+        "delegation": "operator-provenance",
+    }
+    assert "metadata_agent" not in attribution.provenance
+
+
+def test_attribution_quarantines_unavailable_identity_and_spoofed_metadata():
+    flow = _flow(metadata_agent="spoofed-agent")
+
+    attribution = attribute_traffic(flow, resolve_agent_identity(flow))
+
+    assert attribution.evidence_owner is None
+    assert attribution.trusted_transport_identity is None
+    assert attribution.initiator is TrafficInitiator.UNKNOWN
+    assert attribution.status is AttributionStatus.UNAVAILABLE
+    assert attribution.provenance == {"reason": "no_trusted_identity"}
+    assert "metadata_agent" not in attribution.provenance
+
+
+def test_attribution_conflict_keeps_trusted_sources_operator_only():
+    flow = _flow(uds_agent="alice", metadata_agent="spoofed")
+
+    attribution = attribute_traffic(
+        flow,
+        resolve_agent_identity(flow, _discovery("bob")),
+    )
+
+    assert attribution.evidence_owner is None
+    assert attribution.trusted_transport_identity is None
+    assert attribution.status is AttributionStatus.CONFLICT
+    assert attribution.provenance == {
+        "uds_agent": "alice",
+        "ip_map_agent": "bob",
+        "reason": "uds_ip_map_mismatch",
+    }
 
 
 def test_agent_api_ownership_fails_closed_without_trusted_identity():

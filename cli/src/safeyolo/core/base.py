@@ -34,7 +34,13 @@ from mitmproxy import http
 
 from pdp import get_policy_client
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
-from safeyolo.core.identity import AgentIdentity, IdentityStatus, resolve_agent_identity
+from safeyolo.core.identity import (
+    AgentIdentity,
+    IdentityStatus,
+    attribute_traffic,
+    attribution_fields,
+    resolve_agent_identity,
+)
 from safeyolo.core.trace import (
     REASON_POLICY_DISABLED,
     REASON_PRIOR_RESPONSE,
@@ -202,6 +208,7 @@ class SecurityAddon:
         """
         event_type = f"security.{self._option_prefix()}"
 
+        attribution = attribute_traffic(flow, self.resolve_agent_identity(flow))
         write_event(
             event_type,
             kind=EventKind.SECURITY,
@@ -210,7 +217,7 @@ class SecurityAddon:
             decision=decision,
             host=host,
             request_id=flow.metadata.get("request_id"),
-            agent=flow.metadata.get("agent"),
+            **attribution_fields(attribution),
             addon=self.name,
             approval=approval,
             details=details if details else None,

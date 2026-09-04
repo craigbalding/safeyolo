@@ -146,6 +146,14 @@ def test_response_state_identity_url_and_context_are_persisted(
     assert summary["flow_state"] == expected_state
     assert summary["reason"] == expected_reason
     assert summary["agent_id"] == "agent-a"
+    assert summary["evidence_owner"] == "agent-a"
+    assert summary["trusted_transport_identity"] == "agent-a"
+    assert summary["initiator"] == "unknown"
+    assert summary["attribution_status"] == "resolved"
+    assert json.loads(summary["attribution_provenance_json"]) == {
+        "transport_source": "uds",
+        "uds_agent": "agent-a",
+    }
     assert summary["engagement_id"] == "agent-a"
     assert summary["source_id"] == "192.0.2.20"
     assert summary["host"] == "app.example.com"
@@ -201,6 +209,11 @@ def test_operator_provenance_and_websocket_state_are_persisted(recorder):
     summary = store.search_flows({})[0]
     detail = store.get_flow(summary["id"])
     assert summary["source_type"] == "operator"
+    assert summary["evidence_owner"] == "agent-a"
+    assert summary["trusted_transport_identity"] == "agent-a"
+    assert summary["initiator"] == "operator"
+    assert summary["attribution_status"] == "delegated"
+    assert json.loads(summary["attribution_provenance_json"])["delegation"] == "operator-provenance"
     assert detail["is_websocket"] == 1
     assert [
         {"tag": tag["tag"], "value": tag["value"]} for tag in detail["tags"]
