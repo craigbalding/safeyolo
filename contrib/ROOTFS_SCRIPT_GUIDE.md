@@ -79,11 +79,11 @@ must meet these requirements:
    - `ca-certificates` (trust store — SafeYolo's man-in-the-middle certificate
      authority (CA) certificate is appended at
      boot by `guest-init-static`)
-   - `shadow` or equivalent (provides `useradd` + `usermod`; the latter
-     is used to unlock the agent account so OpenSSH accepts pubkey auth
-     — Alpine's OpenSSH refuses locked accounts even for pubkey)
+   - `shadow` or equivalent (provides `useradd`, `usermod`, and `groupadd`;
+     these create the agent account and its `sudo` supplementary group)
    - `sudo` (the distro implementation used for standard command-line
-     semantics and hardware-microVM guest elevation)
+     semantics and hardware-microVM guest elevation; it must include
+     `visudo` so the generated policy can be validated)
    - `setpriv` and `prlimit` from `util-linux` (the SafeYolo sudo shim uses
      the agent's existing namespace capabilities on rootless Linux gVisor;
      PID 1 uses `prlimit` to set the open-file limit on its numeric process)
@@ -131,10 +131,20 @@ This installs:
 - global-only mise profile glue at `/etc/profile.d/mise.sh` plus the explicit
   `mise-project` opt-in (if `mise` is in the tree)
 - BusyBox-backed `hexdump` / `nc` shims (if BusyBox is in the tree)
-- `/usr/local/bin/sudo` compatibility shim and passwordless guest-root policy
+- `/usr/local/bin/sudo` compatibility shim and passwordless guest-root policy;
+  the installer creates/uses the `sudo` group, adds `agent` to it, writes the
+  direct user rule needed by already-running shells, sets `root:root`/0440,
+  and validates the policy with `visudo`
 - hostname = `safeyolo`
 
-The helper is idempotent — safe to re-run.
+The helper is idempotent — safe to re-run. A custom rootfs that omits the
+`sudo` package is explicitly not a sudo-capable image: the compatibility
+helper is skipped, so its agents must not be documented as having
+`sudo -n`. A rootfs that includes sudo but lacks its validation or account
+tools fails during construction rather than producing a partially usable
+image. Alpine may conventionally use `wheel`; SafeYolo still provisions the
+named `sudo` group so fresh shells have a consistent contract, while the
+direct user rule is what makes the capability work in pre-existing shells.
 
 ## Minimal example
 
