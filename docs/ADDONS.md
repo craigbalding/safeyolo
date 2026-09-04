@@ -660,6 +660,18 @@ complete WebSocket messages.
 - WebSocket block mode has independent controls for client and server
   messages; HTTP options do not change WebSocket behavior.
 
+*URL scanning:*
+- Scans a bounded raw path/query representation and one percent-decoded
+  representation.
+- Decoding runs once, does not rewrite the request target, and excludes a
+  literal URL fragment.
+- Malformed escapes and invalid UTF-8 use deterministic bounded handling.
+
+Pattern logs, audit events, traces, and block responses contain only bounded
+finding identity and decision evidence. They do not contain the inspected URL,
+query values, fragments, matched text, request or response content, or the
+configured custom message.
+
 **Options:**
 ```bash
 --set pattern_block_request=true   # Block matching requests
