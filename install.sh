@@ -22,7 +22,7 @@ set -euo pipefail
 # Security-pin overrides — MUST stay in sync with pyproject.toml
 # [tool.uv] override-dependencies.
 UV_OVERRIDES=(
-  "h2>=4.4.1"
+  "h2==4.4.1"
   "flask>=3.1.3"
   "pygments>=2.20.0"
   "cryptography>=50.0.0"

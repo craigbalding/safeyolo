@@ -133,7 +133,8 @@ COMMON_HEADERS = [
 async def test_http2_malformed_headers_stop_at_connection_boundary() -> None:
     """Reject duplicate Host and conflicting content-length before hooks/upstream."""
     cases = (
-        COMMON_HEADERS + [(b"host", b"one"), (b"host", b"two")],
+        COMMON_HEADERS
+        + [(b"host", b"example.test"), (b"host", b"example.test")],
         COMMON_HEADERS + [(b"content-length", b"1"), (b"content-length", b"2")],
     )
 
@@ -155,7 +156,7 @@ async def test_http2_valid_request_reaches_request_hook() -> None:
 
 
 def test_runtime_h2_version_and_override_declarations_are_synchronized() -> None:
-    assert Version(version("h2")) >= Version("4.4.1")
+    assert Version(version("h2")) == Version("4.4.1")
 
     with (PROJECT_ROOT / "pyproject.toml").open("rb") as stream:
         project_overrides = tomllib.load(stream)["tool"]["uv"]["override-dependencies"]
@@ -166,4 +167,4 @@ def test_runtime_h2_version_and_override_declarations_are_synchronized() -> None
     install_overrides = re.findall(r'^\s+"([^"]+)"$', match.group("body"), re.M)
 
     assert install_overrides == project_overrides
-    assert "h2>=4.4.1" in project_overrides
+    assert project_overrides[0] == "h2==4.4.1"
