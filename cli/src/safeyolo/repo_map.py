@@ -207,6 +207,30 @@ def build_repo_map(path: Path | str = ".") -> RepoMap:
     )
 
 
+def _compact_requested_paths(paths: list[Path]) -> list[Path]:
+    """Keep distinct, most-specific scopes from one working tree."""
+
+    resolved: list[tuple[Path, Path, Path]] = []
+    for requested in paths:
+        if not requested.exists():
+            raise RepoMapError(f"path does not exist: {requested}")
+        root = _repository_root(requested)
+        scope = _relative_scope(root, requested)
+        if resolved and root != resolved[0][1]:
+            raise RepoMapError("all paths must belong to the same Git working tree")
+        if not any(scope == seen_scope for _, _, seen_scope in resolved):
+            resolved.append((requested, root, scope))
+
+    return [
+        requested
+        for requested, _, scope in resolved
+        if not any(
+            scope != other_scope and scope in other_scope.parents
+            for _, _, other_scope in resolved
+        )
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the standalone agent-oriented repository map command."""
 
@@ -215,29 +239,36 @@ def main(argv: list[str] | None = None) -> int:
         description="Show files and symbols in the current Git checkout.",
     )
     parser.add_argument(
-        "path",
-        nargs="?",
-        default=Path("."),
+        "paths",
+        nargs="*",
         type=Path,
-        help="repository path to map (default: current directory)",
+        metavar="PATH",
+        help=(
+            "repository file or directory to map; multiple paths are allowed "
+            "(default: current directory)"
+        ),
     )
     args = parser.parse_args(argv)
     try:
-        result = build_repo_map(args.path)
+        paths = _compact_requested_paths(args.paths or [Path(".")])
+        results = [build_repo_map(path) for path in paths]
     except RepoMapError as exc:
         print(f"repo-map: {exc}", file=sys.stderr)
         return 2
 
-    scope = "." if result.scope == Path(".") else result.scope.as_posix()
-    mode = "overview" if result.scope == Path(".") else "detail"
-    print(
-        f"# repo-map scope={scope} mode={mode} files={result.files} "
-        f"symbols={result.symbols} elapsed_ms={result.elapsed_ms}"
-    )
-    if mode == "overview":
-        print("# pass a repository-relative path for private symbols and class methods")
-    if result.text:
-        print(result.text)
+    for index, result in enumerate(results):
+        if index:
+            print()
+        scope = "." if result.scope == Path(".") else result.scope.as_posix()
+        mode = "overview" if result.scope == Path(".") else "detail"
+        print(
+            f"# repo-map scope={scope} mode={mode} files={result.files} "
+            f"symbols={result.symbols} elapsed_ms={result.elapsed_ms}"
+        )
+        if mode == "overview":
+            print("# pass repository-relative paths for private symbols and class methods")
+        if result.text:
+            print(result.text)
     return 0
 
 

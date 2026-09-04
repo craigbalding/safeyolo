@@ -101,6 +101,33 @@ def test_command_reports_scope_and_observability(tmp_path, capsys):
     assert "pkg/app.py" in output
 
 
+def test_command_accepts_multiple_scopes(tmp_path, capsys):
+    repository = _repository(tmp_path)
+
+    exit_code = main(
+        [str(repository / "pkg"), str(repository / "scripts")]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "# repo-map scope=pkg mode=detail" in output
+    assert "# repo-map scope=scripts mode=detail" in output
+    assert "pkg/app.py" in output
+    assert "scripts/start.sh" in output
+
+
+def test_command_compacts_overlapping_scopes(tmp_path, capsys):
+    repository = _repository(tmp_path)
+
+    exit_code = main([str(repository / "pkg"), str(repository)])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "# repo-map scope=pkg mode=detail" in output
+    assert "scope=." not in output
+    assert output.count("pkg/app.py") == 1
+
+
 def test_command_rejects_non_repository(tmp_path, capsys):
     exit_code = main([str(tmp_path)])
 
