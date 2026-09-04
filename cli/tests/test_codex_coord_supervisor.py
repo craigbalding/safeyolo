@@ -2057,186 +2057,152 @@ def test_checkpoint_rejects_old_in_flight_task_protocol(supervisor_module, tmp_p
         module.load_state(_write_json(tmp_path / "old-protocol-state.json", state))
 
 
-def test_version_five_checkpoint_migrates_legacy_in_flight_task(supervisor_module, tmp_path):
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
+def test_pre_target_checkpoint_requires_verified_drain_before_upgrade(
+    supervisor_module,
+    tmp_path,
+    version,
+):
+    module = supervisor_module
+    state = module.empty_state()
+    state["version"] = version
+    state["in_flight"] = [
+        {
+            "attention_id": "attn-" + "6" * 32,
+            "room_name": "backlog",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
+            "sequence": 11,
+            "body": "TASK task=one assignee=forge",
+            "requires_terminal": True,
+        }
+    ]
+    if version == 1:
+        state.pop("awaiting_handoffs")
+        state.pop("briefs")
+    elif version < 5:
+        state["awaiting_handoff"] = None
+        if version < 4:
+            state.pop("briefs")
+        state.pop("awaiting_handoffs")
+
+    with pytest.raises(module.SupervisorError, match="not drained"):
+        module.load_state(_write_json(tmp_path / f"v{version}-pending-state.json", state))
+
+
+@pytest.mark.parametrize("version", [2, 3, 4, 5])
+def test_pre_target_checkpoint_rejects_awaiting_work_before_upgrade(
+    supervisor_module,
+    tmp_path,
+    version,
+):
+    module = supervisor_module
+    state = module.empty_state()
+    state["version"] = version
+    state["in_flight"] = []
+    if version < 5:
+        state["awaiting_handoff"] = {
+            "room_name": "backlog",
+            "request": "REVIEW_READY",
+            "recipient_agent": "lens",
+            "body": f"REVIEW_READY issue=#480 pr=#10 head={'a' * 40}",
+            "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+        }
+        state.pop("awaiting_handoffs")
+        if version < 4:
+            state.pop("briefs")
+    else:
+        state["awaiting_handoffs"] = [
+            {
+                "room_name": "backlog",
+                "request": "REVIEW_READY",
+                "recipient_agent": "lens",
+                "body": f"REVIEW_READY issue=#480 pr=#10 head={'a' * 40}",
+                "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
+            }
+        ]
+
+    with pytest.raises(module.SupervisorError, match="not drained"):
+        module.load_state(_write_json(tmp_path / f"v{version}-awaiting-state.json", state))
+
+
+def test_version_five_checkpoint_migrates_only_after_drain(supervisor_module, tmp_path):
     module = supervisor_module
     state = module.empty_state()
     state["version"] = 5
     state["thread_id"] = "legacy-wait-thread"
-    attention_id = "attn-" + "6" * 32
-    state["in_flight"] = [
-        {
-            "attention_id": attention_id,
-            "room_name": "backlog",
-            "sender_agent_name": "relay",
-            "sender_agent_id": "agent-relay",
-            "sequence": 11,
-            "body": "TASK task=one assignee=forge",
-            "requires_terminal": True,
-        }
-    ]
 
-    migrated = module.load_state(_write_json(tmp_path / "v5-legacy-state.json", state))
+    migrated = module.load_state(_write_json(tmp_path / "v5-empty-state.json", state))
 
     assert migrated["version"] == module.STATE_VERSION
     assert migrated["thread_id"] is None
-    assert migrated["in_flight"][0]["body"] == state["in_flight"][0]["body"]
-    assert migrated["in_flight"][0]["attention_id"] == attention_id
-    assert migrated["in_flight"][0]["legacy_protocol"] == "task-v5"
+    assert migrated["in_flight"] == []
+    assert migrated["awaiting_handoffs"] == []
 
 
-def test_migrated_legacy_task_accepts_legacy_completion(supervisor_module, tmp_path):
+def test_late_legacy_task_is_rejected_after_empty_v5_upgrade(
+    supervisor_module,
+    tmp_path,
+):
     module = supervisor_module
     state = module.empty_state()
     state["version"] = 5
-    attention_id = "attn-" + "7" * 32
-    state["in_flight"] = [
-        {
-            "attention_id": attention_id,
-            "room_name": "backlog",
-            "sender_agent_name": "relay",
-            "sender_agent_id": "agent-relay",
-            "sequence": 11,
-            "body": "TASK task=one assignee=forge",
-            "requires_terminal": True,
-        }
-    ]
-    state_path = _write_json(tmp_path / "v5-legacy-state.json", state)
+    state_path = _write_json(tmp_path / "v5-empty-state.json", state)
     migrated = module.load_state(state_path)
     consumer = module.EventConsumer(
-        _config(module, tmp_path),
+        _factory_config(module, tmp_path, "owner"),
         migrated,
         state_path,
         {"room-1": "backlog"},
     )
 
     consumer.consume(
-        _terminal_event(
-            attention_id,
-            body=f"DONE task=one attention_id={attention_id}",
-        )
-    )
-
-    assert module.load_state(state_path)["in_flight"] == []
-
-
-def test_version_five_checkpoint_migrates_legacy_awaiting_correlation(
-    supervisor_module,
-    tmp_path,
-):
-    module = supervisor_module
-    state = module.empty_state()
-    state["version"] = 5
-    state.pop("accept_legacy_protocol")
-    review_body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
-    state["awaiting_handoffs"] = [
-        {
-            "room_name": "backlog",
-            "request": "REVIEW_READY",
-            "recipient_agent": "lens",
-            "body": review_body,
-            "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
-        }
-    ]
-
-    migrated = module.load_state(_write_json(tmp_path / "v5-awaiting-state.json", state))
-
-    assert migrated["accept_legacy_protocol"] is True
-    assert migrated["awaiting_handoffs"][0]["legacy_protocol"] == "task-v5"
-    assert migrated["awaiting_handoffs"][0]["correlation"] == state["awaiting_handoffs"][0]["correlation"]
-
-
-def test_migrated_legacy_review_can_drain_for_downstream_role(
-    supervisor_module,
-    tmp_path,
-):
-    module = supervisor_module
-    state = module.empty_state()
-    state["version"] = 5
-    state.pop("accept_legacy_protocol")
-    state_path = _write_json(tmp_path / "v5-review-state.json", state)
-    state = module.load_state(state_path)
-    consumer = module.EventConsumer(
-        _factory_config(module, tmp_path, "reviewer"),
-        state,
-        state_path,
-        {"room-1": "backlog"},
-    )
-    review_attention = "attn-" + "8" * 32
-    response_attention = "attn-" + "9" * 32
-    review_body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
-    response_body = "READY issue=#480 pr=#10 head=" + "a" * 40 + f" attention_id={review_attention}"
-
-    consumer.consume(
         _wait_event(
             module,
-            state,
-            [_resolved(review_attention, sender="forge", body=review_body)],
-        )
-    )
-    assert state["in_flight"][0]["legacy_protocol"] == "task-v5"
-
-    consumer.consume(
-        _terminal_event(
-            response_attention,
-            body=response_body,
-            sender="lens",
-            notify=["forge", "relay"],
+            migrated,
+            [
+                _resolved(
+                    "attn-" + "8" * 32,
+                    sender="relay",
+                    body="TASK task=late assignee=forge",
+                )
+            ],
+            next_cursor=12,
         )
     )
 
-    assert state["in_flight"] == []
+    assert migrated["in_flight"] == []
+    assert migrated["recent_attention_ids"] == ["attn-" + "8" * 32]
 
 
-def test_migrated_legacy_awaiting_response_resumes_owner(
+def test_inspect_state_rejects_pending_pre_target_checkpoint_without_mutation(
     supervisor_module,
     tmp_path,
+    capsys,
 ):
     module = supervisor_module
     state = module.empty_state()
     state["version"] = 5
-    state.pop("accept_legacy_protocol")
-    review_body = "REVIEW_READY issue=#480 pr=#10 head=" + "a" * 40
-    state["awaiting_handoffs"] = [
+    state["in_flight"] = [
         {
+            "attention_id": "attn-" + "5" * 32,
             "room_name": "backlog",
-            "request": "REVIEW_READY",
-            "recipient_agent": "lens",
-            "body": review_body,
-            "correlation": {"issue": "#480", "pr": "#10", "head": "a" * 40},
-        }
-    ]
-    state_path = _write_json(tmp_path / "v5-owner-state.json", state)
-    state = module.load_state(state_path)
-    consumer = module.EventConsumer(
-        _factory_config(module, tmp_path, "owner"),
-        state,
-        state_path,
-        {"room-1": "backlog"},
-    )
-    response_attention = "attn-" + "a" * 32
-    request_attention = "attn-" + "b" * 32
-    response_body = "READY issue=#480 pr=#10 head=" + "a" * 40 + f" attention_id={request_attention}"
-
-    consumer.consume(
-        _wait_event(
-            module,
-            state,
-            [_resolved(response_attention, sender="lens", body=response_body)],
-        )
-    )
-
-    assert state["awaiting_handoffs"] == []
-    assert state["in_flight"] == [
-        {
-            "attention_id": response_attention,
-            "room_name": "backlog",
-            "sender_agent_name": "lens",
-            "sender_agent_id": "agent-lens",
+            "sender_agent_name": "relay",
+            "sender_agent_id": "agent-relay",
             "sequence": 11,
-            "body": response_body,
-            "requires_terminal": False,
+            "body": f"TASK target={WORK_ONE_TARGET} assignee=forge",
+            "requires_terminal": True,
         }
     ]
+    state_path = _write_json(tmp_path / "v5-state.json", state)
+    before = state_path.read_bytes()
+
+    assert module.main(["--inspect-state", str(state_path)]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "not drained" in captured.err
+    assert state_path.read_bytes() == before
 
 
 def test_version_three_checkpoint_migrates_with_empty_brief_context(
@@ -2257,7 +2223,7 @@ def test_version_three_checkpoint_migrates_with_empty_brief_context(
     assert migrated["awaiting_handoffs"] == []
 
 
-def test_version_four_checkpoint_migrates_one_awaiting_handoff(
+def test_version_four_checkpoint_requires_drain_for_awaiting_handoff(
     supervisor_module,
     tmp_path,
 ):
@@ -2273,20 +2239,17 @@ def test_version_four_checkpoint_migrates_one_awaiting_handoff(
     }
     state.pop("awaiting_handoffs")
 
-    migrated = module.load_state(_write_json(tmp_path / "v4-state.json", state))
-
-    assert migrated["version"] == module.STATE_VERSION
-    assert migrated["awaiting_handoffs"] == [state["awaiting_handoff"]]
+    with pytest.raises(module.SupervisorError, match="not drained"):
+        module.load_state(_write_json(tmp_path / "v4-state.json", state))
 
 
-def test_version_five_checkpoint_starts_a_clean_thread_but_preserves_work(
+def test_version_five_checkpoint_requires_drain_for_target_work(
     supervisor_module,
     tmp_path,
 ):
     module = supervisor_module
     state = module.empty_state()
     state["version"] = 5
-    state["thread_id"] = "legacy-wait-thread"
     state["in_flight"] = [
         {
             "attention_id": "attn-" + "5" * 32,
@@ -2299,47 +2262,8 @@ def test_version_five_checkpoint_starts_a_clean_thread_but_preserves_work(
         }
     ]
 
-    migrated = module.load_state(_write_json(tmp_path / "v5-state.json", state))
-
-    assert migrated["version"] == module.STATE_VERSION
-    assert migrated["thread_id"] is None
-    assert migrated["in_flight"] == state["in_flight"]
-
-
-def test_inspect_state_uses_runtime_migration_without_mutating_checkpoint(
-    supervisor_module,
-    tmp_path,
-    capsys,
-):
-    module = supervisor_module
-    state = module.empty_state()
-    state["version"] = 5
-    state["thread_id"] = "legacy-wait-thread"
-    state["in_flight"] = [
-        {
-            "attention_id": "attn-" + "5" * 32,
-            "room_name": "backlog",
-            "sender_agent_name": "relay",
-            "sender_agent_id": "agent-relay",
-            "sequence": 11,
-            "body": f"TASK target={WORK_ONE_TARGET} assignee=forge",
-            "requires_terminal": True,
-        }
-    ]
-    state_path = _write_json(tmp_path / "v5-state.json", state)
-    before = state_path.read_bytes()
-
-    assert module.main(["--inspect-state", str(state_path)]) == 0
-
-    summary = json.loads(capsys.readouterr().out)
-    assert summary == {
-        "consecutive_failures": 0,
-        "in_flight": 1,
-        "owned_process": None,
-        "safe_cursor": 0,
-        "version": module.STATE_VERSION,
-    }
-    assert state_path.read_bytes() == before
+    with pytest.raises(module.SupervisorError, match="not drained"):
+        module.load_state(_write_json(tmp_path / "v5-state.json", state))
 
 
 def test_inspect_state_rejects_missing_checkpoint(supervisor_module, tmp_path, capsys):

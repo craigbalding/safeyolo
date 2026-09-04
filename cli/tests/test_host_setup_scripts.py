@@ -769,6 +769,25 @@ def test_normal_codex_setup_keeps_interactive_entrypoint(tmp_path: Path) -> None
     assert not (agent_home / ".safeyolo/codex-coord-supervisor.json").exists()
 
 
+def test_normal_codex_setup_seeds_host_subscription_state_for_fresh_agent(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.joinpath(".codex").mkdir(parents=True)
+    (operator_home / ".codex/auth.json").write_text('{"auth": "host-session"}\n')
+    (operator_home / ".codex/config.toml").write_text('model = "gpt-5"\n')
+
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    assert (agent_home / ".codex/auth.json").read_bytes() == (
+        operator_home / ".codex/auth.json"
+    ).read_bytes()
+    staged_config = (agent_home / ".codex/config.toml").read_text()
+    assert staged_config.startswith('model = "gpt-5"\n')
+    assert "[mcp_servers.safeyolo-coord]" in staged_config
+
+
 @pytest.mark.parametrize(
     ("script_name", "consumer_dir"),
     [

@@ -739,11 +739,23 @@ def _inspect_checkpoint(
     checks: list[FactoryDoctorCheck], name: str, label: str, home: Path
 ) -> dict[str, Any] | None:
     path = home / ".safeyolo/codex-coord-supervisor-state.json"
-    recovery = f"supervisor checkpoint for {label}; run `safeyolo factory run {name}`"
+    recovery = (
+        f"supervisor checkpoint for {label}; for a version 1-5 upgrade, keep the "
+        f"old factory running until `safeyolo factory doctor {name}` verifies "
+        f"in_flight=0 and awaiting_handoffs=0, stop the drained roles, then run "
+        f"`safeyolo factory check {name}`, approve the exact snapshot, and "
+        f"`safeyolo factory run {name}`"
+    )
     try:
         summary, owned = _inspect_checkpoint_with_supervisor(path)
     except (OSError, UnicodeError, ValueError, subprocess.SubprocessError) as exc:
-        checks.append(_fail("checkpoint", f"{label} checkpoint is invalid ({type(exc).__name__})", recovery))
+        checks.append(
+            _fail(
+                "checkpoint",
+                f"{label} checkpoint is invalid ({type(exc).__name__}): {exc}",
+                recovery,
+            )
+        )
         return None
     checks.append(FactoryDoctorCheck("PASS", "checkpoint", f"{label} {summary}"))
     return owned
@@ -761,7 +773,8 @@ def _inspect_checkpoint_with_supervisor(  # DOC: docs/factories.md
         check=False,
     )
     if result.returncode != 0:
-        raise ValueError("supervisor rejected checkpoint")
+        detail = result.stderr.strip() or "supervisor rejected checkpoint"
+        raise ValueError(detail)
     try:
         state = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
@@ -770,6 +783,7 @@ def _inspect_checkpoint_with_supervisor(  # DOC: docs/factories.md
         "version",
         "safe_cursor",
         "in_flight",
+        "awaiting_handoffs",
         "consecutive_failures",
         "owned_process",
     }:
@@ -777,6 +791,7 @@ def _inspect_checkpoint_with_supervisor(  # DOC: docs/factories.md
     version = state["version"]
     cursor = state["safe_cursor"]
     in_flight = state["in_flight"]
+    awaiting_handoffs = state["awaiting_handoffs"]
     failures = state["consecutive_failures"]
     if (
         isinstance(version, bool)
@@ -784,7 +799,7 @@ def _inspect_checkpoint_with_supervisor(  # DOC: docs/factories.md
         or version <= 0
         or any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in (cursor, in_flight, failures)
+            for value in (cursor, in_flight, awaiting_handoffs, failures)
         )
     ):
         raise ValueError("supervisor returned an invalid checkpoint summary")
@@ -805,7 +820,7 @@ def _inspect_checkpoint_with_supervisor(  # DOC: docs/factories.md
             raise ValueError("supervisor returned an invalid checkpoint summary")
         identity = f"pid={pid} start={start}"
     summary = (
-        f"safe_cursor={cursor} in_flight={in_flight} "
+        f"safe_cursor={cursor} in_flight={in_flight} awaiting_handoffs={awaiting_handoffs} "
         f"failures={failures} process={identity}"
     )
     return summary, owned

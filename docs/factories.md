@@ -109,16 +109,16 @@ constraints, but the backlog factory does not require one.
 
 The shortest discoverable setup path is deliberately ordered. Before running
 it, log in to Codex with a ChatGPT subscription on the host. Register every
-agent with the bundled `@codex-coord` host setup, which stages the host's
+agent with the ordinary bundled `@codex` host setup, which stages the host's
 `~/.codex` authentication and config into the agent's persistent home, then
 validate the immutable contract, approve that exact snapshot, and only then run
 the factory. `--no-run` leaves agent creation separate from factory startup;
 the host setup cannot create a subscription login that is absent on the host.
 
 ```sh
-safeyolo agent add relay "$PWD" --host-script @codex-coord --no-run
-safeyolo agent add forge "$PWD" --host-script @codex-coord --no-run
-safeyolo agent add lens "$PWD" --host-script @codex-coord --no-run
+safeyolo agent add relay "$PWD" --host-script @codex --no-run
+safeyolo agent add forge "$PWD" --host-script @codex --no-run
+safeyolo agent add lens "$PWD" --host-script @codex --no-run
 safeyolo factory check docs/factories/backlog.toml
 safeyolo factory approve docs/factories/backlog.toml --yes
 safeyolo factory run backlog
@@ -139,7 +139,7 @@ safeyolo factory doctor backlog
 
 Correct the specific component named by `factory doctor`, then rerun
 `safeyolo factory run backlog`. A missing agent is recovered with
-`safeyolo agent add NAME "$PWD" --host-script @codex-coord --no-run`; a missing workspace is recovered
+`safeyolo agent add NAME "$PWD" --host-script @codex --no-run`; a missing workspace is recovered
 with `safeyolo agent config NAME --folder "$PWD"`. Room and grant recovery is
 the idempotent `safeyolo factory run backlog` command itself. Factory run does
 not claim success until every role supervisor passes the doctor checks for the
@@ -278,23 +278,30 @@ unstated filter. Keep no more work in flight than the stated maximum.
 
 ## Live upgrade
 
-For a running legacy backlog factory:
+There is no backward-compatible parser or completion path for the old
+`TASK task=<id> assignee=<agent>` protocol. Before changing a running legacy
+factory, drain it at a verified safe boundary:
 
-1. Stop the existing `relay`, `forge`, and `lens` agents at a safe boundary.
-2. Add the explicit `operator_input` table, then run `factory check` and verify
-   the agents, room, operator shorthand, reachable handoffs, paths, byte counts,
-   and hashes.
-3. Run `factory approve` for that exact resolved snapshot.
-4. Run `factory run backlog`.
+1. Keep the existing role supervisors running and let every in-flight request
+   and awaiting handoff reach its terminal response.
+2. Run `safeyolo factory doctor backlog` repeatedly. Do not continue until the
+   checkpoint line for every role reports `in_flight=0 awaiting_handoffs=0`.
+3. Stop the drained roles, for example with `safeyolo agent stop relay`,
+   `safeyolo agent stop forge`, and `safeyolo agent stop lens`.
+4. Add or update the explicit `operator_input` table, then run
+   `safeyolo factory check docs/factories/backlog.toml` and verify the agents,
+   room, operator shorthand, reachable handoffs, paths, byte counts, and hashes.
+5. Run `safeyolo factory approve docs/factories/backlog.toml --yes` for that
+   exact resolved snapshot.
+6. Run `safeyolo factory run backlog`.
 
-The supervisor upgrades its existing checkpoint in memory and starts the next
-turn from a clean Codex thread, while keeping the safe cursor, recent attention
-IDs, in-flight canonical objects, awaiting handoffs, and current trusted room
-brief context. Version-5 `TASK task=<id> assignee=<agent>` and other old-format
-requests are preserved with their legacy task or review correlation until they
-reach their declared terminal response; the migrated turn accepts the matching
-legacy completion header because those objects have no target URL. New work
-continues to require target URLs.
+The supervisor applies the same verified drain precondition to supported
+version-1 through version-5 checkpoints before upgrading them to the target-only
+version. A checkpoint with pending work is rejected without mutation and prints
+the recovery procedure; do not edit its messages or invent target URLs. An
+empty checkpoint upgrades to a clean Codex thread while retaining only its safe
+cursor, recent attention IDs, and trusted room brief context. New work must use
+target URLs.
 The running Markdown contract and routing table come from the immutable
 snapshot. To change either, stop the agents, check and approve a new snapshot,
 then run the factory again.
