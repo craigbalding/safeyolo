@@ -138,18 +138,6 @@ needed Coord and GitHub rules does not, by itself, require loading the full
 `safeyolo` skill or its references. Load them when setup, failure, ambiguity,
 or a non-routine operation requires detail not present in the injected context.
 
-## Repository orientation
-
-Inside a Git checkout, `repo-map` prints a compact overview of source
-and configuration files with bounded public top-level symbols and line numbers.
-Pass one or more directories to narrow that overview. Pass individual files,
-for example `repo-map cli/src/safeyolo/factory_contract.py`, to include private
-symbols, function signatures, and class methods. Overlapping scopes are
-compacted to the most specific request.
-Use it for initial orientation when the code area is unfamiliar, then inspect
-the indicated files with ordinary local tools. Reuse a still-current map rather
-than repeating broad discovery searches.
-
 ## Installing tools
 
 Prefer mise for language runtimes and project CLIs so installs persist under

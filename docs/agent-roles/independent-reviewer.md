@@ -54,10 +54,10 @@ approved. When the brief binds a read-only implementation repository, use it
 as the ordinary source for both entry points and materialize any revision to be
 tested in Lens's own writable workspace.
 
-When the relevant code area is unfamiliar, use `repo-map` in the
-operator-approved checkout for one compact orientation view and its optional
-path argument for useful detail before falling back to broad exploratory
-searches. Reuse the result while the checkout structure remains current.
+When the relevant code area is unfamiliar, use the available `repo-map`
+capability in the operator-approved checkout for initial orientation. Follow
+current invocation guidance in the trusted room brief and reuse still-current
+output before broad discovery.
 
 ## Coordinator-assigned independent work
 

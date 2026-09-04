@@ -58,10 +58,9 @@ itself part of the requested product outcome.
   existing repository cannot be made trustworthy; it is not ordinary setup.
   Do not use GitHub pull-request, diff, patch, changed-filename, commit-diff, or
   file-content APIs as source transport.
-- When the implementation area is unfamiliar, use `repo-map` for one
-  compact orientation view and its optional path argument for useful detail
-  before falling back to broad exploratory searches. Reuse the result while
-  the checkout structure remains current.
+- When the implementation area is unfamiliar, use the available `repo-map`
+  capability for initial orientation. Follow current invocation guidance in
+  the trusted room brief and reuse still-current output before broad discovery.
 
 ## Implement the smallest complete change
 
