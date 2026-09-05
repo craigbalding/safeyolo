@@ -1,6 +1,7 @@
 """Executable regression tests for first-party agent host setup scripts."""
 
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -23,6 +24,7 @@ FACTORY_SKILL_SOURCE = (
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
 COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
+CODEX_STATE_SOURCE = REPO_ROOT / "contrib/lib/stage-codex-state.py"
 CODEX_COORD_SUPERVISOR_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor.py"
 CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
@@ -32,6 +34,14 @@ LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
 LAB_COMMAND_TARGET = (
     "/safeyolo/skills/safeyolo-lab-controller/scripts/safeyolo-lab"
 )
+
+
+def _load_codex_state_module():
+    spec = importlib.util.spec_from_file_location("stage_codex_state", CODEX_STATE_SOURCE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _setup_env(operator_home: Path, agent_home: Path, folder: Path) -> dict[str, str]:
@@ -81,6 +91,17 @@ def _run_setup(
         coord_python.write_text("#!/bin/sh\nexit 0\n")
         coord_python.chmod(0o755)
     return result
+
+
+def _seed_adopted_codex_auth(agent_home: Path) -> None:
+    """Create only synthetic local state for coordinated setup fixtures."""
+    codex_home = agent_home / ".codex"
+    codex_home.mkdir(parents=True)
+    codex_home.chmod(0o700)
+    auth_path = codex_home / "auth.json"
+    auth_path.write_bytes(b"synthetic-agent-local-auth")
+    auth_path.chmod(0o600)
+    _load_codex_state_module()._recover(agent_home, "adopt")
 
 
 def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
@@ -286,6 +307,8 @@ def test_context_staging_is_idempotent_and_preserves_user_files(
     operator_home.mkdir()
     instruction = agent_home / user_instruction
     instruction.parent.mkdir(parents=True)
+    if script_name == "codex-host-setup.sh":
+        instruction.parent.chmod(0o700)
     instruction.write_text("user-owned instructions\n")
     personal_skill = agent_home / consumer_dir / "skills" / "personal" / "SKILL.md"
     personal_skill.parent.mkdir(parents=True)
@@ -331,10 +354,12 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
     else:
         config_path = agent_home / ".codex/config.toml"
         config_path.parent.mkdir(parents=True)
+        config_path.parent.chmod(0o700)
         config_path.write_text(
             'model = "preserved"\n\n'
             '[mcp_servers.unrelated]\ncommand = "other"\n'
         )
+        config_path.chmod(0o600)
 
     _run_setup(script_name, operator_home, agent_home, tmp_path)
     _run_setup(script_name, operator_home, agent_home, tmp_path)
@@ -371,6 +396,49 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
     assert managed == expected
 
 
+def test_codex_setup_round_trips_multiline_and_quoted_toml(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    config_path = agent_home / ".codex/config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.parent.chmod(0o700)
+    config_path.write_text(
+        'developer_instructions = """\n'
+        '[mcp_servers.safeyolo-coord]\n'
+        'sentinel must remain\n'
+        '[projects.foo]\n'
+        '"""\n'
+        'model = "gpt-5"\n\n'
+        '[mcp_servers."unrelated.server"]\n'
+        'command = "other"\n\n'
+        '[projects."foo.bar"]\n'
+        'enabled = true\n'
+    )
+    config_path.chmod(0o600)
+
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    data = tomllib.loads(config_path.read_text())
+    assert data["developer_instructions"] == (
+        "[mcp_servers.safeyolo-coord]\n"
+        "sentinel must remain\n"
+        "[projects.foo]\n"
+    )
+    assert data["model"] == "gpt-5"
+    assert data["mcp_servers"]["unrelated.server"] == {"command": "other"}
+    assert data["projects"]["foo.bar"] == {"enabled": True}
+    assert data["forced_chatgpt_auth"] is True
+    assert data["cli_auth_credentials_store"] == "file"
+    assert data["mcp_servers"]["safeyolo-coord"] == {
+        "command": "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher",
+        "args": [],
+        "tool_timeout_sec": 330,
+    }
+
+
 def test_codex_coord_registration_repairs_timeout_idempotently(
     tmp_path: Path,
 ) -> None:
@@ -380,6 +448,7 @@ def test_codex_coord_registration_repairs_timeout_idempotently(
     operator_home.mkdir()
     config_path = agent_home / ".codex/config.toml"
     config_path.parent.mkdir(parents=True)
+    config_path.parent.chmod(0o700)
     config_path.write_text(
         'model = "preserved"\n\n'
         "[mcp_servers.before]\n"
@@ -390,6 +459,7 @@ def test_codex_coord_registration_repairs_timeout_idempotently(
         "[mcp_servers.after]\n"
         'command = "after"\n'
     )
+    config_path.chmod(0o600)
 
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
     first = config_path.read_text()
@@ -580,7 +650,11 @@ def test_bundled_setup_reports_invalid_harness_config(
     operator_home.mkdir()
     config_path = agent_home / config_relative
     config_path.parent.mkdir(parents=True)
+    if script_name == "codex-host-setup.sh":
+        config_path.parent.chmod(0o700)
     config_path.write_text(invalid)
+    if script_name == "codex-host-setup.sh":
+        config_path.chmod(0o600)
 
     result = _run_setup(
         script_name,
@@ -592,7 +666,10 @@ def test_bundled_setup_reports_invalid_harness_config(
     )
 
     assert result.returncode != 0
-    assert "cannot update invalid" in result.stderr
+    if script_name == "codex-host-setup.sh":
+        assert "invalid Codex config" in result.stderr
+    else:
+        assert "cannot update invalid" in result.stderr
 
 
 def test_wheel_manifest_includes_coord_runtime_files() -> None:
@@ -609,6 +686,9 @@ def test_wheel_manifest_includes_coord_runtime_files() -> None:
     )
     assert force_include["contrib/safeyolo-coord-mcp.py"] == (
         "safeyolo/contrib/safeyolo-coord-mcp.py"
+    )
+    assert force_include["contrib/lib/stage-codex-state.py"] == (
+        "safeyolo/contrib/lib/stage-codex-state.py"
     )
     assert force_include["contrib/codex-coord-host-setup.sh"] == (
         "safeyolo/contrib/codex-coord-host-setup.sh"
@@ -635,6 +715,7 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
         "SAFEYOLO_CODEX_COORD_ROOMS": "backlog, releases",
         "SAFEYOLO_CODEX_COORDINATORS": "relay",
     }
+    _seed_adopted_codex_auth(agent_home)
 
     _run_setup(
         "codex-coord-host-setup.sh",
@@ -669,6 +750,30 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     assert 'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"' in command
     assert "--dangerously-bypass-approvals-and-sandbox" in command
     assert command.count("coord-mcp-bootstrap: mcp+httpx install") == 1
+
+
+def test_fresh_codex_coord_setup_requires_normal_login_first(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    result = _run_setup(
+        "codex-coord-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+        extra_env={
+            "SAFEYOLO_CODEX_COORD_ROOMS": "backlog",
+            "SAFEYOLO_CODEX_COORDINATORS": "relay",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "requires an adopted agent-local auth.json" in result.stderr
+    assert "codex login --device-auth" in result.stderr
+    assert "/home/agent/.safeyolo/codex-auth-recovery.py adopt" in result.stderr
 
 
 def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> None:
@@ -725,6 +830,7 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
     }
     snapshot_path = tmp_path / "snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot))
+    _seed_adopted_codex_auth(agent_home)
 
     _run_setup(
         "codex-coord-host-setup.sh",
@@ -774,23 +880,240 @@ def test_normal_codex_setup_keeps_interactive_entrypoint(tmp_path: Path) -> None
     assert not (agent_home / ".safeyolo/codex-coord-supervisor.json").exists()
 
 
-def test_normal_codex_setup_seeds_host_subscription_state_for_fresh_agent(
+def test_normal_codex_setup_does_not_import_host_subscription_state(
     tmp_path: Path,
 ) -> None:
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"
     operator_home.joinpath(".codex").mkdir(parents=True)
     (operator_home / ".codex/auth.json").write_text('{"auth": "host-session"}\n')
+    (operator_home / ".codex/auth.json").chmod(0o600)
     (operator_home / ".codex/config.toml").write_text('model = "gpt-5"\n')
 
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
 
-    assert (agent_home / ".codex/auth.json").read_bytes() == (
-        operator_home / ".codex/auth.json"
-    ).read_bytes()
+    assert not (agent_home / ".codex/auth.json").exists()
+    assert json.loads((agent_home / ".codex/.safeyolo-provenance.json").read_text())["state"] == "fresh"
     staged_config = (agent_home / ".codex/config.toml").read_text()
-    assert staged_config.startswith('model = "gpt-5"\n')
+    assert "gpt-5" not in staged_config
+    assert "forced_chatgpt_auth = true" in staged_config
+    assert 'cli_auth_credentials_store = "file"' in staged_config
     assert "[mcp_servers.safeyolo-coord]" in staged_config
+
+    # A login is created inside the persistent agent, then explicitly adopted;
+    # later host setup must preserve the credential byte-for-byte.
+    auth_path = agent_home / ".codex/auth.json"
+    auth_bytes = b'{"auth": "agent-session", "sentinel": "do-not-read"}\n'
+    auth_path.write_bytes(auth_bytes)
+    auth_path.chmod(0o600)
+    subprocess.run(
+        [str(agent_home / ".safeyolo/codex-auth-recovery.py"), "adopt", "--home", str(agent_home)],
+        check=True,
+    )
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    assert auth_path.read_bytes() == auth_bytes
+
+
+def test_codex_reset_device_login_and_adopt_reapply_successfully(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    recovery = agent_home / ".safeyolo/codex-auth-recovery.py"
+    auth_path = agent_home / ".codex/auth.json"
+
+    auth_bytes = b'{"auth": "first-agent-session"}\n'
+    auth_path.write_bytes(auth_bytes)
+    auth_path.chmod(0o600)
+    subprocess.run([str(recovery), "adopt", "--home", str(agent_home)], check=True)
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    subprocess.run([str(recovery), "reset", "--home", str(agent_home)], check=True)
+    assert not auth_path.exists()
+    auth_bytes = b'{"auth": "replacement-agent-session"}\n'
+    auth_path.write_bytes(auth_bytes)
+    auth_path.chmod(0o600)
+    blocked = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+    assert blocked.returncode != 0
+    assert "codex login --device-auth" in blocked.stderr
+    assert "/home/agent/.safeyolo/codex-auth-recovery.py adopt" in blocked.stderr
+
+    subprocess.run([str(recovery), "adopt", "--home", str(agent_home)], check=True)
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    assert auth_path.read_bytes() == auth_bytes
+
+
+def test_codex_setup_marks_legacy_auth_unknown_without_repairing_it(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    codex_home = agent_home / ".codex"
+    codex_home.mkdir(parents=True)
+    codex_home.chmod(0o700)
+    auth_path = codex_home / "auth.json"
+    auth_bytes = b'{"auth": "legacy-sentinel"}\n'
+    auth_path.write_bytes(auth_bytes)
+    auth_path.chmod(0o600)
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "explicit adopt or reset is required" in result.stderr
+    marker = json.loads((codex_home / ".safeyolo-provenance.json").read_text())
+    assert marker["state"] == "legacy-unknown"
+    assert auth_path.read_bytes() == auth_bytes
+    assert b"legacy-sentinel" not in result.stderr.encode()
+
+
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "fifo", "directory", "mode"))
+def test_codex_setup_rejects_unsafe_auth_metadata(
+    tmp_path: Path,
+    unsafe_kind: str,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    codex_home = agent_home / ".codex"
+    codex_home.mkdir(parents=True)
+    codex_home.chmod(0o700)
+    auth_path = codex_home / "auth.json"
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_bytes(b"credential-sentinel")
+    sentinel.chmod(0o600)
+
+    if unsafe_kind == "symlink":
+        auth_path.symlink_to(sentinel)
+    elif unsafe_kind == "hardlink":
+        auth_path.hardlink_to(sentinel)
+    elif unsafe_kind == "fifo":
+        os.mkfifo(auth_path)
+    elif unsafe_kind == "directory":
+        auth_path.mkdir()
+        auth_path.chmod(0o700)
+    else:
+        auth_path.write_bytes(b"credential-sentinel")
+        auth_path.chmod(0o644)
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "unsafe Codex auth.json" in result.stderr
+    assert b"credential-sentinel" not in result.stderr.encode()
+
+
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "fifo", "directory", "mode"))
+def test_codex_reset_removes_unsafe_auth_entry_without_reading_it(
+    tmp_path: Path,
+    unsafe_kind: str,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    codex_home = agent_home / ".codex"
+    auth_path = codex_home / "auth.json"
+    sentinel = tmp_path / "credential-sentinel"
+    sentinel.write_bytes(b"synthetic-credential-sentinel")
+    if unsafe_kind == "symlink":
+        auth_path.symlink_to(sentinel)
+    elif unsafe_kind == "hardlink":
+        auth_path.hardlink_to(sentinel)
+    elif unsafe_kind == "fifo":
+        os.mkfifo(auth_path)
+    elif unsafe_kind == "directory":
+        auth_path.mkdir()
+        auth_path.chmod(0o700)
+    else:
+        auth_path.write_bytes(b"synthetic-credential-sentinel")
+        auth_path.chmod(0o644)
+
+    recovery = agent_home / ".safeyolo/codex-auth-recovery.py"
+    reset = subprocess.run(
+        [str(recovery), "reset", "--home", str(agent_home)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if unsafe_kind == "directory":
+        assert reset.returncode != 0
+        assert "rmdir /home/agent/.codex/auth.json" in reset.stderr
+        auth_path.rmdir()
+        subprocess.run([str(recovery), "reset", "--home", str(agent_home)], check=True)
+    else:
+        assert reset.returncode == 0, reset.stderr
+        if unsafe_kind in {"symlink", "hardlink"}:
+            assert sentinel.read_bytes() == b"synthetic-credential-sentinel"
+
+    replacement = b"synthetic-replacement-agent-auth"
+    auth_path.write_bytes(replacement)
+    auth_path.chmod(0o600)
+    subprocess.run([str(recovery), "adopt", "--home", str(agent_home)], check=True)
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    assert auth_path.read_bytes() == replacement
+
+
+def test_codex_state_atomic_update_keeps_original_on_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _load_codex_state_module()
+    target = tmp_path / "config.toml"
+    target.write_text("model = 'before'\n")
+    target.chmod(0o600)
+
+    def interrupted_replace(_source: Path, _destination: Path) -> None:
+        raise OSError("synthetic interruption")
+
+    monkeypatch.setattr(state.os, "replace", interrupted_replace)
+    with pytest.raises(state.CodexStateError, match="atomically update"):
+        state._atomic_write(target, "model = 'after'\n", 0o600)
+
+    assert target.read_text() == "model = 'before'\n"
+    assert not list(tmp_path.glob(f".{target.name}.*"))
+
+
+def test_codex_state_rejects_wrong_owner_without_reading_auth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _load_codex_state_module()
+    home = tmp_path / "agent"
+    codex_home = home / ".codex"
+    codex_home.mkdir(parents=True)
+    codex_home.chmod(0o700)
+    auth_path = codex_home / "auth.json"
+    auth_path.write_bytes(b"owner-sentinel")
+    auth_path.chmod(0o600)
+    actual_uid = os.getuid()
+    monkeypatch.setattr(state.os, "getuid", lambda: actual_uid + 1)
+
+    with pytest.raises(state.CodexStateError, match="owner"):
+        state._stage(home, None)
+
+    assert auth_path.read_bytes() == b"owner-sentinel"
 
 
 @pytest.mark.parametrize(

@@ -1,12 +1,17 @@
 """Agent management commands."""
 
+import fcntl
 import getpass
 import logging
 import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
+import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 import typer
@@ -233,25 +238,164 @@ def _run_host_script_for_agent(
     host_script_path: Path,
     folder_str: str,
 ) -> None:
+    with _agent_host_setup_lock(name):
+        from ..platform import get_platform
+        from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
+
+        if get_platform().is_sandbox_running(name):
+            console.print(f"[red]Agent '{name}' is already running.[/red]")
+            console.print(
+                f"Stop it first: [bold]safeyolo agent stop {name}[/bold] "
+                "before applying a host script."
+            )
+            raise typer.Exit(1)
+
+        ensure_agent_persistent_dirs(name)
+        agent_home = get_agent_home_dir(name)
+        env = {
+            **os.environ,
+            "SAFEYOLO_AGENT_NAME": name,
+            "SAFEYOLO_AGENT_HOME": str(agent_home),
+            "SAFEYOLO_AGENT_FOLDER": folder_str,
+            "SAFEYOLO_PYTHON": sys.executable,
+        }
+        console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
+        try:
+            result = subprocess.run([str(host_script_path)], env=env, check=False)
+        except OSError as err:
+            console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
+            raise typer.Exit(1)
+        if result.returncode != 0:
+            console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
+            raise typer.Exit(result.returncode)
+
+
+class _SetupLockHandle:
+    """An agent setup lock that can be released after the boot transition."""
+
+    def __init__(self, fd: int | None, name: str, held: set[str]) -> None:
+        self._fd = fd
+        self._name = name
+        self._held = held
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        fd, self._fd = self._fd, None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+            self._held.discard(self._name)
+
+
+_setup_lock_state = threading.local()
+
+
+def _held_setup_locks() -> set[str]:
+    held = getattr(_setup_lock_state, "names", None)
+    if held is None:
+        held = set()
+        _setup_lock_state.names = held
+    return held
+
+
+def _open_safe_setup_directory(path: Path, name: str) -> int:
+    """Open an agent's setup directory without following its final path."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+    except OSError as exc:
+        raise RuntimeError(f"unsafe host setup directory for agent {name!r}: {exc}") from None
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError(f"unsafe host setup directory for agent {name!r}: {exc}") from None
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError(
+                f"unsafe host setup directory for agent {name!r}: expected a directory"
+            )
+        if info.st_uid != os.getuid():
+            raise RuntimeError(
+                f"unsafe host setup directory for agent {name!r}: owner is not the invoking user"
+            )
+        if stat.S_IMODE(info.st_mode) & 0o022:
+            raise RuntimeError(
+                f"unsafe host setup directory for agent {name!r}: group/world write is not allowed"
+            )
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+@contextmanager
+def _agent_host_setup_lock(name: str):
+    """Serialize setup/start transitions and validate the lock entry."""
     from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
 
+    held = _held_setup_locks()
+    if name in held:
+        # Factory startup holds every role lock while calling the ordinary
+        # setup/run helpers. Re-entry in this thread must not acquire a second
+        # file descriptor, while other threads still block on flock().
+        yield _SetupLockHandle(None, name, held)
+        return
+
     ensure_agent_persistent_dirs(name)
-    agent_home = get_agent_home_dir(name)
-    env = {
-        **os.environ,
-        "SAFEYOLO_AGENT_NAME": name,
-        "SAFEYOLO_AGENT_HOME": str(agent_home),
-        "SAFEYOLO_AGENT_FOLDER": folder_str,
-    }
-    console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
+    setup_dir = get_agent_home_dir(name) / ".safeyolo"
+    setup_dir_fd = _open_safe_setup_directory(setup_dir, name)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd: int | None = None
     try:
-        result = subprocess.run([str(host_script_path)], env=env, check=False)
-    except OSError as err:
-        console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
-        raise typer.Exit(1)
-    if result.returncode != 0:
-        console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
-        raise typer.Exit(result.returncode)
+        try:
+            try:
+                fd = os.open("host-setup.lock", flags, 0o600, dir_fd=setup_dir_fd)
+            except OSError as exc:
+                raise RuntimeError(f"unsafe host setup lock for agent {name!r}: {exc}") from None
+        finally:
+            os.close(setup_dir_fd)
+
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError(
+                f"unsafe host setup lock for agent {name!r}: expected a regular file"
+            )
+        if info.st_nlink != 1:
+            raise RuntimeError(
+                f"unsafe host setup lock for agent {name!r}: hard links are not allowed"
+            )
+        if info.st_uid != os.getuid():
+            raise RuntimeError(
+                f"unsafe host setup lock for agent {name!r}: owner is not the invoking user"
+            )
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+        held.add(name)
+        handle = _SetupLockHandle(fd, name, held)
+        fd = None
+        try:
+            yield handle
+        finally:
+            handle.release()
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def _capture_snapshot_blocking(
@@ -384,7 +528,14 @@ def _print_detached_guidance(name: str) -> None:
     console.print(f"  Diagnose: [bold]safeyolo agent diag {name}[/bold]")
 
 
-def _run_agent(
+def _run_agent(*args, **kwargs) -> int:
+    """Run an agent while serializing its setup/start transition."""
+    name = kwargs.get("name") if "name" in kwargs else args[0]
+    with _agent_host_setup_lock(name) as start_lock:
+        return _run_agent_impl(*args, _start_lock=start_lock, **kwargs)
+
+
+def _run_agent_impl(
     name: str,
     folder_override: str | None = None,
     yolo: bool = False,
@@ -397,6 +548,8 @@ def _run_agent(
     run_command_detached: bool = False,
     no_snapshot: bool = False,
     rename_tmux_window: bool = False,
+    *,
+    _start_lock: _SetupLockHandle | None = None,
 ) -> int:
     """Run an agent VM. Returns exit code.
 
@@ -744,6 +897,8 @@ def _run_agent(
                 except Exception as err:
                     console.print(f"[red]Failed to re-prepare VM config:[/red] {err}")
                     raise typer.Exit(1)
+            if restore_ok and _start_lock is not None:
+                _start_lock.release()
 
         # --- Cold boot (capture or passthrough) ----------------------------
         if snapshot_mode != "restore":
@@ -767,6 +922,8 @@ def _run_agent(
                 snapshot_capture_path=capture_path,
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
             )
+            if _start_lock is not None:
+                _start_lock.release()
             # agent_map was populated pre-start_sandbox (attribution_ip +
             # optional bridge socket). Nothing to re-register here.
 
