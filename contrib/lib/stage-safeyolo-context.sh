@@ -263,6 +263,8 @@ stage_safeyolo_context() {
 
     if [ "$consumer" = "codex" ]; then
         _stage_safeyolo_codex_lab_entrypoint "$agent_home"
+    fi
+    if [ "$consumer" = "codex" ] || [ "$consumer" = "pi" ]; then
         _stage_safeyolo_repo_map "$agent_home"
     fi
 

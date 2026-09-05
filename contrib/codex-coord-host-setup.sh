@@ -11,7 +11,9 @@
 
 set -euo pipefail
 
-if [ -n "${SAFEYOLO_CODEX_FACTORY_SNAPSHOT:-}" ]; then
+if [ -n "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ]; then
+    : "${SAFEYOLO_FACTORY_ROLE:?set the role bound by the factory snapshot}"
+elif [ -n "${SAFEYOLO_CODEX_FACTORY_SNAPSHOT:-}" ]; then
     : "${SAFEYOLO_CODEX_FACTORY_ROLE:?set the role bound by the factory snapshot}"
 else
     : "${SAFEYOLO_CODEX_COORD_ROOMS:?set the factory worker receive room list}"

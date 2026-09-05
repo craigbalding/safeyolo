@@ -210,6 +210,67 @@ def _turn_completed_detail(event: dict[str, Any]) -> str:
     return "turn completed tokens " + " ".join(shown)
 
 
+def _pi_tool_detail(
+    event: dict[str, Any],
+    phase: str,
+    limit: int | None,
+    *,
+    redact: bool,
+) -> str:
+    name = event.get("toolName")
+    name = name if isinstance(name, str) and name else "tool"
+    arguments = event.get("args")
+    arguments = arguments if isinstance(arguments, dict) else {}
+    details = [phase, name]
+    for key in (
+        "command",
+        "path",
+        "offset",
+        "limit",
+        "room_name",
+        "target",
+        "query",
+        "url",
+    ):
+        value = arguments.get(key)
+        if isinstance(value, (str, int)) and not isinstance(value, bool) and value != "":
+            details.append(f"{key}={value}")
+    if phase == "completed":
+        details.append("status=error" if event.get("isError") is True else "status=ok")
+    return _clean(" ".join(details), limit, redact=redact)
+
+
+def _pi_message_detail(message: dict[str, Any], limit: int | None, *, redact: bool) -> str:
+    content = message.get("content")
+    text = ""
+    if isinstance(content, list):
+        fragments = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ]
+        text = " ".join(fragment for fragment in fragments if fragment)
+    if text:
+        return _clean(text, limit, redact=redact)
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return "assistant message"
+    labels = (
+        ("input", "input"),
+        ("cacheRead", "cached"),
+        ("output", "output"),
+        ("reasoning", "reasoning"),
+    )
+    shown = [
+        f"{label}={usage[key]:,}"
+        for key, label in labels
+        if isinstance(usage.get(key), int) and not isinstance(usage[key], bool)
+    ]
+    return "assistant message" + (" tokens " + " ".join(shown) if shown else "")
+
+
 def _event_line(
     event: dict[str, Any],
     limit: int | None,
@@ -218,7 +279,7 @@ def _event_line(
     show_unknown: bool = False,
 ) -> tuple[str, str] | None:
     kind = event.get("type")
-    if kind == "safeyolo.codex.oversize":
+    if kind in {"safeyolo.codex.oversize", "safeyolo.pi.oversize"}:
         original_type = str(event.get("original_type", "unknown"))
         summary = event.get("summary")
         detail = original_type
@@ -261,9 +322,17 @@ def _event_line(
                     redact=redact,
                 )
                 label = "TOOL"
-            elif original_type == "safeyolo.codex.stderr":
+            elif original_type in {"safeyolo.codex.stderr", "safeyolo.pi.stderr"}:
                 detail = str(summary.get("text", ""))
                 label = "STDERR"
+            elif isinstance(summary.get("toolName"), str):
+                detail = _pi_tool_detail(
+                    summary,
+                    "completed" if original_type == "tool_execution_end" else "started",
+                    limit,
+                    redact=redact,
+                )
+                label = "ERROR" if summary.get("isError") == "true" else "TOOL"
             elif original_type == "safeyolo.supervisor":
                 action = str(summary.get("event", "event"))
                 detail = f"{action} {summary.get('message', '')}".rstrip()
@@ -276,7 +345,7 @@ def _event_line(
         )
         detail_limit = max(1, limit - len(marker) - 1)
         return label, f"{_clean(detail, detail_limit, redact=redact)} {marker}"
-    if kind == "safeyolo.codex.stderr":
+    if kind in {"safeyolo.codex.stderr", "safeyolo.pi.stderr"}:
         return "STDERR", _clean(event.get("text", ""), limit, redact=redact)
     if kind == "safeyolo.supervisor":
         action = str(event.get("event", "event"))
@@ -305,6 +374,23 @@ def _event_line(
         return "DONE", _turn_completed_detail(event)
     if kind == "turn.failed":
         return "ERROR", _clean(event.get("error", "turn failed"), limit, redact=redact)
+    if kind == "session":
+        return "SESSION", f"session={event.get('id', '?')}"
+    if kind == "agent_start":
+        return "TURN", "started"
+    if kind == "agent_end":
+        return "DONE", "turn completed"
+    if kind in {"tool_execution_start", "tool_execution_end"}:
+        phase = "started" if kind.endswith("start") else "completed"
+        label = "ERROR" if event.get("isError") is True else "TOOL"
+        return label, _pi_tool_detail(event, phase, limit, redact=redact)
+    if kind == "message_end":
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            label = "ERROR" if message.get("stopReason") in {"error", "aborted"} else "AGENT"
+            return label, _pi_message_detail(message, limit, redact=redact)
+    if kind == "extension_error":
+        return "ERROR", _clean(event.get("error", "extension failed"), limit, redact=redact)
     if kind in {"item.started", "item.completed"}:
         item = event.get("item")
         if isinstance(item, dict):

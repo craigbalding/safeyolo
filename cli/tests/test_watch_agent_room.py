@@ -164,6 +164,36 @@ def test_renders_turn_token_usage(watcher_module):
     )
 
 
+def test_renders_pi_session_tools_messages_and_completion(watcher_module):
+    assert watcher_module._event_line(
+        {"type": "session", "version": 3, "id": "pi-session-1"}, None
+    ) == ("SESSION", "session=pi-session-1")
+    assert watcher_module._event_line(
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "tool-1",
+            "toolName": "read",
+            "args": {"path": "/workspace/cli.py", "offset": 20, "limit": 40},
+        },
+        None,
+    ) == ("TOOL", "started read path=/workspace/cli.py offset=20 limit=40")
+    assert watcher_module._event_line(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Implemented the change."}],
+                "stopReason": "stop",
+            },
+        },
+        None,
+    ) == ("AGENT", "Implemented the change.")
+    assert watcher_module._event_line({"type": "agent_end"}, None) == (
+        "DONE",
+        "turn completed",
+    )
+
+
 def test_renders_top_level_and_item_errors(watcher_module):
     assert watcher_module._event_line(
         {"type": "error", "message": "provider failed"}, None
@@ -367,6 +397,7 @@ def test_unknown_events_are_opt_in(watcher_module, capsys):
             "crashed error_type=RuntimeError",
         ),
         ({"type": "safeyolo.codex.stderr", "text": "provider diagnostic"}, "STDERR", "provider diagnostic"),
+        ({"type": "safeyolo.pi.stderr", "text": "provider diagnostic"}, "STDERR", "provider diagnostic"),
     ],
 )
 def test_renders_supervisor_and_stderr_events(watcher_module, event, label, text):

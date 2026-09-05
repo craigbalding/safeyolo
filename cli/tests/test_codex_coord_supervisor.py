@@ -131,6 +131,39 @@ def test_config_rejects_invalid_agent_room(supervisor_module, tmp_path):
         supervisor_module.Config.load(path)
 
 
+def test_config_selects_pi_as_the_role_harness(supervisor_module, tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agent_name": "forge",
+                "rooms": ["backlog"],
+                "coordinators": ["relay"],
+                "harness": "pi",
+            }
+        )
+    )
+
+    assert supervisor_module.Config.load(path).harness == "pi"
+
+
+def test_config_rejects_an_unknown_harness(supervisor_module, tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agent_name": "forge",
+                "rooms": ["backlog"],
+                "coordinators": ["relay"],
+                "harness": "other",
+            }
+        )
+    )
+
+    with pytest.raises(supervisor_module.SupervisorError, match="harness"):
+        supervisor_module.Config.load(path)
+
+
 def _resolved(
     attention_id: str,
     *,
@@ -213,9 +246,7 @@ def _terminal_event(
     sender: str = "forge",
     notify: str | list[str] | None = None,
 ):
-    body = body or (
-        f"DONE target={WORK_ONE_TARGET} attention_id={attention_id}\nresult=complete"
-    )
+    body = body or (f"DONE target={WORK_ONE_TARGET} attention_id={attention_id}\nresult=complete")
     arguments = {"room_name": room_name, "body": body}
     if notify is not None:
         arguments["notify"] = notify
@@ -304,9 +335,7 @@ def test_send_and_send_task_normalize_to_one_outbound_event(supervisor_module):
     )["item"]
     helper = _send_task_event()["item"]
 
-    assert module._normalize_outbound_send(direct) == module._normalize_outbound_send(
-        helper
-    )
+    assert module._normalize_outbound_send(direct) == module._normalize_outbound_send(helper)
 
 
 def test_send_task_rejects_legacy_nested_result(supervisor_module):
@@ -338,6 +367,51 @@ def test_structured_wait_checkpoints_task_before_terminal(supervisor_module, tmp
     persisted = module.load_state(state_path)
     assert persisted["in_flight"] == []
     assert persisted["recent_attention_ids"] == [attention_id]
+
+
+def test_pi_events_use_the_same_terminal_checkpoint_contract(
+    supervisor_module,
+    tmp_path,
+):
+    module = supervisor_module
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    config = replace(_factory_config(module, tmp_path, "owner"), harness="pi")
+    consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
+    attention_id = "attn-" + "d" * 32
+    consumer.accept_attention_page([_resolved(attention_id)], 12)
+    codex_item = _terminal_event(attention_id, notify=["relay"])["item"]
+    arguments = codex_item["arguments"]
+    details = codex_item["result"]["structured_content"]
+
+    consumer.consume({"type": "session", "version": 3, "id": "pi-session-1"})
+    consumer.consume({"type": "agent_start"})
+    consumer.consume(
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "tool-1",
+            "toolName": "send",
+            "args": arguments,
+        }
+    )
+    consumer.consume(
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "tool-1",
+            "toolName": "send",
+            "result": {"content": [], "details": details},
+            "isError": False,
+        }
+    )
+    consumer.consume({"type": "agent_end"})
+
+    persisted = module.load_state(state_path)
+    assert persisted["thread_id"] == "pi-session-1"
+    assert persisted["in_flight"] == []
+    assert persisted["recent_attention_ids"] == [attention_id]
+    assert consumer.result.saw_turn_started is True
+    assert consumer.result.saw_turn_completed is True
+    assert consumer.result.terminal_observed is True
 
 
 def test_empty_wait_is_idle_only_from_structured_success(supervisor_module, tmp_path):
@@ -487,10 +561,7 @@ def test_target_query_values_survive_assignment_and_terminal_correlation(
     consumer.consume(
         _terminal_event(
             attention_id,
-            body=(
-                "DONE target=https://example.test/work/one?kind=issue&id=481 "
-                f"attention_id={attention_id}"
-            ),
+            body=(f"DONE target=https://example.test/work/one?kind=issue&id=481 attention_id={attention_id}"),
         )
     )
     assert state["in_flight"][0]["attention_id"] == attention_id
@@ -1527,9 +1598,7 @@ def test_one_correlation_label_cannot_complete_two_attentions(supervisor_module,
     consumer = module.EventConsumer(_config(module, tmp_path), state, state_path, {"room-1": "backlog"})
     consumer.consume(_wait_event(module, state, [_resolved(first), _resolved(second)], next_cursor=13))
 
-    consumer.consume(
-        _terminal_event(first, body=f"DONE target={WORK_ONE_TARGET}\nresult=complete")
-    )
+    consumer.consume(_terminal_event(first, body=f"DONE target={WORK_ONE_TARGET}\nresult=complete"))
 
     assert {item["attention_id"] for item in module.load_state(state_path)["in_flight"]} == {
         first,
@@ -1606,6 +1675,29 @@ def test_unavailable_resume_preserves_work_and_starts_fresh_next(
     persisted = module.load_state(state_path)
     assert persisted["thread_id"] is None
     assert persisted["in_flight"][0]["attention_id"] == attention_id
+
+
+def test_switching_harness_discards_only_the_private_session(
+    supervisor_module,
+    tmp_path,
+):
+    module = supervisor_module
+    state_path = tmp_path / "state.json"
+    state = module.empty_state()
+    state["thread_id"] = "codex-thread"
+    state["safe_cursor"] = 12
+    module.save_state(state_path, state)
+
+    module.Supervisor(
+        _config(module, tmp_path, harness="pi"),
+        state_path,
+        ["--model", "gpt-5.6-luna"],
+    )
+
+    persisted = module.load_state(state_path)
+    assert persisted["harness"] == "pi"
+    assert persisted["thread_id"] is None
+    assert persisted["safe_cursor"] == 12
 
 
 def test_recovered_work_preserves_thread_after_successful_handoff(
@@ -1949,6 +2041,123 @@ def test_fake_codex_harness_captures_prompt_and_emits_valid_events(
     assert next(capture.glob("*.stdin")).read_text() == "supervisor checkpoint\n"
 
 
+def test_fake_pi_harness_receives_checkpoint_and_resumes_exact_session(
+    supervisor_module,
+    tmp_path,
+    monkeypatch,
+):
+    module = supervisor_module
+    fake_pi = tmp_path / "fake-pi"
+    capture = tmp_path / "capture"
+    fake_pi.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "capture = Path(os.environ['TEST_PI_CAPTURE'])\n"
+        "capture.mkdir(exist_ok=True)\n"
+        "index = len(list(capture.glob('*.argv')))\n"
+        "(capture / f'{index}.argv').write_text(json.dumps(sys.argv[1:]))\n"
+        "(capture / f'{index}.stdin').write_text(sys.stdin.read())\n"
+        "args = sys.argv[1:]\n"
+        "session = args[args.index('--session') + 1] if '--session' in args else 'pi-session-1'\n"
+        "print(json.dumps({'type':'session','version':3,'id':session}), flush=True)\n"
+        "print(json.dumps({'type':'agent_start'}), flush=True)\n"
+        "print(json.dumps({'type':'message_update','assistantMessageEvent':"
+        "{'type':'text_delta','delta':'noisy'}}), flush=True)\n"
+        "print(json.dumps({'type':'message_end','message':"
+        "{'role':'user','content':[{'type':'text','text':'checkpoint'}]}}), flush=True)\n"
+        "print(json.dumps({'type':'agent_end'}), flush=True)\n"
+    )
+    fake_pi.chmod(0o755)
+    monkeypatch.setenv("SAFEYOLO_PI_BIN", str(fake_pi))
+    monkeypatch.setenv("TEST_PI_CAPTURE", str(capture))
+    published = []
+
+    def publish(path, *, method="GET", body=None):
+        published.append((path, method, body))
+        return {"sequence": len(published)}
+
+    monkeypatch.setattr(module, "_api_json", publish)
+    config = _config(module, tmp_path, harness="pi", agent_room="forge-agent")
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+
+    first = module.run_invocation(
+        config,
+        state,
+        state_path,
+        {"room-1": "backlog"},
+        ["--provider", "openai-codex", "--model", "gpt-5.6-luna", "--thinking", "xhigh"],
+    )
+    second = module.run_invocation(
+        config,
+        state,
+        state_path,
+        {"room-1": "backlog"},
+        ["--provider", "openai-codex", "--model", "gpt-5.6-luna", "--thinking", "xhigh"],
+    )
+
+    assert first.saw_turn_started and first.saw_turn_completed
+    assert second.saw_turn_started and second.saw_turn_completed
+    first_args = json.loads((capture / "0.argv").read_text())
+    second_args = json.loads((capture / "1.argv").read_text())
+    assert first_args[:2] == ["--mode", "json"]
+    assert "--print" in first_args
+    assert "--session" not in first_args
+    session_index = second_args.index("--session")
+    assert second_args[session_index + 1] == "pi-session-1"
+    assert "--no-session" not in second_args
+    assert (
+        (capture / "0.stdin").read_text().startswith("You are in one deterministic, supervised SafeYolo factory cycle.")
+    )
+    assert (capture / "1.stdin").read_text() == (capture / "0.stdin").read_text()
+    assert [json.loads(call[2]["body"])["type"] for call in published] == [
+        "session",
+        "agent_start",
+        "agent_end",
+        "session",
+        "agent_start",
+        "agent_end",
+    ]
+    assert all(call[0] == "/api/coord/rooms/forge-agent/send" for call in published)
+
+
+def test_pi_agent_room_retains_final_text_without_stream_or_reasoning_payload(
+    supervisor_module,
+    tmp_path,
+):
+    module = supervisor_module
+    config = _config(module, tmp_path, harness="pi", agent_room="forge-agent")
+    event = {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "large private stream"},
+                {"type": "text", "text": "DONE target=https://example.test/work/1"},
+            ],
+            "provider": "openai-codex",
+            "model": "gpt-5.6-luna",
+            "usage": {"input": 120, "output": 8},
+            "stopReason": "stop",
+        },
+    }
+
+    retained = json.loads(module._agent_room_stdout_body(config, event, json.dumps(event)))
+
+    assert retained == {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "DONE target=https://example.test/work/1"}],
+            "provider": "openai-codex",
+            "model": "gpt-5.6-luna",
+            "usage": {"input": 120, "output": 8},
+            "stopReason": "stop",
+        },
+    }
+
+
 def test_backoff_is_exponential_and_bounded(supervisor_module, tmp_path):
     module = supervisor_module
     state_path = tmp_path / "state.json"
@@ -2078,6 +2287,7 @@ def test_pre_target_checkpoint_requires_verified_drain_before_upgrade(
     module = supervisor_module
     state = module.empty_state()
     state["version"] = version
+    state.pop("harness")
     state["in_flight"] = [
         {
             "attention_id": "attn-" + "6" * 32,
@@ -2111,6 +2321,7 @@ def test_pre_target_checkpoint_rejects_awaiting_work_before_upgrade(
     module = supervisor_module
     state = module.empty_state()
     state["version"] = version
+    state.pop("harness")
     state["in_flight"] = []
     if version < 5:
         state["awaiting_handoff"] = {
@@ -2142,6 +2353,7 @@ def test_version_five_checkpoint_migrates_only_after_drain(supervisor_module, tm
     module = supervisor_module
     state = module.empty_state()
     state["version"] = 5
+    state.pop("harness")
     state["thread_id"] = "legacy-wait-thread"
 
     migrated = module.load_state(_write_json(tmp_path / "v5-empty-state.json", state))
@@ -2159,6 +2371,7 @@ def test_late_legacy_task_is_rejected_after_empty_v5_upgrade(
     module = supervisor_module
     state = module.empty_state()
     state["version"] = 5
+    state.pop("harness")
     state_path = _write_json(tmp_path / "v5-empty-state.json", state)
     migrated = module.load_state(state_path)
     consumer = module.EventConsumer(
@@ -2195,6 +2408,7 @@ def test_inspect_state_rejects_pending_pre_target_checkpoint_without_mutation(
     module = supervisor_module
     state = module.empty_state()
     state["version"] = 5
+    state.pop("harness")
     state["in_flight"] = [
         {
             "attention_id": "attn-" + "5" * 32,
@@ -2226,6 +2440,7 @@ def test_version_three_checkpoint_migrates_with_empty_brief_context(
     module = supervisor_module
     state = module.empty_state()
     state["version"] = 3
+    state.pop("harness")
     state["awaiting_handoff"] = None
     state.pop("awaiting_handoffs")
     state.pop("briefs")
@@ -2244,6 +2459,7 @@ def test_version_four_checkpoint_requires_drain_for_awaiting_handoff(
     module = supervisor_module
     state = module.empty_state()
     state["version"] = 4
+    state.pop("harness")
     state["awaiting_handoff"] = {
         "room_name": "backlog",
         "request": "REVIEW_READY",
@@ -2264,6 +2480,7 @@ def test_version_five_checkpoint_requires_drain_for_target_work(
     module = supervisor_module
     state = module.empty_state()
     state["version"] = 5
+    state.pop("harness")
     state["in_flight"] = [
         {
             "attention_id": "attn-" + "5" * 32,
@@ -2314,6 +2531,61 @@ def test_preflight_requires_chatgpt_subscription(supervisor_module, tmp_path, mo
 
     with pytest.raises(module.SupervisorError, match="ChatGPT subscription"):
         module.preflight(_config(module, tmp_path))
+
+
+def test_pi_preflight_checks_the_selected_subscription_and_coord(
+    supervisor_module,
+    tmp_path,
+    monkeypatch,
+):
+    module = supervisor_module
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        return module.subprocess.CompletedProcess(command, 0, "", "")
+
+    def api(path, **_kwargs):
+        if path == "/health":
+            return {"agent_api": "ok"}
+        return {"room_id": "room-1", "permissions": ["send", "receive"]}
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(module, "_api_json", api)
+    config = _config(module, tmp_path, harness="pi")
+
+    rooms = module.preflight(
+        config,
+        module.empty_state(),
+        ["--provider", "openai-codex", "--model", "gpt-5.6-luna"],
+    )
+
+    assert rooms == {"room-1": "backlog"}
+    assert commands == [
+        ["pi", "--version"],
+        ["pi", "auth", "check", "--provider", "openai-codex", "--json"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "argument",
+    ["--mode", "--session=other", "--no-session", "--no-extensions", "--tools"],
+)
+def test_pi_preflight_rejects_options_owned_by_the_supervisor(
+    supervisor_module,
+    tmp_path,
+    monkeypatch,
+    argument,
+):
+    module = supervisor_module
+    monkeypatch.setattr(module, "_api_json", lambda *_args, **_kwargs: {"agent_api": "ok"})
+
+    with pytest.raises(module.SupervisorError, match="owned by the factory supervisor"):
+        module.preflight(
+            _config(module, tmp_path, harness="pi"),
+            module.empty_state(),
+            [argument],
+        )
 
 
 def test_preflight_allows_mcp_timeout_below_external_wait(supervisor_module, tmp_path, monkeypatch):
@@ -2833,9 +3105,7 @@ def test_agent_room_receives_each_codex_stdout_event_and_coalesces_stderr_chunk(
         "turn.completed",
     ]
     stderr_call = sends[event_types.index("safeyolo.codex.stderr")]
-    assert json.loads(stderr_call[2]["body"])["text"] == (
-        "provider diagnostic one\nprovider diagnostic two\n"
-    )
+    assert json.loads(stderr_call[2]["body"])["text"] == ("provider diagnostic one\nprovider diagnostic two\n")
     assert all(call[0] == "/api/coord/rooms/forge-agent/send" for call in sends)
     assert all(call[2]["notify"] == "none" for call in sends)
 
@@ -2849,9 +3119,7 @@ def test_oversize_codex_event_is_one_head_tail_coord_message(supervisor_module):
                 "type": "command_execution",
                 "status": "completed",
                 "command": "rg -n pattern /workspace",
-                "aggregated_output": "HEAD-SENTINEL\n"
-                + "x" * module.MAX_AGENT_ROOM_BODY_BYTES
-                + "\nTAIL-SENTINEL",
+                "aggregated_output": "HEAD-SENTINEL\n" + "x" * module.MAX_AGENT_ROOM_BODY_BYTES + "\nTAIL-SENTINEL",
             },
         },
         separators=(",", ":"),
@@ -2870,6 +3138,24 @@ def test_oversize_codex_event_is_one_head_tail_coord_message(supervisor_module):
     assert event["summary"]["command"] == "rg -n pattern /workspace"
     assert "HEAD-SENTINEL" in event["head"]
     assert "TAIL-SENTINEL" in event["tail"]
+
+
+def test_oversize_pi_event_keeps_its_harness_identity(supervisor_module):
+    module = supervisor_module
+    original = json.dumps(
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "tool-1",
+            "toolName": "read",
+            "result": {"content": "x" * module.MAX_AGENT_ROOM_BODY_BYTES},
+            "isError": False,
+        },
+        separators=(",", ":"),
+    )
+
+    bounded = module._bounded_agent_room_body(original, "safeyolo.pi.stdout")
+
+    assert json.loads(bounded)["type"] == "safeyolo.pi.oversize"
 
 
 def test_oversize_agent_room_event_does_not_abort_codex_turn(
@@ -3010,11 +3296,7 @@ def test_signal_during_invocation_discards_only_interrupted_thread(
 ):
     module = supervisor_module
     fake_codex = tmp_path / "fake-codex"
-    fake_codex.write_text(
-        "#!/usr/bin/env python3\n"
-        "import time\n"
-        "time.sleep(60)\n"
-    )
+    fake_codex.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
     fake_codex.chmod(0o755)
     monkeypatch.setenv("SAFEYOLO_CODEX_BIN", str(fake_codex))
     attention_id = "attn-" + "9" * 32

@@ -173,7 +173,7 @@ nodes:
       obtain_from: "pytest, pytest-cov, and Hypothesis distributions named and hash-locked in uv.lock, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 5e4e16bdda5ae492f539527cfd0c4f681f2c8a13a42fbc73516c2b4901e4fe09
+          sha256: 84697e9d9b29511a5d2bc93a0a53aba10ecc8d93d64cec53ce52b5f102a48b76
         - path: uv.lock
           sha256: 7c62d9e115804af47aae79f49ab8b039eeb624242a3a48379f619f6c32f9dad0
         - path: scripts/check_test_assurance.py
@@ -327,11 +327,11 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: e1f375549b4ba258996ac855913f8d0fbfd8265e0a4f7a7db9c5717c60ef0666
+          sha256: f28a76d9814788395bcf64a097d7115488ada51e8b1541e469483330310163a6
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: c826bd2f974cc6299d9bd365cf0c703a0c746d97596ee038819b5e6b4caf228d
         - path: cli/tests/test_factory_doctor.py
-          sha256: cc5361b29614c2f9eebfa63dab3ffcc6b18863b017c00c9e5f25db1f3ff3d61e
+          sha256: 549b0230109891edbf996df3210c7f9ce1956dcca330d34a6866df140ba51dad
       setup: "Use the trusted base's locked Python environment."
       verify: "sha256sum cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py cli/tests/test_factory_doctor.py"
       run: "uv run pytest -q cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py cli/tests/test_factory_doctor.py"
@@ -506,7 +506,7 @@ nodes:
       obtain_from: "pytest-repeat and pytest-xdist in the hash-bearing tools/acceptance stress requirements export, layered over the exact root project environment"
       sources:
         - path: pyproject.toml
-          sha256: 5e4e16bdda5ae492f539527cfd0c4f681f2c8a13a42fbc73516c2b4901e4fe09
+          sha256: 84697e9d9b29511a5d2bc93a0a53aba10ecc8d93d64cec53ce52b5f102a48b76
         - path: uv.lock
           sha256: 7c62d9e115804af47aae79f49ab8b039eeb624242a3a48379f619f6c32f9dad0
         - path: tools/acceptance/requirements-stress.txt
@@ -560,7 +560,7 @@ nodes:
       obtain_from: "pip-audit declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 5e4e16bdda5ae492f539527cfd0c4f681f2c8a13a42fbc73516c2b4901e4fe09
+          sha256: 84697e9d9b29511a5d2bc93a0a53aba10ecc8d93d64cec53ce52b5f102a48b76
         - path: uv.lock
           sha256: 7c62d9e115804af47aae79f49ab8b039eeb624242a3a48379f619f6c32f9dad0
         - path: tools/acceptance/pyproject.toml

@@ -24,9 +24,7 @@ from .platform import AgentPlatform, get_platform
 DoctorStatus = Literal["PASS", "WARN", "FAIL"]
 _AGENT_ID_RE = re.compile(r"ag-[0-9a-f]{32}")
 _SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
-_BACKLOG_COORDINATOR_CONTRACT_SHA256 = (
-    "e06faa79906fa0997e5fa9fc2335e891b98ed007789f8e60fa6e3b5456d8196b"
-)
+_BACKLOG_COORDINATOR_CONTRACT_SHA256 = "e06faa79906fa0997e5fa9fc2335e891b98ed007789f8e60fa6e3b5456d8196b"
 _SUPERVISOR_LIMITS = {
     "wait_seconds": (1, 300, 300),
     "page_limit": (1, 16, 16),
@@ -37,7 +35,7 @@ _SUPERVISOR_LIMITS = {
     "backoff_initial_seconds": (1, 300, 5),
     "backoff_max_seconds": (1, 3600, 300),
 }
-_COMMAND_HEREDOC_START = 'cat > "$AGENT_HOME/.safeyolo-command" <<\'EOF\'\n'
+_COMMAND_HEREDOC_START = "cat > \"$AGENT_HOME/.safeyolo-command\" <<'EOF'\n"
 _COMMAND_HEREDOC_END = '\nEOF\nchmod +x "$AGENT_HOME/.safeyolo-command"'
 _INTERACTIVE_CODEX_EXEC = 'exec codex "${args[@]}" "$@"\n'
 _SUPERVISED_CODEX_EXEC = (
@@ -45,10 +43,16 @@ _SUPERVISED_CODEX_EXEC = (
     '"$HOME/.safeyolo/codex-coord-supervisor.py" '
     '-- "${supervised_args[@]}" "$@"\n'
 )
+_PI_COMMAND_HEREDOC_START = "cat > \"$pi_launcher_tmp\" <<'EOF'\n"
+_PI_COMMAND_HEREDOC_END = "\nEOF\n"
+_INTERACTIVE_PI_EXEC = 'exec "$pi_bin" "${args[@]}" "$@"\n'
+_SUPERVISED_PI_EXEC = (
+    'export SAFEYOLO_PI_BIN="$pi_bin"\nexec python3 "$HOME/.safeyolo/codex-coord-supervisor.py" -- "${args[@]}" "$@"\n'
+)
 _COORD_INSTALL_BLOCK = (
     "# ---- coord-mcp-bootstrap: mcp+httpx install (guarded, idempotent) ----\n"
     'SY_COORD_VENV="$HOME/.safeyolo/venv"\n'
-    "if ! \"$SY_COORD_VENV/bin/python\" -c 'import httpx; "
+    'if ! "$SY_COORD_VENV/bin/python" -c \'import httpx; '
     "from mcp.server.mcpserver import MCPServer' >/dev/null 2>&1; then\n"
     '    if ! { python3 -m venv "$SY_COORD_VENV" \\\n'
     '        && "$SY_COORD_VENV/bin/pip" install --quiet "mcp>=2.0" "httpx>=0.25"; } >&2; then\n'
@@ -56,7 +60,7 @@ _COORD_INSTALL_BLOCK = (
     ' refusing to start the harness without safeyolo-coord" >&2\n'
     "        exit 1\n"
     "    fi\n"
-    "    if ! \"$SY_COORD_VENV/bin/python\" -c 'import httpx; "
+    '    if ! "$SY_COORD_VENV/bin/python" -c \'import httpx; '
     "from mcp.server.mcpserver import MCPServer' >/dev/null 2>&1; then\n"
     '        echo "coord-mcp: dependency verification failed in $SY_COORD_VENV;'
     ' refusing to start the harness without safeyolo-coord" >&2\n'
@@ -395,8 +399,7 @@ def _inspect_role(
             _fail(
                 "agent-identity",
                 f"{label} is not configured",
-                f"run `safeyolo agent add {agent_name} \"$PWD\" --no-run`, "
-                f"then `safeyolo factory run {name}`",
+                f'run `safeyolo agent add {agent_name} "$PWD" --no-run`, then `safeyolo factory run {name}`',
             )
         )
         return
@@ -489,11 +492,12 @@ def _inspect_role(
                     )
                 )
 
-    _inspect_host_script(checks, label, metadata)
+    harness = role.get("harness", "codex")
+    _inspect_host_script(checks, label, metadata, harness)
     _inspect_staging(checks, name, label, role_name, role, payload, snapshot_path, home)
     owned_process = _inspect_checkpoint(checks, name, label, home)
     if running and platform is not None:
-        _inspect_processes(checks, label, agent_name, platform, owned_process)
+        _inspect_processes(checks, label, agent_name, harness, platform, owned_process)
 
 
 def _resolve_configured_path(value: Any) -> Path:
@@ -502,7 +506,12 @@ def _resolve_configured_path(value: Any) -> Path:
     return Path(value).expanduser().resolve()
 
 
-def _inspect_host_script(checks: list[FactoryDoctorCheck], label: str, metadata: dict[str, Any]) -> None:
+def _inspect_host_script(
+    checks: list[FactoryDoctorCheck],
+    label: str,
+    metadata: dict[str, Any],
+    harness: str,
+) -> None:
     value = metadata.get("host_script")
     try:
         path = _resolve_configured_path(value)
@@ -516,25 +525,21 @@ def _inspect_host_script(checks: list[FactoryDoctorCheck], label: str, metadata:
         )
         return
     try:
-        expected = _bundled_contrib_path("codex-coord-host-setup.sh")
+        script_name = f"{harness}-coord-host-setup.sh"
+        expected = _bundled_contrib_path(script_name)
         content_matches = _bounded_bytes(path, 512 * 1024) == _bounded_bytes(expected, 512 * 1024)
     except (OSError, ValueError):
         content_matches = False
-    if (
-        path.name != "codex-coord-host-setup.sh"
-        or not path.is_file()
-        or not os.access(path, os.X_OK)
-        or not content_matches
-    ):
+    if path.name != script_name or not path.is_file() or not os.access(path, os.X_OK) or not content_matches:
         checks.append(
             _fail(
                 "host-script",
-                f"{label} is not bound to executable @codex-coord setup",
+                f"{label} is not bound to executable @{harness}-coord setup",
                 "agent host_script binding; run `safeyolo factory run FACTORY`",
             )
         )
     else:
-        checks.append(FactoryDoctorCheck("PASS", "host-script", f"{label} uses @codex-coord"))
+        checks.append(FactoryDoctorCheck("PASS", "host-script", f"{label} uses @{harness}-coord"))
 
 
 def _expected_supervisor_config(agent_name: str, role_name: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -556,6 +561,7 @@ def _expected_supervisor_config(agent_name: str, role_name: str, payload: dict[s
         "agent_room": f"{agent_name}-agent",
         "rooms": [payload["room"]],
         "coordinators": coordinators,
+        "harness": payload["roles"][role_name].get("harness", "codex"),
         "workspace": "/workspace",
         "factory": {
             "schema": payload["schema"],
@@ -599,32 +605,40 @@ def _inspect_staging(
     home: Path,
 ) -> None:
     recovery = f"staged factory files; run `safeyolo factory run {name}`"
+    harness = role.get("harness", "codex")
     command = home / ".safeyolo-command"
     supervisor = home / ".safeyolo/codex-coord-supervisor.py"
     supervisor_config = home / ".safeyolo/codex-coord-supervisor.json"
     mcp_server = home / ".safeyolo/safeyolo-coord-mcp.py"
     launcher = home / ".safeyolo/safeyolo-coord-mcp-launcher"
+    pi_extension = home / ".pi/agent/extensions/safeyolo-coord.ts"
     instructions = home / ".safeyolo/AGENTS.md"
-    required_executable = (command, supervisor, mcp_server, launcher)
+    required_executable = (command, supervisor, mcp_server, launcher) if harness == "codex" else (command, supervisor)
     missing = [path.name for path in required_executable if not path.is_file() or not os.access(path, os.X_OK)]
-    if missing or not supervisor_config.is_file() or not instructions.is_file():
+    required_files = (
+        (supervisor_config, instructions) if harness == "codex" else (supervisor_config, instructions, pi_extension)
+    )
+    missing_files = [path.name for path in required_files if not path.is_file()]
+    if missing or missing_files:
         names = missing[:]
-        if not supervisor_config.is_file():
-            names.append(supervisor_config.name)
-        if not instructions.is_file():
-            names.append(instructions.name)
+        names.extend(missing_files)
         checks.append(_fail("staging", f"{label} missing or non-executable={','.join(names)}", recovery))
         return
     try:
         command_text = _bounded_text(command, 512 * 1024)
         staged = _bounded_json(supervisor_config, 512 * 1024)
         instructions_text = _bounded_text(instructions, 2 * 1024 * 1024)
-        expected_command = _expected_supervised_command()
-        expected_artifacts = {
-            supervisor: _bundled_contrib_path("codex-coord-supervisor.py"),
-            mcp_server: _bundled_contrib_path("safeyolo-coord-mcp.py"),
-            launcher: _bundled_contrib_path("safeyolo-coord-mcp-launcher.sh"),
-        }
+        expected_command = _expected_supervised_command(harness)
+        expected_artifacts = {supervisor: _bundled_contrib_path("codex-coord-supervisor.py")}
+        if harness == "codex":
+            expected_artifacts.update(
+                {
+                    mcp_server: _bundled_contrib_path("safeyolo-coord-mcp.py"),
+                    launcher: _bundled_contrib_path("safeyolo-coord-mcp-launcher.sh"),
+                }
+            )
+        else:
+            expected_artifacts[pi_extension] = _bundled_contrib_path("pi-coord-extension.ts")
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         checks.append(_fail("staging", f"{label} staged files are unreadable ({type(exc).__name__})", recovery))
         return
@@ -681,37 +695,59 @@ def _inspect_staging(
         _validate_supervisor_config(staged, expected)
     except ValueError:
         checks.append(
-            _fail("staging", f"{label} supervisor config does not match the declared staged snapshot and role", recovery)
+            _fail(
+                "staging", f"{label} supervisor config does not match the declared staged snapshot and role", recovery
+            )
         )
         return
     expected_instructions = _expected_staged_instructions(staged_role["contract_text"])
     if instructions_text != expected_instructions:
-        checks.append(_fail("staging", f"{label} staged role contract does not match staged snapshot {staged_identifier}", recovery))
+        checks.append(
+            _fail(
+                "staging", f"{label} staged role contract does not match staged snapshot {staged_identifier}", recovery
+            )
+        )
         return
     if not snapshot_path.is_file():
         checks.append(_fail("staging", f"{label} bound snapshot is missing", recovery))
         return
-    try:
-        codex_config = tomllib.loads(_bounded_text(home / ".codex/config.toml", 512 * 1024))
-        mcp = codex_config["mcp_servers"]["safeyolo-coord"]
-        timeout = mcp.get("tool_timeout_sec")
-    except (OSError, UnicodeError, ValueError, KeyError, TypeError, tomllib.TOMLDecodeError) as exc:
-        checks.append(_fail("staging", f"{label} Codex MCP config is unreadable ({type(exc).__name__})", recovery))
-        return
-    if (
-        mcp.get("command") != "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
-        or mcp.get("args") != []
-        or (
-            timeout is not None
-            and (
-                isinstance(timeout, bool)
-                or not isinstance(timeout, int | float)
-                or timeout <= 0
+    if harness == "codex":
+        try:
+            codex_config = tomllib.loads(_bounded_text(home / ".codex/config.toml", 512 * 1024))
+            mcp = codex_config["mcp_servers"]["safeyolo-coord"]
+            timeout = mcp.get("tool_timeout_sec")
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            KeyError,
+            TypeError,
+            tomllib.TOMLDecodeError,
+        ) as exc:
+            checks.append(
+                _fail(
+                    "staging",
+                    f"{label} Codex MCP config is unreadable ({type(exc).__name__})",
+                    recovery,
+                )
             )
-        )
-    ):
-        checks.append(_fail("staging", f"{label} Codex MCP binding or timeout is invalid", recovery))
-        return
+            return
+        if (
+            mcp.get("command") != "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
+            or mcp.get("args") != []
+            or (
+                timeout is not None
+                and (isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0)
+            )
+        ):
+            checks.append(
+                _fail(
+                    "staging",
+                    f"{label} Codex MCP binding or timeout is invalid",
+                    recovery,
+                )
+            )
+            return
     approved_identifier = snapshot_id(payload)
     if staged_identifier != approved_identifier:
         checks.append(
@@ -729,7 +765,7 @@ def _inspect_staging(
                 "PASS",
                 "staging",
                 f"{label} approved_snapshot={approved_identifier} staged_snapshot={staged_identifier} "
-                "command, supervisor, role, and MCP binding match",
+                f"command, supervisor, role, and {harness} Coord binding match",
             )
         )
 
@@ -769,29 +805,34 @@ def _expected_staged_instructions(contract_text: str) -> str:
     return baseline.rstrip() + "\n\n---\n\n" + contract_text.lstrip()
 
 
-def _expected_supervised_command() -> str:
-    source = _bounded_text(_bundled_contrib_path("codex-host-setup.sh"), 2 * 1024 * 1024)
-    if source.count(_COMMAND_HEREDOC_START) != 1:
+def _expected_supervised_command(harness: str = "codex") -> str:
+    source_name = "codex-host-setup.sh" if harness == "codex" else "pi-host-setup.sh"
+    heredoc_start = _COMMAND_HEREDOC_START if harness == "codex" else _PI_COMMAND_HEREDOC_START
+    heredoc_end = _COMMAND_HEREDOC_END if harness == "codex" else _PI_COMMAND_HEREDOC_END
+    interactive = _INTERACTIVE_CODEX_EXEC if harness == "codex" else _INTERACTIVE_PI_EXEC
+    supervised = _SUPERVISED_CODEX_EXEC if harness == "codex" else _SUPERVISED_PI_EXEC
+    source = _bounded_text(_bundled_contrib_path(source_name), 2 * 1024 * 1024)
+    if source.count(heredoc_start) != 1:
         raise ValueError("cannot locate staged command template")
-    template = source.split(_COMMAND_HEREDOC_START, 1)[1]
-    if template.count(_COMMAND_HEREDOC_END) != 1:
+    template = source.split(heredoc_start, 1)[1]
+    if template.count(heredoc_end) != 1:
         raise ValueError("cannot locate staged command terminator")
-    command = template.split(_COMMAND_HEREDOC_END, 1)[0] + "\n"
-    if command.count(_INTERACTIVE_CODEX_EXEC) != 1:
-        raise ValueError("cannot locate Codex command handoff")
-    command = command.replace(_INTERACTIVE_CODEX_EXEC, _SUPERVISED_CODEX_EXEC)
-    if command.count(_SUPERVISED_CODEX_EXEC) != 1:
+    command = template.split(heredoc_end, 1)[0] + "\n"
+    if command.count(interactive) != 1:
+        raise ValueError(f"cannot locate {harness} command handoff")
+    command = command.replace(interactive, supervised)
+    if command.count(supervised) != 1:
         raise ValueError("cannot construct supervised command handoff")
-    return command.replace(_SUPERVISED_CODEX_EXEC, _COORD_INSTALL_BLOCK + _SUPERVISED_CODEX_EXEC)
+    if harness == "codex":
+        command = command.replace(supervised, _COORD_INSTALL_BLOCK + supervised)
+    return command
 
 
 def _bounded_json(path: Path, maximum: int) -> Any:
     return json.loads(_bounded_text(path, maximum))
 
 
-def _inspect_checkpoint(
-    checks: list[FactoryDoctorCheck], name: str, label: str, home: Path
-) -> dict[str, Any] | None:
+def _inspect_checkpoint(checks: list[FactoryDoctorCheck], name: str, label: str, home: Path) -> dict[str, Any] | None:
     path = home / ".safeyolo/codex-coord-supervisor-state.json"
     recovery = (
         f"supervisor checkpoint for {label}; for a version 1-5 upgrade, keep the "
@@ -902,12 +943,22 @@ def _process_rows(
         if match is not None:
             executables[int(match.group(1))] = match.group(2)
     expected: dict[str, str] = {}
-    expected_keys = {"python3", "mcp-python", "codex-command", "codex-executable", "node-executable"}
+    required_expected_keys = {
+        "python3",
+        "mcp-python",
+        "codex-command",
+        "codex-executable",
+        "node-executable",
+    }
+    allowed_expected_keys = required_expected_keys | {
+        "pi-command",
+        "pi-executable",
+    }
     for line in expected_text.splitlines():
         key, separator, value = line.partition("=")
-        if separator and key in expected_keys:
+        if separator and key in allowed_expected_keys:
             expected[key] = value
-    if set(expected) != expected_keys:
+    if not required_expected_keys.issubset(expected):
         raise ValueError("expected process executable identity is missing")
     try:
         fields = stat.strip().rsplit(") ", 1)[1].split()
@@ -924,13 +975,19 @@ def _command_tokens(command: str) -> list[str]:
         return []
 
 
-def _is_supervisor_process(command: str, executable: str | None, expected: dict[str, str]) -> bool:
+def _is_supervisor_process(
+    command: str,
+    executable: str | None,
+    expected: dict[str, str],
+    harness: str,
+) -> bool:
     tokens = _command_tokens(command)
+    expected_python = expected["mcp-python"] if harness == "codex" else expected["python3"]
     return (
         len(tokens) >= 2
-        and tokens[0] == "/home/agent/.safeyolo/venv/bin/python"
+        and Path(tokens[0]).name in {"python", "python3", "python3.13"}
         and tokens[1] == "/home/agent/.safeyolo/codex-coord-supervisor.py"
-        and executable == expected["mcp-python"]
+        and executable == expected_python
     )
 
 
@@ -947,11 +1004,7 @@ def _is_codex_process(command: str, executable: str | None, expected: dict[str, 
         if Path(executable).name != Path(expected["codex-command"]).name:
             return False
         return _path_is_within_codex_tool_root(executable, expected["codex-command"])
-    if (
-        len(tokens) < 3
-        or Path(tokens[0]).name not in {"node", "nodejs"}
-        or tokens[2] != "exec"
-    ):
+    if len(tokens) < 3 or Path(tokens[0]).name not in {"node", "nodejs"} or tokens[2] != "exec":
         return False
     if executable != expected["node-executable"] and not (
         executable is not None
@@ -970,6 +1023,25 @@ def _is_codex_process(command: str, executable: str | None, expected: dict[str, 
     if not entrypoint.startswith("/") or not command_path.startswith("/"):
         return False
     return _path_is_within_codex_tool_root(entrypoint, command_path)
+
+
+def _is_pi_process(command: str, executable: str | None, expected: dict[str, str]) -> bool:
+    tokens = _command_tokens(command)
+    if not tokens or executable is None:
+        return False
+    pi_command = expected["pi-command"]
+    if Path(tokens[0]).name == Path(pi_command).name:
+        return executable in {expected["pi-executable"], expected["node-executable"]}
+    if len(tokens) < 2 or Path(tokens[0]).name not in {"node", "nodejs"}:
+        return False
+    if executable != expected["node-executable"]:
+        return False
+    entrypoint = tokens[1]
+    if entrypoint in {pi_command, expected["pi-executable"]}:
+        return True
+    if not entrypoint.startswith("/") or not pi_command.startswith("/"):
+        return False
+    return Path(entrypoint).is_relative_to(Path(pi_command).parent.parent)
 
 
 def _path_is_within_codex_tool_root(path: str, command_path: str) -> bool:
@@ -1008,6 +1080,7 @@ def _inspect_processes(
     checks: list[FactoryDoctorCheck],
     label: str,
     agent_name: str,
+    harness: str,
     platform: AgentPlatform,
     owned_process: dict[str, Any] | None,
 ) -> None:
@@ -1024,6 +1097,7 @@ def _inspect_processes(
         "done; "
         "python3_path=$(command -v python3 2>/dev/null || true); "
         'codex_path=$(command -v "${SAFEYOLO_CODEX_BIN:-codex}" 2>/dev/null || true); '
+        'pi_path=$(command -v "${SAFEYOLO_PI_BIN:-pi}" 2>/dev/null || true); '
         "node_path=$(command -v node 2>/dev/null || true); "
         f"printf '{_PROCESS_EXPECTED_MARKER}\\n'; "
         'printf \'python3=%s\\n\' "$(readlink -f "$python3_path" 2>/dev/null || true)"; '
@@ -1031,6 +1105,8 @@ def _inspect_processes(
         '"$(readlink -f /home/agent/.safeyolo/venv/bin/python 2>/dev/null || true)"; '
         "printf 'codex-command=%s\\n' \"$codex_path\"; "
         'printf \'codex-executable=%s\\n\' "$(readlink -f "$codex_path" 2>/dev/null || true)"; '
+        "printf 'pi-command=%s\\n' \"$pi_path\"; "
+        'printf \'pi-executable=%s\\n\' "$(readlink -f "$pi_path" 2>/dev/null || true)"; '
         'printf \'node-executable=%s\\n\' "$(readlink -f "$node_path" 2>/dev/null || true)"; '
         f"printf '\\n{_PROCESS_STAT_MARKER}\\n'; cat {stat_path} 2>/dev/null || true"
     )
@@ -1074,7 +1150,7 @@ def _inspect_processes(
     supervisors = {
         pid
         for pid, (_parent, _group, process_command) in rows.items()
-        if _is_supervisor_process(process_command, executables.get(pid), expected)
+        if _is_supervisor_process(process_command, executables.get(pid), expected, harness)
     }
 
     def has_mcp(codex_pid: int) -> bool:
@@ -1084,11 +1160,15 @@ def _inspect_processes(
             for pid, (_parent, _process_group, process_command) in rows.items()
         )
 
-    def is_codex(pid: int) -> bool:
+    def is_harness(pid: int) -> bool:
         row = rows.get(pid)
-        return row is not None and row[1] == pid and _is_codex_process(row[2], executables.get(pid), expected)
+        if row is None or row[1] != pid:
+            return False
+        if harness == "codex":
+            return _is_codex_process(row[2], executables.get(pid), expected)
+        return _is_pi_process(row[2], executables.get(pid), expected)
 
-    # A bounded supervisor owns no Codex process between turns.  The
+    # A bounded supervisor owns no harness process between turns. The
     # supervisor itself is the durable health signal in that interval.
     if owned_process is None:
         if supervisors:
@@ -1096,7 +1176,7 @@ def _inspect_processes(
                 FactoryDoctorCheck(
                     "PASS",
                     "processes",
-                    f"{label} bounded supervisor is between Codex turns",
+                    f"{label} bounded supervisor is between {'Codex' if harness == 'codex' else 'Pi'} turns",
                 )
             )
         else:
@@ -1107,11 +1187,11 @@ def _inspect_processes(
     if owned is not None and start_time == owned_process["start_time"]:
         parent = owned[0]
         missing: list[str] = []
-        if not is_codex(owned_pid):
-            missing.append("codex")
+        if not is_harness(owned_pid):
+            missing.append(harness)
         if parent not in supervisors:
             missing.append("supervisor")
-        if not has_mcp(owned_pid):
+        if harness == "codex" and not has_mcp(owned_pid):
             missing.append("coord-mcp")
         if missing:
             checks.append(
@@ -1122,7 +1202,12 @@ def _inspect_processes(
                 )
             )
             return
-        checks.append(FactoryDoctorCheck("PASS", "processes", f"{label} supervisor, Codex, and Coord MCP are running"))
+        detail = (
+            f"{label} supervisor, Codex, and Coord MCP are running"
+            if harness == "codex"
+            else f"{label} supervisor and Pi are running"
+        )
+        checks.append(FactoryDoctorCheck("PASS", "processes", detail))
         return
 
     # The checkpoint can race a normal bounded-turn handoff: its PID may have
@@ -1133,7 +1218,7 @@ def _inspect_processes(
         (
             pid
             for pid, (parent, _group, _command) in rows.items()
-            if parent in supervisors and is_codex(pid) and has_mcp(pid)
+            if parent in supervisors and is_harness(pid) and (harness != "codex" or has_mcp(pid))
         ),
         None,
     )
@@ -1141,14 +1226,14 @@ def _inspect_processes(
         owned is None or start_time is None or start_time != owned_process["start_time"] or replacement is not None
     ):
         detail = (
-            f"{label} bounded supervisor changed Codex turns during inspection"
+            f"{label} bounded supervisor changed {harness} turns during inspection"
             if replacement is not None
             else f"{label} bounded supervisor transition observed during inspection"
         )
         checks.append(FactoryDoctorCheck("PASS", "processes", detail))
         return
 
-    missing = ["checkpointed-codex"]
+    missing = [f"checkpointed-{harness}"]
     if not supervisors:
         missing.append("supervisor")
     checks.append(

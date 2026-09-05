@@ -36,187 +36,24 @@ if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
         exit 1
     fi
     install -m 0755 "$SUPERVISOR_SRC" "$AGENT_HOME/.safeyolo/codex-coord-supervisor.py"
-    if [ -n "${SAFEYOLO_CODEX_FACTORY_SNAPSHOT:-}" ]; then
+    if [ -n "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ]; then
+        : "${SAFEYOLO_FACTORY_ROLE:?set the factory role}"
+        python3 "$SCRIPT_DIR/lib/stage-factory-supervisor.py" \
+            "$AGENT_HOME/.safeyolo/codex-coord-supervisor.json" \
+            "$AGENT_HOME/.safeyolo/AGENTS.md" \
+            "$SAFEYOLO_AGENT_NAME" \
+            "$SAFEYOLO_FACTORY_SNAPSHOT" \
+            "$SAFEYOLO_FACTORY_ROLE" \
+            codex
+    elif [ -n "${SAFEYOLO_CODEX_FACTORY_SNAPSHOT:-}" ]; then
         : "${SAFEYOLO_CODEX_FACTORY_ROLE:?set the factory role}"
-        python3 - \
+        python3 "$SCRIPT_DIR/lib/stage-factory-supervisor.py" \
             "$AGENT_HOME/.safeyolo/codex-coord-supervisor.json" \
             "$AGENT_HOME/.safeyolo/AGENTS.md" \
             "$SAFEYOLO_AGENT_NAME" \
             "$SAFEYOLO_CODEX_FACTORY_SNAPSHOT" \
-            "$SAFEYOLO_CODEX_FACTORY_ROLE" <<'PY'
-import hashlib
-import json
-import os
-import re
-import sys
-import tempfile
-
-config_path, instructions_path, agent_name, snapshot_path, role_name = sys.argv[1:]
-name_re = re.compile(r"[A-Za-z0-9_.-]+")
-type_re = re.compile(r"[A-Z][A-Z0-9_]*")
-if name_re.fullmatch(agent_name) is None or name_re.fullmatch(role_name) is None:
-    raise SystemExit("codex-host-setup: invalid factory agent or role name")
-try:
-    snapshot_bytes = open(snapshot_path, "rb").read()
-    snapshot = json.loads(snapshot_bytes)
-except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-    raise SystemExit(f"codex-host-setup: cannot read factory snapshot: {exc}")
-if not isinstance(snapshot, dict) or set(snapshot) != {
-    "schema", "name", "room", "roles", "handoffs", "operator_input"
-}:
-    raise SystemExit("codex-host-setup: invalid factory snapshot shape")
-if snapshot.get("schema") != "safeyolo.factory/v1":
-    raise SystemExit("codex-host-setup: unsupported factory snapshot schema")
-room = snapshot.get("room")
-roles = snapshot.get("roles")
-handoffs = snapshot.get("handoffs")
-operator_input = snapshot.get("operator_input")
-if name_re.fullmatch(str(room)) is None or not isinstance(roles, dict) or role_name not in roles:
-    raise SystemExit("codex-host-setup: factory role or room is invalid")
-role = roles[role_name]
-if not isinstance(role, dict) or set(role) != {
-    "agent", "contract", "contract_bytes", "contract_sha256", "contract_text"
-}:
-    raise SystemExit("codex-host-setup: factory role binding is invalid")
-if role.get("agent") != agent_name or not isinstance(role.get("contract_text"), str):
-    raise SystemExit("codex-host-setup: factory role is not bound to this agent")
-contract_hash = hashlib.sha256(role["contract_text"].encode()).hexdigest()
-if role.get("contract_bytes") != len(role["contract_text"].encode()):
-    raise SystemExit("codex-host-setup: factory role contract byte count does not match")
-if role.get("contract_sha256") != contract_hash:
-    raise SystemExit("codex-host-setup: factory role contract hash does not match")
-snapshot_id = hashlib.sha256(
-    (json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
-).hexdigest()
-role_agents = {}
-for key, value in roles.items():
-    if name_re.fullmatch(str(key)) is None or not isinstance(value, dict):
-        raise SystemExit("codex-host-setup: invalid factory role map")
-    bound_agent = value.get("agent")
-    if name_re.fullmatch(str(bound_agent)) is None:
-        raise SystemExit("codex-host-setup: invalid factory agent binding")
-    role_agents[key] = bound_agent
-if not isinstance(handoffs, list) or not handoffs:
-    raise SystemExit("codex-host-setup: factory has no handoffs")
-runtime_handoffs = []
-coordinators = []
-handoff_types = set()
-handoff_edges = []
-for handoff in handoffs:
-    required_handoff_keys = {"request", "from", "to", "responses"}
-    if not isinstance(handoff, dict) or set(handoff) not in (
-        required_handoff_keys,
-        required_handoff_keys | {"response_to"},
-    ):
-        raise SystemExit("codex-host-setup: invalid factory handoff")
-    request = handoff.get("request")
-    source = handoff.get("from")
-    destination = handoff.get("to")
-    responses = handoff.get("responses")
-    response_to = handoff.get("response_to", [source])
-    if (
-        type_re.fullmatch(str(request)) is None
-        or source not in role_agents
-        or destination not in role_agents
-        or not isinstance(responses, list)
-        or not responses
-        or any(type_re.fullmatch(str(item)) is None for item in responses)
-        or not isinstance(response_to, list)
-        or not response_to
-        or len(set(response_to)) != len(response_to)
-        or any(role not in role_agents for role in response_to)
-        or source not in response_to
-    ):
-        raise SystemExit("codex-host-setup: invalid factory handoff values")
-    runtime_handoffs.append(
-        {
-            "request": request,
-            "from": source,
-            "to": destination,
-            "responses": responses,
-            "response_to": response_to,
-        }
-    )
-    handoff_edges.append((source, destination))
-    handoff_types.add(request)
-    handoff_types.update(responses)
-    if request == "TASK" and role_agents[source] not in coordinators:
-        coordinators.append(role_agents[source])
-if not coordinators:
-    raise SystemExit("codex-host-setup: factory must declare a TASK coordinator handoff")
-if not isinstance(operator_input, dict) or set(operator_input) != {"to", "types"}:
-    raise SystemExit("codex-host-setup: invalid factory operator input")
-operator_role = operator_input.get("to")
-operator_types = operator_input.get("types")
-if (
-    operator_role not in role_agents
-    or not isinstance(operator_types, list)
-    or not operator_types
-    or any(type_re.fullmatch(str(item)) is None for item in operator_types)
-    or len(set(operator_types)) != len(operator_types)
-    or handoff_types.intersection(operator_types)
-):
-    raise SystemExit("codex-host-setup: invalid factory operator input values")
-reachable = {operator_role}
-while True:
-    expanded = reachable | {
-        destination for source, destination in handoff_edges if source in reachable
-    }
-    if expanded == reachable:
-        break
-    reachable = expanded
-unreachable = sorted(set(role_agents) - reachable)
-if unreachable:
-    raise SystemExit(
-        "codex-host-setup: factory roles are unreachable from operator input: "
-        + ", ".join(unreachable)
-    )
-
-config = {
-    "agent_name": agent_name,
-    "agent_room": f"{agent_name}-agent",
-    "rooms": [room],
-    "coordinators": coordinators,
-    "workspace": "/workspace",
-    "factory": {
-        "schema": snapshot["schema"],
-        "name": snapshot["name"],
-        "role": role_name,
-        "roles": role_agents,
-        "handoffs": runtime_handoffs,
-        "operator_input": {"to": operator_role, "types": operator_types},
-        "contract_sha256": contract_hash,
-        "snapshot_id": snapshot_id,
-    },
-}
-
-
-def atomic_write(path, value):
-    directory = os.path.dirname(path)
-    fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=directory)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            handle.write(value)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
-
-
-atomic_write(config_path, json.dumps(config, sort_keys=True, separators=(",", ":")) + "\n")
-with open(instructions_path) as handle:
-    baseline = handle.read()
-atomic_write(
-    instructions_path,
-    baseline.rstrip() + "\n\n---\n\n" + role["contract_text"].lstrip(),
-)
-PY
+            "$SAFEYOLO_CODEX_FACTORY_ROLE" \
+            codex
     else
         : "${SAFEYOLO_CODEX_COORD_ROOMS:?set a comma-separated receive room list for @codex-coord}"
         : "${SAFEYOLO_CODEX_COORDINATORS:?set a comma-separated coordinator name list for @codex-coord}"

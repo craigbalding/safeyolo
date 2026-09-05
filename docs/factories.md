@@ -24,6 +24,8 @@ types = ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"]
 
 [roles.owner]
 agent = "forge"
+harness = "pi"
+args = ["--provider", "openai-codex", "--model", "gpt-5.6-luna", "--thinking", "xhigh"]
 contract = "../agent-roles/issue-owner.md"
 
 [[handoffs]]
@@ -41,6 +43,18 @@ meaning, but its first line must be exactly
 data, not a task. Other request and response bodies must begin with their exact
 declared type and target. Canonical envelope identity and the configured
 room—not names written in the body—authorize a handoff.
+
+`harness` selects the supervised coding harness for that role. The supported
+values are `codex` and `pi`; omission means `codex`. Harness selection changes
+the execution adapter, not the factory graph, role contract, Coord identity,
+checkpoint rules, handoffs, or observability.
+
+Optional `args` are exact command arguments for the selected harness. They are
+bound into the approved snapshot and override the agent's mutable default
+arguments for that factory run. When omitted, the configured agent defaults
+retain their existing behavior. This makes a harness switch explicit instead
+of accidentally passing Codex flags to Pi (or vice versa). Credentials remain
+in the harness's agent-local login state, not in factory arguments.
 
 `response_to` names every role that the destination must notify when it sends a
 declared response. The source role must be included. Old v1 contracts and
@@ -90,7 +104,7 @@ An approved factory has three distinct state layers:
   `factory run`. Until the next run, this can differ from the newly approved
   snapshot.
 - `factory doctor` reports both identities only after validating the staged
-  snapshot and its role, supervisor, command, and MCP bindings. A difference is
+  snapshot and its role, supervisor, command, and harness adapter bindings. A difference is
   a staged-versus-approved warning, not evidence of the running process's
   identity; process health is reported separately.
 - The canonical trusted room brief is live operator-authored state. The brief
@@ -112,16 +126,16 @@ constraints, but the backlog factory does not require one.
 ## Fresh setup, check, approve, and run
 
 The shortest discoverable setup path is deliberately ordered. Register every
-agent with the ordinary bundled `@codex` host setup, which stages only
-SafeYolo-owned Codex settings. Before the factory starts, log in from inside
-each agent and explicitly adopt that agent-local credential. Then validate the
-immutable contract, approve that exact snapshot, and only then run the factory.
+agent with the ordinary bundled host setup named by its role (`@codex` or
+`@pi`). Before the factory starts, establish that harness's agent-local
+subscription login from inside the agent. Then validate the immutable
+contract, approve that exact snapshot, and only then run the factory.
 `--no-run` leaves agent creation separate from factory startup; host credentials
 are never copied into the agent.
 
 ```sh
 safeyolo agent add relay "$PWD" --host-script @codex --no-run
-safeyolo agent add forge "$PWD" --host-script @codex --no-run
+safeyolo agent add forge "$PWD" --host-script @pi --no-run
 safeyolo agent add lens "$PWD" --host-script @codex --no-run
 safeyolo agent run relay --host-script @codex --detach
 safeyolo agent shell relay
@@ -129,7 +143,8 @@ safeyolo agent shell relay
 #   codex login --device-auth
 safeyolo agent shell relay -c "/home/agent/.safeyolo/codex-auth-recovery.py adopt"
 safeyolo agent stop relay
-# Repeat the run, device-auth login, adopt, and stop sequence for forge and lens.
+# Repeat the Codex login sequence for other Codex roles.
+# For a Pi role, run it once with @pi, use Pi's /login flow, then stop it.
 safeyolo factory check docs/factories/backlog.toml
 safeyolo factory approve docs/factories/backlog.toml --yes
 safeyolo factory run backlog
@@ -154,12 +169,12 @@ safeyolo factory doctor backlog
 
 Correct the specific component named by `factory doctor`, then rerun
 `safeyolo factory run backlog`. A missing agent is recovered with
-`safeyolo agent add NAME "$PWD" --host-script @codex --no-run`; a missing workspace is recovered
+`safeyolo agent add NAME "$PWD" --host-script @HARNESS --no-run`; a missing workspace is recovered
 with `safeyolo agent config NAME --folder "$PWD"`. Room and grant recovery is
 the idempotent `safeyolo factory run backlog` command itself. Factory run does
 not claim success until every role supervisor passes the doctor checks for the
 approved snapshot, agent identity/storage/workspace, rooms and grants, proxy,
-NATS, staged supervisor/MCP/contract files, checkpoint, and process tree.
+NATS, staged supervisor/Coord-adapter/contract files, checkpoint, and process tree.
 
 ## Check, approve, and run
 
@@ -192,9 +207,10 @@ does not mutate live rooms, grants, agents, or processes. The `active` pointer
 from the pre-approve layout is read as a migration fallback without rewriting
 it; use `factory approve` to select a new snapshot explicitly.
 
-Run loads and verifies only the approved snapshot, configures the already-created
-agents through the existing `@codex-coord` host setup, stages each approved
-role contract, provisions the declared shared Coord room and its required
+Run loads and verifies only the approved snapshot, configures each
+already-created agent through the `@codex-coord` or `@pi-coord` setup selected
+by its role, stages each approved role contract, provisions the declared shared
+Coord room and its required
 operator and role grants, starts all roles detached, and waits for operational
 preflight:
 
@@ -254,12 +270,12 @@ repair, approve, or change the factory. Each output line has one status:
 The command checks the approved snapshot and role bindings, agent identity and
 storage, workspaces, room membership and grants, the traffic proxy, and the
 managed Coord NATS runtime. It also checks each staged command, supervisor
-configuration, role contract, Codex Model Context Protocol (MCP) binding,
-checkpoint, and running process tree. A healthy traffic proxy does not hide a
-stopped NATS runtime. A running sandbox fails the check if its supervisor or
-active-turn Coord MCP process is absent. Between bounded turns, the checkpoint
-normally records `owned_process=null`; the running supervisor is then reported
-as healthy without requiring a Codex process. A PID that disappears while the
+configuration, role contract, harness-specific Coord binding, checkpoint, and
+running process tree. A healthy traffic proxy does not hide a stopped NATS
+runtime. A running sandbox fails the check if its supervisor, selected harness,
+or (for Codex) active-turn Coord MCP process is absent. Between bounded turns,
+the checkpoint normally records `owned_process=null`; the running supervisor is
+then reported as healthy without requiring a harness process. A PID that disappears while the
 read-only process probe runs is likewise reported as a non-disruptive turn
 transition. Doctor validates checkpoints through the same bundled supervisor
 decoder that runs them, so checkpoint migrations have one implementation.
@@ -320,7 +336,7 @@ The supervisor applies the same verified drain precondition to supported
 version-1 through version-5 checkpoints before upgrading them to the target-only
 version. A checkpoint with pending work is rejected without mutation and prints
 the recovery procedure; do not edit its messages or invent target URLs. An
-empty checkpoint upgrades to a clean Codex thread while retaining only its safe
+empty checkpoint upgrades to a clean harness session while retaining only its safe
 cursor, recent attention IDs, and trusted room brief context. New work must use
 target URLs.
 The running Markdown contract and routing table come from the immutable
