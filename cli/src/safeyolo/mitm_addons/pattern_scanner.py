@@ -31,6 +31,7 @@ Usage:
 """
 
 import logging
+from dataclasses import dataclass
 from urllib.parse import unquote
 
 from mitmproxy import ctx, http
@@ -69,20 +70,59 @@ MAX_URL_SCAN_BYTES = 16 * 1024
 # actual limit is applied to UTF-8 bytes so malformed Unicode is deterministic.
 MAX_URL_SCAN_LENGTH = MAX_URL_SCAN_BYTES
 
+URL_INSPECTION_OK = "ok"
+URL_INSPECTION_OVERFLOW = "url_inspection_overflow"
+URL_INSPECTION_ERROR = "url_inspection_error"
+
 _SAFE_ACTIONS = frozenset({"block", "log"})
 _SAFE_SEVERITIES = frozenset({"low", "medium", "high", "critical"})
 
 
-def _bounded_utf8(value: str) -> str:
-    """Keep a text representation within the URL inspection byte budget."""
+@dataclass(frozen=True, slots=True)
+class _URLInspection:
+    """Bounded URL representations and the result of inspecting their input."""
+
+    raw: str = ""
+    decoded: str = ""
+    status: str = URL_INSPECTION_OK
+
+    @property
+    def inspectable(self) -> bool:
+        return self.status == URL_INSPECTION_OK
+
+
+def _bounded_source_bytes(value: object) -> tuple[bytes | None, bool]:
+    """Capture at most the URL budget and report whether the source overflowed."""
+    if isinstance(value, bytes):
+        bounded = value[: MAX_URL_SCAN_BYTES + 1]
+        return bounded[:MAX_URL_SCAN_BYTES], len(bounded) > MAX_URL_SCAN_BYTES
+
+    if isinstance(value, str):
+        result = bytearray()
+        for character in value:
+            encoded = character.encode("utf-8", errors="surrogatepass")
+            if len(result) + len(encoded) > MAX_URL_SCAN_BYTES:
+                return bytes(result), True
+            result.extend(encoded)
+        return bytes(result), False
+
+    # Do not call an attacker-controlled __str__: it can allocate an unbounded
+    # value or raise an exception carrying inspected data.
+    return None, False
+
+
+def _bounded_text(value: str) -> str | None:
+    """Normalize text and reject UTF-8 expansion instead of truncating it."""
     try:
-        bounded = value.encode("utf-8", errors="replace")[:MAX_URL_SCAN_BYTES]
-        return bounded.decode("utf-8", errors="ignore")
+        encoded = value.encode("utf-8", errors="replace")
+        if len(encoded) > MAX_URL_SCAN_BYTES:
+            return None
+        return encoded.decode("utf-8", errors="replace")
     except Exception:
-        return ""
+        return None
 
 
-def _bounded_url_representations(value: object) -> tuple[str, str]:
+def _bounded_url_representations(value: object) -> _URLInspection:
     """Return the bounded raw URL and one canonical, non-recursive decode.
 
     ``urllib.parse.unquote`` decodes each ``%HH`` sequence once.  It leaves
@@ -97,31 +137,33 @@ def _bounded_url_representations(value: object) -> tuple[str, str]:
     both representations without changing request semantics.
     """
     try:
-        if isinstance(value, bytes):
-            raw_bytes = value[:MAX_URL_SCAN_BYTES]
-        elif isinstance(value, str):
-            raw_bytes = value.encode("utf-8", errors="surrogatepass")[:MAX_URL_SCAN_BYTES]
-        else:
-            # Do not call an attacker-controlled __str__: it can allocate an
-            # unbounded value or raise an exception carrying inspected data.
-            return "", ""
-        raw = _bounded_utf8(raw_bytes.decode("utf-8", errors="replace"))
+        raw_bytes, overflowed = _bounded_source_bytes(value)
+        if raw_bytes is None:
+            return _URLInspection(status=URL_INSPECTION_ERROR)
+        if overflowed:
+            return _URLInspection(status=URL_INSPECTION_OVERFLOW)
+
+        raw = _bounded_text(raw_bytes.decode("utf-8", errors="replace"))
+        if raw is None:
+            return _URLInspection(status=URL_INSPECTION_OVERFLOW)
     except Exception:
         # The request hook must not publish exception text containing an input
-        # value.  An empty representation is a deterministic bounded failure.
-        return "", ""
+        # value.  This is a deterministic, content-free inspection failure.
+        return _URLInspection(status=URL_INSPECTION_ERROR)
 
     # A literal fragment is never part of the request target.  A percent-
     # encoded '#' is intentionally retained and decoded in the second pass.
     raw = raw.split("#", 1)[0]
     try:
-        decoded = _bounded_utf8(unquote(raw, encoding="utf-8", errors="replace"))
+        decoded = _bounded_text(unquote(raw, encoding="utf-8", errors="replace"))
+        if decoded is None:
+            return _URLInspection(status=URL_INSPECTION_OVERFLOW)
     except Exception:
         # Defensive only: the normalised raw value above is accepted by
         # unquote.  Keeping this branch content-free preserves fail-closed
         # diagnostics if that implementation ever changes.
-        decoded = ""
-    return raw, decoded
+        return _URLInspection(status=URL_INSPECTION_ERROR)
+    return _URLInspection(raw=raw, decoded=decoded)
 
 
 def _safe_value(value: object, *, max_len: int, fallback: str) -> str:
@@ -327,7 +369,15 @@ class PatternScanner(SecurityAddon):
                 return
             self._last_policy_hash = policy_hash
 
-    def block(self, flow: http.HTTPFlow, status: int, body: dict, extra_headers: dict = None):
+    def block(
+        self,
+        flow: http.HTTPFlow,
+        status: int,
+        body: dict,
+        extra_headers: dict = None,
+        *,
+        trace_reason: str | None = None,
+    ):
         """Block request/response with error."""
         self.blocks_total += 1
         flow.metadata["blocked_by"] = self.name
@@ -338,7 +388,52 @@ class PatternScanner(SecurityAddon):
             extra_headers,
             request_id=flow.metadata.get("request_id"),
         )
-        self._trace_evaluated(flow, outcome="blocked", status=status)
+        trace_details = {}
+        if trace_reason in {URL_INSPECTION_OVERFLOW, URL_INSPECTION_ERROR}:
+            trace_details = {"reason": trace_reason, "location": "url"}
+        self._trace_evaluated(flow, outcome="blocked", status=status, **trace_details)
+
+    @staticmethod
+    def _has_url_rules(rules: list[PatternRule], direction: str) -> bool:
+        return any(
+            rule.target in {direction, "both"} and "url" in rule.scope
+            for rule in rules
+        )
+
+    def _block_url_inspection_failure(self, flow: http.HTTPFlow, reason: str) -> None:
+        """Fail closed when URL-scoped request content was not fully inspected."""
+        if reason not in {URL_INSPECTION_OVERFLOW, URL_INSPECTION_ERROR}:
+            reason = URL_INSPECTION_ERROR
+        safe_host = _safe_host(flow)
+        flow.metadata["pattern_scan_failure"] = reason
+        flow.metadata["pattern_location"] = "url"
+        log.warning(
+            "BLOCKED: Pattern URL inspection failed (%s) -> %s",
+            reason,
+            safe_host,
+        )
+        self.log_decision(
+            flow,
+            Decision.DENY,
+            severity=Severity.HIGH,
+            summary=f"Pattern URL inspection blocked request to {safe_host}",
+            host=safe_host,
+            direction="request",
+            location="url",
+            action="block",
+            reason=reason,
+        )
+        self.block(
+            flow,
+            403,
+            {
+                "error": "Request blocked because URL inspection failed",
+                "location": "url",
+                "action": "block",
+                "reason": reason,
+            },
+            trace_reason=reason,
+        )
 
     def _scan_for_scope(
         self,
@@ -378,7 +473,7 @@ class PatternScanner(SecurityAddon):
     def _scan_url_scope(
         self,
         rules: list[PatternRule],
-        representations: tuple[str, str],
+        inspection: _URLInspection,
         direction: str,
     ) -> PatternRule | None:
         """Scan raw URL text and exactly one canonical decoded form.
@@ -388,7 +483,7 @@ class PatternScanner(SecurityAddon):
         text, while both forms are evaluated so the decoded pass is never
         accidentally skipped by a raw match.
         """
-        self.scans_total += len(representations)
+        self.scans_total += 2
 
         for rule in rules:
             if rule.target != direction and rule.target != "both":
@@ -397,7 +492,7 @@ class PatternScanner(SecurityAddon):
                 continue
 
             matched = False
-            for text in representations:
+            for text in (inspection.raw, inspection.decoded):
                 if rule.matches(text):
                     matched = True
             if matched:
@@ -408,36 +503,40 @@ class PatternScanner(SecurityAddon):
     def _scan_request_content(
         self,
         flow: http.HTTPFlow,
-    ) -> tuple[PatternRule | None, str]:
+    ) -> tuple[PatternRule | None, str, str | None]:
         """Scan request URL, headers, and body based on rule scopes.
 
         Returns:
-            (matched_rule, location) - location is "url", "header:<name>", or "body"
+            (matched_rule, location, failure) - location is "url",
+            "header:<name>", or "body"; failure is a stable URL inspection
+            reason when the request target could not be completely inspected.
         """
         # Scan the bounded raw path/query and exactly one percent-decoded form.
         # This is inspection-only; the request target is never rewritten.
-        rule = self._scan_url_scope(
-            self.rules,
-            _bounded_url_representations(flow.request.path),
-            "request",
-        )
+        if self._has_url_rules(self.rules, "request"):
+            inspection = _bounded_url_representations(flow.request.path)
+            if not inspection.inspectable:
+                return None, "", inspection.status
+            rule = self._scan_url_scope(self.rules, inspection, "request")
+        else:
+            rule = None
         if rule:
-            return rule, "url"
+            return rule, "url", None
 
         # Scan headers
         for header_name, header_value in flow.request.headers.items():
             rule = self._scan_for_scope(self.rules, "headers", header_value, "request")
             if rule:
-                return rule, _safe_location(f"header:{header_name}")
+                return rule, _safe_location(f"header:{header_name}"), None
 
         # Scan body
         body = flow.request.get_text(strict=False)
         if body:
             rule = self._scan_for_scope(self.rules, "body", body, "request")
             if rule:
-                return rule, "body"
+                return rule, "body", None
 
-        return None, ""
+        return None, "", None
 
     def _scan_response_content(
         self,
@@ -559,7 +658,10 @@ class PatternScanner(SecurityAddon):
             self._trace_evaluated(flow, outcome=OUTCOME_NO_RULES)
             return
 
-        rule, location = self._scan_request_content(flow)
+        rule, location, inspection_failure = self._scan_request_content(flow)
+        if inspection_failure:
+            self._block_url_inspection_failure(flow, inspection_failure)
+            return
         if not rule:
             self._trace_evaluated(flow, outcome=OUTCOME_NO_MATCH, rules_evaluated=len(self.rules))
             return

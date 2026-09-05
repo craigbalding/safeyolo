@@ -661,11 +661,16 @@ complete WebSocket messages.
   messages; HTTP options do not change WebSocket behavior.
 
 *URL scanning:*
-- Scans a bounded raw path/query representation and one percent-decoded
-  representation.
+- Scans a raw path/query representation and exactly one percent-decoded
+  representation, each bounded to 16 KiB of UTF-8 input/output.
 - Decoding runs once, does not rewrite the request target, and excludes a
   literal URL fragment.
-- Malformed escapes and invalid UTF-8 use deterministic bounded handling.
+- Malformed escapes use deterministic one-pass handling. Invalid UTF-8 uses
+  replacement characters within the bound; if the source or a normalized
+  representation exceeds the inspection bound, the scanner emits a
+  content-free `url_inspection_overflow` failure. Other inspection failures
+  use `url_inspection_error`. URL-scoped requests fail closed even when
+  ordinary pattern blocking is disabled.
 
 Pattern logs, audit events, traces, and block responses contain only bounded
 finding identity and decision evidence. They do not contain the inspected URL,

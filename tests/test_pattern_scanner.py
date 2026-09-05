@@ -1131,11 +1131,12 @@ class TestBoundedUrlInspection:
                 "scope": ["url"],
             }]
         })
-        raw, decoded = __import__("pattern_scanner")._bounded_url_representations(
+        inspection = __import__("pattern_scanner")._bounded_url_representations(
             "/route/%252Fprivate"
         )
-        assert raw == "/route/%252Fprivate"
-        assert decoded == "/route/%2Fprivate"
+        assert inspection.status == "ok"
+        assert inspection.raw == "/route/%252Fprivate"
+        assert inspection.decoded == "/route/%2Fprivate"
 
         flow = make_flow(url="https://api.example.com/route/%252Fprivate")
         with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
@@ -1185,12 +1186,19 @@ class TestBoundedUrlInspection:
         assert flow.metadata["pattern_matched"] == "replacement"
 
     def test_invalid_raw_bytes_remain_within_both_bounds(self):
-        from pattern_scanner import MAX_URL_SCAN_BYTES, _bounded_url_representations
+        from pattern_scanner import (
+            MAX_URL_SCAN_BYTES,
+            URL_INSPECTION_OVERFLOW,
+            _bounded_url_representations,
+        )
 
-        raw, decoded = _bounded_url_representations(b"\xff" * (MAX_URL_SCAN_BYTES * 2))
+        inspection = _bounded_url_representations(
+            b"\xff" * (MAX_URL_SCAN_BYTES // 2 + 1)
+        )
 
-        assert len(raw.encode()) <= MAX_URL_SCAN_BYTES
-        assert len(decoded.encode()) <= MAX_URL_SCAN_BYTES
+        assert inspection.status == URL_INSPECTION_OVERFLOW
+        assert inspection.raw == ""
+        assert inspection.decoded == ""
 
     def test_unstringifiable_value_fails_deterministically_without_exception_text(self):
         from pattern_scanner import _bounded_url_representations
@@ -1201,28 +1209,123 @@ class TestBoundedUrlInspection:
             def __str__(self):
                 raise RuntimeError(secret)
 
-        assert _bounded_url_representations(Unstringifiable()) == ("", "")
+        inspection = _bounded_url_representations(Unstringifiable())
+        assert inspection.status == "url_inspection_error"
+        assert inspection.raw == ""
+        assert inspection.decoded == ""
 
-    def test_oversized_input_is_truncated_before_matching(self, scanner, make_flow):
+    def test_oversized_input_blocks_content_free_even_in_warn_mode(
+        self, scanner, make_flow, caplog
+    ):
+        from pattern_scanner import (
+            MAX_URL_SCAN_BYTES,
+            URL_INSPECTION_OVERFLOW,
+            _bounded_url_representations,
+        )
+
+        from safeyolo.core.trace import get_store, reset_store_for_tests
+
+        sentinel = "URL-TAIL-SENTINEL-5d7a"
         scanner.load_policy_config({
             "scan_patterns": [{
                 "name": "tail-sentinel",
-                "pattern": "URL-TAIL-SENTINEL",
+                "pattern": sentinel,
                 "target": "request",
                 "scope": ["url"],
+                "action": "log",
             }]
         })
-        oversized = "/" + ("a" * __import__("pattern_scanner").MAX_URL_SCAN_BYTES) + "URL-TAIL-SENTINEL"
-        raw, decoded = __import__("pattern_scanner")._bounded_url_representations(oversized)
-        assert len(raw.encode("utf-8")) <= __import__("pattern_scanner").MAX_URL_SCAN_BYTES
-        assert len(decoded.encode("utf-8")) <= __import__("pattern_scanner").MAX_URL_SCAN_BYTES
-        assert "URL-TAIL-SENTINEL" not in raw
-        assert "URL-TAIL-SENTINEL" not in decoded
+        oversized = "/" + ("a" * MAX_URL_SCAN_BYTES) + sentinel
+        inspection = _bounded_url_representations(oversized)
+        assert inspection.status == URL_INSPECTION_OVERFLOW
+        assert inspection.raw == ""
+        assert inspection.decoded == ""
 
+        flow = make_flow(url=f"https://api.example.com{oversized}")
+        flow.metadata.update(trace=True, request_id="req-overflow-synthetic", agent="agent-synthetic")
+        reset_store_for_tests()
+        try:
+            with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)), \
+                 patch("safeyolo.core.base.write_event", autospec=True) as audit, \
+                 caplog.at_level("WARNING"):
+                scanner.request(flow)
+
+            body = json.loads(flow.response.get_text())
+            record = get_store().get("req-overflow-synthetic", "agent-synthetic")
+            published = json.dumps({
+                "body": body,
+                "metadata": flow.metadata,
+                "trace": get_store().serialise(record),
+                "audit": audit.call_args.kwargs,
+                "logs": caplog.text,
+            }, default=str)
+            assert sentinel not in published
+            assert body == {
+                "error": "Request blocked because URL inspection failed",
+                "location": "url",
+                "action": "block",
+                "reason": URL_INSPECTION_OVERFLOW,
+            }
+            assert flow.metadata["pattern_scan_failure"] == URL_INSPECTION_OVERFLOW
+            assert audit.call_count == 1
+            assert audit.call_args.kwargs["details"] == {
+                "direction": "request",
+                "location": "url",
+                "action": "block",
+                "reason": URL_INSPECTION_OVERFLOW,
+            }
+            assert record.steps[-1].details == {
+                "reason": URL_INSPECTION_OVERFLOW,
+                "location": "url",
+                "status": 403,
+            }
+        finally:
+            reset_store_for_tests()
+
+    def test_provider_specimen_crossing_bound_is_fail_closed(self, scanner, make_flow):
+        from pattern_scanner import MAX_URL_SCAN_BYTES, URL_INSPECTION_OVERFLOW
+
+        scanner.load_policy_config({
+            "addons": {"pattern_scanner": {"builtin_sets": ["secrets"]}}
+        })
+        specimen = "sk-proj-" + "a" * 20
+        encoded = _encode_every_byte(specimen, lowercase=True)
+        oversized = "/" + ("a" * (MAX_URL_SCAN_BYTES - 1)) + encoded
         flow = make_flow(url=f"https://api.example.com{oversized}")
         with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
             scanner.request(flow)
-        assert flow.metadata.get("pattern_matched") is None
+
+        assert json.loads(flow.response.get_text())["reason"] == URL_INSPECTION_OVERFLOW
+        assert flow.metadata["pattern_scan_failure"] == URL_INSPECTION_OVERFLOW
+
+    def test_exact_limit_remains_eligible_for_ordinary_policy_action(
+        self, scanner, make_flow
+    ):
+        from pattern_scanner import MAX_URL_SCAN_BYTES, _bounded_url_representations
+
+        sentinel = "URL-EXACT-LIMIT-SENTINEL"
+        path = "/" + ("a" * (MAX_URL_SCAN_BYTES - len(sentinel) - 1)) + sentinel
+        assert len(path.encode("utf-8")) == MAX_URL_SCAN_BYTES
+        inspection = _bounded_url_representations(path)
+        assert inspection.status == "ok"
+        assert sentinel in inspection.raw
+
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "exact-limit",
+                "pattern": sentinel,
+                "target": "request",
+                "scope": ["url"],
+                "action": "log",
+            }]
+        })
+        flow = make_flow(url=f"https://api.example.com{path}")
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+            scanner.request(flow)
+
+        assert flow.response is None
+        assert flow.metadata["pattern_matched"] == "exact-limit"
+        assert flow.metadata["pattern_location"] == "url"
 
     @pytest.mark.parametrize(
         "specimen",
