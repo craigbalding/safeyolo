@@ -571,10 +571,34 @@ def _write_pidfile(
 
 
 def _pid_alive(pid: int) -> bool:
+    """Return whether ``pid`` represents a process that can still run.
+
+    ``kill(pid, 0)`` reports Linux zombies as present.  A long-lived parent
+    that does not reap children can therefore make a later CLI invocation
+    wait the full shutdown timeout for a process that has already exited.
+    Treat an unambiguously reported Linux zombie as dead, while preserving
+    the conservative result when proc state cannot be read or parsed.
+    """
     try:
         os.kill(pid, 0)
     except OSError:
         return False
+
+    if platform.system() == "Linux":
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+
+        # The comm field is parenthesized and may itself contain spaces or
+        # closing parentheses.  The process state is the first field after
+        # the final ``) `` delimiter.
+        _, delimiter, fields = stat.rpartition(") ")
+        state_fields = fields.split(maxsplit=1) if delimiter else []
+        if state_fields and state_fields[0] == "Z":
+            return False
     return True
 
 
