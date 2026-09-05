@@ -75,8 +75,106 @@ def test_renders_wait_event_without_full_tool_result(watcher_module):
     )
 
     assert label == "TOOL"
-    assert "since_sequence=8" in detail
+    assert "cursor=8" in detail
     assert "payload" not in detail
+
+
+def test_renders_mcp_locator_arguments_without_request_body(watcher_module):
+    label, detail = watcher_module._event_line(
+        {
+            "type": "item.started",
+            "item": {
+                "type": "mcp_tool_call",
+                "server": "github",
+                "tool": "fetch_file",
+                "status": "in_progress",
+                "arguments": {
+                    "repository_full_name": "craigbalding/safeyolo",
+                    "path": "cli/src/safeyolo/coord/api.py",
+                    "ref": "abc123",
+                    "start_line": 100,
+                    "end_line": 140,
+                    "content": "do not render this",
+                },
+            },
+        },
+        None,
+    )
+
+    assert label == "TOOL"
+    assert "repo=craigbalding/safeyolo" in detail
+    assert "path=cli/src/safeyolo/coord/api.py" in detail
+    assert "ref=abc123" in detail
+    assert "lines=100-140" in detail
+    assert "do not render this" not in detail
+
+
+def test_renders_file_change_paths_and_kinds(watcher_module):
+    assert watcher_module._event_line(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "file_change",
+                "changes": [
+                    {"kind": "update", "path": "/workspace/one.py"},
+                    {"kind": "add", "path": "/workspace/two.py"},
+                ],
+            },
+        },
+        None,
+    ) == (
+        "TOOL",
+        "completed file_change update:/workspace/one.py add:/workspace/two.py",
+    )
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "label"),
+    [(0, "TOOL"), (2, "ERROR")],
+)
+def test_renders_command_exit_code(watcher_module, exit_code, label):
+    assert watcher_module._event_line(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "pytest -q",
+                "exit_code": exit_code,
+            },
+        },
+        None,
+    ) == (label, f"completed command rc={exit_code} pytest -q")
+
+
+def test_renders_turn_token_usage(watcher_module):
+    assert watcher_module._event_line(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 48210,
+                "cached_input_tokens": 45312,
+                "output_tokens": 1106,
+                "reasoning_output_tokens": 384,
+            },
+        },
+        None,
+    ) == (
+        "DONE",
+        "turn completed tokens input=48,210 cached=45,312 output=1,106 reasoning=384",
+    )
+
+
+def test_renders_top_level_and_item_errors(watcher_module):
+    assert watcher_module._event_line(
+        {"type": "error", "message": "provider failed"}, None
+    ) == ("ERROR", "provider failed")
+    assert watcher_module._event_line(
+        {
+            "type": "item.completed",
+            "item": {"type": "error", "message": "tool failed"},
+        },
+        None,
+    ) == ("ERROR", "tool failed")
 
 
 @pytest.mark.parametrize(
@@ -275,6 +373,22 @@ def test_renders_supervisor_and_stderr_events(watcher_module, event, label, text
     assert watcher_module._event_line(event, 240) == (label, text)
 
 
+def test_renders_supervisor_recovery_fields(watcher_module):
+    assert watcher_module._event_line(
+        {
+            "type": "safeyolo.supervisor",
+            "event": "error",
+            "status": "retrying",
+            "path": "/home/agent/.safeyolo/checkpoint.json",
+            "retry_after": 5,
+        },
+        None,
+    ) == (
+        "ERROR",
+        "error status=retrying path=/home/agent/.safeyolo/checkpoint.json retry_after=5",
+    )
+
+
 def test_renders_oversize_command_with_explicit_middle_snip(watcher_module):
     label, text = watcher_module._event_line(
         {
@@ -340,3 +454,57 @@ async def test_nats_loss_is_visible_and_retries_from_the_same_cursor(
     assert waits == [7, 7]
     output = capsys.readouterr().out
     assert "CONN    lost NATS unavailable; cursor=7 retrying in 1s" in output
+
+
+@pytest.mark.asyncio
+async def test_history_pages_to_the_current_tail(watcher_module, monkeypatch, capsys):
+    calls = []
+
+    def message(sequence):
+        return {
+            "sequence": sequence,
+            "sent_at": 1_788_342_432_000 + sequence,
+            "sender_kind": "agent",
+            "sender_agent_name": "lens",
+            "body": json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": f"message-{sequence}"},
+                }
+            ),
+        }
+
+    async def read_room(*_args, **kwargs):
+        cursor = kwargs["since_sequence"]
+        calls.append(cursor)
+        if cursor == 0:
+            return {
+                "messages": [message(1), message(2)],
+                "next_cursor": 2,
+                "has_more": True,
+            }
+        return {
+            "messages": [message(3), message(4)],
+            "next_cursor": 4,
+            "has_more": False,
+        }
+
+    monkeypatch.setattr(watcher_module.api, "read_room", read_room)
+
+    await watcher_module._watch(
+        "lens-agent",
+        2,
+        None,
+        "rendered",
+        False,
+        False,
+        False,
+        True,
+    )
+
+    assert calls == [0, 2]
+    output = capsys.readouterr().out
+    assert "message-1" not in output
+    assert "message-2" not in output
+    assert "message-3" in output
+    assert "message-4" in output

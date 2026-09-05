@@ -87,6 +87,12 @@ _SHELL_FUNCTION = re.compile(
 _SHELL_ASSIGNMENT = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=")
 _TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_.\-/]*|[0-9]+(?:\.[0-9]+)*")
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_WORK_ITEM_REFERENCE = re.compile(
+    r"(?ix)"
+    r"(?<![A-Za-z0-9_])"
+    r"(?:pull[\s_-]+requests?|prs?|issues?)[\s:/#_-]*\d+\b"
+    r"|(?<![A-Za-z0-9_])\#\d+\b"
+)
 _STOP_WORDS = {
     "about",
     "actual",
@@ -441,6 +447,11 @@ def _query_terms(text: str, *, remove_stop_words: bool = False) -> Counter[str]:
     return result
 
 
+def _task_query_terms(text: str) -> Counter[str]:
+    """Tokenize a task without letting its work-item identifier drive ranking."""
+    return _query_terms(_WORK_ITEM_REFERENCE.sub(" ", text), remove_stop_words=True)
+
+
 def _query_files(root: Path) -> list[Path]:
     entries = _git(
         root,
@@ -630,14 +641,14 @@ def _rank_query_records(
     records: list[_QueryRecord],
     hints: list[_QueryHint],
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    query_counts = _query_terms(task, remove_stop_words=True)
+    query_counts = _task_query_terms(task)
     query_set = set(query_counts)
     matched_hints = _match_query_hints(query_set, hints)
     total = max(len(records), 1)
     document_frequency = {term: sum(1 for record in records if term in record.terms) for term in query_set}
     document_lengths = {record.path: sum(record.terms.values()) for record in records}
     average_length = sum(document_lengths.values()) / total
-    early_terms = set(_query_terms(task[:800], remove_stop_words=True))
+    early_terms = set(_task_query_terms(task[:800]))
     weighted_terms = []
     for term in query_set:
         frequency = document_frequency[term]
@@ -740,7 +751,7 @@ def _query_symbols_for_path(root: Path, relative: str) -> list[_QuerySymbol]:
 
 
 def _enrich_query_locations(root: Path, task: str, locations: list[dict[str, object]]) -> None:
-    query_terms = set(_query_terms(task, remove_stop_words=True))
+    query_terms = set(_task_query_terms(task))
     for location in locations:
         symbols = _query_symbols_for_path(root, str(location["path"]))
         relevant = [symbol for symbol in symbols if set(_query_terms(symbol.name)) & query_terms]

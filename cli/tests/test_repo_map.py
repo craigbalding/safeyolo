@@ -3,7 +3,7 @@
 import subprocess
 from pathlib import Path
 
-from safeyolo.repo_map import build_repo_map, build_repo_query, main
+from safeyolo.repo_map import _task_query_terms, build_repo_map, build_repo_query, main
 
 
 def _git(path: Path, *args: str) -> None:
@@ -219,6 +219,26 @@ def test_task_query_combines_locations_and_repository_guidance(tmp_path):
     assert "LIKELY IMPLEMENTATION (lexical + repository guidance; returned-file symbols)" in result.text
     assert result.text.index("scripts/start.sh") < result.text.index("pkg/app.py")
     assert "function run @2-3" in result.text
+
+
+def test_task_query_removes_work_item_references_as_units():
+    for query in (
+        "issue 571 Pi launcher",
+        "Issue #571 Pi launcher",
+        "issue-571 Pi launcher",
+        "PR 571 Pi launcher",
+        "pr #571 Pi launcher",
+        "pull request 571 Pi launcher",
+        "pull-request #571 Pi launcher",
+        "Review #571 Pi launcher",
+    ):
+        terms = _task_query_terms(query)
+        assert "571" not in terms
+        assert "pi" in terms
+        assert "launcher" in terms
+
+    assert "22" in _task_query_terms("Node 22 launcher")
+    assert "0.85.0" in _task_query_terms("Pi 0.85.0 launcher")
 
 
 def test_task_query_reads_the_current_working_tree(tmp_path):
