@@ -7,8 +7,10 @@ import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
@@ -268,10 +270,48 @@ def _run_host_script_for_agent(
             raise typer.Exit(result.returncode)
 
 
+class _SetupLockHandle:
+    """An agent setup lock that can be released after the boot transition."""
+
+    def __init__(self, fd: int | None, name: str, held: set[str]) -> None:
+        self._fd = fd
+        self._name = name
+        self._held = held
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        fd, self._fd = self._fd, None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+            self._held.discard(self._name)
+
+
+_setup_lock_state = threading.local()
+
+
+def _held_setup_locks() -> set[str]:
+    held = getattr(_setup_lock_state, "names", None)
+    if held is None:
+        held = set()
+        _setup_lock_state.names = held
+    return held
+
+
 @contextmanager
 def _agent_host_setup_lock(name: str):
-    """Serialize host setup and protect it from a concurrently live agent."""
+    """Serialize setup/start transitions and validate the lock entry."""
     from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
+
+    held = _held_setup_locks()
+    if name in held:
+        # Factory startup holds every role lock while calling the ordinary
+        # setup/run helpers. Re-entry in this thread must not acquire a second
+        # file descriptor, while other threads still block on flock().
+        yield _SetupLockHandle(None, name, held)
+        return
 
     ensure_agent_persistent_dirs(name)
     lock_path = get_agent_home_dir(name) / ".safeyolo/host-setup.lock"
@@ -279,14 +319,36 @@ def _agent_host_setup_lock(name: str):
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    fd = os.open(lock_path, flags, 0o600)
     try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise RuntimeError(f"unsafe host setup lock for agent {name!r}: {exc}") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError(
+                f"unsafe host setup lock for agent {name!r}: expected a regular file"
+            )
+        if info.st_nlink != 1:
+            raise RuntimeError(
+                f"unsafe host setup lock for agent {name!r}: hard links are not allowed"
+            )
+        if info.st_uid != os.getuid():
+            raise RuntimeError(
+                f"unsafe host setup lock for agent {name!r}: owner is not the invoking user"
+            )
         os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+    except BaseException:
         os.close(fd)
+        raise
+
+    held.add(name)
+    handle = _SetupLockHandle(fd, name, held)
+    try:
+        yield handle
+    finally:
+        handle.release()
 
 
 def _capture_snapshot_blocking(
@@ -419,7 +481,14 @@ def _print_detached_guidance(name: str) -> None:
     console.print(f"  Diagnose: [bold]safeyolo agent diag {name}[/bold]")
 
 
-def _run_agent(
+def _run_agent(*args, **kwargs) -> int:
+    """Run an agent while serializing its setup/start transition."""
+    name = kwargs.get("name") if "name" in kwargs else args[0]
+    with _agent_host_setup_lock(name) as start_lock:
+        return _run_agent_impl(*args, _start_lock=start_lock, **kwargs)
+
+
+def _run_agent_impl(
     name: str,
     folder_override: str | None = None,
     yolo: bool = False,
@@ -432,6 +501,8 @@ def _run_agent(
     run_command_detached: bool = False,
     no_snapshot: bool = False,
     rename_tmux_window: bool = False,
+    *,
+    _start_lock: _SetupLockHandle | None = None,
 ) -> int:
     """Run an agent VM. Returns exit code.
 
@@ -779,6 +850,8 @@ def _run_agent(
                 except Exception as err:
                     console.print(f"[red]Failed to re-prepare VM config:[/red] {err}")
                     raise typer.Exit(1)
+            if restore_ok and _start_lock is not None:
+                _start_lock.release()
 
         # --- Cold boot (capture or passthrough) ----------------------------
         if snapshot_mode != "restore":
@@ -802,6 +875,8 @@ def _run_agent(
                 snapshot_capture_path=capture_path,
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
             )
+            if _start_lock is not None:
+                _start_lock.release()
             # agent_map was populated pre-start_sandbox (attribution_ip +
             # optional bridge socket). Nothing to re-register here.
 

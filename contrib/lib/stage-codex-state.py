@@ -23,7 +23,9 @@ RECOVERY_GUIDANCE = (
     "codex-auth-recovery.py adopt`. For unknown or unsafe existing state, "
     "confirm the credential is agent-local before adopting it; to reset, run "
     "`/home/agent/.safeyolo/codex-auth-recovery.py reset`, then `codex login "
-    "--device-auth`, then run the adopt command."
+    "--device-auth`, then run the adopt command. Coordinated setup requires "
+    "the same agent to complete that normal @codex login flow, stop, and then "
+    "reapply @codex-coord."
 )
 
 
@@ -239,7 +241,12 @@ def _managed_config(existing: str, launcher: str | None) -> str:
     return managed
 
 
-def _stage(home: Path, launcher: str | None) -> None:
+def _stage(
+    home: Path,
+    launcher: str | None,
+    *,
+    require_agent_local: bool = False,
+) -> None:
     codex_home = _ensure_codex_home(home)
     auth_path = codex_home / AUTH_FILE
     config_path = codex_home / CONFIG_FILE
@@ -253,6 +260,7 @@ def _stage(home: Path, launcher: str | None) -> None:
 
     if marker is None:
         state = "legacy-unknown" if auth_present else "fresh"
+        marker = {"state": state}
         _atomic_write(marker_path, _marker_value(state), 0o600)
         if state == "legacy-unknown":
             raise CodexStateError(
@@ -271,6 +279,12 @@ def _stage(home: Path, launcher: str | None) -> None:
             "Codex auth.json is missing from an agent-local state; explicit adopt or reset is required"
         )
 
+    if require_agent_local and (marker["state"] != "agent-local" or not auth_present):
+        raise CodexStateError(
+            "Codex coordinated setup requires an adopted agent-local auth.json; "
+            "complete login and adoption in the same agent with normal @codex first"
+        )
+
     managed = _managed_config(existing_config, launcher)
     if managed != existing_config:
         mode = 0o600
@@ -283,17 +297,24 @@ def _recover(home: Path, action: str) -> None:
     codex_home = _ensure_codex_home(home)
     auth_path = codex_home / AUTH_FILE
     marker_path = codex_home / MARKER_NAME
-    auth_present = _validate_optional_file(auth_path, "Codex auth.json", auth=True)
-    _read_marker(marker_path)
-
     if action == "adopt":
+        auth_present = _validate_optional_file(auth_path, "Codex auth.json", auth=True)
+        _read_marker(marker_path)
         if not auth_present:
             raise CodexStateError(
                 "cannot adopt missing auth.json; run `codex login --device-auth` first"
             )
         _atomic_write(marker_path, _marker_value("agent-local"), 0o600)
     else:
-        if auth_present:
+        _read_marker(marker_path)
+        if _present(auth_path, "Codex auth.json"):
+            info = auth_path.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                raise CodexStateError(
+                    "cannot reset Codex auth.json because it is a directory; "
+                    "remove that directory entry inside the agent (for example "
+                    "with `rmdir /home/agent/.codex/auth.json` when empty), then rerun reset"
+                )
             try:
                 auth_path.unlink()
             except OSError as exc:
@@ -305,13 +326,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--mcp-launcher")
+    parser.add_argument("--require-agent-local", action="store_true")
     parser.add_argument("recovery", nargs="?", choices=("adopt", "reset"))
     args = parser.parse_args()
     try:
         if args.recovery is not None:
             _recover(args.home, args.recovery)
         else:
-            _stage(args.home, args.mcp_launcher)
+            _stage(
+                args.home,
+                args.mcp_launcher,
+                require_agent_local=args.require_agent_local,
+            )
     except CodexStateError as exc:
         print(f"codex-state: {exc}", file=sys.stderr)
         print(f"codex-state: {RECOVERY_GUIDANCE}", file=sys.stderr)

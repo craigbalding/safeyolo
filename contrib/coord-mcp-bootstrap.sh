@@ -31,6 +31,7 @@ show_help() {
 
 AGENT_HOME=""
 HARNESS=""
+REQUIRE_AGENT_LOCAL=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -43,6 +44,10 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || { echo "coord-mcp-bootstrap: --harness needs claude|codex" >&2; exit 2; }
             HARNESS="$2"
             shift 2
+            ;;
+        --require-agent-local)
+            REQUIRE_AGENT_LOCAL=1
+            shift
             ;;
         -h|--help|help)
             show_help
@@ -184,9 +189,14 @@ PY
             echo "coord-mcp-bootstrap: selected SafeYolo Python lacks tomlkit; use the SafeYolo CLI interpreter" >&2
             exit 1
         fi
-        "$PYTHON_BIN" "$CODEX_STATE_SRC" \
-            --home "$AGENT_HOME" \
+        state_args=(
+            --home "$AGENT_HOME"
             --mcp-launcher "$LAUNCHER_INSANDBOX"
+        )
+        if [ "$REQUIRE_AGENT_LOCAL" -eq 1 ]; then
+            state_args+=(--require-agent-local)
+        fi
+        "$PYTHON_BIN" "$CODEX_STATE_SRC" "${state_args[@]}"
         ;;
     *)
         echo "coord-mcp-bootstrap: unknown harness '$HARNESS' (expected claude|codex)" >&2

@@ -8,6 +8,7 @@ processes are started.
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 from unittest.mock import call, create_autospec, patch
 
@@ -1841,6 +1842,61 @@ class TestRunAgent:
         assert "already running" in result.output.lower()
         assert not marker.exists()
         mock_run.assert_not_called()
+
+    def test_setup_and_start_transitions_share_a_barrier(self, config_dir):
+        """A setup or start transition cannot pass while the other owns the lock."""
+        from safeyolo.commands.agent import _agent_host_setup_lock
+
+        for first in ("setup", "start"):
+            entered = threading.Event()
+            release = threading.Event()
+            second_entered = threading.Event()
+            order: list[str] = []
+
+            def first_transition() -> None:
+                with _agent_host_setup_lock("barrier"):
+                    order.append(first)
+                    entered.set()
+                    assert release.wait(2)
+
+            second = "start" if first == "setup" else "setup"
+
+            def second_transition() -> None:
+                with _agent_host_setup_lock("barrier"):
+                    order.append(second)
+                    second_entered.set()
+
+            first_thread = threading.Thread(target=first_transition)
+            second_thread = threading.Thread(target=second_transition)
+            first_thread.start()
+            assert entered.wait(2)
+            second_thread.start()
+            assert not second_entered.wait(0.1)
+            release.set()
+            first_thread.join(2)
+            second_thread.join(2)
+            assert order == [first, second]
+
+    @pytest.mark.parametrize("lock_kind", ("hardlink", "symlink"))
+    def test_setup_lock_rejects_ambiguous_lock_entry(self, config_dir, lock_kind):
+        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.vm import ensure_agent_persistent_dirs, get_agent_home_dir
+
+        ensure_agent_persistent_dirs("unsafe-lock")
+        lock_path = get_agent_home_dir("unsafe-lock") / ".safeyolo/host-setup.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        source = lock_path.with_name("lock-source")
+        source.write_text("synthetic")
+        if lock_kind == "hardlink":
+            lock_path.hardlink_to(source)
+            expected = "hard links are not allowed"
+        else:
+            lock_path.symlink_to(source)
+            expected = "unsafe host setup lock"
+
+        with pytest.raises(RuntimeError, match=expected):
+            with _agent_host_setup_lock("unsafe-lock"):
+                pass
 
     def test_already_running_exits_one(self, runner, config_dir, tmp_path):
         """If sandbox is already running, exits 1 with helpful message."""

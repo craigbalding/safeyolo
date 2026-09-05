@@ -464,7 +464,7 @@ def test_factory_run_executes_staged_worker_commands(
                 pass
 
 
-def test_factory_run_does_not_boot_workers_without_coord(tmp_path, monkeypatch):
+def test_factory_run_does_not_boot_workers_without_coord(tmp_path, tmp_config_dir, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     payload = {
@@ -475,12 +475,15 @@ def test_factory_run_does_not_boot_workers_without_coord(tmp_path, monkeypatch):
         },
     }
     launched: list[str] = []
+    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
+    platform.is_sandbox_running.return_value = False
 
     monkeypatch.setattr(
         "safeyolo.commands.factory.load_agent",
         lambda name: {"folder": str(workspace)},
     )
     monkeypatch.setattr("safeyolo.commands.factory._check_project_ownership", lambda *_args: None)
+    monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
     monkeypatch.setattr("safeyolo.commands.factory._run_host_script_for_agent", lambda **_kwargs: None)
     monkeypatch.setattr("safeyolo.commands.factory.mutate_agent", lambda *_args: None)
     monkeypatch.setattr(
@@ -502,6 +505,7 @@ def test_factory_run_does_not_boot_workers_without_coord(tmp_path, monkeypatch):
 
 def test_factory_run_does_not_boot_workers_when_room_provisioning_fails(
     tmp_path,
+    tmp_config_dir,
     monkeypatch,
 ):
     workspace = tmp_path / "workspace"
@@ -515,12 +519,15 @@ def test_factory_run_does_not_boot_workers_when_room_provisioning_fails(
         },
     }
     launched: list[str] = []
+    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
+    platform.is_sandbox_running.return_value = False
 
     monkeypatch.setattr(
         "safeyolo.commands.factory.load_agent",
         lambda name: {"folder": str(workspace)},
     )
     monkeypatch.setattr("safeyolo.commands.factory._check_project_ownership", lambda *_args: None)
+    monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
     monkeypatch.setattr("safeyolo.commands.factory._run_host_script_for_agent", lambda **_kwargs: None)
     monkeypatch.setattr("safeyolo.commands.factory.mutate_agent", lambda *_args: None)
     monkeypatch.setattr("safeyolo.commands.factory.coord_nats.start_server", lambda **_kwargs: 123)
@@ -540,6 +547,40 @@ def test_factory_run_does_not_boot_workers_when_room_provisioning_fails(
         _run_snapshot(tmp_path / "snapshot.json", payload)
 
     assert launched == []
+
+
+def test_factory_preflights_all_roles_before_staging(tmp_path, tmp_config_dir, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    payload = {
+        "room": "backlog",
+        "roles": {
+            "coordinator": {"agent": "relay"},
+            "owner": {"agent": "forge"},
+            "reviewer": {"agent": "lens"},
+        },
+    }
+    staged: list[str] = []
+    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
+    platform.is_sandbox_running.side_effect = lambda name: name == "lens"
+
+    monkeypatch.setattr(
+        "safeyolo.commands.factory.load_agent",
+        lambda name: {"folder": str(workspace)},
+    )
+    monkeypatch.setattr("safeyolo.commands.factory._check_project_ownership", lambda *_args: None)
+    monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
+    monkeypatch.setattr(
+        "safeyolo.commands.factory._run_host_script_for_agent",
+        lambda **kwargs: staged.append(kwargs["name"]),
+    )
+
+    from safeyolo.commands.factory import _run_snapshot
+
+    with pytest.raises(FactoryContractError, match="agent 'lens' is already running"):
+        _run_snapshot(tmp_path / "snapshot.json", payload)
+
+    assert staged == []
 
 
 def test_factory_run_missing_agent_prints_ordered_executable_recovery(

@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ from ..factory_contract import (
 )
 from ..factory_doctor import FactoryDoctorReport, inspect_factory
 from .agent import (
+    _agent_host_setup_lock,
     _check_project_ownership,
     _resolve_host_script_path,
     _run_agent,
@@ -335,58 +336,78 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
         _check_project_ownership(folder_path, False)
         configured.append((role_name, agent_name, metadata))
 
-    # Configure every existing agent from the same immutable snapshot before
-    # booting any of them. There is no live reload; another approve+run is needed
-    # to move the factory to a different snapshot.
-    for role_name, agent_name, metadata in configured:
-        with _factory_environment(snapshot_path, role_name):
-            _run_host_script_for_agent(
-                name=agent_name,
-                host_script_path=host_script,
-                folder_str=str(Path(metadata["folder"]).expanduser().resolve()),
-            )
+    setup_locks = ExitStack()
+    try:
+        # Acquire every role lock before checking liveness or mutating any
+        # agent. The sorted order prevents two factory invocations from
+        # deadlocking while they contend for overlapping role sets.
+        for agent_name in sorted({agent_name for _role, agent_name, _meta in configured}):
+            setup_locks.enter_context(_agent_host_setup_lock(agent_name))
 
-        def persist_host_script(current: dict[str, Any]) -> None:
-            current["host_script"] = str(host_script)
+        from ..platform import get_platform
+
+        platform = get_platform()
+        for role_name, agent_name, _metadata in configured:
+            if platform.is_sandbox_running(agent_name):
+                raise FactoryContractError(
+                    f"role {role_name!r} agent {agent_name!r} is already running; "
+                    f"stop it before starting the factory"
+                )
+
+        # Configure every existing agent from the same immutable snapshot before
+        # booting any of them. There is no live reload; another approve+run is needed
+        # to move the factory to a different snapshot.
+        for role_name, agent_name, metadata in configured:
+            with _factory_environment(snapshot_path, role_name):
+                _run_host_script_for_agent(
+                    name=agent_name,
+                    host_script_path=host_script,
+                    folder_str=str(Path(metadata["folder"]).expanduser().resolve()),
+                )
+
+            def persist_host_script(current: dict[str, Any]) -> None:
+                current["host_script"] = str(host_script)
+
+            try:
+                mutate_agent(agent_name, persist_host_script)
+            except KeyError as exc:
+                raise FactoryContractError(f"agent {agent_name!r} was removed during factory setup") from exc
 
         try:
-            mutate_agent(agent_name, persist_host_script)
-        except KeyError as exc:
-            raise FactoryContractError(f"agent {agent_name!r} was removed during factory setup") from exc
-
-    try:
-        coord_nats.start_server(ready_timeout=10.0)
-        coord_api.bootstrap()
-    except Exception as exc:
-        raise FactoryContractError(
-            f"Coord runtime failed before room/grant provisioning: {exc}\n"
-            f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
-        ) from exc
-
-    try:
-        _ensure_factory_rooms(
-            payload["room"],
-            (agent_name for _role_name, agent_name, _metadata in configured),
-        )
-    except Exception as exc:
-        raise FactoryContractError(
-            f"Coord room/grant provisioning failed before role launch: {exc}\n"
-            f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
-        ) from exc
-
-    for _role_name, agent_name, _metadata in configured:
-        exit_code = _run_agent(
-            agent_name,
-            yolo=True,
-            detach=True,
-            run_command_detached=True,
-            no_snapshot=True,
-        )
-        if exit_code != 0:
+            coord_nats.start_server(ready_timeout=10.0)
+            coord_api.bootstrap()
+        except Exception as exc:
             raise FactoryContractError(
-                f"agent {agent_name!r} failed to start (exit {exit_code});\n"
+                f"Coord runtime failed before room/grant provisioning: {exc}\n"
                 f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
+            ) from exc
+
+        try:
+            _ensure_factory_rooms(
+                payload["room"],
+                (agent_name for _role_name, agent_name, _metadata in configured),
             )
+        except Exception as exc:
+            raise FactoryContractError(
+                f"Coord room/grant provisioning failed before role launch: {exc}\n"
+                f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
+            ) from exc
+
+        for _role_name, agent_name, _metadata in configured:
+            exit_code = _run_agent(
+                agent_name,
+                yolo=True,
+                detach=True,
+                run_command_detached=True,
+                no_snapshot=True,
+            )
+            if exit_code != 0:
+                raise FactoryContractError(
+                    f"agent {agent_name!r} failed to start (exit {exit_code});\n"
+                    f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
+                )
+    finally:
+        setup_locks.close()
 
 
 def _wait_for_operational_preflight(name: str) -> FactoryDoctorReport:

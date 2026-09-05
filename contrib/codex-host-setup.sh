@@ -406,6 +406,13 @@ fi
 # --- Stage and register the coord MCP server ---------------------------------
 # This runs after the foreground command is written so the shared bootstrap can
 # inject its guarded dependency setup immediately before the harness exec.
-"$SCRIPT_DIR/coord-mcp-bootstrap.sh" --home "$AGENT_HOME" --harness codex
+if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
+    "$SCRIPT_DIR/coord-mcp-bootstrap.sh" \
+        --home "$AGENT_HOME" \
+        --harness codex \
+        --require-agent-local
+else
+    "$SCRIPT_DIR/coord-mcp-bootstrap.sh" --home "$AGENT_HOME" --harness codex
+fi
 
 echo "codex-host-setup: $SAFEYOLO_AGENT_NAME ready at $AGENT_HOME"
