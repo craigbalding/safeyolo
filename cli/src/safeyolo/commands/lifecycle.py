@@ -1,6 +1,5 @@
 """Proxy lifecycle commands: start, stop, status, build."""
 
-import asyncio
 import os
 import platform
 import secrets
@@ -15,7 +14,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from ..api import APIError, get_api
 from ..config import (
     DEFAULT_CONFIG,
     find_config_dir,
@@ -24,8 +22,6 @@ from ..config import (
     load_config,
     save_config,
 )
-from ..coord import nats_runtime as coord_nats
-from ..events import EventKind, Severity, write_event
 from ..proxy import (
     is_proxy_running,
     start_proxy,
@@ -38,6 +34,49 @@ from ..vm import check_guest_images, missing_guest_images
 from .proxy import _web_tailnet_runtime
 
 console = Console()
+
+
+def get_api():
+    """Load the admin API client only when lifecycle status needs it."""
+    from ..api import get_api as _get_api
+
+    return _get_api()
+
+
+class _LazyCoordNats:
+    """Resolve the coord runtime only for lifecycle operations."""
+
+    def __getattr__(self, name: str):
+        from ..coord import nats_runtime
+
+        return getattr(nats_runtime, name)
+
+
+coord_nats = _LazyCoordNats()
+
+
+def write_event(
+    event: str,
+    *,
+    kind: str,
+    severity: str,
+    summary: str,
+    agent: str | None = None,
+    addon: str | None = None,
+    details: dict | None = None,
+) -> None:
+    """Write a lifecycle event without loading the audit schema at import time."""
+    from ..events import write_event as _write_event
+
+    _write_event(
+        event,
+        kind=kind,
+        severity=severity,
+        summary=summary,
+        agent=agent,
+        addon=addon,
+        details=details,
+    )
 
 
 def _attribution_ip_conflicts(
@@ -103,8 +142,8 @@ def _start_coord_best_effort() -> _CoordStartOutcome:
     except Exception as err:  # noqa: BLE001 — coord failure is non-fatal
         write_event(
             "ops.coord_nats_start_failed",
-            kind=EventKind.OPS,
-            severity=Severity.MEDIUM,
+            kind="ops",
+            severity="medium",
             summary="nats-server did not start; coord API will return 503",
             addon="cli.lifecycle",
             details={"error_type": type(err).__name__, "error": str(err)[:500]},
@@ -131,8 +170,8 @@ def _start_coord_best_effort() -> _CoordStartOutcome:
         # Non-fatal: NATS is up, addon will bootstrap on first request.
         write_event(
             "ops.coord_bootstrap_failed",
-            kind=EventKind.OPS,
-            severity=Severity.LOW,
+            kind="ops",
+            severity="low",
             summary="coord bootstrap failed at start (will retry lazily on first request)",
             addon="cli.lifecycle",
             details={"error_type": type(err).__name__, "error": str(err)[:500]},
@@ -148,14 +187,16 @@ def _start_coord_best_effort() -> _CoordStartOutcome:
         return "degraded"
 
     try:
+        import asyncio
+
         asyncio.run(coord_api.recover_attention())
     except Exception as err:  # noqa: BLE001
         # Accepted manifests remain in JetStream. A later send or attention
         # wait retries the same idempotent contiguous projection.
         write_event(
             "ops.coord_attention_recovery_failed",
-            kind=EventKind.OPS,
-            severity=Severity.LOW,
+            kind="ops",
+            severity="low",
             summary="coord attention recovery is pending",
             addon="cli.lifecycle",
             details={"error_type": type(err).__name__, "error": str(err)[:500]},
@@ -348,8 +389,8 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
     except Exception as err:
         write_event(
             "ops.proxy_start_failed",
-            kind=EventKind.OPS,
-            severity=Severity.HIGH,
+            kind="ops",
+            severity="high",
             summary="SafeYolo proxy failed during launch",
             addon="cli.lifecycle",
             details={"phase": "launch", "error_type": type(err).__name__, "error": str(err)},
@@ -371,8 +412,8 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
             stop_proxy()
             write_event(
                 "ops.proxy_start_failed",
-                kind=EventKind.OPS,
-                severity=Severity.HIGH,
+                kind="ops",
+                severity="high",
                 summary="SafeYolo proxy did not remain healthy during startup",
                 addon="cli.lifecycle",
                 details={"phase": "health", "admin_port": admin_port},
@@ -534,6 +575,7 @@ def stop_all() -> None:
 
 def status() -> None:
     """Show SafeYolo status and statistics."""
+    from ..api import APIError
 
     config_dir = find_config_dir()
     if not config_dir:

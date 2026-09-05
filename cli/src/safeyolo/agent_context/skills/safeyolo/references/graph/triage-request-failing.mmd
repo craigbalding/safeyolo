@@ -79,6 +79,7 @@ flowchart TD
     ev.retry_timeout_with_bounded_curl -->|"escalates_to: the exact URL also times out or the proxy route is unavailable"| ask.diag_agent
     ev.check_x_blocked_by -->|"next_check: header present"| ev.check_response_body_json
     ev.check_x_blocked_by -->|"implies: header absent AND status is upstream-shaped (401/403/404/5xx)"| cls.upstream_only
+    ev.check_x_blocked_by -->|"implies: header absent AND local audit records the response without blocked_by, including an upstream 428"| cls.upstream_only
     ev.check_response_body_json -->|"implies: type refers to network_guard or credential_guard route"| cls.policy_block
     ev.check_response_body_json -->|"implies: action == wait_for_approval"| cls.approval_gate
     ev.check_response_body_json -->|"implies: type mentions budget or Retry-After present"| cls.budget_exhausted

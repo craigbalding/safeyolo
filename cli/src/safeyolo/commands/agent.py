@@ -38,7 +38,6 @@ from ..config import (
     load_config,
     save_config,
 )
-from ..events import EventKind, Severity, write_event
 from ..proxy import is_proxy_running, start_proxy, wait_for_healthy
 from ..snapshot import (
     compute_snapshot_version,
@@ -62,7 +61,6 @@ from ..vm import (
     stage_guest_desktop_launcher,
     vm_helper_failure_summary,
 )
-from ._service_discovery import ServiceDiscoveryError, find_service
 from .mount import is_path_protected
 from .tmux import associate_agent_pane, rename_window_for_agent
 
@@ -70,6 +68,31 @@ log = logging.getLogger("safeyolo.agent")
 console = Console()
 
 DEFAULT_AGENT_MEMORY_MB = 4096
+
+def write_event(
+    event: str,
+    *,
+    kind: str,
+    severity: str,
+    summary: str,
+    agent: str | None = None,
+    addon: str | None = None,
+    details: dict | None = None,
+) -> None:
+    """Write an agent event without loading the audit schema at CLI import time."""
+    from ..events import write_event as _write_event
+
+    _write_event(
+        event,
+        kind=kind,
+        severity=severity,
+        summary=summary,
+        agent=agent,
+        addon=addon,
+        details=details,
+    )
+
+
 
 agent_app = typer.Typer(
     name="agent",
@@ -805,7 +828,7 @@ def _run_agent_impl(
 
     run_background = detach
 
-    write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
+    write_event("agent.started", kind="agent", severity="low", summary=f"Agent {name} started", agent=name)
     exit_code = 0
     try:
         import time as _time
@@ -1075,7 +1098,14 @@ def _run_agent_impl(
     except KeyboardInterrupt:
         exit_code = 130
 
-    write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {exit_code})", agent=name, details={"exit_code": exit_code})
+    write_event(
+        "agent.stopped",
+        kind="agent",
+        severity="low",
+        summary=f"Agent {name} stopped (exit {exit_code})",
+        agent=name,
+        details={"exit_code": exit_code},
+    )
 
     # Clean up PID file (not for detach -- VM is still running).
     if not detach:
@@ -1567,7 +1597,14 @@ def add(  # DOC: README.md, docs/AGENTS.md
         event_details["rootfs_script"] = str(rootfs_script_path)
     if rootfs_from:
         event_details["rootfs_from"] = rootfs_from
-    write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added", agent=name, details=event_details)
+    write_event(
+        "agent.added",
+        kind="agent",
+        severity="low",
+        summary=f"Agent {name} added",
+        agent=name,
+        details=event_details,
+    )
 
     # Auto-run unless --no-run
     if not no_run:
@@ -1694,7 +1731,7 @@ def remove(
     admin_port = config.get("proxy", {}).get("admin_port", 9090)
     from ..proxy import sync_proxy_modes
     sync_proxy_modes(admin_port=admin_port)
-    write_event("agent.removed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} removed", agent=name)
+    write_event("agent.removed", kind="agent", severity="low", summary=f"Agent {name} removed", agent=name)
     console.print(f"[green]Removed agent: {name}[/green]")
 
 
@@ -2305,7 +2342,14 @@ def stop(
         _t("remove proxy listener for stopped agent")
         sync_proxy_modes(admin_port=admin_port)
     _t("record and render stop result")
-    write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped by user", agent=name, details={"reason": "user_request"})
+    write_event(
+        "agent.stopped",
+        kind="agent",
+        severity="low",
+        summary=f"Agent {name} stopped by user",
+        agent=name,
+        details={"reason": "user_request"},
+    )
     console.print(f"[green]Stopped {name}.[/green]")
 
 
@@ -2636,8 +2680,8 @@ def config(
 
     write_event(
         "agent.config_changed",
-        kind=EventKind.AGENT,
-        severity=Severity.LOW,
+        kind="agent",
+        severity="low",
         summary=f"Agent {name} config changed: {', '.join(changes)}",
         agent=name,
         details={"changes": changes},
@@ -2735,6 +2779,8 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
         safeyolo agent authorize boris slack --token-file ~/slack.key
         safeyolo agent authorize boris gmail --credential-name gmail-oauth2
     """
+    from ._service_discovery import ServiceDiscoveryError, find_service
+
     # 1. Validate agent exists
     _validate_instance_name(agent_name)
 

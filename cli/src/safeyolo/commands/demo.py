@@ -4,7 +4,6 @@ import secrets
 import string
 import time
 
-import httpx
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -46,6 +45,8 @@ def _make_request(
     timeout: float = 10.0,
 ) -> tuple[int, dict, str]:
     """Make request through proxy, return (status, headers, body)."""
+    import httpx
+
     proxy_url = _get_proxy_url()
 
     with httpx.Client(proxy=proxy_url, timeout=timeout) as client:
