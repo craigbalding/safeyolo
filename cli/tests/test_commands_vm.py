@@ -1792,7 +1792,12 @@ class TestRunAgent:
             f'[agents.web]\nfolder = "{project}"\n'
         )
 
-        with patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run:
+        platform = _platform()
+        platform.is_sandbox_running.return_value = False
+        with (
+            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True) as mock_run,
+        ):
             result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(script)])
 
         assert result.exit_code == 0
@@ -1810,6 +1815,31 @@ class TestRunAgent:
 
         assert result.exit_code == 1
         assert "host script not found" in result.output.lower()
+        mock_run.assert_not_called()
+
+    def test_run_host_script_refuses_live_agent_before_script(self, runner, config_dir, tmp_path):
+        """A live agent is rejected before host setup can mutate its home."""
+        project = tmp_path / "project"
+        project.mkdir()
+        marker = tmp_path / "script-ran"
+        script = tmp_path / "setup.sh"
+        script.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        script.chmod(0o755)
+        (config_dir / "policy.toml").write_text(
+            'version = "2.0"\n\n[hosts]\n"*" = { rate = 600 }\n\n'
+            f'[agents.web]\nfolder = "{project}"\n'
+        )
+        platform = _platform()
+        platform.is_sandbox_running.return_value = True
+        with (
+            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True) as mock_run,
+        ):
+            result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(script)])
+
+        assert result.exit_code == 1
+        assert "already running" in result.output.lower()
+        assert not marker.exists()
         mock_run.assert_not_called()
 
     def test_already_running_exits_one(self, runner, config_dir, tmp_path):

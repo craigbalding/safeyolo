@@ -56,8 +56,8 @@ def _factory_setup_commands(name: str, payload: dict[str, Any] | None = None) ->
     )
     lines = [
         'Recovery order (use "$PWD" or replace it with each agent\'s workspace):',
-        "Run from a host session already logged in to Codex with a ChatGPT subscription; "
-        + "@codex stages that host's ~/.codex authentication and config for the agent.",
+        "@codex stages SafeYolo-owned Codex settings only. Log in inside each "
+        + "agent and explicitly adopt its agent-local credential before the factory run.",
     ]
     for agent in agents:
         lines.append(f'  safeyolo agent add {agent} "$PWD" --host-script @codex --no-run')
@@ -238,10 +238,11 @@ def run_factory(
         safeyolo factory approve FACTORY.toml --yes
         safeyolo factory run NAME
 
-    Run the add command from a host session already logged in to Codex with a
-    ChatGPT subscription. The ordinary ``@codex`` host setup stages the host's
-    ``~/.codex`` authentication and config into the agent home. ``factory run``
-    later reapplies ``@codex-coord`` with the approved snapshot and role.
+    The ordinary ``@codex`` host setup stages SafeYolo-owned Codex settings
+    only. Log in inside each agent with ``codex login`` and explicitly run
+    ``/home/agent/.safeyolo/codex-auth-recovery.py adopt`` before ``factory
+    run``; the command later reapplies ``@codex-coord`` with the approved
+    snapshot and role.
 
     ``factory run`` provisions the declared Coord rooms and grants before it
     starts any role, then waits for every role supervisor to pass the same

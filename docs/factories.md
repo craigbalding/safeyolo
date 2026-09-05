@@ -111,18 +111,23 @@ constraints, but the backlog factory does not require one.
 
 ## Fresh setup, check, approve, and run
 
-The shortest discoverable setup path is deliberately ordered. Before running
-it, log in to Codex with a ChatGPT subscription on the host. Register every
-agent with the ordinary bundled `@codex` host setup, which stages the host's
-`~/.codex` authentication and config into the agent's persistent home, then
-validate the immutable contract, approve that exact snapshot, and only then run
-the factory. `--no-run` leaves agent creation separate from factory startup;
-the host setup cannot create a subscription login that is absent on the host.
+The shortest discoverable setup path is deliberately ordered. Register every
+agent with the ordinary bundled `@codex` host setup, which stages only
+SafeYolo-owned Codex settings. Before the factory starts, log in from inside
+each agent and explicitly adopt that agent-local credential. Then validate the
+immutable contract, approve that exact snapshot, and only then run the factory.
+`--no-run` leaves agent creation separate from factory startup; host credentials
+are never copied into the agent.
 
 ```sh
 safeyolo agent add relay "$PWD" --host-script @codex --no-run
 safeyolo agent add forge "$PWD" --host-script @codex --no-run
 safeyolo agent add lens "$PWD" --host-script @codex --no-run
+safeyolo agent run relay --host-script @codex --detach
+safeyolo agent shell relay -c "codex login"
+safeyolo agent shell relay -c "/home/agent/.safeyolo/codex-auth-recovery.py adopt"
+safeyolo agent stop relay
+# Repeat the run, login, adopt, and stop sequence for forge and lens.
 safeyolo factory check docs/factories/backlog.toml
 safeyolo factory approve docs/factories/backlog.toml --yes
 safeyolo factory run backlog

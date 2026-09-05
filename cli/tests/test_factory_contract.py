@@ -137,8 +137,8 @@ def test_factory_run_help_exposes_fresh_setup_order(cli_runner):
 
     assert result.exit_code == 0, result.output
     assert "safeyolo agent add AGENT FOLDER --host-script @codex --no-run" in output
-    assert "logged in to Codex with a ChatGPT subscription" in output
-    assert "authentication and config into the agent home" in output
+    assert "explicitly run" in output
+    assert "SafeYolo-owned Codex settings only" in output
     assert output.index("factory check") < output.index("factory approve") < output.index("factory run NAME")
 
 
@@ -268,10 +268,19 @@ def test_factory_run_preserves_each_agents_local_codex_auth(
         save_agent(name, {"agent_id": f"ag-{index:032x}", "folder": str(folder)})
         auth = get_agent_home_dir(name) / ".codex/auth.json"
         auth.parent.mkdir(parents=True)
+        auth.parent.chmod(0o700)
         expected_auth[name] = f'{{"owner":"{name}"}}\n'
         auth.write_text(expected_auth[name])
+        auth.chmod(0o600)
+        (auth.parent / ".safeyolo-provenance.json").write_text(
+            '{"schema":"safeyolo.codex-provenance/v1","state":"agent-local"}\n'
+        )
+        (auth.parent / ".safeyolo-provenance.json").chmod(0o600)
 
     monkeypatch.setattr("safeyolo.commands.factory._run_agent", lambda *args, **kwargs: 0)
+    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
+    platform.is_sandbox_running.return_value = False
+    monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
     monkeypatch.setattr("safeyolo.commands.factory.coord_nats.start_server", lambda **_kwargs: 123)
     monkeypatch.setattr("safeyolo.commands.factory.coord_api.bootstrap", lambda: "sy-test")
     monkeypatch.setattr(
@@ -547,7 +556,7 @@ def test_factory_run_missing_agent_prints_ordered_executable_recovery(
     assert result.exit_code == 1, result.output
     assert "Started factory" not in result.output
     assert 'safeyolo agent add relay "$PWD" --host-script @codex --no-run' in output
-    assert "logged in to Codex with a ChatGPT subscription" in output
+    assert "SafeYolo-owned Codex settings only" in output
     assert output.index("agent add relay") < output.index("factory check")
     assert output.index("factory check") < output.index("factory approve") < output.index("factory run backlog")
 

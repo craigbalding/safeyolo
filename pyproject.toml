@@ -127,6 +127,7 @@ packages = ["cli/src/safeyolo"]
 "contrib/codex-coord-supervisor-fake-codex.sh" = "safeyolo/contrib/codex-coord-supervisor-fake-codex.sh"
 "contrib/mise-shell-host-setup.sh"      = "safeyolo/contrib/mise-shell-host-setup.sh"
 "contrib/lib/stage-safeyolo-context.sh" = "safeyolo/contrib/lib/stage-safeyolo-context.sh"
+"contrib/lib/stage-codex-state.py"      = "safeyolo/contrib/lib/stage-codex-state.py"
 "contrib/HOST_SCRIPT_GUIDE.md"          = "safeyolo/contrib/HOST_SCRIPT_GUIDE.md"
 "contrib/coord-mcp-bootstrap.sh"        = "safeyolo/contrib/coord-mcp-bootstrap.sh"
 "contrib/safeyolo-coord-mcp-launcher.sh" = "safeyolo/contrib/safeyolo-coord-mcp-launcher.sh"

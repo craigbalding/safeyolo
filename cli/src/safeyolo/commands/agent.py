@@ -1,5 +1,6 @@
 """Agent management commands."""
 
+import fcntl
 import getpass
 import logging
 import os
@@ -7,6 +8,7 @@ import re
 import shlex
 import signal
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 import typer
@@ -233,25 +235,56 @@ def _run_host_script_for_agent(
     host_script_path: Path,
     folder_str: str,
 ) -> None:
+    with _agent_host_setup_lock(name):
+        from ..platform import get_platform
+        from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
+
+        if get_platform().is_sandbox_running(name):
+            console.print(f"[red]Agent '{name}' is already running.[/red]")
+            console.print(
+                f"Stop it first: [bold]safeyolo agent stop {name}[/bold] "
+                "before applying a host script."
+            )
+            raise typer.Exit(1)
+
+        ensure_agent_persistent_dirs(name)
+        agent_home = get_agent_home_dir(name)
+        env = {
+            **os.environ,
+            "SAFEYOLO_AGENT_NAME": name,
+            "SAFEYOLO_AGENT_HOME": str(agent_home),
+            "SAFEYOLO_AGENT_FOLDER": folder_str,
+        }
+        console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
+        try:
+            result = subprocess.run([str(host_script_path)], env=env, check=False)
+        except OSError as err:
+            console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
+            raise typer.Exit(1)
+        if result.returncode != 0:
+            console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
+            raise typer.Exit(result.returncode)
+
+
+@contextmanager
+def _agent_host_setup_lock(name: str):
+    """Serialize host setup and protect it from a concurrently live agent."""
     from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
 
     ensure_agent_persistent_dirs(name)
-    agent_home = get_agent_home_dir(name)
-    env = {
-        **os.environ,
-        "SAFEYOLO_AGENT_NAME": name,
-        "SAFEYOLO_AGENT_HOME": str(agent_home),
-        "SAFEYOLO_AGENT_FOLDER": folder_str,
-    }
-    console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
+    lock_path = get_agent_home_dir(name) / ".safeyolo/host-setup.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(lock_path, flags, 0o600)
     try:
-        result = subprocess.run([str(host_script_path)], env=env, check=False)
-    except OSError as err:
-        console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
-        raise typer.Exit(1)
-    if result.returncode != 0:
-        console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
-        raise typer.Exit(result.returncode)
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def _capture_snapshot_blocking(
