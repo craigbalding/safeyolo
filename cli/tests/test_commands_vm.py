@@ -7,8 +7,12 @@ processes are started.
 """
 
 import json
+import os
+import stat
 import subprocess
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import call, create_autospec, patch
 
 import click
@@ -1792,7 +1796,12 @@ class TestRunAgent:
             f'[agents.web]\nfolder = "{project}"\n'
         )
 
-        with patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run:
+        platform = _platform()
+        platform.is_sandbox_running.return_value = False
+        with (
+            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True) as mock_run,
+        ):
             result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(script)])
 
         assert result.exit_code == 0
@@ -1811,6 +1820,226 @@ class TestRunAgent:
         assert result.exit_code == 1
         assert "host script not found" in result.output.lower()
         mock_run.assert_not_called()
+
+    def test_run_host_script_refuses_live_agent_before_script(self, runner, config_dir, tmp_path):
+        """A live agent is rejected before host setup can mutate its home."""
+        project = tmp_path / "project"
+        project.mkdir()
+        marker = tmp_path / "script-ran"
+        script = tmp_path / "setup.sh"
+        script.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        script.chmod(0o755)
+        (config_dir / "policy.toml").write_text(
+            'version = "2.0"\n\n[hosts]\n"*" = { rate = 600 }\n\n'
+            f'[agents.web]\nfolder = "{project}"\n'
+        )
+        platform = _platform()
+        platform.is_sandbox_running.return_value = True
+        with (
+            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True) as mock_run,
+        ):
+            result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(script)])
+
+        assert result.exit_code == 1
+        assert "already running" in result.output.lower()
+        assert not marker.exists()
+        mock_run.assert_not_called()
+
+    def test_setup_and_start_transitions_share_a_barrier(self, config_dir):
+        """A setup or start transition cannot pass while the other owns the lock."""
+        from safeyolo.commands.agent import _agent_host_setup_lock
+
+        for first in ("setup", "start"):
+            entered = threading.Event()
+            release = threading.Event()
+            second_entered = threading.Event()
+            order: list[str] = []
+
+            def first_transition() -> None:
+                with _agent_host_setup_lock("barrier"):
+                    order.append(first)
+                    entered.set()
+                    assert release.wait(2)
+
+            second = "start" if first == "setup" else "setup"
+
+            def second_transition() -> None:
+                with _agent_host_setup_lock("barrier"):
+                    order.append(second)
+                    second_entered.set()
+
+            first_thread = threading.Thread(target=first_transition)
+            second_thread = threading.Thread(target=second_transition)
+            first_thread.start()
+            assert entered.wait(2)
+            second_thread.start()
+            assert not second_entered.wait(0.1)
+            release.set()
+            first_thread.join(2)
+            second_thread.join(2)
+            assert order == [first, second]
+
+    @pytest.mark.parametrize("lock_kind", ("hardlink", "symlink"))
+    def test_setup_lock_rejects_ambiguous_lock_entry(self, config_dir, lock_kind):
+        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.vm import ensure_agent_persistent_dirs, get_agent_home_dir
+
+        ensure_agent_persistent_dirs("unsafe-lock")
+        lock_path = get_agent_home_dir("unsafe-lock") / ".safeyolo/host-setup.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.parent.chmod(0o700)
+        source = lock_path.with_name("lock-source")
+        source.write_text("synthetic")
+        if lock_kind == "hardlink":
+            lock_path.hardlink_to(source)
+            expected = "hard links are not allowed"
+        else:
+            lock_path.symlink_to(source)
+            expected = "unsafe host setup lock"
+
+        with pytest.raises(RuntimeError, match=expected):
+            with _agent_host_setup_lock("unsafe-lock"):
+                pass
+
+    def test_setup_lock_rejects_symlinked_state_directory(self, config_dir, tmp_path):
+        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.vm import ensure_agent_persistent_dirs, get_agent_home_dir
+
+        ensure_agent_persistent_dirs("unsafe-parent")
+        state_dir = get_agent_home_dir("unsafe-parent") / ".safeyolo"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        state_dir.symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(RuntimeError, match="unsafe host setup directory"):
+            with _agent_host_setup_lock("unsafe-parent"):
+                pass
+
+        assert not (outside / "host-setup.lock").exists()
+
+    @staticmethod
+    def _patch_setup_lock_descriptor_primitives(monkeypatch, config_dir):
+        import safeyolo.commands.agent as agent_module
+
+        monkeypatch.setattr("safeyolo.vm.ensure_agent_persistent_dirs", lambda _name: None)
+        monkeypatch.setattr(
+            "safeyolo.vm.get_agent_home_dir",
+            lambda name: config_dir / "agents" / name / "home",
+        )
+        monkeypatch.setattr(
+            agent_module,
+            "_open_safe_setup_directory",
+            lambda _path, _name: 41,
+        )
+        close_calls = []
+        monkeypatch.setattr(agent_module.os, "close", close_calls.append)
+        return agent_module, close_calls
+
+    def test_setup_lock_open_failure_closes_setup_directory(self, config_dir, monkeypatch):
+        agent_module, close_calls = self._patch_setup_lock_descriptor_primitives(
+            monkeypatch, config_dir
+        )
+
+        def fail_open(*_args, **_kwargs):
+            raise OSError("lock open failed")
+
+        monkeypatch.setattr(agent_module.os, "open", fail_open)
+
+        from safeyolo.commands.agent import _agent_host_setup_lock
+
+        with pytest.raises(RuntimeError, match="lock open failed"):
+            with _agent_host_setup_lock("open-failure"):
+                pass
+
+        assert close_calls == [41]
+
+    def test_setup_lock_directory_close_failure_closes_lock(self, config_dir, monkeypatch):
+        agent_module, close_calls = self._patch_setup_lock_descriptor_primitives(
+            monkeypatch, config_dir
+        )
+        monkeypatch.setattr(agent_module.os, "open", lambda *_args, **_kwargs: 42)
+
+        def close(fd):
+            close_calls.append(fd)
+            if fd == 41:
+                raise OSError("setup directory close failed")
+
+        monkeypatch.setattr(agent_module.os, "close", close)
+
+        from safeyolo.commands.agent import _agent_host_setup_lock
+
+        with pytest.raises(OSError, match="setup directory close failed"):
+            with _agent_host_setup_lock("directory-close-failure"):
+                pass
+
+        assert close_calls == [41, 42]
+
+    def test_setup_lock_validation_failure_closes_lock(self, config_dir, monkeypatch):
+        agent_module, close_calls = self._patch_setup_lock_descriptor_primitives(
+            monkeypatch, config_dir
+        )
+        monkeypatch.setattr(agent_module.os, "open", lambda *_args, **_kwargs: 42)
+        monkeypatch.setattr(
+            agent_module.os,
+            "fstat",
+            lambda _fd: SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o600,
+                st_nlink=1,
+                st_uid=os.getuid(),
+            ),
+        )
+        monkeypatch.setattr(agent_module.os, "fchmod", lambda *_args: None)
+
+        def fail_flock(*_args):
+            raise OSError("flock failed")
+
+        monkeypatch.setattr(
+            agent_module.fcntl,
+            "flock",
+            fail_flock,
+        )
+
+        from safeyolo.commands.agent import _agent_host_setup_lock
+
+        with pytest.raises(OSError, match="flock failed"):
+            with _agent_host_setup_lock("validation-failure"):
+                pass
+
+        assert close_calls == [41, 42]
+
+    def test_setup_lock_context_closes_each_descriptor_once(self, config_dir, monkeypatch):
+        agent_module, close_calls = self._patch_setup_lock_descriptor_primitives(
+            monkeypatch, config_dir
+        )
+        monkeypatch.setattr(agent_module.os, "open", lambda *_args, **_kwargs: 42)
+        monkeypatch.setattr(
+            agent_module.os,
+            "fstat",
+            lambda _fd: SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o600,
+                st_nlink=1,
+                st_uid=os.getuid(),
+            ),
+        )
+        monkeypatch.setattr(agent_module.os, "fchmod", lambda *_args: None)
+        flock_calls = []
+        monkeypatch.setattr(
+            agent_module.fcntl,
+            "flock",
+            lambda fd, operation: flock_calls.append((fd, operation)),
+        )
+
+        from safeyolo.commands.agent import _agent_host_setup_lock
+
+        with _agent_host_setup_lock("normal-exit"):
+            pass
+
+        assert close_calls == [41, 42]
+        assert flock_calls == [
+            (42, agent_module.fcntl.LOCK_EX),
+            (42, agent_module.fcntl.LOCK_UN),
+        ]
 
     def test_already_running_exits_one(self, runner, config_dir, tmp_path):
         """If sandbox is already running, exits 1 with helpful message."""

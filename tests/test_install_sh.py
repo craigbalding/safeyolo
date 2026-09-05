@@ -43,7 +43,7 @@ def make_fake_uv(tmp_path: Path) -> tuple[Path, Path, Path]:
 
             if [[ "${1:-}" == python && "${2:-}" == install ]]; then
                 if [[ "${FAKE_UV_INSTALL_MODE:-ok}" == fail ]]; then
-                    echo "${FAKE_UV_SECRET:-fake acquisition failure}" >&2
+                    echo "${FAKE_UV_DIAGNOSTIC:-fake acquisition failure}" >&2
                     exit 19
                 fi
                 : > "$FAKE_UV_STATE"
@@ -52,7 +52,7 @@ def make_fake_uv(tmp_path: Path) -> tuple[Path, Path, Path]:
 
             if [[ "${1:-}" == tool && "${2:-}" == install ]]; then
                 if [[ "${FAKE_UV_TOOL_MODE:-ok}" == fail ]]; then
-                    echo "${FAKE_UV_SECRET:-fake tool failure}" >&2
+                    echo "${FAKE_UV_DIAGNOSTIC:-fake tool failure}" >&2
                     exit 23
                 fi
                 exit 0
@@ -164,12 +164,12 @@ def test_install_acquires_supported_python_when_system_lookup_fails(
     assert "asking uv to acquire one" in result.stderr
 
 
-def test_install_reports_bounded_acquisition_failure_without_echoing_details(
+def test_install_preserves_acquisition_failure_details(
     tmp_path: Path,
 ) -> None:
-    """Acquisition failures name the safe action without leaking uv output."""
+    """Acquisition failures retain the cause alongside the suggested action."""
     fake_bin, log, state = make_fake_uv(tmp_path)
-    secret = "https://user:password@proxy.invalid/token"
+    diagnostic = "error: Python download failed: no space left on device"
 
     result = run_installer(
         REPO_ROOT,
@@ -178,13 +178,13 @@ def test_install_reports_bounded_acquisition_failure_without_echoing_details(
         state,
         FAKE_UV_FIND_MODE="missing",
         FAKE_UV_INSTALL_MODE="fail",
-        FAKE_UV_SECRET=secret,
+        FAKE_UV_DIAGNOSTIC=diagnostic,
     )
 
     assert result.returncode != 0
     assert "unable to acquire a Python interpreter satisfying >=3.12,<3.14" in result.stderr
     assert "install a supported Python or allow uv Python downloads" in result.stderr
-    assert secret not in result.stdout + result.stderr
+    assert diagnostic in result.stderr
 
 
 def test_install_derives_changed_python_boundaries_from_pyproject(tmp_path: Path) -> None:
@@ -213,10 +213,10 @@ def test_install_derives_changed_python_boundaries_from_pyproject(tmp_path: Path
     assert "[--python] [/fake/python-3.12]" in lines
 
 
-def test_install_tool_failure_does_not_echo_uv_diagnostics(tmp_path: Path) -> None:
-    """Tool-resolution failures use the same bounded diagnostic boundary."""
+def test_install_tool_failure_preserves_uv_diagnostics(tmp_path: Path) -> None:
+    """Tool-resolution failures preserve uv's explanation of the conflict."""
     fake_bin, log, state = make_fake_uv(tmp_path)
-    secret = "https://user:password@proxy.invalid/tool"
+    diagnostic = "error: no solution found when resolving dependencies"
 
     result = run_installer(
         REPO_ROOT,
@@ -224,12 +224,12 @@ def test_install_tool_failure_does_not_echo_uv_diagnostics(tmp_path: Path) -> No
         log,
         state,
         FAKE_UV_TOOL_MODE="fail",
-        FAKE_UV_SECRET=secret,
+        FAKE_UV_DIAGNOSTIC=diagnostic,
     )
 
     assert result.returncode != 0
     assert "uv tool install failed with a Python interpreter satisfying >=3.12,<3.14" in result.stderr
-    assert secret not in result.stdout + result.stderr
+    assert diagnostic in result.stderr
 
 
 def test_install_avoids_empty_nounset_array_expansion() -> None:

@@ -1,10 +1,9 @@
 #!/bin/bash
 # SafeYolo install helper.
 #
-# Wraps `uv tool install --editable .` with the security-pin overrides that
-# mitmproxy hasn't cut a release for yet (see pyproject `[tool.uv]` —
-# `uv tool install` does not apply that block, so the pins have to be passed
-# on the CLI).
+# Wraps `uv tool install --editable .` with security-pin overrides not yet
+# adopted by mitmproxy's dependency metadata (see pyproject `[tool.uv]`).
+# `uv tool install` does not apply that block, so pass the pins on the CLI.
 #
 # Keeps the "scary" overrides line out of the user's shell history and
 # doesn't require `make` (Ubuntu 24.04 cloud image and other minimal
@@ -22,6 +21,7 @@ set -euo pipefail
 # Security-pin overrides — MUST stay in sync with pyproject.toml
 # [tool.uv] override-dependencies.
 UV_OVERRIDES=(
+  "h2==4.4.1"
   "flask>=3.1.3"
   "pygments>=2.20.0"
   "cryptography>=50.0.0"
@@ -79,13 +79,13 @@ select_supported_python() {
   fi
 
   echo "install.sh: no installed Python satisfies $requirement; asking uv to acquire one" >&2
-  if ! uv python install "$requirement" >/dev/null 2>&1; then
+  if ! uv python install "$requirement" >&2; then
     echo "install.sh: unable to acquire a Python interpreter satisfying $requirement" >&2
     echo "install.sh: install a supported Python or allow uv Python downloads, then retry" >&2
     return 1
   fi
 
-  if ! interpreter="$(uv python find "$requirement" --resolve-links 2>/dev/null)" \
+  if ! interpreter="$(uv python find "$requirement" --resolve-links)" \
     || [[ -z "$interpreter" ]]; then
     echo "install.sh: uv acquired Python, but could not select one satisfying $requirement" >&2
     return 1
@@ -109,9 +109,7 @@ install_tool() {
   fi
   tool_args+=(--overrides <(printf '%s\n' "${UV_OVERRIDES[@]}"))
 
-  # Keep uv's potentially verbose failure output (which can contain host or
-  # index details) out of the bounded installer diagnostic below.
-  if ! uv tool install "${tool_args[@]}" >/dev/null 2>&1; then
+  if ! uv tool install "${tool_args[@]}"; then
     echo "install.sh: uv tool $action failed with a Python interpreter satisfying $python_requirement" >&2
     echo "install.sh: check uv package-index access and dependency resolution, then retry" >&2
     return 1

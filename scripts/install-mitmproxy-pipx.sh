@@ -16,8 +16,11 @@ if ! command -v pipx >/dev/null 2>&1; then
     exit 1
 fi
 
-pipx install mitmproxy || true  # no-op if already installed
-pipx inject mitmproxy \
+if ! pipx runpip mitmproxy --version >/dev/null 2>&1; then
+    pipx install mitmproxy
+fi
+pipx inject --force mitmproxy \
+    'h2==4.4.1' \
     pyyaml \
     yarl \
     confusable-homoglyphs \
@@ -27,6 +30,12 @@ pipx inject mitmproxy \
     httpx \
     tenacity
 
+h2_version="$(pipx runpip mitmproxy show h2 | awk '$1 == "Version:" {print $2}')"
+if [[ "$h2_version" != "4.4.1" ]]; then
+    echo "ERROR: mitmproxy pipx environment has h2 ${h2_version:-<missing>}; expected 4.4.1" >&2
+    exit 1
+fi
+
 echo
 echo "mitmproxy + addon deps installed in pipx venv."
-echo "Verify: mitmdump --version"
+echo "Verified: h2 ${h2_version}; mitmdump --version"

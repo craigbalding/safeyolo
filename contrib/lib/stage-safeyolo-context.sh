@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared staging for first-party host setup scripts. Source this file, then
-# call: stage_safeyolo_context "$SAFEYOLO_AGENT_HOME" codex|claude|none
+# call: stage_safeyolo_context "$SAFEYOLO_AGENT_HOME" codex|claude|pi|none
 
 _stage_safeyolo_codex_lab_entrypoint() {
     local agent_home="$1"
@@ -71,6 +71,67 @@ stage_safeyolo_context() {
     local link_dir skill_names skill_name link_path link_target
     local legacy_link_target current_target
 
+    # Do not let a guest-created symlink redirect a managed directory outside
+    # the agent home. The helper never needs to read user-owned state here.
+    _stage_refuse_unsafe_parent() {
+        local path="$1"
+        local current="/"
+        local component
+        local old_ifs="$IFS"
+        local path_components
+        IFS=/
+        read -r -a path_components <<< "${path#/}"
+        IFS="$old_ifs"
+        for component in "${path_components[@]}"; do
+            [ -n "$component" ] || continue
+            current="$current$component"
+            if [ -L "$current" ]; then
+                echo "Refusing managed path through symlink $current" >&2
+                return 1
+            fi
+            if [ -e "$current" ] && [ ! -d "$current" ]; then
+                echo "Refusing non-directory managed path $current" >&2
+                return 1
+            fi
+            current="$current/"
+        done
+    }
+
+    _stage_validate_dir_metadata() {
+        local path="$1"
+        local owner mode mode_value
+        [ -d "$path" ] && [ ! -L "$path" ] || {
+            echo "Refusing unsafe managed directory $path" >&2
+            return 1
+        }
+        owner="$(stat -c '%u' "$path" 2>/dev/null || stat -f '%u' "$path" 2>/dev/null)" || {
+            echo "Refusing managed directory with unreadable metadata $path" >&2
+            return 1
+        }
+        [ "$owner" = "$(id -u)" ] || {
+            echo "Refusing managed directory with unexpected owner $path" >&2
+            return 1
+        }
+        mode="$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path" 2>/dev/null)" || {
+            echo "Refusing managed directory with unreadable mode $path" >&2
+            return 1
+        }
+        mode_value=$((0$mode))
+        [ $((mode_value & 022)) -eq 0 ] || {
+            echo "Refusing group/world-writable managed directory $path" >&2
+            return 1
+        }
+    }
+
+    _stage_validate_existing_dirs() {
+        local path
+        for path in "$@"; do
+            if [ -e "$path" ]; then
+                _stage_validate_dir_metadata "$path"
+            fi
+        done
+    }
+
     helper_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
     repo_root="$(cd "$helper_dir/../.." && pwd)"
     guide_src="$repo_root/docs/AGENTS.md"
@@ -89,6 +150,10 @@ stage_safeyolo_context() {
             link_dir="$agent_home/.claude/skills"
             skill_names="safeyolo"
             ;;
+        pi)
+            link_dir="$agent_home/.pi/agent/skills"
+            skill_names="safeyolo"
+            ;;
         none)
             link_dir=""
             skill_names=""
@@ -98,6 +163,14 @@ stage_safeyolo_context() {
             return 1
             ;;
     esac
+
+    _stage_refuse_unsafe_parent "$managed_root"
+    if [ -n "$link_dir" ]; then
+        _stage_refuse_unsafe_parent "$link_dir"
+    fi
+    if [ "$consumer" = "pi" ]; then
+        _stage_validate_existing_dirs "$agent_home/.pi" "$agent_home/.pi/agent" "$link_dir"
+    fi
 
     # Preflight every managed name before changing any skill link.
     if [ -n "$link_dir" ]; then
@@ -120,10 +193,22 @@ stage_safeyolo_context() {
     fi
 
     mkdir -p "$managed_root"
+    if [ "$consumer" = "pi" ]; then
+        _stage_validate_dir_metadata "$managed_root"
+    fi
+    if [ -L "$managed_root/AGENTS.md" ] || \
+       { [ -e "$managed_root/AGENTS.md" ] &&
+         [ ! -f "$managed_root/AGENTS.md" ]; }; then
+        echo "Refusing unsafe managed baseline path $managed_root/AGENTS.md" >&2
+        return 1
+    fi
     cp "$guide_src" "$managed_root/AGENTS.md"
 
     if [ -n "$link_dir" ]; then
         mkdir -p "$link_dir"
+        if [ "$consumer" = "pi" ]; then
+            _stage_validate_existing_dirs "$agent_home/.pi" "$agent_home/.pi/agent" "$link_dir"
+        fi
         for skill_name in $skill_names; do
             link_path="$link_dir/$skill_name"
             link_target="/safeyolo/skills/$skill_name"
