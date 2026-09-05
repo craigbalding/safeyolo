@@ -194,6 +194,11 @@ def write_event(  # DOC: SECURITY.md, README.md
     host: str | None = None,
     request_id: str | None = None,
     agent: str | None = None,
+    evidence_owner: str | None = None,
+    trusted_transport_identity: str | None = None,
+    initiator: str | None = None,
+    attribution_status: str | None = None,
+    attribution_provenance: dict | None = None,
     addon: str | None = None,
     approval: ApprovalRequest | None = None,
     details: dict | None = None,
@@ -211,7 +216,12 @@ def write_event(  # DOC: SECURITY.md, README.md
         decision: Security/gateway decision outcome
         host: Destination hostname
         request_id: Correlation ID from flow.metadata
-        agent: Agent identity
+        agent: Compatibility display alias for the evidence owner
+        evidence_owner: Agent/query scope for the evidence
+        trusted_transport_identity: Identity established by the transport
+        initiator: Best-known traffic actor
+        attribution_status: Attribution state independent of enforcement
+        attribution_provenance: Bounded trusted source facts
         addon: Name of the addon emitting the event
         approval: Approval request metadata
         details: Addon-specific fields not in the spine
@@ -231,6 +241,11 @@ def write_event(  # DOC: SECURITY.md, README.md
             host=host,
             request_id=request_id,
             agent=agent,
+            evidence_owner=evidence_owner,
+            trusted_transport_identity=trusted_transport_identity,
+            initiator=initiator,
+            attribution_status=attribution_status,
+            attribution_provenance=attribution_provenance,
             addon=addon,
             approval=approval,
             details=details or {},

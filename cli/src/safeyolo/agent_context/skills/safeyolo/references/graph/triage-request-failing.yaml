@@ -429,6 +429,7 @@ edges:
   # X-Blocked-By presence classifies plane
   - {from: ev.check_x_blocked_by, to: ev.check_response_body_json, kind: next_check, when: "header present"}
   - {from: ev.check_x_blocked_by, to: cls.upstream_only,            kind: implies,     when: "header absent AND status is upstream-shaped (401/403/404/5xx)"}
+  - {from: ev.check_x_blocked_by, to: cls.upstream_only,            kind: implies,     when: "header absent AND local audit records the response without blocked_by, including an upstream 428"}
 
   # Body JSON drives the exact policy branch
   - {from: ev.check_response_body_json, to: cls.policy_block,     kind: implies, when: "type refers to network_guard or credential_guard route"}

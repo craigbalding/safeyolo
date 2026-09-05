@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
 
 from ..agents_store import get_or_mint_agent_id, load_agent, mutate_agent
 from ..config import find_config_dir
-from ..coord import api as coord_api
-from ..coord import nats_runtime as coord_nats
-from ..coord.identity import new_operation_id
 from ..factory_contract import (
     FactoryContract,
     FactoryContractError,
@@ -25,7 +21,6 @@ from ..factory_contract import (
     load_approved_snapshot,
     load_factory_file,
 )
-from ..factory_doctor import FactoryDoctorReport, inspect_factory
 from .agent import (
     _agent_host_setup_lock,
     _check_project_ownership,
@@ -33,6 +28,9 @@ from .agent import (
     _run_agent,
     _run_host_script_for_agent,
 )
+
+if TYPE_CHECKING:
+    from ..factory_doctor import FactoryDoctorReport
 
 console = Console()
 factory_app = typer.Typer(
@@ -46,6 +44,35 @@ factory_app = typer.Typer(
 
 _FACTORY_PREFLIGHT_TIMEOUT_SECONDS = 30.0
 _FACTORY_PREFLIGHT_POLL_SECONDS = 0.25
+
+
+class _LazyModule:
+    """Resolve command-only modules on first use."""
+
+    def __init__(self, module_name: str) -> None:
+        self.module_name = module_name
+
+    def __getattr__(self, name: str):
+        from importlib import import_module
+
+        module = import_module(self.module_name)
+        return getattr(module, name)
+
+
+coord_api = _LazyModule("safeyolo.coord.api")
+coord_nats = _LazyModule("safeyolo.coord.nats_runtime")
+
+
+def new_operation_id() -> str:
+    from ..coord.identity import new_operation_id as _new_operation_id
+
+    return _new_operation_id()
+
+
+def inspect_factory(name: str):
+    from ..factory_doctor import inspect_factory as _inspect_factory
+
+    return _inspect_factory(name)
 
 
 def _factory_setup_commands(name: str, payload: dict[str, Any] | None = None) -> str:
@@ -452,6 +479,8 @@ def _ensure_factory_rooms(  # DOC: docs/factories.md
 
     def ensure_room(room_name: str) -> None:
         if room_name not in existing:
+            import asyncio
+
             asyncio.run(coord_api.create_room(room_name))
             existing.add(room_name)
 

@@ -367,6 +367,14 @@ class TestRequest:
 
         assert "agent" not in flow.metadata
         assert flow.metadata["agent_identity_status"] == "unavailable"
+        unavailable = next(
+            call for call in mock_event.call_args_list
+            if call.args[0] == "security.agent_identity_unavailable"
+        )
+        assert unavailable.kwargs["attribution_status"] == "unavailable"
+        assert unavailable.kwargs["details"] == {
+            "reason": "no_trusted_identity",
+        }
 
     def test_marks_identity_unavailable_when_peername_is_missing(self):
         """A flow without a source address has no trusted identity."""
