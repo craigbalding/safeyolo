@@ -360,14 +360,16 @@ def _agent_host_setup_lock(name: str):
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    fd: int | None = None
     try:
         try:
-            fd = os.open("host-setup.lock", flags, 0o600, dir_fd=setup_dir_fd)
-        except OSError as exc:
-            raise RuntimeError(f"unsafe host setup lock for agent {name!r}: {exc}") from None
-    finally:
-        os.close(setup_dir_fd)
-    try:
+            try:
+                fd = os.open("host-setup.lock", flags, 0o600, dir_fd=setup_dir_fd)
+            except OSError as exc:
+                raise RuntimeError(f"unsafe host setup lock for agent {name!r}: {exc}") from None
+        finally:
+            os.close(setup_dir_fd)
+
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise RuntimeError(
@@ -383,16 +385,17 @@ def _agent_host_setup_lock(name: str):
             )
         os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
-    except BaseException:
-        os.close(fd)
-        raise
 
-    held.add(name)
-    handle = _SetupLockHandle(fd, name, held)
-    try:
-        yield handle
+        held.add(name)
+        handle = _SetupLockHandle(fd, name, held)
+        fd = None
+        try:
+            yield handle
+        finally:
+            handle.release()
     finally:
-        handle.release()
+        if fd is not None:
+            os.close(fd)
 
 
 def _capture_snapshot_blocking(
