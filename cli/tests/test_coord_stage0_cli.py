@@ -434,6 +434,34 @@ def test_noninteractive_send_reads_explicit_stdin(monkeypatch):
     assert seen["kwargs"]["notify"] == ["relay"]
 
 
+def test_noninteractive_send_stdin_decodes_utf8_bytes_independent_of_stream_encoding(
+    monkeypatch,
+):
+    stream = io.TextIOWrapper(
+        io.BytesIO("caf\N{LATIN SMALL LETTER E WITH ACUTE}\n".encode()),
+        encoding="latin-1",
+    )
+    monkeypatch.setattr(coord.sys, "stdin", stream)
+
+    assert coord._read_send_body(None, None, True) == "caf\N{LATIN SMALL LETTER E WITH ACUTE}\n"
+
+
+def test_noninteractive_send_rejects_invalid_utf8_stdin_bytes(monkeypatch):
+    output = io.StringIO()
+    monkeypatch.setattr(
+        coord,
+        "console",
+        Console(file=output, force_terminal=False, color_system=None),
+    )
+    stream = io.TextIOWrapper(io.BytesIO(b"caf\xe9\n"), encoding="latin-1")
+    monkeypatch.setattr(coord.sys, "stdin", stream)
+
+    with pytest.raises(coord.typer.Exit):
+        coord._read_send_body(None, None, True)
+
+    assert "could not read message from stdin: UnicodeDecodeError" in output.getvalue()
+
+
 @pytest.mark.parametrize(
     "args",
     [

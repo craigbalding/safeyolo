@@ -757,6 +757,27 @@ def revoke(
         )
 
 
+def _read_stdin_utf8() -> str:
+    """Read stdin bytes and decode them as strict UTF-8.
+
+    Standard CLI streams expose a binary ``buffer`` below their text wrapper.
+    Reading that buffer prevents the locale or ``PYTHONIOENCODING`` from
+    silently transcoding input. Text-only streams remain useful for callers
+    that invoke this helper in-process and have already chosen their decoding.
+    """
+    raw = getattr(sys.stdin, "buffer", None)
+    if raw is not None:
+        value = raw.read()
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        if isinstance(value, str):
+            return value
+    value = sys.stdin.read()
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return value
+
+
 def _read_send_body(
     text: str | None,
     file: Path | None,
@@ -776,7 +797,7 @@ def _read_send_body(
             raise typer.Exit(1) from None
     elif read_stdin:
         try:
-            body = sys.stdin.read()
+            body = _read_stdin_utf8()
         except (OSError, UnicodeError) as exc:
             console.print(f"[red]could not read message from stdin: {type(exc).__name__}[/red]")
             raise typer.Exit(1) from None
