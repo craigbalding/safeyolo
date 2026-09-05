@@ -693,6 +693,9 @@ def test_wheel_manifest_includes_coord_runtime_files() -> None:
     assert force_include["contrib/codex-coord-host-setup.sh"] == (
         "safeyolo/contrib/codex-coord-host-setup.sh"
     )
+    assert force_include["contrib/pi-host-setup.sh"] == (
+        "safeyolo/contrib/pi-host-setup.sh"
+    )
     assert force_include["contrib/codex-coord-supervisor.py"] == (
         "safeyolo/contrib/codex-coord-supervisor.py"
     )
@@ -705,6 +708,354 @@ def test_wheel_manifest_includes_coord_runtime_files() -> None:
     assert COORD_SHIM_SOURCE.stat().st_mode & 0o111
     assert CODEX_COORD_SUPERVISOR_SOURCE.stat().st_mode & 0o111
     assert CODEX_COORD_FAKE_SOURCE.stat().st_mode & 0o111
+
+
+def _seed_pi_install(agent_home: Path, *, pi_script: str | None = None) -> Path:
+    """Seed only synthetic agent-local Pi files; never use host Pi state."""
+    prefix = agent_home / ".local"
+    package_dir = prefix / "lib/node_modules/@earendil-works/pi-coding-agent"
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.json").write_text(
+        '{"name":"@earendil-works/pi-coding-agent","version":"0.85.0"}\n'
+    )
+    pi = prefix / "bin/pi"
+    pi.parent.mkdir(parents=True, exist_ok=True)
+    pi.write_text(
+        pi_script
+        or "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then exit 0; fi\n"
+        "printf '%s\\0' \"$@\" > \"$TEST_PI_EXEC_LOG\"\n"
+    )
+    pi.chmod(0o755)
+    return pi
+
+
+def _pi_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith(("MISE_", "__MISE_")) or key == "BASH_ENV":
+            env.pop(key)
+    env.update(
+        {
+            "HOME": str(agent_home),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "TEST_PI_EXEC_LOG": str(tmp_path / "pi-exec-args.bin"),
+        }
+    )
+    return env
+
+
+def test_pi_setup_is_agent_local_and_launches_with_reviewed_flags(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    outside = tmp_path / "outside"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    outside.mkdir()
+    (outside / "host-sentinel").write_text("must not be imported\n")
+    (operator_home / ".pi").symlink_to(outside, target_is_directory=True)
+
+    _run_setup("pi-host-setup.sh", operator_home, agent_home, tmp_path)
+    pi = _seed_pi_install(agent_home)
+
+    fake_node = fake_bin / "node"
+    fake_node.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
+        "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
+        "'@earendil-works/pi-coding-agent' '0.85.0'; exit 0; fi\n"
+        "exit 1\n"
+    )
+    fake_node.chmod(0o755)
+    env = _pi_command_env(agent_home, fake_bin, tmp_path)
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--", "-leading", "value with spaces"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert pi.exists()
+    assert not (agent_home / ".pi/agent/auth.json").exists()
+    assert not (agent_home / ".pi/agent/host-sentinel").exists()
+    assert (agent_home / ".pi/agent/skills/safeyolo").is_symlink()
+    actual_args = [
+        arg.decode()
+        for arg in Path(env["TEST_PI_EXEC_LOG"]).read_bytes().split(b"\0")
+        if arg
+    ]
+    assert actual_args[0] == "--approve"
+    assert "--append-system-prompt" in actual_args
+    assert "--" in actual_args
+    assert "-leading" in actual_args
+    assert "value with spaces" in actual_args
+
+
+def test_pi_setup_rejects_agent_pi_parent_symlink(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    outside = tmp_path / "outside"
+    operator_home.mkdir()
+    agent_home.mkdir()
+    agent_home.chmod(0o700)
+    outside.mkdir()
+    (agent_home / ".pi").symlink_to(outside, target_is_directory=True)
+
+    result = _run_setup(
+        "pi-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+        stage_coord_runtime=False,
+    )
+
+    assert result.returncode != 0
+    assert "symlink" in result.stderr
+    assert not (outside / "agent/skills/safeyolo").exists()
+
+
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink"))
+def test_pi_setup_preserves_unsafe_existing_launcher(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    outside = tmp_path / "outside"
+    operator_home.mkdir()
+    agent_home.mkdir()
+    agent_home.chmod(0o700)
+    outside.mkdir()
+    sentinel = outside / "launcher-sentinel"
+    sentinel.write_bytes(b"must remain unchanged\n")
+    launcher = agent_home / ".safeyolo-command"
+    if unsafe_kind == "symlink":
+        launcher.symlink_to(sentinel)
+    else:
+        launcher.hardlink_to(sentinel)
+
+    result = _run_setup(
+        "pi-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+        stage_coord_runtime=False,
+    )
+
+    assert result.returncode != 0
+    assert "unsafe existing Pi launcher" in result.stderr
+    assert sentinel.read_bytes() == b"must remain unchanged\n"
+    if unsafe_kind == "symlink":
+        assert launcher.is_symlink()
+    else:
+        assert launcher.stat().st_nlink == 2
+
+
+def test_pi_setup_keeps_previous_launcher_when_atomic_publish_is_interrupted(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    agent_home.mkdir()
+    agent_home.chmod(0o700)
+    fake_bin.mkdir()
+    launcher = agent_home / ".safeyolo-command"
+    previous = b"#!/bin/sh\nprintf previous\n"
+    launcher.write_bytes(previous)
+    launcher.chmod(0o700)
+    fake_mv = fake_bin / "mv"
+    fake_mv.write_text("#!/bin/sh\nexit 1\n")
+    fake_mv.chmod(0o755)
+
+    env = _setup_env(operator_home, agent_home, tmp_path)
+    env["PATH"] = f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+    result = subprocess.run(
+        [str(REPO_ROOT / "contrib" / "pi-host-setup.sh")],
+        check=False,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "atomically publish" in result.stderr
+    assert launcher.read_bytes() == previous
+    assert launcher.stat().st_mode & 0o777 == 0o700
+    assert not list(agent_home.glob(".safeyolo-command.tmp.*"))
+
+
+def test_pi_rejects_node_2218_before_package_install(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("pi-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    node = fake_bin / "node"
+    node.write_text("#!/bin/sh\necho v22.18.0\n")
+    node.chmod(0o755)
+    (fake_bin / "npm").write_text("#!/bin/sh\nexit 0\n")
+    (fake_bin / "npm").chmod(0o755)
+    mise = fake_bin / "mise"
+    mise.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$TEST_MISE_LOG\"\n"
+    )
+    mise.chmod(0o755)
+    env = _pi_command_env(agent_home, fake_bin, tmp_path)
+    env["TEST_MISE_LOG"] = str(tmp_path / "mise.log")
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command")],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Node >= 22.19.0" in result.stderr
+    assert (tmp_path / "mise.log").read_text().splitlines() == [
+        "use",
+        "-g",
+        "node@22.19.0",
+    ]
+
+
+def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("pi-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    node = fake_bin / "node"
+    node.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
+        "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
+        "'@earendil-works/pi-coding-agent' '0.85.0'; exit 0; fi\n"
+    )
+    node.chmod(0o755)
+    npm = fake_bin / "npm"
+    npm.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\0' \"$@\" >> \"$TEST_NPM_LOG\"\n"
+        "if [ \"$1\" = pack ]; then\n"
+        "  dest=\"\"; prev=\"\"\n"
+        "  for arg in \"$@\"; do\n"
+        "    if [ \"$prev\" = --pack-destination ]; then dest=\"$arg\"; fi\n"
+        "    prev=\"$arg\"\n"
+        "  done\n"
+        "  : > \"$dest/pi-coding-agent-0.85.0.tgz\"\n"
+        "  echo pi-coding-agent-0.85.0.tgz\n"
+        "  exit 0\n"
+        "fi\n"
+        "prefix=\"\"; prev=\"\"\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$prev\" = --prefix ]; then prefix=\"$arg\"; fi\n"
+        "  prev=\"$arg\"\n"
+        "done\n"
+        "pkg=\"$prefix/lib/node_modules/@earendil-works/pi-coding-agent\"\n"
+        "mkdir -p \"$pkg\" \"$prefix/bin\"\n"
+        "printf '%s\\n' "
+        "'{\"name\":\"@earendil-works/pi-coding-agent\",\"version\":\"0.85.0\"}' "
+        "> \"$pkg/package.json\"\n"
+        "printf '%s\\n' '#!/bin/sh' "
+        "'if [ \"$1\" = --version ]; then exit 0; fi' "
+        "'printf \"%s\\\\0\" \"$@\" > \"$TEST_PI_EXEC_LOG\"' > \"$prefix/bin/pi\"\n"
+        "chmod +x \"$prefix/bin/pi\"\n"
+    )
+    npm.chmod(0o755)
+    openssl = fake_bin / "openssl"
+    openssl.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = dgst ]; then printf x; exit 0; fi\n"
+        "if [ \"$1\" != base64 ] || [ \"$2\" != -A ] || [ \"$3\" != -in ]; then exit 1; fi\n"
+        "printf '%s' "
+        "'INxVkLAVfAMju5MojJpmyu/0bMP+r+ffZuS7UqVv32E2JwHBRbcHfELDfmFNvapEbgYfKN2r9OYO1p3TqDBR+g=='\n"
+    )
+    openssl.chmod(0o755)
+    env = _pi_command_env(agent_home, fake_bin, tmp_path)
+    env["TEST_NPM_LOG"] = str(tmp_path / "npm.log")
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--probe"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    npm_args = [
+        arg.decode()
+        for arg in Path(env["TEST_NPM_LOG"]).read_bytes().split(b"\0")
+        if arg
+    ]
+    assert npm_args[:3] == ["pack", "--ignore-scripts", "--pack-destination"]
+    assert "@earendil-works/pi-coding-agent@0.85.0" in npm_args
+    assert "--ignore-scripts" in npm_args
+    assert "--global" in npm_args
+    assert "--prefix" in npm_args
+
+
+def test_pi_repair_fails_closed_on_checksum_mismatch(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("pi-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    node = fake_bin / "node"
+    node.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
+        "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
+        "'@earendil-works/pi-coding-agent' '0.85.0'; exit 0; fi\n"
+    )
+    node.chmod(0o755)
+    npm = fake_bin / "npm"
+    npm.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" != pack ]; then exit 99; fi\n"
+        "dest=\"\"; prev=\"\"\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$prev\" = --pack-destination ]; then dest=\"$arg\"; fi\n"
+        "  prev=\"$arg\"\n"
+        "done\n"
+        ": > \"$dest/pi-coding-agent-0.85.0.tgz\"\n"
+        "echo pi-coding-agent-0.85.0.tgz\n"
+    )
+    npm.chmod(0o755)
+    openssl = fake_bin / "openssl"
+    openssl.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = dgst ]; then printf x; exit 0; fi\n"
+        "if [ \"$1\" != base64 ] || [ \"$2\" != -A ] || [ \"$3\" != -in ]; then exit 1; fi\n"
+        "printf mismatch\n"
+    )
+    openssl.chmod(0o755)
+    env = _pi_command_env(agent_home, fake_bin, tmp_path)
+    env["TMPDIR"] = str(tmp_path)
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command")],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "integrity differs" in result.stderr
+    assert not (agent_home / ".local/bin/pi").exists()
+    assert not list(tmp_path.glob("safeyolo-pi.*"))
 
 
 def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) -> None:
