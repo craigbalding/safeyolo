@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUEST_DIR = REPO_ROOT / "guest"
 GLOBAL_ONLY_CONFIG = "/etc/safeyolo/mise-project-config-disabled.toml"
@@ -95,6 +97,10 @@ def test_installer_precreates_runtime_bind_mount_targets(tmp_path: Path) -> None
     assert "agent ALL=(ALL) NOPASSWD:ALL" in sudoers.read_text()
     assert "Defaults env_keep +=" in sudoers.read_text()
 
+    compatibility_fd = rootfs / "usr/local/bin/fd"
+    assert compatibility_fd.is_symlink()
+    assert compatibility_fd.readlink() == Path("/usr/bin/fdfind")
+
 
 def test_privilege_helper_requires_group_and_policy_validation_tools(
     tmp_path: Path,
@@ -150,7 +156,7 @@ def test_sudoers_policy_is_valid_with_system_visudo(tmp_path: Path) -> None:
     """The exact generated user rule and environment preservation parse."""
     visudo = Path("/usr/sbin/visudo")
     if not visudo.exists():
-        return
+        pytest.skip("system visudo is not installed")
     policy = tmp_path / "safeyolo-agent"
     policy.write_text(
         "agent ALL=(ALL) NOPASSWD:ALL\n"
@@ -164,11 +170,6 @@ def test_sudoers_policy_is_valid_with_system_visudo(tmp_path: Path) -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
-
-    compatibility_fd = rootfs / "usr/local/bin/fd"
-    assert compatibility_fd.is_symlink()
-    assert compatibility_fd.readlink() == Path("/usr/bin/fdfind")
-
 
 def test_default_rootfs_hook_uses_shared_mount_target_installer() -> None:
     """The default and custom builders must not drift again."""
