@@ -223,7 +223,7 @@ nodes:
       obtain_from: "the trusted-base harness; mitmproxy and Python tools are hash-locked in uv.lock and fetched through the approved SafeYolo proxy"
       sources:
         - path: install.sh
-          sha256: 70f22e014307269b4b74d1235c156048117f57817b4ed7df99a1cc422a229769
+          sha256: 20e692af184d2b1979e1bb67666cef8da1be0e5d785e772dc786aa199bbb045d
         - path: tests/blackbox/run-lane.sh
           sha256: 091934297a817e2f9a82b8e9c2277582d6885869aa2dac8ac6b2479b1efeb820
         - path: tests/blackbox/run-tests.sh
@@ -353,7 +353,7 @@ nodes:
       obtain_from: "the safeyolo-lab-controller skill staged from the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/safeyolo-lab
-          sha256: c0f2dc3314c3e1325c2d9e10d5c84e605dbd413ed1e10cbe81c6fe3fea25a4ee
+          sha256: bba8e4d556fa3dac16656a89175d9d077e61f0cfd27d7b17420d8786e350557a
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/capture-evidence.sh
           sha256: 5f990bdc860c18e8c7e8312d875d767febb32dceb2ed2f5328a596703ebb3990
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/lab-snapshot.sh
