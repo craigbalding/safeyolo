@@ -14,29 +14,32 @@ Example integrations. Copy and adapt for your own use.
 | `../cli/src/safeyolo/agent_context/skills/safeyolo-factory/` | Codex operator skill for designing, cross-reviewing, proving, and troubleshooting supervised factories |
 | `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions and the default coord MCP server, injects the baseline, links `/safeyolo`, and writes an install-on-first-run foreground command |
 | `codex-host-setup.sh` | Host setup for OpenAI Codex CLI -- stages user state and the default coord MCP server, injects the baseline, links `$safeyolo`, `$safeyolo-lab-controller`, and `$safeyolo-factory`, installs the `safeyolo-lab` guest command, and writes an install-on-first-run foreground command |
-| `pi-host-setup.sh` | Host setup for Pi coding agent -- installs `@earendil-works/pi-coding-agent@0.85.0` with a fixed integrity and Node boundary, stages the baseline/shared skill, and writes an install-on-first-run foreground command |
-| `codex-coord-host-setup.sh` | Opt-in `@codex-coord` setup for a long-lived factory worker; it uses the normal Codex setup and runs bounded non-interactive turns under the guest-side coord supervisor |
-| `codex-coord-supervisor.py` | Event-driven persistent-process supervisor for one Codex thread and bounded atomic Coord recovery state |
+| `pi-host-setup.sh` | Host setup for Pi coding agent -- installs `@earendil-works/pi-coding-agent@0.85.0` with a fixed integrity and Node boundary, stages the baseline/shared skill and `repo-map`, and writes an install-on-first-run foreground command |
+| `pi-coord-host-setup.sh` | `@pi-coord` factory setup; stages Pi's native Coord `send` tool and runs bounded JSON turns under the common supervisor |
+| `pi-coord-extension.ts` | Minimal native Pi adapter for canonical Coord sends using the agent's transport identity |
+| `codex-coord-host-setup.sh` | `@codex-coord` setup for a long-lived factory worker; uses the normal Codex setup and runs bounded non-interactive turns under the common supervisor |
+| `codex-coord-supervisor.py` | Event-driven supervisor shared by Codex and Pi, with one harness session and bounded atomic Coord recovery state |
 | `codex-coord-supervisor-fake-codex.sh` | Observable no-model Codex substitute for nested supervisor labs |
 | `coord-mcp-bootstrap.sh` | Shared idempotent coord MCP staging/registration helper used by the bundled Claude and Codex setup scripts |
 | `safeyolo-coord-mcp-launcher.sh` | SafeYolo-owned launcher that restores the current proxy/TLS environment before starting the coord adapter |
 | `safeyolo-coord-mcp.py` | Standalone coord MCP adapter staged into first-party agent homes by the shared bootstrap |
 | `mise-shell-host-setup.sh` | Minimal BYOA -- drops into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
 | `lib/stage-safeyolo-context.sh` | Shared idempotent baseline/skill staging used by the bundled host scripts |
+| `lib/stage-factory-supervisor.py` | Shared snapshot/role verifier and supervisor-config stager for both factory harnesses |
 | `alpine-minimal/build-alpine-rootfs.sh` | Minimal custom rootfs example -- Alpine Linux via skopeo+umoci+apk |
 | `kali-pentest/build-kali-rootfs.sh` | Kali Linux pentest toolkit rootfs (nuclei, httpx, ffuf, sqlmap, ...) |
 | `kali-pentest/pentest-tools.md` | Tool reference for the Kali rootfs -- usage, proxy integration notes |
 | `monitors/` | Log monitoring and visualization tools |
 | `notifiers/` | Push notifications via ntfy with optional approval buttons |
 
-The supervisor owns the bounded Coord attention wait and launches Codex only
-after actionable canonical work is checkpointed. The bundled Codex coord
-registration still sets `tool_timeout_sec = 330` for ordinary Coord tools, but
-that MCP timeout is independent of the supervisor wait.
+The supervisor owns the bounded Coord attention wait and launches the selected
+harness only after actionable canonical work is checkpointed. Codex uses its
+Coord MCP adapter for canonical sends; Pi uses its native extension. The
+supervisor wait is direct Agent API traffic in both cases.
 
-The normal `@codex` setup stays interactive. For a factory worker, set the
-receive rooms and the operator-designated coordinators, then select the
-separate `@codex-coord` alias:
+The normal `@codex` and `@pi` setups stay interactive. Factory snapshots select
+the matching `@codex-coord` or `@pi-coord` setup per role. The standalone Codex
+form is also available:
 
 ```bash
 SAFEYOLO_CODEX_COORD_ROOMS=backlog \

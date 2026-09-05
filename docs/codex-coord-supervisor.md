@@ -1,7 +1,9 @@
-# Supervised Codex coord workers
+# Supervised factory workers
 
-The `@codex-coord` host setup is an opt-in mode for a factory worker. The
-normal `@codex` setup stays interactive and has no supervisor.
+The `@codex-coord` and `@pi-coord` host setups run factory roles under the same
+event-driven supervisor. The ordinary `@codex` and `@pi` setups stay
+interactive and have no supervisor. A role's factory TOML selects its harness;
+that choice does not create another queue or state machine.
 
 Configure the rooms that the worker must receive from and the agent names that
 the operator designated as coordinators:
@@ -12,12 +14,12 @@ SAFEYOLO_CODEX_COORDINATORS=relay \
   safeyolo agent run worker --host-script @codex-coord
 ```
 
-The host setup uses the normal Codex setup first. It preserves an explicitly
-adopted agent-local ChatGPT login, SafeYolo developer instructions, proxy and
-TLS environment, and coord MCP registration. It does not use an OpenAI API key
-or import a host credential.
-The only changed boundary is the foreground command: the guest runs the
-supervisor, and the supervisor runs bounded `codex exec --json` turns.
+Each supervised setup uses its normal harness setup first and preserves that
+agent's own subscription login, SafeYolo instructions, proxy, and TLS
+environment. Codex uses the bundled Coord MCP adapter. Pi uses a small native
+`send` and `read_room` extension. Neither setup imports a host credential.
+The only changed boundary is the foreground command: the guest runs the common supervisor,
+which runs bounded JSON-mode harness turns.
 
 ## Turn contract
 
@@ -25,38 +27,54 @@ The supervisor waits directly on the identity-wide Coord attention feed. It
 resolves the complete returned page before exposing its `next_cursor`, applies
 the configured room, sender, message-type, brief, and handoff checks, and
 atomically checkpoints the result. Empty, brief-only, and irrelevant pages
-re-arm the wait without launching Codex.
+re-arm the wait without launching a harness.
 
-An actionable page launches the first Codex turn and creates one thread. Later
-actionable pages resume that exact thread. Each launched turn receives the
-resolved canonical checkpoint and performs the work. If the role contract
+An actionable page launches the selected harness and creates one session.
+Later actionable pages resume that exact session while an inbound request or
+outbound handoff remains pending. Once both lists are empty, the supervisor
+retires the session before admitting new attention. The next work starts a
+fresh session; Coord state, local files, and old transcripts are retained.
+This uses the existing checkpoint, not role names, response labels, or URL
+heuristics. Forge therefore keeps its session through a pending review and
+repair. After Lens sends a disposition, its review request is settled; a later
+review starts fresh and can retrieve still-valid findings from Coord.
+The injected prompt explains conditional recovery with `read_room`. For a
+known room message sequence N, `since_sequence=N-1, limit=1` retrieves the
+next retained message; the agent checks that its sequence really is N before
+reusing it. The room-history cursor is separate from the supervisor's attention
+cursor. History reads do not complete requests, create assignments, or wake
+agents. The role contracts keep ordinary handoffs self-contained and give
+follow-up reviews a direct reference to the prior disposition.
+Each launched turn receives
+the resolved canonical checkpoint and performs the work. If the role contract
 requires an outbound handoff before the inbound request can complete, the turn
 sends that handoff and exits; the supervisor records its correlation and waits
-outside Codex. Absence of the downstream response at the start of the turn is
-not itself a blocker. Once the request has a genuine terminal outcome, the
+outside the harness. Absence of the downstream response at the start of the
+turn is not itself a blocker. Once the request has a genuine terminal outcome, the
 turn sends its declared response to every role in the handoff's `response_to`
-list and exits. It does not call or re-arm
-`wait_for_coord`; waiting is supervisor transport behavior rather than an
-agent task.
+list and exits. It does not call or re-arm `wait_for_coord`; waiting is
+supervisor transport behavior rather than an agent task.
 
-The Coord Model Context Protocol (MCP) adapter compiles producer helpers such
-as `send_task` into the same canonical send result as `send`. The supervisor
-normalizes both tool calls into one outbound-send event before it evaluates a
-terminal response or records an outbound handoff. Downstream behavior does not
-depend on which producer interface constructed the message.
+Codex and Pi expose the same canonical `send` operation through their native
+tool interfaces. The supervisor normalizes each successful result into one
+outbound-send event before it evaluates a terminal response or records an
+outbound handoff. Downstream behavior does not depend on the selected harness.
 
 A failed wait or canonical-object resolution cannot advance the safe cursor.
-Codex exit code 0 and model text are not work-completion evidence.
+Harness exit code 0 and model text are not work-completion evidence.
 
 Each factory agent also has a room named `<agent>-agent`. The supervisor sends
-each `codex exec --json` stdout line to that room without attention. The
+useful harness events to that room without attention. Codex JSONL is retained
+as emitted. Pi telemetry retains sessions, turn lifecycle, complete tool
+calls/results, final assistant text and usage, errors, and stderr; its
+token-by-token deltas and duplicate transcript payloads are not stored. The
 operator can send targeted natural-language direction to the agent in the same
 room. Other agents can receive the retained stream when the operator grants
 them receive permission; receive permission does not let them send or steer
 the supervised agent.
 
 The supervisor also sends start, handled-error, trapped-signal, crash, and exit
-events to this room. Codex stderr is retained as labelled stderr events. It
+events to this room. Harness stderr is retained as labelled stderr events. It
 does not emit idle or heartbeat messages. An abruptly killed supervisor cannot
 report its own death; runtime supervision is a separate concern.
 
@@ -79,7 +97,7 @@ do not apply because this watcher reads one retained Coord room.
 
 If NATS becomes unavailable, the watcher reports the lost connection and
 retries with bounded exponential backoff from the same cursor. It reports
-recovery after a successful read or wait. A large Codex event is retained as
+recovery after a successful read or wait. A large harness event is retained as
 one bounded record with a short summary, the beginning and end of the original
 event, its original byte count, and its SHA-256. The watcher marks the omitted
 middle explicitly.
@@ -116,10 +134,12 @@ The coord wait is identity-wide. Attention from an authorized room that is not
 configured for this worker is checkpointed as ignored before the cursor moves.
 It cannot route work to the worker or wedge later waits.
 
-If Codex stops after delivery, the supervisor tries the exact session first.
+If the harness stops after delivery, the supervisor tries the exact session first.
 If that session is unavailable, a new thread receives the bounded canonical
 in-flight checkpoint. An older cursor can replay retained attention safely;
 the supervisor keeps a bounded set of stable attention IDs for deduplication.
+That historical list stays in the state file and is not included in the model
+prompt. Active work and handoff identifiers remain in the supplied checkpoint.
 
 ## State and failure bounds
 
@@ -127,7 +147,7 @@ The private state file is
 `~/.safeyolo/codex-coord-supervisor-state.json`. Atomic replacement and a
 single-owner lock protect it across supervisor restarts. It contains only:
 
-- one Codex thread ID;
+- one harness session ID;
 - one safe attention cursor;
 - at most 256 recent attention IDs;
 - at most 16 narrow returned objects that are still in flight;
@@ -137,30 +157,36 @@ single-owner lock protect it across supervisor restarts. It contains only:
   while an invocation is running; and
 - a bounded consecutive-failure count.
 
-It does not contain Codex execution transcripts, provider responses, proxy
+It does not contain harness execution transcripts, provider responses, proxy
 credentials, subscription credentials, agent tokens, or room history. Coord
 remains the source of truth. The file is recovery bookkeeping, not a second
 queue.
 
-Startup checks the Agent API, the ChatGPT subscription login, and the coord MCP
-registration and executable. Every later cycle checks Agent API health and
+For operator-requested abandonment of checkpointed work, use the host-side
+[`factory release` recovery action](factories.md#release-stuck-work-after-stopping-its-agents).
+It requires affected agents to be stopped, preserves unrelated work, and uses
+this supervisor's decoder and atomic writer. It does not add a runtime cancel
+protocol or a new checkpoint schema.
+
+Startup checks the Agent API, the selected harness's agent-local subscription
+login, and its Coord adapter. Every later cycle checks Agent API health and
 receive permission for each configured room. A failed preflight, failed or
 invalid wait, or unavailable dependency does not advance the cursor or launch
-Codex. Repeated failures use exponential backoff with a cap. Agent API failures
+the harness. Repeated failures use exponential backoff with a cap. Agent API failures
 retain their bounded path, HTTP status, and retry classification in supervisor
 events. A successful later cycle emits a recovery event.
 
 ### Deadlines
 
 The external attention long poll has its own bounded HTTP timeout. Once work
-is accepted, Codex startup and work have separate absolute deadlines. The work
+is accepted, harness startup and work have separate absolute deadlines. The work
 deadline is set once when the turn starts; later output cannot extend it. The
 invocation also keeps a hard overall bound.
 
 ### Process cleanup
 
 On timeout or abnormal exit, the supervisor signals only the process group
-that it created for that Codex invocation while its leader fingerprint is
+that it created for that harness invocation while its leader fingerprint is
 still verified. After the leader exits, cleanup never signals the numeric
 process-group ID. It uses PID handles and matching start-time fingerprints for
 recorded descendants.
@@ -182,7 +208,7 @@ handles and fingerprints.
 
 The upgrade from the model-owned Coord wait to the supervisor-owned wait keeps
 the canonical cursor, pending work, and handoff correlations but starts one
-clean Codex thread. This avoids replaying an interrupted legacy MCP call with a
+clean harness session. This avoids replaying an interrupted legacy tool call with a
 missing tool result. Subsequent restarts preserve the healthy external-wait-era
 thread, including across an outbound handoff and its response.
 
@@ -191,21 +217,22 @@ thread, including across an outbound handoff and its response.
 The host setup writes the private, non-secret configuration file
 `~/.safeyolo/codex-coord-supervisor.json`. In factory mode that configuration
 also binds the immutable operator edge and handoff table from the approved
-snapshot. It contains no inferred workflow state. The defaults are:
+snapshot. Its `harness` value is exactly the role's approved `codex` or `pi`
+selection. It contains no inferred workflow state. The defaults are:
 
 | Setting | Default | Purpose |
 |---|---:|---|
 | `wait_seconds` | 300 | One supervisor-owned Coord long poll. |
 | `page_limit` | 16 | Maximum returned and in-flight objects. |
-| `startup_timeout_seconds` | 480 | Bound before a launched Codex turn starts. |
-| `work_timeout_seconds` | 3600 | Bound after a Codex turn starts. |
+| `startup_timeout_seconds` | 480 | Bound before a launched harness turn starts. |
+| `work_timeout_seconds` | 3600 | Bound after a harness turn starts. |
 | `completion_grace_seconds` | 90 | Compatibility bound for an old thread that returns an empty MCP wait. |
 | `backoff_initial_seconds` | 5 | First retry delay. |
 | `backoff_max_seconds` | 300 | Crash-loop retry cap. |
 
 Stop the agent before you edit these values. Keep `wait_seconds` at or below
-the Agent API maximum of 300 seconds. The Codex MCP timeout is independent of
-the supervisor-owned wait. The supervisor rejects invalid or unbounded values.
+the Agent API maximum of 300 seconds. Codex's MCP timeout is independent of the
+supervisor-owned wait. The supervisor rejects invalid or unbounded values.
 
 ## Debugging with a fake Codex harness
 
@@ -214,7 +241,7 @@ idle or debug events to Coord. The same mode can be enabled with
 `SAFEYOLO_COORD_SUPERVISOR_DEBUG=1`. `SAFEYOLO_COORD_SUPERVISOR_ONCE=1` is the
 environment equivalent of `--once`, which is useful when the staged command
 owns the supervisor arguments. Debug output reports cursor movement, page and
-accepted-object counts, re-arming, and Codex invocation boundaries; it never
+accepted-object counts, re-arming, and harness invocation boundaries; it never
 prints message bodies.
 
 For a nested lab, `contrib/codex-coord-supervisor-fake-codex.sh` can replace
@@ -232,3 +259,14 @@ Use a disposable nested agent and state file because a real Coord attention
 page is still resolved and checkpointed. Set `SAFEYOLO_FAKE_CODEX_EVENTS` to a
 JSONL file when a test needs events other than the default `thread.started`,
 `turn.started`, and `turn.completed` sequence.
+
+Pi parity is exercised with a fake JSON-mode Pi process in the supervisor test
+suite. That proof covers session creation and exact resume, direct `send` tool
+results, the common terminal checkpoint, and agent-room telemetry without a
+model request.
+
+To exercise Pi's extension tool definitions with synthetic HTTP and token reads,
+run `node cli/tests/run_pi_coord_extension.mjs /path/to/pi-coding-agent` using
+an already installed Pi package directory. This checks model-visible history,
+pagination metadata, cancellation, errors, and send results. It does not prove
+that a model chooses to recover history in a live task.

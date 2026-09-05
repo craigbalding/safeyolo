@@ -15,25 +15,24 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_SOURCE = REPO_ROOT / "docs" / "AGENTS.md"
 SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo"
-LAB_CONTROLLER_SOURCE = (
-    REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller"
-)
-FACTORY_SKILL_SOURCE = (
-    REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-factory"
-)
+LAB_CONTROLLER_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller"
+FACTORY_SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-factory"
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
 COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
 CODEX_STATE_SOURCE = REPO_ROOT / "contrib/lib/stage-codex-state.py"
 CODEX_COORD_SUPERVISOR_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor.py"
 CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
+PI_COORD_SETUP_SOURCE = REPO_ROOT / "contrib/pi-coord-host-setup.sh"
+PI_COORD_EXTENSION_SOURCE = REPO_ROOT / "contrib/pi-coord-extension.ts"
+FACTORY_STAGE_SOURCE = REPO_ROOT / "contrib/lib/stage-factory-supervisor.py"
+REPO_MAP_SOURCE = REPO_ROOT / "cli/src/safeyolo/repo_map.py"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LAB_CONTROLLER_LINK_TARGET = "/safeyolo/skills/safeyolo-lab-controller"
 FACTORY_SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo-factory"
 LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
-LAB_COMMAND_TARGET = (
-    "/safeyolo/skills/safeyolo-lab-controller/scripts/safeyolo-lab"
-)
+LAB_COMMAND_TARGET = "/safeyolo/skills/safeyolo-lab-controller/scripts/safeyolo-lab"
+REPO_MAP_COMMAND_TARGET = "/home/agent/.safeyolo/repo-map"
 
 
 def _load_codex_state_module():
@@ -83,8 +82,7 @@ def _run_setup(
     if (
         result.returncode == 0
         and stage_coord_runtime
-        and script_name
-        in {"claude-host-setup.sh", "codex-host-setup.sh", "codex-coord-host-setup.sh"}
+        and script_name in {"claude-host-setup.sh", "codex-host-setup.sh", "codex-coord-host-setup.sh"}
     ):
         coord_python = agent_home / ".safeyolo/venv/bin/python"
         coord_python.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +110,12 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
         if consumer_dir == ".agents":
             expected_links["safeyolo-lab-controller"] = LAB_CONTROLLER_LINK_TARGET
             expected_links["safeyolo-factory"] = FACTORY_SKILL_LINK_TARGET
+            repo_map = agent_home / ".safeyolo/repo-map"
+            assert repo_map.read_bytes() == REPO_MAP_SOURCE.read_bytes()
+            assert repo_map.stat().st_mode & 0o111
+            repo_map_command = agent_home / ".local/bin/repo-map"
+            assert repo_map_command.is_symlink()
+            assert os.readlink(repo_map_command) == REPO_MAP_COMMAND_TARGET
         for name, target in expected_links.items():
             link = agent_home / consumer_dir / "skills" / name
             assert link.is_symlink()
@@ -163,7 +167,7 @@ def test_mise_installed_agent_is_immediately_executable_with_context(
         "if any(arg.startswith('npm:') for arg in __import__('sys').argv[1:]):\n"
         "    tool = Path(os.environ['MISE_DATA_DIR']) / 'shims' / os.environ['TEST_TOOL_NAME']\n"
         "    tool.parent.mkdir(parents=True, exist_ok=True)\n"
-        "    tool.write_text(\"#!/bin/sh\\nprintf '%s\\\\0' \\\"$@\\\" > \\\"$TEST_EXEC_LOG\\\"\\n\")\n"
+        '    tool.write_text("#!/bin/sh\\nprintf \'%s\\\\0\' \\"$@\\" > \\"$TEST_EXEC_LOG\\"\\n")\n'
         "    tool.chmod(0o755)\n"
     )
     fake_mise.chmod(0o755)
@@ -191,11 +195,7 @@ def test_mise_installed_agent_is_immediately_executable_with_context(
     )
 
     assert result.returncode == 0, result.stderr
-    actual_args = [
-        arg.decode()
-        for arg in exec_log.read_bytes().split(b"\0")
-        if arg
-    ]
+    actual_args = [arg.decode() for arg in exec_log.read_bytes().split(b"\0") if arg]
     for expected in expected_args:
         assert expected in actual_args
 
@@ -251,9 +251,9 @@ def test_claude_bootstrap_repairs_mise_install_with_skipped_postinstall(
         "    print(os.environ['TEST_CLAUDE_INSTALL_DIR'])\n"
         "elif sys.argv[1] == 'exec':\n"
         "    shim = Path(os.environ['TEST_CLAUDE_SHIM'])\n"
-        "    shim.write_text(\"#!/bin/sh\\n\"\n"
-        "                    \"if [ \\\"$1\\\" = --version ]; then exit 0; fi\\n\"\n"
-        "                    \"printf '%s\\\\0' \\\"$@\\\" > \\\"$TEST_EXEC_LOG\\\"\\n\")\n"
+        '    shim.write_text("#!/bin/sh\\n"\n'
+        '                    "if [ \\"$1\\" = --version ]; then exit 0; fi\\n"\n'
+        '                    "printf \'%s\\\\0\' \\"$@\\" > \\"$TEST_EXEC_LOG\\"\\n")\n'
         "    shim.chmod(0o755)\n"
     )
     fake_mise.chmod(0o755)
@@ -347,18 +347,12 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
     if script_name == "claude-host-setup.sh":
         config_path = agent_home / ".claude.json"
         config_path.parent.mkdir(parents=True)
-        config_path.write_text(
-            '{"custom": {"preserved": true}, "mcpServers": '
-            '{"unrelated": {"command": "other"}}}\n'
-        )
+        config_path.write_text('{"custom": {"preserved": true}, "mcpServers": {"unrelated": {"command": "other"}}}\n')
     else:
         config_path = agent_home / ".codex/config.toml"
         config_path.parent.mkdir(parents=True)
         config_path.parent.chmod(0o700)
-        config_path.write_text(
-            'model = "preserved"\n\n'
-            '[mcp_servers.unrelated]\ncommand = "other"\n'
-        )
+        config_path.write_text('model = "preserved"\n\n[mcp_servers.unrelated]\ncommand = "other"\n')
         config_path.chmod(0o600)
 
     _run_setup(script_name, operator_home, agent_home, tmp_path)
@@ -371,9 +365,7 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
     assert staged_launcher.read_bytes() == COORD_LAUNCHER_SOURCE.read_bytes()
     assert staged_launcher.stat().st_mode & 0o111
     command = (agent_home / ".safeyolo-command").read_text()
-    assert command.count(
-        "# ---- coord-mcp-bootstrap: mcp+httpx install (guarded, idempotent) ----"
-    ) == 1
+    assert command.count("# ---- coord-mcp-bootstrap: mcp+httpx install (guarded, idempotent) ----") == 1
 
     if script_name == "claude-host-setup.sh":
         data = json.loads(config_path.read_text())
@@ -407,26 +399,22 @@ def test_codex_setup_round_trips_multiline_and_quoted_toml(
     config_path.parent.chmod(0o700)
     config_path.write_text(
         'developer_instructions = """\n'
-        '[mcp_servers.safeyolo-coord]\n'
-        'sentinel must remain\n'
-        '[projects.foo]\n'
+        "[mcp_servers.safeyolo-coord]\n"
+        "sentinel must remain\n"
+        "[projects.foo]\n"
         '"""\n'
         'model = "gpt-5"\n\n'
         '[mcp_servers."unrelated.server"]\n'
         'command = "other"\n\n'
         '[projects."foo.bar"]\n'
-        'enabled = true\n'
+        "enabled = true\n"
     )
     config_path.chmod(0o600)
 
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
 
     data = tomllib.loads(config_path.read_text())
-    assert data["developer_instructions"] == (
-        "[mcp_servers.safeyolo-coord]\n"
-        "sentinel must remain\n"
-        "[projects.foo]\n"
-    )
+    assert data["developer_instructions"] == ("[mcp_servers.safeyolo-coord]\nsentinel must remain\n[projects.foo]\n")
     assert data["model"] == "gpt-5"
     assert data["mcp_servers"]["unrelated.server"] == {"command": "other"}
     assert data["projects"]["foo.bar"] == {"enabled": True}
@@ -498,17 +486,11 @@ def test_registered_coord_launcher_restores_safeyolo_environment(
 
     config_path = agent_home / config_relative
     if script_name == "codex-host-setup.sh":
-        managed = tomllib.loads(config_path.read_text())["mcp_servers"][
-            "safeyolo-coord"
-        ]
+        managed = tomllib.loads(config_path.read_text())["mcp_servers"]["safeyolo-coord"]
     else:
-        managed = json.loads(config_path.read_text())["mcpServers"][
-            "safeyolo-coord"
-        ]
+        managed = json.loads(config_path.read_text())["mcpServers"]["safeyolo-coord"]
 
-    assert managed["command"] == (
-        "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
-    )
+    assert managed["command"] == ("/home/agent/.safeyolo/safeyolo-coord-mcp-launcher")
     assert managed["args"] == []
     registered = Path(managed["command"])
     launcher = agent_home / registered.relative_to("/home/agent")
@@ -526,16 +508,11 @@ def test_registered_coord_launcher_restores_safeyolo_environment(
     }
     proxy_env = tmp_path / "proxy.env"
     proxy_env.write_text(
-        "".join(f"export {key}={value!r}\n" for key, value in proxy_values.items())
-        + "export HOME='/home/agent'\n"
+        "".join(f"export {key}={value!r}\n" for key, value in proxy_values.items()) + "export HOME='/home/agent'\n"
     )
 
     fake_python = agent_home / ".safeyolo/venv/bin/python"
-    fake_python.write_text(
-        "#!/bin/sh\n"
-        "printf 'adapter=%s\\n' \"$1\"\n"
-        "env\n"
-    )
+    fake_python.write_text("#!/bin/sh\nprintf 'adapter=%s\\n' \"$1\"\nenv\n")
     fake_python.chmod(0o755)
 
     sanitized_env = {
@@ -551,15 +528,9 @@ def test_registered_coord_launcher_restores_safeyolo_environment(
         text=True,
     )
 
-    output_env = dict(
-        line.split("=", 1)
-        for line in result.stdout.splitlines()
-        if "=" in line
-    )
+    output_env = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     assert {key: output_env[key] for key in proxy_values} == proxy_values
-    assert output_env["adapter"] == str(
-        agent_home / ".safeyolo/safeyolo-coord-mcp.py"
-    )
+    assert output_env["adapter"] == str(agent_home / ".safeyolo/safeyolo-coord-mcp.py")
 
 
 def test_coord_launcher_reports_missing_authoritative_environment(
@@ -603,9 +574,7 @@ def test_coord_dependency_failure_stops_harness_with_diagnostic(tmp_path: Path) 
     (fake_bin / "mise").write_text("#!/bin/sh\nexit 1\n")
     (fake_bin / "python3").write_text("#!/bin/sh\nexit 1\n")
     (fake_bin / "codex").write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = --version ]; then exit 0; fi\n'
-        'touch "$TEST_HARNESS_STARTED"\n'
+        '#!/bin/sh\nif [ "$1" = --version ]; then exit 0; fi\ntouch "$TEST_HARNESS_STARTED"\n'
     )
     for executable in fake_bin.iterdir():
         executable.chmod(0o755)
@@ -674,31 +643,23 @@ def test_bundled_setup_reports_invalid_harness_config(
 
 def test_wheel_manifest_includes_coord_runtime_files() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    force_include = project["tool"]["hatch"]["build"]["targets"]["wheel"][
-        "force-include"
-    ]
+    force_include = project["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    assert force_include["repo-map.toml"] == "safeyolo/repo-map.toml"
 
-    assert force_include["contrib/coord-mcp-bootstrap.sh"] == (
-        "safeyolo/contrib/coord-mcp-bootstrap.sh"
-    )
+    assert force_include["contrib/coord-mcp-bootstrap.sh"] == ("safeyolo/contrib/coord-mcp-bootstrap.sh")
     assert force_include["contrib/safeyolo-coord-mcp-launcher.sh"] == (
         "safeyolo/contrib/safeyolo-coord-mcp-launcher.sh"
     )
-    assert force_include["contrib/safeyolo-coord-mcp.py"] == (
-        "safeyolo/contrib/safeyolo-coord-mcp.py"
+    assert force_include["contrib/safeyolo-coord-mcp.py"] == ("safeyolo/contrib/safeyolo-coord-mcp.py")
+    assert force_include["contrib/lib/stage-codex-state.py"] == ("safeyolo/contrib/lib/stage-codex-state.py")
+    assert force_include["contrib/codex-coord-host-setup.sh"] == ("safeyolo/contrib/codex-coord-host-setup.sh")
+    assert force_include["contrib/pi-host-setup.sh"] == ("safeyolo/contrib/pi-host-setup.sh")
+    assert force_include["contrib/pi-coord-host-setup.sh"] == ("safeyolo/contrib/pi-coord-host-setup.sh")
+    assert force_include["contrib/pi-coord-extension.ts"] == ("safeyolo/contrib/pi-coord-extension.ts")
+    assert force_include["contrib/lib/stage-factory-supervisor.py"] == (
+        "safeyolo/contrib/lib/stage-factory-supervisor.py"
     )
-    assert force_include["contrib/lib/stage-codex-state.py"] == (
-        "safeyolo/contrib/lib/stage-codex-state.py"
-    )
-    assert force_include["contrib/codex-coord-host-setup.sh"] == (
-        "safeyolo/contrib/codex-coord-host-setup.sh"
-    )
-    assert force_include["contrib/pi-host-setup.sh"] == (
-        "safeyolo/contrib/pi-host-setup.sh"
-    )
-    assert force_include["contrib/codex-coord-supervisor.py"] == (
-        "safeyolo/contrib/codex-coord-supervisor.py"
-    )
+    assert force_include["contrib/codex-coord-supervisor.py"] == ("safeyolo/contrib/codex-coord-supervisor.py")
     assert force_include["contrib/codex-coord-supervisor-fake-codex.sh"] == (
         "safeyolo/contrib/codex-coord-supervisor-fake-codex.sh"
     )
@@ -708,6 +669,8 @@ def test_wheel_manifest_includes_coord_runtime_files() -> None:
     assert COORD_SHIM_SOURCE.stat().st_mode & 0o111
     assert CODEX_COORD_SUPERVISOR_SOURCE.stat().st_mode & 0o111
     assert CODEX_COORD_FAKE_SOURCE.stat().st_mode & 0o111
+    assert PI_COORD_SETUP_SOURCE.stat().st_mode & 0o111
+    assert FACTORY_STAGE_SOURCE.stat().st_mode & 0o111
 
 
 def _seed_pi_install(agent_home: Path, *, pi_script: str | None = None) -> Path:
@@ -715,16 +678,12 @@ def _seed_pi_install(agent_home: Path, *, pi_script: str | None = None) -> Path:
     prefix = agent_home / ".local"
     package_dir = prefix / "lib/node_modules/@earendil-works/pi-coding-agent"
     package_dir.mkdir(parents=True)
-    (package_dir / "package.json").write_text(
-        '{"name":"@earendil-works/pi-coding-agent","version":"0.85.0"}\n'
-    )
+    (package_dir / "package.json").write_text('{"name":"@earendil-works/pi-coding-agent","version":"0.85.0"}\n')
     pi = prefix / "bin/pi"
     pi.parent.mkdir(parents=True, exist_ok=True)
     pi.write_text(
         pi_script
-        or "#!/bin/sh\n"
-        "if [ \"$1\" = --version ]; then exit 0; fi\n"
-        "printf '%s\\0' \"$@\" > \"$TEST_PI_EXEC_LOG\"\n"
+        or '#!/bin/sh\nif [ "$1" = --version ]; then exit 0; fi\nprintf \'%s\\0\' "$@" > "$TEST_PI_EXEC_LOG"\n'
     )
     pi.chmod(0o755)
     return pi
@@ -757,18 +716,27 @@ def test_pi_setup_is_agent_local_and_launches_with_reviewed_flags(tmp_path: Path
     (operator_home / ".pi").symlink_to(outside, target_is_directory=True)
 
     _run_setup("pi-host-setup.sh", operator_home, agent_home, tmp_path)
-    pi = _seed_pi_install(agent_home)
+    pi = _seed_pi_install(
+        agent_home,
+        pi_script=(
+            "#!/bin/sh\n"
+            'if [ "$1" = --version ]; then exit 0; fi\n'
+            'printf "%s" "$PATH" > "$TEST_PI_PATH"\n'
+            'printf \'%s\\0\' "$@" > "$TEST_PI_EXEC_LOG"\n'
+        ),
+    )
 
     fake_node = fake_bin / "node"
     fake_node.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
+        'if [ "$1" = --version ]; then echo v22.19.0; exit 0; fi\n'
         "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
         "'@earendil-works/pi-coding-agent' '0.85.0'; exit 0; fi\n"
         "exit 1\n"
     )
     fake_node.chmod(0o755)
     env = _pi_command_env(agent_home, fake_bin, tmp_path)
+    env["TEST_PI_PATH"] = str(tmp_path / "pi-path")
 
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--", "-leading", "value with spaces"],
@@ -782,16 +750,133 @@ def test_pi_setup_is_agent_local_and_launches_with_reviewed_flags(tmp_path: Path
     assert not (agent_home / ".pi/agent/auth.json").exists()
     assert not (agent_home / ".pi/agent/host-sentinel").exists()
     assert (agent_home / ".pi/agent/skills/safeyolo").is_symlink()
-    actual_args = [
-        arg.decode()
-        for arg in Path(env["TEST_PI_EXEC_LOG"]).read_bytes().split(b"\0")
-        if arg
-    ]
+    repo_map = agent_home / ".safeyolo/repo-map"
+    assert repo_map.read_bytes() == REPO_MAP_SOURCE.read_bytes()
+    assert repo_map.stat().st_mode & 0o111
+    repo_map_command = agent_home / ".local/bin/repo-map"
+    assert repo_map_command.is_symlink()
+    assert os.readlink(repo_map_command) == REPO_MAP_COMMAND_TARGET
+    pi_path = Path(env["TEST_PI_PATH"]).read_text().split(os.pathsep)
+    assert str(agent_home / ".local/bin") in pi_path
+    actual_args = [arg.decode() for arg in Path(env["TEST_PI_EXEC_LOG"]).read_bytes().split(b"\0") if arg]
     assert actual_args[0] == "--approve"
     assert "--append-system-prompt" in actual_args
     assert "--" in actual_args
     assert "-leading" in actual_args
     assert "value with spaces" in actual_args
+
+
+def test_pi_coord_setup_stages_the_common_factory_supervisor(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    contract = "# Pi owner\n\nOwn the delegated work.\n"
+    snapshot = {
+        "schema": "safeyolo.factory/v1",
+        "name": "pi-factory",
+        "room": "pi-backlog",
+        "roles": {
+            "coordinator": {
+                "agent": "relay",
+                "harness": "codex",
+                "contract": "coordinator.md",
+                "contract_bytes": 6,
+                "contract_sha256": "0" * 64,
+                "contract_text": "unused",
+            },
+            "owner": {
+                "agent": "test-agent",
+                "harness": "pi",
+                "contract": "owner.md",
+                "contract_bytes": len(contract.encode()),
+                "contract_sha256": hashlib.sha256(contract.encode()).hexdigest(),
+                "contract_text": contract,
+            },
+        },
+        "handoffs": [
+            {
+                "request": "TASK",
+                "from": "coordinator",
+                "to": "owner",
+                "responses": ["DONE", "BLOCKED", "FAILED"],
+            }
+        ],
+        "operator_input": {"to": "coordinator", "types": ["NEXT"]},
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot))
+
+    result = _run_setup(
+        "pi-coord-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        extra_env={
+            "SAFEYOLO_FACTORY_SNAPSHOT": str(snapshot_path),
+            "SAFEYOLO_FACTORY_ROLE": "owner",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    config = json.loads((agent_home / ".safeyolo/codex-coord-supervisor.json").read_text())
+    assert config["harness"] == "pi"
+    assert config["agent_name"] == "test-agent"
+    assert config["rooms"] == ["pi-backlog"]
+    assert config["factory"]["role"] == "owner"
+    assert (agent_home / ".safeyolo/AGENTS.md").read_text().endswith(contract.lstrip())
+    assert (
+        agent_home / ".pi/agent/extensions/safeyolo-coord.ts"
+    ).read_bytes() == PI_COORD_EXTENSION_SOURCE.read_bytes()
+    command = (agent_home / ".safeyolo-command").read_text()
+    assert 'export SAFEYOLO_PI_BIN="$pi_bin"' in command
+    assert '"$HOME/.safeyolo/codex-coord-supervisor.py"' in command
+    assert "--mode json" not in command
+    assert not (agent_home / ".codex/config.toml").exists()
+
+
+@pytest.mark.parametrize("managed_path", (".local", ".local/bin", ".pi/agent/extensions"))
+def test_pi_setup_rejects_new_managed_parent_symlinks(tmp_path: Path, managed_path: str) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    outside = tmp_path / "outside"
+    operator_home.mkdir()
+    agent_home.mkdir(mode=0o700)
+    outside.mkdir()
+    sentinel = outside / "safeyolo-coord.ts"
+    sentinel.write_text("keep external file\n")
+    link = agent_home / managed_path
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if managed_path.startswith(".pi/"):
+        (agent_home / ".pi").chmod(0o700)
+        (agent_home / ".pi/agent").chmod(0o700)
+    link.symlink_to(outside, target_is_directory=True)
+    result = _run_setup(
+        "pi-host-setup.sh", operator_home, agent_home, tmp_path,
+        check=False, stage_coord_runtime=False,
+        extra_env={"SAFEYOLO_PI_COORD_SUPERVISOR": "1"},
+    )
+    assert result.returncode != 0
+    assert "symlink" in result.stderr
+    assert sentinel.read_text() == "keep external file\n"
+    assert list(outside.iterdir()) == [sentinel]
+
+
+@pytest.mark.parametrize("managed_path", (".pi/agent/extensions",))
+def test_pi_setup_rejects_writable_managed_parents(tmp_path: Path, managed_path: str) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    agent_home.mkdir(mode=0o700)
+    destination = agent_home / managed_path
+    destination.mkdir(parents=True)
+    destination.chmod(0o777)
+    result = _run_setup(
+        "pi-host-setup.sh", operator_home, agent_home, tmp_path,
+        check=False, stage_coord_runtime=False,
+        extra_env={"SAFEYOLO_PI_COORD_SUPERVISOR": "1"},
+    )
+    assert result.returncode != 0
+    assert "group/world-writable" in result.stderr
 
 
 def test_pi_setup_rejects_agent_pi_parent_symlink(tmp_path: Path) -> None:
@@ -819,9 +904,7 @@ def test_pi_setup_rejects_agent_pi_parent_symlink(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink"))
-def test_pi_setup_preserves_unsafe_existing_launcher(
-    tmp_path: Path, unsafe_kind: str
-) -> None:
+def test_pi_setup_preserves_unsafe_existing_launcher(tmp_path: Path, unsafe_kind: str) -> None:
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"
     outside = tmp_path / "outside"
@@ -904,9 +987,7 @@ def test_pi_rejects_node_2218_before_package_install(tmp_path: Path) -> None:
     (fake_bin / "npm").write_text("#!/bin/sh\nexit 0\n")
     (fake_bin / "npm").chmod(0o755)
     mise = fake_bin / "mise"
-    mise.write_text(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$TEST_MISE_LOG\"\n"
-    )
+    mise.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$TEST_MISE_LOG"\n')
     mise.chmod(0o755)
     env = _pi_command_env(agent_home, fake_bin, tmp_path)
     env["TEST_MISE_LOG"] = str(tmp_path / "mise.log")
@@ -938,7 +1019,7 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
     node = fake_bin / "node"
     node.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
+        'if [ "$1" = --version ]; then echo v22.19.0; exit 0; fi\n'
         "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
         "'@earendil-works/pi-coding-agent' '0.85.0'; exit 0; fi\n"
     )
@@ -946,38 +1027,38 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
     npm = fake_bin / "npm"
     npm.write_text(
         "#!/bin/sh\n"
-        "printf '%s\\0' \"$@\" >> \"$TEST_NPM_LOG\"\n"
-        "if [ \"$1\" = pack ]; then\n"
-        "  dest=\"\"; prev=\"\"\n"
-        "  for arg in \"$@\"; do\n"
-        "    if [ \"$prev\" = --pack-destination ]; then dest=\"$arg\"; fi\n"
-        "    prev=\"$arg\"\n"
+        'printf \'%s\\0\' "$@" >> "$TEST_NPM_LOG"\n'
+        'if [ "$1" = pack ]; then\n'
+        '  dest=""; prev=""\n'
+        '  for arg in "$@"; do\n'
+        '    if [ "$prev" = --pack-destination ]; then dest="$arg"; fi\n'
+        '    prev="$arg"\n'
         "  done\n"
-        "  : > \"$dest/pi-coding-agent-0.85.0.tgz\"\n"
+        '  : > "$dest/pi-coding-agent-0.85.0.tgz"\n'
         "  echo pi-coding-agent-0.85.0.tgz\n"
         "  exit 0\n"
         "fi\n"
-        "prefix=\"\"; prev=\"\"\n"
-        "for arg in \"$@\"; do\n"
-        "  if [ \"$prev\" = --prefix ]; then prefix=\"$arg\"; fi\n"
-        "  prev=\"$arg\"\n"
+        'prefix=""; prev=""\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$prev" = --prefix ]; then prefix="$arg"; fi\n'
+        '  prev="$arg"\n'
         "done\n"
-        "pkg=\"$prefix/lib/node_modules/@earendil-works/pi-coding-agent\"\n"
-        "mkdir -p \"$pkg\" \"$prefix/bin\"\n"
+        'pkg="$prefix/lib/node_modules/@earendil-works/pi-coding-agent"\n'
+        'mkdir -p "$pkg" "$prefix/bin"\n'
         "printf '%s\\n' "
-        "'{\"name\":\"@earendil-works/pi-coding-agent\",\"version\":\"0.85.0\"}' "
-        "> \"$pkg/package.json\"\n"
+        '\'{"name":"@earendil-works/pi-coding-agent","version":"0.85.0"}\' '
+        '> "$pkg/package.json"\n'
         "printf '%s\\n' '#!/bin/sh' "
         "'if [ \"$1\" = --version ]; then exit 0; fi' "
-        "'printf \"%s\\\\0\" \"$@\" > \"$TEST_PI_EXEC_LOG\"' > \"$prefix/bin/pi\"\n"
-        "chmod +x \"$prefix/bin/pi\"\n"
+        '\'printf "%s\\\\0" "$@" > "$TEST_PI_EXEC_LOG"\' > "$prefix/bin/pi"\n'
+        'chmod +x "$prefix/bin/pi"\n'
     )
     npm.chmod(0o755)
     openssl = fake_bin / "openssl"
     openssl.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = dgst ]; then printf x; exit 0; fi\n"
-        "if [ \"$1\" != base64 ] || [ \"$2\" != -A ] || [ \"$3\" != -in ]; then exit 1; fi\n"
+        'if [ "$1" = dgst ]; then printf x; exit 0; fi\n'
+        'if [ "$1" != base64 ] || [ "$2" != -A ] || [ "$3" != -in ]; then exit 1; fi\n'
         "printf '%s' "
         "'INxVkLAVfAMju5MojJpmyu/0bMP+r+ffZuS7UqVv32E2JwHBRbcHfELDfmFNvapEbgYfKN2r9OYO1p3TqDBR+g=='\n"
     )
@@ -993,11 +1074,7 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
     )
 
     assert result.returncode == 0, result.stderr
-    npm_args = [
-        arg.decode()
-        for arg in Path(env["TEST_NPM_LOG"]).read_bytes().split(b"\0")
-        if arg
-    ]
+    npm_args = [arg.decode() for arg in Path(env["TEST_NPM_LOG"]).read_bytes().split(b"\0") if arg]
     assert npm_args[:3] == ["pack", "--ignore-scripts", "--pack-destination"]
     assert "@earendil-works/pi-coding-agent@0.85.0" in npm_args
     assert "--ignore-scripts" in npm_args
@@ -1016,7 +1093,7 @@ def test_pi_repair_fails_closed_on_checksum_mismatch(tmp_path: Path) -> None:
     node = fake_bin / "node"
     node.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
+        'if [ "$1" = --version ]; then echo v22.19.0; exit 0; fi\n'
         "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
         "'@earendil-works/pi-coding-agent' '0.85.0'; exit 0; fi\n"
     )
@@ -1024,21 +1101,21 @@ def test_pi_repair_fails_closed_on_checksum_mismatch(tmp_path: Path) -> None:
     npm = fake_bin / "npm"
     npm.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" != pack ]; then exit 99; fi\n"
-        "dest=\"\"; prev=\"\"\n"
-        "for arg in \"$@\"; do\n"
-        "  if [ \"$prev\" = --pack-destination ]; then dest=\"$arg\"; fi\n"
-        "  prev=\"$arg\"\n"
+        'if [ "$1" != pack ]; then exit 99; fi\n'
+        'dest=""; prev=""\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$prev" = --pack-destination ]; then dest="$arg"; fi\n'
+        '  prev="$arg"\n'
         "done\n"
-        ": > \"$dest/pi-coding-agent-0.85.0.tgz\"\n"
+        ': > "$dest/pi-coding-agent-0.85.0.tgz"\n'
         "echo pi-coding-agent-0.85.0.tgz\n"
     )
     npm.chmod(0o755)
     openssl = fake_bin / "openssl"
     openssl.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = dgst ]; then printf x; exit 0; fi\n"
-        "if [ \"$1\" != base64 ] || [ \"$2\" != -A ] || [ \"$3\" != -in ]; then exit 1; fi\n"
+        'if [ "$1" = dgst ]; then printf x; exit 0; fi\n'
+        'if [ "$1" != base64 ] || [ "$2" != -A ] || [ "$3" != -in ]; then exit 1; fi\n'
         "printf mismatch\n"
     )
     openssl.chmod(0o755)
@@ -1098,7 +1175,7 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     }
     assert config_path.stat().st_mode & 0o777 == 0o600
     assert (agent_home / ".safeyolo/codex-coord-supervisor.py").stat().st_mode & 0o111
-    assert 'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"' in command
+    assert 'exec "$HOME/.safeyolo/venv/bin/python" "$HOME/.safeyolo/codex-coord-supervisor.py"' in command
     assert "--dangerously-bypass-approvals-and-sandbox" in command
     assert command.count("coord-mcp-bootstrap: mcp+httpx install") == 1
 
@@ -1189,12 +1266,13 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
         agent_home,
         tmp_path,
         extra_env={
-            "SAFEYOLO_CODEX_FACTORY_SNAPSHOT": str(snapshot_path),
-            "SAFEYOLO_CODEX_FACTORY_ROLE": "owner",
+            "SAFEYOLO_FACTORY_SNAPSHOT": str(snapshot_path),
+            "SAFEYOLO_FACTORY_ROLE": "owner",
         },
     )
 
     config = json.loads((agent_home / ".safeyolo/codex-coord-supervisor.json").read_text())
+    assert config["harness"] == "codex"
     assert config["agent_name"] == "test-agent"
     assert config["rooms"] == ["backlog"]
     assert config["coordinators"] == ["relay"]
@@ -1227,7 +1305,7 @@ def test_normal_codex_setup_keeps_interactive_entrypoint(tmp_path: Path) -> None
 
     command = (agent_home / ".safeyolo-command").read_text()
     assert 'exec codex "${args[@]}" "$@"' in command
-    assert 'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"' not in command
+    assert '"$HOME/.safeyolo/codex-coord-supervisor.py"' not in command
     assert not (agent_home / ".safeyolo/codex-coord-supervisor.json").exists()
 
 
@@ -1592,6 +1670,49 @@ def test_codex_context_refuses_user_owned_lab_command(tmp_path: Path) -> None:
     assert command.read_text() == "user-owned command\n"
 
 
+def test_codex_context_refuses_user_owned_repo_map_command(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    command = agent_home / ".local/bin/repo-map"
+    command.parent.mkdir(parents=True)
+    command.write_text("user-owned command\n")
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to replace existing command" in result.stderr
+    assert command.read_text() == "user-owned command\n"
+
+
+def test_codex_context_stages_standalone_repo_map(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    command = agent_home / ".safeyolo/repo-map"
+    assert (agent_home / ".safeyolo/repo-map.toml").read_bytes() == (REPO_ROOT / "repo-map.toml").read_bytes()
+    result = subprocess.run(
+        [str(command), str(REPO_ROOT / "cli/src/safeyolo/coord")],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("# repo-map scope=cli/src/safeyolo/coord mode=overview ")
+    assert "cli/src/safeyolo/coord/api.py" in result.stdout
+    assert "class NotFoundError @" in result.stdout
+
+
 def test_codex_context_refuses_incomplete_lab_bashrc_block(tmp_path: Path) -> None:
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"
@@ -1634,9 +1755,7 @@ def test_claude_setup_stages_personal_skills_but_reserves_safeyolo_name(
     )
 
     _assert_managed_context(agent_home, ".claude")
-    assert (agent_home / ".claude/skills/personal/SKILL.md").read_text() == (
-        "operator personal skill\n"
-    )
+    assert (agent_home / ".claude/skills/personal/SKILL.md").read_text() == ("operator personal skill\n")
     assert "reserved by SafeYolo" in result.stderr
     assert os.readlink(agent_home / ".claude/skills/safeyolo") == SKILL_LINK_TARGET
 
@@ -1768,6 +1887,59 @@ def test_factory_skill_is_codex_scoped_and_self_contained() -> None:
         assert mmd_path.is_file()
 
 
+def test_safeyolo_acceptance_graph_tool_hashes_match_sources() -> None:
+    graph_path = SKILL_SOURCE / "references/graph/accept-safeyolo.yaml"
+    graph = yaml.safe_load(graph_path.read_text())
+    project = tomllib.loads((REPO_ROOT / "tools" / "acceptance" / "pyproject.toml").read_text())
+    acceptance_dependencies = {
+        requirement.split(">=", 1)[0]
+        for group in ("static", "stress")
+        for requirement in project["dependency-groups"][group]
+    }
+    tool_nodes = {node["id"]: node["tool"] for node in graph["nodes"] if "tool" in node}
+    tools = list(tool_nodes.values())
+
+    assert tools
+    assert {
+        "mypy",
+        "pip-audit",
+        "pytest-repeat",
+        "pytest-xdist",
+        "radon",
+        "semgrep",
+    } <= acceptance_dependencies
+    assert {
+        "ev.accept_python_lane",
+        "ev.accept_policy_chaos_lane",
+        "ev.accept_proxy_lane",
+        "ev.accept_runsc_lane",
+        "ev.accept_vz_lane",
+        "ev.accept_coord_lane",
+        "ev.accept_factory_recovery_lab",
+        "ev.accept_nested_linux_lane",
+        "ev.accept_rootfs_lane",
+        "ev.accept_uds_lane",
+        "ev.accept_ruff_lane",
+        "ev.accept_mypy_lane",
+        "ev.accept_concurrency_stress_lane",
+        "ev.accept_semgrep_lane",
+        "ev.accept_dependency_audit_lane",
+        "ev.accept_radon_lane",
+        "ev.accept_codeql_lane",
+    } <= tool_nodes.keys()
+    for tool in tools:
+        assert tool["obtain_from"]
+        assert tool["verify"]
+        assert tool["run"]
+        assert tool["capture"]
+        for source in tool["sources"]:
+            source_path = Path(source["path"])
+            assert not source_path.is_absolute()
+            assert ".." not in source_path.parts
+            content = (REPO_ROOT / source_path).read_bytes()
+            assert hashlib.sha256(content).hexdigest() == source["sha256"]
+
+
 def test_baseline_explains_guest_privilege_without_implying_host_root() -> None:
     """The always-on launch prompt must teach the supported package path."""
     content = BASELINE_SOURCE.read_text()
@@ -1832,34 +2004,32 @@ def _codex_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dict
     for key in list(env):
         if key.startswith(("MISE_", "__MISE_")) or key == "BASH_ENV":
             env.pop(key)
-    env.update({
-        "HOME": str(agent_home),
-        "PATH": f"{fake_bin}:/usr/bin:/bin",
-        "TEST_CODEX_SHIM": str(fake_bin / "codex"),
-        "TEST_EXEC_LOG": str(tmp_path / "codex-exec-args.bin"),
-        "TEST_MISE_LOG": str(tmp_path / "codex-mise.log"),
-        "TEST_INSTALLED_STATE": str(tmp_path / "installed-version"),
-        "TEST_HEALTHY_CODEX": _HEALTHY_CODEX,
-        "TEST_REMOTE_VERSION": "9.9.9",
-    })
+    env.update(
+        {
+            "HOME": str(agent_home),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "TEST_CODEX_SHIM": str(fake_bin / "codex"),
+            "TEST_EXEC_LOG": str(tmp_path / "codex-exec-args.bin"),
+            "TEST_MISE_LOG": str(tmp_path / "codex-mise.log"),
+            "TEST_INSTALLED_STATE": str(tmp_path / "installed-version"),
+            "TEST_HEALTHY_CODEX": _HEALTHY_CODEX,
+            "TEST_REMOTE_VERSION": "9.9.9",
+        }
+    )
     return env
 
 
 _HEALTHY_CODEX = (
     "#!/bin/sh\n"
     "if [ \"$1\" = --version ]; then echo 'codex-cli 0.0.0-test'; exit 0; fi\n"
-    "printf '%s\\0' \"$@\" > \"$TEST_EXEC_LOG\"\n"
+    'printf \'%s\\0\' "$@" > "$TEST_EXEC_LOG"\n'
 )
 
 # A wrapper whose platform-native executable is gone: it is still present and
 # on PATH, so `command -v codex` succeeds, but it cannot run. This is the state
 # macOS Gatekeeper leaves behind when it trashes the vendored Mach-O over a
 # revoked signing certificate, and the state a skipped npm postinstall leaves.
-_BROKEN_CODEX = (
-    "#!/bin/sh\n"
-    "echo 'Error: could not find codex-aarch64-apple-darwin' >&2\n"
-    "exit 1\n"
-)
+_BROKEN_CODEX = "#!/bin/sh\necho 'Error: could not find codex-aarch64-apple-darwin' >&2\nexit 1\n"
 
 # Repairs the wrapper when asked to install, so the command can go on to exec.
 _FAKE_MISE = (
@@ -1926,13 +2096,14 @@ def test_codex_bootstrap_repairs_a_wrapper_whose_native_binary_is_gone(
 
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
-        env=env, capture_output=True, text=True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
 
     assert result.returncode == 0, result.stderr
     mise_calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
-    assert any(c.startswith("use ") and "npm:@openai/codex@" in c
-               for c in mise_calls), (
+    assert any(c.startswith("use ") and "npm:@openai/codex@" in c for c in mise_calls), (
         f"install was skipped for a broken wrapper; mise calls were {mise_calls}"
     )
     args = Path(env["TEST_EXEC_LOG"]).read_bytes().decode().split("\0")
@@ -1963,15 +2134,15 @@ def test_codex_bootstrap_does_not_reinstall_a_healthy_wrapper(
 
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
-        env=env, capture_output=True, text=True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
 
     assert result.returncode == 0, result.stderr
     # Version queries are expected; an *install* is not.
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
-    assert not any(c.startswith("use ") for c in calls), (
-        f"healthy wrapper triggered an install: {calls}"
-    )
+    assert not any(c.startswith("use ") for c in calls), f"healthy wrapper triggered an install: {calls}"
     assert "--probe" in Path(env["TEST_EXEC_LOG"]).read_bytes().decode().split("\0")
 
 
@@ -1998,22 +2169,26 @@ def test_codex_repair_installs_an_explicitly_resolved_remote_version(
     (fake_bin / "mise").chmod(0o755)
 
     env = _codex_command_env(agent_home, fake_bin, tmp_path)
-    Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")   # the stale build
+    Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")  # the stale build
 
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
-        env=env, capture_output=True, text=True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
 
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
-    assert any(c.startswith("latest npm:@openai/codex") and "--installed" not in c
-               for c in calls), f"never resolved a remote version: {calls}"
+    assert any(c.startswith("latest npm:@openai/codex") and "--installed" not in c for c in calls), (
+        f"never resolved a remote version: {calls}"
+    )
     assert any("use -g --force npm:@openai/codex@9.9.9" in c for c in calls), (
         f"did not install the resolved version by exact value: {calls}"
     )
-    assert not any(c.endswith("npm:@openai/codex@latest") and "use" in c
-                   for c in calls), f"fell back to @latest: {calls}"
+    assert not any(c.endswith("npm:@openai/codex@latest") and "use" in c for c in calls), (
+        f"fell back to @latest: {calls}"
+    )
 
 
 def test_codex_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> None:
@@ -2035,15 +2210,15 @@ def test_codex_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> None
 
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
-        env=env, capture_output=True, text=True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
     assert "codex 0.130.0" in result.stderr, result.stderr
     assert "9.9.9 is available" in result.stderr, result.stderr
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
-    assert not any(c.startswith("use ") for c in calls), (
-        f"a healthy install was upgraded: {calls}"
-    )
+    assert not any(c.startswith("use ") for c in calls), f"a healthy install was upgraded: {calls}"
 
 
 def test_codex_still_launches_when_remote_resolution_fails(tmp_path: Path) -> None:
@@ -2061,12 +2236,14 @@ def test_codex_still_launches_when_remote_resolution_fails(tmp_path: Path) -> No
     (fake_bin / "mise").chmod(0o755)
 
     env = _codex_command_env(agent_home, fake_bin, tmp_path)
-    env["TEST_REMOTE_VERSION"] = ""          # remote lookup fails
+    env["TEST_REMOTE_VERSION"] = ""  # remote lookup fails
     Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")
 
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
-        env=env, capture_output=True, text=True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
     assert "could not resolve a remote version" in result.stderr
@@ -2098,14 +2275,18 @@ def test_codex_warns_when_mise_lacks_min_release_age(tmp_path: Path) -> None:
 
     unsupported = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
-        env=env, capture_output=True, text=True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert unsupported.returncode == 0, unsupported.stderr
     assert "no delayed-deployment protection" in unsupported.stderr
 
     supported = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
-        env={**env, "TEST_MISE_HAS_MIN_AGE": "1"}, capture_output=True, text=True,
+        env={**env, "TEST_MISE_HAS_MIN_AGE": "1"},
+        capture_output=True,
+        text=True,
     )
     assert supported.returncode == 0, supported.stderr
     assert "no delayed-deployment protection" not in supported.stderr
@@ -2114,16 +2295,12 @@ def test_codex_warns_when_mise_lacks_min_release_age(tmp_path: Path) -> None:
 _HEALTHY_CLAUDE = (
     "#!/bin/sh\n"
     "if [ \"$1\" = --version ]; then echo '9.9.9 (Claude Code)'; exit 0; fi\n"
-    "printf '%s\\0' \"$@\" > \"$TEST_EXEC_LOG\"\n"
+    'printf \'%s\\0\' "$@" > "$TEST_EXEC_LOG"\n'
 )
 
 # Wrapper present and on PATH, native binary gone: `command -v` succeeds,
 # `--version` does not. Same shape as the Codex case.
-_BROKEN_CLAUDE = (
-    "#!/bin/sh\n"
-    "echo 'Error: could not find @anthropic-ai/claude-code-linux-arm64' >&2\n"
-    "exit 1\n"
-)
+_BROKEN_CLAUDE = "#!/bin/sh\necho 'Error: could not find @anthropic-ai/claude-code-linux-arm64' >&2\nexit 1\n"
 
 _FAKE_MISE_CLAUDE = (
     "#!/usr/bin/env python3\n"
@@ -2158,16 +2335,18 @@ def _claude_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dic
     for key in list(env):
         if key.startswith(("MISE_", "__MISE_")) or key == "BASH_ENV":
             env.pop(key)
-    env.update({
-        "HOME": str(agent_home),
-        "PATH": f"{fake_bin}:/usr/bin:/bin",
-        "TEST_CLAUDE_SHIM": str(fake_bin / "claude"),
-        "TEST_EXEC_LOG": str(tmp_path / "claude-exec-args.bin"),
-        "TEST_MISE_LOG": str(tmp_path / "claude-mise.log"),
-        "TEST_INSTALLED_STATE": str(tmp_path / "claude-installed-version"),
-        "TEST_HEALTHY_CLAUDE": _HEALTHY_CLAUDE,
-        "TEST_REMOTE_VERSION": "9.9.9",
-    })
+    env.update(
+        {
+            "HOME": str(agent_home),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "TEST_CLAUDE_SHIM": str(fake_bin / "claude"),
+            "TEST_EXEC_LOG": str(tmp_path / "claude-exec-args.bin"),
+            "TEST_MISE_LOG": str(tmp_path / "claude-mise.log"),
+            "TEST_INSTALLED_STATE": str(tmp_path / "claude-installed-version"),
+            "TEST_HEALTHY_CLAUDE": _HEALTHY_CLAUDE,
+            "TEST_REMOTE_VERSION": "9.9.9",
+        }
+    )
     return env
 
 
@@ -2196,23 +2375,26 @@ def test_claude_repair_installs_an_explicitly_resolved_remote_version(
     """
     agent_home, fake_bin = _stage_claude(tmp_path, _BROKEN_CLAUDE)
     env = _claude_command_env(agent_home, fake_bin, tmp_path)
-    Path(env["TEST_INSTALLED_STATE"]).write_text("2.1.100")   # stale build
+    Path(env["TEST_INSTALLED_STATE"]).write_text("2.1.100")  # stale build
 
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
-        env=env, capture_output=True, text=True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
 
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
-    assert any(c.startswith("latest npm:@anthropic-ai/claude-code")
-               and "--installed" not in c for c in calls), (
-        f"never resolved a remote version: {calls}")
-    assert any("use -g --force npm:@anthropic-ai/claude-code@9.9.9" in c
-               for c in calls), (
-        f"did not install the resolved version by exact value: {calls}")
-    assert not any(c.startswith("use") and c.endswith("claude-code@latest")
-                   for c in calls), f"fell back to @latest: {calls}"
+    assert any(c.startswith("latest npm:@anthropic-ai/claude-code") and "--installed" not in c for c in calls), (
+        f"never resolved a remote version: {calls}"
+    )
+    assert any("use -g --force npm:@anthropic-ai/claude-code@9.9.9" in c for c in calls), (
+        f"did not install the resolved version by exact value: {calls}"
+    )
+    assert not any(c.startswith("use") and c.endswith("claude-code@latest") for c in calls), (
+        f"fell back to @latest: {calls}"
+    )
     assert "--probe" in Path(env["TEST_EXEC_LOG"]).read_bytes().decode().split("\0")
 
 
@@ -2223,11 +2405,12 @@ def test_claude_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> Non
 
     result = subprocess.run(
         [str(agent_home / ".safeyolo-command"), "--probe"],
-        env=env, capture_output=True, text=True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
     assert "claude 2.1.100" in result.stderr, result.stderr
     assert "9.9.9 is available" in result.stderr, result.stderr
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
-    assert not any(c.startswith("use ") for c in calls), (
-        f"a healthy install was upgraded: {calls}")
+    assert not any(c.startswith("use ") for c in calls), f"a healthy install was upgraded: {calls}"

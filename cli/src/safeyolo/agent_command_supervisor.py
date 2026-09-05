@@ -54,7 +54,7 @@ def _state_path(name: str) -> Path:
 
 
 def _stop_path(name: str) -> Path:
-    return _state_path(name).with_name("command-supervisor.stop")
+    return _state_path(name).with_name(".safeyolo-command-supervisor.stop")
 
 
 def _now() -> str:
@@ -450,7 +450,16 @@ def start_command_supervisor(name: str, command: str) -> None:
     if not command.strip():
         raise ValueError("detached agent has no command to run")
     existing = _read_state(name)
-    if existing and existing.get("state") in {"starting", "running", "restarting"}:
+    fenced_guest_owner = bool(
+        existing
+        and existing.get("runtime_owner") == "guest-pid1"
+        and _stop_path(name).exists()
+    )
+    if (
+        existing
+        and existing.get("state") in {"starting", "running", "restarting"}
+        and not fenced_guest_owner
+    ):
         if supervisor_process_is_live(existing) or _supervisor_is_ours(existing):
             raise RuntimeError(f"agent command supervisor already running for {name}")
         raise RuntimeError(f"stale command supervisor state for {name}; stop it first")

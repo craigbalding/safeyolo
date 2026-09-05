@@ -4,6 +4,24 @@ SafeYolo runs a host-local, authenticated NATS server for retained coord room
 messages. SafeYolo owns its lifecycle; operators should not launch a second
 server or edit the generated NATS configuration.
 
+## Room storage
+
+Rooms share the managed NATS server's total storage budget. They do not reserve
+a fixed number of bytes per room. Age and message-count retention still remove
+old messages within each room. The message-size limit is unchanged.
+
+At normal Coord startup and before creating a room, SafeYolo upgrades the former
+100 MiB room byte reservation in place. The upgrade preserves messages,
+sequences, subjects, and other stream settings. It only changes streams whose
+enforced settings match the known old contract; unrelated configuration drift
+is not overwritten. No room deletion or server restart is required for the
+stream update.
+
+Removing reservations removes the accidental ten-room ceiling; it does not
+make storage unlimited. Rooms compete for the shared budget. If actual stored
+data exhausts that budget, new writes can fail across rooms. The server does
+not evict another room's history to make space for a write.
+
 ## Credential lifecycle
 
 On the first coord start, SafeYolo generates a random password and stores it at

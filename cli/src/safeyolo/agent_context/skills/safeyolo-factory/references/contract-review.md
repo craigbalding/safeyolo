@@ -55,8 +55,12 @@ the model from these perspectives:
    enough context to act without reconstructing a hidden conversation.
 6. **Concurrency and recovery:** Duplicate delivery, concurrent tasks,
    rejection, supersession, process failure, and restart have coherent owners.
-7. **Runtime feasibility:** The roles can actually access the approved tools,
-   environments, data, and message routes their responsibilities require.
+7. **Runtime feasibility:** The roles can actually use the approved tools,
+   environments, data, and message routes their responsibilities require. For
+   each required resource, distinguish existence, intended permissions and
+   content, and consumer discoverability: the consuming role can locate it
+   from its actual injected context or an ordinary inventory. Controller-only
+   metadata does not establish usable access.
 8. **Operator experience:** Material decisions surface clearly; silence does
    not falsely mean health; slow operator response is not treated as refusal.
 9. **Simplicity:** The same behavior is not represented twice, and machinery is

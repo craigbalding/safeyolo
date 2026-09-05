@@ -6,3 +6,5 @@ paths-ignore:
   - "**/test_*.py"
   - "**/*_test.py"
   - "**/conftest.py"
+  # Deliberately unsafe specimens used only by `semgrep test`, not runtime code.
+  - tools/acceptance/semgrep-rules.py

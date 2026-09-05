@@ -1097,7 +1097,8 @@ async def read_attention(
 
 
 async def recover_attention() -> None:
-    """Project accepted message manifests and pending low-latency hints."""
+    """Upgrade room storage, then project accepted manifests and wake hints."""
+    await nats_client.upgrade_room_streams()
     await attention.recover_all_attention()
     from .outbox import project_attention_hints
 

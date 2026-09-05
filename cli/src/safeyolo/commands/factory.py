@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -38,7 +39,7 @@ console = Console()
 factory_app = typer.Typer(
     name="factory",
     help=(
-        "Check, approve, run, and diagnose supervised coord factories. "
+        "Check, approve, run, diagnose, and recover supervised coord factories. "
         "Fresh setup: add agents, check, approve, then run."
     ),
     no_args_is_help=True,
@@ -50,22 +51,29 @@ _FACTORY_PREFLIGHT_POLL_SECONDS = 0.25
 
 def _factory_setup_commands(name: str, payload: dict[str, Any] | None = None) -> str:
     """Return the copyable ordering for a first factory setup or recovery."""
-    agents = (
-        [role["agent"] for role in payload["roles"].values()]
+    roles = (
+        [(role["agent"], role.get("harness", "codex")) for role in payload["roles"].values()]
         if payload is not None
-        else ["AGENT"]
+        else [("AGENT", "codex")]
     )
     lines = [
         'Recovery order (use "$PWD" or replace it with each agent\'s workspace):',
-        "@codex stages SafeYolo-owned Codex settings only. Log in inside each "
-        + "agent and explicitly adopt its agent-local credential before the factory run.",
-        "Inside each running agent, use `codex login --device-auth`, then run "
-        + "`/home/agent/.safeyolo/codex-auth-recovery.py adopt`.",
-        "For reset recovery, run `/home/agent/.safeyolo/codex-auth-recovery.py reset`, then "
-        + "`codex login --device-auth`, then run the adopt command.",
+        (
+            "Create each agent with the harness declared by its role, then establish "
+            "that harness's agent-local subscription login before factory run."
+        ),
+        "@codex stages SafeYolo-owned Codex settings only; @pi likewise keeps Pi authentication agent-local.",
+        (
+            "For Codex, run `codex login --device-auth`, then explicitly run "
+            "`/home/agent/.safeyolo/codex-auth-recovery.py adopt` inside the agent."
+        ),
+        (
+            "For reset recovery, run `/home/agent/.safeyolo/codex-auth-recovery.py reset`, "
+            "then repeat the Codex login and adopt commands."
+        ),
     ]
-    for agent in agents:
-        lines.append(f'  safeyolo agent add {agent} "$PWD" --host-script @codex --no-run')
+    for agent, harness in roles:
+        lines.append(f'  safeyolo agent add {agent} "$PWD" --host-script @{harness} --no-run')
     lines.extend(
         [
             "  safeyolo factory check FACTORY.toml",
@@ -94,8 +102,10 @@ def _load_file_or_exit(path: Path) -> FactoryContract:
 def _print_contract(contract: FactoryContract) -> None:
     console.print(f"factory={contract.name} schema=safeyolo.factory/v1 room={contract.room}")
     for role in contract.roles:
+        args = "agent-defaults" if role.args is None else shlex.join(role.args)
         console.print(
             f"role={role.name} agent={role.agent} contract={role.contract} "
+            f"harness={role.harness} args={args} "
             f"source={role.contract_source} bytes={role.contract_bytes} "
             f"sha256={role.contract_sha256}"
         )
@@ -153,27 +163,13 @@ def _print_contract_explanation(  # DOC: docs/factories.md, docs/factories/backl
         f"The canonical trusted brief for room={contract.room} is separate live "
         "operator state. It is not part of the immutable snapshot."
     )
-    console.print(
-        "This static check does not inspect live room state, grants, brief "
-        "revision, or worker health."
-    )
-    console.print(
-        "Static admission of a control word does not select work or prove live "
-        "eligibility or readiness."
-    )
-    console.print(
-        "Read the bound role contract to determine intake behavior. A live "
-        "brief can refine that behavior."
-    )
-    console.print(
-        "An absent brief is not a static contract error and does not by itself "
-        "disable proactive intake."
-    )
+    console.print("This static check does not inspect live room state, grants, brief revision, or worker health.")
+    console.print("Static admission of a control word does not select work or prove live eligibility or readiness.")
+    console.print("Read the bound role contract to determine intake behavior. A live brief can refine that behavior.")
+    console.print("An absent brief is not a static contract error and does not by itself disable proactive intake.")
     console.print(f"Inspect the live brief: safeyolo coord brief show {contract.room}")
     console.print(
-        "Set the live brief: "
-        f"safeyolo coord brief set {contract.room} --file BRIEF.md "
-        "--expected-revision REVISION"
+        f"Set the live brief: safeyolo coord brief set {contract.room} --file BRIEF.md --expected-revision REVISION"
     )
     console.print(f"Inspect live readiness: safeyolo factory doctor {contract.name}")
 
@@ -229,7 +225,7 @@ def run_factory(
     name: str = typer.Argument(
         ...,
         help=(
-            "Approved factory name. Fresh setup order is: agent add --host-script @codex --no-run, "
+            "Approved factory name. Fresh setup order is: agent add with each role's harness, "
             "factory check, factory approve, factory run."
         ),
     ),
@@ -239,16 +235,22 @@ def run_factory(
     Fresh setup order:
 
         safeyolo agent add AGENT FOLDER --host-script @codex --no-run
+
+    ``@codex`` is the default harness; use ``@pi`` when the role declares
+    ``harness = "pi"``.
         safeyolo factory check FACTORY.toml
         safeyolo factory approve FACTORY.toml --yes
         safeyolo factory run NAME
 
-    The ordinary ``@codex`` host setup stages SafeYolo-owned Codex settings
-    only. Log in inside each agent with ``codex login --device-auth`` and explicitly run
-    ``/home/agent/.safeyolo/codex-auth-recovery.py adopt`` before ``factory
-    run``; after a reset, use ``codex login --device-auth`` followed by the
-    same adopt command. The command later reapplies ``@codex-coord`` with the
-    approved snapshot and role.
+    Establish each harness's agent-local subscription login before ``factory
+    run``. The command later reapplies that role's supervised host setup with
+    the approved snapshot and role.
+
+    ``@codex`` stages SafeYolo-owned Codex settings only; ``@pi`` likewise
+    keeps Pi authentication agent-local.
+
+    For Codex, run ``codex login --device-auth`` inside the agent, then
+    explicitly run ``/home/agent/.safeyolo/codex-auth-recovery.py adopt``.
 
     ``factory run`` provisions the declared Coord rooms and grants before it
     starts any role, then waits for every role supervisor to pass the same
@@ -277,10 +279,7 @@ def doctor_factory(name: str = typer.Argument(..., help="Approved factory name")
         # Keep content-addressed identities copyable when output is piped or
         # captured on a narrow terminal; a wrapped SHA is not actionable.
         console.print(line, soft_wrap=True)
-    counts = {
-        status: sum(item.status == status for item in report.checks)
-        for status in ("PASS", "WARN", "FAIL")
-    }
+    counts = {status: sum(item.status == status for item in report.checks) for status in ("PASS", "WARN", "FAIL")}
     console.print(
         f"SUMMARY factory={name} status={report.status} "
         f"pass={counts['PASS']} warn={counts['WARN']} fail={counts['FAIL']}"
@@ -289,28 +288,53 @@ def doctor_factory(name: str = typer.Argument(..., help="Approved factory name")
         raise typer.Exit(1)
 
 
+@factory_app.command("release")
+def release_factory_work(  # DOC: docs/factories.md
+    name: str = typer.Argument(..., help="Approved factory whose agents hold the stopped work."),
+    target: list[str] = typer.Option(..., "--target", help="Exact target URL; repeat to select related review targets."),
+    room: str | None = typer.Option(None, "--room", help="Original work room; defaults to the approved factory room."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Release the displayed selection without prompting."),
+) -> None:
+    """Release selected checkpointed work after stopping the affected agents.
+
+    Preserve other work, files and room history. This does not cancel a live
+    turn or consume assignments still waiting in the attention feed.
+    """
+    from ..factory_recovery import release_stopped_work
+
+    def confirm(description: str) -> bool:
+        console.print(description, markup=False, soft_wrap=True)
+        return yes or typer.confirm("Release only these stopped-work records?")
+
+    try:
+        _identifier, _path, payload = load_approved_snapshot(name)
+        result = release_stopped_work(payload, room or payload["room"], set(target), confirm)
+    except (FactoryContractError, OSError, ValueError, RuntimeError) as exc:
+        console.print(f"Cannot release factory work: {exc}", markup=False, soft_wrap=True)
+        raise typer.Exit(1) from exc
+    console.print(result, markup=False, soft_wrap=True)
+
+
 def _print_snapshot(identifier: str, snapshot_path: Path, payload: dict[str, Any]) -> None:
     console.print(
         f"factory={payload['name']} schema={payload['schema']} room={payload['room']} "
         f"snapshot={identifier} snapshot_path={snapshot_path}"
     )
     for role_name, role in payload["roles"].items():
+        args = "agent-defaults" if "args" not in role else shlex.join(role["args"])
         console.print(
-            f"role={role_name} agent={role['agent']} contract={role['contract']} "
+            f"role={role_name} agent={role['agent']} "
+            f"harness={role.get('harness', 'codex')} args={args} "
+            f"contract={role['contract']} "
             f"bytes={role['contract_bytes']} sha256={role['contract_sha256']}"
         )
     operator_input = payload["operator_input"]
-    console.print(
-        f"operator_input=operator to={operator_input['to']} "
-        f"types={','.join(operator_input['types'])}"
-    )
+    console.print(f"operator_input=operator to={operator_input['to']} types={','.join(operator_input['types'])}")
 
 
 def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
     roles = payload["roles"]
     configured: list[tuple[str, str, dict[str, Any]]] = []
-    host_script = _resolve_host_script_path("@codex-coord")
-    assert host_script is not None
     for role_name, role in roles.items():
         agent_name = role["agent"]
         metadata = load_agent(agent_name)
@@ -323,14 +347,14 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
         if not isinstance(folder, str):
             raise FactoryContractError(
                 f"agent {agent_name!r} has no configured folder;\n"
-                f"run `safeyolo agent config {agent_name} --folder \"$PWD\"`, "
+                f'run `safeyolo agent config {agent_name} --folder "$PWD"`, '
                 f"then `safeyolo factory run {payload.get('name', 'FACTORY')}`"
             )
         folder_path = Path(folder).expanduser().resolve()
         if not folder_path.is_dir():
             raise FactoryContractError(
                 f"agent {agent_name!r} folder does not exist: {folder_path};\n"
-                f"run `safeyolo agent config {agent_name} --folder \"$PWD\"`, "
+                f'run `safeyolo agent config {agent_name} --folder "$PWD"`, '
                 f"then `safeyolo factory run {payload.get('name', 'FACTORY')}`"
             )
         _check_project_ownership(folder_path, False)
@@ -350,14 +374,16 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
         for role_name, agent_name, _metadata in configured:
             if platform.is_sandbox_running(agent_name):
                 raise FactoryContractError(
-                    f"role {role_name!r} agent {agent_name!r} is already running; "
-                    f"stop it before starting the factory"
+                    f"role {role_name!r} agent {agent_name!r} is already running; stop it before starting the factory"
                 )
 
         # Configure every existing agent from the same immutable snapshot before
         # booting any of them. There is no live reload; another approve+run is needed
         # to move the factory to a different snapshot.
         for role_name, agent_name, metadata in configured:
+            harness = roles[role_name].get("harness", "codex")
+            host_script = _resolve_host_script_path(f"@{harness}-coord")
+            assert host_script is not None
             with _factory_environment(snapshot_path, role_name):
                 _run_host_script_for_agent(
                     name=agent_name,
@@ -365,8 +391,12 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
                     folder_str=str(Path(metadata["folder"]).expanduser().resolve()),
                 )
 
-            def persist_host_script(current: dict[str, Any]) -> None:
-                current["host_script"] = str(host_script)
+            def persist_host_script(
+                current: dict[str, Any],
+                *,
+                resolved_host_script: Path = host_script,
+            ) -> None:
+                current["host_script"] = str(resolved_host_script)
 
             try:
                 mutate_agent(agent_name, persist_host_script)
@@ -393,10 +423,13 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
                 f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
             ) from exc
 
-        for _role_name, agent_name, _metadata in configured:
+        for role_name, agent_name, _metadata in configured:
+            role_args = roles[role_name].get("args")
             exit_code = _run_agent(
                 agent_name,
                 yolo=True,
+                agent_args=role_args,
+                skip_default_args=role_args is not None,
                 detach=True,
                 run_command_detached=True,
                 no_snapshot=True,
@@ -419,18 +452,13 @@ def _wait_for_operational_preflight(name: str) -> FactoryDoctorReport:
             latest = inspect_factory(name)
         except Exception as exc:  # noqa: BLE001 - startup boundary
             raise FactoryContractError(
-                f"operational preflight could not inspect factory {name!r}: {exc}\n"
-                f"{_factory_run_recovery(name)}"
+                f"operational preflight could not inspect factory {name!r}: {exc}\n{_factory_run_recovery(name)}"
             ) from exc
         if latest.status == "PASS":
             return latest
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            failed = [
-                f"{item.component}: {item.detail}"
-                for item in latest.checks
-                if item.status != "PASS"
-            ]
+            failed = [f"{item.component}: {item.detail}" for item in latest.checks if item.status != "PASS"]
             detail = "; ".join(failed) if failed else f"status={latest.status}"
             raise FactoryContractError(
                 f"operational preflight did not pass within "
@@ -444,10 +472,7 @@ def _ensure_factory_rooms(  # DOC: docs/factories.md
     factory_room: str,
     agent_names: Iterator[str],
 ) -> None:
-    agent_ids = {
-        agent_name: get_or_mint_agent_id(agent_name)
-        for agent_name in agent_names
-    }
+    agent_ids = {agent_name: get_or_mint_agent_id(agent_name) for agent_name in agent_names}
     existing = {room["name"] for room in coord_api.list_rooms()}
 
     def ensure_room(room_name: str) -> None:
@@ -490,8 +515,8 @@ def _ensure_factory_rooms(  # DOC: docs/factories.md
 @contextmanager
 def _factory_environment(snapshot_path: Path, role_name: str) -> Iterator[None]:
     values = {
-        "SAFEYOLO_CODEX_FACTORY_SNAPSHOT": str(snapshot_path),
-        "SAFEYOLO_CODEX_FACTORY_ROLE": role_name,
+        "SAFEYOLO_FACTORY_SNAPSHOT": str(snapshot_path),
+        "SAFEYOLO_FACTORY_ROLE": role_name,
     }
     previous = {key: os.environ.get(key) for key in values}
     os.environ.update(values)

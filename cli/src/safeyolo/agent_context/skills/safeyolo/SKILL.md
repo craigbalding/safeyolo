@@ -1,12 +1,20 @@
 ---
 name: safeyolo
-description: Operate and troubleshoot from inside a SafeYolo sandbox. Auto-invoke on the first turn that touches any sandbox-side operation, including SafeYolo proxy or TLS failures; policy and credential blocks; HTTP 403/428/429/503/508 responses; X-Blocked-By responses; guest package installation and sudo/setpriv/apt/apk/pip/mise behavior; ptrace / strace / gdb / py-spy / rbspy / perf attach failures and same-uid in-guest debugging; `agent shell --root` or operator recovery paths; optional desktop and operator preview access; Agent API queries; flow inspection; budgets; circuit breakers; service-gateway access; coord work coordination; repeated GitHub intake or exact-candidate checks through a configured GitHub App connector; approvals through `safeyolo watch`; approved legacy plumb collaboration; and general "am I inside a SafeYolo sandbox / what can I do from here / how do I debug this" introspection questions.
+description: Diagnose and resolve SafeYolo boundary failures and operate advanced SafeYolo facilities when the task explicitly concerns them. Use for proxy/TLS failures; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; operator recovery shells; desktop preview; Agent API policy, flow, budget, circuit-breaker, or service-gateway operations; approvals; legacy plumb; and sandbox introspection. Do not invoke merely because the product or repository is SafeYolo, or for ordinary commands in a healthy sandbox, routine factory handoffs, or normal GitHub App Connector work already specified by injected instructions.
 ---
 
 # Operate inside SafeYolo
 
 Treat SafeYolo as the outer security boundary. Diagnose through its agent-side
 interfaces; do not try to bypass or weaken it.
+
+## Routine supervised factory fast path
+
+When injected developer instructions already contain the role's Coord and
+GitHub rules, follow those instructions without loading this skill merely for
+confidence. If this skill was required for a real setup, failure, ambiguity,
+or non-routine operation, read only the reference needed for that condition;
+do not reload Coord or GitHub references already supplied by the role contract.
 
 ## Start with evidence
 
@@ -66,13 +74,13 @@ interfaces; do not try to bypass or weaken it.
 
 Read only the reference needed for the current task.
 
-## Triage graphs
+## Troubleshooting and acceptance graphs
 
-For fast-turn triage, use the graphs in [`references/graph/`](references/graph/)
-as decision aids rather than re-deriving SafeYolo's plane story every time.
+Use the graphs in [`references/graph/`](references/graph/) as decision aids
+rather than re-deriving SafeYolo's plane and acceptance stories every time.
 Each `.yaml` is the source of truth; the sibling `.mmd` is a mermaid render
-for a human operator watching over my shoulder. Every symptom node carries
-a `keywords:` list so binding an observed symptom to an entry can be
+for a human operator watching over my shoulder. Every symptom node carries a
+`keywords:` list so binding an observation or claim to an entry can be
 keyword-matched, not eye-matched.
 
 **Manifest** — pick the graph whose entry-question fits, then bind a symptom
@@ -89,6 +97,7 @@ inside it:
 | [`triage-guest-tools-and-sudo.yaml`](references/graph/triage-guest-tools-and-sudo.yaml) | "sudo / apt / mise / package install failing" |
 | [`triage-kernel-observability.yaml`](references/graph/triage-kernel-observability.yaml) | "perf / eBPF / bpftrace / ftrace / kprobe / uprobe doesn't work inside the guest" |
 | [`triage-desktop-preview.yaml`](references/graph/triage-desktop-preview.yaml) | "The operator can't see what I'm showing / desktop isn't working" |
+| [`accept-safeyolo.yaml`](references/graph/accept-safeyolo.yaml) | "Which trusted tool proves this SafeYolo acceptance claim?" |
 
 Graphs cross-reference each other via a top-level `see_also:` block when a
 symptom overlaps concerns — check the target graph before authoring a new
@@ -97,8 +106,9 @@ edge in the current one.
 **Traversal protocol I follow when using a graph in-context:**
 
 1. State the entry-node match out loud so the reader can see the bind.
-2. At each `evidence` node, state which endpoint or operator command
-   yields the value I'm reading.
+2. At each `evidence` node, state which endpoint, probe, or operator command
+   yields the value I'm reading. For executable acceptance evidence, obey its
+   `tool` trust and invocation annotation.
 3. Follow `implies` / `rules_out` edges by the evidence value.
 4. Land on a `conclusion` or `operator_ask` and stop.
 5. **Graph gap:** if the evidence I have is not covered by an outgoing

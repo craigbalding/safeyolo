@@ -64,6 +64,45 @@ EOF
     fi
 }
 
+_stage_safeyolo_repo_map() {
+    local agent_home="$1"
+    local helper_dir repo_root source_path
+    local managed_path="$agent_home/.safeyolo/repo-map"
+    local command_dir="$agent_home/.local/bin"
+    local command_path="$command_dir/repo-map"
+    local command_target="/home/agent/.safeyolo/repo-map"
+    local current_target
+
+    helper_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    repo_root="$(cd "$helper_dir/../.." && pwd)"
+    if [ -f "$repo_root/repo_map.py" ]; then
+        source_path="$repo_root/repo_map.py"
+    elif [ -f "$repo_root/cli/src/safeyolo/repo_map.py" ]; then
+        source_path="$repo_root/cli/src/safeyolo/repo_map.py"
+    else
+        echo "SafeYolo repo-map source is missing from $repo_root" >&2
+        return 1
+    fi
+
+    if [ -L "$command_path" ]; then
+        current_target="$(readlink "$command_path")"
+        if [ "$current_target" != "$command_target" ]; then
+            echo "Refusing to replace existing $command_path -> $current_target" >&2
+            return 1
+        fi
+    elif [ -e "$command_path" ]; then
+        echo "Refusing to replace existing command at $command_path" >&2
+        return 1
+    fi
+
+    mkdir -p "$(dirname -- "$managed_path")" "$command_dir"
+    install -m 0755 "$source_path" "$managed_path"
+    install -m 0644 "$repo_root/repo-map.toml" "$agent_home/.safeyolo/repo-map.toml"
+    if [ ! -L "$command_path" ]; then
+        ln -s "$command_target" "$command_path"
+    fi
+}
+
 stage_safeyolo_context() {
     local agent_home="$1"
     local consumer="${2:-none}"
@@ -165,11 +204,18 @@ stage_safeyolo_context() {
     esac
 
     _stage_refuse_unsafe_parent "$managed_root"
+    if [ "$consumer" = "codex" ] || [ "$consumer" = "pi" ]; then
+        _stage_refuse_unsafe_parent "$agent_home/.local/bin"
+    fi
     if [ -n "$link_dir" ]; then
         _stage_refuse_unsafe_parent "$link_dir"
     fi
     if [ "$consumer" = "pi" ]; then
         _stage_validate_existing_dirs "$agent_home/.pi" "$agent_home/.pi/agent" "$link_dir"
+        if [ "${SAFEYOLO_PI_COORD_SUPERVISOR:-0}" = "1" ]; then
+            _stage_refuse_unsafe_parent "$agent_home/.pi/agent/extensions"
+            _stage_validate_existing_dirs "$agent_home/.pi/agent/extensions"
+        fi
     fi
 
     # Preflight every managed name before changing any skill link.
@@ -225,6 +271,9 @@ stage_safeyolo_context() {
 
     if [ "$consumer" = "codex" ]; then
         _stage_safeyolo_codex_lab_entrypoint "$agent_home"
+    fi
+    if [ "$consumer" = "codex" ] || [ "$consumer" = "pi" ]; then
+        _stage_safeyolo_repo_map "$agent_home"
     fi
 
     # Install slash commands shipped by the safeyolo skill. Skills live under

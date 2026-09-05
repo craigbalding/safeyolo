@@ -180,6 +180,7 @@ _HOST_SCRIPT_ALIASES: dict[str, str] = {
     "codex": "codex-host-setup.sh",
     "codex-coord": "codex-coord-host-setup.sh",
     "pi": "pi-host-setup.sh",
+    "pi-coord": "pi-coord-host-setup.sh",
     "mise-shell": "mise-shell-host-setup.sh",
 }
 
