@@ -107,9 +107,9 @@ install_tool() {
   if [[ "$action" == "reinstall" ]]; then
     tool_args+=(--reinstall)
   fi
-  tool_args+=(--overrides <(printf '%s\n' "${UV_OVERRIDES[@]}"))
-
-  if ! uv tool install "${tool_args[@]}"; then
+  # Open the overrides for this command, not during an earlier assignment:
+  # Bash closes a process-substitution descriptor when its command finishes.
+  if ! uv tool install "${tool_args[@]}" --overrides <(printf '%s\n' "${UV_OVERRIDES[@]}"); then
     echo "install.sh: uv tool $action failed with a Python interpreter satisfying $python_requirement" >&2
     echo "install.sh: check uv package-index access and dependency resolution, then retry" >&2
     return 1

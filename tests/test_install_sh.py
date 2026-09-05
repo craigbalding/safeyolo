@@ -51,6 +51,21 @@ def make_fake_uv(tmp_path: Path) -> tuple[Path, Path, Path]:
             fi
 
             if [[ "${1:-}" == tool && "${2:-}" == install ]]; then
+                override_file=
+                while [[ $# -gt 0 ]]; do
+                    if [[ "$1" == --overrides ]]; then
+                        override_file="$2"
+                        break
+                    fi
+                    shift
+                done
+                if [[ -z "$override_file" || ! -r "$override_file" ]]; then
+                    echo "fake uv cannot open the overrides file" >&2
+                    exit 25
+                fi
+                while IFS= read -r pin; do
+                    printf 'override: %s\n' "$pin" >> "$FAKE_UV_LOG"
+                done < "$override_file"
                 if [[ "${FAKE_UV_TOOL_MODE:-ok}" == fail ]]; then
                     echo "${FAKE_UV_DIAGNOSTIC:-fake tool failure}" >&2
                     exit 23
@@ -139,6 +154,7 @@ def test_install_and_reinstall_select_supported_python_for_tool_environment(
     assert all("[--editable]" in line and "[--overrides]" in line for line in tool_lines)
     assert "[--reinstall]" not in tool_lines[0]
     assert "[--reinstall]" in tool_lines[1]
+    assert lines.count("override: h2==4.4.1") == 2
 
 
 def test_install_acquires_supported_python_when_system_lookup_fails(
