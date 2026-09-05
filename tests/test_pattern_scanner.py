@@ -6,9 +6,11 @@ headers, and bodies. It has NO built-in patterns by default - users configure
 patterns via policy or enable builtin pattern sets.
 """
 
+import json
 import re
 from types import SimpleNamespace
 from unittest.mock import create_autospec, patch
+from urllib.parse import quote
 
 import pytest
 from mitmproxy.test import tflow
@@ -18,6 +20,12 @@ from wsproto.frame_protocol import Opcode
 from pdp.client import PolicyClient
 
 pytestmark = pytest.mark.assurance_boundary
+
+
+def _encode_every_byte(value: str, *, lowercase: bool = False) -> str:
+    """Percent-encode a specimen, including bytes normally left unescaped."""
+    format_code = "x" if lowercase else "X"
+    return "".join(f"%{byte:{format_code}}" for byte in value.encode())
 
 
 def _ctx(**options):
@@ -145,6 +153,15 @@ class TestCompilePattern:
         assert result is not None
         assert result.search("confidential") is not None
         assert result.search("CONFIDENTIAL") is not None
+
+    def test_invalid_pattern_diagnostics_do_not_echo_policy_text(self, caplog):
+        from safeyolo.detection.patterns import compile_pattern
+
+        secret = "SYNTHETIC-POLICY-PATTERN-5b7e"
+        with caplog.at_level("WARNING", logger="safeyolo.patterns"):
+            assert compile_pattern(f"[{secret}") is None
+
+        assert secret not in caplog.text
 
 
 class TestScopeConfiguration:
@@ -803,8 +820,8 @@ class TestBlockResponseContent:
         from pattern_scanner import PatternScanner
         return PatternScanner()
 
-    def test_request_block_response_body_contains_rule_and_location(self, scanner, make_flow):
-        """Blocked request response body includes error, rule, location, and message."""
+    def test_request_block_response_body_contains_only_safe_evidence(self, scanner, make_flow):
+        """Blocked request response omits custom text that may echo content."""
         scanner.load_policy_config({
             "scan_patterns": [{
                 "name": "proj-id",
@@ -828,10 +845,11 @@ class TestBlockResponseContent:
         assert body["error"] == "Request blocked by pattern policy"
         assert body["rule"] == "proj-id"
         assert body["location"] == "body"
-        assert body["message"] == "Project ID leak"
+        assert body["action"] == "block"
+        assert "message" not in body
 
-    def test_response_block_response_body_contains_rule_and_location(self, scanner, make_flow, make_response):
-        """Blocked response body includes error, rule, location, and message."""
+    def test_response_block_response_body_contains_only_safe_evidence(self, scanner, make_flow, make_response):
+        """Blocked response body omits custom text that may echo content."""
         scanner.load_policy_config({
             "scan_patterns": [{
                 "name": "cust-id",
@@ -855,7 +873,8 @@ class TestBlockResponseContent:
         assert body["error"] == "Response blocked by pattern policy"
         assert body["rule"] == "cust-id"
         assert body["location"] == "body"
-        assert body["message"] == "Customer ID in response"
+        assert body["action"] == "block"
+        assert "message" not in body
 
 
 class TestLogOnlyPath:
@@ -1069,6 +1088,389 @@ class TestRequestWithNoBody:
 
         assert flow.metadata.get("pattern_matched") == "header-leak"
         assert flow.metadata.get("pattern_location") == "header:X-Token"
+
+
+class TestBoundedUrlInspection:
+    """URL matching uses raw plus one bounded canonical decode only."""
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    def test_mixed_case_escape_and_encoded_delimiters_match_once_decoded(
+        self, scanner, make_flow
+    ):
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "url-sentinel",
+                "pattern": r"secret=URL-SENTINEL",
+                "target": "request",
+                "scope": ["url"],
+            }]
+        })
+        flow = make_flow(
+            url="https://api.example.com/search?secret%3dURL%2dSENTINEL&secret=other",
+        )
+        original_path = flow.request.path
+
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+            scanner.request(flow)
+
+        assert flow.metadata["pattern_matched"] == "url-sentinel"
+        assert flow.request.path == original_path
+        assert scanner.matches_total == 1
+        assert scanner.scans_total == 2
+
+    def test_double_encoding_is_not_recursively_decoded(self, scanner, make_flow):
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "slash",
+                "pattern": r"/private",
+                "target": "request",
+                "scope": ["url"],
+            }]
+        })
+        inspection = __import__("pattern_scanner")._bounded_url_representations(
+            "/route/%252Fprivate"
+        )
+        assert inspection.status == "ok"
+        assert inspection.raw == "/route/%252Fprivate"
+        assert inspection.decoded == "/route/%2Fprivate"
+
+        flow = make_flow(url="https://api.example.com/route/%252Fprivate")
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+            scanner.request(flow)
+        assert flow.metadata.get("pattern_matched") is None
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/search?x=SECRET%",
+            "/search?x=SECRET%2",
+            "/search?x=SECRET%GG",
+            "/search?x=one&x=SECRET%2dVALUE&x=three",
+        ],
+    )
+    def test_malformed_truncated_and_duplicate_query_values_are_bounded(
+        self, scanner, make_flow, path
+    ):
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "secret-value",
+                "pattern": r"SECRET(?:-|%2d)VALUE",
+                "target": "request",
+                "scope": ["url"],
+            }]
+        })
+        flow = make_flow(url=f"https://api.example.com{path}")
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+            scanner.request(flow)
+        if "SECRET%2dVALUE" in path:
+            assert flow.metadata["pattern_matched"] == "secret-value"
+        else:
+            assert flow.metadata.get("pattern_matched") is None
+
+    def test_unicode_and_invalid_percent_bytes_never_raise(self, scanner, make_flow):
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "replacement",
+                "pattern": "�",
+                "target": "request",
+                "scope": ["url"],
+            }]
+        })
+        flow = make_flow(url="https://api.example.com/search?q=%E2%28%A1%E2%9C%93")
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+            scanner.request(flow)
+        assert flow.metadata["pattern_matched"] == "replacement"
+
+    def test_invalid_raw_bytes_remain_within_both_bounds(self):
+        from pattern_scanner import (
+            MAX_URL_SCAN_BYTES,
+            URL_INSPECTION_OVERFLOW,
+            _bounded_url_representations,
+        )
+
+        inspection = _bounded_url_representations(
+            b"\xff" * (MAX_URL_SCAN_BYTES // 2 + 1)
+        )
+
+        assert inspection.status == URL_INSPECTION_OVERFLOW
+        assert inspection.raw == ""
+        assert inspection.decoded == ""
+
+    def test_unstringifiable_value_fails_deterministically_without_exception_text(self):
+        from pattern_scanner import _bounded_url_representations
+
+        secret = "SYNTHETIC-URL-EXCEPTION-3a1f"
+
+        class Unstringifiable:
+            def __str__(self):
+                raise RuntimeError(secret)
+
+        inspection = _bounded_url_representations(Unstringifiable())
+        assert inspection.status == "url_inspection_error"
+        assert inspection.raw == ""
+        assert inspection.decoded == ""
+
+    def test_oversized_input_blocks_content_free_even_in_warn_mode(
+        self, scanner, make_flow, caplog
+    ):
+        from pattern_scanner import (
+            MAX_URL_SCAN_BYTES,
+            URL_INSPECTION_OVERFLOW,
+            _bounded_url_representations,
+        )
+
+        from safeyolo.core.trace import get_store, reset_store_for_tests
+
+        sentinel = "URL-TAIL-SENTINEL-5d7a"
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "tail-sentinel",
+                "pattern": sentinel,
+                "target": "request",
+                "scope": ["url"],
+                "action": "log",
+            }]
+        })
+        oversized = "/" + ("a" * MAX_URL_SCAN_BYTES) + sentinel
+        inspection = _bounded_url_representations(oversized)
+        assert inspection.status == URL_INSPECTION_OVERFLOW
+        assert inspection.raw == ""
+        assert inspection.decoded == ""
+
+        flow = make_flow(url=f"https://api.example.com{oversized}")
+        flow.metadata.update(trace=True, request_id="req-overflow-synthetic", agent="agent-synthetic")
+        reset_store_for_tests()
+        try:
+            with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)), \
+                 patch("safeyolo.core.base.write_event", autospec=True) as audit, \
+                 caplog.at_level("WARNING"):
+                scanner.request(flow)
+
+            body = json.loads(flow.response.get_text())
+            record = get_store().get("req-overflow-synthetic", "agent-synthetic")
+            published = json.dumps({
+                "body": body,
+                "metadata": flow.metadata,
+                "trace": get_store().serialise(record),
+                "audit": audit.call_args.kwargs,
+                "logs": caplog.text,
+            }, default=str)
+            assert sentinel not in published
+            assert body == {
+                "error": "Request blocked because URL inspection failed",
+                "location": "url",
+                "action": "block",
+                "reason": URL_INSPECTION_OVERFLOW,
+            }
+            assert flow.metadata["pattern_scan_failure"] == URL_INSPECTION_OVERFLOW
+            assert audit.call_count == 1
+            assert audit.call_args.kwargs["details"] == {
+                "direction": "request",
+                "location": "url",
+                "action": "block",
+                "reason": URL_INSPECTION_OVERFLOW,
+            }
+            assert record.steps[-1].details == {
+                "reason": URL_INSPECTION_OVERFLOW,
+                "location": "url",
+                "status": 403,
+            }
+        finally:
+            reset_store_for_tests()
+
+    def test_provider_specimen_crossing_bound_is_fail_closed(self, scanner, make_flow):
+        from pattern_scanner import MAX_URL_SCAN_BYTES, URL_INSPECTION_OVERFLOW
+
+        scanner.load_policy_config({
+            "addons": {"pattern_scanner": {"builtin_sets": ["secrets"]}}
+        })
+        specimen = "sk-proj-" + "a" * 20
+        encoded = _encode_every_byte(specimen, lowercase=True)
+        oversized = "/" + ("a" * (MAX_URL_SCAN_BYTES - 1)) + encoded
+        flow = make_flow(url=f"https://api.example.com{oversized}")
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+            scanner.request(flow)
+
+        assert json.loads(flow.response.get_text())["reason"] == URL_INSPECTION_OVERFLOW
+        assert flow.metadata["pattern_scan_failure"] == URL_INSPECTION_OVERFLOW
+
+    def test_exact_limit_remains_eligible_for_ordinary_policy_action(
+        self, scanner, make_flow
+    ):
+        from pattern_scanner import MAX_URL_SCAN_BYTES, _bounded_url_representations
+
+        sentinel = "URL-EXACT-LIMIT-SENTINEL"
+        path = "/" + ("a" * (MAX_URL_SCAN_BYTES - len(sentinel) - 1)) + sentinel
+        assert len(path.encode("utf-8")) == MAX_URL_SCAN_BYTES
+        inspection = _bounded_url_representations(path)
+        assert inspection.status == "ok"
+        assert sentinel in inspection.raw
+
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "exact-limit",
+                "pattern": sentinel,
+                "target": "request",
+                "scope": ["url"],
+                "action": "log",
+            }]
+        })
+        flow = make_flow(url=f"https://api.example.com{path}")
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+            scanner.request(flow)
+
+        assert flow.response is None
+        assert flow.metadata["pattern_matched"] == "exact-limit"
+        assert flow.metadata["pattern_location"] == "url"
+
+    @pytest.mark.parametrize(
+        "specimen",
+        [
+            "sk-admin-" + "A1_b-" * 2,
+            "sk-or-v1-" + "a" * 64,
+            "sk-proj-" + "a" * 20,
+            "sk-svcacct-" + "a" * 20,
+            "sk-ant-api03-" + "a" * 93 + "AA",
+            "sk-ant-oat01-" + "a" * 93 + "AA",
+            "sk-ant-admin01-" + "a" * 93 + "AA",
+            "sk-ant-ort01-" + "a" * 93 + "AA",
+            "ghp_" + "a" * 36,
+            "gho_" + "a" * 36,
+            "ghu_" + "a" * 36,
+            "ghs_" + "a" * 36,
+            "ghr_" + "a" * 36,
+            "github_pat_" + "a" * 60,
+            "AIza" + "a" * 35,
+            "AQ." + "a" * 40,
+            "xai-" + "a" * 20,
+            "gsk_" + "a" * 20,
+            "hf_" + "a" * 20,
+            "sk-custom-" + "a" * 20,
+        ],
+    )
+    def test_builtin_provider_patterns_match_percent_encoded_query_values(
+        self, scanner, make_flow, specimen
+    ):
+        scanner.load_policy_config({
+            "addons": {"pattern_scanner": {"builtin_sets": ["secrets"]}}
+        })
+        encoded = _encode_every_byte(specimen)
+        flow = make_flow(url=f"https://provider.example.test/token?value={encoded}")
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+            scanner.request(flow)
+        assert flow.metadata.get("pattern_matched")
+
+
+class TestPatternDisclosureContainment:
+    """No scanner publication surface receives request/response content."""
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    def test_request_block_omits_url_and_custom_message_from_all_scanner_surfaces(
+        self, scanner, make_flow, caplog
+    ):
+        sentinel = "SYNTHETIC-URL-SENTINEL-7f3c"
+        encoded = quote(sentinel, safe="")
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "synthetic-finding",
+                "pattern": sentinel,
+                "target": "request",
+                "scope": ["url"],
+                "action": "block",
+                "message": f"do not publish {sentinel}",
+            }]
+        })
+        flow = make_flow(
+            url=f"https://api.example.com/private?value={encoded}#fragment-{sentinel}",
+        )
+        with patch.object(scanner, "log_decision", autospec=True) as decision:
+            with patch("pattern_scanner.ctx", _ctx(pattern_block_request=True)):
+                scanner.request(flow)
+
+        body = json.loads(flow.response.get_text())
+        published = json.dumps({
+            "body": body,
+            "metadata": flow.metadata,
+            "decision": decision.call_args.kwargs,
+            "logs": caplog.text,
+        })
+        assert sentinel not in published
+        assert encoded not in published
+        assert "fragment" not in published
+        assert body == {
+            "error": "Request blocked by pattern policy",
+            "rule": "synthetic-finding",
+            "location": "url",
+            "action": "block",
+        }
+
+    def test_response_block_omits_request_path_and_response_content(
+        self, scanner, make_flow, make_response
+    ):
+        path_sentinel = "SYNTHETIC-PATH-SENTINEL-9e2a"
+        body_sentinel = "SYNTHETIC-RESPONSE-SENTINEL-4b1d"
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "response-finding",
+                "pattern": body_sentinel,
+                "target": "response",
+                "scope": ["body"],
+                "action": "block",
+            }]
+        })
+        flow = make_flow(url=f"https://api.example.com/{path_sentinel}?q=hidden")
+        flow.response = make_response(content=body_sentinel)
+        with patch.object(scanner, "log_decision", autospec=True) as decision:
+            with patch("pattern_scanner.ctx", _ctx(pattern_block_response=True)):
+                scanner.response(flow)
+        published = json.dumps({
+            "body": json.loads(flow.response.get_text()),
+            "decision": decision.call_args.kwargs,
+        })
+        assert path_sentinel not in published
+        assert body_sentinel not in published
+
+    def test_trace_and_audit_arguments_omit_request_content(
+        self, scanner, make_flow
+    ):
+        from safeyolo.core.trace import get_store, reset_store_for_tests
+
+        sentinel = "SYNTHETIC-TRACE-URL-SENTINEL-8c4d"
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "trace-finding",
+                "pattern": sentinel,
+                "target": "request",
+                "scope": ["url"],
+                "action": "log",
+            }]
+        })
+        flow = make_flow(url=f"https://api.example.com/?value={quote(sentinel, safe='')}")
+        flow.metadata.update(trace=True, request_id="req-trace-synthetic", agent="agent-synthetic")
+        reset_store_for_tests()
+        try:
+            with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)), \
+                 patch("safeyolo.core.base.write_event", autospec=True) as audit:
+                scanner.request(flow)
+
+            record = get_store().get("req-trace-synthetic", "agent-synthetic")
+            published = json.dumps({
+                "metadata": flow.metadata,
+                "trace": get_store().serialise(record),
+                "audit": audit.call_args.kwargs,
+            }, default=str)
+            assert sentinel not in published
+            assert "value" not in published
+        finally:
+            reset_store_for_tests()
 
 
 class TestResponseSkippedWhenNone:
