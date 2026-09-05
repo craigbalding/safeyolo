@@ -1937,7 +1937,7 @@ def test_safeyolo_acceptance_graph_tool_hashes_match_sources() -> None:
             assert not source_path.is_absolute()
             assert ".." not in source_path.parts
             content = (REPO_ROOT / source_path).read_bytes()
-            assert hashlib.sha256(content).hexdigest() == source["sha256"]
+            assert hashlib.sha256(content).hexdigest() == source["sha256"], source["path"]
 
 
 def test_baseline_explains_guest_privilege_without_implying_host_root() -> None:
