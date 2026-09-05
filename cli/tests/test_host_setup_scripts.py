@@ -800,6 +800,7 @@ def test_pi_setup_rejects_agent_pi_parent_symlink(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     operator_home.mkdir()
     agent_home.mkdir()
+    agent_home.chmod(0o700)
     outside.mkdir()
     (agent_home / ".pi").symlink_to(outside, target_is_directory=True)
 
@@ -815,6 +816,78 @@ def test_pi_setup_rejects_agent_pi_parent_symlink(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "symlink" in result.stderr
     assert not (outside / "agent/skills/safeyolo").exists()
+
+
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink"))
+def test_pi_setup_preserves_unsafe_existing_launcher(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    outside = tmp_path / "outside"
+    operator_home.mkdir()
+    agent_home.mkdir()
+    agent_home.chmod(0o700)
+    outside.mkdir()
+    sentinel = outside / "launcher-sentinel"
+    sentinel.write_bytes(b"must remain unchanged\n")
+    launcher = agent_home / ".safeyolo-command"
+    if unsafe_kind == "symlink":
+        launcher.symlink_to(sentinel)
+    else:
+        launcher.hardlink_to(sentinel)
+
+    result = _run_setup(
+        "pi-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+        stage_coord_runtime=False,
+    )
+
+    assert result.returncode != 0
+    assert "unsafe existing Pi launcher" in result.stderr
+    assert sentinel.read_bytes() == b"must remain unchanged\n"
+    if unsafe_kind == "symlink":
+        assert launcher.is_symlink()
+    else:
+        assert launcher.stat().st_nlink == 2
+
+
+def test_pi_setup_keeps_previous_launcher_when_atomic_publish_is_interrupted(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    agent_home.mkdir()
+    agent_home.chmod(0o700)
+    fake_bin.mkdir()
+    launcher = agent_home / ".safeyolo-command"
+    previous = b"#!/bin/sh\nprintf previous\n"
+    launcher.write_bytes(previous)
+    launcher.chmod(0o700)
+    fake_mv = fake_bin / "mv"
+    fake_mv.write_text("#!/bin/sh\nexit 1\n")
+    fake_mv.chmod(0o755)
+
+    env = _setup_env(operator_home, agent_home, tmp_path)
+    env["PATH"] = f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+    result = subprocess.run(
+        [str(REPO_ROOT / "contrib" / "pi-host-setup.sh")],
+        check=False,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "atomically publish" in result.stderr
+    assert launcher.read_bytes() == previous
+    assert launcher.stat().st_mode & 0o777 == 0o700
+    assert not list(agent_home.glob(".safeyolo-command.tmp.*"))
 
 
 def test_pi_rejects_node_2218_before_package_install(tmp_path: Path) -> None:

@@ -29,7 +29,56 @@ PI_INTEGRITY="sha512-Yr2p9PubrbFZmYEPYI+C8KmZP9xlFuLDnAG64RtU0ZDgrdiXYWa+y7WGyJO
 # is SafeYolo's own baseline and the native read-only skill link.
 stage_safeyolo_context "$AGENT_HOME" pi
 
-cat > "$AGENT_HOME/.safeyolo-command" <<'EOF'
+pi_fail() {
+    echo "pi-host-setup: $1" >&2
+    exit 1
+}
+
+pi_validate_agent_home() {
+    local owner mode mode_value
+    [ -d "$AGENT_HOME" ] && [ ! -L "$AGENT_HOME" ] || return 1
+    owner="$(stat -c '%u' "$AGENT_HOME" 2>/dev/null || stat -f '%u' "$AGENT_HOME" 2>/dev/null)" || return 1
+    [ "$owner" = "$(id -u)" ] || return 1
+    mode="$(stat -c '%a' "$AGENT_HOME" 2>/dev/null || stat -f '%Lp' "$AGENT_HOME" 2>/dev/null)" || return 1
+    mode_value=$((0$mode))
+    [ $((mode_value & 022)) -eq 0 ]
+}
+
+pi_validate_launcher_destination() {
+    local path="$AGENT_HOME/.safeyolo-command"
+    local owner links mode mode_value
+    if [ -L "$path" ]; then
+        return 1
+    fi
+    if [ ! -e "$path" ]; then
+        return 0
+    fi
+    [ -f "$path" ] || return 1
+    owner="$(stat -c '%u' "$path" 2>/dev/null || stat -f '%u' "$path" 2>/dev/null)" || return 1
+    links="$(stat -c '%h' "$path" 2>/dev/null || stat -f '%l' "$path" 2>/dev/null)" || return 1
+    mode="$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path" 2>/dev/null)" || return 1
+    [ "$owner" = "$(id -u)" ] || return 1
+    [ "$links" = 1 ] || return 1
+    mode_value=$((0$mode))
+    [ $((mode_value & 022)) -eq 0 ]
+}
+
+pi_launcher_tmp=""
+pi_cleanup_launcher() {
+    if [ -n "$pi_launcher_tmp" ] && [ -e "$pi_launcher_tmp" ]; then
+        rm -f -- "$pi_launcher_tmp" 2>/dev/null || true
+    fi
+}
+trap pi_cleanup_launcher EXIT
+
+pi_validate_agent_home ||
+    pi_fail "unsafe agent home directory; refusing to write the Pi launcher"
+pi_validate_launcher_destination ||
+    pi_fail "unsafe existing Pi launcher; refusing to replace it"
+pi_launcher_tmp="$(mktemp "$AGENT_HOME/.safeyolo-command.tmp.XXXXXX")" ||
+    pi_fail "could not create a temporary Pi launcher"
+
+cat > "$pi_launcher_tmp" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
@@ -278,6 +327,11 @@ fi
 
 exec "$pi_bin" "${args[@]}" "$@"
 EOF
-chmod +x "$AGENT_HOME/.safeyolo-command"
+chmod 700 "$pi_launcher_tmp"
+pi_validate_launcher_destination ||
+    pi_fail "unsafe existing Pi launcher; refusing to replace it"
+mv -f -- "$pi_launcher_tmp" "$AGENT_HOME/.safeyolo-command" ||
+    pi_fail "could not atomically publish the Pi launcher"
+pi_launcher_tmp=""
 
 echo "pi-host-setup: $SAFEYOLO_AGENT_NAME ready at $AGENT_HOME"
