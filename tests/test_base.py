@@ -214,12 +214,15 @@ def test_warn_and_stats_snapshot_report_exact_counters():
 
 def test_log_decision_emits_schema_values_and_attribution():
     addon = BoundaryAddon()
+    discovery = _discovery("agent-a")
     flow = _flow()
     flow.metadata.update(request_id="req-123", agent="agent-a")
     from safeyolo.core import base
 
     writer = create_autospec(base.write_event, spec_set=True)
-    with patch("safeyolo.core.base.write_event", new=writer):
+    with taddons.context(addon, discovery), patch(
+        "safeyolo.core.base.write_event", new=writer
+    ):
         addon.log_decision(
             flow,
             Decision.DENY,
@@ -238,6 +241,14 @@ def test_log_decision_emits_schema_values_and_attribution():
         host="example.com",
         request_id="req-123",
         agent="agent-a",
+        evidence_owner="agent-a",
+        trusted_transport_identity="agent-a",
+        initiator="unknown",
+        attribution_status="resolved",
+        attribution_provenance={
+            "transport_source": "ip_map",
+            "ip_map_agent": "agent-a",
+        },
         addon="test-addon",
         approval=None,
         details={"reason": "policy denied"},

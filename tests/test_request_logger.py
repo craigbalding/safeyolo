@@ -135,6 +135,16 @@ def test_request_writes_schema_valid_event_with_trusted_identity(logger_with_log
                 "path": "/v1/data",
                 "size": 5,
                 "client": "192.0.2.10",
+                "attribution": {
+                    "evidence_owner": "agent-a",
+                    "trusted_transport_identity": "agent-a",
+                    "initiator": "unknown",
+                    "attribution_status": "resolved",
+                    "attribution_provenance": {
+                        "transport_source": "uds",
+                        "uds_agent": "agent-a",
+                    },
+                },
             },
         }
     ]
@@ -162,9 +172,58 @@ def test_untrusted_metadata_is_removed_from_audit_attribution(logger_with_log):
     flow.metadata["agent"] = "spoofed-agent"
     addon.request(flow)
     event = _events(path)[0]
+    attribution = event["details"]["attribution"]
     assert "agent" not in event
+    assert attribution["attribution_status"] == "unavailable"
+    assert attribution["initiator"] == "unknown"
+    assert attribution["attribution_provenance"] == {"reason": "no_trusted_identity"}
     assert "agent" not in flow.metadata
     assert flow.metadata["agent_identity_status"] == "unavailable"
+
+
+def test_delegated_operator_traffic_keeps_transport_owner_but_not_agent_initiator(
+    logger_with_log,
+):
+    addon, path = logger_with_log
+    flow = _flow()
+    flow.metadata["origin"] = "operator"
+
+    addon.request(flow)
+
+    event = _events(path)[0]
+    attribution = event["details"]["attribution"]
+    assert event["agent"] == "agent-a"
+    assert attribution["evidence_owner"] == "agent-a"
+    assert attribution["trusted_transport_identity"] == "agent-a"
+    assert attribution["initiator"] == "operator"
+    assert attribution["attribution_status"] == "delegated"
+    assert attribution["attribution_provenance"]["delegation"] == "operator-provenance"
+
+
+def test_conflicting_trusted_sources_are_operator_only(logger_with_log):
+    from service_discovery import ServiceDiscovery
+
+    addon, path = logger_with_log
+    discovery = ServiceDiscovery()
+    discovery._ip_to_name = {"192.0.2.10": "agent-b"}
+    flow = _flow()
+
+    with patch(
+        "request_logger.find_addon", autospec=True, return_value=discovery
+    ):
+        addon.request(flow)
+
+    event = _events(path)[0]
+    attribution = event["details"]["attribution"]
+    assert "agent" not in event
+    assert attribution["attribution_status"] == "conflict"
+    assert "evidence_owner" not in attribution
+    assert "trusted_transport_identity" not in attribution
+    assert attribution["attribution_provenance"] == {
+        "uds_agent": "agent-a",
+        "ip_map_agent": "agent-b",
+        "reason": "uds_ip_map_mismatch",
+    }
 
 
 def test_missing_response_emits_ops_event_without_response_counter(logger_with_log):
@@ -181,6 +240,38 @@ def test_missing_response_emits_ops_event_without_response_counter(logger_with_l
     assert addon.blocks_total == 0
 
 
+def test_request_response_share_snapshot_when_ip_map_changes(logger_with_log):
+    """A late trusted-source change is linked and quarantines storage scope."""
+    from service_discovery import ServiceDiscovery
+
+    addon, path = logger_with_log
+    discovery = ServiceDiscovery()
+    discovery._ip_to_name = {"192.0.2.10": "agent-a"}
+    flow = _flow()
+    flow.metadata["request_id"] = "req-late-change"
+
+    with patch("request_logger.find_addon", autospec=True, return_value=discovery):
+        addon.request(flow)
+        discovery._ip_to_name["192.0.2.10"] = "agent-b"
+        addon.response(flow)
+
+    traffic = [event for event in _events(path) if event["event"].startswith("traffic.")]
+    traffic_attribution = [event["details"]["attribution"] for event in traffic]
+    assert traffic_attribution[0]["evidence_owner"] == traffic_attribution[1]["evidence_owner"] == "agent-a"
+    assert traffic_attribution[0]["trusted_transport_identity"] == traffic_attribution[1]["trusted_transport_identity"] == "agent-a"
+    assert traffic_attribution[0]["attribution_status"] == traffic_attribution[1]["attribution_status"] == "resolved"
+    assert traffic[1]["details"]["attribution_quarantined"] is True
+
+    late = next(event for event in _events(path) if event["event"] == "security.agent_identity_late_change")
+    assert "agent" not in late
+    assert "evidence_owner" not in late
+    assert late["request_id"] == "req-late-change"
+    assert late["decision"] == "log"
+    assert late["details"]["quarantined"] is True
+    assert late["details"]["attribution"]["attribution_provenance"]["snapshot_agent"] == "agent-a"
+    assert late["details"]["attribution"]["attribution_provenance"]["current_status"] == "conflict"
+
+
 def test_response_duration_and_counter_are_exact(logger_with_log):
     addon, path = logger_with_log
     flow = _flow(response_content=b"abc")
@@ -193,6 +284,16 @@ def test_response_duration_and_counter_are_exact(logger_with_log):
         "status": 200,
         "size": 3,
         "ms": 75.0,
+        "attribution": {
+            "evidence_owner": "agent-a",
+            "trusted_transport_identity": "agent-a",
+            "initiator": "unknown",
+            "attribution_status": "resolved",
+            "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "agent-a",
+            },
+        },
     }
     assert event["agent"] == "agent-a"
     assert addon.responses_total == 1

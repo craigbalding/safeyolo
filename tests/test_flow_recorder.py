@@ -146,6 +146,14 @@ def test_response_state_identity_url_and_context_are_persisted(
     assert summary["flow_state"] == expected_state
     assert summary["reason"] == expected_reason
     assert summary["agent_id"] == "agent-a"
+    assert summary["evidence_owner"] == "agent-a"
+    assert summary["trusted_transport_identity"] == "agent-a"
+    assert summary["initiator"] == "unknown"
+    assert summary["attribution_status"] == "resolved"
+    assert json.loads(summary["attribution_provenance_json"]) == {
+        "transport_source": "uds",
+        "uds_agent": "agent-a",
+    }
     assert summary["engagement_id"] == "agent-a"
     assert summary["source_id"] == "192.0.2.20"
     assert summary["host"] == "app.example.com"
@@ -201,6 +209,11 @@ def test_operator_provenance_and_websocket_state_are_persisted(recorder):
     summary = store.search_flows({})[0]
     detail = store.get_flow(summary["id"])
     assert summary["source_type"] == "operator"
+    assert summary["evidence_owner"] == "agent-a"
+    assert summary["trusted_transport_identity"] == "agent-a"
+    assert summary["initiator"] == "operator"
+    assert summary["attribution_status"] == "delegated"
+    assert json.loads(summary["attribution_provenance_json"])["delegation"] == "operator-provenance"
     assert detail["is_websocket"] == 1
     assert [
         {"tag": tag["tag"], "value": tag["value"]} for tag in detail["tags"]
@@ -219,6 +232,36 @@ def test_record_build_failure_is_best_effort_and_counted(recorder):
     enqueue.assert_not_called()
     assert addon.get_stats()["errors"] == 1
     assert addon.get_stats()["recorded"] == 0
+
+
+def test_late_identity_change_between_gate_and_build_is_quarantined(recorder):
+    """The gate/build pair cannot store evidence after ownership changes."""
+    from service_discovery import ServiceDiscovery
+
+    addon, store = recorder
+    discovery = ServiceDiscovery()
+    discovery._ip_to_name = {"192.0.2.20": "agent-a"}
+    flow = _flow()
+
+    with patch("safeyolo.core.utils.find_addon", autospec=True, return_value=discovery), \
+         patch("safeyolo.core.utils.write_event", autospec=True):
+        original_build = addon._build_record
+
+        def mutate_before_build(current_flow, flow_state):
+            discovery._ip_to_name["192.0.2.20"] = "agent-b"
+            return original_build(current_flow, flow_state)
+
+        with patch.object(
+            addon,
+            "_build_record",
+            autospec=True,
+            side_effect=mutate_before_build,
+        ):
+            addon.response(flow)
+
+    assert store.search_flows({}) == []
+    assert addon.get_stats()["skipped"] == 1
+    assert addon.get_stats()["errors"] == 0
 
 
 def test_writer_backpressure_and_write_failures_surface_in_stats(recorder):

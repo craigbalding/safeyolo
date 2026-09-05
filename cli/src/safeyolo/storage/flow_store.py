@@ -22,6 +22,10 @@ log = logging.getLogger("safeyolo.flow-store")
 _FLOW_SEARCH_EXACT_FILTERS = {
     "engagement_id": "engagement_id = ?",
     "agent_id": "agent_id = ?",
+    "evidence_owner": "evidence_owner = ?",
+    "trusted_transport_identity": "trusted_transport_identity = ?",
+    "initiator": "initiator = ?",
+    "attribution_status": "attribution_status = ?",
     "run": "run = ?",
     "test": "test = ?",
     "role": "role = ?",
@@ -95,6 +99,11 @@ CREATE TABLE IF NOT EXISTS flows (
 
     engagement_id TEXT NOT NULL,
     agent_id TEXT,
+    evidence_owner TEXT,
+    trusted_transport_identity TEXT,
+    initiator TEXT,
+    attribution_status TEXT,
+    attribution_provenance_json TEXT,
     source_id TEXT,
 
     run TEXT,
@@ -194,21 +203,41 @@ CREATE TABLE IF NOT EXISTS flow_tags (
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_flows_engagement_ts ON flows (engagement_id, ts_start DESC);",
     "CREATE INDEX IF NOT EXISTS idx_flows_engagement_agent_ts ON flows (engagement_id, agent_id, ts_start DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_flows_evidence_owner_ts ON flows (evidence_owner, ts_start DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_flows_attribution_status_ts ON flows (attribution_status, ts_start DESC);",
     "CREATE INDEX IF NOT EXISTS idx_flows_engagement_test_ts ON flows (engagement_id, test, ts_start DESC);",
     "CREATE INDEX IF NOT EXISTS idx_flows_agent_test_intent_ts ON flows (agent_id, test, intent, ts_start DESC);",
     "CREATE INDEX IF NOT EXISTS idx_flows_engagement_host_path ON flows (engagement_id, host, path);",
     "CREATE INDEX IF NOT EXISTS idx_flows_engagement_status_ts ON flows (engagement_id, status_code, ts_start DESC);",
 ]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _CONTEXT_COLUMNS = ("test_agent", "suite", "subject", "step", "intent", "expect")
+_ATTRIBUTION_COLUMNS = (
+    "evidence_owner",
+    "trusted_transport_identity",
+    "initiator",
+    "attribution_status",
+    "attribution_provenance_json",
+)
 
 
 def _append_context_conditions(
     conditions: list[str], params: list, filters: dict, *, prefix: str = ""
 ) -> None:
     """Append promoted context and time constraints to a SQL predicate."""
-    for key in ("engagement_id", "agent_id", "run", "test", "role", *_CONTEXT_COLUMNS):
+    for key in (
+        "engagement_id",
+        "agent_id",
+        "evidence_owner",
+        "trusted_transport_identity",
+        "initiator",
+        "attribution_status",
+        "run",
+        "test",
+        "role",
+        *_CONTEXT_COLUMNS,
+    ):
         if filters.get(key) is not None:
             conditions.append(f"{prefix}{key} = ?")
             params.append(filters[key])
@@ -392,6 +421,29 @@ class FlowStore:
         for column in _CONTEXT_COLUMNS:
             if column not in columns:
                 self._conn.execute(f"ALTER TABLE flows ADD COLUMN {column} TEXT")
+        for column in _ATTRIBUTION_COLUMNS:
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE flows ADD COLUMN {column} TEXT")
+
+        # Version-1 rows used agent_id as the implicit evidence owner. Preserve
+        # that query scope while making the missing attribution provenance
+        # explicit instead of pretending transport details were recorded. Do
+        # not run this on an already-v2 database: ownerless conflict and
+        # unavailable rows are intentional quarantined evidence and must remain
+        # operator-only across reopen.
+        if version < SCHEMA_VERSION:
+            self._conn.execute(
+                """UPDATE flows
+                   SET evidence_owner = agent_id,
+                       attribution_status = CASE
+                           WHEN agent_id IS NOT NULL THEN 'resolved'
+                           ELSE 'unavailable'
+                       END,
+                       initiator = 'unknown',
+                       attribution_provenance_json =
+                           '{"migration":"flow_store_v1","transport_identity":"unknown"}'
+                   WHERE evidence_owner IS NULL"""
+            )
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def record_flow(self, record: dict) -> int:
@@ -403,6 +455,28 @@ class FlowStore:
         Returns:
             The inserted row ID.
         """
+        # Keep callers that still provide only the pre-#378 agent_id shape
+        # readable while making the new ownership/attribution dimensions
+        # explicit in every newly written row.
+        record = dict(record)
+        if record.get("evidence_owner") is None:
+            record["evidence_owner"] = record.get("agent_id")
+        if record.get("agent_id") is None:
+            record["agent_id"] = record.get("evidence_owner")
+        if record.get("attribution_status") is None:
+            record["attribution_status"] = (
+                "resolved" if record.get("evidence_owner") else "unavailable"
+            )
+        if record.get("initiator") is None:
+            record["initiator"] = "unknown"
+        provenance = record.get("attribution_provenance_json")
+        if isinstance(provenance, dict):
+            record["attribution_provenance_json"] = json.dumps(provenance)
+        elif provenance is None:
+            record["attribution_provenance_json"] = json.dumps(
+                {"compatibility": "implicit_agent_id"}
+            )
+
         # Process request body
         req_body_raw = record.get("request_body") or b""
         req_ct = record.get("request_content_type", "")
@@ -454,7 +528,9 @@ class FlowStore:
         sql = """
         INSERT INTO flows (
             request_id, ts_start, ts_end, duration_ms,
-            engagement_id, agent_id, source_id,
+            engagement_id, agent_id, evidence_owner,
+            trusted_transport_identity, initiator, attribution_status,
+            attribution_provenance_json, source_id,
             run, test, role, test_agent, suite, subject, step, intent, expect, context_json,
             source_type, flow_state,
             scheme, host, port, method, path, query_string, full_url,
@@ -470,19 +546,10 @@ class FlowStore:
             request_body_truncated, response_body_truncated
         ) VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?,
-            ?, ?, ?, ?,
-            ?, ?,
-            ?, ?, ?, ?, ?, ?, ?,
-            ?, ?,
-            ?, ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?
         )
         """
@@ -493,6 +560,11 @@ class FlowStore:
             record.get("duration_ms"),
             record.get("engagement_id"),
             record.get("agent_id"),
+            record.get("evidence_owner"),
+            record.get("trusted_transport_identity"),
+            record.get("initiator"),
+            record.get("attribution_status"),
+            record.get("attribution_provenance_json"),
             record.get("source_id"),
             record.get("run"),
             record.get("test"),
@@ -684,7 +756,9 @@ class FlowStore:
 
         sql = f"""
         SELECT id, request_id, ts_start, ts_end, duration_ms,
-               engagement_id, agent_id, source_id,
+               engagement_id, agent_id, evidence_owner,
+               trusted_transport_identity, initiator, attribution_status,
+               attribution_provenance_json, source_id,
                run, test, role, test_agent, suite, subject, step, intent, expect,
                source_type, flow_state, method, host, path, query_string, full_url,
                status_code, reason,
@@ -717,7 +791,9 @@ class FlowStore:
         """Get full flow metadata, headers, previews, flags (no blobs)."""
         sql = """
         SELECT id, request_id, ts_start, ts_end, duration_ms,
-               engagement_id, agent_id, source_id,
+               engagement_id, agent_id, evidence_owner,
+               trusted_transport_identity, initiator, attribution_status,
+               attribution_provenance_json, source_id,
                run, test, role, test_agent, suite, subject, step, intent, expect,
                context_json,
                source_type, flow_state,
@@ -872,7 +948,9 @@ class FlowStore:
 
         sql = f"""
         SELECT f.id, f.request_id, f.ts_start, f.duration_ms,
-               f.engagement_id, f.agent_id,
+               f.engagement_id, f.agent_id, f.evidence_owner,
+               f.trusted_transport_identity, f.initiator, f.attribution_status,
+               f.attribution_provenance_json,
                f.run, f.test, f.role, f.test_agent, f.suite, f.subject,
                f.step, f.intent, f.expect,
                f.method, f.host, f.path,
@@ -979,7 +1057,9 @@ class FlowStore:
 
         sql = f"""
         SELECT f.id, f.request_id, f.ts_start, f.duration_ms,
-               f.engagement_id, f.agent_id,
+               f.engagement_id, f.agent_id, f.evidence_owner,
+               f.trusted_transport_identity, f.initiator, f.attribution_status,
+               f.attribution_provenance_json,
                f.run, f.test, f.role, f.test_agent, f.suite, f.subject,
                f.step, f.intent, f.expect,
                f.method, f.host, f.path,
@@ -1022,7 +1102,16 @@ class FlowStore:
 
         result: dict[str, list[dict]] = {}
         with self._lock:
-            for dimension in ("agent_id", "test", "intent", "expect"):
+            for dimension in (
+                "agent_id",
+                "evidence_owner",
+                "trusted_transport_identity",
+                "initiator",
+                "attribution_status",
+                "test",
+                "intent",
+                "expect",
+            ):
                 rows = self._conn.execute(
                     f"""SELECT {dimension} AS value, COUNT(*) AS count,
                                MAX(ts_start) AS last_seen

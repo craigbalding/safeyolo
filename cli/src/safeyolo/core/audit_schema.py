@@ -122,6 +122,24 @@ class ApprovalType(StrEnum):
     PLUMB = "plumb"
 
 
+class AttributionStatus(StrEnum):
+    """Status of evidence attribution, independent of enforcement."""
+
+    RESOLVED = "resolved"
+    DELEGATED = "delegated"
+    UNAVAILABLE = "unavailable"
+    CONFLICT = "conflict"
+
+
+class TrafficInitiator(StrEnum):
+    """Best-known actor that initiated traffic."""
+
+    AGENT = "agent"
+    OPERATOR = "operator"
+    EXTERNAL = "external"
+    UNKNOWN = "unknown"
+
+
 # =============================================================================
 # Approval request
 # =============================================================================
@@ -144,9 +162,26 @@ class ApprovalRequest(BaseModel):
 
 SCHEMA_VERSION = 1
 
+# Keep the wire shape compatible with schema-v1 readers that use
+# ``extra="forbid"``. Current code exposes attribution as first-class model
+# fields, but serializes those fields under the existing ``details`` object.
+_ATTRIBUTION_FIELDS = (
+    "evidence_owner",
+    "trusted_transport_identity",
+    "initiator",
+    "attribution_status",
+    "attribution_provenance",
+)
+_ATTRIBUTION_DETAILS_KEY = "attribution"
+
 
 class AuditEvent(BaseModel):
-    """The audit event envelope - the shared contract."""
+    """The audit event envelope - the shared contract.
+
+    Attribution is represented as explicit model fields, but serialized under
+    ``details.attribution`` so schema-v1 readers with ``extra="forbid"`` can
+    continue consuming these events.
+    """
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = SCHEMA_VERSION
@@ -159,12 +194,47 @@ class AuditEvent(BaseModel):
     severity: Severity                      # for watch rendering
     summary: str = Field(..., min_length=1) # human-readable one-liner; must not be empty
     request_id: str | None = None           # correlation
-    agent: str | None = None                # agent identity
+    agent: str | None = None                # compatibility display alias
+    evidence_owner: str | None = None       # agent query/evidence scope
+    trusted_transport_identity: str | None = None
+    initiator: TrafficInitiator | None = None
+    attribution_status: AttributionStatus | None = None
+    attribution_provenance: dict[str, Any] | None = None
     addon: str | None = None                # emitting addon
     decision: Decision | None = None        # only for security/gateway events
     host: str | None = None                 # always "host", never "domain"
     approval: ApprovalRequest | None = None
     details: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unpack_compat_attribution(cls, data: Any) -> Any:
+        """Lift nested schema-v1 attribution into the model fields."""
+        if not isinstance(data, dict):
+            return data
+        details = data.get("details")
+        if not isinstance(details, dict):
+            return data
+        nested = details.get(_ATTRIBUTION_DETAILS_KEY)
+        if not isinstance(nested, dict):
+            return data
+
+        normalized = dict(data)
+        normalized_details = dict(details)
+        remaining = {
+            key: value
+            for key, value in nested.items()
+            if key not in _ATTRIBUTION_FIELDS
+        }
+        if remaining:
+            normalized_details[_ATTRIBUTION_DETAILS_KEY] = remaining
+        else:
+            normalized_details.pop(_ATTRIBUTION_DETAILS_KEY, None)
+        normalized["details"] = normalized_details
+        for field in _ATTRIBUTION_FIELDS:
+            if field not in normalized and field in nested:
+                normalized[field] = nested[field]
+        return normalized
 
     @field_validator("schema_version")
     @classmethod
@@ -213,8 +283,20 @@ class AuditEvent(BaseModel):
         return self
 
     def to_jsonl(self) -> dict[str, Any]:
-        """Serialize to a dict suitable for JSONL output."""
-        return self.model_dump(mode="json", exclude_none=True)
+        """Serialize to a schema-v1-compatible dict suitable for JSONL output."""
+        payload = self.model_dump(mode="json", exclude_none=True)
+        attribution = {
+            field: payload.pop(field)
+            for field in _ATTRIBUTION_FIELDS
+            if field in payload
+        }
+        if attribution:
+            details = payload.setdefault("details", {})
+            existing = details.get(_ATTRIBUTION_DETAILS_KEY)
+            nested = dict(existing) if isinstance(existing, dict) else {}
+            nested.update(attribution)
+            details[_ATTRIBUTION_DETAILS_KEY] = nested
+        return payload
 
 
 # =============================================================================
