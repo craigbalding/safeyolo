@@ -141,9 +141,7 @@ one phase:
 # doing it manually here means bootstrap has nothing left to name).
 sudo apt-get install -y skopeo umoci mmdebstrap debootstrap acl jq curl
 
-./install.sh        # or: uv tool install --editable . --overrides <(printf '%s\n' \
-                    #      'flask>=3.1.3' 'pygments>=2.20.0' 'cryptography>=50.0.0' \
-                    #      'msgpack>=1.2.1' 'pyopenssl>=26.0.0' 'tornado>=6.5.5')
+./install.sh
 
 safeyolo init       # writes ~/.safeyolo/{policy.toml, addons.yaml, tokens, ...}
 safeyolo build      # builds + installs the guest rootfs into ~/.safeyolo/share/
