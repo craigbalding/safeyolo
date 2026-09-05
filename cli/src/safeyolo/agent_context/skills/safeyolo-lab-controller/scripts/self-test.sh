@@ -19,9 +19,14 @@ startup_instructions="$skill_dir/assets/startup-instructions.md"
 
 test_root=$(mktemp -d)
 tmux_socket="$test_root/tmux.sock"
+unrelated_socket="$test_root/unrelated-tmux.sock"
+operator_home="$test_root/operator-home"
+operator_lab_socket="$operator_home/.safeyolo/lab-tmux.sock"
 
 cleanup() {
   tmux -S "$tmux_socket" kill-server >/dev/null 2>&1 || true
+  tmux -S "$unrelated_socket" kill-server >/dev/null 2>&1 || true
+  tmux -S "$operator_lab_socket" kill-server >/dev/null 2>&1 || true
   rm -rf -- "$test_root"
 }
 trap cleanup EXIT
@@ -473,16 +478,37 @@ cat > "$fake_bin/tmux" <<'SH'
 #!/usr/bin/env bash
 printf '%q ' "$@" >> "$FAKE_TMUX_LOG"
 printf '\n' >> "$FAKE_TMUX_LOG"
+if [ "${1:-}" = -S ]; then
+  shift 2
+fi
+# Use a stable process identity: most tmux queries below run in command
+# substitutions, whose parent is not the operator_cli shell. PID 1 is alive
+# for the duration of this fixture and lets the launcher exercise its
+# start-ticks liveness check without a background process.
+controller_pid=1
+start_ticks=$(awk '{print $22}' "/proc/$controller_pid/stat" 2>/dev/null || printf '1')
 case "${1:-}" in
   has-session)
     [ "${FAKE_TMUX_MODE:-}" = existing ]
     exit $?
     ;;
+  show-options)
+    case "${*: -1}" in
+      @safeyolo_lab_owner) printf 'safeyolo:unknown\n' ;;
+      @safeyolo_lab_agent) printf 'unknown\n' ;;
+      @safeyolo_lab_controller_pane) printf '%%0\n' ;;
+      @safeyolo_lab_controller_run) printf '%s:%s\n' "$controller_pid" "$start_ticks" ;;
+    esac
+    ;;
   list-sessions)
     exit 1
     ;;
   display-message)
-    printf '%%0\n'
+    case "$*" in
+      *pane_dead*) printf '0\n' ;;
+      *pane_id*) printf '%%0\n' ;;
+      *) printf '%%0\n' ;;
+    esac
     ;;
   *) exit 0 ;;
 esac
@@ -490,19 +516,82 @@ SH
 chmod 700 "$fake_bin/tmux"
 
 : > "$fake_tmux_log"
-env -u TMUX -u TMUX_PANE PATH="$fake_bin:$PATH" FAKE_TMUX_LOG="$fake_tmux_log" \
+env -u TMUX -u TMUX_PANE SAFEYOLO_AGENT_NAME=unknown PATH="$fake_bin:$PATH" FAKE_TMUX_LOG="$fake_tmux_log" \
   FAKE_TMUX_MODE=create "$operator_cli"
-[ "$(grep -c '^send-keys ' "$fake_tmux_log")" -eq 2 ] || fail 'new lab did not inject exactly one controller command'
+[ "$(grep -c 'send-keys ' "$fake_tmux_log")" -eq 2 ] || fail 'new lab did not inject exactly one controller command'
 grep -Fq 'startup-instructions.md' "$fake_tmux_log" || fail 'new lab did not inject the hidden startup instructions'
 grep -Fq 'attach-session -t lab' "$fake_tmux_log" || fail 'new lab did not attach'
 
 : > "$fake_tmux_log"
-env -u TMUX -u TMUX_PANE PATH="$fake_bin:$PATH" FAKE_TMUX_LOG="$fake_tmux_log" \
+env -u TMUX -u TMUX_PANE SAFEYOLO_AGENT_NAME=unknown PATH="$fake_bin:$PATH" FAKE_TMUX_LOG="$fake_tmux_log" \
   FAKE_TMUX_MODE=existing "$operator_cli"
 if grep -Fq 'send-keys' "$fake_tmux_log"; then
   fail 'reconnect injected another controller command'
 fi
 grep -Fq 'attach-session -t lab' "$fake_tmux_log" || fail 'reconnect did not attach'
+
+mkdir -p "$operator_home"
+tmux -S "$unrelated_socket" new-session -d -s unrelated
+unrelated_first_pane=$(tmux -S "$unrelated_socket" list-panes -t unrelated -F '#{pane_id}')
+unrelated_second_pane=$(tmux -S "$unrelated_socket" split-window -d -P -F '#{pane_id}' -t "$unrelated_first_pane")
+tmux -S "$unrelated_socket" set-option -g prefix C-b
+tmux -S "$unrelated_socket" set-option -g status-left UNRELATED_LEFT
+tmux -S "$unrelated_socket" set-option -g status-right UNRELATED_RIGHT
+tmux -S "$unrelated_socket" set-hook -g client-resized 'display-message unrelated-hook'
+tmux -S "$unrelated_socket" send-keys -t "$unrelated_first_pane" -l -- \
+  'printf "__UNRELATED_SCROLLBACK__\\n"'
+tmux -S "$unrelated_socket" send-keys -t "$unrelated_first_pane" Enter
+sleep 0.2
+unrelated_panes_before=$(tmux -S "$unrelated_socket" list-panes -t unrelated \
+  -F '#{pane_id}:#{pane_dead}:#{history_size}' | sort)
+unrelated_text_before=$(for pane in "$unrelated_first_pane" "$unrelated_second_pane"; do
+  printf 'pane=%s\n' "$pane"
+  tmux -S "$unrelated_socket" capture-pane -p -t "$pane" -S -
+done)
+unrelated_hook_before=$(tmux -S "$unrelated_socket" show-hooks -g client-resized)
+
+set +e
+timeout 10s env -u TMUX -u TMUX_PANE HOME="$operator_home" \
+  SAFEYOLO_AGENT_NAME=real-lab "$operator_cli" \
+  --objective 'real dedicated socket regression' >/dev/null 2>&1
+operator_rc=$?
+set -e
+[ "$operator_rc" -ne 125 ] || fail 'real Lab launcher timed out'
+[ -S "$operator_lab_socket" ] || fail 'Lab did not create its dedicated tmux socket'
+[ "$(tmux -S "$operator_lab_socket" show-options -gv prefix)" = C-a ] || \
+  fail 'Lab profile did not apply on its dedicated server'
+[ "$(tmux -S "$unrelated_socket" show-options -gv prefix)" = C-b ] || \
+  fail 'Lab changed the unrelated server prefix'
+[ "$(tmux -S "$unrelated_socket" show-options -gv status-left)" = UNRELATED_LEFT ] || \
+  fail 'Lab changed the unrelated server status-left'
+[ "$(tmux -S "$unrelated_socket" show-options -gv status-right)" = UNRELATED_RIGHT ] || \
+  fail 'Lab changed the unrelated server status-right'
+unrelated_lab_hook=$(tmux -S "$unrelated_socket" show-hooks -g client-resized)
+[ "$unrelated_lab_hook" = "$unrelated_hook_before" ] || \
+  fail 'Lab changed the unrelated server hooks'
+lab_panes=$(tmux -S "$operator_lab_socket" list-panes -t lab -F '#{pane_id}' | wc -l)
+[ "$lab_panes" -eq 1 ] || fail 'Lab created an unexpected number of controller panes'
+
+env -u TMUX -u TMUX_PANE HOME="$operator_home" SAFEYOLO_AGENT_NAME=real-lab \
+  "$operator_cli" --teardown >/dev/null 2>&1 || fail 'real Lab teardown failed'
+unrelated_panes_after=$(tmux -S "$unrelated_socket" list-panes -t unrelated \
+  -F '#{pane_id}:#{pane_dead}:#{history_size}' | sort)
+unrelated_text_after=$(for pane in "$unrelated_first_pane" "$unrelated_second_pane"; do
+  printf 'pane=%s\n' "$pane"
+  tmux -S "$unrelated_socket" capture-pane -p -t "$pane" -S -
+done)
+[ "$unrelated_panes_after" = "$unrelated_panes_before" ] || \
+  fail 'Lab changed unrelated panes or their liveness/history'
+[ "$unrelated_text_after" = "$unrelated_text_before" ] || \
+  fail 'Lab changed unrelated pane scrollback'
+[ "$(tmux -S "$unrelated_socket" show-options -gv prefix)" = C-b ] || \
+  fail 'Lab teardown changed the unrelated server prefix'
+[ "$(tmux -S "$unrelated_socket" show-options -gv status-left)" = UNRELATED_LEFT ] || \
+  fail 'Lab teardown changed the unrelated server status-left'
+[ "$(tmux -S "$unrelated_socket" show-options -gv status-right)" = UNRELATED_RIGHT ] || \
+  fail 'Lab teardown changed the unrelated server status-right'
+[ "$(tmux -S "$unrelated_socket" show-hooks -g client-resized)" = "$unrelated_hook_before" ] || \
+  fail 'Lab teardown changed the unrelated server hooks'
 
 fake_home="$test_root/home"
 mkdir -p "$fake_home"
@@ -523,6 +612,7 @@ wait_for_pane_text "$pane" '__PERSISTENT_SHELL_OK__' || fail 'persistent shell c
 fake_controller="$test_root/fake-controller.sh"
 fake_startup="$test_root/fake-startup.md"
 fake_runner_home="$test_root/runner-home"
+expected_objective='Inspect a bounded objective.'
 mkdir -p "$fake_runner_home/.safeyolo"
 printf 'Base instruction test marker.\n' > "$fake_runner_home/.safeyolo/AGENTS.md"
 printf 'Lab startup test instruction.\n' > "$fake_startup"
@@ -531,16 +621,18 @@ printf 'Lab startup test instruction.\n' > "$fake_startup"
   printf '%s\n' 'printf "__FAKE_CONTROLLER_RAN__\\n"'
   printf '%s\n' 'controller_run=$(tmux display-message -p -t "$TMUX_PANE" "#{@safeyolo_lab_controller_run}")'
   printf '%s\n' 'if [[ "$controller_run" =~ ^[0-9]+:[0-9]+$ ]]; then printf "__FAKE_CONTROLLER_READY__=ok\\n"; else printf "__FAKE_CONTROLLER_READY__=bad\\n"; fi'
-  printf '%s\n' 'if [ "${1:-}" = -c ] && [[ "${2:-}" == *"Base instruction test marker."* ]] && [[ "${2:-}" == *"Lab startup test instruction."* ]] && [ "${3:-}" = "Hello." ]; then'
+  printf '%s\n' 'if [ "${1:-}" = -c ] && [[ "${2:-}" == *"Base instruction test marker."* ]] && [[ "${2:-}" == *"Lab startup test instruction."* ]] && [[ "${2:-}" != *"$EXPECTED_OBJECTIVE"* ]] && [ "${3:-}" = "Hello." ]; then'
   printf '%s\n' '  printf "__FAKE_CONTROLLER_STARTUP__=ok\\n"'
+  printf '%s\n' 'elif [ "${1:-}" = -c ] && [[ "${2:-}" == *"Base instruction test marker."* ]] && [[ "${2:-}" == *"Lab startup test instruction."* ]] && [[ "${2:-}" == *"$EXPECTED_OBJECTIVE"* ]] && [ "${3:-}" = "Hello." ]; then'
+  printf '%s\n' '  printf "__FAKE_CONTROLLER_OBJECTIVE__=ok\\n"'
   printf '%s\n' 'else'
   printf '%s\n' '  printf "__FAKE_CONTROLLER_STARTUP__=bad\\n"'
   printf '%s\n' 'fi'
   printf '%s\n' 'exit 7'
 } > "$fake_controller"
 chmod 700 "$fake_controller"
-controller_line=$(printf 'HOME=%q %q --command %q --startup-file %q' \
-  "$fake_runner_home" "$controller_runner" "$fake_controller" "$fake_startup")
+controller_line=$(printf 'EXPECTED_OBJECTIVE=%q HOME=%q %q --command %q --startup-file %q' \
+  "$expected_objective" "$fake_runner_home" "$controller_runner" "$fake_controller" "$fake_startup")
 controller_line+='; self_test_rc=$?; printf "__RUN_CONTROLLER_RC__=%s\\n" "$self_test_rc"'
 tmux -S "$tmux_socket" send-keys -t "$pane" -l -- "$controller_line"
 tmux -S "$tmux_socket" send-keys -t "$pane" Enter
@@ -552,6 +644,14 @@ wait_for_pane_text "$pane" '__FAKE_CONTROLLER_READY__=ok' || fail 'controller ru
   fail 'controller runner retained input readiness after exit'
 [ "$(tmux -S "$tmux_socket" display-message -p -t "$pane" '#{@safeyolo_lab_role}')" = controller ] || fail 'controller role was not retained'
 [ "$(tmux -S "$tmux_socket" display-message -p -t "$pane" '#{pane_dead}')" = 0 ] || fail 'controller runner replaced the parent shell'
+
+printf '%s\n' "$expected_objective" > "$fake_runner_home/.safeyolo/lab-objective"
+tmux -S "$tmux_socket" send-keys -t "$pane" -l -- "$controller_line"
+tmux -S "$tmux_socket" send-keys -t "$pane" Enter
+wait_for_pane_text "$pane" '__FAKE_CONTROLLER_OBJECTIVE__=ok' || \
+  fail 'controller runner did not retain the objective in startup instructions'
+wait_for_pane_text "$pane" '__RUN_CONTROLLER_RC__=7' || \
+  fail 'controller runner did not complete the objective startup test'
 
 capture_root="$test_root/evidence"
 capture_dir=$("$capture" --output "$capture_root" --socket "$tmux_socket" \

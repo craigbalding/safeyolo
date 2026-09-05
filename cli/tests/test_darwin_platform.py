@@ -120,3 +120,31 @@ def test_darwin_interactive_shell_repairs_limit_before_login_shell(
     )
     assert ("/usr/local/bin/sudo" in remote) is uses_sudo
     assert captured["stdin"] is None
+
+
+def test_darwin_interactive_lab_command_keeps_tty_attached(monkeypatch, tmp_path) -> None:
+    """A command-backed Lab attach still receives a controlling terminal."""
+    shell_socket = tmp_path / "shell.sock"
+    shell_socket.touch()
+    key = tmp_path / "id_ed25519"
+    key.touch()
+    captured = {}
+
+    monkeypatch.setattr(darwin, "_shell_socket_path", lambda _name: shell_socket)
+    monkeypatch.setattr(darwin, "get_ssh_key_path", lambda: key)
+
+    def fake_run(command, *, stdin):
+        captured["command"] = command
+        captured["stdin"] = stdin
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(darwin.subprocess, "run", fake_run)
+
+    result = darwin.DarwinPlatform().exec_in_sandbox(
+        "agent1", "safeyolo-lab", user="agent", interactive=True
+    )
+
+    assert result == 0
+    assert "-t" in captured["command"]
+    assert captured["command"][-1].endswith("safeyolo-lab")
+    assert captured["stdin"] is None
