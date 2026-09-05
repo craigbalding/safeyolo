@@ -1,0 +1,173 @@
+version = 1
+
+# Within each hint, paths are ordered from the primary inspection location.
+
+[[hints]]
+id = "installed-agent-context"
+triggers = [
+  "agent context",
+  "skill staging",
+  "installed skill",
+  "sandbox baseline",
+  "host setup",
+]
+advice = "Edit the authoritative files under cli/src/safeyolo/agent_context, then verify every staging/install path and its tests; do not patch an installed ~/.codex or ~/.agents copy as the product change."
+paths = [
+  "cli/src/safeyolo/agent_context/",
+  "contrib/lib/stage-safeyolo-context.sh",
+]
+source = "cli/src/safeyolo/agent_context/skills/safeyolo/references/contributing-to-safeyolo.md"
+
+[[hints]]
+id = "factory-contract-plumbing"
+triggers = [
+  "factory",
+  "supervisor",
+  "role contract",
+  "contract schema",
+  "factory doctor",
+  "coord attention",
+  "checkpoint",
+]
+advice = "Treat the factory TOML, role contracts, staged contract identity, supervisor checkpoint behaviour, and doctor verification as one change boundary. Prefer recovery from Coord/checkpoint state over another queue or task store."
+paths = [
+  "cli/src/safeyolo/factory_contract.py",
+  "cli/src/safeyolo/commands/factory.py",
+  "contrib/codex-coord-supervisor.py",
+  "contrib/lib/stage-safeyolo-context.sh",
+  "docs/factories.md",
+  "docs/codex-coord-supervisor.md",
+]
+source = "docs/factories.md; docs/codex-coord-supervisor.md"
+
+[[hints]]
+id = "coord-kernel-boundary"
+triggers = [
+  "coord",
+  "room message",
+  "attention",
+  "durable work",
+  "work object",
+  "handoff",
+  "cursor",
+]
+advice = "Keep Coord transport identity and durable kernel objects authoritative. Attention is interruption, not visibility; do not infer assignment from retained room history or create a parallel work-state abstraction."
+paths = [
+  "cli/src/safeyolo/coord/",
+  "docs/coord-kernel-capabilities.md",
+  "docs/coord-trust-boundary.md",
+]
+source = "docs/coord-kernel-capabilities.md; docs/coord-trust-boundary.md"
+
+[[hints]]
+id = "installer-support-boundary"
+triggers = [
+  "install.sh",
+  "installer",
+  "reinstall",
+  "requires-python",
+  "python interpreter",
+  "uv tool",
+  "pipx",
+]
+advice = "Derive installer/runtime compatibility from pyproject.toml and exercise install.sh's real uv and recovery paths. Preserve proxy/CA variables and secure dependency overrides; test constructed commands hermetically before broad installation trials."
+paths = [
+  "install.sh",
+  "pyproject.toml",
+  "scripts/install-mitmproxy-pipx.sh",
+]
+source = "README.md#install-from-source-advanced; pyproject.toml"
+
+[[hints]]
+id = "pattern-scanner-flow"
+triggers = [
+  "pattern scanner",
+  "url scan",
+  "percent decoded",
+  "credential pattern",
+]
+advice = "Start with pattern_scanner.py for scan orchestration, detection/patterns.py for matching rules, and flow_store.py for retained evidence. Sanitize findings before operational publication."
+paths = [
+  "cli/src/safeyolo/mitm_addons/pattern_scanner.py",
+  "cli/src/safeyolo/detection/patterns.py",
+  "cli/src/safeyolo/storage/flow_store.py",
+  "tests/test_pattern_scanner.py",
+]
+source = "docs/ADDONS.md; docs/security-verification.md"
+
+[[hints]]
+id = "proxy-addon-flow"
+triggers = [
+  "proxy startup",
+  "mitmproxy",
+  "addon chain",
+  "request hook",
+  "websocket",
+]
+advice = "Trace the request through proxy startup, addon configuration, the concrete mitmproxy hook, and FlowStore/audit publication. Sanitize before operational publication and keep policy decisions separate from detector findings."
+paths = [
+  "cli/src/safeyolo/proxy.py",
+  "cli/src/safeyolo/mitm_addons/",
+  "cli/src/safeyolo/detection/",
+  "cli/src/safeyolo/storage/flow_store.py",
+  "docs/ADDONS.md",
+]
+source = "docs/DEVELOPERS.md; docs/ADDONS.md; docs/security-verification.md"
+
+[[hints]]
+id = "agent-lifecycle-platforms"
+triggers = [
+  "agent lifecycle",
+  "agent run",
+  "agent shell",
+  "microvm",
+  "gvisor",
+  "runsc",
+  "darwin platform",
+  "macos vm",
+  "linux sandbox",
+]
+advice = "Reuse the shared lifecycle command path, then verify both Linux/gVisor and macOS/VZ platform adapters. Persistent home/workspace and disposable runtime/rootfs state are intentionally different boundaries."
+paths = [
+  "cli/src/safeyolo/commands/agent.py",
+  "cli/src/safeyolo/platform/linux.py",
+  "cli/src/safeyolo/platform/darwin.py",
+  "docs/microvm-architecture.md",
+]
+source = "docs/agent-lifecycle-identity-plan.md; docs/microvm-architecture.md"
+
+[[hints]]
+id = "lab-lifecycle"
+triggers = [
+  "safeyolo lab",
+  "lab lifecycle",
+  "tmux lab",
+  "fault injection",
+  "evidence capture",
+  "teardown",
+]
+advice = "Keep Lab a thin lifecycle over existing agent and tmux mechanisms: objective first, one authorized reversible fault, bounded evidence, restoration, and same-path proof. Use ownership checks before reattach or teardown."
+paths = [
+  "cli/src/safeyolo/commands/lab.py",
+  "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/",
+  "cli/tests/test_lab.py",
+]
+source = "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/SKILL.md"
+
+[[hints]]
+id = "acceptance-tool-selection"
+triggers = [
+  "acceptance graph",
+  "nested safeyolo",
+  "security assessment",
+  "race condition",
+  "complexity analysis",
+  "code smell",
+]
+advice = "Select the smallest acceptance-graph lane that exercises the real boundary. Use the graph's trusted entrypoint and retain evidence; deterministic analysis complements rather than substitutes for behavioural acceptance."
+paths = [
+  "cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/accept-safeyolo.yaml",
+  "docs/security-testing-design.md",
+  "docs/nested-linux-lab.md",
+]
+source = "cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/accept-safeyolo.yaml"
