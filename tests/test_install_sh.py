@@ -46,6 +46,8 @@ def make_fake_uv(tmp_path: Path) -> tuple[Path, Path, Path]:
                     echo "${FAKE_UV_DIAGNOSTIC:-fake acquisition failure}" >&2
                     exit 19
                 fi
+                echo "fake uv installed Python"
+                echo "fake uv download completed" >&2
                 : > "$FAKE_UV_STATE"
                 exit 0
             fi
@@ -176,8 +178,10 @@ def test_install_acquires_supported_python_when_system_lookup_fails(
     assert lines[0].startswith("argv: [python] [find] [>=3.12,<3.14]")
     assert lines[1].startswith("argv: [python] [install] [>=3.12,<3.14]")
     assert lines[2].startswith("argv: [python] [find] [>=3.12,<3.14]")
-    assert any("[tool] [install] [--python]" in line for line in lines)
+    assert any("[tool] [install] [--python] [/fake/python-3.13]" in line for line in lines)
     assert "asking uv to acquire one" in result.stderr
+    assert "fake uv installed Python" in result.stderr
+    assert "fake uv download completed" in result.stderr
 
 
 def test_install_preserves_acquisition_failure_details(
