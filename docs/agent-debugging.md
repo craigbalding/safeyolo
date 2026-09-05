@@ -103,15 +103,17 @@ behaviour lines up. Genuine parity gaps show up as agent-visible
 differences (a command works on one platform and not the other); report
 those as bugs rather than working around them.
 
-**Silent-skip branch to know about:** the shim installer
-([`guest/install-guest-common.sh:127-130`](../guest/install-guest-common.sh))
-skips itself if the rootfs has no `/usr/bin/sudo`. Minimal custom
-rootfs builders that don't `apt install sudo` get no shim and no
-`NOPASSWD:ALL` policy. Agents on such a rootfs see `sudo: command not
-found` and cannot elevate at all. This is by design — a compatibility
-shim should not shadow a missing real binary — but it means "sudo is
-absent" and "sudo is misconfigured" have the same visible failure and
-are best distinguished by `ls /usr/bin/sudo /usr/local/bin/sudo`.
+**Explicit unsupported branch to know about:** the shim installer
+([`guest/install-guest-common.sh`](../guest/install-guest-common.sh)) skips
+itself if a custom rootfs has no `/usr/bin/sudo`. Such an image is not
+sudo-capable and must not claim the documented `sudo -n` facility; agents see
+`sudo: command not found`. Images that do include sudo must also provide the
+account tools and `visudo`: construction provisions the `sudo` group, adds
+`agent`, writes the direct user-scoped rule needed by pre-existing shells,
+sets it `root:root`/0440, and fails closed if validation cannot pass. This
+keeps Alpine's conventional `wheel` naming from changing the SafeYolo
+contract. Distinguish the unsupported branch from a runtime drift with
+`ls /usr/bin/sudo /usr/local/bin/sudo` and the rootfs build output.
 
 ## What debugging *looks like* in practice
 
