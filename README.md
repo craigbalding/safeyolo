@@ -42,7 +42,8 @@ Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patt
 ### Prerequisites
 
 - macOS with Apple Silicon (M1+) **or** Linux (x86_64/arm64)
-- Python 3.12 or 3.13
+- SafeYolo supports Python 3.12 and 3.13. The installer asks uv to select or
+  acquire a matching interpreter.
 - [uv](https://docs.astral.sh/uv/) — the Python package/project manager SafeYolo uses. Grab it from your distro's package manager or the upstream installer.
 - macOS only: [Lima](https://lima-vm.io/) for the guest image build (`brew install lima`, `sudo port install lima`, or `mise use -g lima`).
 - Linux (apt-based): `safeyolo bootstrap` installs gVisor `runsc`, `uidmap`, `acl`, and other build prereqs via apt. On non-apt distros install gVisor first per its [upstream instructions](https://gvisor.dev/).
@@ -59,6 +60,9 @@ safeyolo bootstrap
 ```
 
 `./install.sh` puts `safeyolo` on your `PATH` at `~/.local/bin/safeyolo`.
+The installer reads SafeYolo's declared `requires-python` range and asks uv to
+select or acquire a matching interpreter, so a newer host default does not
+change the supported Python boundary.
 `safeyolo bootstrap` initializes configuration, builds the platform-specific
 guest artifacts, and applies host prerequisites. The command is idempotent.
 
