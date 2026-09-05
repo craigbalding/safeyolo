@@ -188,8 +188,8 @@ def _resolve_host_script_alias(alias: str) -> Path | None:
     """Resolve @alias → bundled contrib/*.sh path, or None if not found.
 
     Tries the installed-package location first (wheel install path), then
-    falls back to the repo-root contrib/ (for `uv tool install --editable .`
-    from a checkout where hatch.force-include hasn't been re-run).
+    falls back to the repo-root contrib/ for source checkouts where
+    hatch.force-include hasn't been re-run.
     """
     if alias not in _HOST_SCRIPT_ALIASES:
         return None
