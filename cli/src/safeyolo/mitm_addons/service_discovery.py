@@ -14,8 +14,12 @@ from threading import Lock
 
 from mitmproxy import ctx, http
 
-from safeyolo.core.audit_schema import Decision, EventKind, Severity
-from safeyolo.core.identity import IdentityStatus, resolve_agent_identity
+from safeyolo.core.audit_schema import AttributionStatus, Decision, EventKind, Severity
+from safeyolo.core.identity import (
+    attribution_fields,
+    flow_identity,
+    snapshot_flow_attribution,
+)
 from safeyolo.core.utils import sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.discovery")
@@ -118,22 +122,37 @@ class ServiceDiscovery:
 
     def request(self, flow: http.HTTPFlow):
         """Resolve and stamp one trusted identity for downstream consumers."""
-        identity = resolve_agent_identity(flow, self)
-        if identity.is_resolved:
+        attribution = snapshot_flow_attribution(flow, self)
+        if attribution.evidence_owner:
             with self._lock:
-                self._last_seen[identity.agent] = time.time()
+                self._last_seen[attribution.evidence_owner] = time.time()
             return
 
-        if identity.status is IdentityStatus.CONFLICT:
+        identity = flow_identity(flow, self)
+
+        if attribution.status is AttributionStatus.CONFLICT:
             write_event(
                 "security.agent_identity_conflict",
                 kind=EventKind.SECURITY,
                 severity=Severity.CRITICAL,
                 summary="Trusted agent identity sources disagree",
-                decision=Decision.DENY,
+                decision=Decision.LOG,
                 request_id=flow.metadata.get("request_id"),
+                **attribution_fields(attribution),
                 addon=self.name,
-                details=flow.metadata.get("agent_identity_conflict"),
+                details=identity.conflict_details(),
+            )
+        elif attribution.status is AttributionStatus.UNAVAILABLE:
+            write_event(
+                "security.agent_identity_unavailable",
+                kind=EventKind.SECURITY,
+                severity=Severity.MEDIUM,
+                summary="Traffic has no trusted agent identity",
+                decision=Decision.LOG,
+                request_id=flow.metadata.get("request_id"),
+                **attribution_fields(attribution),
+                addon=self.name,
+                details={"reason": identity.reason},
             )
 
     def get_agents(self) -> dict:
