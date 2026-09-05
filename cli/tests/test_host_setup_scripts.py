@@ -716,7 +716,7 @@ def _seed_pi_install(agent_home: Path, *, pi_script: str | None = None) -> Path:
     package_dir = prefix / "lib/node_modules/@earendil-works/pi-coding-agent"
     package_dir.mkdir(parents=True)
     (package_dir / "package.json").write_text(
-        '{"name":"@earendil-works/pi-coding-agent","version":"0.84.3"}\n'
+        '{"name":"@earendil-works/pi-coding-agent","version":"0.84.4"}\n'
     )
     pi = prefix / "bin/pi"
     pi.parent.mkdir(parents=True, exist_ok=True)
@@ -764,7 +764,7 @@ def test_pi_setup_is_agent_local_and_launches_with_reviewed_flags(tmp_path: Path
         "#!/bin/sh\n"
         "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
         "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
-        "'@earendil-works/pi-coding-agent' '0.84.3'; exit 0; fi\n"
+        "'@earendil-works/pi-coding-agent' '0.84.4'; exit 0; fi\n"
         "exit 1\n"
     )
     fake_node.chmod(0o755)
@@ -940,7 +940,7 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
         "#!/bin/sh\n"
         "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
         "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
-        "'@earendil-works/pi-coding-agent' '0.84.3'; exit 0; fi\n"
+        "'@earendil-works/pi-coding-agent' '0.84.4'; exit 0; fi\n"
     )
     node.chmod(0o755)
     npm = fake_bin / "npm"
@@ -953,8 +953,8 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
         "    if [ \"$prev\" = --pack-destination ]; then dest=\"$arg\"; fi\n"
         "    prev=\"$arg\"\n"
         "  done\n"
-        "  : > \"$dest/pi-coding-agent-0.84.3.tgz\"\n"
-        "  echo pi-coding-agent-0.84.3.tgz\n"
+        "  : > \"$dest/pi-coding-agent-0.84.4.tgz\"\n"
+        "  echo pi-coding-agent-0.84.4.tgz\n"
         "  exit 0\n"
         "fi\n"
         "prefix=\"\"; prev=\"\"\n"
@@ -965,7 +965,7 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
         "pkg=\"$prefix/lib/node_modules/@earendil-works/pi-coding-agent\"\n"
         "mkdir -p \"$pkg\" \"$prefix/bin\"\n"
         "printf '%s\\n' "
-        "'{\"name\":\"@earendil-works/pi-coding-agent\",\"version\":\"0.84.3\"}' "
+        "'{\"name\":\"@earendil-works/pi-coding-agent\",\"version\":\"0.84.4\"}' "
         "> \"$pkg/package.json\"\n"
         "printf '%s\\n' '#!/bin/sh' "
         "'if [ \"$1\" = --version ]; then exit 0; fi' "
@@ -979,7 +979,7 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
         "if [ \"$1\" = dgst ]; then printf x; exit 0; fi\n"
         "if [ \"$1\" != base64 ] || [ \"$2\" != -A ] || [ \"$3\" != -in ]; then exit 1; fi\n"
         "printf '%s' "
-        "'Yr2p9PubrbFZmYEPYI+C8KmZP9xlFuLDnAG64RtU0ZDgrdiXYWa+y7WGyJO5OlqPliOkVCMd9IzVszO3/t0D0w=='\n"
+        "'jmOlrqUmvhh/siNWFRXjYLJzhKFIHNsAQaysRwzQPQFnPAaV/vhqHsLH/MBsIISA1Rjj7WTUFR3nJrpXoLx39w=='\n"
     )
     openssl.chmod(0o755)
     env = _pi_command_env(agent_home, fake_bin, tmp_path)
@@ -999,7 +999,7 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
         if arg
     ]
     assert npm_args[:3] == ["pack", "--ignore-scripts", "--pack-destination"]
-    assert "@earendil-works/pi-coding-agent@0.84.3" in npm_args
+    assert "@earendil-works/pi-coding-agent@0.84.4" in npm_args
     assert "--ignore-scripts" in npm_args
     assert "--global" in npm_args
     assert "--prefix" in npm_args
@@ -1018,7 +1018,7 @@ def test_pi_repair_fails_closed_on_checksum_mismatch(tmp_path: Path) -> None:
         "#!/bin/sh\n"
         "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
         "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
-        "'@earendil-works/pi-coding-agent' '0.84.3'; exit 0; fi\n"
+        "'@earendil-works/pi-coding-agent' '0.84.4'; exit 0; fi\n"
     )
     node.chmod(0o755)
     npm = fake_bin / "npm"
@@ -1030,8 +1030,8 @@ def test_pi_repair_fails_closed_on_checksum_mismatch(tmp_path: Path) -> None:
         "  if [ \"$prev\" = --pack-destination ]; then dest=\"$arg\"; fi\n"
         "  prev=\"$arg\"\n"
         "done\n"
-        ": > \"$dest/pi-coding-agent-0.84.3.tgz\"\n"
-        "echo pi-coding-agent-0.84.3.tgz\n"
+        ": > \"$dest/pi-coding-agent-0.84.4.tgz\"\n"
+        "echo pi-coding-agent-0.84.4.tgz\n"
     )
     npm.chmod(0o755)
     openssl = fake_bin / "openssl"

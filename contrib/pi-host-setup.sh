@@ -22,8 +22,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # fetched by exact package/version, checked against the published integrity,
 # and only then installed with lifecycle scripts disabled.
 PI_PACKAGE="@earendil-works/pi-coding-agent"
-PI_VERSION="0.84.3"
-PI_INTEGRITY="sha512-Yr2p9PubrbFZmYEPYI+C8KmZP9xlFuLDnAG64RtU0ZDgrdiXYWa+y7WGyJO5OlqPliOkVCMd9IzVszO3/t0D0w=="
+PI_VERSION="0.84.4"
+PI_INTEGRITY="sha512-jmOlrqUmvhh/siNWFRXjYLJzhKFIHNsAQaysRwzQPQFnPAaV/vhqHsLH/MBsIISA1Rjj7WTUFR3nJrpXoLx39w=="
 
 # The script never reads any host Pi path. The only host-side filesystem work
 # is SafeYolo's own baseline and the native read-only skill link.
@@ -86,8 +86,8 @@ umask 077
 : "${SAFEYOLO_PI_NODE_SPEC:=node@22.19.0}"
 : "${SAFEYOLO_PI_PREFIX:=$HOME/.local}"
 PI_PACKAGE="@earendil-works/pi-coding-agent"
-PI_VERSION="0.84.3"
-PI_INTEGRITY="sha512-Yr2p9PubrbFZmYEPYI+C8KmZP9xlFuLDnAG64RtU0ZDgrdiXYWa+y7WGyJO5OlqPliOkVCMd9IzVszO3/t0D0w=="
+PI_VERSION="0.84.4"
+PI_INTEGRITY="sha512-jmOlrqUmvhh/siNWFRXjYLJzhKFIHNsAQaysRwzQPQFnPAaV/vhqHsLH/MBsIISA1Rjj7WTUFR3nJrpXoLx39w=="
 PI_MIN_NODE="22.19.0"
 
 export MISE_DATA_DIR="${MISE_DATA_DIR:-$HOME/.mise}"
