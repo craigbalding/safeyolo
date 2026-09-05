@@ -300,6 +300,47 @@ def _held_setup_locks() -> set[str]:
     return held
 
 
+def _open_safe_setup_directory(path: Path, name: str) -> int:
+    """Open an agent's setup directory without following its final path."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+    except OSError as exc:
+        raise RuntimeError(f"unsafe host setup directory for agent {name!r}: {exc}") from None
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError(f"unsafe host setup directory for agent {name!r}: {exc}") from None
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError(
+                f"unsafe host setup directory for agent {name!r}: expected a directory"
+            )
+        if info.st_uid != os.getuid():
+            raise RuntimeError(
+                f"unsafe host setup directory for agent {name!r}: owner is not the invoking user"
+            )
+        if stat.S_IMODE(info.st_mode) & 0o022:
+            raise RuntimeError(
+                f"unsafe host setup directory for agent {name!r}: group/world write is not allowed"
+            )
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 @contextmanager
 def _agent_host_setup_lock(name: str):
     """Serialize setup/start transitions and validate the lock entry."""
@@ -314,15 +355,17 @@ def _agent_host_setup_lock(name: str):
         return
 
     ensure_agent_persistent_dirs(name)
-    lock_path = get_agent_home_dir(name) / ".safeyolo/host-setup.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    setup_dir = get_agent_home_dir(name) / ".safeyolo"
+    setup_dir_fd = _open_safe_setup_directory(setup_dir, name)
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        fd = os.open(lock_path, flags, 0o600)
+        fd = os.open("host-setup.lock", flags, 0o600, dir_fd=setup_dir_fd)
     except OSError as exc:
+        os.close(setup_dir_fd)
         raise RuntimeError(f"unsafe host setup lock for agent {name!r}: {exc}") from None
+    os.close(setup_dir_fd)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):

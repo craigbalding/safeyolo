@@ -1885,6 +1885,7 @@ class TestRunAgent:
         ensure_agent_persistent_dirs("unsafe-lock")
         lock_path = get_agent_home_dir("unsafe-lock") / ".safeyolo/host-setup.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.parent.chmod(0o700)
         source = lock_path.with_name("lock-source")
         source.write_text("synthetic")
         if lock_kind == "hardlink":
@@ -1897,6 +1898,22 @@ class TestRunAgent:
         with pytest.raises(RuntimeError, match=expected):
             with _agent_host_setup_lock("unsafe-lock"):
                 pass
+
+    def test_setup_lock_rejects_symlinked_state_directory(self, config_dir, tmp_path):
+        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.vm import ensure_agent_persistent_dirs, get_agent_home_dir
+
+        ensure_agent_persistent_dirs("unsafe-parent")
+        state_dir = get_agent_home_dir("unsafe-parent") / ".safeyolo"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        state_dir.symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(RuntimeError, match="unsafe host setup directory"):
+            with _agent_host_setup_lock("unsafe-parent"):
+                pass
+
+        assert not (outside / "host-setup.lock").exists()
 
     def test_already_running_exits_one(self, runner, config_dir, tmp_path):
         """If sandbox is already running, exits 1 with helpful message."""
