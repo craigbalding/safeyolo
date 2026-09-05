@@ -45,13 +45,14 @@ class PatternRule:
     """A user-defined pattern detection rule.
 
     Attributes:
-        name: Human-readable rule name (used in logs/responses)
+        name: Human-readable rule name (used as bounded finding identity)
         pattern: Compiled regex pattern
         target: Direction to scan - "request", "response", or "both"
         scope: Where to scan - set of "url", "headers", "body"
         action: What to do on match - "block" or "log"
         severity: For logging/alerting - "low", "medium", "high", "critical"
-        message: Custom message shown when pattern matches
+        message: Custom policy message retained for configuration; the scanner
+            does not publish it in logs or block responses
         case_sensitive: Whether pattern matching is case-sensitive
     """
     name: str
@@ -100,14 +101,17 @@ def compile_pattern(pattern_str: str, case_sensitive: bool = True) -> re.Pattern
 
     for indicator in dangerous_indicators:
         if indicator in pattern_str:
-            log.warning(f"Rejected potentially dangerous pattern: {pattern_str[:50]}...")
+            log.warning("Rejected potentially dangerous pattern (length=%d)", len(pattern_str))
             return None
 
     try:
         flags = 0 if case_sensitive else re.IGNORECASE
         return re.compile(pattern_str, flags)
     except re.error as err:
-        log.warning(f"Invalid regex pattern '{pattern_str[:50]}...': {err}")
+        # Regex diagnostics can include excerpts of the policy pattern. Keep
+        # operational logs structural; the policy store remains the source of
+        # configuration details for an authorized operator.
+        log.warning("Invalid regex pattern (%s)", type(err).__name__)
         return None
 
 
@@ -125,7 +129,7 @@ def _parse_scope(scope_config) -> set[str]:
         if s_lower in VALID_SCOPES:
             result.add(s_lower)
         else:
-            log.warning(f"Invalid scope '{s}', ignoring (valid: {VALID_SCOPES})")
+            log.warning("Invalid scope value, ignoring (valid scopes=%d)", len(VALID_SCOPES))
 
     return result if result else {"body"}
 
@@ -157,7 +161,7 @@ def load_patterns_from_config(scan_patterns: list[dict]) -> list[PatternRule]:
         pattern_str = config.get("pattern")
 
         if not name or not pattern_str:
-            log.warning(f"Skipping pattern config missing name or pattern: {config}")
+            log.warning("Skipping pattern config missing name or pattern")
             continue
 
         # Normalize target (accept both "request"/"response" and "input"/"output")
@@ -166,7 +170,7 @@ def load_patterns_from_config(scan_patterns: list[dict]) -> list[PatternRule]:
         target = target_map.get(target, target)
 
         if target not in ("request", "response", "both"):
-            log.warning(f"Invalid target '{target}' for pattern '{name}', defaulting to 'both'")
+            log.warning("Invalid pattern target, defaulting to 'both'")
             target = "both"
 
         # Parse scope
@@ -175,7 +179,7 @@ def load_patterns_from_config(scan_patterns: list[dict]) -> list[PatternRule]:
         # Normalize action
         action = config.get("action", "log")
         if action not in ("block", "log"):
-            log.warning(f"Invalid action '{action}' for pattern '{name}', defaulting to 'log'")
+            log.warning("Invalid pattern action, defaulting to 'log'")
             action = "log"
 
         case_sensitive = config.get("case_sensitive", True)
@@ -295,7 +299,7 @@ def load_builtin_set(set_name: str) -> list[dict]:
         List of pattern config dicts, or empty list if not found
     """
     if set_name not in BUILTIN_PATTERN_SETS:
-        log.warning(f"Unknown builtin pattern set '{set_name}', available: {list(BUILTIN_PATTERN_SETS.keys())}")
+        log.warning("Unknown builtin pattern set (available=%d)", len(BUILTIN_PATTERN_SETS))
         return []
 
     return BUILTIN_PATTERN_SETS[set_name]
