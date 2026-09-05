@@ -400,6 +400,13 @@ def test_factory_run_executes_staged_worker_commands(
     platform.stop_sandbox.side_effect = stop_sandbox
     platform.exec_in_sandbox.side_effect = exec_in_sandbox
 
+    # The fake platform launches three 4-CPU agents in one process. Give the
+    # aggregate guard an explicit test capacity rather than coupling this
+    # lifecycle test to the host that runs it.
+    monkeypatch.setattr(
+        "safeyolo.host_resources._read_cpu_capacity",
+        lambda: (12, "automatic: test CPU capacity"),
+    )
     monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
     monkeypatch.setattr("safeyolo.commands.agent.is_proxy_running", lambda: True)
     monkeypatch.setattr(

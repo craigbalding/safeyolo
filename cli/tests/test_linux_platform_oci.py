@@ -425,13 +425,30 @@ def test_normal_launch_keeps_systemd_resource_scope(monkeypatch):
         "_systemd_user_scope_available",
         lambda: (True, "available"),
     )
+    monkeypatch.setattr(linux, "_host_tasks_max", lambda: None)
 
     command = linux._sandbox_launch_command(direct, "normal", 1536, 3)
 
     assert command[:3] == ["systemd-run", "--user", "--scope"]
     assert "MemoryMax=1536M" in command
     assert "CPUQuota=300%" in command
+    assert "TasksMax=" not in command
     assert command[-3:] == direct
+
+
+def test_systemd_scope_adds_detected_tasks_limit(monkeypatch):
+    from safeyolo.platform import linux
+
+    monkeypatch.setattr(
+        linux,
+        "_systemd_user_scope_available",
+        lambda: (True, "available"),
+    )
+    monkeypatch.setattr(linux, "_host_tasks_max", lambda: 321)
+
+    command = linux._sandbox_launch_command(["runsc", "start", "agent"], "normal", 1536, 3)
+
+    assert "TasksMax=321" in command
 
 
 def test_etxtbsy_experiment_workspace_dcache_rejects_invalid_value(

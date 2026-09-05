@@ -52,6 +52,14 @@ DEFAULT_CONFIG = {
         # otherwise falls back to SafeYolo's generic 1280x800 geometry.
         "size": "auto",
     },
+    # Host protection is separate from per-agent sizing in policy.toml.
+    # Null values use host-derived admission boundaries.
+    "host_resources": {
+        "cpu_ceiling": None,
+        "memory_ceiling_mb": None,
+        "disk_min_free_bytes": None,
+        "process_limit": None,
+    },
     "notifications": {
         "method": "none",
     },

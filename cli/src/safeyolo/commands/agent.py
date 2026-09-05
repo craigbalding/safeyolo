@@ -789,10 +789,40 @@ def _run_agent_impl(
             debug_mode=_debug_mode,
         )
 
+    # Admission is checked before SafeYolo writes its per-run config share.
+    # The lock makes concurrent starts observe one another's running
+    # allocations instead of racing on a stale aggregate total.
+    host_guard = None
+    try:
+        from ..host_resources import HostResourceAdmissionError, HostResourceGuard
+
+        host_guard = HostResourceGuard(
+            name=name,
+            requested_cpu=cpus_for_run,
+            requested_memory_mb=memory_for_run,
+        ).acquire()
+        host_guard.admit(
+            extra_paths=[workspace_path, *(Path(share[0]) for share in extra_shares)]
+        )
+    except (HostResourceAdmissionError, ValueError) as err:
+        if host_guard is not None:
+            host_guard.release()
+        console.print(f"[red]Host resource admission refused:[/red] {escape(str(err))}")
+        raise typer.Exit(1)
+    except Exception as err:  # noqa: BLE001 - fail closed on incomplete host facts
+        if host_guard is not None:
+            host_guard.release()
+        console.print(
+            "[red]Host resource admission check failed; refusing to start:[/red] "
+            f"{escape(str(err))}"
+        )
+        raise typer.Exit(1)
+
     try:
         _t("prepare_config_share (write env files, scripts)")
         _do_prepare_config_share(snapshot_mode)
     except Exception as err:
+        host_guard.release()
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
         raise typer.Exit(1)
 
@@ -800,12 +830,15 @@ def _run_agent_impl(
     # infrastructure error has passed. Any tmux window rename must happen
     # at this boundary, not earlier — an earlier failure would leave the
     # window renamed with nothing behind it (issue #330).
-    if rename_tmux_window:
-        rename_window_for_agent(name)
+    try:
+        if rename_tmux_window:
+            rename_window_for_agent(name)
+        write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
+    except BaseException:
+        host_guard.release()
+        raise
 
     run_background = detach
-
-    write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     exit_code = 0
     try:
         import time as _time
@@ -840,6 +873,8 @@ def _run_agent_impl(
                 restore_from_path=restore_src,
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
             )
+            # Keep the host-resource lock through restore readiness. A failed
+            # restore is stopped before the cold-boot fallback below.
             # agent_map was populated pre-start_sandbox (attribution_ip +
             # optional bridge socket). Nothing to re-register here.
 
@@ -883,6 +918,8 @@ def _run_agent_impl(
 
             if restore_ok:
                 console.print(" [green]ready[/green]")
+                if host_guard is not None:
+                    host_guard.release()
             else:
                 console.print(" [yellow]failed[/yellow]")
                 console.print("  [yellow]Snapshot invalidated; cold-booting.[/yellow]")
@@ -923,6 +960,8 @@ def _run_agent_impl(
                 snapshot_capture_path=capture_path,
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
             )
+            if host_guard is not None:
+                host_guard.release()
             if _start_lock is not None:
                 _start_lock.release()
             # agent_map was populated pre-start_sandbox (attribution_ip +
@@ -1074,6 +1113,12 @@ def _run_agent_impl(
         exit_code = 1
     except KeyboardInterrupt:
         exit_code = 130
+    finally:
+        # Covers failures before start_sandbox and a failed restore attempt.
+        # Successful starts release the lock earlier so an interactive agent
+        # does not serialize unrelated future starts.
+        if host_guard is not None:
+            host_guard.release()
 
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {exit_code})", agent=name, details={"exit_code": exit_code})
 
