@@ -1,8 +1,10 @@
 """Tests for the compact repository map."""
 
 import subprocess
+import sys
 from pathlib import Path
 
+import safeyolo.repo_map as repo_map
 from safeyolo.repo_map import _task_query_terms, build_repo_map, build_repo_query, main
 
 
@@ -269,3 +271,147 @@ def test_command_exposes_task_query_observability(tmp_path, capsys):
     assert "files=" in output
     assert "elapsed_ms=" in output
     assert "pkg/app.py" in output
+
+
+def test_exact_symbol_query_returns_definition_defaults_docstring_and_use(tmp_path):
+    repository = _repository(tmp_path)
+    (repository / "pkg/api.py").write_text(
+        "def send(body: str, *, notify=None):\n"
+        '    """Send without attention unless notify is supplied."""\n'
+        "    return body, notify\n"
+    )
+    (repository / "pkg/admin_api.py").write_text("def send(body):\n    return body\n")
+    (repository / "tests").mkdir()
+    (repository / "tests/test_api.py").write_text(
+        "from pkg import api\n\n"
+        "def test_send():\n"
+        '    assert api.send("hello", notify=["worker"]) == ("hello", ["worker"])\n'
+    )
+
+    for query in ("api.send", "api.send()", "pkg.api.send"):
+        result = build_repo_query(repository, query)
+        assert "DEFINITION pkg/api.py:1-3" in result.text
+        assert "1: def send(body: str, *, notify=None):" in result.text
+        assert '2:     """Send without attention unless notify is supplied."""' in result.text
+        assert "admin_api.py" not in result.text
+    result = build_repo_query(repository, "api.send")
+    assert "EXAMPLE USE (text match; binding not verified) tests/test_api.py:4" in result.text
+    assert 'api.send("hello", notify=["worker"])' in result.text
+    assert result.indexed_files == 0
+
+
+def test_exact_method_query_qualifies_class_and_preserves_decorators(tmp_path):
+    repository = _repository(tmp_path)
+    (repository / "pkg/app.py").write_text(
+        "class Service:\n    @staticmethod\n    def create(name='default'):\n        return name\n"
+        "class Other:\n    def create(self):\n        pass\n"
+    )
+    result = build_repo_query(repository, "Service.create")
+    assert "DEFINITION pkg/app.py:2-4" in result.text
+    assert "2:     @staticmethod" in result.text
+    assert "Other" not in result.text
+
+
+def test_long_symbol_preview_labels_omission_and_keeps_the_end(tmp_path):
+    repository = _repository(tmp_path)
+    (repository / "pkg/app.py").write_text("def lengthy():\n" + "    # implementation\n" * 100 + "    return 'end'\n")
+    result = build_repo_query(repository, "lengthy")
+    assert "DEFINITION pkg/app.py:1-102" in result.text
+    assert "42 lines omitted; full range 1-102" in result.text
+    assert "102:     return 'end'" in result.text
+
+
+def test_exact_symbol_cache_follows_local_edits_and_renames(tmp_path):
+    repository = _repository(tmp_path)
+    first = build_repo_query(repository, "app.create")
+    assert "DEFINITION pkg/app.py:5-6" in first.text
+    (repository / "pkg/app.py").write_text("def replacement():\n    return 42\n")
+    assert "DEFINITION" not in build_repo_query(repository, "app.create").text
+    assert "return 42" in build_repo_query(repository, "app.replacement").text
+    (repository / "pkg/app.py").rename(repository / "pkg/renamed.py")
+    assert "DEFINITION" not in build_repo_query(repository, "app.replacement").text
+    assert "DEFINITION pkg/renamed.py:1-2" in build_repo_query(repository, "renamed.replacement").text
+
+
+def test_installed_hints_match_project_and_local_hints_win(tmp_path, monkeypatch):
+    (tmp_path / "repo").mkdir()
+    repository = _repository(tmp_path / "repo")
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    bundled = installed / "repo-map.toml"
+    bundled.write_text(
+        'version = 1\nproject = "example"\n[[hints]]\nid = "installed"\n'
+        'triggers = ["service"]\nadvice = "Reuse the service."\nsource = "README.md"\n'
+    )
+    monkeypatch.setattr(repo_map, "__file__", str(installed / "repo-map"))
+    assert build_repo_query(repository, "service").hints_file is None
+    (repository / "pyproject.toml").write_text('[project]\nname = "other"\n')
+    assert build_repo_query(repository, "service").hints_file is None
+    (repository / "pyproject.toml").write_text('[project]\nname = "example"\n')
+    result = build_repo_query(repository, "service")
+    assert result.hints_file == bundled
+    assert "[installed]" in result.text
+    (repository / "repo-map.toml").write_text("version = 1\n")
+    result = build_repo_query(repository, "service")
+    assert result.hints_file == repository / "repo-map.toml"
+    assert "[installed]" not in result.text
+
+
+def test_installed_command_symlink_finds_sibling_guidance(tmp_path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _repository(repository)
+    (repository / "pyproject.toml").write_text('[project]\nname = "example"\n')
+    installed = tmp_path / "managed"
+    installed.mkdir()
+    script = installed / "repo-map"
+    script.write_bytes(Path(repo_map.__file__).read_bytes())
+    (installed / "repo-map.toml").write_text(
+        'version = 1\nproject = "example"\n[[hints]]\nid = "installed"\n'
+        'triggers = ["service"]\nadvice = "Reuse the service."\nsource = "README.md"\n'
+    )
+    command = tmp_path / "bin/repo-map"
+    command.parent.mkdir()
+    command.symlink_to(script)
+
+    result = subprocess.run(
+        [sys.executable, str(command), "--query", "service"],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert f"# guidance_file={installed / 'repo-map.toml'}" in result.stdout
+    assert "[installed]" in result.stdout
+
+
+def test_query_prioritises_specific_symbols_over_earlier_partial_matches(tmp_path):
+    repository = _repository(tmp_path)
+    (repository / "tests").mkdir()
+    (repository / "tests/test_coord.py").write_text(
+        "".join(f"def test_coord_case_{index}():\n    pass\n\n" for index in range(6))
+        + "def test_send_stdin_encoding():\n    pass\n"
+    )
+
+    result = build_repo_query(repository, "coord send stdin encoding")
+
+    assert "function test_send_stdin_encoding @19-20" in result.text
+    assert result.text.index("function test_send_stdin_encoding") < result.text.index("function test_coord_case_0")
+
+
+def test_guidance_documents_do_not_crowd_out_all_tests(tmp_path):
+    repository = _repository(tmp_path)
+    (repository / "tests").mkdir()
+    (repository / "tests/test_service.py").write_text("def test_service():\n    assert True\n")
+    for number in range(3):
+        (repository / f"guide{number}.md").write_text("Service lifecycle guidance\n")
+    (repository / "repo-map.toml").write_text(
+        'version = 1\n[[hints]]\nid = "service"\ntriggers = ["service"]\n'
+        'advice = "Use existing service."\nsource = "guide0.md"\n'
+        'paths = ["guide0.md", "guide1.md", "guide2.md"]\n'
+    )
+    result = build_repo_query(repository, "service lifecycle", limit=6)
+    assert "RELATED TESTS" in result.text
+    assert "tests/test_service.py" in result.text
+    assert "RELATED DOCUMENTATION" in result.text

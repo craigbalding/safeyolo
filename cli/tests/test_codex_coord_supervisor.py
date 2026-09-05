@@ -427,6 +427,50 @@ def test_empty_wait_is_idle_only_from_structured_success(supervisor_module, tmp_
     assert module.load_state(state_path)["safe_cursor"] == 0
 
 
+@pytest.mark.parametrize("harness", ["codex", "pi"])
+def test_prompt_explains_targeted_history_recovery_without_routine_replay(supervisor_module, tmp_path, harness):
+    module = supervisor_module
+    prompt = module.build_prompt(_config(module, tmp_path, harness=harness), module.empty_state(), {})
+    assert "recover it with read_room" in prompt
+    assert "since_sequence=N-1 and limit=1" in prompt
+    assert "room-history cursor is separate from safe_cursor" in prompt
+    assert "Do not reread history on every wake" in prompt
+
+
+def test_pi_history_does_not_complete_work_or_advance_attention(supervisor_module, tmp_path):
+    module = supervisor_module
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(_config(module, tmp_path, harness="pi"), state, state_path, {"room-1": "backlog"})
+    attention_id = "attn-" + "d" * 32
+    consumer.accept_attention_page([_resolved(attention_id)], 12)
+    before = json.loads(json.dumps(state))
+    consumer.consume(
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "read-1",
+            "toolName": "read_room",
+            "args": {"room_name": "backlog", "since_sequence": 40, "limit": 1},
+        }
+    )
+    consumer.consume(
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "read-1",
+            "toolName": "read_room",
+            "result": {
+                "details": {
+                    "messages": [{"body": f"DONE target={WORK_ONE_TARGET} attention_id={attention_id}"}],
+                    "next_cursor": 500,
+                }
+            },
+            "isError": False,
+        }
+    )
+    assert state == before
+    assert consumer.result.terminal_observed is False
+
+
 @pytest.mark.parametrize(
     "event_change",
     [
@@ -1606,6 +1650,28 @@ def test_one_correlation_label_cannot_complete_two_attentions(supervisor_module,
     }
 
 
+@pytest.mark.parametrize("harness", ["codex", "pi"])
+def test_prompt_omits_dedup_history_but_preserves_active_work(supervisor_module, tmp_path, harness):
+    module = supervisor_module
+    config = replace(_factory_config(module, tmp_path, "owner"), harness=harness)
+    state = module.empty_state()
+    state["recent_attention_ids"] = ["attn-" + "b" * 32]
+    state["in_flight"] = [{"attention_id": "attn-" + "a" * 32, "body": f"TASK target={WORK_ONE_TARGET}"}]
+    state["awaiting_handoffs"] = [{"request": "REVIEW_READY", "correlation": {"target": _review_target()}}]
+    state["safe_cursor"] = 12
+    state["briefs"] = {"backlog": {"revision": 1, "markdown": "Keep useful work moving."}}
+    before = json.dumps(state, sort_keys=True)
+
+    prompt = module.build_prompt(config, state, {"room-1": "backlog"})
+    checkpoint = json.loads(prompt.split("Supervisor checkpoint:\n", 1)[1])
+
+    assert "recent_attention_ids" not in checkpoint
+    assert state["recent_attention_ids"][0] not in prompt
+    for key in ("in_flight", "awaiting_handoffs", "briefs", "safe_cursor"):
+        assert checkpoint[key] == state[key]
+    assert json.dumps(state, sort_keys=True) == before
+
+
 def test_recovery_prompt_uses_checkpoint_and_skips_wait(supervisor_module, tmp_path):
     module = supervisor_module
     attention_id = "attn-" + "e" * 32
@@ -1949,6 +2015,8 @@ def test_new_external_work_preserves_thread_after_outbound_handoff(
     )
 
     def invoke(config, state, current_path, room_ids, codex_args):
+        assert state["thread_id"] is None
+        state["thread_id"] = "new-work-thread"
         state["awaiting_handoffs"] = [
             {
                 "room_name": "backlog",
@@ -1969,9 +2037,65 @@ def test_new_external_work_preserves_thread_after_outbound_handoff(
 
     assert supervisor.cycle() is True
     persisted = module.load_state(state_path)
-    assert persisted["thread_id"] == "healthy-thread"
+    assert persisted["thread_id"] == "new-work-thread"
     assert persisted["in_flight"][0]["attention_id"] == attention_id
     assert persisted["awaiting_handoffs"][0]["recipient_agent"] == "lens"
+
+
+@pytest.mark.parametrize("harness", ["codex", "pi"])
+def test_settled_session_is_retired_before_new_attention(supervisor_module, tmp_path, monkeypatch, harness):
+    module = supervisor_module
+    state_path = tmp_path / "state.json"
+    state = module.empty_state()
+    state["harness"] = harness
+    state["thread_id"] = "completed-review-thread"
+    state["safe_cursor"] = 7
+    state["recent_attention_ids"] = ["attn-" + "7" * 32]
+    module.save_state(state_path, state)
+    monkeypatch.setattr(module, "preflight", lambda *args: {"room-1": "backlog"})
+    monkeypatch.setattr(module, "reconcile_terminals", lambda *args: False)
+
+    def wait(config, current):
+        assert current["thread_id"] is None
+        assert current["safe_cursor"] == 7
+        return {"objects": [], "next_cursor": 7}
+
+    monkeypatch.setattr(module, "wait_for_attention_page", wait)
+    monkeypatch.setattr(module, "run_invocation", lambda *args: pytest.fail("retirement must not launch a harness"))
+    supervisor = module.Supervisor(_config(module, tmp_path, harness=harness), state_path, [])
+    assert supervisor.cycle() is True
+    persisted = module.load_state(state_path)
+    assert persisted["thread_id"] is None
+    assert persisted["recent_attention_ids"] == state["recent_attention_ids"]
+    assert persisted["safe_cursor"] == 7
+
+
+@pytest.mark.parametrize("harness", ["codex", "pi"])
+def test_pending_handoff_keeps_session_even_without_inbound_work(supervisor_module, tmp_path, monkeypatch, harness):
+    module = supervisor_module
+    state_path = tmp_path / "state.json"
+    state = module.empty_state()
+    state["harness"] = harness
+    state["thread_id"] = "waiting-for-review"
+    state["awaiting_handoffs"] = [
+        {
+            "room_name": "backlog",
+            "request": "REVIEW_READY",
+            "recipient_agent": "lens",
+            "body": f"REVIEW_READY target={_review_target()}",
+            "correlation": {"target": _review_target()},
+        }
+    ]
+    module.save_state(state_path, state)
+    monkeypatch.setattr(module, "preflight", lambda *args: {"room-1": "backlog"})
+    monkeypatch.setattr(module, "reconcile_terminals", lambda *args: False)
+    monkeypatch.setattr(module, "wait_for_attention_page", lambda *args: {"objects": [], "next_cursor": 0})
+    monkeypatch.setattr(module, "run_invocation", lambda *args: pytest.fail("empty wait must not launch a harness"))
+    config = replace(_factory_config(module, tmp_path, "owner"), harness=harness)
+    supervisor = module.Supervisor(config, state_path, [])
+    assert supervisor.cycle() is True
+    assert module.load_state(state_path)["thread_id"] == "waiting-for-review"
+    assert supervisor.state["awaiting_handoffs"] == state["awaiting_handoffs"]
 
 
 def test_brief_only_external_attention_does_not_launch_codex(

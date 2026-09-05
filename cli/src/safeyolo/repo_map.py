@@ -15,7 +15,7 @@ import sys
 import time
 import tomllib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -46,6 +46,7 @@ class RepoQuery:
     indexed_files: int
     cached_files: int
     elapsed_ms: int
+    hints_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -54,12 +55,14 @@ class _QuerySymbol:
     kind: str
     line: int
     end_line: int | None = None
+    qualified_name: str = ""
 
 
 @dataclass(frozen=True)
 class _QueryRecord:
     path: str
     terms: Counter[str]
+    symbols: tuple[_QuerySymbol, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,7 +82,8 @@ _DETAIL_IMPORT_LIMIT = 8
 _QUERY_TERM_LIMIT = 32
 _QUERY_FILE_LIMIT = 10
 _QUERY_FILE_BYTES = 1_000_000
-_QUERY_CACHE_VERSION = 2
+_QUERY_CACHE_VERSION = 3
+_SOURCE_PREVIEW_LINES = 60
 _SHELL_FUNCTION = re.compile(
     r"^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*\))?"
     r"|([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\))\s*\{"
@@ -482,11 +486,24 @@ def _python_query_symbols(source: str) -> list[_QuerySymbol]:
     except SyntaxError:
         return []
     symbols = []
-    for node in ast.walk(module):
-        if isinstance(node, ast.ClassDef):
-            symbols.append(_QuerySymbol(node.name, "class", node.lineno, node.end_lineno))
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            symbols.append(_QuerySymbol(node.name, "function", node.lineno, node.end_lineno))
+
+    def visit(node: ast.AST, parents: tuple[str, ...] = ()) -> None:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            parents = (*parents, node.name)
+            start = min([node.lineno, *(decorator.lineno for decorator in node.decorator_list)])
+            symbols.append(
+                _QuerySymbol(
+                    node.name,
+                    "class" if isinstance(node, ast.ClassDef) else "function",
+                    start,
+                    node.end_lineno,
+                    ".".join(parents),
+                )
+            )
+        for child in ast.iter_child_nodes(node):
+            visit(child, parents)
+
+    visit(module)
     return sorted(symbols, key=lambda item: (item.line, item.name))
 
 
@@ -527,6 +544,7 @@ def _save_query_cache(path: Path, records: dict[str, tuple[str, _QueryRecord]]) 
             name: {
                 "digest": digest,
                 "terms": dict(record.terms),
+                "symbols": [asdict(symbol) for symbol in record.symbols],
             }
             for name, (digest, record) in sorted(records.items())
         },
@@ -556,6 +574,7 @@ def _query_records(root: Path, cache_path: Path) -> tuple[list[_QueryRecord], in
                 record = _QueryRecord(
                     path=name,
                     terms=Counter(cached["terms"]),
+                    symbols=tuple(_QuerySymbol(**value) for value in cached["symbols"]),
                 )
             except (KeyError, TypeError):
                 record = None
@@ -567,6 +586,7 @@ def _query_records(root: Path, cache_path: Path) -> tuple[list[_QueryRecord], in
         record = _QueryRecord(
             path=name,
             terms=_query_terms(source),
+            symbols=tuple(_query_symbols(relative, source)),
         )
         current[name] = (digest, record)
         indexed_files += 1
@@ -575,8 +595,29 @@ def _query_records(root: Path, cache_path: Path) -> tuple[list[_QueryRecord], in
     return [record for _, record in current.values()], indexed_files, cached_files
 
 
+def _query_hint_path(root: Path, requested: Path | None) -> Path | None:
+    if requested is not None:
+        return requested
+    local = root / "repo-map.toml"
+    if local.exists():
+        return local
+    # Installed guidance is optional and applies only to its named project.
+    # A local checkout's own guidance always wins, including on older branches.
+    bundled = Path(__file__).resolve().with_name("repo-map.toml")
+    try:
+        hints = tomllib.loads(bundled.read_text(encoding="utf-8"))
+        project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    if hints.get("project") and hints["project"] == project.get("project", {}).get("name"):
+        return bundled
+    return None
+
+
 def _load_query_hints(root: Path, requested: Path | None) -> list[_QueryHint]:
-    path = requested or root / "repo-map.toml"
+    path = _query_hint_path(root, requested)
+    if path is None:
+        return []
     if not path.exists():
         return []
     try:
@@ -664,6 +705,7 @@ def _rank_query_records(
     selected_weights = {term: weight for weight, term in selected_terms}
 
     ranked = []
+    exact_query = task.strip().removesuffix("()")
     for record in records:
         path_terms = set(_query_terms(record.path))
         score = 0.0
@@ -699,8 +741,11 @@ def _rank_query_records(
                     break
         if hint_matches:
             reasons.append("guidance=" + ",".join(hint_matches))
-        if score <= 0:
+        exact_symbols = [symbol for symbol in record.symbols if _symbol_matches(record.path, symbol, exact_query)]
+        if score <= 0 and not exact_symbols:
             continue
+        if exact_symbols:
+            reasons.insert(0, "definition=" + exact_query)
         if lexical_matches:
             lexical_matches.sort(reverse=True)
             reasons.append("text=" + ",".join(term for _, term in lexical_matches[:4]))
@@ -710,14 +755,18 @@ def _rank_query_records(
                 "score": round(score, 2),
                 "category": _query_category(record.path),
                 "reasons": reasons,
-                "symbols": [],
+                "symbols": list(record.symbols),
+                "exact_symbols": exact_symbols,
             }
         )
-    ranked.sort(key=lambda value: (-float(value["score"]), str(value["path"])))
+    ranked.sort(key=lambda value: (not value["exact_symbols"], -float(value["score"]), str(value["path"])))
     return ranked, matched_hints
 
 
 def _select_query_locations(ranked: list[dict[str, object]], limit: int) -> list[dict[str, object]]:
+    exact = [value for value in ranked if value["exact_symbols"]]
+    if exact:
+        return exact[:limit]
     implementation = [value for value in ranked if value["category"] == "implementation"]
     support = [value for value in ranked if value["category"] != "implementation"]
     support_limit = min(3, max(1, limit // 3)) if support else 0
@@ -733,15 +782,20 @@ def _select_query_locations(ranked: list[dict[str, object]], limit: int) -> list
         parent_counts[parent] += 1
         if len(diverse_implementation) == implementation_limit:
             break
-    return [*diverse_implementation, *support[:support_limit]][:limit]
+    # Keep tests visible even when several guidance documents rank strongly.
+    selected_support = []
+    for category in ("test", "documentation"):
+        match = next((value for value in support if value["category"] == category), None)
+        if match is not None and len(selected_support) < support_limit:
+            selected_support.append(match)
+    for value in support:
+        if value not in selected_support and len(selected_support) < support_limit:
+            selected_support.append(value)
+    selected = [*diverse_implementation, *selected_support]
+    return (selected + [value for value in ranked if value not in selected])[:limit]
 
 
-def _query_symbols_for_path(root: Path, relative: str) -> list[_QuerySymbol]:
-    path = root / relative
-    try:
-        source = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return []
+def _query_symbols(path: Path, source: str) -> list[_QuerySymbol]:
     first_line = source.partition("\n")[0]
     if path.suffix == ".py" or (not path.suffix and "python" in first_line):
         return _python_query_symbols(source)
@@ -750,12 +804,67 @@ def _query_symbols_for_path(root: Path, relative: str) -> list[_QuerySymbol]:
     return []
 
 
-def _enrich_query_locations(root: Path, task: str, locations: list[dict[str, object]]) -> None:
+def _symbol_matches(path: str, symbol: _QuerySymbol, query: str) -> bool:
+    if not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", query):
+        return False
+    module = Path(path).with_suffix("").as_posix().replace("/", ".")
+    if module.endswith(".__init__"):
+        module = module.removesuffix(".__init__")
+    qualified = f"{module}.{symbol.qualified_name or symbol.name}"
+    return qualified == query or qualified.endswith("." + query)
+
+
+def _enrich_query_locations(task: str, locations: list[dict[str, object]]) -> None:
     query_terms = set(_task_query_terms(task))
     for location in locations:
-        symbols = _query_symbols_for_path(root, str(location["path"]))
+        symbols = location["symbols"]
         relevant = [symbol for symbol in symbols if set(_query_terms(symbol.name)) & query_terms]
-        location["symbols"] = (relevant or symbols[:3])[:5]
+        relevant.sort(key=lambda symbol: len(set(_query_terms(symbol.name)) & query_terms), reverse=True)
+        location["symbols"] = location["exact_symbols"] or (relevant or symbols[:3])[:5]
+
+
+def _source_excerpt(path: Path, start: int, end: int, limit: int) -> list[str]:
+    source = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    numbered = [f"{index + 1}: {source[index]}" for index in range(start - 1, min(end, len(source)))]
+    if len(numbered) > limit:
+        tail = min(10, limit // 3)
+        return [
+            *numbered[: limit - tail],
+            f"... {len(numbered) - limit} lines omitted; full range {start}-{end} ...",
+            *numbered[-tail:],
+        ]
+    return numbered
+
+
+def _render_symbol_source(
+    root: Path, task: str, locations: list[dict[str, object]], records: list[_QueryRecord]
+) -> str:
+    lines = []
+    for location in locations:
+        for symbol in location["exact_symbols"]:
+            lines.append(f"DEFINITION {location['path']}:{symbol.line}-{symbol.end_line or symbol.line}")
+            lines.extend(
+                _source_excerpt(
+                    root / str(location["path"]), symbol.line, symbol.end_line or symbol.line, _SOURCE_PREVIEW_LINES
+                )
+            )
+    if not lines:
+        return ""
+    # This is a lexical usage example, not a resolved caller graph.
+    query = task.strip().removesuffix("()")
+    pattern = re.compile(r"(?<![\w.])" + re.escape(query) + r"\s*\(")
+    for record in sorted(records, key=lambda value: (_query_category(value.path) != "test", value.path)):
+        if not set(_query_terms(query)) <= record.terms.keys():
+            continue
+        for number, line in enumerate(
+            (root / record.path).read_text(encoding="utf-8", errors="replace").splitlines(), 1
+        ):
+            if not pattern.search(line) or re.search(r"\b(?:def|class)\s", line):
+                continue
+            lines.append(f"\nEXAMPLE USE (text match; binding not verified) {record.path}:{number}")
+            lines.extend(_source_excerpt(root / record.path, max(1, number - 1), number + 6, 8))
+            return "\n".join(lines)
+    return "\n".join(lines)
 
 
 def _render_repo_query(locations: list[dict[str, object]], guidance: list[dict[str, object]]) -> str:
@@ -806,15 +915,20 @@ def build_repo_query(
     records, indexed_files, cached_files = _query_records(root, cache_path or _default_query_cache(root))
     ranked, guidance = _rank_query_records(task, records, _load_query_hints(root, hints_path))
     locations = _select_query_locations(ranked, limit)
-    _enrich_query_locations(root, task, locations)
+    _enrich_query_locations(task, locations)
+    text = _render_repo_query(locations, guidance)
+    source = _render_symbol_source(root, task, locations, records)
+    if source:
+        text += "\n\n" + source
     return RepoQuery(
         root=root,
         head=_head_identity(root),
-        text=_render_repo_query(locations, guidance),
+        text=text,
         files=len(records),
         indexed_files=indexed_files,
         cached_files=cached_files,
         elapsed_ms=round((time.perf_counter() - started) * 1000),
+        hints_file=_query_hint_path(root, hints_path),
     )
 
 
@@ -856,7 +970,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--query",
         metavar="TEXT",
-        help=("rank likely implementation locations for a task and include matching repository guidance"),
+        help=(
+            "rank task locations and guidance; an exact Python symbol (e.g. api.send) also shows a definition preview and example use"
+        ),
     )
     parser.add_argument(
         "--hints",
@@ -889,6 +1005,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"files={result.files} indexed={result.indexed_files} "
                 f"cached={result.cached_files} elapsed_ms={result.elapsed_ms}"
             )
+            if result.hints_file:
+                print(f"# guidance_file={result.hints_file}")
             if result.text:
                 print(result.text)
             return 0

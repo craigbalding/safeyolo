@@ -705,7 +705,116 @@ def test_revoke_during_blocked_read_raises_no_membership(coord_env):
         asyncio.run(scenario())
 
 
-# ---------- 13. Stream config drift fails loud ----------
+# ---------- 13. Stream config upgrades and drift ----------
+
+
+@pytest.mark.timeout(30)
+def test_more_than_ten_rooms_share_storage_without_reservations(coord_env):
+    async def scenario():
+        for index in range(12):
+            name = f"room-{index}"
+            await api.create_room(name)
+            _grant(name, "agent", AGENT_A)
+            await api.send(name, "agent", AGENT_A, name)
+        js = await nats_client.get_jetstream()
+        account = await js.account_info()
+        assert account.streams == 12
+        assert account.storage > 0
+        for index in range(12):
+            page = await api.read_room(f"room-{index}", "agent", AGENT_A)
+            assert [m["body"] for m in page["messages"]] == [f"room-{index}"]
+
+    _run(scenario())
+
+
+@pytest.mark.timeout(30)
+def test_legacy_room_reservations_upgrade_in_place_before_new_room(coord_env):
+    async def scenario():
+        js = await nats_client.get_jetstream()
+        rooms = []
+        for index in range(10):
+            name = f"legacy-{index}"
+            room_id = await api.create_room(name)
+            _grant(name, "agent", AGENT_A)
+            sent = await api.send(name, "agent", AGENT_A, f"retained-{index}")
+            rooms.append((name, room_id, sent))
+        for _, room_id, _ in rooms:
+            config = (await js.stream_info(nats_client.stream_name_for_room(room_id))).config
+            config.max_bytes = 100 * 1024 * 1024
+            await js.update_stream(config)
+
+        # Exercise the normal create path, not an operator-only migration helper.
+        await api.create_room("eleventh")
+        for name, room_id, sent in rooms:
+            info = await js.stream_info(nats_client.stream_name_for_room(room_id))
+            assert info.config.max_bytes == -1
+            assert info.state.messages == 1
+            page = await api.read_room(name, "agent", AGENT_A)
+            assert page["messages"][0]["msg_id"] == sent["envelope"]["msg_id"]
+            assert page["messages"][0]["sequence"] == sent["sequence"]
+        # Startup reconciliation also upgrades retained rooms without creating one.
+        legacy_name = nats_client.stream_name_for_room(rooms[0][1])
+        config = (await js.stream_info(legacy_name)).config
+        await js.update_stream(config.evolve(max_bytes=100 * 1024 * 1024))
+        await api.recover_attention()
+        assert (await js.stream_info(legacy_name)).config.max_bytes == -1
+        # Repeating reconciliation must leave the same stream and message identities.
+        await api.recover_attention()
+        assert (await js.account_info()).streams == 11
+
+    _run(scenario())
+
+
+@pytest.mark.timeout(30)
+def test_shared_storage_still_rejects_writes_at_global_capacity(nats_env, monkeypatch):
+    # Exercise the real server at a small budget, not a GiB of fixture writes.
+    monkeypatch.setattr(nr, "JETSTREAM_MAX_FILE_STORE", 256 * 1024)
+    nr.start_server(ready_timeout=8)
+    nats_client.reset_for_tests()
+    api.bootstrap()
+
+    async def scenario():
+        for room in ("first", "second"):
+            await api.create_room(room)
+            _grant(room, "agent", AGENT_A)
+        accepted = 0
+        with pytest.raises(nats_client.NatsUnavailable, match="(storage|resources|maximum)"):
+            for index in range(40):
+                await api.send("first" if index % 2 else "second", "agent", AGENT_A, "x" * (16 * 1024))
+                accepted += 1
+        assert 0 < accepted < 40
+        for room in ("first", "second"):
+            page = await api.read_room(room, "agent", AGENT_A)
+            assert page["messages"]
+
+    _run(scenario())
+
+
+@pytest.mark.timeout(30)
+def test_room_upgrade_preserves_other_configuration_and_rejects_unknown_drift(coord_env):
+    async def scenario():
+        room_id = await api.create_room("r")
+        js = await nats_client.get_jetstream()
+        name = nats_client.stream_name_for_room(room_id)
+        config = (await js.stream_info(name)).config
+        config.max_bytes = 100 * 1024 * 1024
+        config.description = "Retain operator description"
+        await js.update_stream(config)
+        await nats_client.ensure_room_stream(room_id)
+        updated = (await js.stream_info(name)).config
+        assert updated.max_bytes == -1
+        assert updated.description == config.description
+        config = updated
+        config.max_bytes = 100 * 1024 * 1024
+        config.max_msgs = 17
+        await js.update_stream(config)
+        with pytest.raises(nats_client.StreamConfigDrift):
+            await nats_client.ensure_room_stream(room_id)
+        unchanged = (await js.stream_info(name)).config
+        assert unchanged.max_bytes == 100 * 1024 * 1024
+        assert unchanged.max_msgs == 17
+
+    _run(scenario())
 
 
 @pytest.mark.timeout(30)

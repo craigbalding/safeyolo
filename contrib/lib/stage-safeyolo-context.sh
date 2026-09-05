@@ -97,6 +97,7 @@ _stage_safeyolo_repo_map() {
 
     mkdir -p "$(dirname -- "$managed_path")" "$command_dir"
     install -m 0755 "$source_path" "$managed_path"
+    install -m 0644 "$repo_root/repo-map.toml" "$agent_home/.safeyolo/repo-map.toml"
     if [ ! -L "$command_path" ]; then
         ln -s "$command_target" "$command_path"
     fi

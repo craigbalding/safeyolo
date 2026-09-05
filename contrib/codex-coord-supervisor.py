@@ -1263,15 +1263,14 @@ def _matching_awaiting_handoff(
 
 def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]) -> str:
     pending = state["in_flight"]
-    recent = state["recent_attention_ids"]
     awaiting = state["awaiting_handoffs"]
+    # Historical IDs are supervisor deduplication state, not model work context.
     checkpoint = {
         "configured_room_ids": room_ids,
         "safe_cursor": state["safe_cursor"],
         "in_flight": pending,
         "awaiting_handoffs": awaiting,
         "briefs": state["briefs"],
-        "recent_attention_ids": recent,
     }
     if config.factory_name is not None:
         agents = _role_agents(config)
@@ -1389,6 +1388,11 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
             else "Use the bound role contract and canonical harness tool results. "
         )
         + "Do not decide success from prose or process status. "
+        + "Use the supplied checkpoint first. If a new session or compaction leaves a useful prior decision or "
+        "finding missing, recover it with read_room in the relevant Coord room. For a known message sequence N, "
+        "use since_sequence=N-1 and limit=1; verify the returned sequence, canonical sender, and work target. "
+        "A room-history cursor is separate from safe_cursor and reading history does not assign work. "
+        "Do not reread history on every wake when the needed context is already supplied. "
         + action
         + " Finish this invocation after the work above. Supervisor checkpoint:\n"
         + json.dumps(checkpoint, sort_keys=True, separators=(",", ":"))
@@ -2384,6 +2388,13 @@ class Supervisor:
         save_state(self.state_path, self.state)
         if reconcile_terminals(self.config, self.state):
             save_state(self.state_path, self.state)
+
+        if self.state["thread_id"] and not self.state["in_flight"] and not self.state["awaiting_handoffs"]:
+            # No work remains attached to this session. Keep Coord state and
+            # transcripts, but do not carry a completed exchange into new work.
+            self.state["thread_id"] = None
+            save_state(self.state_path, self.state)
+            _debug_event(self.debug, "session.retired", reason="work_settled")
 
         recovering_pending = bool(self.state["in_flight"]) and not self.state["awaiting_handoffs"]
 

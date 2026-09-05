@@ -1,6 +1,14 @@
 version = 1
+project = "safeyolo"
 
 # Within each hint, paths are ordered from the primary inspection location.
+
+[[hints]]
+id = "python-check-entrypoints"
+triggers = ["python", "pytest", "ruff", "test", "tests"]
+advice = "Run focused Python checks from the repository root with uv run pytest <relevant-test-paths> and uv run ruff check <changed-python-paths>. These use the project environment; bare pytest or ruff may select a different interpreter or miss installed tools. CI and pre-commit configure Ruff lint, not a whole-file Ruff format gate. Fix reported lint without unrelated reformatting."
+paths = []
+source = "pyproject.toml; .github/workflows/ci.yml; .pre-commit-config.yaml; docs/DEVELOPERS.md"
 
 [[hints]]
 id = "installed-agent-context"

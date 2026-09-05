@@ -644,6 +644,7 @@ def test_bundled_setup_reports_invalid_harness_config(
 def test_wheel_manifest_includes_coord_runtime_files() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     force_include = project["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    assert force_include["repo-map.toml"] == "safeyolo/repo-map.toml"
 
     assert force_include["contrib/coord-mcp-bootstrap.sh"] == ("safeyolo/contrib/coord-mcp-bootstrap.sh")
     assert force_include["contrib/safeyolo-coord-mcp-launcher.sh"] == (
@@ -1652,6 +1653,7 @@ def test_codex_context_stages_standalone_repo_map(tmp_path: Path) -> None:
 
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
     command = agent_home / ".safeyolo/repo-map"
+    assert (agent_home / ".safeyolo/repo-map.toml").read_bytes() == (REPO_ROOT / "repo-map.toml").read_bytes()
     result = subprocess.run(
         [str(command), str(REPO_ROOT / "cli/src/safeyolo/coord")],
         cwd=REPO_ROOT,

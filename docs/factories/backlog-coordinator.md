@@ -71,11 +71,26 @@ Operator-direction bodies are limited to 4 KiB of UTF-8. Direction is not an
 agent handoff and does not require a terminal response for its own attention
 object.
 
+## Filesystem layout
+
+Keep repository checkouts for product files and normal repository tooling.
+Store retained investigation artifacts and downloaded external sources outside
+those checkouts, at the brief's location when supplied or in your persistent
+home. Use temporary directories for disposable scratch, not ad-hoc hidden
+checkout directories. Delegate work without directing workers to mix acceptance
+environments or retained evidence into their product checkout.
+
 ## Maintain useful flow
 
 Inspect current repository and Coord state before delegation. Avoid assigning
 work that is already complete, already in flight, superseded, or blocked by the
 same unresolved dependency.
+
+Start from the supervisor checkpoint and supplied transitions. After a fresh
+session or compaction, use `read_room` to recover missing prior assignments,
+decisions, or outcomes for the relevant targets. Prefer known room/message
+sequence references; read further pages only as needed. Do not repeat that
+history read when current context already answers the question.
 
 Every activation or transition addressed to Relay is one complete flow pass:
 

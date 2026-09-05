@@ -332,7 +332,7 @@ def _event_line(
                     limit,
                     redact=redact,
                 )
-                label = "ERROR" if summary.get("isError") == "true" else "TOOL"
+                label = "TOOLERR" if summary.get("isError") == "true" else "TOOL"
             elif original_type == "safeyolo.supervisor":
                 action = str(summary.get("event", "event"))
                 detail = f"{action} {summary.get('message', '')}".rstrip()
@@ -382,7 +382,7 @@ def _event_line(
         return "DONE", "turn completed"
     if kind in {"tool_execution_start", "tool_execution_end"}:
         phase = "started" if kind.endswith("start") else "completed"
-        label = "ERROR" if event.get("isError") is True else "TOOL"
+        label = "TOOLERR" if event.get("isError") is True else "TOOL"
         return label, _pi_tool_detail(event, phase, limit, redact=redact)
     if kind == "message_end":
         message = event.get("message")
@@ -402,7 +402,7 @@ def _event_line(
                 return "THINK", _clean(item.get("text", ""), limit, redact=redact)
             if item.get("type") == "mcp_tool_call":
                 detail = _mcp_detail(item, phase, limit, redact=redact)
-                label = "ERROR" if item.get("error") or item.get("status") == "failed" else "TOOL"
+                label = "TOOLERR" if item.get("error") or item.get("status") == "failed" else "TOOL"
                 return label, detail
             if item_type in {"command_execution", "local_shell_call"}:
                 command = item.get("command") or item.get("action") or item.get("arguments") or ""
@@ -410,7 +410,10 @@ def _event_line(
                 exit_code = item.get("exit_code")
                 if isinstance(exit_code, int) and not isinstance(exit_code, bool):
                     prefix += f" rc={exit_code}"
-                label = "ERROR" if isinstance(exit_code, int) and exit_code != 0 else "TOOL"
+                # A non-zero command can be an intentional rejection probe.
+                # Report the tool result, not a factory/task disposition.
+                failed = isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0
+                label = "TOOLERR" if failed else "TOOL"
                 return label, _clean(f"{prefix} {command}", limit, redact=redact)
             if item_type in {"function_call", "custom_tool_call"}:
                 name = item.get("name") or item.get("tool") or "tool"
@@ -481,6 +484,7 @@ def _render(
         "AGENT": "32",
         "DONE": "32;1",
         "ERROR": "31;1",
+        "TOOLERR": "31;1",
         "STDERR": "31",
         "SUPERV": "36;1",
         "OP": "34;1",

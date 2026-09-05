@@ -39,7 +39,7 @@ console = Console()
 factory_app = typer.Typer(
     name="factory",
     help=(
-        "Check, approve, run, and diagnose supervised coord factories. "
+        "Check, approve, run, diagnose, and recover supervised coord factories. "
         "Fresh setup: add agents, check, approve, then run."
     ),
     no_args_is_help=True,
@@ -280,6 +280,33 @@ def doctor_factory(name: str = typer.Argument(..., help="Approved factory name")
     )
     if report.status == "FAIL":
         raise typer.Exit(1)
+
+
+@factory_app.command("release")
+def release_factory_work(  # DOC: docs/factories.md
+    name: str = typer.Argument(..., help="Approved factory whose agents hold the stopped work."),
+    target: list[str] = typer.Option(..., "--target", help="Exact target URL; repeat to select related review targets."),
+    room: str | None = typer.Option(None, "--room", help="Original work room; defaults to the approved factory room."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Release the displayed selection without prompting."),
+) -> None:
+    """Release selected checkpointed work after stopping the affected agents.
+
+    Preserve other work, files and room history. This does not cancel a live
+    turn or consume assignments still waiting in the attention feed.
+    """
+    from ..factory_recovery import release_stopped_work
+
+    def confirm(description: str) -> bool:
+        console.print(description, markup=False, soft_wrap=True)
+        return yes or typer.confirm("Release only these stopped-work records?")
+
+    try:
+        _identifier, _path, payload = load_approved_snapshot(name)
+        result = release_stopped_work(payload, room or payload["room"], set(target), confirm)
+    except (FactoryContractError, OSError, ValueError, RuntimeError) as exc:
+        console.print(f"Cannot release factory work: {exc}", markup=False, soft_wrap=True)
+        raise typer.Exit(1) from exc
+    console.print(result, markup=False, soft_wrap=True)
 
 
 def _print_snapshot(identifier: str, snapshot_path: Path, payload: dict[str, Any]) -> None:

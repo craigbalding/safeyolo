@@ -78,6 +78,20 @@ put that directory on the harness `PATH`. The helper refuses to overwrite a
 user-owned skill or command with a managed name. Custom standalone scripts may
 instead stage their own instructions.
 
+`repo-map --query "<task>"` returns likely local implementation, tests, and
+documentation. An exact Python symbol, such as `repo-map --query api.send`,
+returns its definition with defaults, annotations, and docstring, plus one
+lexical example use when found. Large definitions show a labelled 60-line
+preview with the full source range; the example is not a semantic binding claim.
+The tool reads the current working tree and caches content-derived symbols.
+Run it in the checkout being worked on, after selecting the task's revision.
+
+The helper also stages repository guidance beside the command. A checkout's
+`repo-map.toml` takes precedence. If that file is absent, installed guidance
+applies only when its `project` matches the checkout's `pyproject.toml` project
+name. This is hint selection, not repository authorization. Query output names
+the guidance file used; unrelated repositories do not receive SafeYolo hints.
+
 Sketch:
 
 ```sh
@@ -173,7 +187,7 @@ credential from another agent or from the host. The launcher starts Pi with
 user are forwarded unchanged and can alter Pi's trust behavior.
 
 For a factory role, `@pi-coord` adds the approved role contract and the small
-native Coord `send` extension, then hands Pi JSON turns to the common factory
+native Coord `send` and `read_room` extension, then hands Pi JSON turns to the common factory
 supervisor. The role's Pi session, Coord cursor, and pending work use the same
 checkpoint and recovery rules as a Codex role.
 On Alpine, support is conditional on the image's native `nodejs` package

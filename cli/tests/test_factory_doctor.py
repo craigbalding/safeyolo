@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +31,7 @@ from safeyolo.factory_doctor import (
     _expected_supervisor_config,
     _inspect_brief,
     _inspect_processes,
+    _process_rows,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -174,6 +176,72 @@ def test_doctor_accepts_the_supervisor_owned_pi_process_tree(tmp_path):
 
     assert [(check.status, check.component) for check in checks] == [("PASS", "processes")]
     assert "supervisor and Pi are running" in checks[0].detail
+
+
+@pytest.mark.parametrize("prompt", ["Lens's findings", 'Read the file named "example', "A trailing backslash \\"])
+def test_doctor_does_not_parse_supervisor_prompt_as_shell_syntax(prompt):
+    output = _healthy_pi_process_output(2).replace("-- --approve\n", f"-- --approve --append-system-prompt {prompt}\n")
+    checks = []
+    platform = SimpleNamespace(popen_in_sandbox=lambda *_args, **_kwargs: _Process(output))
+
+    _inspect_processes(checks, "forge", "forge", "pi", platform, {"pid": 102, "start_time": "1234"})
+
+    assert checks[0].status == "PASS", checks
+
+
+@pytest.mark.parametrize("executable, expected_status", [("/opt/node/bin/node", "PASS"), ("/tmp/node", "FAIL")])
+def test_doctor_checks_executable_when_pi_rewrites_its_process_title(executable, expected_status):
+    output = _healthy_pi_process_output(2).replace(
+        "node /home/agent/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/main.js --mode json --print",
+        "pi",
+    ).replace("102\t/opt/node/bin/node", f"102\t{executable}")
+    checks = []
+    platform = SimpleNamespace(popen_in_sandbox=lambda *_args, **_kwargs: _Process(output))
+
+    _inspect_processes(checks, "forge", "forge", "pi", platform, {"pid": 102, "start_time": "1234"})
+
+    assert checks[0].status == expected_status, checks
+
+
+def test_doctor_probe_finds_installed_pi_and_resolves_node_through_shim(tmp_path):
+    home = tmp_path / "home"
+    local_bin = home / ".local/bin"
+    shims = home / ".mise/shims"
+    local_bin.mkdir(parents=True)
+    shims.mkdir(parents=True)
+    pi = local_bin / "pi"
+    pi.write_text("#!/bin/sh\nexit 0\n")
+    pi.chmod(0o755)
+    # Like mise, the shim pathname is not the runtime executable pathname.
+    runtime_node = tmp_path / "runtime/bin/node"
+    runtime_node.parent.mkdir(parents=True)
+    runtime_node.touch()
+    node = shims / "node"
+    node.write_text(
+        '#!/bin/sh\n[ "$1" = "-p" ] && [ "$2" = "process.execPath" ] || exit 1\n'
+        f'printf "%s\\n" "{runtime_node}"\n'
+    )
+    node.chmod(0o755)
+    observed = {}
+
+    def probe(_agent, command, *, user):
+        assert user == "agent"
+        result = subprocess.run(
+            ["/bin/sh", "-c", command],
+            env={**os.environ, "HOME": str(home), "PATH": f"{shims}:/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        observed.update(_process_rows(result.stdout)[2])
+        return _Process(result.stdout)
+
+    _inspect_processes([], "forge", "forge", "pi", SimpleNamespace(popen_in_sandbox=probe), None)
+
+    assert observed["pi-command"] == str(pi)
+    assert observed["pi-executable"] == str(pi)
+    assert observed["node-executable"] == str(runtime_node)
 
 
 def test_expected_pi_supervised_command_matches_the_staged_launcher():

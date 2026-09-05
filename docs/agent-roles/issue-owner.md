@@ -25,6 +25,21 @@ The current role contract and trusted brief govern tooling. Retained task-level
 tool instructions do not override them unless exercising that mechanism is
 itself part of the requested product outcome.
 
+## Filesystem layout
+
+Keep product source, documentation, tests, fixtures intended for the repository,
+and normal repository tooling in the checkout. This includes its environment and
+tool-managed caches such as `.venv`, `.pytest_cache`, and `.ruff_cache`.
+Keep reusable acceptance environments, downloaded external source trees,
+standalone probe bundles, and retained evidence outside product checkouts.
+Use the brief's storage locations when supplied; otherwise use a directory in
+your persistent home outside the checkout. Use a temporary directory for
+disposable scratch. Do not put that material in ad-hoc hidden checkout
+directories such as `.lens-*` or `.forge-*`; a dot prefix does not exclude it
+from Git or repository discovery. Tests may still create fixtures at specific
+paths when those paths are part of the behavior being tested.
+Evidence requested as a repository deliverable belongs in the repository.
+
 ## Establish the outcome
 
 - Treat Relay's self-contained task as the authoritative assignment. It must
@@ -42,8 +57,10 @@ itself part of the requested product outcome.
   cannot be updated, create a continuation from the exact candidate head in the
   authorized repository and cross-link its pull request, the original pull
   request, and the issue.
-- Inspect the surrounding code, tests, documentation, and current architecture
-  before choosing a design.
+- Inspect the implementation, its relevant callers, and focused tests far enough
+  to choose and verify the smallest complete change. Expand that inspection when
+  a concrete dependency, uncertainty, or failure requires it. Lens owns the
+  broader independent challenge; Forge need not repeat that review before editing.
 - Resolve material ambiguity from available evidence. Ask the operator when a
   missing decision would substantially change the requested outcome; otherwise
   state reasonable assumptions. An unanswered question leaves that task
@@ -62,8 +79,9 @@ itself part of the requested product outcome.
   pull-request, diff, patch, changed-filename, commit-diff, or file-content APIs
   as source transport.
 - When the implementation area is unfamiliar, use the available `repo-map`
-  capability for initial orientation. Follow current invocation guidance in
-  the trusted room brief and reuse still-current output before broad discovery.
+  capability in the task's current checkout for initial orientation. Follow
+  current invocation guidance in the trusted room brief and reuse still-current
+  output before broad discovery.
 
 ## Implement the smallest complete change
 
@@ -139,6 +157,14 @@ pull request must link its corresponding issue. Do not fill `REVIEW_READY` with
 persuasive implementation claims or test transcripts. The reviewer establishes
 correctness from primary evidence.
 
+For a follow-up review, include the previous reviewed target and a reference
+to Lens's last disposition: its Coord room and canonical message sequence.
+Take the sequence from the received envelope, not its `attention_id`.
+This reference lets a fresh Lens session reuse its own findings. It is not a
+new protocol field or a substitute for the new exact candidate target.
+If that reference is unavailable, say so and continue with the candidate;
+missing history alone is not a blocker.
+
 After sending, leave that candidate awaiting its correlated disposition and
 continue other assigned, ready work when capacity permits. Resolve the
 canonical attention object when it arrives and act. The supervisor re-arms in
@@ -153,6 +179,9 @@ correlation token.
   target URL, send a fresh `REVIEW_READY`, and wait again. Do not reread the
   issue, full pull request, review history, or CI logs unless a specific missing
   fact requires it.
+  If a fresh session lacks necessary earlier context, use `read_room` to recover
+  that specific decision or finding. Do not reread a disposition already supplied
+  in the checkpoint.
   Mandatory findings must not be hidden in preceding unnotified room history or
   another channel.
 - On `READY`, verify that the commit in the reviewed target URL is still the

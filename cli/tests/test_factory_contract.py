@@ -72,6 +72,30 @@ def test_backlog_reviewer_contract_binds_install_trust_and_complexity_checks():
     assert "rather than from a candidate as self-authorization" in contract
 
 
+def test_reviewer_repairs_execution_failures_and_escalates_without_false_blocked():
+    contract = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
+
+    assert "Fix unexpected failures that prevent tests or validation tools from running, then rerun them." in contract
+    assert "always raise it directly to the operator with what failed, what you tried, and what is needed" in contract
+    assert "Do not silently skip it or call it a limitation." in contract
+    assert "awaiting an operator response is not `BLOCKED`" in contract
+    assert "A test that runs and detects a product defect is different" in contract
+    assert "through the assigned task or review response" in contract
+
+
+@pytest.mark.parametrize("role", ["issue-owner", "independent-reviewer"])
+def test_worker_layout_separates_acceptance_material_without_banning_project_tools(role):
+    path = Path(__file__).parents[2] / "docs/agent-roles" / f"{role}.md"
+    contract = " ".join(path.read_text().split())
+
+    assert "Keep reusable acceptance environments" in contract
+    assert "retained evidence outside product checkouts" in contract
+    assert "otherwise use a directory in your persistent home outside the checkout" in contract
+    assert "`.venv`, `.pytest_cache`, and `.ruff_cache`" in contract
+    assert "Tests may still create fixtures at specific paths" in contract
+    assert "Evidence requested as a repository deliverable belongs in the repository." in contract
+
+
 def _factory_file(
     tmp_path: Path,
     *,

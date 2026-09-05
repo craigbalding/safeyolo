@@ -173,7 +173,7 @@ nodes:
       obtain_from: "pytest, pytest-cov, and Hypothesis distributions named and hash-locked in uv.lock, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 84697e9d9b29511a5d2bc93a0a53aba10ecc8d93d64cec53ce52b5f102a48b76
+          sha256: 0c9af5325d18a3fbfe5ee1fb577fa009d0ea057c75bf157017c4c69d7d5b99d8
         - path: uv.lock
           sha256: 7c62d9e115804af47aae79f49ab8b039eeb624242a3a48379f619f6c32f9dad0
         - path: scripts/check_test_assurance.py
@@ -306,7 +306,7 @@ nodes:
         - path: cli/tests/test_coord_kernel_upgrade_acceptance.py
           sha256: c92ee94eba54e99b58d99e29e799919835d543a24b21c3808d51feaa9f997086
         - path: cli/tests/test_coord_jetstream_acceptance.py
-          sha256: 457659f3b8a75c485c591b4049554c01e2febebed258c340c610748273a8921e
+          sha256: abb3e9019ab4fc45ad7e2b4a2dd850c5dca3c3638e361111a3f385d1c2bb40ff
         - path: cli/src/safeyolo/coord/nats_runtime.py
           sha256: a2f9dd5a949291da7aa9a52e973c4333437eb39583a0e62124a6f5b8e41f0f9d
       setup: "Use the trusted base's locked Python environment; the tests allocate their own NATS ports."
@@ -327,11 +327,11 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: f28a76d9814788395bcf64a097d7115488ada51e8b1541e469483330310163a6
+          sha256: 4f07426bb84f38018b0caba0d83febd57c1fc3a6ad00efaa6e35e8d890125102
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: c826bd2f974cc6299d9bd365cf0c703a0c746d97596ee038819b5e6b4caf228d
         - path: cli/tests/test_factory_doctor.py
-          sha256: 549b0230109891edbf996df3210c7f9ce1956dcca330d34a6866df140ba51dad
+          sha256: c60580f35fb85d75f49278654ae21d292520cc2c540062dd8507150401510ba5
       setup: "Use the trusted base's locked Python environment."
       verify: "sha256sum cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py cli/tests/test_factory_doctor.py"
       run: "uv run pytest -q cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py cli/tests/test_factory_doctor.py"
@@ -506,7 +506,7 @@ nodes:
       obtain_from: "pytest-repeat and pytest-xdist in the hash-bearing tools/acceptance stress requirements export, layered over the exact root project environment"
       sources:
         - path: pyproject.toml
-          sha256: 84697e9d9b29511a5d2bc93a0a53aba10ecc8d93d64cec53ce52b5f102a48b76
+          sha256: 0c9af5325d18a3fbfe5ee1fb577fa009d0ea057c75bf157017c4c69d7d5b99d8
         - path: uv.lock
           sha256: 7c62d9e115804af47aae79f49ab8b039eeb624242a3a48379f619f6c32f9dad0
         - path: tools/acceptance/requirements-stress.txt
@@ -560,7 +560,7 @@ nodes:
       obtain_from: "pip-audit declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 84697e9d9b29511a5d2bc93a0a53aba10ecc8d93d64cec53ce52b5f102a48b76
+          sha256: 0c9af5325d18a3fbfe5ee1fb577fa009d0ea057c75bf157017c4c69d7d5b99d8
         - path: uv.lock
           sha256: 7c62d9e115804af47aae79f49ab8b039eeb624242a3a48379f619f6c32f9dad0
         - path: tools/acceptance/pyproject.toml

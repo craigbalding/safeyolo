@@ -17,8 +17,8 @@ SAFEYOLO_CODEX_COORDINATORS=relay \
 Each supervised setup uses its normal harness setup first and preserves that
 agent's own subscription login, SafeYolo instructions, proxy, and TLS
 environment. Codex uses the bundled Coord MCP adapter. Pi uses a small native
-`send` extension. Neither setup imports a host credential. The only changed
-boundary is the foreground command: the guest runs the common supervisor,
+`send` and `read_room` extension. Neither setup imports a host credential.
+The only changed boundary is the foreground command: the guest runs the common supervisor,
 which runs bounded JSON-mode harness turns.
 
 ## Turn contract
@@ -30,7 +30,22 @@ atomically checkpoints the result. Empty, brief-only, and irrelevant pages
 re-arm the wait without launching a harness.
 
 An actionable page launches the selected harness and creates one session.
-Later actionable pages resume that exact session. Each launched turn receives
+Later actionable pages resume that exact session while an inbound request or
+outbound handoff remains pending. Once both lists are empty, the supervisor
+retires the session before admitting new attention. The next work starts a
+fresh session; Coord state, local files, and old transcripts are retained.
+This uses the existing checkpoint, not role names, response labels, or URL
+heuristics. Forge therefore keeps its session through a pending review and
+repair. After Lens sends a disposition, its review request is settled; a later
+review starts fresh and can retrieve still-valid findings from Coord.
+The injected prompt explains conditional recovery with `read_room`. For a
+known room message sequence N, `since_sequence=N-1, limit=1` retrieves the
+next retained message; the agent checks that its sequence really is N before
+reusing it. The room-history cursor is separate from the supervisor's attention
+cursor. History reads do not complete requests, create assignments, or wake
+agents. The role contracts keep ordinary handoffs self-contained and give
+follow-up reviews a direct reference to the prior disposition.
+Each launched turn receives
 the resolved canonical checkpoint and performs the work. If the role contract
 requires an outbound handoff before the inbound request can complete, the turn
 sends that handoff and exits; the supervisor records its correlation and waits
@@ -123,6 +138,8 @@ If the harness stops after delivery, the supervisor tries the exact session firs
 If that session is unavailable, a new thread receives the bounded canonical
 in-flight checkpoint. An older cursor can replay retained attention safely;
 the supervisor keeps a bounded set of stable attention IDs for deduplication.
+That historical list stays in the state file and is not included in the model
+prompt. Active work and handoff identifiers remain in the supplied checkpoint.
 
 ## State and failure bounds
 
@@ -144,6 +161,12 @@ It does not contain harness execution transcripts, provider responses, proxy
 credentials, subscription credentials, agent tokens, or room history. Coord
 remains the source of truth. The file is recovery bookkeeping, not a second
 queue.
+
+For operator-requested abandonment of checkpointed work, use the host-side
+[`factory release` recovery action](factories.md#release-stuck-work-after-stopping-its-agents).
+It requires affected agents to be stopped, preserves unrelated work, and uses
+this supervisor's decoder and atomic writer. It does not add a runtime cancel
+protocol or a new checkpoint schema.
 
 Startup checks the Agent API, the selected harness's agent-local subscription
 login, and its Coord adapter. Every later cycle checks Agent API health and
@@ -241,3 +264,9 @@ Pi parity is exercised with a fake JSON-mode Pi process in the supervisor test
 suite. That proof covers session creation and exact resume, direct `send` tool
 results, the common terminal checkpoint, and agent-room telemetry without a
 model request.
+
+To exercise Pi's extension tool definitions with synthetic HTTP and token reads,
+run `node cli/tests/run_pi_coord_extension.mjs /path/to/pi-coding-agent` using
+an already installed Pi package directory. This checks model-visible history,
+pagination metadata, cancellation, errors, and send results. It does not prove
+that a model chooses to recover history in a live task.

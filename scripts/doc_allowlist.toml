@@ -41,6 +41,7 @@ user_facing_docs = [
     "docs/agent-roles/independent-reviewer.md",
     "docs/agent-roles/issue-owner.md",
     "docs/coord-completion-notes.md",
+    "docs/coord-operations.md",
     "docs/dispatch-generation.md",
     "docs/dispatch-publication.md",
     "docs/factory-proposals.md",

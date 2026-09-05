@@ -234,6 +234,44 @@ and decoded text. `factory run` prints the bound snapshot path, byte counts,
 hashes, and operator edge before it starts agents, so the operator can compare
 the running object with the approved check output.
 
+## Release stuck work after stopping its agents
+
+Use `factory release` when a stopped supervisor still holds an assignment that
+the operator wants to abandon. Stop each affected agent with `safeyolo agent
+stop NAME` first. Select the exact target URL from the retained assignment:
+
+```sh
+safeyolo factory release backlog --target https://github.com/craigbalding/safeyolo/issues/123
+```
+
+The command shows the selected targets and matching record counts for each
+agent, then asks for confirmation. `--yes` confirms that same selection without
+prompting. Repeat `--target` to include related review targets. SafeYolo does
+not infer relationships between an issue URL and a pull-request commit URL.
+If the records belong to a previous room, use `--room ORIGINAL_ROOM`; the
+approved factory still selects which agents to inspect.
+
+Only matching records in the selected room are released. Other work, attention
+cursors, briefs, files, and room history remain. Released inbound attention IDs
+remain in the existing duplicate-detection history. Affected harness sessions
+start fresh on their next invocation, using the remaining checkpointed work.
+The command neither reports `DONE` nor starts an agent.
+
+Each changed checkpoint has a byte-for-byte backup beside it, named
+`codex-coord-supervisor-state.before-release-OPERATION_ID.json`. Coord records
+the operator's request before checkpoint changes and completion afterward,
+with no agent notification. If the request cannot be recorded, no work is
+released. If a later write or completion message fails, the command reports
+which agents changed and the backup paths. Keep them stopped, inspect the
+checkpoints, and repeat the same selection if records remain. Do not restore
+a whole backup after agents have resumed: it can restore already completed
+work or discard newer state.
+
+This is checkpoint recovery, not live cancellation or a durable Coord work
+object. It does not consume assignments still waiting in the attention feed,
+stop external jobs, or undo published changes. Resume only the intended agents
+after recovery; normal factory startup still requires all its roles stopped.
+
 ## Diagnose an approved or running factory
 
 Inspect the approved snapshot and current runtime before you rely on them:

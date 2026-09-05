@@ -130,7 +130,7 @@ def test_renders_file_change_paths_and_kinds(watcher_module):
 
 @pytest.mark.parametrize(
     ("exit_code", "label"),
-    [(0, "TOOL"), (2, "ERROR")],
+    [(0, "TOOL"), (1, "TOOLERR"), (2, "TOOLERR")],
 )
 def test_renders_command_exit_code(watcher_module, exit_code, label):
     assert watcher_module._event_line(
@@ -192,6 +192,15 @@ def test_renders_pi_session_tools_messages_and_completion(watcher_module):
         "DONE",
         "turn completed",
     )
+
+
+def test_pi_tool_failure_is_distinct_from_harness_failure(watcher_module):
+    assert watcher_module._event_line(
+        {"type": "tool_execution_end", "toolName": "bash", "isError": True}, None
+    ) == ("TOOLERR", "completed bash status=error")
+    assert watcher_module._event_line(
+        {"type": "turn.failed", "error": "provider unavailable"}, None
+    ) == ("ERROR", "provider unavailable")
 
 
 def test_renders_top_level_and_item_errors(watcher_module):

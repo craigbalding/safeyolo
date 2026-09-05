@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import tomllib
@@ -24,7 +23,7 @@ from .platform import AgentPlatform, get_platform
 DoctorStatus = Literal["PASS", "WARN", "FAIL"]
 _AGENT_ID_RE = re.compile(r"ag-[0-9a-f]{32}")
 _SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
-_BACKLOG_COORDINATOR_CONTRACT_SHA256 = "e06faa79906fa0997e5fa9fc2335e891b98ed007789f8e60fa6e3b5456d8196b"
+_BACKLOG_COORDINATOR_CONTRACT_SHA256 = "456e1a8cb2c95fb5a28e1bc0f739c386cd4f1cb821d439d57d365d7f2c75170b"
 _SUPERVISOR_LIMITS = {
     "wait_seconds": (1, 300, 300),
     "page_limit": (1, 16, 16),
@@ -969,10 +968,10 @@ def _process_rows(
 
 
 def _command_tokens(command: str) -> list[str]:
-    try:
-        return shlex.split(command)
-    except ValueError:
-        return []
+    # ps joins argv without shell quoting. Only the fixed launcher prefix is
+    # relevant here; an apostrophe or backslash in an appended prompt is data,
+    # not malformed shell syntax. Executable identity is checked separately.
+    return command.split(maxsplit=3)
 
 
 def _is_supervisor_process(
@@ -1088,6 +1087,9 @@ def _inspect_processes(
     owned_pid = owned_process["pid"] if owned_process is not None else None
     stat_path = f"/proc/{owned_pid}/stat" if owned_pid is not None else "/dev/null"
     command = (
+        # Match the managed launcher locations, not just an interactive shell's
+        # PATH. Pi is installed under .local; mise's node shim is not Node itself.
+        'export PATH="${SAFEYOLO_PI_PREFIX:-$HOME/.local}/bin:$HOME/.local/bin:$HOME/.mise/shims:$PATH"; '
         "ps -eo pid=,ppid=,pgid=,args=; "
         f"printf '\\n{_PROCESS_EXECUTABLE_MARKER}\\n'; "
         "for process_path in /proc/[0-9]*; do "
@@ -1099,6 +1101,7 @@ def _inspect_processes(
         'codex_path=$(command -v "${SAFEYOLO_CODEX_BIN:-codex}" 2>/dev/null || true); '
         'pi_path=$(command -v "${SAFEYOLO_PI_BIN:-pi}" 2>/dev/null || true); '
         "node_path=$(command -v node 2>/dev/null || true); "
+        'if [ -n "$node_path" ]; then node_path=$("$node_path" -p process.execPath 2>/dev/null || true); fi; '
         f"printf '{_PROCESS_EXPECTED_MARKER}\\n'; "
         'printf \'python3=%s\\n\' "$(readlink -f "$python3_path" 2>/dev/null || true)"; '
         "printf 'mcp-python=%s\\n' "
