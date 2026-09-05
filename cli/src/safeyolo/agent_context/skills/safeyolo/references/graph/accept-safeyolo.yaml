@@ -327,7 +327,7 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: 4f07426bb84f38018b0caba0d83febd57c1fc3a6ad00efaa6e35e8d890125102
+          sha256: 6186702cc92368513130acfaa5d52fbf28865e5a0c58ee5aca913ca0e53ae345
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: c826bd2f974cc6299d9bd365cf0c703a0c746d97596ee038819b5e6b4caf228d
         - path: cli/tests/test_factory_doctor.py
@@ -616,7 +616,7 @@ nodes:
         - path: .github/codeql/local-bundle.json
           sha256: 414eddd30321b51420614d374a09b9f725ff0fd418c0b1bd96af969d825bcc0d
         - path: .github/codeql/codeql-config.yml
-          sha256: 7a10d8cff38ca0c49acd0e371d8a6e6f59408f807d611efcc07933bc3a9413da
+          sha256: 88a702e846f1eabd8a57554543607028a08bc92da21bf08bce8828543eba2f3a
       setup: "Use an approved supported host with sufficient disk; preserve the helper's persistent verified bundle cache."
       verify: "sha256sum scripts/check_codeql.py .github/codeql/local-bundle.json .github/codeql/codeql-config.yml && uv run python scripts/check_codeql.py --install-only"
       run: "uv run python scripts/check_codeql.py"

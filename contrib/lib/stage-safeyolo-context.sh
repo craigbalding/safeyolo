@@ -204,11 +204,18 @@ stage_safeyolo_context() {
     esac
 
     _stage_refuse_unsafe_parent "$managed_root"
+    if [ "$consumer" = "codex" ] || [ "$consumer" = "pi" ]; then
+        _stage_refuse_unsafe_parent "$agent_home/.local/bin"
+    fi
     if [ -n "$link_dir" ]; then
         _stage_refuse_unsafe_parent "$link_dir"
     fi
     if [ "$consumer" = "pi" ]; then
         _stage_validate_existing_dirs "$agent_home/.pi" "$agent_home/.pi/agent" "$link_dir"
+        if [ "${SAFEYOLO_PI_COORD_SUPERVISOR:-0}" = "1" ]; then
+            _stage_refuse_unsafe_parent "$agent_home/.pi/agent/extensions"
+            _stage_validate_existing_dirs "$agent_home/.pi/agent/extensions"
+        fi
     fi
 
     # Preflight every managed name before changing any skill link.

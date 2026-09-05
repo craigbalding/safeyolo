@@ -1407,6 +1407,7 @@ class InvocationResult:
     wait_was_empty: bool = False
     wait_failed: bool = False
     protocol_failed: bool = False
+    harness_failed: bool = False
     timed_out: bool = False
     terminal_observed: bool = False
     handoff_observed: bool = False
@@ -1512,14 +1513,19 @@ class EventConsumer:
             save_state(self.state_path, self.state)
         elif event_type == "agent_start":
             self.result.saw_turn_started = True
+            self.result.saw_turn_completed = False
         elif event_type == "agent_end":
+            if event.get("willRetry") or self.result.harness_failed or self.result.protocol_failed:
+                return
             self.result.saw_turn_completed = True
             self._complete_nonterminal_objects()
         elif event_type == "message_end":
             message = event.get("message")
             if isinstance(message, dict) and message.get("role") == "assistant":
-                if message.get("stopReason") in {"error", "aborted"}:
-                    self.result.protocol_failed = True
+                # Pi emits agent_end after failures too, and may retry inside
+                # this invocation. Only a subsequent successful response can
+                # clear a harness failure; malformed protocol stays failed.
+                self.result.harness_failed = message.get("stopReason") in {"error", "aborted"}
         elif event_type == "tool_execution_start":
             tool_call_id = event.get("toolCallId")
             arguments = event.get("args")
@@ -2480,7 +2486,8 @@ class Supervisor:
         canonical_completion = result.terminal_observed or result.handoff_observed or healthy_recovery
         healthy_turn = result.saw_turn_completed and complete
         success = canonical_completion or (
-            healthy_turn and not (result.wait_failed or result.protocol_failed or result.timed_out)
+            healthy_turn
+            and not (result.wait_failed or result.protocol_failed or result.harness_failed or result.timed_out)
         )
         if success:
             self.state["consecutive_failures"] = 0

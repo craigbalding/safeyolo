@@ -93,6 +93,7 @@ if [ "${SAFEYOLO_PI_COORD_SUPERVISOR:-0}" = "1" ]; then
         "$SAFEYOLO_FACTORY_ROLE" \
         pi
     install -d -m 0700 "$AGENT_HOME/.pi/agent/extensions"
+    _stage_validate_dir_metadata "$AGENT_HOME/.pi/agent/extensions"
     install -m 0600 "$extension_src" \
         "$AGENT_HOME/.pi/agent/extensions/safeyolo-coord.ts"
 fi

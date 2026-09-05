@@ -30,6 +30,28 @@ def _repository(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def test_map_and_query_keep_file_symlinks_within_the_repository(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    repository = _repository(checkout)
+    outside = tmp_path / "outside.py"
+    outside.write_text("def outside_helper():\n    return 'outside-only-sentinel'\n")
+    (repository / "escape.py").symlink_to(outside)
+    (repository / "local_alias.py").symlink_to("pkg/app.py")
+    (repository / "broken.py").symlink_to("missing.py")
+    (repository / "loop.py").symlink_to("loop.py")
+
+    source_paths = repo_map._source_files(repository, Path("."))
+    query_paths = repo_map._query_files(repository)
+    for paths in (source_paths, query_paths):
+        assert Path("local_alias.py") in paths
+        assert not {Path("escape.py"), Path("broken.py"), Path("loop.py")} & set(paths)
+    assert "escape.py" not in build_repo_map(repository).text
+    result = build_repo_query(repository, "outside_helper")
+    assert "outside-only-sentinel" not in result.text
+    assert "escape.py" not in result.text
+
+
 def test_map_contains_compact_python_symbols(tmp_path):
     repository = _repository(tmp_path)
 

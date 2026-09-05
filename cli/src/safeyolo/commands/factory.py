@@ -58,13 +58,19 @@ def _factory_setup_commands(name: str, payload: dict[str, Any] | None = None) ->
     )
     lines = [
         'Recovery order (use "$PWD" or replace it with each agent\'s workspace):',
-        "Create each agent with the harness declared by its role, then establish "
-        "that harness's agent-local subscription login before factory run.",
+        (
+            "Create each agent with the harness declared by its role, then establish "
+            "that harness's agent-local subscription login before factory run."
+        ),
         "@codex stages SafeYolo-owned Codex settings only; @pi likewise keeps Pi authentication agent-local.",
-        "For Codex, run `codex login --device-auth`, then explicitly run "
-        "`/home/agent/.safeyolo/codex-auth-recovery.py adopt` inside the agent.",
-        "For reset recovery, run `/home/agent/.safeyolo/codex-auth-recovery.py reset`, "
-        "then repeat the Codex login and adopt commands.",
+        (
+            "For Codex, run `codex login --device-auth`, then explicitly run "
+            "`/home/agent/.safeyolo/codex-auth-recovery.py adopt` inside the agent."
+        ),
+        (
+            "For reset recovery, run `/home/agent/.safeyolo/codex-auth-recovery.py reset`, "
+            "then repeat the Codex login and adopt commands."
+        ),
     ]
     for agent, harness in roles:
         lines.append(f'  safeyolo agent add {agent} "$PWD" --host-script @{harness} --no-run')

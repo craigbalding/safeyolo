@@ -222,6 +222,14 @@ def _relative_scope(root: Path, requested: Path) -> Path:
         raise RepoMapError(f"path is outside repository: {requested}") from exc
 
 
+def _is_repo_file(root: Path, path: Path) -> bool:
+    """Include ordinary files and in-repository links, not off-tree targets."""
+    try:
+        return path.is_file() and path.resolve().is_relative_to(root)
+    except (OSError, RuntimeError):
+        return False
+
+
 def _source_files(root: Path, scope: Path) -> list[Path]:
     entries = _git(
         root,
@@ -241,7 +249,7 @@ def _source_files(root: Path, scope: Path) -> list[Path]:
         if relative.suffix not in _SOURCE_SUFFIXES and relative.name not in _SOURCE_NAMES:
             continue
         absolute = root / relative
-        if absolute.is_file():
+        if _is_repo_file(root, absolute):
             paths.append(relative)
     return sorted(paths, key=lambda item: item.as_posix())
 
@@ -475,7 +483,7 @@ def _query_files(root: Path) -> list[Path]:
         if not (relative.suffix in _QUERY_SUFFIXES or relative.name in _SOURCE_NAMES or not relative.suffix):
             continue
         absolute = root / relative
-        if absolute.is_file() and absolute.stat().st_size <= _QUERY_FILE_BYTES:
+        if _is_repo_file(root, absolute) and absolute.stat().st_size <= _QUERY_FILE_BYTES:
             paths.append(relative)
     return sorted(paths, key=lambda item: item.as_posix())
 

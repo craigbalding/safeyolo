@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -114,6 +115,52 @@ def test_release_can_select_old_room_without_touching_current_assignment(stopped
     api.grant("old", "operator", "operator", operation_id=new_operation_id())
     recovery.release_stopped_work(env.payload, "old", {TARGET}, lambda _: True)
     assert env.supervisor.load_state(env.paths["forge"])["in_flight"] == env.states["forge"]["in_flight"][:2]
+    assert _messages() == []
+
+
+@pytest.mark.parametrize("entry", ["home", "directory", "state", "lock"])
+def test_release_rejects_redirected_host_paths(stopped_factory, tmp_path, entry):
+    env = stopped_factory
+    checkpoint = env.paths["forge"]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if entry in {"home", "directory"}:
+        original = checkpoint.parent.parent if entry == "home" else checkpoint.parent
+        original.rename(outside / "moved")
+        original.symlink_to(outside / "moved", target_is_directory=True)
+    else:
+        original = checkpoint if entry == "state" else checkpoint.with_name(checkpoint.name + ".lock")
+        target = outside / "sentinel"
+        target.write_bytes(checkpoint.read_bytes() if entry == "state" else b"keep lock\n")
+        if original.exists():
+            original.unlink()
+        original.symlink_to(target)
+    before = {str(path.relative_to(outside)): path.read_bytes() for path in outside.rglob("*") if path.is_file()}
+    with pytest.raises(FactoryContractError, match="unsafe checkpoint"):
+        recovery.release_stopped_work(env.payload, "backlog", {TARGET}, lambda _: True)
+    after = {str(path.relative_to(outside)): path.read_bytes() for path in outside.rglob("*") if path.is_file()}
+    assert after == before
+    assert _messages() == []
+
+
+@pytest.mark.parametrize("kind", ["hardlink", "fifo"])
+@pytest.mark.parametrize("entry", ["state", "lock"])
+def test_release_rejects_nonprivate_checkpoint_entries(stopped_factory, tmp_path, kind, entry):
+    env = stopped_factory
+    checkpoint = env.paths["forge"]
+    original = checkpoint if entry == "state" else checkpoint.with_name(checkpoint.name + ".lock")
+    target = tmp_path / "sentinel"
+    target.write_bytes(checkpoint.read_bytes())
+    if original.exists():
+        original.unlink()
+    if kind == "hardlink":
+        os.link(target, original)
+    else:
+        os.mkfifo(original)
+    before = target.read_bytes()
+    with pytest.raises(FactoryContractError, match="unsafe checkpoint"):
+        recovery.release_stopped_work(env.payload, "backlog", {TARGET}, lambda _: True)
+    assert target.read_bytes() == before
     assert _messages() == []
 
 

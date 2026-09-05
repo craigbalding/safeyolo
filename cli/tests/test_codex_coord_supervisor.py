@@ -414,6 +414,60 @@ def test_pi_events_use_the_same_terminal_checkpoint_contract(
     assert consumer.result.terminal_observed is True
 
 
+@pytest.mark.parametrize("stop_reason", ["error", "aborted"])
+@pytest.mark.parametrize("retry_succeeds", [False, True])
+def test_pi_failed_end_preserves_operator_attention(supervisor_module, tmp_path, stop_reason, retry_succeeds):
+    module = supervisor_module
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    config = replace(_factory_config(module, tmp_path, "coordinator"), harness="pi")
+    consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
+    attention_id = "attn-" + "e" * 32
+    consumer.accept_attention_page(
+        [_resolved(attention_id, sender_kind="operator", body="Pause new assignments.")], 12
+    )
+    consumer.consume({"type": "agent_start"})
+    consumer.consume({"type": "message_end", "message": {"role": "assistant", "stopReason": stop_reason}})
+    consumer.consume({"type": "agent_end", "willRetry": retry_succeeds})
+
+    persisted = module.load_state(state_path)
+    assert [item["attention_id"] for item in persisted["in_flight"]] == [attention_id]
+    assert attention_id not in persisted["recent_attention_ids"]
+    assert consumer.result.saw_turn_completed is False
+    assert consumer.result.harness_failed is True
+    if retry_succeeds:
+        consumer.consume({"type": "agent_start"})
+        consumer.consume({"type": "message_end", "message": {"role": "assistant", "stopReason": "stop"}})
+        consumer.consume({"type": "agent_end", "willRetry": False})
+        persisted = module.load_state(state_path)
+        assert persisted["in_flight"] == []
+        assert persisted["recent_attention_ids"] == [attention_id]
+        assert consumer.result.saw_turn_completed is True
+        assert consumer.result.harness_failed is False
+
+
+def test_pi_retry_does_not_clear_protocol_failure(supervisor_module, tmp_path):
+    module = supervisor_module
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    config = replace(_factory_config(module, tmp_path, "coordinator"), harness="pi")
+    consumer = module.EventConsumer(config, state, state_path, {"room-1": "backlog"})
+    attention_id = "attn-" + "f" * 32
+    consumer.accept_attention_page(
+        [_resolved(attention_id, sender_kind="operator", body="Pause new assignments.")], 12
+    )
+    consumer.consume({"type": "agent_start"})
+    consumer.consume({"type": "agent_end", "willRetry": True})
+    assert state["in_flight"]
+    consumer.consume(None)
+    consumer.consume({"type": "agent_start"})
+    consumer.consume({"type": "message_end", "message": {"role": "assistant", "stopReason": "stop"}})
+    consumer.consume({"type": "agent_end"})
+    assert state["in_flight"]
+    assert consumer.result.protocol_failed is True
+    assert consumer.result.saw_turn_completed is False
+
+
 def test_empty_wait_is_idle_only_from_structured_success(supervisor_module, tmp_path):
     module = supervisor_module
     state = module.empty_state()

@@ -834,6 +834,51 @@ def test_pi_coord_setup_stages_the_common_factory_supervisor(tmp_path: Path) -> 
     assert not (agent_home / ".codex/config.toml").exists()
 
 
+@pytest.mark.parametrize("managed_path", (".local", ".local/bin", ".pi/agent/extensions"))
+def test_pi_setup_rejects_new_managed_parent_symlinks(tmp_path: Path, managed_path: str) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    outside = tmp_path / "outside"
+    operator_home.mkdir()
+    agent_home.mkdir(mode=0o700)
+    outside.mkdir()
+    sentinel = outside / "safeyolo-coord.ts"
+    sentinel.write_text("keep external file\n")
+    link = agent_home / managed_path
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if managed_path.startswith(".pi/"):
+        (agent_home / ".pi").chmod(0o700)
+        (agent_home / ".pi/agent").chmod(0o700)
+    link.symlink_to(outside, target_is_directory=True)
+    result = _run_setup(
+        "pi-host-setup.sh", operator_home, agent_home, tmp_path,
+        check=False, stage_coord_runtime=False,
+        extra_env={"SAFEYOLO_PI_COORD_SUPERVISOR": "1"},
+    )
+    assert result.returncode != 0
+    assert "symlink" in result.stderr
+    assert sentinel.read_text() == "keep external file\n"
+    assert list(outside.iterdir()) == [sentinel]
+
+
+@pytest.mark.parametrize("managed_path", (".pi/agent/extensions",))
+def test_pi_setup_rejects_writable_managed_parents(tmp_path: Path, managed_path: str) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    agent_home.mkdir(mode=0o700)
+    destination = agent_home / managed_path
+    destination.mkdir(parents=True)
+    destination.chmod(0o777)
+    result = _run_setup(
+        "pi-host-setup.sh", operator_home, agent_home, tmp_path,
+        check=False, stage_coord_runtime=False,
+        extra_env={"SAFEYOLO_PI_COORD_SUPERVISOR": "1"},
+    )
+    assert result.returncode != 0
+    assert "group/world-writable" in result.stderr
+
+
 def test_pi_setup_rejects_agent_pi_parent_symlink(tmp_path: Path) -> None:
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"

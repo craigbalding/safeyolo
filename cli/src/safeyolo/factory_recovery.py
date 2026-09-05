@@ -6,8 +6,10 @@ import asyncio
 import copy
 import os
 import runpy
+import stat
 from collections.abc import Callable
 from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -44,11 +46,32 @@ def _release_state(supervisor, state: dict[str, Any], room: str, targets: set[st
     return updated
 
 
+def _checkpoint_path(agent: str) -> Path:
+    """Validate guest-owned paths before using them from host recovery code."""
+    home = get_agent_home_dir(agent)
+    path = home / ".safeyolo/codex-coord-supervisor-state.json"
+    for directory in (home, path.parent):
+        try:
+            info = directory.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            raise FactoryContractError(f"unsafe checkpoint directory for {agent!r}: {directory}")
+    for entry in (path, path.with_name(path.name + ".lock")):
+        try:
+            info = entry.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+            raise FactoryContractError(f"unsafe checkpoint file for {agent!r}: {entry}")
+    return path
+
+
 def _collect_releases(supervisor, agents, room, targets, locks):
     plans = []
     platform = get_platform()
     for agent in agents:
-        path = get_agent_home_dir(agent) / ".safeyolo/codex-coord-supervisor-state.json"
+        path = _checkpoint_path(agent)
         if not path.exists():
             continue
         state = supervisor.load_state(path)
@@ -69,6 +92,7 @@ def _apply_releases(supervisor, plans, room: str, description: str) -> str:
     backups = []
     platform = get_platform()
     for agent, path, original, _before, _after in plans:
+        _checkpoint_path(agent)
         if platform.is_sandbox_running(agent) or path.read_bytes() != original:
             raise FactoryContractError(f"agent or checkpoint changed for {agent!r}; nothing released")
     for _agent, path, original, _before, _after in plans:
@@ -131,6 +155,7 @@ def release_stopped_work(
         for agent in agents:
             if not load_agent(agent):
                 raise FactoryContractError(f"factory agent {agent!r} is not registered")
+            _checkpoint_path(agent)
             locks.enter_context(_agent_host_setup_lock(agent))
         plans = _collect_releases(supervisor, agents, room, targets, locks)
         if not plans:
