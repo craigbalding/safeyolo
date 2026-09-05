@@ -86,10 +86,11 @@ claim. Every HTTP injection under this flag emits a
 `gateway.http_injection_allowed` audit event.
 
 Coding-harness authentication is outside this vault guarantee. The bundled
-Claude Code and Codex host scripts deliberately copy subscription state into
-the persistent agent home. Those files enter the sandbox and are readable by
-the agent process. Operators must treat `--host-script` as an explicit decision
-to share the files that the selected script copies.
+Claude Code host script can deliberately copy selected subscription state into
+the persistent agent home. The Codex host scripts do not copy host credentials:
+an operator must run `codex login` inside each agent and explicitly adopt the
+resulting agent-local credential. Operators must treat `--host-script` as an
+explicit decision to share the files that the selected script copies.
 
 **Network and transport controls.**
 Agents have no direct internet access. Each sandbox has no external network

@@ -31,6 +31,7 @@ show_help() {
 
 AGENT_HOME=""
 HARNESS=""
+REQUIRE_AGENT_LOCAL=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -43,6 +44,10 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || { echo "coord-mcp-bootstrap: --harness needs claude|codex" >&2; exit 2; }
             HARNESS="$2"
             shift 2
+            ;;
+        --require-agent-local)
+            REQUIRE_AGENT_LOCAL=1
+            shift
             ;;
         -h|--help|help)
             show_help
@@ -66,6 +71,7 @@ fi
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 SHIM_SRC="$SCRIPT_DIR/safeyolo-coord-mcp.py"
 LAUNCHER_SRC="$SCRIPT_DIR/safeyolo-coord-mcp-launcher.sh"
+CODEX_STATE_SRC="$SCRIPT_DIR/lib/stage-codex-state.py"
 FG="$AGENT_HOME/.safeyolo-command"
 
 if [ ! -f "$SHIM_SRC" ]; then
@@ -76,8 +82,28 @@ if [ ! -f "$LAUNCHER_SRC" ]; then
     echo "coord-mcp-bootstrap: expected launcher at $LAUNCHER_SRC" >&2
     exit 1
 fi
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "coord-mcp-bootstrap: python3 is required to preserve and update harness config" >&2
+if [ ! -f "$CODEX_STATE_SRC" ]; then
+    echo "coord-mcp-bootstrap: expected Codex state helper at $CODEX_STATE_SRC" >&2
+    exit 1
+fi
+PYTHON_BIN="${SAFEYOLO_PYTHON:-}"
+if [ -z "$PYTHON_BIN" ] && [ -n "${VIRTUAL_ENV:-}" ] \
+    && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+    PYTHON_BIN="$VIRTUAL_ENV/bin/python"
+fi
+if [ -z "$PYTHON_BIN" ] && command -v safeyolo >/dev/null 2>&1; then
+    SAFEYOLO_ENTRYPOINT="$(command -v safeyolo)"
+    SAFEYOLO_SHEBANG="$(head -n 1 "$SAFEYOLO_ENTRYPOINT" 2>/dev/null || true)"
+    if [[ "$SAFEYOLO_SHEBANG" == '#!'/* ]] \
+        && [ -x "${SAFEYOLO_SHEBANG#\#!}" ]; then
+        PYTHON_BIN="${SAFEYOLO_SHEBANG#\#!}"
+    fi
+fi
+if [ -z "$PYTHON_BIN" ]; then
+    PYTHON_BIN="$(command -v python3 || true)"
+fi
+if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
+    echo "coord-mcp-bootstrap: a SafeYolo Python interpreter is required to preserve and update harness config" >&2
     exit 1
 fi
 if [ ! -f "$FG" ]; then
@@ -124,7 +150,7 @@ case "$HARNESS" in
         # Claude Code reads user-scope MCP servers from ~/.claude.json.
         # Merge into whatever the base host script already wrote — never
         # clobber unrelated keys.
-        python3 - "$AGENT_HOME/.claude.json" "$LAUNCHER_INSANDBOX" <<'PY'
+        "$PYTHON_BIN" - "$AGENT_HOME/.claude.json" "$LAUNCHER_INSANDBOX" <<'PY'
 import json, os, sys
 path, launcher = sys.argv[1], sys.argv[2]
 data = {}
@@ -154,72 +180,23 @@ with open(path, "w") as f:
 PY
         ;;
     codex)
-        # Codex reads MCP servers from ~/.codex/config.toml under an
-        # [mcp_servers.<name>] table.
-        python3 - "$AGENT_HOME/.codex/config.toml" "$LAUNCHER_INSANDBOX" <<'PY'
-import os, sys, tomllib
-
-path, launcher = sys.argv[1], sys.argv[2]
-os.makedirs(os.path.dirname(path), exist_ok=True)
-
-existing_lines = []
-if os.path.exists(path):
-    with open(path) as f:
-        existing_lines = f.readlines()
-    try:
-        tomllib.loads("".join(existing_lines))
-    except tomllib.TOMLDecodeError as exc:
-        raise SystemExit(
-            f"coord-mcp-bootstrap: cannot update invalid Codex config {path}: {exc}"
+        # Codex reads MCP servers from ~/.codex/config.toml. The shared helper
+        # validates local state, preserves auth.json without opening it, and
+        # atomically updates only SafeYolo-owned settings and this MCP block.
+        install -m 0755 "$CODEX_STATE_SRC" \
+            "$AGENT_HOME/.safeyolo/codex-auth-recovery.py"
+        if ! "$PYTHON_BIN" -c 'import tomlkit' >/dev/null 2>&1; then
+            echo "coord-mcp-bootstrap: selected SafeYolo Python lacks tomlkit; use the SafeYolo CLI interpreter" >&2
+            exit 1
+        fi
+        state_args=(
+            --home "$AGENT_HOME"
+            --mcp-launcher "$LAUNCHER_INSANDBOX"
         )
-
-# Strip any prior [mcp_servers.safeyolo-coord] table so re-runs stay
-# idempotent. Line-based rather than regex so `args = ["..."]` values
-# (which contain `[`) can't accidentally close the match early.
-out = []
-skipping = False
-for line in existing_lines:
-    stripped = line.lstrip()
-    if stripped.startswith("[mcp_servers.safeyolo-coord]"):
-        skipping = True
-        continue
-    if skipping:
-        # End the strip window on the next table header (any `[` at
-        # column 0), or on EOF.
-        if stripped.startswith("[") and not stripped.startswith("[mcp_servers.safeyolo-coord]"):
-            skipping = False
-            out.append(line)
-        # else: consume the k=v line and stay in skip mode.
-        continue
-    out.append(line)
-
-# The Agent API caps a foreground coord wait at 300 seconds
-# (cli/src/safeyolo/mitm_addons/agent_api.py). Codex's MCP tool deadline must
-# be strictly longer so the adapter can return the empty page and its
-# adoptable cursor after the full wait. The extra 30 seconds covers adapter
-# resolution and transport overhead. Keep these coupled bounds in sync.
-coord_tool_timeout_sec = 330
-new_block = (
-    "[mcp_servers.safeyolo-coord]\n"
-    f'command = "{launcher}"\n'
-    'args = []\n'
-    f"tool_timeout_sec = {coord_tool_timeout_sec}\n"
-)
-
-body = "".join(out).rstrip()
-if body:
-    combined = body + "\n\n" + new_block
-else:
-    combined = new_block
-try:
-    tomllib.loads(combined)
-except tomllib.TOMLDecodeError as exc:
-    raise SystemExit(
-        f"coord-mcp-bootstrap: generated invalid Codex config for {path}: {exc}"
-    )
-with open(path, "w") as f:
-    f.write(combined)
-PY
+        if [ "$REQUIRE_AGENT_LOCAL" -eq 1 ]; then
+            state_args+=(--require-agent-local)
+        fi
+        "$PYTHON_BIN" "$CODEX_STATE_SRC" "${state_args[@]}"
         ;;
     *)
         echo "coord-mcp-bootstrap: unknown harness '$HARNESS' (expected claude|codex)" >&2
@@ -236,7 +213,7 @@ esac
 MARKER="# ---- coord-mcp-bootstrap: mcp+httpx install (guarded, idempotent) ----"
 
 if ! grep -qxF "$MARKER" "$FG"; then
-    python3 - "$FG" "$MARKER" <<'PY'
+    "$PYTHON_BIN" - "$FG" "$MARKER" <<'PY'
 import sys
 path, marker = sys.argv[1], sys.argv[2]
 with open(path) as f:

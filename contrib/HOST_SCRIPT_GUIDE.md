@@ -69,7 +69,8 @@ stage_safeyolo_context "$SAFEYOLO_AGENT_HOME" codex
 
 The helper stages the baseline under `~/.safeyolo/` and links applicable
 read-only, per-run skill trees under the agent's skill directory. Both Claude
-and Codex get `/safeyolo/skills/safeyolo`. Codex also gets
+and Codex get `/safeyolo/skills/safeyolo`. Pi gets the same shared skill under
+its native `~/.pi/agent/skills` path. Codex also gets
 `/safeyolo/skills/safeyolo-lab-controller`,
 `/safeyolo/skills/safeyolo-factory`, and the `safeyolo-lab` guest command. The
 helper refuses to overwrite a user-owned skill or command with a managed name.
@@ -157,6 +158,19 @@ Host scripts run on `safeyolo agent add` and whenever an existing agent is
 started with `safeyolo agent run <name> --host-script PATH`. Re-running
 `agent add --force` also reruns the script. Make yours re-runnable: check before
 creating, overwrite only what you own, and don't assume a blank slate.
+
+### Pi authentication and trust
+
+The bundled `@pi` setup keeps Pi authentication, settings, models, sessions,
+extensions, and prompts in the agent-local `~/.pi/agent/` directory. It does
+not inspect or copy host `~/.pi` state. From an interactive Pi session, use
+`/login` and `/logout` for the agent's own provider session; never copy a
+credential from another agent or from the host. The launcher starts Pi with
+`--approve` and appends the SafeYolo baseline. Arguments supplied later by the
+user are forwarded unchanged and can alter Pi's trust behavior.
+On Alpine, support is conditional on the image's native `nodejs` package
+meeting Node `>=22.19.0`; the setup does not use `nodejs-current`, mix
+repositories, or build Node from source.
 
 ## Using an agent to write host scripts
 

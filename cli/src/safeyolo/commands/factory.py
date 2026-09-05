@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ from ..factory_contract import (
 )
 from ..factory_doctor import FactoryDoctorReport, inspect_factory
 from .agent import (
+    _agent_host_setup_lock,
     _check_project_ownership,
     _resolve_host_script_path,
     _run_agent,
@@ -56,8 +57,12 @@ def _factory_setup_commands(name: str, payload: dict[str, Any] | None = None) ->
     )
     lines = [
         'Recovery order (use "$PWD" or replace it with each agent\'s workspace):',
-        "Run from a host session already logged in to Codex with a ChatGPT subscription; "
-        + "@codex stages that host's ~/.codex authentication and config for the agent.",
+        "@codex stages SafeYolo-owned Codex settings only. Log in inside each "
+        + "agent and explicitly adopt its agent-local credential before the factory run.",
+        "Inside each running agent, use `codex login --device-auth`, then run "
+        + "`/home/agent/.safeyolo/codex-auth-recovery.py adopt`.",
+        "For reset recovery, run `/home/agent/.safeyolo/codex-auth-recovery.py reset`, then "
+        + "`codex login --device-auth`, then run the adopt command.",
     ]
     for agent in agents:
         lines.append(f'  safeyolo agent add {agent} "$PWD" --host-script @codex --no-run')
@@ -238,10 +243,12 @@ def run_factory(
         safeyolo factory approve FACTORY.toml --yes
         safeyolo factory run NAME
 
-    Run the add command from a host session already logged in to Codex with a
-    ChatGPT subscription. The ordinary ``@codex`` host setup stages the host's
-    ``~/.codex`` authentication and config into the agent home. ``factory run``
-    later reapplies ``@codex-coord`` with the approved snapshot and role.
+    The ordinary ``@codex`` host setup stages SafeYolo-owned Codex settings
+    only. Log in inside each agent with ``codex login --device-auth`` and explicitly run
+    ``/home/agent/.safeyolo/codex-auth-recovery.py adopt`` before ``factory
+    run``; after a reset, use ``codex login --device-auth`` followed by the
+    same adopt command. The command later reapplies ``@codex-coord`` with the
+    approved snapshot and role.
 
     ``factory run`` provisions the declared Coord rooms and grants before it
     starts any role, then waits for every role supervisor to pass the same
@@ -329,58 +336,78 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
         _check_project_ownership(folder_path, False)
         configured.append((role_name, agent_name, metadata))
 
-    # Configure every existing agent from the same immutable snapshot before
-    # booting any of them. There is no live reload; another approve+run is needed
-    # to move the factory to a different snapshot.
-    for role_name, agent_name, metadata in configured:
-        with _factory_environment(snapshot_path, role_name):
-            _run_host_script_for_agent(
-                name=agent_name,
-                host_script_path=host_script,
-                folder_str=str(Path(metadata["folder"]).expanduser().resolve()),
-            )
+    setup_locks = ExitStack()
+    try:
+        # Acquire every role lock before checking liveness or mutating any
+        # agent. The sorted order prevents two factory invocations from
+        # deadlocking while they contend for overlapping role sets.
+        for agent_name in sorted({agent_name for _role, agent_name, _meta in configured}):
+            setup_locks.enter_context(_agent_host_setup_lock(agent_name))
 
-        def persist_host_script(current: dict[str, Any]) -> None:
-            current["host_script"] = str(host_script)
+        from ..platform import get_platform
+
+        platform = get_platform()
+        for role_name, agent_name, _metadata in configured:
+            if platform.is_sandbox_running(agent_name):
+                raise FactoryContractError(
+                    f"role {role_name!r} agent {agent_name!r} is already running; "
+                    f"stop it before starting the factory"
+                )
+
+        # Configure every existing agent from the same immutable snapshot before
+        # booting any of them. There is no live reload; another approve+run is needed
+        # to move the factory to a different snapshot.
+        for role_name, agent_name, metadata in configured:
+            with _factory_environment(snapshot_path, role_name):
+                _run_host_script_for_agent(
+                    name=agent_name,
+                    host_script_path=host_script,
+                    folder_str=str(Path(metadata["folder"]).expanduser().resolve()),
+                )
+
+            def persist_host_script(current: dict[str, Any]) -> None:
+                current["host_script"] = str(host_script)
+
+            try:
+                mutate_agent(agent_name, persist_host_script)
+            except KeyError as exc:
+                raise FactoryContractError(f"agent {agent_name!r} was removed during factory setup") from exc
 
         try:
-            mutate_agent(agent_name, persist_host_script)
-        except KeyError as exc:
-            raise FactoryContractError(f"agent {agent_name!r} was removed during factory setup") from exc
-
-    try:
-        coord_nats.start_server(ready_timeout=10.0)
-        coord_api.bootstrap()
-    except Exception as exc:
-        raise FactoryContractError(
-            f"Coord runtime failed before room/grant provisioning: {exc}\n"
-            f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
-        ) from exc
-
-    try:
-        _ensure_factory_rooms(
-            payload["room"],
-            (agent_name for _role_name, agent_name, _metadata in configured),
-        )
-    except Exception as exc:
-        raise FactoryContractError(
-            f"Coord room/grant provisioning failed before role launch: {exc}\n"
-            f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
-        ) from exc
-
-    for _role_name, agent_name, _metadata in configured:
-        exit_code = _run_agent(
-            agent_name,
-            yolo=True,
-            detach=True,
-            run_command_detached=True,
-            no_snapshot=True,
-        )
-        if exit_code != 0:
+            coord_nats.start_server(ready_timeout=10.0)
+            coord_api.bootstrap()
+        except Exception as exc:
             raise FactoryContractError(
-                f"agent {agent_name!r} failed to start (exit {exit_code});\n"
+                f"Coord runtime failed before room/grant provisioning: {exc}\n"
                 f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
+            ) from exc
+
+        try:
+            _ensure_factory_rooms(
+                payload["room"],
+                (agent_name for _role_name, agent_name, _metadata in configured),
             )
+        except Exception as exc:
+            raise FactoryContractError(
+                f"Coord room/grant provisioning failed before role launch: {exc}\n"
+                f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
+            ) from exc
+
+        for _role_name, agent_name, _metadata in configured:
+            exit_code = _run_agent(
+                agent_name,
+                yolo=True,
+                detach=True,
+                run_command_detached=True,
+                no_snapshot=True,
+            )
+            if exit_code != 0:
+                raise FactoryContractError(
+                    f"agent {agent_name!r} failed to start (exit {exit_code});\n"
+                    f"{_factory_run_recovery(payload.get('name', 'FACTORY'))}"
+                )
+    finally:
+        setup_locks.close()
 
 
 def _wait_for_operational_preflight(name: str) -> FactoryDoctorReport:
