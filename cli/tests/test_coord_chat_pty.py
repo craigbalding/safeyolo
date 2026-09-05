@@ -54,6 +54,7 @@ def _extracted_source() -> str:
 
 
 HARNESS = """
+from __future__ import annotations
 import sys, types, datetime, asyncio, os, shlex, shutil, subprocess, tempfile
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -69,6 +70,16 @@ class GrantError(Exception): pass
 class NatsUnavailable(Exception): pass
 class CoordDataError(Exception): pass
 class NatsPublishOutcomeUnknown(Exception): pass
+# The extracted functions retain their production relative imports. Recreate
+# the module package context so this harness exercises the same import form.
+# Inject only the exception classes needed by the chat helpers; the harness
+# deliberately avoids importing the production NATS client.
+__package__ = "safeyolo.commands"
+_nats_client = types.ModuleType("safeyolo.coord.nats_client")
+_nats_client.CoordDataError = CoordDataError
+_nats_client.NatsPublishOutcomeUnknown = NatsPublishOutcomeUnknown
+_nats_client.NatsUnavailable = NatsUnavailable
+sys.modules[_nats_client.__name__] = _nats_client
 async def _send(room, kind, aid, body, **kwargs):
     sent.append(body); print("SENT<<" + repr(body) + ">>", flush=True)
     print("NOTIFY<<" + repr(kwargs.get("notify")) + ">>", flush=True)
