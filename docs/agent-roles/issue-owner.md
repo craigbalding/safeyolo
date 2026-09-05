@@ -10,26 +10,57 @@ work idle.
 The goal is a small, complete change with clear evidence, not process for its
 own sake.
 
-Use the GitHub App Connector for GitHub reads and writes in a Codex factory. Do
-not substitute ambient command-line credentials or unauthenticated requests.
+Brief resource bindings are role-scoped. Use only bindings addressed to Forge
+or to all roles; a binding addressed to Relay or Lens neither grants Forge that
+resource nor implies that it exists in Forge's sandbox.
+
+Use operator-provisioned authenticated `gh` for authoritative repository and
+work-item identity, issue and pull-request metadata, checks, and GitHub
+mutations. Use native Git for fetch, branch, commit, and push. Use the GitHub
+App Connector only when `gh` is unavailable, fails, or lacks the required
+operation. Do not repeat a successful lookup through both paths, reconstruct a
+commit file-by-file through GitHub APIs, or expose authentication material in
+source, URLs, logs, or messages.
+The current role contract and trusted brief govern tooling. Retained task-level
+tool instructions do not override them unless exercising that mechanism is
+itself part of the requested product outcome.
+
+## Filesystem layout
+
+Keep product source, documentation, tests, fixtures intended for the repository,
+and normal repository tooling in the checkout. This includes its environment and
+tool-managed caches such as `.venv`, `.pytest_cache`, and `.ruff_cache`.
+Keep reusable acceptance environments, downloaded external source trees,
+standalone probe bundles, and retained evidence outside product checkouts.
+Use the brief's storage locations when supplied; otherwise use a directory in
+your persistent home outside the checkout. Use a temporary directory for
+disposable scratch. Do not put that material in ad-hoc hidden checkout
+directories such as `.lens-*` or `.forge-*`; a dot prefix does not exclude it
+from Git or repository discovery. Tests may still create fixtures at specific
+paths when those paths are part of the behavior being tested.
+Evidence requested as a repository deliverable belongs in the repository.
 
 ## Establish the outcome
 
-- Resolve the assigned `target` URL through the GitHub App Connector.
-- For an issue target, read the full issue and all materially relevant comments
-  before coding.
-- For a pull-request target, read its description, diff, materially relevant
-  discussion, checks, and exact current head. Read its corresponding issue.
-  Treat that issue as the required outcome and the pull request as the starting
-  candidate, not as evidence that the outcome is already satisfied.
-- Derive the requested outcome, acceptance criteria, and important constraints
-  from the issue and any authoritative design material it references.
+- Treat Relay's self-contained task as the authoritative assignment. It must
+  contain the intended outcome, credible acceptance criteria, material
+  constraints, and canonical target. Do not routinely reread the issue or pull
+  request to reconstruct those facts. Query GitHub when a material fact is
+  missing, the authoritative content changed, or an ambiguity cannot be
+  resolved locally.
+- For a pull-request target, verify its exact current head and corresponding
+  issue. Treat that issue as the required outcome and the pull request as the
+  starting candidate, not as evidence that the outcome is already satisfied.
+- Derive the requested outcome from the task and any authoritative design
+  material it references.
 - Prefer updating and completing the existing pull request. If its branch
   cannot be updated, create a continuation from the exact candidate head in the
   authorized repository and cross-link its pull request, the original pull
   request, and the issue.
-- Inspect the surrounding code, tests, documentation, and current architecture
-  before choosing a design.
+- Inspect the implementation, its relevant callers, and focused tests far enough
+  to choose and verify the smallest complete change. Expand that inspection when
+  a concrete dependency, uncertainty, or failure requires it. Lens owns the
+  broader independent challenge; Forge need not repeat that review before editing.
 - Resolve material ambiguity from available evidence. Ask the operator when a
   missing decision would substantially change the requested outcome; otherwise
   state reasonable assumptions. An unanswered question leaves that task
@@ -39,6 +70,18 @@ not substitute ambient command-line credentials or unauthenticated requests.
   head. Otherwise, start from the repository and branch state appropriate to
   the issue, normally current `master`. Keep unrelated local or pre-existing
   changes out of the work.
+- Forge's configured workspace is one persistent repository checkout. Perform
+  each task on its branch in that checkout. Its current branch, index, and
+  working tree are durable work state: after a restart, inspect and resume that
+  state before refreshing or switching branches.
+- At task start, incrementally refresh the persistent repository and then
+  inspect, branch, diff, and modify through local Git. Do not use GitHub
+  pull-request, diff, patch, changed-filename, commit-diff, or file-content APIs
+  as source transport.
+- When the implementation area is unfamiliar, use the available `repo-map`
+  capability in the task's current checkout for initial orientation. Follow
+  current invocation guidance in the trusted room brief and reuse still-current
+  output before broad discovery.
 
 ## Implement the smallest complete change
 
@@ -62,10 +105,10 @@ not substitute ambient command-line credentials or unauthenticated requests.
   correctness.
 - Exercise the real system boundary when the issue depends on it; do not mock
   away the behaviour that needs proving.
-- Run focused tests while developing, then the appropriate wider repository
-  checks before declaring the candidate ready. Scale validation to the risk and
-  behaviour changed; trivial changes do not require ceremony unrelated to their
-  failure modes.
+- Run focused tests while developing. Repository CI is the broad regression
+  execution for a published head; do not run the repository-wide test suite or
+  reproduce its matrix locally. Diagnose a failure with the smallest useful
+  local reproducer.
 - Diagnose a failed check before excluding it from the candidate evidence. Call
   it pre-existing or unrelated only when the same failure is established on an
   equivalent current-base run or by equally direct canonical evidence. A
@@ -80,16 +123,19 @@ claim that it substitutes for independent review.
 
 ## Coord review loop
 
-This role specialises the generic SafeYolo
-[coord work protocol](../../cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md).
+The protocol below is self-contained for routine review handoffs; do not reload
+supporting Coord references unless setup, failure, or ambiguity requires them.
 Use coord only with the reviewer designated for this issue; room membership
 alone does not designate one.
 
 When the candidate is ready for independent review:
 
-1. Commit and push the complete intended change and ensure a reviewable PR
-   exists.
-2. Determine and independently verify the exact current pull-request head.
+1. Commit the complete intended change, push it with native Git, and create or
+   update the reviewable pull request with `gh`.
+2. Determine and independently verify that the exact current pull-request head
+   equals the local commit just pushed. Keep that object in the existing local
+   Git database so the reviewer's approved read-only repository mount can
+   supply it; do not refetch or reconstruct the unchanged object.
    Construct its canonical immutable URL:
    `https://github.com/<owner>/<repository>/pull/<number>/commits/<full-head-sha>`.
 3. Send one targeted handoff to the designated reviewer:
@@ -98,14 +144,26 @@ When the candidate is ready for independent review:
    REVIEW_READY target=<canonical-immutable-pr-commit-url>
    ```
 
-   Target the reviewer bound by the approved factory snapshot. The supervised
-   adapter records that exact outbound handoff and resumes bounded coord waits
-   for its declared response; do not create a second queue or polling loop.
+   Use the canonical Coord `send` operation with the configured factory room,
+   `declared_content_type="text/plain"`, and `notify=["<reviewer>"]`. The
+   `REVIEW_READY` line is the first body line. Target the reviewer bound by the
+   approved factory snapshot. Do not send the handoff to a private agent room,
+   guess alternate payload shapes after an error, or create a second queue or
+   polling loop. The supervised adapter records the outbound handoff and
+   resumes bounded coord waits for its declared response.
 
 The `target` URL identifies the pull request and its exact head commit. The
 pull request must link its corresponding issue. Do not fill `REVIEW_READY` with
 persuasive implementation claims or test transcripts. The reviewer establishes
 correctness from primary evidence.
+
+For a follow-up review, include the previous reviewed target and a reference
+to Lens's last disposition: its Coord room and canonical message sequence.
+Take the sequence from the received envelope, not its `attention_id`.
+This reference lets a fresh Lens session reuse its own findings. It is not a
+new protocol field or a substitute for the new exact candidate target.
+If that reference is unavailable, say so and continue with the candidate;
+missing history alone is not a blocker.
 
 After sending, leave that candidate awaiting its correlated disposition and
 continue other assigned, ready work when capacity permits. Resolve the
@@ -116,8 +174,14 @@ review target and carries the review request's canonical `attention_id=<id>`
 correlation token.
 
 - On `CHANGES_REQUIRED`, consume the complete actionable findings from that
-  targeted disposition, fix them, push a new candidate, independently verify
-  its immutable target URL, send a fresh `REVIEW_READY`, and wait again.
+  targeted disposition, reuse still-valid local evidence, inspect the material
+  delta, fix it, publish a new candidate, independently verify its immutable
+  target URL, send a fresh `REVIEW_READY`, and wait again. Do not reread the
+  issue, full pull request, review history, or CI logs unless a specific missing
+  fact requires it.
+  If a fresh session lacks necessary earlier context, use `read_room` to recover
+  that specific decision or finding. Do not reread a disposition already supplied
+  in the checkpoint.
   Mandatory findings must not be hidden in preceding unnotified room history or
   another channel.
 - On `READY`, verify that the commit in the reviewed target URL is still the
@@ -128,6 +192,12 @@ correlation token.
 - On `BLOCKED`, preserve the candidate and return `BLOCKED` for the original
   assignment with the reviewer's specific unmet need. Relay owns subsequent
   recovery.
+
+Send an original-assignment `DONE`, `BLOCKED`, or `FAILED` through the canonical
+Coord `send` operation with the configured factory room,
+`declared_content_type="text/plain"`, and `notify=["<coordinator>"]`. Put the
+terminal protocol line first and use the coordinator bound by the factory
+snapshot.
 
 Work silently between these state transitions; do not send review-progress or
 acknowledgement chatter.

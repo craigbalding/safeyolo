@@ -417,6 +417,24 @@ uv run pre-commit run --all-files
 uv run python scripts/check_codeql.py
 ```
 
+Lens's broader, operator-bound analysis toolbox is a separate locked tool
+project:
+
+```bash
+uv sync --project tools/acceptance --frozen --only-group static
+```
+
+This creates an isolated tool environment and does not change the product
+runtime lock. The acceptance graph selects bounded uses of mypy, Semgrep,
+pip-audit, Radon, pytest-xdist, and pytest-repeat; its stress-test invocation
+layers the small hash-locked pytest plugin set over the exact root project
+environment. These tools contribute different evidence, and their findings are
+not automatic merge vetoes. In particular, compare static and complexity
+findings with the trusted base, and treat parallel or repeated tests as stress
+signals rather than proof that a race cannot exist. See `accept-safeyolo.yaml`
+in the bundled SafeYolo skill graphs for the trusted sources, invocations, and
+evidence to retain.
+
 The commit hooks mirror CI's fast static checks:
 - **ruff** - linting and import sorting
 - **py_compile** - Python syntax validation

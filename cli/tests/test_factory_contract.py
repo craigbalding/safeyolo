@@ -52,19 +52,59 @@ def test_backlog_coordinator_contract_owns_proactive_flow_and_backfill():
     assert "When Lens has useful capacity" in contract
     assert "Treat an actionable `BLOCKED` or `FAILED` response as coordinator work." in contract
     assert "the factory does not require a brief" in contract
+    assert "product acceptance graph" in contract
+    assert "Assign one bounded path, not the whole graph" in contract
 
 
 def test_backlog_reviewer_contract_binds_install_trust_and_complexity_checks():
     contract = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
 
-    assert "trusted base revision's tracked lockfiles" in contract
+    assert "trusted base revision's tracked dependency inventory" in contract
+    assert "operator-bound acceptance graph" in contract
+    assert "separate validation-tool inventory" in contract
+    assert "outside both trusted-base inventories" in contract
     assert "it does not grant itself standing approval" in contract
     assert "Run deterministic post-change quality analysis" in contract
     assert "--select C901,PLR0911,PLR0912,PLR0913,PLR0915" in contract
     assert "A tool finding is evidence, not an automatic veto" in contract
+    assert "maintains reusable acceptance capability" in contract
+    assert "product acceptance graph" in contract
+    assert "rather than from a candidate as self-authorization" in contract
 
 
-def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> Path:
+def test_reviewer_repairs_execution_failures_and_escalates_without_false_blocked():
+    contract = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
+
+    assert "Fix unexpected failures that prevent tests or validation tools from running, then rerun them." in contract
+    assert "always raise it directly to the operator with what failed, what you tried, and what is needed" in contract
+    assert "Do not silently skip it or call it a limitation." in contract
+    assert "awaiting an operator response is not `BLOCKED`" in contract
+    assert "A test that runs and detects a product defect is different" in contract
+    assert "through the assigned task or review response" in contract
+
+
+@pytest.mark.parametrize("role", ["issue-owner", "independent-reviewer"])
+def test_worker_layout_separates_acceptance_material_without_banning_project_tools(role):
+    path = Path(__file__).parents[2] / "docs/agent-roles" / f"{role}.md"
+    contract = " ".join(path.read_text().split())
+
+    assert "Keep reusable acceptance environments" in contract
+    assert "retained evidence outside product checkouts" in contract
+    assert "otherwise use a directory in your persistent home outside the checkout" in contract
+    assert "`.venv`, `.pytest_cache`, and `.ruff_cache`" in contract
+    assert "Tests may still create fixtures at specific paths" in contract
+    assert "Evidence requested as a repository deliverable belongs in the repository." in contract
+
+
+def _factory_file(
+    tmp_path: Path,
+    *,
+    name: str = "backlog",
+    owner_harness: str | None = None,
+    owner_args: list[str] | None = None,
+    extra: str = "",
+) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "coordinator.md").write_text("# Coordinator\n\nDelegate exact tasks.\n")
     (tmp_path / "owner.md").write_text("# Owner\n\nOwn the issue.\n")
     (tmp_path / "reviewer.md").write_text("# Reviewer\n\nReview independently.\n")
@@ -73,11 +113,14 @@ def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> 
         'schema = "safeyolo.factory/v1"\n'
         f'name = "{name}"\n'
         'room = "backlog"\n\n'
-        '[operator_input]\n'
+        "[operator_input]\n"
         'to = "coordinator"\n'
         'types = ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"]\n\n'
         '[roles.coordinator]\nagent = "relay"\ncontract = "coordinator.md"\n\n'
-        '[roles.owner]\nagent = "forge"\ncontract = "owner.md"\n\n'
+        '[roles.owner]\nagent = "forge"\ncontract = "owner.md"\n'
+        + (f'harness = "{owner_harness}"\n' if owner_harness is not None else "")
+        + (f"args = {json.dumps(owner_args)}\n" if owner_args is not None else "")
+        + "\n"
         '[roles.reviewer]\nagent = "lens"\ncontract = "reviewer.md"\n\n'
         '[[handoffs]]\nrequest = "TASK"\nfrom = "coordinator"\nto = "owner"\n'
         'responses = ["DONE", "BLOCKED", "FAILED"]\n'
@@ -90,6 +133,56 @@ def _factory_file(tmp_path: Path, *, name: str = "backlog", extra: str = "") -> 
         'response_to = ["owner", "coordinator"]\n' + extra
     )
     return path
+
+
+def test_factory_role_selects_a_harness_and_defaults_to_codex(tmp_path):
+    default = load_factory_file(_factory_file(tmp_path / "default"))
+    selected = load_factory_file(_factory_file(tmp_path / "selected", owner_harness="pi"))
+
+    assert {role.name: role.harness for role in default.roles} == {
+        "coordinator": "codex",
+        "owner": "codex",
+        "reviewer": "codex",
+    }
+    assert {role.name: role.harness for role in selected.roles}["owner"] == "pi"
+    assert selected.snapshot_payload()["roles"]["owner"]["harness"] == "pi"
+
+
+def test_factory_role_can_snapshot_explicit_harness_arguments(tmp_path):
+    selected = load_factory_file(
+        _factory_file(
+            tmp_path,
+            owner_harness="pi",
+            owner_args=["--provider", "openai-codex", "--thinking", "xhigh"],
+        )
+    )
+
+    owner = next(role for role in selected.roles if role.name == "owner")
+    assert owner.args == ("--provider", "openai-codex", "--thinking", "xhigh")
+    assert selected.snapshot_payload()["roles"]["owner"]["args"] == [
+        "--provider",
+        "openai-codex",
+        "--thinking",
+        "xhigh",
+    ]
+
+
+def test_factory_role_rejects_non_string_harness_arguments(tmp_path):
+    path = _factory_file(tmp_path)
+    path.write_text(
+        path.read_text().replace(
+            '[roles.owner]\nagent = "forge"\ncontract = "owner.md"\n',
+            '[roles.owner]\nagent = "forge"\ncontract = "owner.md"\nargs = [1]\n',
+        )
+    )
+
+    with pytest.raises(FactoryContractError, match="args must be an array"):
+        load_factory_file(path)
+
+
+def test_factory_rejects_an_unknown_role_harness(tmp_path):
+    with pytest.raises(FactoryContractError, match="harness must be one of codex, pi"):
+        load_factory_file(_factory_file(tmp_path, owner_harness="unknown"))
 
 
 def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, tmp_path):
@@ -109,25 +202,15 @@ def test_factory_check_resolves_roles_handoffs_and_contract_hashes(cli_runner, t
     assert "handoff=REVIEW_READY from=owner to=reviewer" in result.output
     assert "response_to=owner,coordinator" in result.output
     assert "Approval creates an immutable snapshot." in explanation
-    assert (
-        "Inspect those files directly; SafeYolo does not summarize"
-        in explanation
-    )
+    assert "Inspect those files directly; SafeYolo does not summarize" in explanation
     assert "The admitted input words are not workflow definitions." in explanation
     assert "separate live operator state" in explanation
-    assert (
-        "does not inspect live room state, grants, brief revision, or worker health"
-        in explanation
-    )
+    assert "does not inspect live room state, grants, brief revision, or worker health" in explanation
     assert "does not select work or prove live eligibility or readiness" in explanation
     assert "Read the bound role contract to determine intake behavior" in explanation
     assert "does not by itself disable proactive intake" in explanation
     assert "safeyolo coord brief show backlog" in explanation
-    assert (
-        "safeyolo coord brief set backlog --file BRIEF.md "
-        "--expected-revision REVISION"
-        in explanation
-    )
+    assert "safeyolo coord brief set backlog --file BRIEF.md --expected-revision REVISION" in explanation
     assert "safeyolo factory doctor backlog" in explanation
 
 
@@ -319,6 +402,8 @@ def test_factory_run_executes_staged_worker_commands(
     homes: dict[str, Path] = {}
     markers: dict[str, Path] = {}
     rootfs: dict[str, Path] = {}
+    staged_harnesses: dict[str, str] = {}
+    worker_commands: dict[str, str] = {}
 
     for index, name in enumerate(names, start=1):
         workspace = tmp_path / f"{name}-workspace"
@@ -353,7 +438,8 @@ def test_factory_run_executes_staged_worker_commands(
     def stop_sandbox(name):
         running.discard(name)
 
-    def stage_worker(*, name, **_kwargs):
+    def stage_worker(*, name, host_script_path, **_kwargs):
+        staged_harnesses[name] = host_script_path.name
         command = homes[name] / ".safeyolo-command"
         command.write_text(
             "#!/bin/sh\n"
@@ -387,6 +473,7 @@ def test_factory_run_executes_staged_worker_commands(
             shlex.quote(str(homes[name] / ".safeyolo-command")),
         )
         env = {**os.environ, "HOME": str(homes[name])}
+        worker_commands[name] = command
         worker = subprocess.Popen(
             ["bash", "-c", local_command],
             env=env,
@@ -439,7 +526,18 @@ def test_factory_run_executes_staged_worker_commands(
         lambda _name: _passing_factory_report(),
     )
 
-    path = _factory_file(tmp_path)
+    path = _factory_file(
+        tmp_path,
+        owner_harness="pi",
+        owner_args=[
+            "--provider",
+            "openai-codex",
+            "--model",
+            "gpt-5.6-luna",
+            "--thinking",
+            "xhigh",
+        ],
+    )
     approved = cli_runner.invoke(app, ["factory", "approve", str(path), "--yes"])
     assert approved.exit_code == 0, approved.output
 
@@ -453,6 +551,14 @@ def test_factory_run_executes_staged_worker_commands(
         while time.monotonic() < deadline and not all(marker.exists() for marker in markers.values()):
             time.sleep(0.01)
         assert all(marker.exists() for marker in markers.values())
+        assert staged_harnesses == {
+            "relay": "codex-coord-host-setup.sh",
+            "forge": "pi-coord-host-setup.sh",
+            "lens": "codex-coord-host-setup.sh",
+        }
+        assert "--provider openai-codex --model gpt-5.6-luna --thinking xhigh" in worker_commands["forge"]
+        assert "--provider" not in worker_commands["relay"]
+        assert "--provider" not in worker_commands["lens"]
         pids = [int(marker.read_text()) for marker in markers.values()]
         for pid in pids:
             os.kill(pid, 0)
@@ -831,7 +937,4 @@ def test_factory_run_rejects_a_legacy_source_only_snapshot(
     assert result.exit_code == 1
     assert "snapshot has no operator_input" in result.output
     assert "cannot be" in result.output
-    assert (
-        "cannot be run; check and approve a reachable contract"
-        in " ".join(result.output.split())
-    )
+    assert "cannot be run; check and approve a reachable contract" in " ".join(result.output.split())
