@@ -8,7 +8,8 @@ sandboxes.
 ```bash
 # From source (PyPI package coming soon)
 git clone https://github.com/craigbalding/safeyolo.git
-cd safeyolo && uv tool install -e .
+cd safeyolo
+./install.sh
 ```
 
 ## Quick Start
