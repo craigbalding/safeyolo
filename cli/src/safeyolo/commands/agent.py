@@ -549,6 +549,7 @@ def _run_agent_impl(
     run_command_detached: bool = False,
     no_snapshot: bool = False,
     rename_tmux_window: bool = False,
+    skip_configured_command: bool = False,
     *,
     _start_lock: _SetupLockHandle | None = None,
 ) -> int:
@@ -559,6 +560,9 @@ def _run_agent_impl(
     detach: Boot VM in background and return after boot confirmation.
     run_command_detached: start the resolved agent command before returning
         from a detached run.
+    skip_configured_command: boot the sandbox without starting its configured
+        host command. This is used by a first-party workflow that starts its
+        own guest-side controller through the normal shell boundary.
     no_snapshot: skip snapshot capture and restore for this run;
         don't touch an existing snapshot on disk either way.
     rename_tmux_window: rename the invoking tmux window to `name` once
@@ -639,7 +643,7 @@ def _run_agent_impl(
         extra_env["SAFEYOLO_YOLO_MODE"] = "1"
     if detach:
         extra_env["SAFEYOLO_DETACH"] = "1"
-    if detached_command_is_configured:
+    if detached_command_is_configured and not skip_configured_command:
         # The guest's PID 1 owns the runtime supervisor.  This marker is
         # staged before boot so both Linux/gVisor and macOS/VZ use the same
         # durable ownership boundary.
@@ -995,7 +999,7 @@ def _run_agent_impl(
                     effective_agent_args,
                     agent_args,
                 )
-                if full_cmd is not None:
+                if full_cmd is not None and not skip_configured_command:
                     # Keep command recovery in the host runtime. A command
                     # crash must not restart or recreate the sandbox, and a
                     # retained Coord task must remain in the guest checkpoint.
@@ -1006,7 +1010,7 @@ def _run_agent_impl(
                     except Exception:
                         plat.stop_sandbox(name)
                         raise RuntimeError("detached agent command supervisor failed to start")
-                elif run_command_detached:
+                elif run_command_detached and not skip_configured_command:
                     plat.stop_sandbox(name)
                     raise RuntimeError("detached agent has no command to run")
                 _print_detached_guidance(name)
