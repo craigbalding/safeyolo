@@ -361,11 +361,12 @@ def _agent_host_setup_lock(name: str):
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        fd = os.open("host-setup.lock", flags, 0o600, dir_fd=setup_dir_fd)
-    except OSError as exc:
+        try:
+            fd = os.open("host-setup.lock", flags, 0o600, dir_fd=setup_dir_fd)
+        except OSError as exc:
+            raise RuntimeError(f"unsafe host setup lock for agent {name!r}: {exc}") from None
+    finally:
         os.close(setup_dir_fd)
-        raise RuntimeError(f"unsafe host setup lock for agent {name!r}: {exc}") from None
-    os.close(setup_dir_fd)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
