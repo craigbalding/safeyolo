@@ -230,3 +230,12 @@ def test_install_tool_failure_does_not_echo_uv_diagnostics(tmp_path: Path) -> No
     assert result.returncode != 0
     assert "uv tool install failed with a Python interpreter satisfying >=3.12,<3.14" in result.stderr
     assert secret not in result.stdout + result.stderr
+
+
+def test_install_avoids_empty_nounset_array_expansion() -> None:
+    """The install path must remain compatible with macOS Bash 3.2."""
+    source = (REPO_ROOT / "install.sh").read_text()
+
+    assert "reinstall_args=()" not in source
+    assert 'local tool_args=(--python)' in source
+    assert 'uv tool install "${tool_args[@]}"' in source

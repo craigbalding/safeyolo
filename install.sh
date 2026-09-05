@@ -98,20 +98,20 @@ install_tool() {
   local action="$1"
   local python_requirement
   local python_interpreter
-  local reinstall_args=()
+  local tool_args=(--python)
 
   python_requirement="$(read_python_requirement)" || return 1
   python_interpreter="$(select_supported_python "$python_requirement")" || return 1
+  tool_args+=("$python_interpreter" --editable "$REPO_ROOT")
 
   if [[ "$action" == "reinstall" ]]; then
-    reinstall_args=(--reinstall)
+    tool_args+=(--reinstall)
   fi
+  tool_args+=(--overrides <(printf '%s\n' "${UV_OVERRIDES[@]}"))
 
   # Keep uv's potentially verbose failure output (which can contain host or
   # index details) out of the bounded installer diagnostic below.
-  if ! uv tool install --python "$python_interpreter" \
-    --editable "$REPO_ROOT" "${reinstall_args[@]}" \
-    --overrides <(printf '%s\n' "${UV_OVERRIDES[@]}") >/dev/null 2>&1; then
+  if ! uv tool install "${tool_args[@]}" >/dev/null 2>&1; then
     echo "install.sh: uv tool $action failed with a Python interpreter satisfying $python_requirement" >&2
     echo "install.sh: check uv package-index access and dependency resolution, then retry" >&2
     return 1
