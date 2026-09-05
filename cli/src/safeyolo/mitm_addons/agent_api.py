@@ -1886,7 +1886,10 @@ class AgentAPI:
         if agent_id is None:
             self._respond(flow, 403, {"error": "Could not identify agent"})
             return False
-        filters["agent_id"] = agent_id
+        # Evidence ownership is the authorization boundary. Keep the legacy
+        # agent_id filter caller-supplied for compatibility, but always add a
+        # trusted owner predicate that guest input cannot replace.
+        filters["evidence_owner"] = agent_id
         return True
 
     def _handle_flow_search(self, flow: http.HTTPFlow):
@@ -1934,8 +1937,12 @@ class AgentAPI:
         agent_id = self._resolve_agent_id(flow)
         if agent_id is None:
             return False
-        record_agent = flow_record.get("agent_id", "")
-        return record_agent == agent_id
+        record_owner = flow_record.get("evidence_owner")
+        if record_owner is None:
+            # Direct callers and pre-migration test doubles may still expose
+            # only the legacy field. Real stores backfill evidence_owner.
+            record_owner = flow_record.get("agent_id")
+        return record_owner == agent_id
 
     def _handle_flow_detail(self, flow: http.HTTPFlow, flow_id: int):
         """GET /api/flows/{id} - Get flow metadata."""

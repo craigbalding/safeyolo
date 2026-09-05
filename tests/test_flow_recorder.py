@@ -146,6 +146,14 @@ def test_response_state_identity_url_and_context_are_persisted(
     assert summary["flow_state"] == expected_state
     assert summary["reason"] == expected_reason
     assert summary["agent_id"] == "agent-a"
+    assert summary["evidence_owner"] == "agent-a"
+    assert summary["trusted_transport_identity"] == "agent-a"
+    assert summary["initiator"] == "unknown"
+    assert summary["attribution_status"] == "resolved"
+    assert json.loads(summary["attribution_provenance_json"]) == {
+        "transport_source": "uds",
+        "uds_agent": "agent-a",
+    }
     assert summary["engagement_id"] == "agent-a"
     assert summary["source_id"] == "192.0.2.20"
     assert summary["host"] == "app.example.com"
@@ -201,6 +209,11 @@ def test_operator_provenance_and_websocket_state_are_persisted(recorder):
     summary = store.search_flows({})[0]
     detail = store.get_flow(summary["id"])
     assert summary["source_type"] == "operator"
+    assert summary["evidence_owner"] == "agent-a"
+    assert summary["trusted_transport_identity"] == "agent-a"
+    assert summary["initiator"] == "operator"
+    assert summary["attribution_status"] == "delegated"
+    assert json.loads(summary["attribution_provenance_json"])["delegation"] == "operator-provenance"
     assert detail["is_websocket"] == 1
     assert [
         {"tag": tag["tag"], "value": tag["value"]} for tag in detail["tags"]
@@ -208,6 +221,128 @@ def test_operator_provenance_and_websocket_state_are_persisted(recorder):
         {"tag": "operator_action", "value": "replay"},
         {"tag": "source_flow_id", "value": "17"},
     ]
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_operator_replay_refreshes_initiator_in_traffic_and_store(recorder, tmp_path, duplicate):
+    """Real replay hooks replace the initiator, not the captured evidence owner."""
+    from operator_provenance import OperatorProvenance
+    from request_id import RequestIdGenerator
+    from request_logger import RequestLogger
+    from service_discovery import ServiceDiscovery
+
+    from safeyolo.core import utils
+    from safeyolo.core.audit_writer import get_writer
+    from safeyolo.core.identity import flow_attribution
+
+    addon, store = recorder
+    discovery = ServiceDiscovery()
+    operator = OperatorProvenance()
+    request_ids = RequestIdGenerator()
+    logger = RequestLogger()
+    path = tmp_path / "replay-audit.jsonl"
+    original = _flow()
+
+    with taddons.context(addon, discovery, operator, request_ids, logger), \
+         patch.object(utils, "AUDIT_LOG_PATH", new=path):
+        request_ids.request(original)
+        discovery.request(original)
+        logger.request(original)
+        logger.response(original)
+        original_attribution = flow_attribution(original, discovery)
+        operator._remember(original)
+
+        replay = original.copy() if duplicate else original
+        if duplicate:
+            operator._view_add(replay)
+        replay.backup()
+        replay.is_replay = "request"
+        replay.response = None
+        operator._view_update(replay)
+        request_ids.request(replay)
+        operator.request(replay)
+        discovery.request(replay)
+        logger.request(replay)
+        replay.response = http.Response.make(200, b"replayed")
+        _invoke(addon, store, replay)
+        logger.response(replay)
+        assert get_writer().wait_for_drain(timeout_s=3.0)
+
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    traffic = [event for event in events if event["event"].startswith("traffic.")]
+    assert len(traffic) == 4
+    assert original_attribution.initiator.value == "unknown"
+    for event in traffic[:2]:
+        assert event["details"]["attribution"]["initiator"] == "unknown"
+    replay_audit = next(
+        event for event in events
+        if event["event"] == "admin.traffic_operator_action"
+        and event["details"]["action"] == "replay"
+    )
+    for event in [replay_audit, *traffic[2:]]:
+        attribution = event["details"]["attribution"]
+        assert attribution["evidence_owner"] == "agent-a"
+        assert attribution["trusted_transport_identity"] == "agent-a"
+        assert attribution["initiator"] == "operator"
+        assert attribution["attribution_status"] == "delegated"
+    stored = store.search_flows({})
+    assert len(stored) == 1
+    assert stored[0]["evidence_owner"] == "agent-a"
+    assert stored[0]["trusted_transport_identity"] == "agent-a"
+    assert stored[0]["initiator"] == "operator"
+    assert stored[0]["attribution_status"] == "delegated"
+
+
+@pytest.mark.parametrize("identity_state", ["unavailable", "conflict", "late_change"])
+def test_operator_replay_does_not_restore_quarantined_ownership(recorder, identity_state):
+    from operator_provenance import OperatorProvenance
+    from request_id import RequestIdGenerator
+    from service_discovery import ServiceDiscovery
+
+    from safeyolo.core.identity import (
+        LATE_ATTRIBUTION_CHANGE_KEY,
+        detect_late_attribution_change,
+        flow_attribution,
+        flow_identity,
+    )
+
+    addon, store = recorder
+    discovery = ServiceDiscovery()
+    operator = OperatorProvenance()
+    request_ids = RequestIdGenerator()
+    flow = _flow(agent=None if identity_state == "unavailable" else "agent-a")
+    if identity_state == "conflict":
+        discovery._ip_to_name = {"192.0.2.20": "agent-b"}
+
+    with taddons.context(addon, discovery, operator, request_ids):
+        discovery.request(flow)
+        original_identity = flow_identity(flow, discovery)
+        original_attribution = flow_attribution(flow, discovery)
+        if identity_state == "late_change":
+            discovery._ip_to_name = {"192.0.2.20": "agent-b"}
+            assert detect_late_attribution_change(flow, discovery)
+        operator._remember(flow)
+        flow.backup()
+        flow.is_replay = "request"
+        flow.response = None
+        operator._view_update(flow)
+        request_ids.request(flow)
+        operator.request(flow)
+        discovery.request(flow)
+        flow.response = http.Response.make(200, b"replayed")
+        enqueue = _invoke(addon, store, flow)
+
+    attribution = flow_attribution(flow, discovery)
+    assert flow_identity(flow, discovery) == original_identity
+    assert attribution.evidence_owner == original_attribution.evidence_owner
+    assert attribution.initiator.value == "operator"
+    if identity_state == "late_change":
+        assert flow.metadata[LATE_ATTRIBUTION_CHANGE_KEY]["quarantined"] is True
+    else:
+        assert attribution.status == original_attribution.status
+        assert attribution.evidence_owner is None
+    enqueue.assert_not_called()
+    assert store.search_flows({}) == []
 
 
 def test_record_build_failure_is_best_effort_and_counted(recorder):
@@ -219,6 +354,36 @@ def test_record_build_failure_is_best_effort_and_counted(recorder):
     enqueue.assert_not_called()
     assert addon.get_stats()["errors"] == 1
     assert addon.get_stats()["recorded"] == 0
+
+
+def test_late_identity_change_between_gate_and_build_is_quarantined(recorder):
+    """The gate/build pair cannot store evidence after ownership changes."""
+    from service_discovery import ServiceDiscovery
+
+    addon, store = recorder
+    discovery = ServiceDiscovery()
+    discovery._ip_to_name = {"192.0.2.20": "agent-a"}
+    flow = _flow()
+
+    with patch("safeyolo.core.utils.find_addon", autospec=True, return_value=discovery), \
+         patch("safeyolo.core.utils.write_event", autospec=True):
+        original_build = addon._build_record
+
+        def mutate_before_build(current_flow, flow_state):
+            discovery._ip_to_name["192.0.2.20"] = "agent-b"
+            return original_build(current_flow, flow_state)
+
+        with patch.object(
+            addon,
+            "_build_record",
+            autospec=True,
+            side_effect=mutate_before_build,
+        ):
+            addon.response(flow)
+
+    assert store.search_flows({}) == []
+    assert addon.get_stats()["skipped"] == 1
+    assert addon.get_stats()["errors"] == 0
 
 
 def test_writer_backpressure_and_write_failures_surface_in_stats(recorder):

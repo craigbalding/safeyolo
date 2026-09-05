@@ -17,7 +17,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from safeyolo.core.audit_schema import (
     SCHEMA_VERSION,
@@ -401,6 +401,58 @@ class TestAuditEventRoundTrip:
         )
         restored = AuditEvent.model_validate(original.to_jsonl())
         assert restored.event_id == "evt-123"
+
+    def test_attribution_wire_shape_is_readable_by_schema_v1_consumers(self):
+        """New attribution remains inside the v1-compatible details field."""
+
+        class LegacyAuditEvent(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+            schema_version: int = 1
+            event_id: str | None = None
+            ts: datetime
+            event: str
+            kind: EventKind
+            severity: Severity
+            summary: str
+            request_id: str | None = None
+            agent: str | None = None
+            addon: str | None = None
+            decision: Decision | None = None
+            host: str | None = None
+            approval: ApprovalRequest | None = None
+            details: dict = {}
+
+        current = AuditEvent(
+            event="traffic.request",
+            kind=EventKind.TRAFFIC,
+            severity=Severity.LOW,
+            summary="request",
+            evidence_owner="agent-a",
+            trusted_transport_identity="agent-a",
+            initiator="unknown",
+            attribution_status="resolved",
+            attribution_provenance={"transport_source": "uds"},
+            details={"method": "GET"},
+        )
+        raw = current.to_jsonl()
+
+        assert not {
+            "evidence_owner",
+            "trusted_transport_identity",
+            "initiator",
+            "attribution_status",
+            "attribution_provenance",
+        } & raw.keys()
+        assert raw["details"]["method"] == "GET"
+        assert raw["details"]["attribution"]["evidence_owner"] == "agent-a"
+        LegacyAuditEvent.model_validate(raw)
+
+        restored = parse_audit_event(raw)
+        assert restored.evidence_owner == "agent-a"
+        assert restored.trusted_transport_identity == "agent-a"
+        assert restored.attribution_status == "resolved"
+        assert restored.details == {"method": "GET"}
 
 
 # =========================================================================
