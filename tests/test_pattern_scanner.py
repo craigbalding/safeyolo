@@ -18,6 +18,7 @@ from mitmproxy.websocket import WebSocketMessage
 from wsproto.frame_protocol import Opcode
 
 from pdp.client import PolicyClient
+from safeyolo.proxy_modes.unix_listener import UnixMode
 
 pytestmark = pytest.mark.assurance_boundary
 
@@ -1242,7 +1243,10 @@ class TestBoundedUrlInspection:
         assert inspection.decoded == ""
 
         flow = make_flow(url=f"https://api.example.com{oversized}")
-        flow.metadata.update(trace=True, request_id="req-overflow-synthetic", agent="agent-synthetic")
+        flow.client_conn.proxy_mode = UnixMode.parse(
+            "unix:/tmp/192.0.2.20_agent-synthetic/proxy.sock"
+        )
+        flow.metadata.update(trace=True, request_id="req-overflow-synthetic")
         reset_store_for_tests()
         try:
             with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)), \
@@ -1252,6 +1256,9 @@ class TestBoundedUrlInspection:
 
             body = json.loads(flow.response.get_text())
             record = get_store().get("req-overflow-synthetic", "agent-synthetic")
+            assert record is not None
+            assert audit.call_args.kwargs["evidence_owner"] == "agent-synthetic"
+            assert audit.call_args.kwargs["attribution_status"] == "resolved"
             published = json.dumps({
                 "body": body,
                 "metadata": flow.metadata,
@@ -1454,7 +1461,10 @@ class TestPatternDisclosureContainment:
             }]
         })
         flow = make_flow(url=f"https://api.example.com/?value={quote(sentinel, safe='')}")
-        flow.metadata.update(trace=True, request_id="req-trace-synthetic", agent="agent-synthetic")
+        flow.client_conn.proxy_mode = UnixMode.parse(
+            "unix:/tmp/192.0.2.20_agent-synthetic/proxy.sock"
+        )
+        flow.metadata.update(trace=True, request_id="req-trace-synthetic")
         reset_store_for_tests()
         try:
             with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)), \
@@ -1462,6 +1472,9 @@ class TestPatternDisclosureContainment:
                 scanner.request(flow)
 
             record = get_store().get("req-trace-synthetic", "agent-synthetic")
+            assert record is not None
+            assert audit.call_args.kwargs["evidence_owner"] == "agent-synthetic"
+            assert audit.call_args.kwargs["attribution_status"] == "resolved"
             published = json.dumps({
                 "metadata": flow.metadata,
                 "trace": get_store().serialise(record),
@@ -1469,6 +1482,34 @@ class TestPatternDisclosureContainment:
             }, default=str)
             assert sentinel not in published
             assert "value" not in published
+        finally:
+            reset_store_for_tests()
+
+
+    def test_metadata_only_identity_cannot_claim_scanner_trace(self, scanner, make_flow):
+        from safeyolo.core.trace import get_store, reset_store_for_tests
+
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "trace-finding",
+                "pattern": "synthetic-match",
+                "target": "request",
+                "scope": ["url"],
+                "action": "log",
+            }]
+        })
+        flow = make_flow(url="https://api.example.com/?q=synthetic-match")
+        flow.metadata.update(trace=True, request_id="req-untrusted", agent="agent-synthetic")
+        reset_store_for_tests()
+        try:
+            with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)), \
+                 patch("safeyolo.core.base.write_event", autospec=True) as audit:
+                scanner.request(flow)
+
+            assert "agent" not in flow.metadata
+            assert audit.call_args.kwargs["evidence_owner"] is None
+            assert audit.call_args.kwargs["attribution_status"] == "unavailable"
+            assert get_store().get("req-untrusted", "agent-synthetic") is None
         finally:
             reset_store_for_tests()
 
