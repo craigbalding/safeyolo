@@ -12,46 +12,116 @@ controller_runner="$script_dir/run-controller.sh"
 layout_helper="$script_dir/adapt-layout.sh"
 annotation_viewer="$script_dir/show-annotation.sh"
 surface_switcher="$script_dir/switch-surface.sh"
-questions_helper="$script_dir/lesson-questions.sh"
-sources_helper="$script_dir/lesson-sources.sh"
+capture_helper="$script_dir/capture-evidence.sh"
 startup_instructions="$skill_dir/assets/startup-instructions.md"
 session=lab
+lab_socket_dir="$HOME/.safeyolo"
+lab_socket="$lab_socket_dir/lab-tmux.sock"
+agent_name="${SAFEYOLO_AGENT_NAME:-}"
+if [ -z "$agent_name" ] && [ -r /safeyolo/agent-name ]; then
+  agent_name=$(cat /safeyolo/agent-name 2>/dev/null || true)
+fi
+if [ -z "$agent_name" ] || [[ ! "$agent_name" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+  printf 'SafeYolo Lab requires the managed agent identity from its guest environment\n' >&2
+  exit 2
+fi
+owner_marker="safeyolo:$agent_name"
+objective=
+action=attach
+json_status=0
 
 usage() {
   cat <<'EOF'
-Usage: safeyolo-lab
+Usage: safeyolo-lab [OPTIONS]
 
 Run this command once from /home/agent after `safeyolo agent shell AGENT`.
-It enters the guest lab tmux and starts the controller.
+It enters the guest Lab tmux and starts the controller.
 
 On a later reconnect, run the same command. It attaches to the existing lab.
 It does not start a second controller.
+
+Options:
+  --objective TEXT  Record the operator's objective before starting a Lab.
+  --status          Report the owned session and controller state.
+  --json            Emit JSON with --status.
+  --recover         Relaunch an owned dead controller.
+  --relaunch        Explicitly relaunch an owned controller.
+  --teardown        Capture redacted pane evidence and remove the owned session.
 
 The same command works in a direct terminal and inside a host tmux pane.
 The guest tmux prefix is C-a. Detach with C-a d.
 EOF
 }
 
-case "${1:-}" in
-  '') ;;
-  -h|--help)
-    [ "$#" -eq 1 ] || {
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+      usage
+      exit 0
+      ;;
+    --objective)
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+      objective=$2
+      shift 2
+      ;;
+    --status)
+      action=status
+      shift
+      ;;
+    --json)
+      json_status=1
+      shift
+      ;;
+    --recover)
+      action=recover
+      shift
+      ;;
+    --relaunch)
+      action=relaunch
+      shift
+      ;;
+    --teardown)
+      action=teardown
+      shift
+      ;;
+    *)
       usage >&2
       exit 2
-    }
-    usage
-    exit 0
-    ;;
-  *)
-    usage >&2
-    exit 2
-    ;;
-esac
+      ;;
+  esac
+done
+
+if [ "$json_status" -eq 1 ] && [ "$action" != status ]; then
+  printf '%s\n' '--json requires --status' >&2
+  exit 2
+fi
+if [ "$action" != attach ] && [ -n "$objective" ]; then
+  printf '%s\n' '--objective is valid only when attaching to a Lab' >&2
+  exit 2
+fi
+if [ "${#objective}" -gt 4096 ]; then
+  printf '%s\n' 'Lab objective is limited to 4096 characters' >&2
+  exit 2
+fi
 
 if ! command -v tmux >/dev/null 2>&1; then
   printf 'tmux is not installed in this SafeYolo guest\n' >&2
   exit 127
 fi
+if [ -L "$lab_socket_dir" ] || [ -e "$lab_socket_dir" ] && [ ! -d "$lab_socket_dir" ]; then
+  printf 'The Lab state directory is not a private directory: %s\n' "$lab_socket_dir" >&2
+  exit 2
+fi
+mkdir -p "$lab_socket_dir" || exit 2
+chmod 700 "$lab_socket_dir" || exit 2
+if [ -e "$lab_socket" ] && [ ! -S "$lab_socket" ]; then
+  printf 'The Lab tmux socket is not a Unix socket: %s\n' "$lab_socket" >&2
+  exit 2
+fi
+tmux() {
+  command tmux -S "$lab_socket" "$@"
+}
 if [ ! -r "$profile" ]; then
   printf 'The tmux profile is not readable: %s\n' "$profile" >&2
   exit 2
@@ -72,12 +142,8 @@ if [ ! -x "$surface_switcher" ]; then
   printf 'The surface switcher is not executable: %s\n' "$surface_switcher" >&2
   exit 126
 fi
-if [ ! -x "$questions_helper" ]; then
-  printf 'The lesson question helper is not executable: %s\n' "$questions_helper" >&2
-  exit 126
-fi
-if [ ! -x "$sources_helper" ]; then
-  printf 'The lesson source helper is not executable: %s\n' "$sources_helper" >&2
+if [ ! -x "$capture_helper" ]; then
+  printf 'The evidence helper is not executable: %s\n' "$capture_helper" >&2
   exit 126
 fi
 if [ ! -r "$startup_instructions" ]; then
@@ -93,46 +159,232 @@ if [ -n "${TMUX:-}" ]; then
   unset TMUX TMUX_PANE
 fi
 
-if tmux has-session -t "$session" 2>/dev/null; then
-  tmux source-file "$profile" || exit
-  tmux set-option -g @safeyolo_lab_layout_script "$layout_helper" || exit
-  tmux set-option -g @safeyolo_lab_annotation_script "$annotation_viewer" || exit
-  tmux set-option -g @safeyolo_lab_surface_script "$surface_switcher" || exit
-  tmux set-option -g @safeyolo_lab_questions_script "$questions_helper" || exit
-  tmux set-option -g @safeyolo_lab_sources_script "$sources_helper" || exit
+session_exists() {
+  tmux has-session -t "$session" 2>/dev/null
+}
+
+session_option() {
+  tmux show-options -qv -t "$session" "$1" 2>/dev/null || true
+}
+
+controller_pane=""
+controller_dead=1
+controller_run_alive=0
+session_owned=0
+run_marker=
+run_pid=
+run_ticks=
+
+refresh_state() {
+  controller_pane=$(session_option @safeyolo_lab_controller_pane)
+  if [ -n "$controller_pane" ] && tmux display-message -p -t "$controller_pane" '#{pane_id}' >/dev/null 2>&1; then
+    controller_dead=$(tmux display-message -p -t "$controller_pane" '#{pane_dead}' 2>/dev/null || printf '1')
+  else
+    controller_pane=""
+    controller_dead=1
+  fi
+  controller_run_alive=0
+  if [ -n "$controller_pane" ]; then
+    run_marker=$(tmux show-options -pqv -t "$controller_pane" @safeyolo_lab_controller_run 2>/dev/null || true)
+    run_pid=${run_marker%%:*}
+    run_ticks=${run_marker#*:}
+    if [ -n "$run_marker" ] && [ "$run_pid" != "$run_marker" ] && [ -r "/proc/$run_pid/stat" ]; then
+      current_ticks=$(awk '{print $22}' "/proc/$run_pid/stat" 2>/dev/null || true)
+      if [ -n "$current_ticks" ] && [ "$current_ticks" = "$run_ticks" ]; then
+        controller_run_alive=1
+      fi
+    fi
+  fi
+}
+
+status_json() {
+  local exists=$1 owned=$2 alive=$3 run_alive=$4
+  printf '{"agent":"%s","session":"%s","session_exists":%s,"owned":%s,"controller_pane":"%s","controller_alive":%s,"controller_run_alive":%s}\n' \
+    "$agent_name" "$session" "$exists" "$owned" "$controller_pane" "$alive" "$run_alive"
+}
+
+if session_exists; then
+  if [ "$(session_option @safeyolo_lab_owner)" = "$owner_marker" ] && \
+    [ "$(session_option @safeyolo_lab_agent)" = "$agent_name" ]; then
+    session_owned=1
+  fi
+  refresh_state
+fi
+
+controller_alive=0
+if [ "$session_owned" -eq 1 ] && [ "$controller_dead" = "0" ] && [ "$controller_run_alive" -eq 1 ]; then
+  controller_alive=1
+fi
+
+if [ "$action" = status ]; then
+  if [ "$json_status" -eq 1 ]; then
+    if session_exists && [ "$session_owned" -eq 1 ]; then
+      status_json 1 1 "$controller_alive" "$controller_run_alive"
+    elif session_exists; then
+      status_json 1 0 0 0
+    else
+      status_json 0 0 0 0
+    fi
+  fi
+  if [ "$json_status" -eq 0 ]; then
+    if ! session_exists; then
+      printf 'Lab session: absent\n'
+    elif [ "$session_owned" -ne 1 ]; then
+      printf 'Lab session: present but not owned by SafeYolo agent %s\n' "$agent_name"
+    else
+      printf 'Lab session: owned\n'
+      if [ "$controller_alive" -eq 1 ]; then
+        printf 'Controller: alive\n'
+      else
+        printf 'Controller: not alive\n'
+      fi
+      [ -n "$controller_pane" ] && printf 'Controller pane: %s\n' "$controller_pane"
+    fi
+  fi
+  if ! session_exists; then exit 0; fi
+  [ "$session_owned" -eq 1 ] || exit 3
+  [ "$controller_alive" -eq 1 ] || exit 4
+  exit 0
+fi
+
+if session_exists && [ "$session_owned" -ne 1 ]; then
+  printf 'A guest tmux session named %s exists, but SafeYolo does not own it.\n' "$session" >&2
+  printf 'The Lab will not adopt or overwrite an unrelated session.\n' >&2
+  exit 3
+fi
+
+configure_session() {
+  tmux set-option -t "$session" @safeyolo_lab_owner "$owner_marker" || return
+  tmux set-option -t "$session" @safeyolo_lab_agent "$agent_name" || return
+  tmux set-option -t "$session" @safeyolo_lab_schema 1 || return
+  tmux set-option -t "$session" @safeyolo_lab_controller_command "$controller_runner" || return
+  tmux set-option -t "$session" @safeyolo_lab_startup_file "$startup_instructions" || return
+  tmux set-window-option -t "$session:0" remain-on-exit on || return
+  tmux set-option -g @safeyolo_lab_layout_script "$layout_helper" || return
+  tmux set-option -g @safeyolo_lab_annotation_script "$annotation_viewer" || return
+  tmux set-option -g @safeyolo_lab_surface_script "$surface_switcher" || return
+}
+
+start_controller() {
+  local pane=$1
+  local controller_line
+  controller_line=$(printf '%q --startup-file %q' "$controller_runner" "$startup_instructions")
+  tmux set-option -p -t "$pane" @safeyolo_lab_role controller || return
+  tmux set-option -p -t "$pane" @safeyolo_lab_controller 1 || return
+  tmux select-pane -t "$pane" -T controller || return
+  tmux set-option -t "$session" @safeyolo_lab_controller_pane "$pane" || return
+  tmux send-keys -t "$pane" -l -- "$controller_line" || return
+  tmux send-keys -t "$pane" Enter || return
+}
+
+wait_for_controller() {
+  local attempt
+  for attempt in $(seq 1 40); do
+    refresh_state
+    if [ "$session_owned" -eq 1 ] && [ "$controller_dead" = "0" ] && \
+      [ "$controller_run_alive" -eq 1 ]; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
+if [ "$action" = teardown ]; then
+  if ! session_exists; then
+    printf 'No Lab session is running; no guest resources were removed.\n'
+    exit 0
+  fi
+  evidence_root="$HOME/.safeyolo/lab-evidence"
+  panes=()
+  while IFS= read -r pane; do
+    [ -n "$pane" ] && panes+=(--pane "$pane")
+  done < <(tmux list-panes -t "$session" -F '#{pane_id}')
+  [ "${#panes[@]}" -gt 0 ] || {
+    printf 'Owned Lab session has no panes; evidence capture was not possible.\n' >&2
+    exit 4
+  }
+  for pane in "${panes[@]}"; do
+    pane_session=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null || true)
+    [ "$pane_session" = "$session" ] || {
+      printf 'Refusing evidence capture for pane outside the owned Lab session: %s\n' "$pane" >&2
+      exit 3
+    }
+    pane_owner=$(tmux show-options -qv -t "$session" @safeyolo_lab_owner 2>/dev/null || true)
+    pane_agent=$(tmux show-options -qv -t "$session" @safeyolo_lab_agent 2>/dev/null || true)
+    [ "$pane_owner" = "$owner_marker" ] && [ "$pane_agent" = "$agent_name" ] || {
+      printf 'Refusing evidence capture after Lab ownership changed.\n' >&2
+      exit 3
+    }
+  done
+  evidence_path=$("$capture_helper" --output "$evidence_root" --socket "$lab_socket" "${panes[@]}") || {
+    printf 'Final evidence capture failed; the owned Lab session remains.\n' >&2
+    exit 4
+  }
+  tmux kill-session -t "$session" || exit 4
+  printf 'Lab session removed after redacted evidence capture: %s\n' "$evidence_path"
+  exit 0
+fi
+
+if [ "$action" = recover ] || [ "$action" = relaunch ]; then
+  if ! session_exists; then
+    printf 'No owned Lab session exists. Start `safeyolo-lab` first.\n' >&2
+    exit 4
+  fi
+  if [ "$action" = recover ] && [ "$controller_alive" -eq 1 ]; then
+    printf 'Owned Lab controller is already alive in pane %s.\n' "$controller_pane"
+    exit 0
+  fi
+  if [ -z "$controller_pane" ]; then
+    [ "$action" = relaunch ] || {
+      printf 'The owned Lab session has no controller pane. Run `safeyolo-lab --relaunch`.\n' >&2
+      exit 4
+    }
+    controller_pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$session" -n controller) || exit 4
+  else
+    tmux respawn-pane -k -t "$controller_pane" || exit 4
+  fi
+  start_controller "$controller_pane" || exit 4
+  if ! wait_for_controller; then
+    printf 'The owned Lab controller did not become live after relaunch.\n' >&2
+    exit 4
+  fi
+  printf 'Relaunched owned Lab controller in pane %s.\n' "$controller_pane"
+  exit 0
+fi
+
+if [ -n "$objective" ] && ! session_exists; then
+  umask 077
+  mkdir -p "$HOME/.safeyolo"
+  chmod 700 "$HOME/.safeyolo"
+  printf '%s\n' "$objective" > "$HOME/.safeyolo/lab-objective"
+  chmod 600 "$HOME/.safeyolo/lab-objective"
+fi
+
+if session_exists; then
+  configure_session || exit 2
+  if [ "$controller_alive" -ne 1 ]; then
+    printf 'The owned Lab controller is not alive. Run `safeyolo-lab --recover`.\n' >&2
+    exit 4
+  fi
   tmux attach-session -t "$session"
   exit $?
 fi
 
 if tmux list-sessions >/dev/null 2>&1; then
-  tmux source-file "$profile" || exit
-  tmux new-session -d -s "$session" || exit
+  tmux source-file "$profile" || exit 2
+  tmux new-session -d -s "$session" || exit 2
 else
-  tmux -f "$profile" new-session -d -s "$session" || exit
+  tmux -f "$profile" new-session -d -s "$session" || exit 2
 fi
-
-tmux set-option -g @safeyolo_lab_layout_script "$layout_helper" || exit
-tmux set-option -g @safeyolo_lab_annotation_script "$annotation_viewer" || exit
-tmux set-option -g @safeyolo_lab_surface_script "$surface_switcher" || exit
-tmux set-option -g @safeyolo_lab_questions_script "$questions_helper" || exit
-tmux set-option -g @safeyolo_lab_sources_script "$sources_helper" || exit
-
+configure_session || exit 2
 controller_pane=$(tmux display-message -p -t "$session:0.0" '#{pane_id}')
-if [ -z "$controller_pane" ]; then
-  printf 'The lab session exists, but its controller pane is unavailable\n' >&2
-  exit 2
-fi
-
-tmux set-option -p -t "$controller_pane" @safeyolo_lab_role controller || true
-tmux select-pane -t "$controller_pane" -T controller || true
-controller_line=$(printf '%q --startup-file %q' "$controller_runner" "$startup_instructions")
-tmux send-keys -t "$controller_pane" -l -- "$controller_line" || {
-  printf 'The lab session exists, but the controller command could not be injected\n' >&2
+[ -n "$controller_pane" ] || {
+  printf 'The Lab session exists, but its controller pane is unavailable\n' >&2
   exit 2
 }
-tmux send-keys -t "$controller_pane" Enter || {
-  printf 'The lab session exists, but the controller command could not be started\n' >&2
+start_controller "$controller_pane" || {
+  printf 'The Lab session exists, but the controller command could not be started\n' >&2
   exit 2
 }
-
 tmux attach-session -t "$session"

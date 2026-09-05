@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUEST_DIR = REPO_ROOT / "guest"
 GLOBAL_ONLY_CONFIG = "/etc/safeyolo/mise-project-config-disabled.toml"
@@ -43,15 +45,22 @@ def test_installer_precreates_runtime_bind_mount_targets(tmp_path: Path) -> None
     (rootfs / "etc/passwd").write_text(
         "agent:x:1000:1000::/home/agent:/bin/bash\n"
     )
+    (rootfs / "etc/group").write_text("sudo:x:27:\n")
     (rootfs / "usr/sbin/useradd").touch()
     (rootfs / "usr/sbin/useradd").chmod(0o755)
+    (rootfs / "usr/sbin/visudo").touch()
+    (rootfs / "usr/sbin/visudo").chmod(0o755)
     (rootfs / "usr/bin/sudo").touch()
     (rootfs / "usr/bin/sudo").chmod(0o755)
     (rootfs / "usr/bin/fdfind").touch()
     (rootfs / "usr/bin/fdfind").chmod(0o755)
 
     command = (
-        "chroot() { return 0; }; "
+        "chroot() { "
+        "  case \"$*\" in *' id -nG agent') echo 'agent sudo';; esac; "
+        "  return 0; "
+        "}; "
+        "chown() { return 0; }; "
         'source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"; '
         'install_safeyolo_guest_common "$TEST_ROOTFS"'
     )
@@ -86,11 +95,81 @@ def test_installer_precreates_runtime_bind_mount_targets(tmp_path: Path) -> None
     assert sudoers.is_file()
     assert sudoers.stat().st_mode & 0o777 == 0o440
     assert "agent ALL=(ALL) NOPASSWD:ALL" in sudoers.read_text()
+    assert "Defaults env_keep +=" in sudoers.read_text()
 
     compatibility_fd = rootfs / "usr/local/bin/fd"
     assert compatibility_fd.is_symlink()
     assert compatibility_fd.readlink() == Path("/usr/bin/fdfind")
 
+
+def test_privilege_helper_requires_group_and_policy_validation_tools(
+    tmp_path: Path,
+) -> None:
+    """A sudo-capable image must not silently ship an unvalidated policy."""
+    rootfs = tmp_path / "rootfs"
+    (rootfs / "usr/bin").mkdir(parents=True)
+    (rootfs / "usr/local/bin").mkdir(parents=True)
+    (rootfs / "etc/sudoers.d").mkdir(parents=True)
+    (rootfs / "etc").mkdir(exist_ok=True)
+    (rootfs / "etc/passwd").write_text(
+        "agent:x:1000:1000::/home/agent:/bin/bash\n"
+    )
+    (rootfs / "etc/group").write_text("sudo:x:27:agent\n")
+    (rootfs / "usr/bin/sudo").touch()
+    (rootfs / "usr/bin/sudo").chmod(0o755)
+    (rootfs / "usr/sbin").mkdir()
+    (rootfs / "usr/sbin/visudo").touch()
+    (rootfs / "usr/sbin/visudo").chmod(0o755)
+    log = tmp_path / "chroot.log"
+
+    command = (
+        "chroot() { "
+        f"  printf '%s\\n' \"$*\" >> '{log}'; "
+        "  case \"$*\" in *' id -nG agent') echo 'agent sudo';; esac; "
+        "  return 0; "
+        "}; "
+        "chown() { printf '%s\\n' \"$*\" >> \"$TEST_CHOWN_LOG\"; return 0; }; "
+        'source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"; '
+        'install_safeyolo_privilege_helper "$TEST_ROOTFS"'
+    )
+    chown_log = tmp_path / "chown.log"
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "SAFEYOLO_GUEST_SRC_DIR": str(GUEST_DIR),
+            "TEST_ROOTFS": str(rootfs),
+            "TEST_CHOWN_LOG": str(chown_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    assert any("usermod -a -G sudo agent" in call for call in calls)
+    assert any("visudo -cf /etc/sudoers.d/safeyolo-agent.tmp." in call for call in calls)
+    assert any(call.startswith("0:0 ") for call in chown_log.read_text().splitlines())
+
+
+def test_sudoers_policy_is_valid_with_system_visudo(tmp_path: Path) -> None:
+    """The exact generated user rule and environment preservation parse."""
+    visudo = Path("/usr/sbin/visudo")
+    if not visudo.exists():
+        pytest.skip("system visudo is not installed")
+    policy = tmp_path / "safeyolo-agent"
+    policy.write_text(
+        "agent ALL=(ALL) NOPASSWD:ALL\n"
+        "Defaults env_keep += \"HTTP_PROXY HTTPS_PROXY http_proxy https_proxy "
+        "NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS\"\n"
+    )
+    policy.chmod(0o440)
+    result = subprocess.run(
+        [str(visudo), "-cf", str(policy)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 def test_default_rootfs_hook_uses_shared_mount_target_installer() -> None:
     """The default and custom builders must not drift again."""

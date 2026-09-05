@@ -29,13 +29,15 @@ The runner invokes `/home/agent/.safeyolo-command` without replacing the
 interactive shell. When the controller exits, the shell remains alive and
 shows the controller exit marker.
 
-Codex receives `Hello.` as the short first user message. The startup briefing is
-in developer instructions, so Codex does not show it as a long user message.
-The first controller response explains that the lab is a visible tmux workspace
-for experiments. It gives brief examples and invites the operator to state what
-they want to explore. It makes no tool call and does not change lab state. The
-controller discusses the pass condition, constraints, evidence, and teardown
-only after the operator describes the work.
+Codex receives `Hello.` as the short first user message. The startup briefing
+and any recorded objective are in developer instructions, so Codex does not
+show them as long user messages. Without an objective, the first controller
+response explains that the lab is a visible tmux workspace for experiments,
+gives brief examples, and invites the operator to state what they want to
+explore. With an objective, it acknowledges that objective and does not ask the
+operator to repeat it. Neither response makes a tool call or changes lab state.
+The controller discusses the pass condition, constraints, evidence, and
+teardown before changing lab state.
 
 The same `safeyolo-lab` command works when the guest is displayed directly and
 when a host tmux pane displays the guest. The guest prefix is `C-a`. A host tmux

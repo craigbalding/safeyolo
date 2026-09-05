@@ -29,6 +29,9 @@ safeyolo status
 
 # Diagnose problems
 safeyolo doctor
+
+# Start the operator-guided experimentation Lab
+safeyolo lab
 ```
 
 ## Commands
@@ -45,8 +48,24 @@ safeyolo doctor
 | `safeyolo check` | Verify setup is working correctly |
 | `safeyolo doctor` | Run diagnostic cascade (config, proxy, addons, sandbox runtime) |
 | `safeyolo demo` | Guided tour of SafeYolo security features |
+| `safeyolo lab` | Create, attach, recover, inspect, or tear down a SafeYolo experimentation workbench |
 
 **Aliases:** `safeyolo up` = `start` (accepts `--wait/--no-wait` and `--profile`), `safeyolo down` = `stop`
+
+**Lab:**
+
+```bash
+safeyolo lab                         # Ask for an objective, then propose and confirm a Lab agent
+safeyolo lab --status                 # Inspect the selected Lab agent and its guest controller
+safeyolo lab --recover                # Relaunch an owned dead controller and attach
+safeyolo lab --teardown               # Capture redacted evidence, then remove the Lab session
+safeyolo lab --teardown --keep-agent  # Retain the managed agent for later inspection
+```
+
+Lab selects only agents explicitly marked as Lab-managed. It does not adopt
+or overwrite an unrelated agent or guest tmux session. Teardown retains the
+captured evidence and Lab configuration; deleting retained artifacts is a
+separate operator choice.
 
 **Start options:**
 

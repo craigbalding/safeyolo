@@ -1118,6 +1118,30 @@ class TestFlowStoreAPI:
             body = json.loads(flow.response.content)
             assert body["count"] == 1
             assert body["flows"][0]["host"] == "app.example.com"
+            assert body["flows"][0]["evidence_owner"] == "agent-1"
+            assert body["flows"][0]["attribution_status"] == "resolved"
+
+    def test_flow_search_cannot_override_trusted_evidence_scope(self, api_with_store):
+        api, store, token = api_with_store
+        legacy = dict(store.get_flow(1))
+        legacy.update(
+            request_id="req-foreign0001",
+            agent_id="agent-2",
+            evidence_owner="agent-2",
+            trusted_transport_identity="agent-2",
+        )
+        store.record_flow(legacy)
+
+        with _patch_active_token(token):
+            flow = _make_post_api_flow(
+                "/api/flows/search",
+                {"agent_id": "agent-2"},
+                token,
+            )
+            asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 200
+        assert json.loads(flow.response.content) == {"flows": [], "count": 0}
 
     def test_get_flow_detail(self, api_with_store):
         """GET /api/flows/{id} returns flow metadata."""
@@ -1129,6 +1153,8 @@ class TestFlowStoreAPI:
             body = json.loads(flow.response.content)
             assert body["id"] == 1
             assert body["request_id"] == "req-relay00001"
+            assert body["evidence_owner"] == "agent-1"
+            assert body["attribution_status"] == "resolved"
 
     def test_get_flow_detail_not_found(self, api_with_store):
         """GET /api/flows/{id} returns 404 for missing flow."""
@@ -1188,6 +1214,8 @@ class TestFlowStoreAPI:
             assert flow.response.status_code == 200
             facets = json.loads(flow.response.content)["facets"]
             assert facets["agent_id"][0]["value"] == "agent-1"
+            assert facets["evidence_owner"][0]["value"] == "agent-1"
+            assert facets["attribution_status"][0]["value"] == "resolved"
             assert facets["test"][0]["value"] == "idor-baseline"
 
     def test_post_flow_body_search(self, api_with_store):
