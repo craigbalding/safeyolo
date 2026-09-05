@@ -1,5 +1,6 @@
 """Tests for the shared custom-rootfs guest installer."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -46,6 +47,8 @@ def test_installer_precreates_runtime_bind_mount_targets(tmp_path: Path) -> None
     (rootfs / "usr/sbin/useradd").chmod(0o755)
     (rootfs / "usr/bin/sudo").touch()
     (rootfs / "usr/bin/sudo").chmod(0o755)
+    (rootfs / "usr/bin/fdfind").touch()
+    (rootfs / "usr/bin/fdfind").chmod(0o755)
 
     command = (
         "chroot() { return 0; }; "
@@ -84,6 +87,10 @@ def test_installer_precreates_runtime_bind_mount_targets(tmp_path: Path) -> None
     assert sudoers.stat().st_mode & 0o777 == 0o440
     assert "agent ALL=(ALL) NOPASSWD:ALL" in sudoers.read_text()
 
+    compatibility_fd = rootfs / "usr/local/bin/fd"
+    assert compatibility_fd.is_symlink()
+    assert compatibility_fd.readlink() == Path("/usr/bin/fdfind")
+
 
 def test_default_rootfs_hook_uses_shared_mount_target_installer() -> None:
     """The default and custom builders must not drift again."""
@@ -91,8 +98,98 @@ def test_default_rootfs_hook_uses_shared_mount_target_installer() -> None:
 
     assert 'source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"' in source
     assert 'install_safeyolo_mise_integration "$ROOTFS"' in source
+    assert 'install_safeyolo_fd_compat "$ROOTFS"' in source
     assert 'install_safeyolo_runtime_mount_targets "$ROOTFS"' in source
     assert 'install_safeyolo_privilege_helper "$ROOTFS"' in source
+
+
+def test_guest_fd_compat_maps_fdfind_and_is_idempotent(tmp_path: Path) -> None:
+    """Debian's fdfind must provide fd when no command already exists."""
+    rootfs = tmp_path / "rootfs"
+    fdfind = rootfs / "usr/bin/fdfind"
+    fdfind.parent.mkdir(parents=True)
+    fdfind.write_text("#!/bin/sh\nprintf 'fd-find\\n'\n")
+    fdfind.chmod(0o755)
+
+    command = (
+        'source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"; '
+        'install_safeyolo_fd_compat "$TEST_ROOTFS"; '
+        'install_safeyolo_fd_compat "$TEST_ROOTFS"'
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "SAFEYOLO_GUEST_SRC_DIR": str(GUEST_DIR),
+            "TEST_ROOTFS": str(rootfs),
+        }
+    )
+    result = subprocess.run(
+        ["bash", "-c", command], env=env, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    fd = rootfs / "usr/local/bin/fd"
+    assert fd.is_symlink()
+    assert fd.readlink() == Path("/usr/bin/fdfind")
+
+
+def test_guest_fd_compat_preserves_existing_fd_binary_and_link(
+    tmp_path: Path,
+) -> None:
+    """A supplied fd command must not be replaced by the compatibility link."""
+    for name, existing in (("binary", False), ("link", True)):
+        rootfs = tmp_path / name
+        fd = rootfs / "usr/bin/fd"
+        fd.parent.mkdir(parents=True)
+        if existing:
+            fd.symlink_to("/usr/bin/supplied-fd")
+            original = fd.readlink()
+        else:
+            fd.write_text("#!/bin/sh\nprintf 'supplied-fd\\n'\n")
+            fd.chmod(0o755)
+            original = fd.read_text()
+        fdfind = rootfs / "usr/bin/fdfind"
+        fdfind.write_text("#!/bin/sh\nprintf 'fd-find\\n'\n")
+        fdfind.chmod(0o755)
+
+        command = (
+            'source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"; '
+            'install_safeyolo_fd_compat "$TEST_ROOTFS"'
+        )
+        env = os.environ.copy()
+        env.update(
+            {
+                "SAFEYOLO_GUEST_SRC_DIR": str(GUEST_DIR),
+                "TEST_ROOTFS": str(rootfs),
+            }
+        )
+        result = subprocess.run(
+            ["bash", "-c", command], env=env, capture_output=True, text=True
+        )
+
+        assert result.returncode == 0, result.stderr
+        compatibility_fd = rootfs / "usr/local/bin/fd"
+        assert not compatibility_fd.exists()
+        assert not compatibility_fd.is_symlink()
+        if existing:
+            assert fd.readlink() == original
+        else:
+            assert fd.read_text() == original
+
+
+def test_debian_builders_verify_the_fd_runtime_command() -> None:
+    """Both fd-find install paths must validate the command at build time."""
+    common = (GUEST_DIR / "install-guest-common.sh").read_text()
+    default = (GUEST_DIR / "rootfs-customize-hook.sh").read_text()
+    kali = (REPO_ROOT / "contrib/kali-pentest/build-kali-rootfs.sh").read_text()
+
+    assert 'install_safeyolo_fd_compat "$rootfs"' in common
+    assert "fd-find" in (REPO_ROOT / "guest/build-rootfs.sh").read_text()
+    assert "fd-find" in kali
+    assert "command -v fd" in default
+    assert "fd --version" in default
+    assert "command -v fd" in kali
+    assert "fd --version" in kali
 
 
 def test_default_and_custom_builders_share_current_mise_pin() -> None:
