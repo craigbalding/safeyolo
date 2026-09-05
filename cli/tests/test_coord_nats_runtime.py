@@ -71,6 +71,56 @@ print(json.dumps(stored), flush=True)
 
 
 class TestPathsAndCredentials:
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [("R", True), ("S", True), ("Z", False)],
+    )
+    def test_pid_alive_uses_linux_proc_state(
+        self, isolated_coord, state, expected
+    ):
+        with (
+            patch.object(nr.os, "kill", autospec=True),
+            patch.object(nr.platform, "system", autospec=True, return_value="Linux"),
+            patch.object(
+                nr.Path,
+                "read_text",
+                autospec=True,
+                return_value=f"123 (nats server) {state} 1 2 3\n",
+            ),
+        ):
+            assert nr._pid_alive(123) is expected
+
+    def test_pid_alive_reports_missing_linux_proc_entry_dead(
+        self, isolated_coord
+    ):
+        with (
+            patch.object(nr.os, "kill", autospec=True),
+            patch.object(nr.platform, "system", autospec=True, return_value="Linux"),
+            patch.object(
+                nr.Path,
+                "read_text",
+                autospec=True,
+                side_effect=FileNotFoundError,
+            ),
+        ):
+            assert nr._pid_alive(123) is False
+
+    @pytest.mark.parametrize("stat_result", [PermissionError, "malformed"])
+    def test_pid_alive_is_conservative_when_proc_state_is_unknown(
+        self, isolated_coord, stat_result
+    ):
+        read_kwargs = (
+            {"side_effect": stat_result}
+            if isinstance(stat_result, type) and issubclass(stat_result, OSError)
+            else {"return_value": stat_result}
+        )
+        with (
+            patch.object(nr.os, "kill", autospec=True),
+            patch.object(nr.platform, "system", autospec=True, return_value="Linux"),
+            patch.object(nr.Path, "read_text", autospec=True, **read_kwargs),
+        ):
+            assert nr._pid_alive(123) is True
+
     def test_test_mode_refuses_operator_home_state(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
         fake_home.mkdir()
@@ -312,6 +362,27 @@ class TestReapChild:
         )
         nr._reap_child(proc, term_timeout=0.3, kill_timeout=2.0)
         assert proc.poll() is not None
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux proc zombie state")
+    def test_later_process_observes_zombie_without_reaping_it(self, isolated_coord):
+        """A later CLI sees completed exit while the parent retains reap ownership."""
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        try:
+            os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
+            os.kill(proc.pid, 0)
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from safeyolo.coord.nats_runtime import _wait_for_pid_exit; "
+                    f"assert _wait_for_pid_exit({proc.pid}, 0) == (True, False)",
+                ],
+                check=True,
+                timeout=5,
+            )
+            assert nr._wait_for_pid_exit(proc.pid, 0) == (True, True)
+        finally:
+            proc.wait(timeout=5)
 
     def test_wait_for_pid_exit_reaps_same_process_child(self, isolated_coord):
         proc = subprocess.Popen(
@@ -670,7 +741,7 @@ class TestFailedStartupDiagnostics:
             if not nr._pid_alive(pid):
                 break
             time.sleep(0.05)
-        # Even accounting for zombie: /varz must be gone
+        # The process may already be a zombie; /varz must also be gone.
         for _ in range(60):
             if nr._varz() is None:
                 break
@@ -775,10 +846,8 @@ class TestExternalKillHygiene:
         pid = nr.start_server(ready_timeout=8.0)
         assert nr.is_healthy()
         os.kill(pid, 9)
-        # Wait until the process actually exits (not just stops answering
-        # /varz — a zombie has a live PID but no listener). Reap via
-        # waitpid so /proc entry is gone before we call stop_server;
-        # otherwise the PID-alive wedge guard fires on the zombie.
+        # Wait until the process exits (not just stops answering /varz), then
+        # reap it when possible so this test does not leave a zombie behind.
         for _ in range(60):
             try:
                 gone_pid, _ = os.waitpid(pid, os.WNOHANG)
@@ -793,8 +862,8 @@ class TestExternalKillHygiene:
             time.sleep(0.05)
         # Ownership check fails cleanly
         assert not nr.is_healthy()
-        # Process is genuinely gone (not zombie), so stop_server clears
-        # the stale pidfile and returns False.
+        # Process is no longer runnable, so stop_server clears the stale
+        # pidfile and returns False.
         assert nr.stop_server() is False
         assert not nr.nats_pid_path().exists()
 
