@@ -98,7 +98,9 @@ addons:
   test_context:
     target_hosts: []
 
-  # pattern_scanner — scans request/response bodies for secrets using regex.
+  # pattern_scanner — scans bounded request URLs, headers, and bodies plus
+  # response headers and bodies for secrets using regex. URL inspection uses
+  # one raw and one percent-decoded representation without rewriting traffic.
   # The secrets builtin covers common credential formats in content and headers.
   pattern_scanner:
     enabled: true

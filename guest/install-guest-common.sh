@@ -22,6 +22,7 @@
 #   * baseline PATH glue at /etc/profile.d/00-path.sh + /etc/environment
 #   * mise profile glue at /etc/profile.d/mise.sh (only if mise present)
 #   * BusyBox applet shims (`hexdump`, `nc`) when busybox is present
+#   * `/usr/local/bin/fd` compatibility link for Debian's `fdfind`, when needed
 #   * `/usr/local/bin/sudo` compatibility shim + passwordless guest-root policy
 #   * hostname = safeyolo
 #
@@ -173,6 +174,44 @@ install_safeyolo_runtime_mount_targets() {
 }
 
 
+install_safeyolo_fd_compat() {
+    local rootfs="$1"
+    local path dir fdfind_path fdfind_target
+
+    [ -n "$rootfs" ] || {
+        echo "install_safeyolo_fd_compat: rootfs arg required" >&2
+        return 1
+    }
+    [ -d "$rootfs" ] || {
+        echo "install_safeyolo_fd_compat: rootfs not a dir: $rootfs" >&2
+        return 1
+    }
+
+    # Check every standard PATH directory before creating the compatibility
+    # link. This preserves a distro or package-provided binary or symlink,
+    # including a link whose target is supplied later in the build.
+    for dir in usr/local/sbin usr/local/bin usr/sbin usr/bin sbin bin; do
+        path="$rootfs/$dir/fd"
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            return 0
+        fi
+    done
+
+    # Debian's fd-find package installs fdfind rather than fd. Other distro
+    # trees may already provide fd, or may not ship either command.
+    for dir in usr/local/sbin usr/local/bin usr/sbin usr/bin sbin bin; do
+        fdfind_path="$rootfs/$dir/fdfind"
+        if [ -x "$fdfind_path" ]; then
+            fdfind_target="/$dir/fdfind"
+            install -d -m 0755 "$rootfs/usr/local/bin"
+            ln -s "$fdfind_target" "$rootfs/usr/local/bin/fd"
+            return 0
+        fi
+    done
+    return 0
+}
+
+
 install_safeyolo_privilege_helper() {
     local rootfs="$1"
     local helper="$SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-sudo"
@@ -297,6 +336,10 @@ PATH_PROFILE
     # Keep persistent global tools on PATH without consulting repository mise
     # configuration. The default rootfs builder calls the same helper.
     install_safeyolo_mise_integration "$rootfs"
+
+    # Debian names the fd-find binary fdfind. Add the conventional command
+    # without replacing a command already supplied by the rootfs.
+    install_safeyolo_fd_compat "$rootfs"
 
     # BusyBox applet shims (`hexdump`, `nc`) -- convenience only, installed
     # when the rootfs ships busybox. apt/yum/apk remain usable at runtime

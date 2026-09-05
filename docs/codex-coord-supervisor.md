@@ -12,9 +12,10 @@ SAFEYOLO_CODEX_COORDINATORS=relay \
   safeyolo agent run worker --host-script @codex-coord
 ```
 
-The host setup uses the normal Codex setup first. It preserves the staged
-ChatGPT subscription login, SafeYolo developer instructions, proxy and TLS
-environment, and coord MCP registration. It does not use an OpenAI API key.
+The host setup uses the normal Codex setup first. It preserves an explicitly
+adopted agent-local ChatGPT login, SafeYolo developer instructions, proxy and
+TLS environment, and coord MCP registration. It does not use an OpenAI API key
+or import a host credential.
 The only changed boundary is the foreground command: the guest runs the
 supervisor, and the supervisor runs bounded `codex exec --json` turns.
 

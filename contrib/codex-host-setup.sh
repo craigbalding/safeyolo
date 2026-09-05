@@ -3,8 +3,9 @@
 #
 # Runs on the host (macOS or Linux), as you, when `safeyolo agent add
 # <name> <folder> --host-script contrib/codex-host-setup.sh` is
-# invoked. Stages host ~/.codex/ into the agent's persistent home and
-# writes a foreground command script that installs codex via mise on first boot and
+# invoked. Stages SafeYolo-owned Codex settings into the agent's persistent
+# home without importing host credentials, and writes a foreground command
+# script that installs codex via mise on first boot and
 # runs it with Codex sandboxing disabled thereafter. SafeYolo remains
 # the outer containment boundary.
 #
@@ -16,30 +17,10 @@ set -euo pipefail
 : "${SAFEYOLO_AGENT_HOME:?must be run via 'safeyolo agent add --host-script'}"
 
 AGENT_HOME="$SAFEYOLO_AGENT_HOME"
-mkdir -p "$AGENT_HOME/.codex"
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=lib/stage-safeyolo-context.sh
 . "$SCRIPT_DIR/lib/stage-safeyolo-context.sh"
-
-# --- Stage host codex state --------------------------------------------------
-# Codex stores auth + config under ~/.codex/. Copy the whole dir if present.
-# Preserve existing agent-side authentication and config on reapply so state
-# created inside the persistent agent home is not clobbered.
-# Session transcripts etc. are inside the same tree -- we're choosing to stage
-# the lot because codex doesn't have the same scale of transcript state as
-# Claude Code. If that stops being true, narrow this to specific files.
-if [ -d "$HOME/.codex" ]; then
-    while IFS= read -r -d '' host_entry; do
-        entry_name="$(basename "$host_entry")"
-        agent_entry="$AGENT_HOME/.codex/$entry_name"
-        if { [ "$entry_name" = "auth.json" ] || [ "$entry_name" = "config.toml" ]; } \
-            && { [ -e "$agent_entry" ] || [ -L "$agent_entry" ]; }; then
-            continue
-        fi
-        cp -R "$host_entry" "$AGENT_HOME/.codex/" 2>/dev/null || true
-    done < <(find "$HOME/.codex" -mindepth 1 -maxdepth 1 -print0)
-fi
 
 # --- Stage SafeYolo baseline + shared skill ---------------------------------
 # The baseline is injected as Codex developer instructions at launch. The
@@ -425,6 +406,13 @@ fi
 # --- Stage and register the coord MCP server ---------------------------------
 # This runs after the foreground command is written so the shared bootstrap can
 # inject its guarded dependency setup immediately before the harness exec.
-"$SCRIPT_DIR/coord-mcp-bootstrap.sh" --home "$AGENT_HOME" --harness codex
+if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
+    "$SCRIPT_DIR/coord-mcp-bootstrap.sh" \
+        --home "$AGENT_HOME" \
+        --harness codex \
+        --require-agent-local
+else
+    "$SCRIPT_DIR/coord-mcp-bootstrap.sh" --home "$AGENT_HOME" --harness codex
+fi
 
 echo "codex-host-setup: $SAFEYOLO_AGENT_NAME ready at $AGENT_HOME"
