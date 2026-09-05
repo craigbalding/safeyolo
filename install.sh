@@ -2,9 +2,9 @@
 # SafeYolo install helper.
 #
 # Wraps `uv tool install --editable .` with the security-pin overrides that
-# mitmproxy hasn't cut a release for yet (see pyproject `[tool.uv]` —
-# `uv tool install` does not apply that block, so the pins have to be passed
-# on the CLI).
+# mitmproxy's current dependency metadata has not adopted this fix yet (see pyproject
+# `[tool.uv]` — `uv tool install` does not apply that block, so the pins have
+# to be passed on the CLI).
 #
 # Keeps the "scary" overrides line out of the user's shell history and
 # doesn't require `make` (Ubuntu 24.04 cloud image and other minimal
@@ -22,6 +22,7 @@ set -euo pipefail
 # Security-pin overrides — MUST stay in sync with pyproject.toml
 # [tool.uv] override-dependencies.
 UV_OVERRIDES=(
+  "h2==4.4.1"
   "flask>=3.1.3"
   "pygments>=2.20.0"
   "cryptography>=50.0.0"

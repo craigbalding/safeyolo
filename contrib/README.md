@@ -11,8 +11,10 @@ Example integrations. Copy and adapt for your own use.
 | `../docs/AGENTS.md` | Compact always-on agent baseline (environment, guest tools, Agent API health check, security boundaries) |
 | `../cli/src/safeyolo/agent_context/skills/safeyolo/` | Shared Codex/Claude skill for guest tool installation, Agent API, flows, service gateway, plumb, block responses, and troubleshooting |
 | `../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/` | Codex skill and helper scripts for persistent, operator-visible tmux labs |
+| `../cli/src/safeyolo/agent_context/skills/safeyolo-factory/` | Codex operator skill for designing, cross-reviewing, proving, and troubleshooting supervised factories |
 | `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions and the default coord MCP server, injects the baseline, links `/safeyolo`, and writes an install-on-first-run foreground command |
-| `codex-host-setup.sh` | Host setup for OpenAI Codex CLI -- stages user state and the default coord MCP server, injects the baseline, links `$safeyolo` and `$safeyolo-lab-controller`, installs the `safeyolo-lab` guest command, and writes an install-on-first-run foreground command |
+| `codex-host-setup.sh` | Host setup for OpenAI Codex CLI -- stages user state and the default coord MCP server, injects the baseline, links `$safeyolo`, `$safeyolo-lab-controller`, and `$safeyolo-factory`, installs the `safeyolo-lab` guest command, and writes an install-on-first-run foreground command |
+| `pi-host-setup.sh` | Host setup for Pi coding agent -- installs `@earendil-works/pi-coding-agent@0.85.0` with a fixed integrity and Node boundary, stages the baseline/shared skill, and writes an install-on-first-run foreground command |
 | `codex-coord-host-setup.sh` | Opt-in `@codex-coord` setup for a long-lived factory worker; it uses the normal Codex setup and runs bounded non-interactive turns under the guest-side coord supervisor |
 | `codex-coord-supervisor.py` | Event-driven persistent-process supervisor for one Codex thread and bounded atomic Coord recovery state |
 | `codex-coord-supervisor-fake-codex.sh` | Observable no-model Codex substitute for nested supervisor labs |
@@ -44,6 +46,18 @@ SAFEYOLO_CODEX_COORDINATORS=relay \
 
 See [the supervised worker contract](../docs/codex-coord-supervisor.md) before
 you enable this mode.
+
+## Detached command supervision
+
+`safeyolo agent run <name> --detach` with a configured
+`$SAFEYOLO_AGENT_HOME/.safeyolo-command` publishes the command to a runtime
+supervisor owned by guest PID 1. It restarts every unexpected command exit,
+including a clean exit, with bounded backoff and resets the crash-loop window
+after a stable run. It records exit classification, byte-counted/truncated
+stderr, a digest, and a sanitized tail, and exposes `running`, `restarting`,
+`failed`, and `stopped` through `safeyolo agent diag` and `safeyolo status`. It
+never restarts the sandbox and is independent of the Coord event room. `safeyolo
+agent stop` records durable stop intent before sandbox cleanup, fencing restart.
 
 ## The Integration Pattern
 

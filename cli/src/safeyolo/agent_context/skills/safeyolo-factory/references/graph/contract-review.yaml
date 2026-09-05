@@ -1,0 +1,222 @@
+# Factory graph: review a factory TOML and its prose contracts as one system.
+#
+# Schema and traversal deliberately match the proven SafeYolo troubleshooting
+# graphs: bind an observed review situation to an entry, gather named evidence,
+# classify what the evidence establishes, then stop at a bounded conclusion or
+# operator ask. YAML is authoritative; the sibling Mermaid file is derived.
+
+see_also:
+  - graph: runtime-triage
+    when: "the suspected contract problem was first observed in a running factory"
+  - graph: nested-mvp
+    when: "the reviewed contracts are ready for a controlled proving run"
+
+nodes:
+  # ---- Review situations ---------------------------------------------
+  - id: sym.review_new_contract_set
+    kind: symptom
+    label: "A new factory TOML and role-contract set needs cross-cutting review"
+    keywords: [new factory, contract review, TOML, roles, handoffs]
+    source: authored
+
+  - id: sym.review_revised_contract
+    kind: symptom
+    label: "One role contract changed; verify the complete factory contract again"
+    detail: "A local improvement can contradict another role or break an edge."
+    keywords: [revised contract, changed role, diff, second review]
+    source: authored
+
+  - id: sym.review_running_factory
+    kind: symptom
+    label: "Review a running factory and determine which exact contract bytes are approved and running"
+    keywords: [running factory, approved snapshot, staged snapshot, hashes, doctor]
+    source: authored
+
+  - id: sym.review_partial_sources
+    kind: symptom
+    label: "The factory TOML or one or more linked contracts are unavailable"
+    keywords: [missing file, inaccessible checkout, partial review, not mounted]
+    source: authored
+
+  # ---- Evidence ------------------------------------------------------
+  - id: ev.review_load_exact_set
+    kind: evidence
+    label: "Read the factory TOML and every linked role contract in full"
+    detail: "Resolve contract paths relative to the TOML. Do not review excerpts as if they were the complete set."
+    source: authored
+
+  - id: ev.review_load_live_brief
+    kind: evidence
+    label: "Read the current live brief when one exists; keep it separate from the immutable contract set"
+    source: authored
+
+  - id: ev.review_compare_snapshot
+    kind: evidence
+    label: "Compare source paths and hashes with the approved snapshot, supervisor-staged snapshot, and `factory doctor` evidence"
+    detail: "Source edits and approval do not change contract bytes already staged into running roles."
+    source: authored
+
+  - id: ev.review_extract_model
+    kind: evidence
+    label: "Extract roles, owned outcomes, authority, work inputs/outputs, handoffs, evidence, waits, and recovery owners"
+    source: authored
+
+  - id: ev.review_render_projection
+    kind: evidence
+    label: "Render an instance-specific Mermaid projection plus an authority/evidence matrix"
+    detail: "The projection is a review aid, not a replacement for TOML or prose."
+    source: authored
+
+  - id: ev.review_outcome_liveness
+    kind: evidence
+    label: "Check outcome ownership, reachability, response routes, useful waiting, and all ordinary failure paths"
+    source: authored
+
+  - id: ev.review_authority_evidence
+    kind: evidence
+    label: "Check mutation authority, operator-only choices, evidence independence, and circular success claims"
+    source: authored
+
+  - id: ev.review_handoff_recovery
+    kind: evidence
+    label: "Check self-contained handoffs, exact work versions, duplicate delivery, supersession, restart, and recovery"
+    source: authored
+
+  - id: ev.review_runtime_operator
+    kind: evidence
+    label: "Check tool and route feasibility, operator attention UX, and behavior while operator input is delayed"
+    source: authored
+
+  - id: ev.review_restriction_basis
+    kind: evidence
+    label: "Audit every MUST, gate, approval, exact format, limit, eligibility rule, and BLOCKED condition"
+    detail: "Each restriction needs an operator requirement, concrete safety property, or external/technical necessity."
+    source: authored
+
+  - id: ev.review_reread_complete_set
+    kind: evidence
+    label: "After a proposed edit, re-read and re-run every review pass over the complete set"
+    source: authored
+
+  # ---- Classifications -----------------------------------------------
+  - id: cls.review_incomplete
+    kind: classification
+    label: "Required source or approved/running-state evidence is missing; only a bounded partial review is possible"
+    source: authored
+
+  - id: cls.review_source_snapshot_drift
+    kind: classification
+    label: "Source, approved snapshot, and supervisor-staged snapshot differ; the running factory is not using the reviewed bytes"
+    source: authored
+
+  - id: cls.review_material_gap
+    kind: classification
+    label: "Material contradiction, unreachable transition, false-success path, or ownerless failure exists"
+    source: authored
+
+  - id: cls.review_unjustified_restriction
+    kind: classification
+    label: "A mandatory restriction has no established operator, safety, or technical basis"
+    source: authored
+
+  - id: cls.review_operator_hinge
+    kind: classification
+    label: "A material design choice depends on operator intent or risk tolerance not present in the sources"
+    source: authored
+
+  - id: cls.review_no_known_material_gap
+    kind: classification
+    label: "All passes completed with no known material contradiction, uncovered transition, ownerless failure, or unjustified restriction"
+    source: authored
+
+  # ---- Conclusions ---------------------------------------------------
+  - id: con.review_state_partial_scope
+    kind: conclusion
+    label: "Continue only as a clearly scoped partial review; list missing sources and limit every conclusion"
+    source: authored
+
+  - id: con.review_rank_smallest_diff
+    kind: conclusion
+    label: "Rank the finding by material effect and propose the smallest coherent cross-contract diff"
+    source: authored
+
+  - id: con.review_remove_or_demote
+    kind: conclusion
+    label: "Remove the unsupported restriction or demote it to non-blocking guidance"
+    source: authored
+
+  - id: con.review_report_bounded_result
+    kind: conclusion
+    label: "Report no known material gaps after the stated review; disclose residual assumptions and unavailable evidence"
+    source: authored
+
+  - id: con.review_repeat_complete_review
+    kind: conclusion
+    label: "Do not stop at the edited file; repeat the complete-set review before acceptance"
+    source: authored
+
+  # ---- Operator asks -------------------------------------------------
+  - id: ask.review_provide_sources
+    kind: operator_ask
+    label: "Ask for the exact TOML and all linked contracts, or a mount containing them"
+    source: authored
+
+  - id: ask.review_resolve_hinge
+    kind: operator_ask
+    label: "Ask one concrete deal-breaker question that resolves the material design hinge"
+    source: authored
+
+  - id: ask.review_approve_and_run_snapshot
+    kind: operator_ask
+    label: "After source correction, ask the operator to check, approve, and run the intended snapshot"
+    source: authored
+
+edges:
+  # Every complete review starts from exact sources.
+  - {from: sym.review_new_contract_set, to: ev.review_load_exact_set, kind: next_check}
+  - {from: sym.review_revised_contract, to: ev.review_load_exact_set, kind: next_check}
+  - {from: sym.review_running_factory, to: ev.review_load_exact_set, kind: next_check}
+  - {from: sym.review_partial_sources, to: cls.review_incomplete, kind: implies}
+  - {from: cls.review_incomplete, to: ask.review_provide_sources, kind: escalates_to}
+  - {from: cls.review_incomplete, to: con.review_state_partial_scope, kind: implies, when: "the operator wants useful analysis before the missing sources arrive"}
+
+  # Establish source versus live state before interpreting behavior.
+  - {from: ev.review_load_exact_set, to: ev.review_load_live_brief, kind: next_check, when: "a live brief exists or is claimed"}
+  - {from: ev.review_load_exact_set, to: ev.review_compare_snapshot, kind: next_check, when: "the factory is running or an approved snapshot is under review"}
+  - {from: ev.review_load_live_brief, to: ev.review_extract_model, kind: next_check, when: "brief direction has been separated from contract responsibility"}
+  - {from: ev.review_compare_snapshot, to: cls.review_source_snapshot_drift, kind: implies, when: "source, approved, or supervisor-staged hashes differ"}
+  - {from: cls.review_source_snapshot_drift, to: ask.review_approve_and_run_snapshot, kind: escalates_to, when: "the source change is intended for the running factory"}
+
+  # Build one model, then examine it from every cross-cutting perspective.
+  - {from: ev.review_load_exact_set, to: ev.review_extract_model, kind: next_check}
+  - {from: ev.review_extract_model, to: ev.review_render_projection, kind: next_check}
+  - {from: ev.review_render_projection, to: ev.review_outcome_liveness, kind: next_check}
+  - {from: ev.review_render_projection, to: ev.review_authority_evidence, kind: next_check}
+  - {from: ev.review_render_projection, to: ev.review_handoff_recovery, kind: next_check}
+  - {from: ev.review_render_projection, to: ev.review_runtime_operator, kind: next_check}
+  - {from: ev.review_render_projection, to: ev.review_restriction_basis, kind: next_check}
+
+  # Evidence determines the remediation, never role-name intuition.
+  - {from: ev.review_outcome_liveness, to: cls.review_material_gap, kind: implies, when: "an outcome, normal transition, or ordinary failure lacks a reachable owner"}
+  - {from: ev.review_authority_evidence, to: cls.review_material_gap, kind: implies, when: "authority conflicts or success evidence is circular/insufficient"}
+  - {from: ev.review_handoff_recovery, to: cls.review_material_gap, kind: implies, when: "handoff identity/context or recovery behavior is materially incomplete"}
+  - {from: ev.review_runtime_operator, to: cls.review_material_gap, kind: implies, when: "a required capability/route is unavailable or ordinary waiting strands work"}
+  - {from: ev.review_restriction_basis, to: cls.review_unjustified_restriction, kind: implies, when: "a mandatory rule has no established basis"}
+  - {from: ev.review_restriction_basis, to: cls.review_operator_hinge, kind: implies, when: "the correct rule depends on an unstated operator choice"}
+  - {from: cls.review_material_gap, to: con.review_rank_smallest_diff, kind: implies}
+  - {from: cls.review_unjustified_restriction, to: con.review_remove_or_demote, kind: implies}
+  - {from: cls.review_operator_hinge, to: ask.review_resolve_hinge, kind: escalates_to}
+
+  # Any edit loops through the whole set; a clean result is bounded.
+  - {from: con.review_rank_smallest_diff, to: ev.review_reread_complete_set, kind: next_check, when: "the diff is applied"}
+  - {from: con.review_remove_or_demote, to: ev.review_reread_complete_set, kind: next_check, when: "the diff is applied"}
+  - {from: ev.review_reread_complete_set, to: con.review_repeat_complete_review, kind: implies}
+  - {from: con.review_repeat_complete_review, to: ev.review_extract_model, kind: next_check}
+  - {from: ev.review_restriction_basis, to: cls.review_no_known_material_gap, kind: implies, when: "all review passes completed and produced no material finding"}
+  - {from: cls.review_no_known_material_gap, to: con.review_report_bounded_result, kind: implies}
+
+entries:
+  - symptom: sym.review_new_contract_set
+  - symptom: sym.review_revised_contract
+  - symptom: sym.review_running_factory
+  - symptom: sym.review_partial_sources

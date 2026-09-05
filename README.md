@@ -22,9 +22,9 @@ service capabilities the agent can reach. Its service gateway keeps vaulted
 credentials on the host and injects them only into authorized requests.
 
 Coding-harness authentication is a separate, explicit path. The bundled Claude
-Code and Codex host scripts copy the operator's subscription state into the
-agent's persistent `/home/agent`. The agent process can read and use those
-copies. Use a host script only when that trust decision is acceptable.
+Code host script can copy selected operator state into the agent, while the
+Codex host scripts never import host credentials or arbitrary `~/.codex` state.
+Codex login is performed inside each agent's persistent `/home/agent` home.
 
 Each agent runs in an isolated Linux sandbox — hardware-backed microVM on macOS, gVisor on Linux — with network traffic forced through a programmable [mitmproxy](https://mitmproxy.org/) policy layer.
 
@@ -141,9 +141,7 @@ one phase:
 # doing it manually here means bootstrap has nothing left to name).
 sudo apt-get install -y skopeo umoci mmdebstrap debootstrap acl jq curl
 
-./install.sh        # or: uv tool install --editable . --overrides <(printf '%s\n' \
-                    #      'flask>=3.1.3' 'pygments>=2.20.0' 'cryptography>=50.0.0' \
-                    #      'msgpack>=1.2.1' 'pyopenssl>=26.0.0' 'tornado>=6.5.5')
+./install.sh
 
 safeyolo init       # writes ~/.safeyolo/{policy.toml, addons.yaml, tokens, ...}
 safeyolo build      # builds + installs the guest rootfs into ~/.safeyolo/share/
@@ -287,9 +285,13 @@ The `contrib/` directory has ready-made host scripts:
 | Script | Purpose |
 |--------|---------|
 | `contrib/claude-host-setup.sh` | Copies Claude Code authentication and selected user extensions into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context, and launches Claude Code. |
-| `contrib/codex-host-setup.sh` | Copies `~/.codex/` into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context including `$safeyolo-lab-controller` and the `safeyolo-lab` guest command, and launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`). SafeYolo remains the outer boundary. |
-| `contrib/codex-coord-host-setup.sh` | Uses the Codex setup above, including copied subscription authentication, then supervises bounded non-interactive turns. See the [supervisor contract](docs/codex-coord-supervisor.md). |
+| `contrib/codex-host-setup.sh` | Stages SafeYolo-owned Codex settings and the coord MCP adapter without importing host credentials or arbitrary `~/.codex` state, installs SafeYolo context including `$safeyolo-lab-controller` and the `safeyolo-lab` guest command, and launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`). SafeYolo remains the outer boundary. |
+| `contrib/codex-coord-host-setup.sh` | Uses the Codex setup above, preserving only an explicitly adopted agent-local login, then supervises bounded non-interactive turns. See the [supervisor contract](docs/codex-coord-supervisor.md). |
 | `contrib/mise-shell-host-setup.sh` | Opens an interactive shell with mise ready for `mise use -g ...`. |
+
+For a fresh Codex agent, perform `codex login --device-auth` inside the agent,
+then run `/home/agent/.safeyolo/codex-auth-recovery.py adopt`. The same
+device-auth and adopt sequence follows an explicit reset.
 
 Without `--host-script`, the sandbox boots to an interactive bash shell in a per-agent persistent home.
 

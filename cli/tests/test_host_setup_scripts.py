@@ -1,5 +1,7 @@
 """Executable regression tests for first-party agent host setup scripts."""
 
+import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -16,17 +18,30 @@ SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo"
 LAB_CONTROLLER_SOURCE = (
     REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller"
 )
+FACTORY_SKILL_SOURCE = (
+    REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo-factory"
+)
 COORD_BOOTSTRAP_SOURCE = REPO_ROOT / "contrib/coord-mcp-bootstrap.sh"
 COORD_LAUNCHER_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp-launcher.sh"
 COORD_SHIM_SOURCE = REPO_ROOT / "contrib/safeyolo-coord-mcp.py"
+CODEX_STATE_SOURCE = REPO_ROOT / "contrib/lib/stage-codex-state.py"
 CODEX_COORD_SUPERVISOR_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor.py"
 CODEX_COORD_FAKE_SOURCE = REPO_ROOT / "contrib/codex-coord-supervisor-fake-codex.sh"
 SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
 LAB_CONTROLLER_LINK_TARGET = "/safeyolo/skills/safeyolo-lab-controller"
+FACTORY_SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo-factory"
 LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
 LAB_COMMAND_TARGET = (
     "/safeyolo/skills/safeyolo-lab-controller/scripts/safeyolo-lab"
 )
+
+
+def _load_codex_state_module():
+    spec = importlib.util.spec_from_file_location("stage_codex_state", CODEX_STATE_SOURCE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _setup_env(operator_home: Path, agent_home: Path, folder: Path) -> dict[str, str]:
@@ -78,6 +93,17 @@ def _run_setup(
     return result
 
 
+def _seed_adopted_codex_auth(agent_home: Path) -> None:
+    """Create only synthetic local state for coordinated setup fixtures."""
+    codex_home = agent_home / ".codex"
+    codex_home.mkdir(parents=True)
+    codex_home.chmod(0o700)
+    auth_path = codex_home / "auth.json"
+    auth_path.write_bytes(b"synthetic-agent-local-auth")
+    auth_path.chmod(0o600)
+    _load_codex_state_module()._recover(agent_home, "adopt")
+
+
 def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
     assert (agent_home / ".safeyolo/AGENTS.md").read_bytes() == BASELINE_SOURCE.read_bytes()
 
@@ -85,6 +111,7 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
         expected_links = {"safeyolo": SKILL_LINK_TARGET}
         if consumer_dir == ".agents":
             expected_links["safeyolo-lab-controller"] = LAB_CONTROLLER_LINK_TARGET
+            expected_links["safeyolo-factory"] = FACTORY_SKILL_LINK_TARGET
         for name, target in expected_links.items():
             link = agent_home / consumer_dir / "skills" / name
             assert link.is_symlink()
@@ -280,6 +307,8 @@ def test_context_staging_is_idempotent_and_preserves_user_files(
     operator_home.mkdir()
     instruction = agent_home / user_instruction
     instruction.parent.mkdir(parents=True)
+    if script_name == "codex-host-setup.sh":
+        instruction.parent.chmod(0o700)
     instruction.write_text("user-owned instructions\n")
     personal_skill = agent_home / consumer_dir / "skills" / "personal" / "SKILL.md"
     personal_skill.parent.mkdir(parents=True)
@@ -325,10 +354,12 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
     else:
         config_path = agent_home / ".codex/config.toml"
         config_path.parent.mkdir(parents=True)
+        config_path.parent.chmod(0o700)
         config_path.write_text(
             'model = "preserved"\n\n'
             '[mcp_servers.unrelated]\ncommand = "other"\n'
         )
+        config_path.chmod(0o600)
 
     _run_setup(script_name, operator_home, agent_home, tmp_path)
     _run_setup(script_name, operator_home, agent_home, tmp_path)
@@ -365,6 +396,49 @@ def test_bundled_setup_registers_coord_mcp_idempotently_and_preserves_config(
     assert managed == expected
 
 
+def test_codex_setup_round_trips_multiline_and_quoted_toml(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    config_path = agent_home / ".codex/config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.parent.chmod(0o700)
+    config_path.write_text(
+        'developer_instructions = """\n'
+        '[mcp_servers.safeyolo-coord]\n'
+        'sentinel must remain\n'
+        '[projects.foo]\n'
+        '"""\n'
+        'model = "gpt-5"\n\n'
+        '[mcp_servers."unrelated.server"]\n'
+        'command = "other"\n\n'
+        '[projects."foo.bar"]\n'
+        'enabled = true\n'
+    )
+    config_path.chmod(0o600)
+
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    data = tomllib.loads(config_path.read_text())
+    assert data["developer_instructions"] == (
+        "[mcp_servers.safeyolo-coord]\n"
+        "sentinel must remain\n"
+        "[projects.foo]\n"
+    )
+    assert data["model"] == "gpt-5"
+    assert data["mcp_servers"]["unrelated.server"] == {"command": "other"}
+    assert data["projects"]["foo.bar"] == {"enabled": True}
+    assert data["forced_chatgpt_auth"] is True
+    assert data["cli_auth_credentials_store"] == "file"
+    assert data["mcp_servers"]["safeyolo-coord"] == {
+        "command": "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher",
+        "args": [],
+        "tool_timeout_sec": 330,
+    }
+
+
 def test_codex_coord_registration_repairs_timeout_idempotently(
     tmp_path: Path,
 ) -> None:
@@ -374,6 +448,7 @@ def test_codex_coord_registration_repairs_timeout_idempotently(
     operator_home.mkdir()
     config_path = agent_home / ".codex/config.toml"
     config_path.parent.mkdir(parents=True)
+    config_path.parent.chmod(0o700)
     config_path.write_text(
         'model = "preserved"\n\n'
         "[mcp_servers.before]\n"
@@ -384,6 +459,7 @@ def test_codex_coord_registration_repairs_timeout_idempotently(
         "[mcp_servers.after]\n"
         'command = "after"\n'
     )
+    config_path.chmod(0o600)
 
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
     first = config_path.read_text()
@@ -574,7 +650,11 @@ def test_bundled_setup_reports_invalid_harness_config(
     operator_home.mkdir()
     config_path = agent_home / config_relative
     config_path.parent.mkdir(parents=True)
+    if script_name == "codex-host-setup.sh":
+        config_path.parent.chmod(0o700)
     config_path.write_text(invalid)
+    if script_name == "codex-host-setup.sh":
+        config_path.chmod(0o600)
 
     result = _run_setup(
         script_name,
@@ -586,7 +666,10 @@ def test_bundled_setup_reports_invalid_harness_config(
     )
 
     assert result.returncode != 0
-    assert "cannot update invalid" in result.stderr
+    if script_name == "codex-host-setup.sh":
+        assert "invalid Codex config" in result.stderr
+    else:
+        assert "cannot update invalid" in result.stderr
 
 
 def test_wheel_manifest_includes_coord_runtime_files() -> None:
@@ -604,8 +687,14 @@ def test_wheel_manifest_includes_coord_runtime_files() -> None:
     assert force_include["contrib/safeyolo-coord-mcp.py"] == (
         "safeyolo/contrib/safeyolo-coord-mcp.py"
     )
+    assert force_include["contrib/lib/stage-codex-state.py"] == (
+        "safeyolo/contrib/lib/stage-codex-state.py"
+    )
     assert force_include["contrib/codex-coord-host-setup.sh"] == (
         "safeyolo/contrib/codex-coord-host-setup.sh"
+    )
+    assert force_include["contrib/pi-host-setup.sh"] == (
+        "safeyolo/contrib/pi-host-setup.sh"
     )
     assert force_include["contrib/codex-coord-supervisor.py"] == (
         "safeyolo/contrib/codex-coord-supervisor.py"
@@ -621,6 +710,354 @@ def test_wheel_manifest_includes_coord_runtime_files() -> None:
     assert CODEX_COORD_FAKE_SOURCE.stat().st_mode & 0o111
 
 
+def _seed_pi_install(agent_home: Path, *, pi_script: str | None = None) -> Path:
+    """Seed only synthetic agent-local Pi files; never use host Pi state."""
+    prefix = agent_home / ".local"
+    package_dir = prefix / "lib/node_modules/@earendil-works/pi-coding-agent"
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.json").write_text(
+        '{"name":"@earendil-works/pi-coding-agent","version":"0.85.0"}\n'
+    )
+    pi = prefix / "bin/pi"
+    pi.parent.mkdir(parents=True, exist_ok=True)
+    pi.write_text(
+        pi_script
+        or "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then exit 0; fi\n"
+        "printf '%s\\0' \"$@\" > \"$TEST_PI_EXEC_LOG\"\n"
+    )
+    pi.chmod(0o755)
+    return pi
+
+
+def _pi_command_env(agent_home: Path, fake_bin: Path, tmp_path: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith(("MISE_", "__MISE_")) or key == "BASH_ENV":
+            env.pop(key)
+    env.update(
+        {
+            "HOME": str(agent_home),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "TEST_PI_EXEC_LOG": str(tmp_path / "pi-exec-args.bin"),
+        }
+    )
+    return env
+
+
+def test_pi_setup_is_agent_local_and_launches_with_reviewed_flags(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    outside = tmp_path / "outside"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    outside.mkdir()
+    (outside / "host-sentinel").write_text("must not be imported\n")
+    (operator_home / ".pi").symlink_to(outside, target_is_directory=True)
+
+    _run_setup("pi-host-setup.sh", operator_home, agent_home, tmp_path)
+    pi = _seed_pi_install(agent_home)
+
+    fake_node = fake_bin / "node"
+    fake_node.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
+        "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
+        "'@earendil-works/pi-coding-agent' '0.85.0'; exit 0; fi\n"
+        "exit 1\n"
+    )
+    fake_node.chmod(0o755)
+    env = _pi_command_env(agent_home, fake_bin, tmp_path)
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--", "-leading", "value with spaces"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert pi.exists()
+    assert not (agent_home / ".pi/agent/auth.json").exists()
+    assert not (agent_home / ".pi/agent/host-sentinel").exists()
+    assert (agent_home / ".pi/agent/skills/safeyolo").is_symlink()
+    actual_args = [
+        arg.decode()
+        for arg in Path(env["TEST_PI_EXEC_LOG"]).read_bytes().split(b"\0")
+        if arg
+    ]
+    assert actual_args[0] == "--approve"
+    assert "--append-system-prompt" in actual_args
+    assert "--" in actual_args
+    assert "-leading" in actual_args
+    assert "value with spaces" in actual_args
+
+
+def test_pi_setup_rejects_agent_pi_parent_symlink(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    outside = tmp_path / "outside"
+    operator_home.mkdir()
+    agent_home.mkdir()
+    agent_home.chmod(0o700)
+    outside.mkdir()
+    (agent_home / ".pi").symlink_to(outside, target_is_directory=True)
+
+    result = _run_setup(
+        "pi-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+        stage_coord_runtime=False,
+    )
+
+    assert result.returncode != 0
+    assert "symlink" in result.stderr
+    assert not (outside / "agent/skills/safeyolo").exists()
+
+
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink"))
+def test_pi_setup_preserves_unsafe_existing_launcher(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    outside = tmp_path / "outside"
+    operator_home.mkdir()
+    agent_home.mkdir()
+    agent_home.chmod(0o700)
+    outside.mkdir()
+    sentinel = outside / "launcher-sentinel"
+    sentinel.write_bytes(b"must remain unchanged\n")
+    launcher = agent_home / ".safeyolo-command"
+    if unsafe_kind == "symlink":
+        launcher.symlink_to(sentinel)
+    else:
+        launcher.hardlink_to(sentinel)
+
+    result = _run_setup(
+        "pi-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+        stage_coord_runtime=False,
+    )
+
+    assert result.returncode != 0
+    assert "unsafe existing Pi launcher" in result.stderr
+    assert sentinel.read_bytes() == b"must remain unchanged\n"
+    if unsafe_kind == "symlink":
+        assert launcher.is_symlink()
+    else:
+        assert launcher.stat().st_nlink == 2
+
+
+def test_pi_setup_keeps_previous_launcher_when_atomic_publish_is_interrupted(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    agent_home.mkdir()
+    agent_home.chmod(0o700)
+    fake_bin.mkdir()
+    launcher = agent_home / ".safeyolo-command"
+    previous = b"#!/bin/sh\nprintf previous\n"
+    launcher.write_bytes(previous)
+    launcher.chmod(0o700)
+    fake_mv = fake_bin / "mv"
+    fake_mv.write_text("#!/bin/sh\nexit 1\n")
+    fake_mv.chmod(0o755)
+
+    env = _setup_env(operator_home, agent_home, tmp_path)
+    env["PATH"] = f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+    result = subprocess.run(
+        [str(REPO_ROOT / "contrib" / "pi-host-setup.sh")],
+        check=False,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "atomically publish" in result.stderr
+    assert launcher.read_bytes() == previous
+    assert launcher.stat().st_mode & 0o777 == 0o700
+    assert not list(agent_home.glob(".safeyolo-command.tmp.*"))
+
+
+def test_pi_rejects_node_2218_before_package_install(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("pi-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    node = fake_bin / "node"
+    node.write_text("#!/bin/sh\necho v22.18.0\n")
+    node.chmod(0o755)
+    (fake_bin / "npm").write_text("#!/bin/sh\nexit 0\n")
+    (fake_bin / "npm").chmod(0o755)
+    mise = fake_bin / "mise"
+    mise.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$TEST_MISE_LOG\"\n"
+    )
+    mise.chmod(0o755)
+    env = _pi_command_env(agent_home, fake_bin, tmp_path)
+    env["TEST_MISE_LOG"] = str(tmp_path / "mise.log")
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command")],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Node >= 22.19.0" in result.stderr
+    assert (tmp_path / "mise.log").read_text().splitlines() == [
+        "use",
+        "-g",
+        "node@22.19.0",
+    ]
+
+
+def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("pi-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    node = fake_bin / "node"
+    node.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
+        "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
+        "'@earendil-works/pi-coding-agent' '0.85.0'; exit 0; fi\n"
+    )
+    node.chmod(0o755)
+    npm = fake_bin / "npm"
+    npm.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\0' \"$@\" >> \"$TEST_NPM_LOG\"\n"
+        "if [ \"$1\" = pack ]; then\n"
+        "  dest=\"\"; prev=\"\"\n"
+        "  for arg in \"$@\"; do\n"
+        "    if [ \"$prev\" = --pack-destination ]; then dest=\"$arg\"; fi\n"
+        "    prev=\"$arg\"\n"
+        "  done\n"
+        "  : > \"$dest/pi-coding-agent-0.85.0.tgz\"\n"
+        "  echo pi-coding-agent-0.85.0.tgz\n"
+        "  exit 0\n"
+        "fi\n"
+        "prefix=\"\"; prev=\"\"\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$prev\" = --prefix ]; then prefix=\"$arg\"; fi\n"
+        "  prev=\"$arg\"\n"
+        "done\n"
+        "pkg=\"$prefix/lib/node_modules/@earendil-works/pi-coding-agent\"\n"
+        "mkdir -p \"$pkg\" \"$prefix/bin\"\n"
+        "printf '%s\\n' "
+        "'{\"name\":\"@earendil-works/pi-coding-agent\",\"version\":\"0.85.0\"}' "
+        "> \"$pkg/package.json\"\n"
+        "printf '%s\\n' '#!/bin/sh' "
+        "'if [ \"$1\" = --version ]; then exit 0; fi' "
+        "'printf \"%s\\\\0\" \"$@\" > \"$TEST_PI_EXEC_LOG\"' > \"$prefix/bin/pi\"\n"
+        "chmod +x \"$prefix/bin/pi\"\n"
+    )
+    npm.chmod(0o755)
+    openssl = fake_bin / "openssl"
+    openssl.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = dgst ]; then printf x; exit 0; fi\n"
+        "if [ \"$1\" != base64 ] || [ \"$2\" != -A ] || [ \"$3\" != -in ]; then exit 1; fi\n"
+        "printf '%s' "
+        "'INxVkLAVfAMju5MojJpmyu/0bMP+r+ffZuS7UqVv32E2JwHBRbcHfELDfmFNvapEbgYfKN2r9OYO1p3TqDBR+g=='\n"
+    )
+    openssl.chmod(0o755)
+    env = _pi_command_env(agent_home, fake_bin, tmp_path)
+    env["TEST_NPM_LOG"] = str(tmp_path / "npm.log")
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--probe"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    npm_args = [
+        arg.decode()
+        for arg in Path(env["TEST_NPM_LOG"]).read_bytes().split(b"\0")
+        if arg
+    ]
+    assert npm_args[:3] == ["pack", "--ignore-scripts", "--pack-destination"]
+    assert "@earendil-works/pi-coding-agent@0.85.0" in npm_args
+    assert "--ignore-scripts" in npm_args
+    assert "--global" in npm_args
+    assert "--prefix" in npm_args
+
+
+def test_pi_repair_fails_closed_on_checksum_mismatch(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("pi-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    node = fake_bin / "node"
+    node.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
+        "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
+        "'@earendil-works/pi-coding-agent' '0.85.0'; exit 0; fi\n"
+    )
+    node.chmod(0o755)
+    npm = fake_bin / "npm"
+    npm.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" != pack ]; then exit 99; fi\n"
+        "dest=\"\"; prev=\"\"\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$prev\" = --pack-destination ]; then dest=\"$arg\"; fi\n"
+        "  prev=\"$arg\"\n"
+        "done\n"
+        ": > \"$dest/pi-coding-agent-0.85.0.tgz\"\n"
+        "echo pi-coding-agent-0.85.0.tgz\n"
+    )
+    npm.chmod(0o755)
+    openssl = fake_bin / "openssl"
+    openssl.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = dgst ]; then printf x; exit 0; fi\n"
+        "if [ \"$1\" != base64 ] || [ \"$2\" != -A ] || [ \"$3\" != -in ]; then exit 1; fi\n"
+        "printf mismatch\n"
+    )
+    openssl.chmod(0o755)
+    env = _pi_command_env(agent_home, fake_bin, tmp_path)
+    env["TMPDIR"] = str(tmp_path)
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command")],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "integrity differs" in result.stderr
+    assert not (agent_home / ".local/bin/pi").exists()
+    assert not list(tmp_path.glob("safeyolo-pi.*"))
+
+
 def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) -> None:
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"
@@ -629,6 +1066,7 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
         "SAFEYOLO_CODEX_COORD_ROOMS": "backlog, releases",
         "SAFEYOLO_CODEX_COORDINATORS": "relay",
     }
+    _seed_adopted_codex_auth(agent_home)
 
     _run_setup(
         "codex-coord-host-setup.sh",
@@ -663,6 +1101,30 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     assert 'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"' in command
     assert "--dangerously-bypass-approvals-and-sandbox" in command
     assert command.count("coord-mcp-bootstrap: mcp+httpx install") == 1
+
+
+def test_fresh_codex_coord_setup_requires_normal_login_first(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    result = _run_setup(
+        "codex-coord-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+        extra_env={
+            "SAFEYOLO_CODEX_COORD_ROOMS": "backlog",
+            "SAFEYOLO_CODEX_COORDINATORS": "relay",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "requires an adopted agent-local auth.json" in result.stderr
+    assert "codex login --device-auth" in result.stderr
+    assert "/home/agent/.safeyolo/codex-auth-recovery.py adopt" in result.stderr
 
 
 def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> None:
@@ -719,6 +1181,7 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
     }
     snapshot_path = tmp_path / "snapshot.json"
     snapshot_path.write_text(json.dumps(snapshot))
+    _seed_adopted_codex_auth(agent_home)
 
     _run_setup(
         "codex-coord-host-setup.sh",
@@ -742,6 +1205,10 @@ def test_codex_coord_setup_stages_one_verified_factory_role(tmp_path: Path) -> N
         "reviewer": "lens",
     }
     assert config["factory"]["operator_input"] == snapshot["operator_input"]
+    expected_snapshot_id = hashlib.sha256(
+        (json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    ).hexdigest()
+    assert config["factory"]["snapshot_id"] == expected_snapshot_id
     assert config["factory"]["handoffs"][1]["response_to"] == [
         "owner",
         "coordinator",
@@ -762,6 +1229,242 @@ def test_normal_codex_setup_keeps_interactive_entrypoint(tmp_path: Path) -> None
     assert 'exec codex "${args[@]}" "$@"' in command
     assert 'exec python3 "$HOME/.safeyolo/codex-coord-supervisor.py"' not in command
     assert not (agent_home / ".safeyolo/codex-coord-supervisor.json").exists()
+
+
+def test_normal_codex_setup_does_not_import_host_subscription_state(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.joinpath(".codex").mkdir(parents=True)
+    (operator_home / ".codex/auth.json").write_text('{"auth": "host-session"}\n')
+    (operator_home / ".codex/auth.json").chmod(0o600)
+    (operator_home / ".codex/config.toml").write_text('model = "gpt-5"\n')
+
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    assert not (agent_home / ".codex/auth.json").exists()
+    assert json.loads((agent_home / ".codex/.safeyolo-provenance.json").read_text())["state"] == "fresh"
+    staged_config = (agent_home / ".codex/config.toml").read_text()
+    assert "gpt-5" not in staged_config
+    assert "forced_chatgpt_auth = true" in staged_config
+    assert 'cli_auth_credentials_store = "file"' in staged_config
+    assert "[mcp_servers.safeyolo-coord]" in staged_config
+
+    # A login is created inside the persistent agent, then explicitly adopted;
+    # later host setup must preserve the credential byte-for-byte.
+    auth_path = agent_home / ".codex/auth.json"
+    auth_bytes = b'{"auth": "agent-session", "sentinel": "do-not-read"}\n'
+    auth_path.write_bytes(auth_bytes)
+    auth_path.chmod(0o600)
+    subprocess.run(
+        [str(agent_home / ".safeyolo/codex-auth-recovery.py"), "adopt", "--home", str(agent_home)],
+        check=True,
+    )
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    assert auth_path.read_bytes() == auth_bytes
+
+
+def test_codex_reset_device_login_and_adopt_reapply_successfully(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    recovery = agent_home / ".safeyolo/codex-auth-recovery.py"
+    auth_path = agent_home / ".codex/auth.json"
+
+    auth_bytes = b'{"auth": "first-agent-session"}\n'
+    auth_path.write_bytes(auth_bytes)
+    auth_path.chmod(0o600)
+    subprocess.run([str(recovery), "adopt", "--home", str(agent_home)], check=True)
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    subprocess.run([str(recovery), "reset", "--home", str(agent_home)], check=True)
+    assert not auth_path.exists()
+    auth_bytes = b'{"auth": "replacement-agent-session"}\n'
+    auth_path.write_bytes(auth_bytes)
+    auth_path.chmod(0o600)
+    blocked = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+    assert blocked.returncode != 0
+    assert "codex login --device-auth" in blocked.stderr
+    assert "/home/agent/.safeyolo/codex-auth-recovery.py adopt" in blocked.stderr
+
+    subprocess.run([str(recovery), "adopt", "--home", str(agent_home)], check=True)
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    assert auth_path.read_bytes() == auth_bytes
+
+
+def test_codex_setup_marks_legacy_auth_unknown_without_repairing_it(
+    tmp_path: Path,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    codex_home = agent_home / ".codex"
+    codex_home.mkdir(parents=True)
+    codex_home.chmod(0o700)
+    auth_path = codex_home / "auth.json"
+    auth_bytes = b'{"auth": "legacy-sentinel"}\n'
+    auth_path.write_bytes(auth_bytes)
+    auth_path.chmod(0o600)
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "explicit adopt or reset is required" in result.stderr
+    marker = json.loads((codex_home / ".safeyolo-provenance.json").read_text())
+    assert marker["state"] == "legacy-unknown"
+    assert auth_path.read_bytes() == auth_bytes
+    assert b"legacy-sentinel" not in result.stderr.encode()
+
+
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "fifo", "directory", "mode"))
+def test_codex_setup_rejects_unsafe_auth_metadata(
+    tmp_path: Path,
+    unsafe_kind: str,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    codex_home = agent_home / ".codex"
+    codex_home.mkdir(parents=True)
+    codex_home.chmod(0o700)
+    auth_path = codex_home / "auth.json"
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_bytes(b"credential-sentinel")
+    sentinel.chmod(0o600)
+
+    if unsafe_kind == "symlink":
+        auth_path.symlink_to(sentinel)
+    elif unsafe_kind == "hardlink":
+        auth_path.hardlink_to(sentinel)
+    elif unsafe_kind == "fifo":
+        os.mkfifo(auth_path)
+    elif unsafe_kind == "directory":
+        auth_path.mkdir()
+        auth_path.chmod(0o700)
+    else:
+        auth_path.write_bytes(b"credential-sentinel")
+        auth_path.chmod(0o644)
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "unsafe Codex auth.json" in result.stderr
+    assert b"credential-sentinel" not in result.stderr.encode()
+
+
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "fifo", "directory", "mode"))
+def test_codex_reset_removes_unsafe_auth_entry_without_reading_it(
+    tmp_path: Path,
+    unsafe_kind: str,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    codex_home = agent_home / ".codex"
+    auth_path = codex_home / "auth.json"
+    sentinel = tmp_path / "credential-sentinel"
+    sentinel.write_bytes(b"synthetic-credential-sentinel")
+    if unsafe_kind == "symlink":
+        auth_path.symlink_to(sentinel)
+    elif unsafe_kind == "hardlink":
+        auth_path.hardlink_to(sentinel)
+    elif unsafe_kind == "fifo":
+        os.mkfifo(auth_path)
+    elif unsafe_kind == "directory":
+        auth_path.mkdir()
+        auth_path.chmod(0o700)
+    else:
+        auth_path.write_bytes(b"synthetic-credential-sentinel")
+        auth_path.chmod(0o644)
+
+    recovery = agent_home / ".safeyolo/codex-auth-recovery.py"
+    reset = subprocess.run(
+        [str(recovery), "reset", "--home", str(agent_home)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if unsafe_kind == "directory":
+        assert reset.returncode != 0
+        assert "rmdir /home/agent/.codex/auth.json" in reset.stderr
+        auth_path.rmdir()
+        subprocess.run([str(recovery), "reset", "--home", str(agent_home)], check=True)
+    else:
+        assert reset.returncode == 0, reset.stderr
+        if unsafe_kind in {"symlink", "hardlink"}:
+            assert sentinel.read_bytes() == b"synthetic-credential-sentinel"
+
+    replacement = b"synthetic-replacement-agent-auth"
+    auth_path.write_bytes(replacement)
+    auth_path.chmod(0o600)
+    subprocess.run([str(recovery), "adopt", "--home", str(agent_home)], check=True)
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    assert auth_path.read_bytes() == replacement
+
+
+def test_codex_state_atomic_update_keeps_original_on_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _load_codex_state_module()
+    target = tmp_path / "config.toml"
+    target.write_text("model = 'before'\n")
+    target.chmod(0o600)
+
+    def interrupted_replace(_source: Path, _destination: Path) -> None:
+        raise OSError("synthetic interruption")
+
+    monkeypatch.setattr(state.os, "replace", interrupted_replace)
+    with pytest.raises(state.CodexStateError, match="atomically update"):
+        state._atomic_write(target, "model = 'after'\n", 0o600)
+
+    assert target.read_text() == "model = 'before'\n"
+    assert not list(tmp_path.glob(f".{target.name}.*"))
+
+
+def test_codex_state_rejects_wrong_owner_without_reading_auth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _load_codex_state_module()
+    home = tmp_path / "agent"
+    codex_home = home / ".codex"
+    codex_home.mkdir(parents=True)
+    codex_home.chmod(0o700)
+    auth_path = codex_home / "auth.json"
+    auth_path.write_bytes(b"owner-sentinel")
+    auth_path.chmod(0o600)
+    actual_uid = os.getuid()
+    monkeypatch.setattr(state.os, "getuid", lambda: actual_uid + 1)
+
+    with pytest.raises(state.CodexStateError, match="owner"):
+        state._stage(home, None)
+
+    assert auth_path.read_bytes() == b"owner-sentinel"
 
 
 @pytest.mark.parametrize(
@@ -844,6 +1547,28 @@ def test_codex_context_refuses_user_owned_lab_controller_skill(
     assert result.returncode != 0
     assert "Refusing to replace existing user skill" in result.stderr
     assert marker.read_text() == "user-owned lab skill\n"
+
+
+def test_codex_context_refuses_user_owned_factory_skill(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    collision = agent_home / ".agents/skills/safeyolo-factory"
+    collision.mkdir(parents=True)
+    marker = collision / "SKILL.md"
+    marker.write_text("user-owned factory skill\n")
+
+    result = _run_setup(
+        "codex-host-setup.sh",
+        operator_home,
+        agent_home,
+        tmp_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to replace existing user skill" in result.stderr
+    assert marker.read_text() == "user-owned factory skill\n"
 
 
 def test_codex_context_refuses_user_owned_lab_command(tmp_path: Path) -> None:
@@ -1014,6 +1739,33 @@ def test_lab_controller_skill_is_codex_scoped_and_self_contained() -> None:
         path = LAB_CONTROLLER_SOURCE / "scripts" / script
         assert path.is_file()
         assert path.stat().st_mode & 0o111
+
+
+def test_factory_skill_is_codex_scoped_and_self_contained() -> None:
+    content = (FACTORY_SKILL_SOURCE / "SKILL.md").read_text()
+    _, frontmatter, body = content.split("---", 2)
+    metadata = yaml.safe_load(frontmatter)
+
+    assert set(metadata) == {"name", "description"}
+    assert metadata["name"] == "safeyolo-factory"
+    assert "SafeYolo supervised factories" in metadata["description"]
+    for reference in (
+        "design.md",
+        "contract-review.md",
+        "operations.md",
+    ):
+        assert f"references/{reference}" in body
+        assert (FACTORY_SKILL_SOURCE / "references" / reference).is_file()
+
+    for graph in (
+        "contract-review",
+        "runtime-triage",
+        "nested-mvp",
+    ):
+        yaml_path = FACTORY_SKILL_SOURCE / "references/graph" / f"{graph}.yaml"
+        mmd_path = FACTORY_SKILL_SOURCE / "references/graph" / f"{graph}.mmd"
+        assert yaml_path.is_file()
+        assert mmd_path.is_file()
 
 
 def test_baseline_explains_guest_privilege_without_implying_host_root() -> None:

@@ -177,6 +177,12 @@ def load_factory_file(path: Path) -> FactoryContract:
             )
         )
 
+    private_room_names = {f"{role.agent}-agent" for role in roles}
+    if room in private_room_names:
+        raise FactoryContractError(
+            f"factory room {room!r} conflicts with a bound agent's private room"
+        )
+
     raw_handoffs = raw["handoffs"]
     if not isinstance(raw_handoffs, list) or not raw_handoffs:
         raise FactoryContractError("handoffs must be a non-empty array of tables")
@@ -334,7 +340,26 @@ def _factory_root(name: str) -> Path:
     return root
 
 
-def store_snapshot(contract: FactoryContract) -> tuple[str, Path]:
+def load_snapshot(name: str, identifier: str) -> tuple[str, Path, dict[str, Any]]:
+    """Load and validate one immutable snapshot by its content identity."""
+    name = _simple_name("factory name", name)
+    if not isinstance(identifier, str) or re.fullmatch(r"[0-9a-f]{64}", identifier) is None:
+        raise FactoryContractError("factory snapshot ID is invalid")
+    root = _factory_root(name)
+    path = _contained_path(root, "snapshots", f"{identifier}.json")
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise FactoryContractError(f"cannot read factory snapshot {path}: {exc}") from exc
+    if not isinstance(payload, dict) or snapshot_id(payload) != identifier:
+        raise FactoryContractError(f"factory snapshot {identifier} failed its content hash")
+    # Revalidate the security-relevant stored shape without consulting live
+    # Markdown files. The host setup performs the same narrow checks per role.
+    _validate_snapshot_payload(payload, expected_name=name)
+    return identifier, path, payload
+
+
+def approve_snapshot(contract: FactoryContract) -> tuple[str, Path]:
     payload = contract.snapshot_payload()
     identifier = snapshot_id(payload)
     root = _factory_root(contract.name)
@@ -352,36 +377,43 @@ def store_snapshot(contract: FactoryContract) -> tuple[str, Path]:
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
-    _atomic_write(_contained_path(root, "active"), f"{identifier}\n".encode())
+    _atomic_write(_contained_path(root, "approved"), f"{identifier}\n".encode())
     return identifier, snapshot_path
 
 
-def load_active_snapshot(name: str) -> tuple[str, Path, dict[str, Any]]:
+def load_approved_snapshot(name: str) -> tuple[str, Path, dict[str, Any]]:
     name = _simple_name("factory name", name)
     root = _factory_root(name)
+    pointer_name = "approved"
     try:
-        identifier = _contained_path(root, "active").read_text().strip()
+        identifier = _contained_path(root, pointer_name).read_text().strip()
     except OSError as exc:
-        raise FactoryContractError(f"factory {name!r} has no applied snapshot") from exc
+        if not isinstance(exc, FileNotFoundError):
+            raise FactoryContractError(f"cannot read factory {name!r} approved pointer") from exc
+        pointer_name = "active"
+        try:
+            identifier = _contained_path(root, pointer_name).read_text().strip()
+        except OSError as legacy_exc:
+            raise FactoryContractError(f"factory {name!r} has no approved snapshot") from legacy_exc
     if re.fullmatch(r"[0-9a-f]{64}", identifier) is None:
-        raise FactoryContractError(f"factory {name!r} has an invalid active snapshot pointer")
-    path = _contained_path(root, "snapshots", f"{identifier}.json")
-    try:
-        payload = json.loads(path.read_text())
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise FactoryContractError(f"cannot read factory snapshot {path}: {exc}") from exc
-    if not isinstance(payload, dict) or snapshot_id(payload) != identifier:
-        raise FactoryContractError(f"factory snapshot {identifier} failed its content hash")
-    # Revalidate the security-relevant stored shape without consulting live
-    # Markdown files. The host setup performs the same narrow checks per role.
-    _validate_snapshot_payload(payload, expected_name=name)
-    return identifier, path, payload
+        raise FactoryContractError(f"factory {name!r} has an invalid {pointer_name} snapshot pointer")
+    return load_snapshot(name, identifier)
+
+
+def load_active_snapshot(name: str) -> tuple[str, Path, dict[str, Any]]:
+    """Compatibility name for callers that used the pre-approve API."""
+    return load_approved_snapshot(name)
+
+
+def store_snapshot(contract: FactoryContract) -> tuple[str, Path]:
+    """Compatibility name for the pre-approve snapshot writer."""
+    return approve_snapshot(contract)
 
 
 def _validate_snapshot_payload(payload: dict[str, Any], *, expected_name: str) -> None:
     if isinstance(payload, dict) and "operator_input" not in payload:
         raise FactoryContractError(
-            "factory snapshot has no operator_input and cannot be activated; check and apply a reachable contract"
+            "factory snapshot has no operator_input and cannot be run; check and approve a reachable contract"
         )
     _exact_keys(
         "snapshot",

@@ -39,11 +39,13 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
 import httpx
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 BASE_URL = os.environ.get(
     "SAFEYOLO_COORD_BASE_URL", "http://_safeyolo.proxy.internal"
@@ -87,7 +89,10 @@ def _raise_for_status(r: httpx.Response) -> None:
         detail = r.json().get("error")
     except Exception:
         detail = r.text
-    raise RuntimeError(f"coord API {r.status_code}: {detail}")
+    detail_text = str(detail or r.reason_phrase or "request failed")
+    if len(detail_text) > 2048:
+        detail_text = detail_text[:2045] + "..."
+    raise ToolError(f"coord API {r.status_code}: {detail_text}")
 
 
 mcp = MCPServer("safeyolo-coord")
@@ -178,7 +183,7 @@ async def _send_canonical(
 async def send_task(
     room_name: str,
     assignee: str,
-    task_id: str,
+    target: str,
     body: str,
 ) -> dict[str, Any]:
     """Send one canonical TASK header and notify exactly its assignee.
@@ -189,16 +194,23 @@ async def send_task(
     values = {
         "room_name": room_name,
         "assignee": assignee,
-        "task_id": task_id,
     }
     for field, value in values.items():
         if not isinstance(value, str) or not _COORD_NAME_RE.fullmatch(value):
             raise ValueError(f"{field} is missing or malformed")
+    if not isinstance(target, str) or re.search(r"\s", target):
+        raise ValueError("target is missing or malformed")
+    try:
+        parsed_target = urllib.parse.urlsplit(target)
+    except ValueError as exc:
+        raise ValueError("target is missing or malformed") from exc
+    if not parsed_target.scheme or not (parsed_target.netloc or parsed_target.path):
+        raise ValueError("target is missing or malformed")
     if not isinstance(body, str) or not body.strip():
         raise ValueError("body is missing")
     if _TASK_BODY_HEADER_RE.search(body):
         raise ValueError("body contains a duplicate TASK header")
-    message = f"TASK task={task_id} assignee={assignee}\n\n{body}"
+    message = f"TASK target={target} assignee={assignee}\n\n{body}"
     result = await _send_canonical(
         room_name,
         message,

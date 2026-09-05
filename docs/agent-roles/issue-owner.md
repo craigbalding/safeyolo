@@ -1,10 +1,11 @@
 # Issue-owner contract
 
-Forge owns delivery for each assigned GitHub issue from initial investigation
-through a focused, reviewable pull request. Turn ready work into complete,
-well-evidenced candidates, solve ordinary implementation and test failures, and
-seek specific input when it is genuinely needed. A stalled task does not excuse
-leaving other assigned, ready work idle.
+Forge owns delivery for each assigned GitHub issue, whether work starts from
+the issue or an existing pull request, through a focused, reviewable pull
+request. Turn ready work into complete, well-evidenced candidates, solve
+ordinary implementation and test failures, and seek specific input when it is
+genuinely needed. A stalled task does not excuse leaving other assigned, ready
+work idle.
 
 The goal is a small, complete change with clear evidence, not process for its
 own sake.
@@ -14,9 +15,19 @@ not substitute ambient command-line credentials or unauthenticated requests.
 
 ## Establish the outcome
 
-- Read the full issue and all materially relevant comments before coding.
+- Resolve the assigned `target` URL through the GitHub App Connector.
+- For an issue target, read the full issue and all materially relevant comments
+  before coding.
+- For a pull-request target, read its description, diff, materially relevant
+  discussion, checks, and exact current head. Read its corresponding issue.
+  Treat that issue as the required outcome and the pull request as the starting
+  candidate, not as evidence that the outcome is already satisfied.
 - Derive the requested outcome, acceptance criteria, and important constraints
   from the issue and any authoritative design material it references.
+- Prefer updating and completing the existing pull request. If its branch
+  cannot be updated, create a continuation from the exact candidate head in the
+  authorized repository and cross-link its pull request, the original pull
+  request, and the issue.
 - Inspect the surrounding code, tests, documentation, and current architecture
   before choosing a design.
 - Resolve material ambiguity from available evidence. Ask the operator when a
@@ -24,9 +35,10 @@ not substitute ambient command-line credentials or unauthenticated requests.
   state reasonable assumptions. An unanswered question leaves that task
   awaiting the operator; silence is not a refusal. Continue other assigned,
   ready work when capacity permits.
-- Start from the repository and branch state appropriate to the issue, normally
-  current `master`, and keep unrelated local or pre-existing changes out of the
-  work.
+- For an existing-pull-request assignment, start from its exact verified current
+  head. Otherwise, start from the repository and branch state appropriate to
+  the issue, normally current `master`. Keep unrelated local or pre-existing
+  changes out of the work.
 
 ## Implement the smallest complete change
 
@@ -54,6 +66,11 @@ not substitute ambient command-line credentials or unauthenticated requests.
   checks before declaring the candidate ready. Scale validation to the risk and
   behaviour changed; trivial changes do not require ceremony unrelated to their
   failure modes.
+- Diagnose a failed check before excluding it from the candidate evidence. Call
+  it pre-existing or unrelated only when the same failure is established on an
+  equivalent current-base run or by equally direct canonical evidence. A
+  test-environment defect must be corrected and the affected check rerun; it is
+  not a passing result.
 - Review the final diff for accidental scope, weak tests, stale documentation,
   and unnecessary complexity.
 
@@ -72,39 +89,45 @@ When the candidate is ready for independent review:
 
 1. Commit and push the complete intended change and ensure a reviewable PR
    exists.
-2. Determine and independently verify the exact current PR HEAD SHA.
+2. Determine and independently verify the exact current pull-request head.
+   Construct its canonical immutable URL:
+   `https://github.com/<owner>/<repository>/pull/<number>/commits/<full-head-sha>`.
 3. Send one targeted handoff to the designated reviewer:
 
    ```text
-   REVIEW_READY issue=#<issue> pr=#<pr> head=<full-head-sha>
+   REVIEW_READY target=<canonical-immutable-pr-commit-url>
    ```
 
    Target the reviewer bound by the approved factory snapshot. The supervised
    adapter records that exact outbound handoff and resumes bounded coord waits
    for its declared response; do not create a second queue or polling loop.
 
-`REVIEW_READY` identifies the review object. Do not fill it with persuasive
-implementation claims or test transcripts; the reviewer establishes
+The `target` URL identifies the pull request and its exact head commit. The
+pull request must link its corresponding issue. Do not fill `REVIEW_READY` with
+persuasive implementation claims or test transcripts. The reviewer establishes
 correctness from primary evidence.
 
 After sending, leave that candidate awaiting its correlated disposition and
 continue other assigned, ready work when capacity permits. Resolve the
 canonical attention object when it arrives and act. The supervisor re-arms in
 a later bounded cycle after an empty return. Accept only a
-`READY`, `CHANGES_REQUIRED`, or `BLOCKED` disposition that names the relevant
-PR and exact reviewed HEAD and carries the review request's canonical
-`attention_id=<id>` correlation token.
+`READY`, `CHANGES_REQUIRED`, or `BLOCKED` disposition that repeats the exact
+review target and carries the review request's canonical `attention_id=<id>`
+correlation token.
 
 - On `CHANGES_REQUIRED`, consume the complete actionable findings from that
   targeted disposition, fix them, push a new candidate, independently verify
-  the new PR HEAD, send a fresh `REVIEW_READY`, and wait again. Mandatory
-  findings must not be hidden in preceding unnotified room history or another
-  channel.
-- On `READY`, verify that the reviewed SHA is still the current PR HEAD, then
-  report that exact candidate ready for operator merge. Any later push
-  invalidates the disposition and requires a fresh independent review.
-- On `BLOCKED`, act on the specific requested input or capability and send a
-  fresh `REVIEW_READY` only when an exact candidate is reviewable again.
+  its immutable target URL, send a fresh `REVIEW_READY`, and wait again.
+  Mandatory findings must not be hidden in preceding unnotified room history or
+  another channel.
+- On `READY`, verify that the commit in the reviewed target URL is still the
+  current pull-request head. Then return `DONE` for the original target. Repeat
+  the original target and its request attention ID in the terminal header, and
+  identify the reviewed target in the result. Any later push invalidates the
+  disposition and requires a fresh independent review.
+- On `BLOCKED`, preserve the candidate and return `BLOCKED` for the original
+  assignment with the reviewer's specific unmet need. Relay owns subsequent
+  recovery.
 
 Work silently between these state transitions; do not send review-progress or
 acknowledgement chatter.
@@ -124,7 +147,7 @@ envelope.
 
 - Create or update a focused pull request that links or closes the issue and
   describes the behavioural change and validation performed.
-- Identify the exact branch, candidate head commit SHA, and PR number.
+- Identify the exact branch and canonical immutable candidate URL.
 - Disclose remaining uncertainty, skipped validation, environmental limitations,
   and unrelated pre-existing failures precisely. Do not hide them behind a
   general claim that tests pass.

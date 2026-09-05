@@ -1,12 +1,17 @@
 """Agent management commands."""
 
+import fcntl
 import getpass
 import logging
 import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
+import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 import typer
@@ -51,6 +56,7 @@ from ..vm import (
     build_custom_rootfs,
     clone_custom_rootfs,
     get_agent_config_share_dir,
+    get_agent_home_dir,
     get_agent_status_dir,
     prepare_config_share,
     stage_guest_desktop_launcher,
@@ -173,6 +179,7 @@ _HOST_SCRIPT_ALIASES: dict[str, str] = {
     "claude": "claude-host-setup.sh",
     "codex": "codex-host-setup.sh",
     "codex-coord": "codex-coord-host-setup.sh",
+    "pi": "pi-host-setup.sh",
     "mise-shell": "mise-shell-host-setup.sh",
 }
 
@@ -181,8 +188,8 @@ def _resolve_host_script_alias(alias: str) -> Path | None:
     """Resolve @alias → bundled contrib/*.sh path, or None if not found.
 
     Tries the installed-package location first (wheel install path), then
-    falls back to the repo-root contrib/ (for `uv tool install --editable .`
-    from a checkout where hatch.force-include hasn't been re-run).
+    falls back to the repo-root contrib/ for source checkouts where
+    hatch.force-include hasn't been re-run.
     """
     if alias not in _HOST_SCRIPT_ALIASES:
         return None
@@ -232,25 +239,164 @@ def _run_host_script_for_agent(
     host_script_path: Path,
     folder_str: str,
 ) -> None:
+    with _agent_host_setup_lock(name):
+        from ..platform import get_platform
+        from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
+
+        if get_platform().is_sandbox_running(name):
+            console.print(f"[red]Agent '{name}' is already running.[/red]")
+            console.print(
+                f"Stop it first: [bold]safeyolo agent stop {name}[/bold] "
+                "before applying a host script."
+            )
+            raise typer.Exit(1)
+
+        ensure_agent_persistent_dirs(name)
+        agent_home = get_agent_home_dir(name)
+        env = {
+            **os.environ,
+            "SAFEYOLO_AGENT_NAME": name,
+            "SAFEYOLO_AGENT_HOME": str(agent_home),
+            "SAFEYOLO_AGENT_FOLDER": folder_str,
+            "SAFEYOLO_PYTHON": sys.executable,
+        }
+        console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
+        try:
+            result = subprocess.run([str(host_script_path)], env=env, check=False)
+        except OSError as err:
+            console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
+            raise typer.Exit(1)
+        if result.returncode != 0:
+            console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
+            raise typer.Exit(result.returncode)
+
+
+class _SetupLockHandle:
+    """An agent setup lock that can be released after the boot transition."""
+
+    def __init__(self, fd: int | None, name: str, held: set[str]) -> None:
+        self._fd = fd
+        self._name = name
+        self._held = held
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        fd, self._fd = self._fd, None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+            self._held.discard(self._name)
+
+
+_setup_lock_state = threading.local()
+
+
+def _held_setup_locks() -> set[str]:
+    held = getattr(_setup_lock_state, "names", None)
+    if held is None:
+        held = set()
+        _setup_lock_state.names = held
+    return held
+
+
+def _open_safe_setup_directory(path: Path, name: str) -> int:
+    """Open an agent's setup directory without following its final path."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+    except OSError as exc:
+        raise RuntimeError(f"unsafe host setup directory for agent {name!r}: {exc}") from None
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError(f"unsafe host setup directory for agent {name!r}: {exc}") from None
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError(
+                f"unsafe host setup directory for agent {name!r}: expected a directory"
+            )
+        if info.st_uid != os.getuid():
+            raise RuntimeError(
+                f"unsafe host setup directory for agent {name!r}: owner is not the invoking user"
+            )
+        if stat.S_IMODE(info.st_mode) & 0o022:
+            raise RuntimeError(
+                f"unsafe host setup directory for agent {name!r}: group/world write is not allowed"
+            )
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+@contextmanager
+def _agent_host_setup_lock(name: str):
+    """Serialize setup/start transitions and validate the lock entry."""
     from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
 
+    held = _held_setup_locks()
+    if name in held:
+        # Factory startup holds every role lock while calling the ordinary
+        # setup/run helpers. Re-entry in this thread must not acquire a second
+        # file descriptor, while other threads still block on flock().
+        yield _SetupLockHandle(None, name, held)
+        return
+
     ensure_agent_persistent_dirs(name)
-    agent_home = get_agent_home_dir(name)
-    env = {
-        **os.environ,
-        "SAFEYOLO_AGENT_NAME": name,
-        "SAFEYOLO_AGENT_HOME": str(agent_home),
-        "SAFEYOLO_AGENT_FOLDER": folder_str,
-    }
-    console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
+    setup_dir = get_agent_home_dir(name) / ".safeyolo"
+    setup_dir_fd = _open_safe_setup_directory(setup_dir, name)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd: int | None = None
     try:
-        result = subprocess.run([str(host_script_path)], env=env, check=False)
-    except OSError as err:
-        console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
-        raise typer.Exit(1)
-    if result.returncode != 0:
-        console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
-        raise typer.Exit(result.returncode)
+        try:
+            try:
+                fd = os.open("host-setup.lock", flags, 0o600, dir_fd=setup_dir_fd)
+            except OSError as exc:
+                raise RuntimeError(f"unsafe host setup lock for agent {name!r}: {exc}") from None
+        finally:
+            os.close(setup_dir_fd)
+
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError(
+                f"unsafe host setup lock for agent {name!r}: expected a regular file"
+            )
+        if info.st_nlink != 1:
+            raise RuntimeError(
+                f"unsafe host setup lock for agent {name!r}: hard links are not allowed"
+            )
+        if info.st_uid != os.getuid():
+            raise RuntimeError(
+                f"unsafe host setup lock for agent {name!r}: owner is not the invoking user"
+            )
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+        held.add(name)
+        handle = _SetupLockHandle(fd, name, held)
+        fd = None
+        try:
+            yield handle
+        finally:
+            handle.release()
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def _capture_snapshot_blocking(
@@ -380,9 +526,17 @@ def _print_detached_guidance(name: str) -> None:
     console.print("  Agent running (detached)")
     console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
     console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
+    console.print(f"  Diagnose: [bold]safeyolo agent diag {name}[/bold]")
 
 
-def _run_agent(
+def _run_agent(*args, **kwargs) -> int:
+    """Run an agent while serializing its setup/start transition."""
+    name = kwargs.get("name") if "name" in kwargs else args[0]
+    with _agent_host_setup_lock(name) as start_lock:
+        return _run_agent_impl(*args, _start_lock=start_lock, **kwargs)
+
+
+def _run_agent_impl(
     name: str,
     folder_override: str | None = None,
     yolo: bool = False,
@@ -395,6 +549,8 @@ def _run_agent(
     run_command_detached: bool = False,
     no_snapshot: bool = False,
     rename_tmux_window: bool = False,
+    *,
+    _start_lock: _SetupLockHandle | None = None,
 ) -> int:
     """Run an agent VM. Returns exit code.
 
@@ -473,10 +629,21 @@ def _run_agent(
 
     # Extra env for yolo mode
     extra_env = {}
+    detached_command_path = get_agent_home_dir(name) / ".safeyolo-command"
+    detached_command_is_configured = (
+        detach
+        and detached_command_path.is_file()
+        and os.access(detached_command_path, os.X_OK)
+    )
     if yolo:
         extra_env["SAFEYOLO_YOLO_MODE"] = "1"
     if detach:
         extra_env["SAFEYOLO_DETACH"] = "1"
+    if detached_command_is_configured:
+        # The guest's PID 1 owns the runtime supervisor.  This marker is
+        # staged before boot so both Linux/gVisor and macOS/VZ use the same
+        # durable ownership boundary.
+        extra_env["SAFEYOLO_COMMAND_SUPERVISED"] = "1"
     import sys as _sys
     if _sys.platform == "linux" and not detach:
         extra_env["SAFEYOLO_HOST_TERMINAL"] = "1"
@@ -731,6 +898,8 @@ def _run_agent(
                 except Exception as err:
                     console.print(f"[red]Failed to re-prepare VM config:[/red] {err}")
                     raise typer.Exit(1)
+            if restore_ok and _start_lock is not None:
+                _start_lock.release()
 
         # --- Cold boot (capture or passthrough) ----------------------------
         if snapshot_mode != "restore":
@@ -754,6 +923,8 @@ def _run_agent(
                 snapshot_capture_path=capture_path,
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
             )
+            if _start_lock is not None:
+                _start_lock.release()
             # agent_map was populated pre-start_sandbox (attribution_ip +
             # optional bridge socket). Nothing to re-register here.
 
@@ -818,30 +989,26 @@ def _run_agent(
         # --- Post-boot (shared by restore and cold-boot success paths) ----
         if plat.is_sandbox_running(name):
             if detach:
-                if run_command_detached:
-                    from ..vm import get_agent_home_dir
-                    command_host = get_agent_home_dir(name) / ".safeyolo-command"
-                    full_cmd = _linux_interactive_command(
-                        command_host,
-                        effective_agent_args,
-                        agent_args,
-                    )
-                    if full_cmd is None:
+                command_host = get_agent_home_dir(name) / ".safeyolo-command"
+                full_cmd = _linux_interactive_command(
+                    command_host,
+                    effective_agent_args,
+                    agent_args,
+                )
+                if full_cmd is not None:
+                    # Keep command recovery in the host runtime. A command
+                    # crash must not restart or recreate the sandbox, and a
+                    # retained Coord task must remain in the guest checkpoint.
+                    from ..agent_command_supervisor import start_command_supervisor
+
+                    try:
+                        start_command_supervisor(name, full_cmd)
+                    except Exception:
                         plat.stop_sandbox(name)
-                        raise RuntimeError("detached agent has no command to run")
-                    launch_cmd = (
-                        f"nohup {full_cmd} >>\"$HOME/.safeyolo-command.log\" "
-                        "2>&1 </dev/null & worker=$!; "
-                        "sleep 0.2; kill -0 \"$worker\""
-                    )
-                    if plat.exec_in_sandbox(
-                        name,
-                        command=launch_cmd,
-                        user="agent",
-                        interactive=False,
-                    ) != 0:
-                        plat.stop_sandbox(name)
-                        raise RuntimeError("detached agent command failed to start")
+                        raise RuntimeError("detached agent command supervisor failed to start")
+                elif run_command_detached:
+                    plat.stop_sandbox(name)
+                    raise RuntimeError("detached agent has no command to run")
                 _print_detached_guidance(name)
                 _t("detach return")
                 _timing_emit()
@@ -857,7 +1024,6 @@ def _run_agent(
                 # /home/agent/.safeyolo-command if present (written by
                 # the host script into the persistent home), else drops
                 # to an interactive bash login.
-                from ..vm import get_agent_home_dir
                 command_host = get_agent_home_dir(name) / ".safeyolo-command"
                 full_cmd = _linux_interactive_command(
                     command_host,
@@ -1478,6 +1644,19 @@ def remove(
     from ..platform import get_platform
     plat = get_platform()
 
+    # Mark the command supervisor before touching the sandbox. If the host
+    # supervisor cannot be identified and stopped, leave everything intact so
+    # a command cannot be restarted after its agent is being removed.
+    from ..agent_command_supervisor import request_command_supervisor_stop
+
+    if not request_command_supervisor_stop(name):
+        console.print(
+            f"[red]Could not stop the command supervisor for {name}.[/red]\n"
+            "The agent was not removed to prevent an automatic restart. "
+            f"Run `safeyolo agent diag {name}` and retry."
+        )
+        raise typer.Exit(1)
+
     # Read the persistent network slot before removing agent metadata. Current
     # platforms have no host-side interface to tear down, but preserving the
     # platform contract here avoids reintroducing name-order allocation.
@@ -1532,7 +1711,12 @@ def run(  # DOC: README.md, docs/AGENTS.md
     ),
     yolo: bool = typer.Option(True, "--yolo/--no-yolo", help="Auto-accept mode (skips permission prompts)"),
     fresh: bool = typer.Option(False, "--fresh", help="Ignore user_default_args, start fresh session"),
-    detach: bool = typer.Option(False, "--detach", "-d", help="Boot VM in background and return (use 'agent shell' to connect)"),
+    detach: bool = typer.Option(
+        False,
+        "--detach",
+        "-d",
+        help="Boot VM in background; a configured command is runtime-supervised",
+    ),
     mount: list[str] = typer.Option(
         [],
         "--mount",
@@ -2054,7 +2238,7 @@ def diag(
     Runs through the hops from the agent out to mitmproxy and back,
     checking each link:
         agent map entry → proxy socket → attribution IP →
-        mitmproxy process → VM process → proxy transport →
+        mitmproxy process → VM process → command supervisor → proxy transport →
         authenticated Agent API + source attribution
 
     Exits 0 if everything checks out, 1 if any link is broken. Output
@@ -2089,8 +2273,20 @@ def stop(
     from ..platform import get_platform
     plat = get_platform()
 
+    # Stop intent is durable and must reach the runtime supervisor even when
+    # the sandbox has already disappeared.
+    from ..agent_command_supervisor import request_command_supervisor_stop
+
+    if not request_command_supervisor_stop(name):
+        console.print(
+            f"[red]Could not stop the command supervisor for {name}.[/red]\n"
+            "The sandbox was left intact to prevent an automatic restart. "
+            f"Run `safeyolo agent diag {name}` and retry."
+        )
+        raise typer.Exit(1)
+
     if not plat.is_sandbox_running(name):
-        console.print(f"Agent '{name}' is not running.")
+        console.print(f"Agent '{name}' sandbox is not running; command supervisor stopped.")
         raise typer.Exit(0)
 
     console.print(f"Stopping {name}...")

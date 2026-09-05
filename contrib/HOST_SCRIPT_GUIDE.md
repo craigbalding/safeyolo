@@ -69,11 +69,12 @@ stage_safeyolo_context "$SAFEYOLO_AGENT_HOME" codex
 
 The helper stages the baseline under `~/.safeyolo/` and links applicable
 read-only, per-run skill trees under the agent's skill directory. Both Claude
-and Codex get `/safeyolo/skills/safeyolo`. Codex also gets
-`/safeyolo/skills/safeyolo-lab-controller` and the `safeyolo-lab` guest
-command. The helper refuses to overwrite a user-owned skill or command with a
-managed name. Custom standalone scripts may instead stage their own
-instructions.
+and Codex get `/safeyolo/skills/safeyolo`. Pi gets the same shared skill under
+its native `~/.pi/agent/skills` path. Codex also gets
+`/safeyolo/skills/safeyolo-lab-controller`,
+`/safeyolo/skills/safeyolo-factory`, and the `safeyolo-lab` guest command. The
+helper refuses to overwrite a user-owned skill or command with a managed name.
+Custom standalone scripts may instead stage their own instructions.
 
 Sketch:
 
@@ -112,8 +113,18 @@ with it.
 Don't write `sleep infinity`, `wait`, `tail -f /dev/null`, or another
 non-interactive daemon as the command. To keep the sandbox alive in the
 background for a later `safeyolo agent shell <name>` connection, use
-`safeyolo agent run <name> --detach`; the guest's built-in keep-alive handles
-that cleanly, with no `.safeyolo-command` required.
+`safeyolo agent run <name> --detach` without a `.safeyolo-command`.
+
+When a detached run has a `.safeyolo-command`, SafeYolo publishes that command
+to a runtime supervisor owned by guest PID 1. The owner survives loss of the
+CLI transport and re-owns the supervisor if it is killed; it restarts every
+unexpected exit, including a clean exit, with bounded backoff. A stable run
+resets the crash-loop window. Exit classification, byte-counted/truncated
+stderr, and a sanitized tail are retained without allowing unbounded output.
+It does not restart the sandbox or consume Coord work. Inspect it with
+`safeyolo agent diag <name>` or `safeyolo status`; `safeyolo agent stop <name>`
+records stop intent before stopping the sandbox, so an intentional operator
+stop fences recovery.
 
 If you press Ctrl-C during the attached Linux session, SafeYolo detaches the
 terminal and leaves the sandbox running. Reconnect with `safeyolo agent shell
@@ -147,6 +158,19 @@ Host scripts run on `safeyolo agent add` and whenever an existing agent is
 started with `safeyolo agent run <name> --host-script PATH`. Re-running
 `agent add --force` also reruns the script. Make yours re-runnable: check before
 creating, overwrite only what you own, and don't assume a blank slate.
+
+### Pi authentication and trust
+
+The bundled `@pi` setup keeps Pi authentication, settings, models, sessions,
+extensions, and prompts in the agent-local `~/.pi/agent/` directory. It does
+not inspect or copy host `~/.pi` state. From an interactive Pi session, use
+`/login` and `/logout` for the agent's own provider session; never copy a
+credential from another agent or from the host. The launcher starts Pi with
+`--approve` and appends the SafeYolo baseline. Arguments supplied later by the
+user are forwarded unchanged and can alter Pi's trust behavior.
+On Alpine, support is conditional on the image's native `nodejs` package
+meeting Node `>=22.19.0`; the setup does not use `nodejs-current`, mix
+repositories, or build Node from source.
 
 ## Using an agent to write host scripts
 

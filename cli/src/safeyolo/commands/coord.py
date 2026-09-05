@@ -34,7 +34,7 @@ from ..coord.nats_client import (
     NatsPublishOutcomeUnknown,
     NatsUnavailable,
 )
-from ..factory_contract import FactoryContractError, factories_dir, load_active_snapshot
+from ..factory_contract import FactoryContractError, factories_dir, load_approved_snapshot
 
 if TYPE_CHECKING:
     from prompt_toolkit import PromptSession
@@ -757,6 +757,146 @@ def revoke(
         )
 
 
+def _read_stdin_utf8() -> str:
+    """Read stdin bytes and decode them as strict UTF-8.
+
+    Standard CLI streams expose a binary ``buffer`` below their text wrapper.
+    Reading that buffer prevents the locale or ``PYTHONIOENCODING`` from
+    silently transcoding input. Text-only streams remain useful for callers
+    that invoke this helper in-process and have already chosen their decoding.
+    """
+    raw = getattr(sys.stdin, "buffer", None)
+    if raw is not None:
+        value = raw.read()
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        if isinstance(value, str):
+            return value
+    value = sys.stdin.read()
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return value
+
+
+def _read_send_body(
+    text: str | None,
+    file: Path | None,
+    read_stdin: bool,
+) -> str:
+    """Read exactly one explicitly selected non-interactive input source."""
+    selected = sum(value is not None for value in (text, file)) + int(read_stdin)
+    if selected != 1:
+        console.print("[red]provide exactly one of TEXT, --file, or --stdin[/red]")
+        raise typer.Exit(1)
+
+    if file is not None:
+        try:
+            body = file.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            console.print(f"[red]could not read message file: {type(exc).__name__}[/red]")
+            raise typer.Exit(1) from None
+    elif read_stdin:
+        try:
+            body = _read_stdin_utf8()
+        except (OSError, UnicodeError) as exc:
+            console.print(f"[red]could not read message from stdin: {type(exc).__name__}[/red]")
+            raise typer.Exit(1) from None
+    else:
+        assert text is not None
+        body = text
+
+    if not body.strip():
+        console.print("[red]message body must be non-empty[/red]")
+        raise typer.Exit(1)
+    return body
+
+
+@coord_app.command("send")
+def coord_send(
+    room: str = typer.Argument(..., help="Coord room name"),
+    text: str | None = typer.Argument(
+        None,
+        help="Message text; mutually exclusive with --file and --stdin.",
+    ),
+    file: Path | None = typer.Option(
+        None,
+        "--file",
+        "-f",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Read the message body from this UTF-8 file.",
+    ),
+    read_stdin: bool = typer.Option(
+        False,
+        "--stdin",
+        help="Read the message body from standard input.",
+    ),
+    to: list[str] = typer.Option(
+        [],
+        "--to",
+        metavar="AGENT",
+        help="Notify this receive-authorized room member; repeat for multiple agents.",
+    ),
+    content_type: str = typer.Option(
+        "text/markdown",
+        "--content-type",
+        help="Declared body type: text/markdown or text/plain.",
+    ),
+) -> None:
+    """Send one trusted operator message without opening an interactive chat."""
+    body = _read_send_body(text, file, read_stdin)
+    api.bootstrap()
+    notify = to if to else "room"
+    try:
+        result = _run(
+            api.send(
+                room,
+                "operator",
+                None,
+                body,
+                declared_content_type=content_type,
+                notify=notify,
+            )
+        )
+    except NatsPublishOutcomeUnknown as exc:
+        console.print(
+            "[yellow]message acceptance is UNKNOWN: JetStream may have accepted "
+            f"it; inspect retained room history before retrying: {_explain_coord_failure(exc)}[/]"
+        )
+        raise typer.Exit(1) from None
+    except (
+        api.attention.AttentionTargetError,
+        api.GrantError,
+        api.NotFoundError,
+        ValueError,
+    ) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from None
+    except (NatsUnavailable, CoordDataError) as exc:
+        console.print(f"[red]{_explain_coord_failure(exc)}[/]")
+        console.print("[red]message was not accepted; it was not sent[/]")
+        raise typer.Exit(1) from None
+
+    intent = result.get("attention_intent")
+    mode = intent.get("mode") if isinstance(intent, dict) else None
+    if mode == "targeted":
+        detail = f"attention=targeted targets={','.join(dict.fromkeys(to))}"
+    elif mode in {"none", "room"}:
+        detail = f"attention={mode}"
+    else:
+        detail = "attention intent unavailable"
+    if result.get("attention_status") == "pending":
+        console.print(f"[yellow]message accepted; {detail}; delivery is pending[/]")
+    elif result.get("attention_status") == "lost":
+        console.print(
+            f"[red]message accepted; {detail}, but retention removed it before "
+            "attention materialization; its attention is lost[/]"
+        )
+    else:
+        console.print(f"[dim]message accepted; {detail}[/]")
+
+
 class _ChatRuntime:
     """One event loop + one NATS connection for the lifetime of a
     single `safeyolo coord chat` invocation.
@@ -784,23 +924,23 @@ class _ChatRuntime:
         self._loop.close()
 
 
-def _active_factory_coordinator(room: str) -> str | None:
-    """Resolve one room's applied factory coordinator without parsing prose."""
+def _approved_factory_coordinator(room: str) -> str | None:
+    """Resolve one room's approved factory coordinator without parsing prose."""
     root = factories_dir()
     if not root.is_dir():
         return None
     coordinators: set[str] = set()
     for candidate in sorted(root.iterdir(), key=lambda item: item.name):
-        if not candidate.is_dir() or not (candidate / "active").is_file():
+        if not candidate.is_dir() or not (candidate / "approved").is_file():
             continue
-        _, _, payload = load_active_snapshot(candidate.name)
+        _, _, payload = load_approved_snapshot(candidate.name)
         if payload["room"] != room:
             continue
         destination = payload["operator_input"]["to"]
         coordinators.add(payload["roles"][destination]["agent"])
     if len(coordinators) > 1:
         raise FactoryContractError(
-            f"room {room!r} has multiple active factory coordinators; use --to explicitly"
+            f"room {room!r} has multiple approved factory coordinators; use --to explicitly"
         )
     return next(iter(coordinators), None)
 
@@ -856,14 +996,14 @@ def chat(
     target = to
     if not observe and target is None:
         try:
-            target = _active_factory_coordinator(room)
+            target = _approved_factory_coordinator(room)
         except FactoryContractError as e:
             console.print(f"[red]{e}[/]")
             raise typer.Exit(1) from None
 
     console.print(f"[bold]attached to room[/] {room}  (mode={'observe' if observe else 'interactive'})")
     if target is not None:
-        source = "--to" if to is not None else "active factory coordinator"
+        source = "--to" if to is not None else "approved factory coordinator"
         console.print(f"[dim]operator messages target {target} ({source})[/]")
     console.print("[dim]---[/]")
 

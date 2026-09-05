@@ -12,9 +12,10 @@ SAFEYOLO_CODEX_COORDINATORS=relay \
   safeyolo agent run worker --host-script @codex-coord
 ```
 
-The host setup uses the normal Codex setup first. It preserves the staged
-ChatGPT subscription login, SafeYolo developer instructions, proxy and TLS
-environment, and coord MCP registration. It does not use an OpenAI API key.
+The host setup uses the normal Codex setup first. It preserves an explicitly
+adopted agent-local ChatGPT login, SafeYolo developer instructions, proxy and
+TLS environment, and coord MCP registration. It does not use an OpenAI API key
+or import a host credential.
 The only changed boundary is the foreground command: the guest runs the
 supervisor, and the supervisor runs bounded `codex exec --json` turns.
 
@@ -103,11 +104,12 @@ such authority.
 
 For each returned object, the supervisor atomically stores a narrow canonical
 checkpoint before it adopts the returned cursor. Only a `TASK` from a
-configured coordinator with exactly `assignee=<worker-name>` becomes work.
-That task stays in flight until the supervisor observes a canonical `DONE`,
-`BLOCKED`, or `FAILED` in the same room with its exact `attention_id`.
-Correlation labels such as `task=` cannot complete work. If a terminal send
-reached coord but the local execution event was lost, the supervisor checks
+configured coordinator with an absolute `target` URL and exactly
+`assignee=<worker-name>` becomes work. That task stays in flight until the
+supervisor observes a canonical `DONE`, `BLOCKED`, or `FAILED` in the same room
+with the same target and its exact `attention_id`. The URL locates the work; it
+does not create a durable work object or claim. If a terminal send reached
+coord but the local execution event was lost, the supervisor checks
 bounded canonical room history after the task sequence.
 
 The coord wait is identity-wide. Attention from an authorized room that is not

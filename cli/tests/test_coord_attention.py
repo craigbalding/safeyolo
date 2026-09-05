@@ -241,7 +241,8 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
         coordinator.consume({"type": "turn.completed"})
         assert coordinator_state["in_flight"] == []
 
-        forge_body = "TASK task=forge-check assignee=bob"
+        forge_target = "https://example.test/checks/forge"
+        forge_body = f"TASK target={forge_target} assignee=bob"
         forge_send = await api.send(
             "nested-factory",
             "agent",
@@ -250,7 +251,8 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
             sender_agent_name="alice",
             notify=["bob"],
         )
-        lens_body = "TASK task=lens-check assignee=codey"
+        lens_target = "https://example.test/checks/lens"
+        lens_body = f"TASK target={lens_target} assignee=codey"
         lens_send = await api.send(
             "nested-factory",
             "agent",
@@ -306,14 +308,14 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
         )
 
         responses = []
-        for role, task_name in (("owner", "forge-check"), ("reviewer", "lens-check")):
+        for role, target in (("owner", forge_target), ("reviewer", lens_target)):
             request_attention = worker_objects[role]["edge"]["attention_id"]
             sender_name = roles[role]
             response = await api.send(
                 "nested-factory",
                 "agent",
                 AGENTS[sender_name],
-                f"DONE task={task_name} attention_id={request_attention}",
+                f"DONE target={target} attention_id={request_attention}",
                 sender_agent_name=sender_name,
                 notify=["alice"],
             )
@@ -361,8 +363,8 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
         )
         bodies = [message["body"] for message in retained["messages"]]
         assert "Both checks are being assigned independently." in bodies
-        assert any(body.startswith("DONE task=forge-check ") for body in bodies)
-        assert any(body.startswith("DONE task=lens-check ") for body in bodies)
+        assert any(body.startswith(f"DONE target={forge_target} ") for body in bodies)
+        assert any(body.startswith(f"DONE target={lens_target} ") for body in bodies)
 
     asyncio.run(scenario())
 

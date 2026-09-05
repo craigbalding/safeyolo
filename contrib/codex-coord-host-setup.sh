@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Opt-in SafeYolo host setup for a supervised, coord-driven Codex worker.
 #
-# Required host environment is either an applied factory snapshot + role or
+# Required host environment is either an approved factory snapshot + role or
 # the legacy room/coordinator pair:
 #   SAFEYOLO_CODEX_FACTORY_SNAPSHOT=/absolute/path/to/<sha256>.json
 #   SAFEYOLO_CODEX_FACTORY_ROLE=owner

@@ -350,12 +350,190 @@ def test_interactive_send_uses_explicit_target(monkeypatch):
     assert "attention=targeted target=relay" in output.getvalue()
 
 
-def test_active_factory_coordinator_resolution_is_room_scoped(monkeypatch, tmp_path):
+def _install_coord_send_stub(monkeypatch, result=None, error=None):
+    seen = {}
+
+    async def send(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        if error is not None:
+            raise error
+        return result or {
+            "attention_status": "ready",
+            "attention_intent": {"mode": "room"},
+        }
+
+    monkeypatch.setattr(coord.api, "bootstrap", lambda: "sy-test")
+    monkeypatch.setattr(coord.api, "send", send)
+    monkeypatch.setattr(coord, "_run", lambda coroutine: asyncio.run(coroutine))
+    return seen
+
+
+def test_noninteractive_send_uses_trusted_operator_and_multiple_targets(monkeypatch):
+    seen = _install_coord_send_stub(
+        monkeypatch,
+        result={
+            "attention_status": "ready",
+            "attention_intent": {"mode": "targeted"},
+        },
+    )
+
+    result = CliRunner().invoke(
+        coord.coord_app,
+        [
+            "send",
+            "backlog",
+            "operator direction",
+            "--to",
+            "relay",
+            "--to",
+            "lens",
+            "--content-type",
+            "text/plain",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == {
+        "args": ("backlog", "operator", None, "operator direction"),
+        "kwargs": {"declared_content_type": "text/plain", "notify": ["relay", "lens"]},
+    }
+    assert "message accepted" in result.output
+    assert "attention=targeted" in result.output
+    assert "targets=relay,lens" in result.output
+
+
+def test_noninteractive_send_reads_file_and_preserves_trailing_newline(
+    monkeypatch, tmp_path
+):
+    message = tmp_path / "direction.md"
+    message.write_text("from file\n", encoding="utf-8")
+    seen = _install_coord_send_stub(monkeypatch)
+
+    result = CliRunner().invoke(
+        coord.coord_app,
+        ["send", "backlog", "--file", str(message)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["args"] == ("backlog", "operator", None, "from file\n")
+    assert seen["kwargs"]["notify"] == "room"
+
+
+def test_noninteractive_send_reads_explicit_stdin(monkeypatch):
+    seen = _install_coord_send_stub(monkeypatch)
+
+    result = CliRunner().invoke(
+        coord.coord_app,
+        ["send", "backlog", "--stdin", "--to", "relay"],
+        input="from stdin\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["args"] == ("backlog", "operator", None, "from stdin\n")
+    assert seen["kwargs"]["notify"] == ["relay"]
+
+
+def test_noninteractive_send_stdin_decodes_utf8_bytes_independent_of_stream_encoding(
+    monkeypatch,
+):
+    stream = io.TextIOWrapper(
+        io.BytesIO("caf\N{LATIN SMALL LETTER E WITH ACUTE}\n".encode()),
+        encoding="latin-1",
+    )
+    monkeypatch.setattr(coord.sys, "stdin", stream)
+
+    assert coord._read_send_body(None, None, True) == "caf\N{LATIN SMALL LETTER E WITH ACUTE}\n"
+
+
+def test_noninteractive_send_rejects_invalid_utf8_stdin_bytes(monkeypatch):
+    output = io.StringIO()
+    monkeypatch.setattr(
+        coord,
+        "console",
+        Console(file=output, force_terminal=False, color_system=None),
+    )
+    stream = io.TextIOWrapper(io.BytesIO(b"caf\xe9\n"), encoding="latin-1")
+    monkeypatch.setattr(coord.sys, "stdin", stream)
+
+    with pytest.raises(coord.typer.Exit):
+        coord._read_send_body(None, None, True)
+
+    assert "could not read message from stdin: UnicodeDecodeError" in output.getvalue()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["send", "backlog"],
+        ["send", "backlog", "inline", "--stdin"],
+        ["send", "backlog", "inline", "--file", "message.md"],
+    ],
+)
+def test_noninteractive_send_requires_exactly_one_body_source(args, tmp_path):
+    message = tmp_path / "message.md"
+    message.write_text("file body", encoding="utf-8")
+    args = [str(message) if value == "message.md" else value for value in args]
+
+    result = CliRunner().invoke(coord.coord_app, args, input="stdin body")
+
+    assert result.exit_code == 1
+    assert "provide exactly one of TEXT, --file, or --stdin" in result.output
+
+
+@pytest.mark.parametrize(
+    ("args", "input"),
+    [
+        (["send", "backlog", ""], ""),
+        (["send", "backlog", "   "], ""),
+        (["send", "backlog", "--stdin"], " \n\t"),
+    ],
+)
+def test_noninteractive_send_rejects_empty_body(args, input):
+    result = CliRunner().invoke(coord.coord_app, args, input=input)
+
+    assert result.exit_code == 1
+    assert "message body must be non-empty" in result.output
+
+
+def test_noninteractive_send_reports_invalid_target_without_sending(monkeypatch):
+    error = coord.api.attention.AttentionTargetError(
+        "one or more notify targets are not active room members"
+    )
+    _install_coord_send_stub(monkeypatch, error=error)
+
+    result = CliRunner().invoke(
+        coord.coord_app,
+        ["send", "backlog", "direction", "--to", "revoked-agent"],
+    )
+
+    assert result.exit_code == 1
+    assert "not active room members" in result.output
+
+
+def test_noninteractive_send_reports_authorization_and_provider_errors(monkeypatch):
+    for error, expected in (
+        (coord.api.GrantError("permission 'send' denied"), "send' denied"),
+        (coord.api.NotFoundError("room 'missing' not found"), "not found"),
+        (coord.NatsUnavailable("connection refused"), "coord runtime unreachable"),
+    ):
+        _install_coord_send_stub(monkeypatch, error=error)
+        result = CliRunner().invoke(
+            coord.coord_app,
+            ["send", "backlog", "direction"],
+        )
+        assert result.exit_code == 1
+        assert expected in result.output
+        if isinstance(error, coord.NatsUnavailable):
+            assert "message was not accepted; it was not sent" in result.output
+
+
+def test_approved_factory_coordinator_resolution_is_room_scoped(monkeypatch, tmp_path):
     factories = tmp_path / "factories"
     (factories / "backlog").mkdir(parents=True)
-    (factories / "backlog" / "active").write_text("snapshot\n")
+    (factories / "backlog" / "approved").write_text("snapshot\n")
     (factories / "other").mkdir()
-    (factories / "other" / "active").write_text("snapshot\n")
+    (factories / "other" / "approved").write_text("snapshot\n")
     monkeypatch.setattr(coord, "factories_dir", lambda: factories)
 
     def load(name):
@@ -366,17 +544,17 @@ def test_active_factory_coordinator_resolution_is_room_scoped(monkeypatch, tmp_p
             "roles": {"coordinator": {"agent": "navigator"}},
         }
 
-    monkeypatch.setattr(coord, "load_active_snapshot", load)
+    monkeypatch.setattr(coord, "load_approved_snapshot", load)
 
-    assert coord._active_factory_coordinator("backlog") == "navigator"
-    assert coord._active_factory_coordinator("unconfigured") is None
+    assert coord._approved_factory_coordinator("backlog") == "navigator"
+    assert coord._approved_factory_coordinator("unconfigured") is None
 
 
-def test_active_factory_coordinator_ambiguity_fails_closed(monkeypatch, tmp_path):
+def test_approved_factory_coordinator_ambiguity_fails_closed(monkeypatch, tmp_path):
     factories = tmp_path / "factories"
     for name in ("one", "two"):
         (factories / name).mkdir(parents=True)
-        (factories / name / "active").write_text("snapshot\n")
+        (factories / name / "approved").write_text("snapshot\n")
     monkeypatch.setattr(coord, "factories_dir", lambda: factories)
 
     def load(name):
@@ -386,10 +564,10 @@ def test_active_factory_coordinator_ambiguity_fails_closed(monkeypatch, tmp_path
             "roles": {"coordinator": {"agent": f"relay-{name}"}},
         }
 
-    monkeypatch.setattr(coord, "load_active_snapshot", load)
+    monkeypatch.setattr(coord, "load_approved_snapshot", load)
 
-    with pytest.raises(coord.FactoryContractError, match="multiple active"):
-        coord._active_factory_coordinator("backlog")
+    with pytest.raises(coord.FactoryContractError, match="multiple approved"):
+        coord._approved_factory_coordinator("backlog")
 
 
 def test_chat_rejects_target_in_observe_mode(monkeypatch):
