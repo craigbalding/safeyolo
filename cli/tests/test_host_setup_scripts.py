@@ -903,8 +903,10 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
     openssl = fake_bin / "openssl"
     openssl.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = dgst ]; then printf x; else printf '%s' "
-        "'Yr2p9PubrbFZmYEPYI+C8KmZP9xlFuLDnAG64RtU0ZDgrdiXYWa+y7WGyJO5OlqPliOkVCMd9IzVszO3/t0D0w=='; fi\n"
+        "if [ \"$1\" = dgst ]; then printf x; exit 0; fi\n"
+        "if [ \"$1\" != base64 ] || [ \"$2\" != -A ] || [ \"$3\" != -in ]; then exit 1; fi\n"
+        "printf '%s' "
+        "'Yr2p9PubrbFZmYEPYI+C8KmZP9xlFuLDnAG64RtU0ZDgrdiXYWa+y7WGyJO5OlqPliOkVCMd9IzVszO3/t0D0w=='\n"
     )
     openssl.chmod(0o755)
     env = _pi_command_env(agent_home, fake_bin, tmp_path)
@@ -928,6 +930,59 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
     assert "--ignore-scripts" in npm_args
     assert "--global" in npm_args
     assert "--prefix" in npm_args
+
+
+def test_pi_repair_fails_closed_on_checksum_mismatch(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+    _run_setup("pi-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    node = fake_bin / "node"
+    node.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then echo v22.19.0; exit 0; fi\n"
+        "if [ \"$1\" = -e ]; then printf '%s\\t%s' "
+        "'@earendil-works/pi-coding-agent' '0.84.3'; exit 0; fi\n"
+    )
+    node.chmod(0o755)
+    npm = fake_bin / "npm"
+    npm.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" != pack ]; then exit 99; fi\n"
+        "dest=\"\"; prev=\"\"\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$prev\" = --pack-destination ]; then dest=\"$arg\"; fi\n"
+        "  prev=\"$arg\"\n"
+        "done\n"
+        ": > \"$dest/pi-coding-agent-0.84.3.tgz\"\n"
+        "echo pi-coding-agent-0.84.3.tgz\n"
+    )
+    npm.chmod(0o755)
+    openssl = fake_bin / "openssl"
+    openssl.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = dgst ]; then printf x; exit 0; fi\n"
+        "if [ \"$1\" != base64 ] || [ \"$2\" != -A ] || [ \"$3\" != -in ]; then exit 1; fi\n"
+        "printf mismatch\n"
+    )
+    openssl.chmod(0o755)
+    env = _pi_command_env(agent_home, fake_bin, tmp_path)
+    env["TMPDIR"] = str(tmp_path)
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command")],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "integrity differs" in result.stderr
+    assert not (agent_home / ".local/bin/pi").exists()
+    assert not list(tmp_path.glob("safeyolo-pi.*"))
 
 
 def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) -> None:

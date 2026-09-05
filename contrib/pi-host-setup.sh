@@ -215,9 +215,13 @@ if ! pi_identity_is_healthy; then
 
     pi_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/safeyolo-pi.XXXXXX")"
     pi_tarball=""
+    pi_digest_file=""
     pi_cleanup() {
         if [ -n "$pi_tarball" ] && [ -f "$pi_tarball" ]; then
             rm -f -- "$pi_tarball"
+        fi
+        if [ -n "$pi_digest_file" ] && [ -f "$pi_digest_file" ]; then
+            rm -f -- "$pi_digest_file"
         fi
         rmdir "$pi_tmp_dir" 2>/dev/null || true
     }
@@ -232,7 +236,7 @@ if ! pi_identity_is_healthy; then
     pi_digest_file="$pi_tmp_dir/digest.bin"
     openssl dgst -sha512 -binary "$pi_tarball" > "$pi_digest_file" 2>/dev/null ||
         pi_fail "cannot verify the reviewed Pi package integrity"
-    pi_actual_integrity="sha512-$(openssl base64 -A "$pi_digest_file" 2>/dev/null)" ||
+    pi_actual_integrity="sha512-$(openssl base64 -A -in "$pi_digest_file" 2>/dev/null)" ||
         pi_fail "cannot verify the reviewed Pi package integrity"
     [ "$pi_actual_integrity" = "$PI_INTEGRITY" ] ||
         pi_fail "Pi package integrity differs from the reviewed pin; refusing installation"
