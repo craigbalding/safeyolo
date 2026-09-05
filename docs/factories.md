@@ -124,14 +124,20 @@ safeyolo agent add relay "$PWD" --host-script @codex --no-run
 safeyolo agent add forge "$PWD" --host-script @codex --no-run
 safeyolo agent add lens "$PWD" --host-script @codex --no-run
 safeyolo agent run relay --host-script @codex --detach
-safeyolo agent shell relay -c "codex login"
+safeyolo agent shell relay
+# In the relay agent shell:
+#   codex login --device-auth
 safeyolo agent shell relay -c "/home/agent/.safeyolo/codex-auth-recovery.py adopt"
 safeyolo agent stop relay
-# Repeat the run, login, adopt, and stop sequence for forge and lens.
+# Repeat the run, device-auth login, adopt, and stop sequence for forge and lens.
 safeyolo factory check docs/factories/backlog.toml
 safeyolo factory approve docs/factories/backlog.toml --yes
 safeyolo factory run backlog
 ```
+
+For reset recovery, run `/home/agent/.safeyolo/codex-auth-recovery.py reset`
+inside the agent, then `codex login --device-auth`, then run the adopt command
+before reapplying the host setup.
 
 Use the role agent names from the factory file for another contract. The
 workspace argument may be changed per agent. `factory run` is the step that

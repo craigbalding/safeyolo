@@ -58,6 +58,10 @@ def _factory_setup_commands(name: str, payload: dict[str, Any] | None = None) ->
         'Recovery order (use "$PWD" or replace it with each agent\'s workspace):',
         "@codex stages SafeYolo-owned Codex settings only. Log in inside each "
         + "agent and explicitly adopt its agent-local credential before the factory run.",
+        "Inside each running agent, use `codex login --device-auth`, then run "
+        + "`/home/agent/.safeyolo/codex-auth-recovery.py adopt`.",
+        "For reset recovery, run `/home/agent/.safeyolo/codex-auth-recovery.py reset`, then "
+        + "`codex login --device-auth`, then run the adopt command.",
     ]
     for agent in agents:
         lines.append(f'  safeyolo agent add {agent} "$PWD" --host-script @codex --no-run')
@@ -239,10 +243,11 @@ def run_factory(
         safeyolo factory run NAME
 
     The ordinary ``@codex`` host setup stages SafeYolo-owned Codex settings
-    only. Log in inside each agent with ``codex login`` and explicitly run
+    only. Log in inside each agent with ``codex login --device-auth`` and explicitly run
     ``/home/agent/.safeyolo/codex-auth-recovery.py adopt`` before ``factory
-    run``; the command later reapplies ``@codex-coord`` with the approved
-    snapshot and role.
+    run``; after a reset, use ``codex login --device-auth`` followed by the
+    same adopt command. The command later reapplies ``@codex-coord`` with the
+    approved snapshot and role.
 
     ``factory run`` provisions the declared Coord rooms and grants before it
     starts any role, then waits for every role supervisor to pass the same

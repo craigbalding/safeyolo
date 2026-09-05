@@ -6,38 +6,40 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import stat
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
 
 SCHEMA = "safeyolo.codex-provenance/v1"
 MARKER_NAME = ".safeyolo-provenance.json"
 AUTH_FILE = "auth.json"
 CONFIG_FILE = "config.toml"
-MANAGED_AUTH_COMMENT = "# SafeYolo-managed Codex authentication settings."
-MCP_HEADER = "[mcp_servers.safeyolo-coord]"
-ROOT_KEY_RE = re.compile(
-    r"^\s*(?:forced_chatgpt_auth|cli_auth_credentials_store)\s*="
-)
-TABLE_RE = re.compile(r"^\s*\[")
-MCP_HEADER_RE = re.compile(r"^\s*\[mcp_servers\.safeyolo-coord\]\s*$")
 VALID_STATES = frozenset({"fresh", "agent-local", "legacy-unknown", "reset"})
 
 RECOVERY_GUIDANCE = (
-    "No credential content was changed. Recovery: start the agent with `safeyolo "
-    "agent shell NAME`, then run `/home/agent/.safeyolo/codex-auth-recovery.py "
-    "adopt` only after confirming the credential is agent-local, or run "
-    "`/home/agent/.safeyolo/codex-auth-recovery.py reset` to remove it and "
-    "then run `codex login` "
-    "inside the agent."
+    "No credential content was changed. Inside the agent, fresh activation is "
+    "`codex login --device-auth`, then `/home/agent/.safeyolo/"
+    "codex-auth-recovery.py adopt`. For unknown or unsafe existing state, "
+    "confirm the credential is agent-local before adopting it; to reset, run "
+    "`/home/agent/.safeyolo/codex-auth-recovery.py reset`, then `codex login "
+    "--device-auth`, then run the adopt command."
 )
 
 
 class CodexStateError(RuntimeError):
     """The agent-local Codex state is unsafe or requires explicit migration."""
+
+
+def _load_tomlkit():
+    try:
+        import tomlkit
+        from tomlkit.items import InlineTable, Table
+    except ImportError as exc:
+        raise CodexStateError(
+            "SafeYolo Python with tomlkit is required for Codex config staging"
+        ) from exc
+    return tomlkit, InlineTable, Table
 
 
 def _label(path: Path) -> str:
@@ -180,67 +182,60 @@ def _read_config(path: Path) -> str:
     if not _present(path, "Codex config"):
         return ""
     _validate_owner_mode(path, "Codex config")
+    tomlkit, _inline_table, _table = _load_tomlkit()
     try:
         text = _read_text_no_follow(path, "Codex config")
-        tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
+        tomlkit.parse(text)
+    except tomlkit.exceptions.TOMLKitError as exc:
         raise CodexStateError(f"invalid Codex config: {exc}") from None
     return text
 
 
 def _managed_config(existing: str, launcher: str | None) -> str:
-    lines = existing.splitlines(keepends=True)
-    output: list[str] = []
-    in_table = False
-    skipping_mcp = False
-    for line in lines:
-        if TABLE_RE.match(line):
-            in_table = True
-            if launcher is not None and MCP_HEADER_RE.match(line.rstrip("\r\n")):
-                skipping_mcp = True
-                continue
-            skipping_mcp = False
-            output.append(line)
-            continue
-        if skipping_mcp:
-            continue
-        if not in_table and (
-            ROOT_KEY_RE.match(line) or line.rstrip("\r\n") == MANAGED_AUTH_COMMENT
-        ):
-            continue
-        output.append(line)
+    tomlkit, inline_table_type, table_type = _load_tomlkit()
+    try:
+        document = tomlkit.parse(existing) if existing else tomlkit.document()
+    except tomlkit.exceptions.TOMLKitError as exc:
+        raise CodexStateError(f"invalid Codex config: {exc}") from None
 
-    auth_block = (
-        f"{MANAGED_AUTH_COMMENT}\n"
-        "forced_chatgpt_auth = true\n"
-        'cli_auth_credentials_store = "file"\n'
-    )
-    first_table = next(
-        (index for index, line in enumerate(output) if TABLE_RE.match(line)),
-        len(output),
-    )
-    before = "".join(output[:first_table]).rstrip()
-    after = "".join(output[first_table:])
-    if before:
-        before += "\n\n"
-    managed = before + auth_block
-    if after:
-        managed += after if after.startswith("\n") else "\n" + after
+    document["forced_chatgpt_auth"] = True
+    document["cli_auth_credentials_store"] = "file"
 
     if launcher is not None:
-        body = managed.rstrip()
-        if body:
-            managed = body + "\n\n"
-        managed += (
-            f"{MCP_HEADER}\n"
-            f"command = {json.dumps(launcher)}\n"
-            "args = []\n"
-            "tool_timeout_sec = 330\n"
+        servers = document.get("mcp_servers")
+        if servers is None:
+            servers = tomlkit.table()
+            document.add("mcp_servers", servers)
+        elif not isinstance(servers, (table_type, inline_table_type)):
+            raise CodexStateError("Codex mcp_servers setting must be a table")
+
+        coord = (
+            tomlkit.inline_table()
+            if isinstance(servers, inline_table_type)
+            else tomlkit.table()
         )
+        coord["command"] = launcher
+        coord["args"] = []
+        coord["tool_timeout_sec"] = 330
+        servers["safeyolo-coord"] = coord
+
+    managed = tomlkit.dumps(document)
     try:
-        tomllib.loads(managed)
-    except tomllib.TOMLDecodeError as exc:
+        parsed = tomlkit.parse(managed).unwrap()
+    except tomlkit.exceptions.TOMLKitError as exc:
         raise CodexStateError(f"generated invalid Codex config: {exc}") from None
+
+    if (
+        parsed.get("forced_chatgpt_auth") is not True
+        or parsed.get("cli_auth_credentials_store") != "file"
+    ):
+        raise CodexStateError("generated Codex config lacks required auth settings")
+    if launcher is not None and parsed.get("mcp_servers", {}).get("safeyolo-coord") != {
+        "command": launcher,
+        "args": [],
+        "tool_timeout_sec": 330,
+    }:
+        raise CodexStateError("generated Codex config lacks the required Coord MCP settings")
     return managed
 
 
@@ -293,7 +288,9 @@ def _recover(home: Path, action: str) -> None:
 
     if action == "adopt":
         if not auth_present:
-            raise CodexStateError("cannot adopt missing auth.json; run `codex login` first")
+            raise CodexStateError(
+                "cannot adopt missing auth.json; run `codex login --device-auth` first"
+            )
         _atomic_write(marker_path, _marker_value("agent-local"), 0o600)
     else:
         if auth_present:

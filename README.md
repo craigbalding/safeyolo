@@ -291,6 +291,10 @@ The `contrib/` directory has ready-made host scripts:
 | `contrib/codex-coord-host-setup.sh` | Uses the Codex setup above, preserving only an explicitly adopted agent-local login, then supervises bounded non-interactive turns. See the [supervisor contract](docs/codex-coord-supervisor.md). |
 | `contrib/mise-shell-host-setup.sh` | Opens an interactive shell with mise ready for `mise use -g ...`. |
 
+For a fresh Codex agent, perform `codex login --device-auth` inside the agent,
+then run `/home/agent/.safeyolo/codex-auth-recovery.py adopt`. The same
+device-auth and adopt sequence follows an explicit reset.
+
 Without `--host-script`, the sandbox boots to an interactive bash shell in a per-agent persistent home.
 
 Writing your own: see [`contrib/HOST_SCRIPT_GUIDE.md`](contrib/HOST_SCRIPT_GUIDE.md).

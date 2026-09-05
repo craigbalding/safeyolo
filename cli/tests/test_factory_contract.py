@@ -139,6 +139,7 @@ def test_factory_run_help_exposes_fresh_setup_order(cli_runner):
     assert "safeyolo agent add AGENT FOLDER --host-script @codex --no-run" in output
     assert "explicitly run" in output
     assert "SafeYolo-owned Codex settings only" in output
+    assert "codex login --device-auth" in output
     assert output.index("factory check") < output.index("factory approve") < output.index("factory run NAME")
 
 
@@ -557,6 +558,8 @@ def test_factory_run_missing_agent_prints_ordered_executable_recovery(
     assert "Started factory" not in result.output
     assert 'safeyolo agent add relay "$PWD" --host-script @codex --no-run' in output
     assert "SafeYolo-owned Codex settings only" in output
+    assert "codex login --device-auth" in output
+    assert "/home/agent/.safeyolo/codex-auth-recovery.py reset" in output
     assert output.index("agent add relay") < output.index("factory check")
     assert output.index("factory check") < output.index("factory approve") < output.index("factory run backlog")
 

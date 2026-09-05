@@ -8,6 +8,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
@@ -254,6 +255,7 @@ def _run_host_script_for_agent(
             "SAFEYOLO_AGENT_NAME": name,
             "SAFEYOLO_AGENT_HOME": str(agent_home),
             "SAFEYOLO_AGENT_FOLDER": folder_str,
+            "SAFEYOLO_PYTHON": sys.executable,
         }
         console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
         try:

@@ -81,8 +81,24 @@ if [ ! -f "$CODEX_STATE_SRC" ]; then
     echo "coord-mcp-bootstrap: expected Codex state helper at $CODEX_STATE_SRC" >&2
     exit 1
 fi
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "coord-mcp-bootstrap: python3 is required to preserve and update harness config" >&2
+PYTHON_BIN="${SAFEYOLO_PYTHON:-}"
+if [ -z "$PYTHON_BIN" ] && [ -n "${VIRTUAL_ENV:-}" ] \
+    && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+    PYTHON_BIN="$VIRTUAL_ENV/bin/python"
+fi
+if [ -z "$PYTHON_BIN" ] && command -v safeyolo >/dev/null 2>&1; then
+    SAFEYOLO_ENTRYPOINT="$(command -v safeyolo)"
+    SAFEYOLO_SHEBANG="$(head -n 1 "$SAFEYOLO_ENTRYPOINT" 2>/dev/null || true)"
+    if [[ "$SAFEYOLO_SHEBANG" == '#!'/* ]] \
+        && [ -x "${SAFEYOLO_SHEBANG#\#!}" ]; then
+        PYTHON_BIN="${SAFEYOLO_SHEBANG#\#!}"
+    fi
+fi
+if [ -z "$PYTHON_BIN" ]; then
+    PYTHON_BIN="$(command -v python3 || true)"
+fi
+if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
+    echo "coord-mcp-bootstrap: a SafeYolo Python interpreter is required to preserve and update harness config" >&2
     exit 1
 fi
 if [ ! -f "$FG" ]; then
@@ -129,7 +145,7 @@ case "$HARNESS" in
         # Claude Code reads user-scope MCP servers from ~/.claude.json.
         # Merge into whatever the base host script already wrote — never
         # clobber unrelated keys.
-        python3 - "$AGENT_HOME/.claude.json" "$LAUNCHER_INSANDBOX" <<'PY'
+        "$PYTHON_BIN" - "$AGENT_HOME/.claude.json" "$LAUNCHER_INSANDBOX" <<'PY'
 import json, os, sys
 path, launcher = sys.argv[1], sys.argv[2]
 data = {}
@@ -164,7 +180,11 @@ PY
         # atomically updates only SafeYolo-owned settings and this MCP block.
         install -m 0755 "$CODEX_STATE_SRC" \
             "$AGENT_HOME/.safeyolo/codex-auth-recovery.py"
-        python3 "$CODEX_STATE_SRC" \
+        if ! "$PYTHON_BIN" -c 'import tomlkit' >/dev/null 2>&1; then
+            echo "coord-mcp-bootstrap: selected SafeYolo Python lacks tomlkit; use the SafeYolo CLI interpreter" >&2
+            exit 1
+        fi
+        "$PYTHON_BIN" "$CODEX_STATE_SRC" \
             --home "$AGENT_HOME" \
             --mcp-launcher "$LAUNCHER_INSANDBOX"
         ;;
@@ -183,7 +203,7 @@ esac
 MARKER="# ---- coord-mcp-bootstrap: mcp+httpx install (guarded, idempotent) ----"
 
 if ! grep -qxF "$MARKER" "$FG"; then
-    python3 - "$FG" "$MARKER" <<'PY'
+    "$PYTHON_BIN" - "$FG" "$MARKER" <<'PY'
 import sys
 path, marker = sys.argv[1], sys.argv[2]
 with open(path) as f:
