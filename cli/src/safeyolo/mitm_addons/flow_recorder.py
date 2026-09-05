@@ -21,6 +21,12 @@ import time
 
 from mitmproxy import ctx, http
 
+from safeyolo.core.identity import (
+    LATE_ATTRIBUTION_CHANGE_KEY,
+    AttributionQuarantined,
+    TrafficAttribution,
+    flow_attribution,
+)
 from safeyolo.core.internal_api import AGENT_API_HOST as AGENT_API_HOST
 from safeyolo.core.internal_api import is_agent_api_host
 
@@ -118,13 +124,25 @@ class FlowRecorder:
         # Reconcile the trusted UDS/IP-map sources here even if an earlier
         # addon failed to stamp identity; unresolved and conflicting flows
         # cannot safely be placed in an agent-scoped evidence store.
-        from safeyolo.core.identity import resolve_agent_identity
-        from safeyolo.core.utils import find_addon
-
-        identity = resolve_agent_identity(flow, find_addon("service-discovery"))
-        if not identity.is_resolved:
+        attribution = self._attribution(flow, check_late_change=True)
+        if not attribution.evidence_owner or LATE_ATTRIBUTION_CHANGE_KEY in flow.metadata:
             return False
         return True
+
+    @staticmethod
+    def _attribution(
+        flow: http.HTTPFlow,
+        *,
+        check_late_change: bool = False,
+    ) -> TrafficAttribution:
+        """Read the stable attribution shared by audit and storage."""
+        from safeyolo.core.utils import find_addon
+
+        return flow_attribution(
+            flow,
+            find_addon("service-discovery"),
+            check_late_change=check_late_change,
+        )
 
     def _build_record(self, flow: http.HTTPFlow, flow_state: str) -> dict:
         """Extract flow data into a record dict for FlowStore."""
@@ -137,9 +155,18 @@ class FlowRecorder:
         ts_end = int(time.time() * 1000)
         duration_ms = ts_end - ts_start
 
-        # Identity
-        # _should_record has already reconciled and stamped a trusted identity.
-        agent = flow.metadata["agent"]
+        # Identity. _should_record captured the request-boundary attribution;
+        # consume that snapshot again and check for a late change before the
+        # record enters an agent partition.
+        attribution = self._attribution(flow, check_late_change=True)
+        if (
+            attribution.evidence_owner is None
+            or LATE_ATTRIBUTION_CHANGE_KEY in flow.metadata
+        ):
+            raise AttributionQuarantined(
+                "trusted attribution changed before flow persistence"
+            )
+        agent = attribution.evidence_owner
         engagement_id = agent
         agent_id = agent
         source_id = get_client_ip(flow)
@@ -199,6 +226,11 @@ class FlowRecorder:
             "duration_ms": duration_ms,
             "engagement_id": engagement_id,
             "agent_id": agent_id,
+            "evidence_owner": attribution.evidence_owner,
+            "trusted_transport_identity": attribution.trusted_transport_identity,
+            "initiator": attribution.initiator.value,
+            "attribution_status": attribution.status.value,
+            "attribution_provenance_json": json.dumps(attribution.provenance),
             "source_id": source_id,
             "run": context.get("run"),
             "test": context.get("test"),
@@ -252,6 +284,13 @@ class FlowRecorder:
 
         try:
             record = self._build_record(flow, flow_state)
+        except AttributionQuarantined as exc:
+            # A late source change is an intentional quarantine, not a record
+            # construction failure.  The linked operator-only audit event is
+            # already emitted by flow_attribution().
+            self._stats["skipped"] += 1
+            log.warning("Quarantined flow record: %s", exc)
+            return
         except Exception as exc:
             # Build-record failures stay on the hook (cheap, bounded).
             # Writer-thread errors are tracked via flow_writer stats.
@@ -273,6 +312,10 @@ class FlowRecorder:
 
         try:
             record = self._build_record(flow, "error")
+        except AttributionQuarantined as exc:
+            self._stats["skipped"] += 1
+            log.warning("Quarantined error flow record: %s", exc)
+            return
         except Exception as exc:
             self._stats["errors"] += 1
             log.warning(f"Failed to build error flow record: {type(exc).__name__}: {exc}")
