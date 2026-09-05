@@ -119,6 +119,34 @@ with an actionable error; it does not consume the input or emit terminal
 cursor-control bytes into the caller's shell. Use `--observe` when a
 non-interactive room tail is needed, or run interactive chat from a terminal.
 
+## Scriptable operator sends
+
+Use `safeyolo coord send` when a trusted operator must send one ordinary Coord
+message without opening an interactive terminal session. The command requires
+exactly one body source:
+
+```bash
+safeyolo coord send ROOM_NAME "Operator direction"
+safeyolo coord send ROOM_NAME --file direction.md --to relay --to lens
+printf '%s\n' "Operator direction" | safeyolo coord send ROOM_NAME --stdin --to relay
+```
+
+A positional `TEXT`, `--file`, and `--stdin` are mutually exclusive. The
+command rejects a missing, empty, or whitespace-only body. The file and stdin
+sources use UTF-8. Use `--content-type text/plain` when the receiver requires
+plain text; the default is `text/markdown`.
+
+Without `--to`, the command requests room-wide attention. Repeat `--to` to
+request targeted attention for multiple agents. Each target must be an active,
+receive-authorized member of the named room. The command uses the same
+SafeYolo-generated operator attribution and `api.send` authorization as
+interactive chat. It reports authorization, invalid-room, invalid-target,
+provider, and publish-outcome errors without printing credentials.
+
+`coord send` is separate from `coord chat --observe`. The `--observe` flag
+remains read-only, and `dispatch-trigger` remains the specialized Dispatch
+publication command rather than a generic message interface.
+
 ## Secret-handling boundary
 
 Status, doctor output, lifecycle diagnostics, generated configuration, and
