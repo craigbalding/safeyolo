@@ -123,6 +123,7 @@ packages = ["cli/src/safeyolo"]
 "contrib/claude-host-setup.sh"          = "safeyolo/contrib/claude-host-setup.sh"
 "contrib/codex-host-setup.sh"           = "safeyolo/contrib/codex-host-setup.sh"
 "contrib/codex-coord-host-setup.sh"     = "safeyolo/contrib/codex-coord-host-setup.sh"
+"contrib/pi-host-setup.sh"              = "safeyolo/contrib/pi-host-setup.sh"
 "contrib/codex-coord-supervisor.py"     = "safeyolo/contrib/codex-coord-supervisor.py"
 "contrib/codex-coord-supervisor-fake-codex.sh" = "safeyolo/contrib/codex-coord-supervisor-fake-codex.sh"
 "contrib/mise-shell-host-setup.sh"      = "safeyolo/contrib/mise-shell-host-setup.sh"
