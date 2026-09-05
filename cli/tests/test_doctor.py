@@ -22,6 +22,7 @@ from safeyolo.commands.doctor import (
     _check_firewall,
     _check_flow_store,
     _check_guest_images,
+    _check_host_resources,
     _check_isolation_platform,
     _check_log_health,
     _check_pipeline_probe,
@@ -327,6 +328,81 @@ class TestCheckCoordMessagePlane:
         assert result.message == "nats-server not running; coord API will 503"
         if raw_secret in repr(result):
             pytest.fail("coord doctor result rendered a raw NATS credential")
+
+
+class TestCheckHostResources:
+    def test_reports_capacity_derivation_and_enforcement(self, monkeypatch):
+        from safeyolo.host_resources import (
+            DiskCapacity,
+            HostResourceReport,
+            ResourceLimit,
+        )
+
+        report = HostResourceReport(
+            cpu=ResourceLimit(4, 4, "automatic: test CPU", "admission"),
+            memory=ResourceLimit(
+                8 * 1024**3,
+                6 * 1024**3,
+                "automatic: test available memory",
+                "admission",
+            ),
+            disks=(
+                DiskCapacity(
+                    "/runtime",
+                    1000,
+                    900,
+                    4096,
+                    100,
+                    "operator override",
+                    "admission",
+                ),
+            ),
+            processes=ResourceLimit(
+                100,
+                100,
+                "automatic: test process limit",
+                "admission",
+            ),
+            process_current=4,
+            active_cpu=0,
+            active_memory_mb=0,
+            platform="Linux",
+        )
+        monkeypatch.setattr(
+            "safeyolo.host_resources.build_host_resource_report",
+            lambda: report,
+        )
+
+        result = _check_host_resources()
+
+        assert result.status == "pass"
+        assert "admission protection is active" in result.message
+        assert "automatic: test available memory" in result.detail
+        assert "operator override" in result.detail
+        assert "enforcement: admission" in result.detail
+
+    def test_reports_degraded_enforcement(self, monkeypatch):
+        from safeyolo.host_resources import HostResourceReport, ResourceLimit
+
+        report = HostResourceReport(
+            cpu=ResourceLimit(4, 4, "automatic", "degraded: scope unavailable"),
+            memory=ResourceLimit(8, None, "unavailable", "degraded: unavailable"),
+            disks=(),
+            processes=ResourceLimit(100, 100, "automatic", "degraded: unavailable"),
+            process_current=None,
+            active_cpu=0,
+            active_memory_mb=0,
+            platform="Linux",
+        )
+        monkeypatch.setattr(
+            "safeyolo.host_resources.build_host_resource_report",
+            lambda: report,
+        )
+
+        result = _check_host_resources()
+
+        assert result.status == "warn"
+        assert "degraded" in result.message
 
 
 class TestCheckVsockTerm:

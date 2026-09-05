@@ -702,18 +702,31 @@ def _wrap_in_systemd_scope(
     name: str,
     memory_mb: int,
     cpus: int,
+    tasks_max: int | None = None,
 ) -> list[str]:
     """Wrap a command in a systemd user scope for resource limits."""
     memory_max = f"{memory_mb}M"
     cpu_quota = f"{cpus * 100}%"
-    return [
-        "systemd-run", "--user", "--scope",
+    properties = [
         "-p", "Delegate=yes",
         "-p", f"MemoryMax={memory_max}",
         "-p", f"CPUQuota={cpu_quota}",
+    ]
+    if tasks_max is not None:
+        properties.extend(["-p", f"TasksMax={tasks_max}"])
+    return [
+        "systemd-run", "--user", "--scope",
+        *properties,
         "-p", f"Description=safeyolo-{name}",
         "--",
     ] + cmd
+
+
+def _host_tasks_max() -> int | None:
+    """Return a finite host-derived TasksMax value, if one is available."""
+    from ..host_resources import configured_process_limit  # noqa: PLC0415
+
+    return configured_process_limit()
 
 
 def _systemd_user_scope_available(
@@ -769,7 +782,7 @@ def _sandbox_launch_command(
     """Use the normal systemd scope, or direct runsc for a nested lab."""
     available, reason = _systemd_user_scope_available()
     if available:
-        return _wrap_in_systemd_scope(cmd, name, memory_mb, cpus)
+        return _wrap_in_systemd_scope(cmd, name, memory_mb, cpus, _host_tasks_max())
     log.warning(
         "systemd user scope unavailable (%s); starting %s directly. "
         "Inner MemoryMax and CPUQuota limits are not enforced.",

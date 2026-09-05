@@ -1415,6 +1415,42 @@ def _check_flow_store() -> DiagResult:
         )
 
 
+def _check_host_resources() -> DiagResult:
+    """Report host capacity, admission ceilings, and enforcement state."""
+    from ..host_resources import build_host_resource_report
+
+    try:
+        report = build_host_resource_report()
+    except (OSError, ValueError) as exc:
+        return DiagResult(
+            name="Host resource protection",
+            status="warn",
+            message=f"Host resource report unavailable: {type(exc).__name__}: {exc}",
+            remediation="Check host_resources in config.yaml",
+        )
+
+    critical_disks = [
+        disk for disk in report.disks
+        if disk.free is not None and disk.free <= disk.effective_min_free
+    ]
+    degraded = report.degraded
+    if critical_disks:
+        status = "warn"
+        message = "New agent admission is closed by the disk guard"
+    elif degraded:
+        status = "warn"
+        message = "Host resource protection is degraded on this host"
+    else:
+        status = "pass"
+        message = "Host resource admission protection is active"
+    return DiagResult(
+        name="Host resource protection",
+        status=status,
+        message=message,
+        detail="\n".join(report.as_detail_lines()),
+    )
+
+
 def _check_sandbox_runtime() -> DiagResult:
     """Check sandbox runtime availability (runsc on Linux, safeyolo-vm on macOS)."""
     import platform as _plat
@@ -1883,6 +1919,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
         checks_funcs.append(("Interactive terminal", _check_vsock_term))
     checks_funcs.extend(
         [
+            ("Host resource protection", _check_host_resources),
             ("Isolation platform", _check_isolation_platform),
         ]
     )

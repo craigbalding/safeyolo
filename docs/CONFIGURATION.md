@@ -55,7 +55,35 @@ modes:
   network_guard: block
   pattern_scanner: warn
   test_context: block
+
+host_resources:
+  cpu_ceiling: null             # aggregate CPUs; null derives host capacity
+  memory_ceiling_mb: null       # aggregate configured MiB; null uses available memory
+  disk_min_free_bytes: null     # per-filesystem low watermark; null means zero
+  process_limit: null           # aggregate process ceiling; null uses host capacity
 ```
+
+`host_resources` protects the host as a whole. It is separate from the
+per-agent `memory_mb` setting in `policy.toml`. SafeYolo checks the aggregate
+configured CPU and memory allocations, the current host process capacity, and
+free space on the filesystems used by SafeYolo runtime writes before it starts
+an agent. The automatic memory ceiling uses currently available host memory
+when the platform exposes that measurement; otherwise the report is degraded.
+The automatic disk rule refuses new work only when a used filesystem has no
+free bytes. These automatic rules do not claim a reserve that SafeYolo cannot
+defend from host measurements.
+
+Set an integer override only when the operator has a host-specific capacity
+model. SafeYolo caps CPU and memory overrides at detected host capacity. A
+finite process override is also passed to the Linux systemd user scope as
+`TasksMax` when that scope is available. SafeYolo never stops an active agent
+when disk space crosses the low watermark; the guard applies to new work.
+
+`safeyolo doctor --verbose` reports detected capacity, each effective ceiling
+or low watermark, its derivation source, and whether enforcement is an
+aggregate admission check, an existing Linux systemd scope, or a degraded
+fallback. If a host cannot expose a capacity or an enforcement mechanism,
+the report says so instead of implying protection.
 
 Manage `proxy.ignore_hosts` with `safeyolo proxy ignore-host add`,
 `safeyolo proxy ignore-host list`, and `safeyolo proxy ignore-host remove`.
