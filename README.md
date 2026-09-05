@@ -299,17 +299,26 @@ Writing your own: see [`contrib/HOST_SCRIPT_GUIDE.md`](contrib/HOST_SCRIPT_GUIDE
 
 The Codex setup includes an inspectable tmux lab for experiments that benefit
 from persistent shells, visible output, and operator control. Enter the agent,
-then run one command from the guest shell at `/home/agent`:
+or use the public Lab lifecycle directly:
 
 ```bash
-safeyolo agent shell codex
+safeyolo lab
+```
+
+The command asks for the objective, shows the proposed managed agent, and
+requires confirmation before it starts anything. Use `safeyolo lab --status`,
+`--recover`, and `--teardown` for the rest of the lifecycle. The lower-level
+guest entry point remains available for an already running agent:
+
+```bash
+safeyolo agent shell AGENT
 # Inside the guest:
 safeyolo-lab
 ```
 
 The guest tmux prefix is `C-a`. Run `safeyolo-lab` again after a disconnect to
-attach to the existing lab. The controller first asks what you want to explore;
-it does not create experiment panes until you describe the work.
+attach to the existing Lab. It never adopts an unrelated guest session or
+starts a second controller.
 
 ## Custom rootfs
 
@@ -362,6 +371,15 @@ $ safeyolo watch
 ```
 
 **Try it yourself:** Run `safeyolo demo` for a guided tour, with `safeyolo watch` in a second terminal.
+
+For operator-directed experiments, run `safeyolo lab`. The Lab asks for the
+objective before it creates or starts anything, proposes a clearly identified
+managed agent, and attaches to a guest-owned tmux workspace. Use
+`safeyolo lab --status` to inspect ownership and controller liveness,
+`--recover` to relaunch an owned dead controller, and `--teardown` to capture
+redacted final evidence before removing only Lab-owned session resources.
+Lab is an independent workflow from Demo and does not require lesson,
+request-story, or Presenterm components.
 
 ## Architecture
 
