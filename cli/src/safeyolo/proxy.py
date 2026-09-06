@@ -590,9 +590,7 @@ def _build_command(
     cmd.extend(["--set", f"flow_pruner_max={flow_cache}"])
     cmd.extend(["--set", f"flow_pruner_max_body_bytes={flow_cache_bytes}"])
     cmd.extend(["--set", "web_open_browser=false"])
-    cmd.extend(
-        ["--set", f"web_host={(proxy_config or {}).get('web_host', '127.0.0.1')}"]
-    )  # DOC: docs/security-verification.md
+    cmd.extend(["--set", f"web_host={(proxy_config or {}).get('web_host', '127.0.0.1')}"])  # DOC: docs/security-verification.md
     cmd.extend(["--set", f"web_port={(proxy_config or {}).get('web_port', 8081)}"])
     cmd.extend(["--set", f"admin_port={admin_port}"])
     command_centre_enabled = (command_centre_config or {}).get("enabled", False)
