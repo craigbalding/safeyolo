@@ -21,7 +21,9 @@ final class SafeYoloClient: ObservableObject {
     private let eventsURL: URL
     private let token: String
     private let expectedInstanceID: String
+    private let session: URLSession
     private var webSocket: URLSessionWebSocketTask?
+    private var connectionTask: Task<Void, Never>?
     private var knownApprovalIDs = Set<String>()
     private var stopping = false
 
@@ -29,7 +31,8 @@ final class SafeYoloClient: ObservableObject {
         adminURL: String,
         eventsURL: String,
         token: String,
-        expectedInstanceID: String
+        expectedInstanceID: String,
+        session: URLSession = .shared
     ) throws {
         guard let parsedAdminURL = URL(string: adminURL) else {
             throw ClientError.invalidURL(adminURL)
@@ -41,24 +44,39 @@ final class SafeYoloClient: ObservableObject {
         self.eventsURL = parsedEventsURL
         self.token = token
         self.expectedInstanceID = expectedInstanceID
+        self.session = session
     }
 
     func start() {
         stopping = false
         connectionState = .connecting
-        Task {
-            if await refreshInstance() {
-                await refreshApprovals()
-                connectEvents()
-            }
-        }
+        reconnectUntilAvailable()
     }
 
     func stop() {
         stopping = true
         connectionState = .stopped
+        connectionTask?.cancel()
+        connectionTask = nil
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
+    }
+
+    private func reconnectUntilAvailable() {
+        connectionTask?.cancel()
+        connectionTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, !stopping {
+                if await refreshInstance() {
+                    await refreshApprovals()
+                    guard !Task.isCancelled, !stopping else { return }
+                    connectionTask = nil
+                    connectEvents()
+                    return
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
     }
 
     func resolve(
@@ -130,7 +148,7 @@ final class SafeYoloClient: ObservableObject {
         }
         var request = URLRequest(url: eventsURL)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let socket = URLSession.shared.webSocketTask(with: request)
+        let socket = session.webSocketTask(with: request)
         webSocket = socket
         socket.resume()
         Task {
@@ -150,12 +168,9 @@ final class SafeYoloClient: ObservableObject {
             }
             connectionState = .reconnecting
             lastError = "Live events disconnected: \(error.localizedDescription)"
-            try? await Task.sleep(for: .seconds(1))
             if !stopping, webSocket === socket {
-                if await refreshInstance() {
-                    connectEvents()
-                    await refreshApprovals()
-                }
+                webSocket = nil
+                reconnectUntilAvailable()
             }
         }
     }
@@ -175,7 +190,7 @@ final class SafeYoloClient: ObservableObject {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: json)
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ClientError.invalidResponse
         }

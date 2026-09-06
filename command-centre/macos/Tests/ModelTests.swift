@@ -20,6 +20,8 @@ private final class StubURLProtocol: URLProtocol {
     static var responseData = Data()
     static var responseStatus = 200
     static var observedAuthorization: String?
+    static var failuresRemaining = 0
+    static var requestCount = 0
 
     override class func canInit(with request: URLRequest) -> Bool {
         true
@@ -30,7 +32,13 @@ private final class StubURLProtocol: URLProtocol {
     }
 
     override func startLoading() {
+        Self.requestCount += 1
         Self.observedAuthorization = request.value(forHTTPHeaderField: "Authorization")
+        if Self.failuresRemaining > 0 {
+            Self.failuresRemaining -= 1
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+            return
+        }
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: Self.responseStatus,
@@ -47,12 +55,14 @@ private final class StubURLProtocol: URLProtocol {
 
 @main
 struct ModelTests {
-    static func main() throws {
+    @MainActor
+    static func main() async throws {
         try testMutationPlans()
         try testCredentialImportAndReload()
         try testRemoteProfileStorage()
         try testRemoteConnectionVerification()
         try testPinnedInstanceIdentity()
+        try await testClientRetriesInitialConnection()
         print("model-tests: PASS")
     }
 
@@ -186,6 +196,8 @@ struct ModelTests {
             session: URLSession(configuration: configuration)
         )
         StubURLProtocol.responseStatus = 200
+        StubURLProtocol.failuresRemaining = 0
+        StubURLProtocol.requestCount = 0
         StubURLProtocol.responseData = Data(
             """
             {"schema_version":1,"safeyolo_instance_id":"sy-remote-test"}
@@ -208,6 +220,36 @@ struct ModelTests {
         precondition(profile.instanceID == "sy-remote-test")
         precondition(profile.adminURL == "https://dev.example.ts.net:9443")
         precondition(StubURLProtocol.observedAuthorization == "Bearer fixture-token")
+    }
+
+    @MainActor
+    private static func testClientRetriesInitialConnection() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        StubURLProtocol.responseStatus = 200
+        StubURLProtocol.responseData = Data(
+            """
+            {"schema_version":1,"safeyolo_instance_id":"sy-remote-test"}
+            """.utf8
+        )
+        StubURLProtocol.failuresRemaining = 1
+        StubURLProtocol.requestCount = 0
+        let client = try SafeYoloClient(
+            adminURL: "https://dev.example.ts.net:9443",
+            eventsURL: "wss://dev.example.ts.net:9444/admin/events",
+            token: "fixture-token",
+            expectedInstanceID: "sy-remote-test",
+            session: URLSession(configuration: configuration)
+        )
+
+        client.start()
+        let deadline = Date().addingTimeInterval(3)
+        while StubURLProtocol.requestCount < 2, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        client.stop()
+
+        precondition(StubURLProtocol.requestCount >= 2)
     }
 
     private static func testPinnedInstanceIdentity() throws {
