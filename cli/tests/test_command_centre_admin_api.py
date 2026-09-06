@@ -9,6 +9,7 @@ from unittest.mock import create_autospec, patch
 import httpx
 import pytest
 
+from safeyolo.agent_lifecycle import AgentRuntime
 from safeyolo.api import AdminAPI
 from safeyolo.desktop_presenter import DesktopPresentation, DesktopPresenter
 from safeyolo.mitm_addons.admin_api import AdminRequestHandler, LoopbackHTTPServer
@@ -64,6 +65,8 @@ def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin):
     assert first == second
     assert first["safeyolo_instance_id"].startswith("sy-")
     assert first["capabilities"] == {
+        "agent_inventory": True,
+        "agent_lifecycle": True,
         "approvals": True,
         "audit_events": True,
         "desktop_present": True,
@@ -124,3 +127,75 @@ def test_desktop_present_uses_stable_agent_id(command_centre_admin):
         }
     presenter.present.assert_called_once_with("ag-forge")
     assert write_event.call_args.kwargs["details"]["approval_request_id"] == "req-desktop"
+
+
+def test_agent_inventory_and_lifecycle_use_stable_agent_ids(command_centre_admin):
+    base_url, _ = command_centre_admin
+    api = AdminAPI(base_url=base_url, token="test-admin-token")
+    stopped = AgentRuntime(agent_id="ag-probe", name="probe", state="stopped")
+    running = AgentRuntime(agent_id="ag-probe", name="probe", state="running")
+
+    with (
+        patch(
+            "safeyolo.agent_lifecycle.list_agent_runtimes",
+            return_value=[stopped],
+            autospec=True,
+        ),
+        patch(
+            "safeyolo.agent_lifecycle.start_agent",
+            return_value=running,
+            autospec=True,
+        ) as start,
+        patch(
+            "safeyolo.agent_lifecycle.stop_agent",
+            return_value=stopped,
+            autospec=True,
+        ) as stop,
+    ):
+        assert api.agents() == [
+            {"agent_id": "ag-probe", "name": "probe", "state": "stopped"}
+        ]
+        assert api.start_agent("ag-probe") == {
+            "agent_id": "ag-probe",
+            "name": "probe",
+            "state": "running",
+        }
+        assert api.stop_agent("ag-probe") == {
+            "agent_id": "ag-probe",
+            "name": "probe",
+            "state": "stopped",
+        }
+
+    start.assert_called_once_with("ag-probe")
+    stop.assert_called_once_with("ag-probe")
+
+
+def test_stopping_agent_closes_its_active_desktop(command_centre_admin):
+    base_url, _ = command_centre_admin
+    stopped = AgentRuntime(agent_id="ag-probe", name="probe", state="stopped")
+    presenter = create_autospec(DesktopPresenter, instance=True, spec_set=True)
+    AdminRequestHandler.desktop_presenter = presenter
+    api = AdminAPI(base_url=base_url, token="test-admin-token")
+
+    with patch(
+        "safeyolo.agent_lifecycle.stop_agent",
+        return_value=stopped,
+        autospec=True,
+    ):
+        api.stop_agent("ag-probe")
+
+    presenter.close.assert_called_once_with("ag-probe")
+
+
+def test_agent_lifecycle_rejects_command_arguments(command_centre_admin):
+    base_url, _ = command_centre_admin
+    with patch("safeyolo.agent_lifecycle.start_agent", autospec=True) as start:
+        response = httpx.post(
+            f"{base_url}/admin/agents/ag-probe/start",
+            headers={"Authorization": "Bearer test-admin-token"},
+            json={"command": "anything"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "Agent lifecycle requests do not accept arguments"
+    start.assert_not_called()

@@ -129,3 +129,10 @@ class DesktopPresenter:
             self._sessions.clear()
         for session in sessions:
             session.close()
+
+    def close(self, agent_id: str) -> None:
+        """Close the active host preview for one stable agent identity."""
+        with self._lock:
+            session = self._sessions.pop(agent_id, None)
+        if session is not None:
+            session.close()

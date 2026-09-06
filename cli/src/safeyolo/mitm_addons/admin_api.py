@@ -19,7 +19,7 @@ import os
 import re
 import secrets
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from socketserver import TCPServer
 from urllib.parse import urlparse
@@ -46,7 +46,7 @@ log = logging.getLogger("safeyolo.admin")
 _sanitize_log = sanitize_for_log
 
 
-class LoopbackHTTPServer(HTTPServer):
+class LoopbackHTTPServer(ThreadingHTTPServer):
     """HTTP server that binds loopback without performing reverse DNS."""
 
     allow_reuse_address = True
@@ -189,6 +189,21 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             log.warning("Invalid request body: %s: %s", type(e).__name__, e)
             return None
 
+    def _read_optional_json_object(self) -> dict | None:
+        """Read an optional JSON object, distinguishing an empty request body."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self._send_json({"error": "Invalid Content-Length"}, 400)
+            return None
+        if content_length == 0:
+            return {}
+        data = self._read_json()
+        if data is not None and not isinstance(data, dict):
+            self._send_json({"error": "JSON request body must be an object"}, 400)
+            return None
+        return data
+
     def _get_addon_mode(self, addon_name: str) -> dict | None:
         """Get current mode for an addon."""
         if addon_name not in self.MODE_SWITCHABLE:
@@ -279,6 +294,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 "schema_version": 1,
                 "safeyolo_instance_id": get_or_create_instance_id(),
                 "capabilities": {
+                    "agent_inventory": True,
+                    "agent_lifecycle": True,
                     "approvals": True,
                     "audit_events": True,
                     "desktop_present": True,
@@ -291,6 +308,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         log_path = Path(os.environ.get("SAFEYOLO_LOG_PATH", "/app/logs/safeyolo.jsonl"))
         approvals, _ = scan_pending_approvals(log_path)
         self._send_json({"approvals": approvals})
+
+    def _handle_get_agents(self) -> None:
+        """GET /admin/agents - Configured agents and their live state."""
+        from safeyolo.agent_lifecycle import list_agent_runtimes
+
+        self._send_json({"agents": [agent.to_dict() for agent in list_agent_runtimes()]})
 
     def _handle_get_stats(self) -> None:
         """GET /stats - Aggregate stats from all addons."""
@@ -417,6 +440,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/admin/runtime-identity": self._handle_get_runtime_identity,
             "/admin/instance": self._handle_get_instance,
             "/admin/approvals": self._handle_get_approvals,
+            "/admin/agents": self._handle_get_agents,
             "/admin/gateway/grants": self._handle_get_gateway_grants,
             "/admin/plumb/pending": self._handle_get_plumb_pending,
             "/admin/plumb/conversations": self._handle_get_plumb_conversations,
@@ -1142,7 +1166,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_post_desktop_present(self, agent_id: str) -> None:
         """POST /admin/agents/{id}/desktop/present - Present a local desktop."""
-        data = self._read_json() if self.headers.get("Content-Length") else {}
+        data = self._read_optional_json_object()
         if data is None:
             return
         approval_request_id = data.get("approval_request_id")
@@ -1181,6 +1205,37 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         )
         self._send_json(result)
 
+    def _handle_post_agent_lifecycle(self, agent_id: str, action: str) -> None:
+        """Start or stop one configured agent without accepting command arguments."""
+        data = self._read_optional_json_object()
+        if data is None:
+            return
+        if not isinstance(data, dict) or data:
+            self._send_json(
+                {"error": "Agent lifecycle requests do not accept arguments"},
+                400,
+            )
+            return
+
+        from safeyolo.agent_lifecycle import (
+            AgentLifecycleError,
+            start_agent,
+            stop_agent,
+        )
+
+        try:
+            runtime = start_agent(agent_id) if action == "start" else stop_agent(agent_id)
+        except AgentLifecycleError as exc:
+            self._send_json({"error": str(exc)}, exc.status_code)
+            return
+        except Exception as exc:
+            log.exception("Agent %s failed for %s", action, agent_id)
+            self._send_json({"error": f"Agent {action} failed: {type(exc).__name__}"}, 500)
+            return
+        if action == "stop" and self.desktop_presenter is not None:
+            self.desktop_presenter.close(agent_id)
+        self._send_json(runtime.to_dict())
+
     def do_POST(self):
         """Handle POST requests."""
         if not self._require_auth():
@@ -1218,6 +1273,10 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         m = re.match(r"^/admin/agents/([^/]+)/desktop/present$", path)
         if m:
             return self._handle_post_desktop_present(m.group(1))
+
+        m = re.match(r"^/admin/agents/([^/]+)/(start|stop)$", path)
+        if m:
+            return self._handle_post_agent_lifecycle(m.group(1), m.group(2))
 
         self._send_json({"error": "not found"}, 404)
         return None
@@ -1721,7 +1780,7 @@ class AdminAPI:
     name = "admin-api"
 
     def __init__(self):
-        self.server: HTTPServer | None = None
+        self.server: LoopbackHTTPServer | None = None
         self.server_thread: threading.Thread | None = None
         self.operator_event_server: OperatorEventServer | None = None
         self.desktop_presenter = DesktopPresenter()

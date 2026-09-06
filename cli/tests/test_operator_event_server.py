@@ -55,6 +55,28 @@ def test_filter_includes_approvals_resolutions_lifecycle_and_proxy_state():
     assert is_operator_event(_event("evt-agent", "agent.started"))
     assert is_operator_event(_event("evt-proxy", "ops.proxy_stop"))
     assert is_operator_event(_event("evt-command-centre", "ops.command_centre_tailnet_failed"))
+    assert is_operator_event(
+        _event(
+            "evt-security",
+            "security.pattern_detected",
+            severity="high",
+        )
+    )
+    assert is_operator_event(
+        _event(
+            "evt-gateway",
+            "gateway.route_denied",
+            severity="critical",
+        )
+    )
+    assert is_operator_event(_event("evt-circuit", "ops.circuit_breaker.open"))
+    assert not is_operator_event(
+        _event(
+            "evt-low-security",
+            "security.pattern_detected",
+            severity="low",
+        )
+    )
     assert not is_operator_event(_event("evt-traffic", "traffic.request"))
 
 

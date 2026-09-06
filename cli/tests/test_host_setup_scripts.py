@@ -1051,7 +1051,7 @@ def test_pi_repair_uses_exact_package_and_integrity_policy(tmp_path: Path) -> No
         "printf '%s\\n' '#!/bin/sh' "
         "'if [ \"$1\" = --version ]; then exit 0; fi' "
         '\'printf "%s\\\\0" "$@" > "$TEST_PI_EXEC_LOG"\' > "$prefix/bin/pi"\n'
-        'chmod +x "$prefix/bin/pi"\n'
+        'chmod 755 "$prefix/bin/pi"\n'
     )
     npm.chmod(0o755)
     openssl = fake_bin / "openssl"

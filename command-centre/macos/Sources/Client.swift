@@ -12,10 +12,15 @@ final class SafeYoloClient: ObservableObject {
 
     @Published private(set) var connectionState = ConnectionState.connecting
     @Published private(set) var approvals: [ApprovalEvent] = []
+    @Published private(set) var agents: [AgentInfo] = []
+    @Published private(set) var securityEvents: [SecurityObservation] = []
+    @Published private(set) var busyAgentIDs = Set<String>()
     @Published private(set) var instanceID = ""
     @Published private(set) var lastError: String?
+    @Published private(set) var eventFeedGap: String?
 
     var onNewApproval: ((ApprovalEvent) -> Void)?
+    var onNewSecurityEvent: ((SecurityObservation) -> Void)?
 
     private let adminURL: URL
     private let eventsURL: URL
@@ -25,6 +30,7 @@ final class SafeYoloClient: ObservableObject {
     private var webSocket: URLSessionWebSocketTask?
     private var connectionTask: Task<Void, Never>?
     private var knownApprovalIDs = Set<String>()
+    private var knownSecurityEventIDs = Set<String>()
     private var stopping = false
 
     init(
@@ -68,11 +74,14 @@ final class SafeYoloClient: ObservableObject {
             guard let self else { return }
             while !Task.isCancelled, !stopping {
                 if await refreshInstance() {
-                    await refreshApprovals()
+                    let approvalsReady = await refreshApprovals()
+                    let agentsReady = await refreshAgents()
                     guard !Task.isCancelled, !stopping else { return }
-                    connectionTask = nil
-                    connectEvents()
-                    return
+                    if approvalsReady && agentsReady {
+                        connectionTask = nil
+                        connectEvents()
+                        return
+                    }
                 }
                 try? await Task.sleep(for: .seconds(1))
             }
@@ -103,6 +112,67 @@ final class SafeYoloClient: ObservableObject {
         }
     }
 
+    func setRunning(
+        _ agent: AgentInfo,
+        running: Bool,
+        completion: @escaping (Result<AgentInfo, Error>) -> Void
+    ) {
+        guard !busyAgentIDs.contains(agent.agentID) else { return }
+        busyAgentIDs.insert(agent.agentID)
+        Task {
+            defer { busyAgentIDs.remove(agent.agentID) }
+            do {
+                guard let encodedID = encodePathComponent(agent.agentID) else {
+                    throw ClientError.invalidURL(agent.agentID)
+                }
+                let action = running ? "start" : "stop"
+                let data = try await request(
+                    path: "/admin/agents/\(encodedID)/\(action)",
+                    method: "POST"
+                )
+                let updated = try JSONDecoder().decode(AgentInfo.self, from: data)
+                await refreshAgents()
+                completion(.success(updated))
+            } catch {
+                lastError = error.localizedDescription
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func presentDesktop(
+        for agent: AgentInfo,
+        completion: @escaping (Result<DesktopPresentation, Error>) -> Void
+    ) {
+        guard !busyAgentIDs.contains(agent.agentID) else { return }
+        busyAgentIDs.insert(agent.agentID)
+        Task {
+            defer { busyAgentIDs.remove(agent.agentID) }
+            do {
+                guard let encodedID = encodePathComponent(agent.agentID) else {
+                    throw ClientError.invalidURL(agent.agentID)
+                }
+                let data = try await request(
+                    path: "/admin/agents/\(encodedID)/desktop/present",
+                    method: "POST"
+                )
+                completion(.success(try JSONDecoder().decode(DesktopPresentation.self, from: data)))
+            } catch {
+                lastError = error.localizedDescription
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func clearSecurityEvents() {
+        securityEvents = []
+        knownSecurityEventIDs = []
+    }
+
+    func clearEventFeedGap() {
+        eventFeedGap = nil
+    }
+
     private func refreshInstance() async -> Bool {
         do {
             let data = try await request(path: "/admin/instance")
@@ -114,7 +184,6 @@ final class SafeYoloClient: ObservableObject {
                 actual: actualInstanceID,
                 expected: expectedInstanceID
             )
-            connectionState = .connected
             lastError = nil
             return true
         } catch {
@@ -124,7 +193,8 @@ final class SafeYoloClient: ObservableObject {
         }
     }
 
-    private func refreshApprovals() async {
+    @discardableResult
+    private func refreshApprovals() async -> Bool {
         do {
             let data = try await request(path: "/admin/approvals")
             let fresh = try JSONDecoder().decode(PendingApprovals.self, from: data).approvals
@@ -134,11 +204,26 @@ final class SafeYoloClient: ObservableObject {
             if let first = newApprovals.first {
                 onNewApproval?(first)
             }
-            connectionState = .connected
             lastError = nil
+            return true
         } catch {
             connectionState = .reconnecting
             lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    private func refreshAgents() async -> Bool {
+        do {
+            let data = try await request(path: "/admin/agents")
+            agents = try JSONDecoder().decode(AgentInventory.self, from: data).agents
+            lastError = nil
+            return true
+        } catch {
+            connectionState = .reconnecting
+            lastError = error.localizedDescription
+            return false
         }
     }
 
@@ -152,25 +237,86 @@ final class SafeYoloClient: ObservableObject {
         webSocket = socket
         socket.resume()
         Task {
-            await receiveEvents(from: socket)
+            do {
+                try await ping(socket)
+                guard !stopping, webSocket === socket else { return }
+                connectionState = .connected
+                if eventFeedGap != nil {
+                    eventFeedGap = "Live event feed reconnected after a gap; events during the gap may be missing."
+                }
+                lastError = nil
+                await receiveEvents(from: socket)
+            } catch {
+                handleEventDisconnect(socket, error: error)
+            }
         }
     }
 
     private func receiveEvents(from socket: URLSessionWebSocketTask) async {
         do {
             while !stopping, webSocket === socket {
-                _ = try await socket.receive()
-                await refreshApprovals()
+                let message = try await socket.receive()
+                let data: Data
+                switch message {
+                case .data(let value): data = value
+                case .string(let value): data = Data(value.utf8)
+                @unknown default: continue
+                }
+                try await ingestOperatorEventData(data)
             }
         } catch {
-            guard !stopping, webSocket === socket else {
-                return
+            handleEventDisconnect(socket, error: error)
+        }
+    }
+
+    func ingestOperatorEventData(_ data: Data) async throws {
+        let event = try JSONDecoder().decode(OperatorEventEnvelope.self, from: data)
+        if event.needsApproval || event.event.hasPrefix("admin.") {
+            guard await refreshApprovals() else {
+                throw ClientError.invalidResponse
             }
-            connectionState = .reconnecting
-            lastError = "Live events disconnected: \(error.localizedDescription)"
-            if !stopping, webSocket === socket {
-                webSocket = nil
-                reconnectUntilAvailable()
+        }
+        if event.event.hasPrefix("agent.") {
+            guard await refreshAgents() else {
+                throw ClientError.invalidResponse
+            }
+        }
+        if event.isSecurityObservation {
+            recordSecurityEvent(event)
+        }
+    }
+
+    private func recordSecurityEvent(_ event: OperatorEventEnvelope) {
+        if let eventID = event.eventID {
+            guard !knownSecurityEventIDs.contains(eventID) else { return }
+            knownSecurityEventIDs.insert(eventID)
+        }
+        if let index = securityEvents.firstIndex(where: { $0.id == event.coalescingKey }) {
+            securityEvents[index].observe(event)
+            return
+        }
+        let observation = SecurityObservation(event)
+        securityEvents.insert(observation, at: 0)
+        onNewSecurityEvent?(observation)
+    }
+
+    private func handleEventDisconnect(_ socket: URLSessionWebSocketTask, error: Error) {
+        guard !stopping, webSocket === socket else { return }
+        connectionState = .reconnecting
+        eventFeedGap = "Live event feed interrupted; events during this gap may be missing."
+        lastError = "Live events disconnected: \(error.localizedDescription)"
+        webSocket = nil
+        reconnectUntilAvailable()
+    }
+
+    private func ping(_ socket: URLSessionWebSocketTask) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            socket.sendPing { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
             }
         }
     }

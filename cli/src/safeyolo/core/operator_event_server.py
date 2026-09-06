@@ -26,6 +26,13 @@ def is_operator_event(event: dict[str, Any]) -> bool:
     event_type = event.get("event", "")
     if event_type.startswith("agent."):
         return True
+    if event_type == "ops.circuit_breaker.open":
+        return True
+    if (
+        event.get("kind") in {"security", "gateway"}
+        and event.get("severity") in {"high", "critical"}
+    ):
+        return True
     return event_type in {
         "ops.command_centre_tailnet_exited",
         "ops.command_centre_tailnet_failed",

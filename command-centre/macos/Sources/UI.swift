@@ -82,6 +82,94 @@ final class ConnectionSettingsWindowPresenter {
     }
 }
 
+@MainActor
+final class SecurityEventWindowPresenter {
+    private var windows: [String: NSWindow] = [:]
+
+    func show(_ event: SecurityObservation) {
+        if let existing = windows[event.id] {
+            NSApp.activate(ignoringOtherApps: true)
+            existing.makeKeyAndOrderFront(nil)
+            return
+        }
+        let view = SecurityEventView(event: event, close: { [weak self] in
+            self?.close(event.id)
+        })
+        let controller = NSHostingController(rootView: view)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 360),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "SafeYolo Security Event"
+        window.contentViewController = controller
+        window.isReleasedWhenClosed = false
+        windows[event.id] = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func close(_ id: String) {
+        windows.removeValue(forKey: id)?.close()
+    }
+}
+
+struct SecurityEventView: View {
+    let event: SecurityObservation
+    let close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(event.summary).font(.headline)
+                    Text("\(event.severity.capitalized) · observed this app session")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 5) {
+                detailRow("Event", event.event)
+                if let agent = event.agent { detailRow("Agent", agent) }
+                if let host = event.host { detailRow("Host", host) }
+                if let decision = event.decision { detailRow("Decision", decision) }
+                if event.count > 1 { detailRow("Occurrences", String(event.count)) }
+                if let first = event.firstSeen { detailRow("First seen", first) }
+                if let last = event.lastSeen, last != event.firstSeen { detailRow("Last seen", last) }
+            }
+            if !event.details.isEmpty {
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(event.details.keys.sorted(), id: \.self) { key in
+                            detailRow(key, event.details[key]?.description ?? "")
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+            HStack {
+                Spacer()
+                Button("Close") { close() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 500, minHeight: 320)
+    }
+
+    @ViewBuilder
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label).foregroundStyle(.secondary)
+            Text(value).textSelection(.enabled)
+        }
+    }
+}
+
 struct ConnectionSettingsView: View {
     @ObservedObject var controller: CommandCentreController
     let close: () -> Void
@@ -293,6 +381,9 @@ struct CommandCentreMenu: View {
     @ObservedObject var controller: CommandCentreController
     let presenter: ApprovalWindowPresenter
     let settingsPresenter: ConnectionSettingsWindowPresenter
+    let securityPresenter: SecurityEventWindowPresenter
+
+    @State private var actionError: String?
 
     var body: some View {
         Text(controller.connectionName)
@@ -304,6 +395,10 @@ struct CommandCentreMenu: View {
             if let error = client.lastError {
                 Text(error).foregroundStyle(.red)
             }
+            if let gap = client.eventFeedGap {
+                Text(gap).foregroundStyle(.orange)
+                Button("Dismiss Feed Gap") { client.clearEventFeedGap() }
+            }
             Divider()
             if client.approvals.isEmpty {
                 Text("No pending approvals")
@@ -314,6 +409,36 @@ struct CommandCentreMenu: View {
                         presenter.show(approval, client: client)
                     }
                 }
+            }
+            Divider()
+            if client.agents.isEmpty {
+                Text("No configured agents")
+            } else {
+                Text("Agents")
+                ForEach(client.agents) { agent in
+                    Menu("\(agent.name) · \(agent.state)") {
+                        if agent.isRunning {
+                            Button("Present Desktop") { present(agent, client: client) }
+                            Button("Stop Agent") { setRunning(agent, running: false, client: client) }
+                        } else {
+                            Button("Start Agent") { setRunning(agent, running: true, client: client) }
+                        }
+                    }
+                    .disabled(client.busyAgentIDs.contains(agent.agentID))
+                }
+            }
+            if !client.securityEvents.isEmpty {
+                Divider()
+                Text("Security events observed this session (\(client.securityEvents.count))")
+                ForEach(client.securityEvents) { event in
+                    Button(event.count > 1 ? "\(event.summary) (×\(event.count))" : event.summary) {
+                        securityPresenter.show(event)
+                    }
+                }
+                Button("Clear Security Events") { client.clearSecurityEvents() }
+            }
+            if let actionError {
+                Text(actionError).foregroundStyle(.red)
             }
         } else {
             Text("Not connected")
@@ -328,6 +453,31 @@ struct CommandCentreMenu: View {
         Button("Quit Command Centre") {
             controller.stop()
             NSApplication.shared.terminate(nil)
+        }
+    }
+
+    private func setRunning(_ agent: AgentInfo, running: Bool, client: SafeYoloClient) {
+        actionError = nil
+        client.setRunning(agent, running: running) { result in
+            if case .failure(let error) = result {
+                actionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func present(_ agent: AgentInfo, client: SafeYoloClient) {
+        actionError = nil
+        client.presentDesktop(for: agent) { result in
+            switch result {
+            case .success(let presentation):
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(presentation.unlockCode, forType: .string)
+                if let url = URL(string: presentation.url) {
+                    NSWorkspace.shared.open(url)
+                }
+            case .failure(let error):
+                actionError = error.localizedDescription
+            }
         }
     }
 }

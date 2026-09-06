@@ -21,6 +21,144 @@ struct PendingApprovals: Decodable {
     let approvals: [ApprovalEvent]
 }
 
+struct AgentInventory: Decodable {
+    let agents: [AgentInfo]
+}
+
+struct AgentInfo: Decodable, Equatable, Hashable, Identifiable {
+    let agentID: String
+    let name: String
+    let state: String
+
+    enum CodingKeys: String, CodingKey {
+        case agentID = "agent_id"
+        case name
+        case state
+    }
+
+    var id: String { agentID }
+    var isRunning: Bool { state == "running" }
+}
+
+enum JSONValue: Decodable, Hashable, CustomStringConvertible {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() {
+            self = .null
+        } else if let decoded = try? value.decode(Bool.self) {
+            self = .bool(decoded)
+        } else if let decoded = try? value.decode(Double.self) {
+            self = .number(decoded)
+        } else if let decoded = try? value.decode(String.self) {
+            self = .string(decoded)
+        } else if let decoded = try? value.decode([String: JSONValue].self) {
+            self = .object(decoded)
+        } else {
+            self = .array(try value.decode([JSONValue].self))
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .string(let value): return value
+        case .number(let value): return value.formatted()
+        case .bool(let value): return value ? "true" : "false"
+        case .object(let value):
+            return value.keys.sorted().map { "\($0): \(value[$0]!)" }.joined(separator: ", ")
+        case .array(let value): return value.map(\.description).joined(separator: ", ")
+        case .null: return "null"
+        }
+    }
+}
+
+struct OperatorEventEnvelope: Decodable, Hashable {
+    struct ApprovalMarker: Decodable, Hashable {
+        let required: Bool
+    }
+
+    let eventID: String?
+    let timestamp: String?
+    let event: String
+    let kind: String
+    let severity: String
+    let summary: String
+    let requestID: String?
+    let agent: String?
+    let host: String?
+    let decision: String?
+    let approval: ApprovalMarker?
+    let details: [String: JSONValue]?
+
+    enum CodingKeys: String, CodingKey {
+        case eventID = "event_id"
+        case timestamp = "ts"
+        case event
+        case kind
+        case severity
+        case summary
+        case requestID = "request_id"
+        case agent
+        case host
+        case decision
+        case approval
+        case details
+    }
+
+    var needsApproval: Bool { approval?.required == true }
+    var isSecurityObservation: Bool {
+        if event == "ops.circuit_breaker.open" { return true }
+        return ["security", "gateway"].contains(kind)
+            && ["high", "critical"].contains(severity)
+            && !needsApproval
+    }
+
+    var coalescingKey: String {
+        [event, agent ?? "", host ?? "", decision ?? ""].joined(separator: ":")
+    }
+}
+
+struct SecurityObservation: Hashable, Identifiable {
+    let id: String
+    let event: String
+    let kind: String
+    let severity: String
+    let summary: String
+    let agent: String?
+    let host: String?
+    let decision: String?
+    let firstSeen: String?
+    var lastSeen: String?
+    var count: Int
+    let details: [String: JSONValue]
+
+    init(_ event: OperatorEventEnvelope) {
+        id = event.coalescingKey
+        self.event = event.event
+        kind = event.kind
+        severity = event.severity
+        summary = event.summary
+        agent = event.agent
+        host = event.host
+        decision = event.decision
+        firstSeen = event.timestamp
+        lastSeen = event.timestamp
+        count = 1
+        details = event.details ?? [:]
+    }
+
+    mutating func observe(_ event: OperatorEventEnvelope) {
+        count += 1
+        lastSeen = event.timestamp ?? lastSeen
+    }
+}
+
 struct ApprovalEvent: Decodable, Hashable, Identifiable {
     struct Request: Decodable, Hashable {
         struct Scope: Decodable, Hashable {
@@ -176,7 +314,7 @@ enum ClientError: LocalizedError {
     }
 }
 
-private func encodePathComponent(_ value: String) -> String? {
+func encodePathComponent(_ value: String) -> String? {
     var allowed = CharacterSet.alphanumerics
     allowed.insert(charactersIn: "-._~")
     guard !value.isEmpty else {

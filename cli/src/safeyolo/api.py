@@ -475,6 +475,19 @@ class AdminAPI:
         """Get the stable SafeYolo instance identity and client capabilities."""
         return self._request("GET", "/admin/instance")
 
+    def agents(self) -> list[dict[str, Any]]:
+        """List configured agents and their live state."""
+        result = self._request("GET", "/admin/agents")
+        return result.get("agents", [])
+
+    def start_agent(self, agent_id: str) -> dict[str, Any]:
+        """Start one configured agent by stable identity."""
+        return self._request("POST", f"/admin/agents/{agent_id}/start")
+
+    def stop_agent(self, agent_id: str) -> dict[str, Any]:
+        """Stop one configured agent by stable identity."""
+        return self._request("POST", f"/admin/agents/{agent_id}/stop")
+
     def present_desktop(
         self,
         agent_id: str,

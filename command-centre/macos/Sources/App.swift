@@ -6,14 +6,21 @@ struct SafeYoloCommandCentreApp: App {
     @StateObject private var controller: CommandCentreController
     private let presenter: ApprovalWindowPresenter
     private let settingsPresenter: ConnectionSettingsWindowPresenter
+    private let securityPresenter: SecurityEventWindowPresenter
 
     init() {
         NSApplication.shared.setActivationPolicy(.accessory)
         let presenter = ApprovalWindowPresenter()
         let settingsPresenter = ConnectionSettingsWindowPresenter()
-        let controller = CommandCentreController(presenter: presenter)
+        let securityPresenter = SecurityEventWindowPresenter()
+        let securityNotifier = SecurityNotificationPresenter()
+        let controller = CommandCentreController(
+            presenter: presenter,
+            securityNotifier: securityNotifier
+        )
         self.presenter = presenter
         self.settingsPresenter = settingsPresenter
+        self.securityPresenter = securityPresenter
         _controller = StateObject(wrappedValue: controller)
         DispatchQueue.main.async {
             controller.start()
@@ -28,17 +35,22 @@ struct SafeYoloCommandCentreApp: App {
             CommandCentreMenu(
                 controller: controller,
                 presenter: presenter,
-                settingsPresenter: settingsPresenter
+                settingsPresenter: settingsPresenter,
+                securityPresenter: securityPresenter
             )
         } label: {
-            Label(
-                "SafeYolo",
-                systemImage: controller.hasPendingApprovals
+            Image(
+                systemName: controller.hasSecurityEvents
                     ? "exclamationmark.shield.fill"
-                    : controller.client == nil
+                    : controller.hasPendingApprovals
+                        ? "exclamationmark.shield.fill"
+                        : controller.client == nil
                         ? "shield.slash"
                         : "shield.lefthalf.filled"
             )
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(controller.hasSecurityEvents ? Color.red : Color.primary)
+            .accessibilityLabel("SafeYolo")
         }
         .menuBarExtraStyle(.menu)
     }

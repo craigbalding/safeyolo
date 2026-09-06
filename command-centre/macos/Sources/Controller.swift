@@ -8,6 +8,7 @@ final class CommandCentreController: ObservableObject {
     @Published private(set) var connectionName = "Local SafeYolo"
 
     private let presenter: ApprovalWindowPresenter
+    private let securityNotifier: SecurityNotificationPresenter
     private let keychain: any CredentialStore
     private let profileStore: any ConnectionProfileStore
     private let verifier: RemoteConnectionVerifier
@@ -15,11 +16,13 @@ final class CommandCentreController: ObservableObject {
 
     init(
         presenter: ApprovalWindowPresenter,
+        securityNotifier: SecurityNotificationPresenter,
         keychain: any CredentialStore = NativeKeychainStore(),
         profileStore: any ConnectionProfileStore = UserDefaultsConnectionProfileStore(),
         verifier: RemoteConnectionVerifier = RemoteConnectionVerifier()
     ) {
         self.presenter = presenter
+        self.securityNotifier = securityNotifier
         self.keychain = keychain
         self.profileStore = profileStore
         self.verifier = verifier
@@ -31,6 +34,10 @@ final class CommandCentreController: ObservableObject {
 
     var hasPendingApprovals: Bool {
         !(client?.approvals.isEmpty ?? true)
+    }
+
+    var hasSecurityEvents: Bool {
+        !(client?.securityEvents.isEmpty ?? true)
     }
 
     func start(commandLine: CommandLineConfiguration = .load()) {
@@ -135,6 +142,9 @@ final class CommandCentreController: ObservableObject {
         nextClient.onNewApproval = { [weak presenter = self.presenter, weak nextClient] approval in
             guard let presenter, let nextClient else { return }
             presenter.show(approval, client: nextClient)
+        }
+        nextClient.onNewSecurityEvent = { [weak securityNotifier = self.securityNotifier] event in
+            securityNotifier?.show(event)
         }
         clientUpdates = nextClient.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()

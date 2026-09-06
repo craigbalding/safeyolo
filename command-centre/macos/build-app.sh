@@ -40,11 +40,13 @@ xcrun swiftc -parse-as-library \
   "$ROOT/Sources/Client.swift" \
   "$ROOT/Sources/UI.swift" \
   "$ROOT/Sources/Controller.swift" \
+  "$ROOT/Sources/SecurityNotifications.swift" \
   "$ROOT/Sources/App.swift" \
   -o "$EXECUTABLE" \
   -framework SwiftUI \
   -framework AppKit \
-  -framework Security
+  -framework Security \
+  -framework UserNotifications
 install -m 0644 "$ROOT/Info.plist" "$APP/Contents/Info.plist"
 codesign --force --sign - --timestamp=none "$APP"
 codesign --verify --strict --verbose=2 "$APP"

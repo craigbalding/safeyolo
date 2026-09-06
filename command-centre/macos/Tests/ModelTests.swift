@@ -62,8 +62,103 @@ struct ModelTests {
         try testRemoteProfileStorage()
         try testRemoteConnectionVerification()
         try testPinnedInstanceIdentity()
+        try testAgentAndSecurityModels()
+        try await testClientIngestsAndCoalescesSecurityEvents()
         try await testClientRetriesInitialConnection()
         print("model-tests: PASS")
+    }
+
+    @MainActor
+    private static func testClientIngestsAndCoalescesSecurityEvents() async throws {
+        let client = try SafeYoloClient(
+            adminURL: "https://dev.example.ts.net:9443",
+            eventsURL: "wss://dev.example.ts.net:9444/admin/events",
+            token: "fixture-token",
+            expectedInstanceID: "sy-remote-test"
+        )
+        var notifications = 0
+        client.onNewSecurityEvent = { _ in notifications += 1 }
+        let first = Data("""
+        {
+          "event_id":"evt-security-1",
+          "ts":"2026-09-06T23:00:00Z",
+          "event":"security.pattern_detected",
+          "kind":"security",
+          "severity":"high",
+          "summary":"Sensitive pattern blocked",
+          "agent":"forge",
+          "host":"api.example.com",
+          "decision":"deny",
+          "details":{"reason":"matched rule"}
+        }
+        """.utf8)
+        let repeatEvent = Data(String(decoding: first, as: UTF8.self)
+            .replacingOccurrences(of: "evt-security-1", with: "evt-security-2")
+            .utf8)
+
+        try await client.ingestOperatorEventData(first)
+        try await client.ingestOperatorEventData(repeatEvent)
+
+        precondition(client.securityEvents.count == 1)
+        precondition(client.securityEvents[0].count == 2)
+        precondition(notifications == 1)
+        client.clearSecurityEvents()
+        precondition(client.securityEvents.isEmpty)
+    }
+
+    private static func testAgentAndSecurityModels() throws {
+        let inventory = try JSONDecoder().decode(
+            AgentInventory.self,
+            from: Data("""
+            {"agents":[{"agent_id":"ag-probe","name":"probe","state":"running"}]}
+            """.utf8)
+        )
+        precondition(
+            inventory.agents == [
+                AgentInfo(agentID: "ag-probe", name: "probe", state: "running")
+            ]
+        )
+        precondition(inventory.agents[0].isRunning)
+
+        let decoded = try JSONDecoder().decode(
+            OperatorEventEnvelope.self,
+            from: Data("""
+            {
+              "event_id":"evt-security",
+              "ts":"2026-09-06T23:00:00Z",
+              "event":"security.pattern_detected",
+              "kind":"security",
+              "severity":"high",
+              "summary":"Sensitive pattern blocked",
+              "agent":"forge",
+              "host":"api.example.com",
+              "decision":"deny",
+              "details":{"reason":"matched rule","count":2}
+            }
+            """.utf8)
+        )
+        precondition(decoded.isSecurityObservation)
+        var observation = SecurityObservation(decoded)
+        observation.observe(decoded)
+        precondition(observation.count == 2)
+        precondition(observation.details["reason"]?.description == "matched rule")
+
+        let approval = try JSONDecoder().decode(
+            OperatorEventEnvelope.self,
+            from: Data("""
+            {
+              "event_id":"evt-approval",
+              "event":"security.credential_guard",
+              "kind":"security",
+              "severity":"high",
+              "summary":"Approval needed",
+              "approval":{"required":true},
+              "details":{}
+            }
+            """.utf8)
+        )
+        precondition(approval.needsApproval)
+        precondition(!approval.isSecurityObservation)
     }
 
     private static func testMutationPlans() throws {
