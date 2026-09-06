@@ -1791,6 +1791,7 @@ dependencies = [
     { name = "tenacity" },
     { name = "tomlkit" },
     { name = "typer" },
+    { name = "websockets" },
     { name = "yarl" },
 ]
 
@@ -1798,7 +1799,6 @@ dependencies = [
 command-centre = [
     { name = "keyring" },
     { name = "pyside6" },
-    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -1837,7 +1837,7 @@ requires-dist = [
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tomlkit", specifier = ">=0.12.0" },
     { name = "typer", specifier = ">=0.9.0" },
-    { name = "websockets", marker = "extra == 'command-centre'", specifier = ">=16.1,<17" },
+    { name = "websockets", specifier = ">=16.1,<17" },
     { name = "yarl", specifier = ">=1.9.0" },
 ]
 provides-extras = ["command-centre"]

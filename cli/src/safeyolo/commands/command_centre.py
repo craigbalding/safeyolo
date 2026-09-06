@@ -52,8 +52,8 @@ def enable(
     """Enable Command Centre locally or over an explicit Tailnet share."""
     if importlib.util.find_spec("websockets") is None:
         console.print(
-            "[red]Command Centre dependencies are not installed.[/red]\n"
-            "Install SafeYolo with its [bold]command-centre[/bold] extra first."
+            "[red]The Command Centre event-server dependency is missing.[/red]\n"
+            "Reinstall SafeYolo from this checkout."
         )
         raise typer.Exit(1)
 
