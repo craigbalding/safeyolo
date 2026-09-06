@@ -274,6 +274,38 @@ def test_disk_headroom_boundary_covers_target_allocations(monkeypatch, tmp_path)
     ).allowed
 
 
+def test_disk_headroom_low_and_override_paths_do_not_probe(monkeypatch, tmp_path):
+    import safeyolo.host_resources as host_resources
+
+    monkeypatch.setattr(
+        host_resources.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: pytest.fail("disk admission must not copy a probe"),
+    )
+    monkeypatch.setattr(
+        host_resources.shutil,
+        "copy2",
+        lambda *_args, **_kwargs: pytest.fail("disk admission must not copy a probe"),
+    )
+    monkeypatch.setattr(
+        host_resources.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=100_000, free=1, block_size=4096),
+    )
+
+    automatic = host_resources._read_disks([tmp_path], None)[0]
+    assert automatic.effective_min_free is not None
+    assert automatic.effective_min_free > 1
+
+    monkeypatch.setattr(
+        host_resources,
+        "_minimum_start_disk_headroom",
+        lambda *_args: pytest.fail("explicit disk override must skip measurement"),
+    )
+    override = host_resources._read_disks([tmp_path], 1)[0]
+    assert override.effective_min_free == 1
+
+
 def test_cgroup_process_boundaries_include_a_constrained_parent(monkeypatch, tmp_path):
     import safeyolo.host_resources as host_resources
 

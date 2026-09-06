@@ -270,7 +270,8 @@ watermark, and checks the host process capacity with runtime launch headroom.
 It retains one existing default-agent allocation from detected host memory,
 and checks each new request against live available memory; an explicit memory
 ceiling adds an aggregate configured-allocation cap. Automatic disk protection
-reserves the measured startup payload plus one filesystem allocation block.
+reserves a computed target-filesystem startup allocation bound plus one
+filesystem allocation block.
 Automatic boundaries come from host measurements; explicit overrides live
 under `host_resources` in `config.yaml` and replace their automatic reserve.
 Run `safeyolo doctor --verbose` to inspect detected capacity, effective

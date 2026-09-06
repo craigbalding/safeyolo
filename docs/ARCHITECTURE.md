@@ -56,10 +56,10 @@ The guard enforces these invariants:
 - aggregate configured memory retains one existing default-agent allocation
   from detected host memory, and a new request stays below current available
   memory; an explicit aggregate memory ceiling is not reached;
-- a filesystem used by SafeYolo runtime writes retains the measured startup
-  payload allocation (including dynamic files and replacement overlap) plus one
-  detected allocation block before new work starts;
-  if that footprint cannot be measured, admission is closed; and
+- a filesystem used by SafeYolo runtime writes retains a computed target-
+  filesystem startup allocation bound (including dynamic files and replacement
+  overlap) plus one detected allocation block before new work starts;
+  if that bound cannot be computed, admission is closed; and
 - a new runtime process is not admitted when the detected host process limit
   has the minimum runtime launch headroom (two Linux tasks, one macOS helper).
 

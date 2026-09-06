@@ -481,98 +481,106 @@ def _startup_extra_sources() -> list[tuple[Path, Path, int | None]]:
     return extras
 
 
-def _allocation_bytes(path: Path, block_size: int) -> int | None:
-    """Measure allocated bytes for a probe tree on its target filesystem."""
+def _round_allocation(size: int, block_size: int) -> int:
+    """Round a non-empty file or directory payload to target blocks."""
+    if size <= 0:
+        return 0
+    return ((size + block_size - 1) // block_size) * block_size
+
+
+def _directory_allocation_bound(names: set[str], block_size: int) -> int:
+    """Bound directory data blocks from the names it must contain."""
+    # Linux ext* and macOS directory records carry a fixed header plus the
+    # name, rounded to an alignment boundary. Add one block for filesystem
+    # directory metadata/hash overhead.
+    record_bytes = sum(((8 + len(name) + 3) // 4) * 4 for name in names)
+    return max(block_size, _round_allocation(record_bytes, block_size) + block_size)
+
+
+def _startup_path_allocation(path: Path, block_size: int) -> int | None:
+    """Compute target-block allocation for a source tree without writing."""
     try:
-        paths = [path, *path.rglob("*")]
-        total = 0
-        for item in paths:
-            stat = item.stat()
-            allocated = getattr(stat, "st_blocks", 0) * 512
-            if item.is_dir():
-                total += max(block_size, allocated)
-            elif item.is_file():
-                rounded = max(
-                    block_size,
-                    ((stat.st_size + block_size - 1) // block_size) * block_size,
-                )
-                total += max(rounded, allocated)
+        stat = path.stat()
+        allocated = getattr(stat, "st_blocks", 0) * 512
+        if path.is_file():
+            return max(_round_allocation(stat.st_size, block_size), allocated)
+        if not path.is_dir():
+            return None
+        children = list(path.iterdir())
+        total = max(
+            block_size,
+            _round_allocation(
+                sum(((8 + len(child.name) + 3) // 4) * 4 for child in children),
+                block_size,
+            )
+            + block_size,
+            allocated,
+        )
+        for child in children:
+            child_allocation = _startup_path_allocation(child, block_size)
+            if child_allocation is None:
+                return None
+            total += child_allocation
         return total
     except OSError:
         return None
 
 
 def _minimum_start_disk_headroom(path: Path, block_size: int) -> int | None:
-    """Measure prepare_config_share's allocation on the target filesystem.
+    """Compute prepare_config_share's target-filesystem allocation bound.
 
-    The probe copies every static source using the same temporary-file and
-    replacement shape as startup, then adds bounded dynamic outputs. Its
-    temporary new skill tree is measured while a destination-shaped tree is
-    retained, so old/new replacement overlap is represented without counting
-    the existing destination twice against already-free space.
+    This is intentionally non-writing: it rounds every source and dynamic
+    file to the target filesystem block size, accounts for required directory
+    records and metadata, and includes temporary replacement names alongside
+    their existing destinations. Existing files are already excluded from
+    free space, so the complete new allocation is the conservative overlap
+    bound needed before startup begins.
     """
     dynamic_paths = _startup_dynamic_paths(path)
     if dynamic_paths is None or block_size <= 0:
         return None
-    probe: Path | None = None
-    try:
-        probe = Path(tempfile.mkdtemp(prefix=".safeyolo-disk-probe-", dir=path))
-        source_paths = _startup_source_paths()
-        skills_destination = Path("config-share/skills")
-        skills_source = next(
-            (
-                source
-                for source, relative_destination in source_paths
-                if relative_destination == skills_destination
-            ),
-            None,
-        )
-        if skills_source is None or not skills_source.is_dir():
+    source_paths = _startup_source_paths()
+    total = 0
+    directory_names: dict[str, set[str]] = {
+        "config-share": set(),
+        "status": set(),
+    }
+    for source, relative_destination in source_paths:
+        allocation = _startup_path_allocation(source, block_size)
+        if allocation is None:
             return None
-
-        def copy_probe_source(
-            source: Path, destination: Path, fallback_size: int | None = None
-        ) -> bool:
-            if source.is_dir():
-                shutil.copytree(source, destination)
-                return True
-            if source.is_file():
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, destination)
-                return True
-            if fallback_size is not None:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                with destination.open("wb") as handle:
-                    handle.truncate(fallback_size)
-                return True
-            return False
-
-        # Build every new payload and temporary replacement while the old
-        # destination would still be present. Free space already excludes old
-        # files, so summing this complete new allocation is a conservative
-        # incremental bound for the replacement overlap.
-        for source, relative_destination in source_paths:
-            if not copy_probe_source(source, probe / relative_destination):
-                return None
-        for source, relative_destination, fallback_size in _startup_extra_sources():
-            if not source.is_file() and fallback_size is None:
-                continue
-            if not copy_probe_source(
-                source, probe / relative_destination, fallback_size
-            ):
-                return None
-        for relative_destination, size in dynamic_paths:
-            destination = probe / relative_destination
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            with destination.open("wb") as handle:
-                if size:
-                    handle.write(b"x" * size)
-        return _allocation_bytes(probe, block_size)
-    except OSError:
-        return None
-    finally:
-        if probe is not None:
-            shutil.rmtree(probe, ignore_errors=True)
+        total += allocation
+        parent = str(relative_destination.parent)
+        directory_names.setdefault(parent, set()).add(relative_destination.name)
+        # copytree uses a temporary directory for skills; each script and the
+        # desktop launcher uses a temporary file before replacement.
+        if relative_destination.name == "skills":
+            directory_names[parent].add(".skills-xxxxxxxx")
+        elif relative_destination.name != "guest-sudo":
+            directory_names[parent].add(
+                f".{relative_destination.name}-xxxxxxxx"
+            )
+    for source, relative_destination, fallback_size in _startup_extra_sources():
+        if source.is_file():
+            allocation = _startup_path_allocation(source, block_size)
+        elif fallback_size is not None:
+            allocation = _round_allocation(fallback_size, block_size)
+        else:
+            continue
+        if allocation is None:
+            return None
+        total += allocation
+        parent = str(relative_destination.parent)
+        directory_names.setdefault(parent, set()).add(relative_destination.name)
+    for relative_destination, size in dynamic_paths:
+        total += _round_allocation(size, block_size)
+        parent = str(relative_destination.parent)
+        directory_names.setdefault(parent, set()).add(relative_destination.name)
+    total += sum(
+        _directory_allocation_bound(names, block_size)
+        for names in directory_names.values()
+    )
+    return total
 
 
 def _configured_limit(
@@ -814,7 +822,11 @@ def _read_disks(
             )
             continue
         block_size = _filesystem_block_size(path, usage)
-        measured_payload = _minimum_start_disk_headroom(path, block_size)
+        measured_payload = (
+            None
+            if override is not None or block_size is None
+            else _minimum_start_disk_headroom(path, block_size)
+        )
         minimum = (
             override
             if override is not None
@@ -828,7 +840,7 @@ def _read_disks(
             "operator override"
             if override is not None
             else (
-                "automatic: measured startup payload plus one allocation block"
+                "automatic: computed startup allocation bound plus one filesystem allocation block"
                 if minimum is not None
                 else "unavailable: SafeYolo startup payload or allocation block could not be detected"
             )

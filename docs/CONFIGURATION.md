@@ -72,8 +72,8 @@ configured allocation retains one existing default-agent allocation from the
 detected host total, and each new request is also checked against current
 available memory. An explicit memory ceiling additionally caps the aggregate
 allocations of running agents. CPU admission reserves one detected logical
-CPU. Automatic disk admission reserves the measured target-filesystem
-allocation for startup writes plus one filesystem allocation block. Linux
+CPU. Automatic disk admission reserves a computed target-filesystem
+allocation bound for startup writes plus one filesystem allocation block. Linux
 process admission reserves
 the minimum runtime launch tasks (two for the user-namespace holder and
 launcher). These are measured or runtime-derived boundaries, not workload
