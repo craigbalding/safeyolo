@@ -62,7 +62,7 @@ if [ -z "$MITMDUMP" ] || [ ! -x "$MITMDUMP" ]; then
     if [ -x "$HOME_DIR/.local/bin/mitmdump" ]; then
         MITMDUMP="$HOME_DIR/.local/bin/mitmdump"
     else
-        echo "ERROR: mitmdump not installed (install with: pipx install mitmproxy)"
+        echo "ERROR: mitmdump not installed (run ./scripts/install-mitmproxy-pipx.sh from the repository root)"
         exit 2
     fi
 fi

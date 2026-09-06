@@ -7,7 +7,6 @@ module never mints agent IDs.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import shlex
@@ -27,16 +26,11 @@ from rich.table import Table
 from rich.text import Text
 
 from ..agents_store import get_or_mint_agent_id, load_all_agents
-from ..coord import api
-from ..coord.identity import new_operation_id
-from ..coord.nats_client import (
-    CoordDataError,
-    NatsPublishOutcomeUnknown,
-    NatsUnavailable,
-)
 from ..factory_contract import FactoryContractError, factories_dir, load_approved_snapshot
 
 if TYPE_CHECKING:
+    from asyncio import Event, Task
+
     from prompt_toolkit import PromptSession
 
 # One-shot CLI commands (room create, grant, revoke) each spin up a
@@ -45,7 +39,41 @@ if TYPE_CHECKING:
 # their duration via `_ChatRuntime` below so the NATS client survives
 # across polls rather than being torn down and rebuilt every iteration
 # (reviewer round-4 point 3).
-_run = asyncio.run
+def _run(awaitable):
+    import asyncio
+
+    return asyncio.run(awaitable)
+
+
+class _LazyCoordAPI:
+    """Load coord persistence and NATS dependencies only for coord commands."""
+
+    def __getattr__(self, name: str):
+        from ..coord import api as coord_api
+
+        return getattr(coord_api, name)
+
+
+api = _LazyCoordAPI()
+
+
+def __getattr__(name: str):
+    """Preserve lazy access to the NATS exception names re-exported here."""
+    if name in {
+        "CoordDataError",
+        "NatsPublishOutcomeUnknown",
+        "NatsUnavailable",
+    }:
+        from ..coord import nats_client
+
+        return getattr(nats_client, name)
+    raise AttributeError(name)
+
+
+def new_operation_id() -> str:
+    from ..coord.identity import new_operation_id as _new_operation_id
+
+    return _new_operation_id()
 
 coord_app = typer.Typer(
     name="coord",
@@ -218,6 +246,8 @@ def _explain_coord_failure(exc: Exception) -> str:
     particular often carries an empty message, so the exception text alone
     tells the operator nothing.
     """
+    from ..coord.nats_client import CoordDataError
+
     if isinstance(exc, CoordDataError):
         return (f"coord storage problem: {exc}\n"
                 "The room is registered but its message stream is missing or "
@@ -757,6 +787,152 @@ def revoke(
         )
 
 
+def _read_stdin_utf8() -> str:
+    """Read stdin bytes and decode them as strict UTF-8.
+
+    Standard CLI streams expose a binary ``buffer`` below their text wrapper.
+    Reading that buffer prevents the locale or ``PYTHONIOENCODING`` from
+    silently transcoding input. Text-only streams remain useful for callers
+    that invoke this helper in-process and have already chosen their decoding.
+    """
+    raw = getattr(sys.stdin, "buffer", None)
+    if raw is not None:
+        value = raw.read()
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        if isinstance(value, str):
+            return value
+    value = sys.stdin.read()
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return value
+
+
+def _read_send_body(
+    text: str | None,
+    file: Path | None,
+    read_stdin: bool,
+) -> str:
+    """Read exactly one explicitly selected non-interactive input source."""
+    selected = sum(value is not None for value in (text, file)) + int(read_stdin)
+    if selected != 1:
+        console.print("[red]provide exactly one of TEXT, --file, or --stdin[/red]")
+        raise typer.Exit(1)
+
+    if file is not None:
+        try:
+            body = file.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            console.print(f"[red]could not read message file: {type(exc).__name__}[/red]")
+            raise typer.Exit(1) from None
+    elif read_stdin:
+        try:
+            body = _read_stdin_utf8()
+        except (OSError, UnicodeError) as exc:
+            console.print(f"[red]could not read message from stdin: {type(exc).__name__}[/red]")
+            raise typer.Exit(1) from None
+    else:
+        assert text is not None
+        body = text
+
+    if not body.strip():
+        console.print("[red]message body must be non-empty[/red]")
+        raise typer.Exit(1)
+    return body
+
+
+@coord_app.command("send")
+def coord_send(
+    room: str = typer.Argument(..., help="Coord room name"),
+    text: str | None = typer.Argument(
+        None,
+        help="Message text; mutually exclusive with --file and --stdin.",
+    ),
+    file: Path | None = typer.Option(
+        None,
+        "--file",
+        "-f",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Read the message body from this UTF-8 file.",
+    ),
+    read_stdin: bool = typer.Option(
+        False,
+        "--stdin",
+        help="Read the message body from standard input.",
+    ),
+    to: list[str] = typer.Option(
+        [],
+        "--to",
+        metavar="AGENT",
+        help="Notify this receive-authorized room member; repeat for multiple agents.",
+    ),
+    content_type: str = typer.Option(
+        "text/markdown",
+        "--content-type",
+        help="Declared body type: text/markdown or text/plain.",
+    ),
+) -> None:
+    """Send one trusted operator message without opening an interactive chat."""
+    from ..coord.nats_client import (
+        CoordDataError,
+        NatsPublishOutcomeUnknown,
+        NatsUnavailable,
+    )
+
+    body = _read_send_body(text, file, read_stdin)
+    api.bootstrap()
+    notify = to if to else "room"
+    try:
+        result = _run(
+            api.send(
+                room,
+                "operator",
+                None,
+                body,
+                declared_content_type=content_type,
+                notify=notify,
+            )
+        )
+    except NatsPublishOutcomeUnknown as exc:
+        console.print(
+            "[yellow]message acceptance is UNKNOWN: JetStream may have accepted "
+            f"it; inspect retained room history before retrying: {_explain_coord_failure(exc)}[/]"
+        )
+        raise typer.Exit(1) from None
+    except (
+        api.attention.AttentionTargetError,
+        api.GrantError,
+        api.NotFoundError,
+        ValueError,
+    ) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from None
+    except (NatsUnavailable, CoordDataError) as exc:
+        console.print(f"[red]{_explain_coord_failure(exc)}[/]")
+        console.print("[red]message was not accepted; it was not sent[/]")
+        raise typer.Exit(1) from None
+
+    intent = result.get("attention_intent")
+    mode = intent.get("mode") if isinstance(intent, dict) else None
+    if mode == "targeted":
+        detail = f"attention=targeted targets={','.join(dict.fromkeys(to))}"
+    elif mode in {"none", "room"}:
+        detail = f"attention={mode}"
+    else:
+        detail = "attention intent unavailable"
+    if result.get("attention_status") == "pending":
+        console.print(f"[yellow]message accepted; {detail}; delivery is pending[/]")
+    elif result.get("attention_status") == "lost":
+        console.print(
+            f"[red]message accepted; {detail}, but retention removed it before "
+            "attention materialization; its attention is lost[/]"
+        )
+    else:
+        console.print(f"[dim]message accepted; {detail}[/]")
+
+
 class _ChatRuntime:
     """One event loop + one NATS connection for the lifetime of a
     single `safeyolo coord chat` invocation.
@@ -770,6 +946,8 @@ class _ChatRuntime:
     """
 
     def __init__(self) -> None:
+        import asyncio
+
         self._loop = asyncio.new_event_loop()
 
     def run(self, coro):
@@ -829,6 +1007,8 @@ def chat(
     read-only room tail is useful. Interactive mode requires a terminal on
     both stdin and stdout; use a terminal session for operator sends.
     """
+    from ..coord.nats_client import CoordDataError, NatsUnavailable
+
     if not observe:
         missing = []
         if not sys.stdin.isatty():
@@ -911,6 +1091,11 @@ def dispatch_trigger(
 ) -> None:
     """Durably post one idempotent operator-authored Dispatch TASK to Relay."""
     from ..coord import dispatch_schedule
+    from ..coord.nats_client import (
+        CoordDataError,
+        NatsPublishOutcomeUnknown,
+        NatsUnavailable,
+    )
 
     try:
         run_date = date.fromisoformat(for_date)
@@ -952,6 +1137,8 @@ def dispatch_trigger(
 
 
 def _observe_loop(runtime: _ChatRuntime, room: str, cursor: int) -> None:
+    from ..coord.nats_client import CoordDataError, NatsUnavailable
+
     console.print("[dim]--- observing (Ctrl-C to detach) ---[/]")
     # Long-poll rather than sleep-poll. read_room opens and deletes its own
     # ephemeral pull consumer per call, so a 0.5s poll loop was ~2 consumer
@@ -1083,10 +1270,12 @@ def _read_editor() -> tuple[str | None, str]:
 
 async def _prompt_line(
     session: PromptSession,
-    receiver: asyncio.Task,
+    receiver: Task,
     prompt: str,
 ) -> str:
     """Read one editable line, but stop promptly if the receiver fails."""
+    import asyncio
+
     async def stop_if_receiver_finishes() -> None:
         try:
             # Cancelling this short-lived monitor must not cancel the receiver.
@@ -1112,7 +1301,7 @@ async def _prompt_line(
 
 async def _confirm_send(
     session: PromptSession,
-    receiver: asyncio.Task,
+    receiver: Task,
     body: str,
 ) -> bool:
     """Preview a composed body and ask before it goes to the room."""
@@ -1139,9 +1328,13 @@ async def _confirm_send(
 async def _receive_messages(
     room: str,
     cursor: int,
-    render_ready: asyncio.Event,
+    render_ready: Event,
 ) -> None:
     """Receive and render room messages while the operator prompt is open."""
+    import asyncio
+
+    from ..coord.nats_client import NatsUnavailable
+
     consecutive_failures = 0
     while True:
         try:
@@ -1200,8 +1393,16 @@ async def _interactive_session(
     *,
     target: str | None = None,
 ) -> None:
+    import asyncio
+
     from prompt_toolkit import PromptSession
     from prompt_toolkit.patch_stdout import patch_stdout
+
+    from ..coord.nats_client import (
+        CoordDataError,
+        NatsPublishOutcomeUnknown,
+        NatsUnavailable,
+    )
 
     session = PromptSession()
     render_ready = asyncio.Event()

@@ -394,6 +394,19 @@ def _container_id(name: str) -> str:
     return f"safeyolo-{name}"
 
 
+def _proc_process_state(pid: int) -> str | None:
+    """Return a Linux proc state letter, or None when it is uncertain."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+
+    # The parenthesized command may contain spaces or closing parentheses.
+    _, delimiter, fields = stat.rpartition(") ")
+    state_fields = fields.split(maxsplit=1) if delimiter else []
+    return state_fields[0] if state_fields else None
+
+
 def _runsc_container_status(
     prefix: list[str], runsc: str, root: str, cid: str
 ) -> str | None:
@@ -405,9 +418,20 @@ def _runsc_container_status(
     if result.returncode != 0:
         return None
     try:
-        status = json.loads(result.stdout).get("status")
+        state = json.loads(result.stdout)
+        status = state.get("status")
     except (json.JSONDecodeError, AttributeError):
         return "unknown"
+
+    # gVisor can retain "running" OCI state after its sentry (the reported
+    # host PID) has exited under an unreaping parent.  Waiting for that stale
+    # state consumes the entire graceful-stop timeout.  A zombie cannot run
+    # guest work, and the following force-delete still owns cleanup.  Unknown
+    # or unreadable proc state remains conservative.
+    pid = state.get("pid")
+    if status == "running" and isinstance(pid, int):
+        if _proc_process_state(pid) == "Z":
+            return "stopped"
     return status if isinstance(status, str) else "unknown"
 
 

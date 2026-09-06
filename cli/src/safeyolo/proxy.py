@@ -242,9 +242,8 @@ def _find_addons_dir() -> Path | None:
 
     Post-refactor (#200 phase 5), addons live next to this module in
     the installed package: `safeyolo/mitm_addons/`. The sibling lookup
-    works for both editable (`uv tool install --editable .`) and
-    non-editable installs, since the package layout itself is
-    consistent. `SAFEYOLO_ADDONS_DIR` still overrides for testing or
+    works for both source checkouts and non-editable installs, since the
+    package layout itself is consistent. `SAFEYOLO_ADDONS_DIR` still overrides for testing or
     custom deployments. The override selects the containing ``safeyolo``
     package for the fresh traffic process so addons and their package
     dependencies always come from the same checkout.
@@ -874,8 +873,8 @@ def start_proxy(
             "$SAFEYOLO_ADDONS_DIR (unset or invalid).\n"
             "\n"
             "Fixes:\n"
-            "  1. Install editable from the repo:\n"
-            "       uv tool install --editable .\n"
+            "  1. From the SafeYolo repository root, run the supported installer:\n"
+            "       ./install.sh reinstall\n"
             "  2. Or point SafeYolo at an existing checkout:\n"
             "       export SAFEYOLO_ADDONS_DIR=/path/to/safeyolo/cli/src/safeyolo/mitm_addons\n"
             "       export SAFEYOLO_PDP_DIR=/path/to/safeyolo/pdp\n"

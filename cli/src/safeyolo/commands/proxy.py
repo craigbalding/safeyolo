@@ -14,7 +14,6 @@ from rich.markup import escape
 from rich.table import Table
 
 from ..config import load_config, save_config
-from ..events import EventKind, Severity, write_event
 from ..ignore_hosts import normalize_ignore_host, normalize_ignore_hosts
 from ..proxy import (
     is_proxy_running,
@@ -35,6 +34,30 @@ from ..tailnet import (
 )
 
 console = Console()
+
+
+def write_event(
+    event: str,
+    *,
+    kind: str,
+    severity: str,
+    summary: str,
+    agent: str | None = None,
+    addon: str | None = None,
+    details: dict | None = None,
+) -> None:
+    """Write a proxy event without loading the audit schema at import time."""
+    from ..events import write_event as _write_event
+
+    _write_event(
+        event,
+        kind=kind,
+        severity=severity,
+        summary=summary,
+        agent=agent,
+        addon=addon,
+        details=details,
+    )
 
 proxy_app = typer.Typer(
     name="proxy",
@@ -277,8 +300,8 @@ def web_share(  # DOC: README.md
         )
         write_event(
             event,
-            kind=EventKind.OPS,
-            severity=Severity.HIGH,
+            kind="ops",
+            severity="high",
             summary="WebMITM Tailnet sharing preflight failed",
             addon="cli.proxy.web",
             details={"port": selected_port, "error": str(exc)},
@@ -298,8 +321,8 @@ def web_share(  # DOC: README.md
     except RuntimeError as exc:
         write_event(
             "ops.web_tailnet_share_enable_failed",
-            kind=EventKind.OPS,
-            severity=Severity.HIGH,
+            kind="ops",
+            severity="high",
             summary="Failed to enable persistent WebMITM Tailnet sharing",
             addon="cli.proxy.web",
             details={"port": selected_port, "error": str(exc)},
@@ -309,8 +332,8 @@ def web_share(  # DOC: README.md
 
     write_event(
         "ops.web_tailnet_share_enabled",
-        kind=EventKind.OPS,
-        severity=Severity.HIGH,
+        kind="ops",
+        severity="high",
         summary=f"Persistent WebMITM Tailnet sharing enabled on port {selected_port}",
         addon="cli.proxy.web",
         details={"port": selected_port},
@@ -339,8 +362,8 @@ def web_unshare() -> None:
     except RuntimeError as exc:
         write_event(
             "ops.web_tailnet_share_disable_failed",
-            kind=EventKind.OPS,
-            severity=Severity.HIGH,
+            kind="ops",
+            severity="high",
             summary="Failed to disable persistent WebMITM Tailnet sharing",
             addon="cli.proxy.web",
             details={"port": old_port, "error": str(exc)},
@@ -349,8 +372,8 @@ def web_unshare() -> None:
         raise typer.Exit(1) from exc
     write_event(
         "ops.web_tailnet_share_disabled",
-        kind=EventKind.OPS,
-        severity=Severity.HIGH,
+        kind="ops",
+        severity="high",
         summary=f"Persistent WebMITM Tailnet sharing disabled on port {old_port}",
         addon="cli.proxy.web",
         details={"port": old_port},

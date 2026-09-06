@@ -59,7 +59,7 @@ Typical tasks:
 
 First-party integrations also source `contrib/lib/stage-safeyolo-context.sh`
 to install SafeYolo's compact baseline and managed skills. Pass `codex`,
-`claude`, or `none` to select the agent-specific discovery links:
+`claude`, `pi`, or `none` to select the agent-specific discovery links:
 
 ```sh
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -73,8 +73,24 @@ and Codex get `/safeyolo/skills/safeyolo`. Pi gets the same shared skill under
 its native `~/.pi/agent/skills` path. Codex also gets
 `/safeyolo/skills/safeyolo-lab-controller`,
 `/safeyolo/skills/safeyolo-factory`, and the `safeyolo-lab` guest command. The
-helper refuses to overwrite a user-owned skill or command with a managed name.
-Custom standalone scripts may instead stage their own instructions.
+Codex and Pi setups both stage `repo-map` under `~/.local/bin`; their launchers
+put that directory on the harness `PATH`. The helper refuses to overwrite a
+user-owned skill or command with a managed name. Custom standalone scripts may
+instead stage their own instructions.
+
+`repo-map --query "<task>"` returns likely local implementation, tests, and
+documentation. An exact Python symbol, such as `repo-map --query api.send`,
+returns its definition with defaults, annotations, and docstring, plus one
+lexical example use when found. Large definitions show a labelled 60-line
+preview with the full source range; the example is not a semantic binding claim.
+The tool reads the current working tree and caches content-derived symbols.
+Run it in the checkout being worked on, after selecting the task's revision.
+
+The helper also stages repository guidance beside the command. A checkout's
+`repo-map.toml` takes precedence. If that file is absent, installed guidance
+applies only when its `project` matches the checkout's `pyproject.toml` project
+name. This is hint selection, not repository authorization. Query output names
+the guidance file used; unrelated repositories do not receive SafeYolo hints.
 
 Sketch:
 
@@ -130,10 +146,11 @@ If you press Ctrl-C during the attached Linux session, SafeYolo detaches the
 terminal and leaves the sandbox running. Reconnect with `safeyolo agent shell
 <name>` or stop it explicitly with `safeyolo agent stop <name>`.
 
-The bundled `@codex-coord` setup is one explicit exception to the interactive
-harness shape. Its foreground process is a guest-side supervisor for bounded
-non-interactive Codex turns. SafeYolo still owns the sandbox lifetime and the
-terminal attachment. The supervisor does not become a host daemon. See the
+The bundled `@codex-coord` and `@pi-coord` setups are explicit exceptions to
+the interactive harness shape. Their foreground process is the same guest-side
+supervisor for bounded non-interactive harness turns. SafeYolo still owns the
+sandbox lifetime and terminal attachment. The supervisor does not become a
+host daemon. See the
 [supervisor contract](../docs/codex-coord-supervisor.md) for its recovery and
 authority rules.
 
@@ -168,6 +185,11 @@ not inspect or copy host `~/.pi` state. From an interactive Pi session, use
 credential from another agent or from the host. The launcher starts Pi with
 `--approve` and appends the SafeYolo baseline. Arguments supplied later by the
 user are forwarded unchanged and can alter Pi's trust behavior.
+
+For a factory role, `@pi-coord` adds the approved role contract and the small
+native Coord `send` and `read_room` extension, then hands Pi JSON turns to the common factory
+supervisor. The role's Pi session, Coord cursor, and pending work use the same
+checkpoint and recovery rules as a Codex role.
 On Alpine, support is conditional on the image's native `nodejs` package
 meeting Node `>=22.19.0`; the setup does not use `nodejs-current`, mix
 repositories, or build Node from source.

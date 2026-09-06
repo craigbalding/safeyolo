@@ -45,6 +45,15 @@ source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
 
 echo "=== Customizing rootfs at $ROOTFS ==="
 
+# Debian's fd-find package installs /usr/bin/fdfind. Expose the conventional
+# fd command without replacing an fd binary or link already in the rootfs.
+install_safeyolo_fd_compat "$ROOTFS"
+if ! chroot "$ROOTFS" /bin/bash -c \
+    'command -v fd >/dev/null 2>&1 && fd --version >/dev/null 2>&1'; then
+    echo "rootfs fd command is unavailable after fd-find installation" >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # mise
 # ---------------------------------------------------------------------------

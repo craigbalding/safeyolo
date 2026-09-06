@@ -4,6 +4,24 @@ SafeYolo runs a host-local, authenticated NATS server for retained coord room
 messages. SafeYolo owns its lifecycle; operators should not launch a second
 server or edit the generated NATS configuration.
 
+## Room storage
+
+Rooms share the managed NATS server's total storage budget. They do not reserve
+a fixed number of bytes per room. Age and message-count retention still remove
+old messages within each room. The message-size limit is unchanged.
+
+At normal Coord startup and before creating a room, SafeYolo upgrades the former
+100 MiB room byte reservation in place. The upgrade preserves messages,
+sequences, subjects, and other stream settings. It only changes streams whose
+enforced settings match the known old contract; unrelated configuration drift
+is not overwritten. No room deletion or server restart is required for the
+stream update.
+
+Removing reservations removes the accidental ten-room ceiling; it does not
+make storage unlimited. Rooms compete for the shared budget. If actual stored
+data exhausts that budget, new writes can fail across rooms. The server does
+not evict another room's history to make space for a write.
+
 ## Credential lifecycle
 
 On the first coord start, SafeYolo generates a random password and stores it at
@@ -118,6 +136,34 @@ stream is piped or redirected, the command exits before connecting to Coord
 with an actionable error; it does not consume the input or emit terminal
 cursor-control bytes into the caller's shell. Use `--observe` when a
 non-interactive room tail is needed, or run interactive chat from a terminal.
+
+## Scriptable operator sends
+
+Use `safeyolo coord send` when a trusted operator must send one ordinary Coord
+message without opening an interactive terminal session. The command requires
+exactly one body source:
+
+```bash
+safeyolo coord send ROOM_NAME "Operator direction"
+safeyolo coord send ROOM_NAME --file direction.md --to relay --to lens
+printf '%s\n' "Operator direction" | safeyolo coord send ROOM_NAME --stdin --to relay
+```
+
+A positional `TEXT`, `--file`, and `--stdin` are mutually exclusive. The
+command rejects a missing, empty, or whitespace-only body. The file and stdin
+sources use UTF-8. Use `--content-type text/plain` when the receiver requires
+plain text; the default is `text/markdown`.
+
+Without `--to`, the command requests room-wide attention. Repeat `--to` to
+request targeted attention for multiple agents. Each target must be an active,
+receive-authorized member of the named room. The command uses the same
+SafeYolo-generated operator attribution and `api.send` authorization as
+interactive chat. It reports authorization, invalid-room, invalid-target,
+provider, and publish-outcome errors without printing credentials.
+
+`coord send` is separate from `coord chat --observe`. The `--observe` flag
+remains read-only, and `dispatch-trigger` remains the specialized Dispatch
+publication command rather than a generic message interface.
 
 ## Secret-handling boundary
 

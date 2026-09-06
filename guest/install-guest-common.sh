@@ -22,7 +22,9 @@
 #   * baseline PATH glue at /etc/profile.d/00-path.sh + /etc/environment
 #   * mise profile glue at /etc/profile.d/mise.sh (only if mise present)
 #   * BusyBox applet shims (`hexdump`, `nc`) when busybox is present
+#   * `/usr/local/bin/fd` compatibility link for Debian's `fdfind`, when needed
 #   * `/usr/local/bin/sudo` compatibility shim + passwordless guest-root policy
+#     (including a validated `sudo` group and user-scoped rule)
 #   * hostname = safeyolo
 #
 # What it deliberately does NOT install:
@@ -173,9 +175,50 @@ install_safeyolo_runtime_mount_targets() {
 }
 
 
+install_safeyolo_fd_compat() {
+    local rootfs="$1"
+    local path dir fdfind_path fdfind_target
+
+    [ -n "$rootfs" ] || {
+        echo "install_safeyolo_fd_compat: rootfs arg required" >&2
+        return 1
+    }
+    [ -d "$rootfs" ] || {
+        echo "install_safeyolo_fd_compat: rootfs not a dir: $rootfs" >&2
+        return 1
+    }
+
+    # Check every standard PATH directory before creating the compatibility
+    # link. This preserves a distro or package-provided binary or symlink,
+    # including a link whose target is supplied later in the build.
+    for dir in usr/local/sbin usr/local/bin usr/sbin usr/bin sbin bin; do
+        path="$rootfs/$dir/fd"
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            return 0
+        fi
+    done
+
+    # Debian's fd-find package installs fdfind rather than fd. Other distro
+    # trees may already provide fd, or may not ship either command.
+    for dir in usr/local/sbin usr/local/bin usr/sbin usr/bin sbin bin; do
+        fdfind_path="$rootfs/$dir/fdfind"
+        if [ -x "$fdfind_path" ]; then
+            fdfind_target="/$dir/fdfind"
+            install -d -m 0755 "$rootfs/usr/local/bin"
+            ln -s "$fdfind_target" "$rootfs/usr/local/bin/fd"
+            return 0
+        fi
+    done
+    return 0
+}
+
+
 install_safeyolo_privilege_helper() {
     local rootfs="$1"
     local helper="$SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-sudo"
+    local policy="$rootfs/etc/sudoers.d/safeyolo-agent"
+    local policy_tmp="${policy}.tmp.$$"
+    local visudo
 
     [ -n "$rootfs" ] || {
         echo "install_safeyolo_privilege_helper: rootfs arg required" >&2
@@ -198,13 +241,59 @@ install_safeyolo_privilege_helper() {
         return 0
     fi
 
+    # Keep the distro-neutral group contract explicit. Debian/Ubuntu call
+    # this group `sudo`; Alpine commonly uses `wheel`, but a direct
+    # user-scoped rule is still required because adding a group does not
+    # update the supplementary groups of an already-running shell. Creating
+    # the same named group on Alpine keeps fresh shells and diagnostics
+    # consistent across the supported rootfs builders.
+    if ! grep -q '^sudo:' "$rootfs/etc/group" 2>/dev/null; then
+        if ! chroot "$rootfs" groupadd -f sudo 2>/dev/null; then
+            if ! chroot "$rootfs" addgroup sudo 2>/dev/null; then
+                echo "install_safeyolo_privilege_helper: rootfs cannot create the sudo group" >&2
+                return 1
+            fi
+        fi
+    fi
+    if ! chroot "$rootfs" usermod -a -G sudo agent; then
+        echo "install_safeyolo_privilege_helper: could not add agent to the sudo group" >&2
+        return 1
+    fi
+    if ! chroot "$rootfs" id -nG agent 2>/dev/null | grep -qw sudo; then
+        echo "install_safeyolo_privilege_helper: agent is not a member of the sudo group" >&2
+        return 1
+    fi
+
+    # sudo is a bundled-rootfs prerequisite, so visudo is available with it.
+    # Refuse a partially provisioned image instead of shipping a policy that
+    # only fails later from an agent's pre-existing shell.
+    if [ -x "$rootfs/usr/sbin/visudo" ]; then
+        visudo=/usr/sbin/visudo
+    elif [ -x "$rootfs/usr/bin/visudo" ]; then
+        visudo=/usr/bin/visudo
+    else
+        echo "install_safeyolo_privilege_helper: sudo is present but visudo is missing" >&2
+        return 1
+    fi
+
     install -d -m 0755 "$rootfs/usr/local/bin" "$rootfs/etc/sudoers.d"
     install -m 0755 "$helper" "$rootfs/usr/local/bin/sudo"
-    cat > "$rootfs/etc/sudoers.d/safeyolo-agent" <<'SUDOERS'
+
+    # Leave any existing valid policy in place until the replacement has
+    # passed syntax validation. This matters when a custom builder retries.
+    rm -f "$policy_tmp"
+    cat > "$policy_tmp" <<'SUDOERS'
 agent ALL=(ALL) NOPASSWD:ALL
 Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
 SUDOERS
-    chmod 0440 "$rootfs/etc/sudoers.d/safeyolo-agent"
+    chmod 0440 "$policy_tmp"
+    chown 0:0 "$policy_tmp"
+    if ! chroot "$rootfs" "$visudo" -cf "/etc/sudoers.d/$(basename "$policy_tmp")"; then
+        rm -f "$policy_tmp"
+        echo "install_safeyolo_privilege_helper: generated sudoers policy failed visudo validation" >&2
+        return 1
+    fi
+    mv -f "$policy_tmp" "$policy"
 }
 
 
@@ -297,6 +386,10 @@ PATH_PROFILE
     # Keep persistent global tools on PATH without consulting repository mise
     # configuration. The default rootfs builder calls the same helper.
     install_safeyolo_mise_integration "$rootfs"
+
+    # Debian names the fd-find binary fdfind. Add the conventional command
+    # without replacing a command already supplied by the rootfs.
+    install_safeyolo_fd_compat "$rootfs"
 
     # BusyBox applet shims (`hexdump`, `nc`) -- convenience only, installed
     # when the rootfs ships busybox. apt/yum/apk remain usable at runtime

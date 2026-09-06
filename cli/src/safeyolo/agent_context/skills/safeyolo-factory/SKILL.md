@@ -100,8 +100,9 @@ When traversing a bundled graph:
    hidden transition.
 
 Prefer a table for resource estimates and authority/evidence matrices. Keep
-commands and nuanced judgment in prose; graphing them usually makes them less
-clear.
+long procedures and nuanced judgment in prose. Put bounded deterministic tool
+source, identity, invocation, and evidence requirements on executable graph
+nodes when that prevents agents from guessing.
 
 ## Finish with useful artifacts
 

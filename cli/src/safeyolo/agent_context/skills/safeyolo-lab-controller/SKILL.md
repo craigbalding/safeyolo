@@ -14,9 +14,9 @@ coord, guest privilege, or agent lifecycle, invoke the installed `safeyolo`
 skill and follow its current guidance. This skill controls the experiment; it
 does not replace SafeYolo's operational rules.
 
-When the operator asks to learn or demonstrate SafeYolo through the lab, invoke
-the installed `safeyolo-demo-lab` skill. It supplies the teaching flow while
-this skill continues to control tmux and experiment mechanics.
+Lab is independent from the SafeYolo Demo. If an experiment needs a narrative
+or source surface, use the generic Lab panes and evidence helpers described
+below; do not invoke a Demo-specific workflow.
 
 ## Respect the controller bootstrap
 
@@ -27,13 +27,15 @@ The ordinary controller startup is operator-owned and ordered:
 
 The command creates the guest tmux session, starts its persistent controller
 shell, injects the host-script-provided `.safeyolo-command` through the runner,
-and attaches the operator. The first controller turn briefly explains the lab,
-gives a few experiment examples, and invites the operator to say what they want
-to explore. It does not change lab state. Keep the startup briefing in
-developer instructions. Send only the short `Hello.` user message; do not
-display the briefing as operator input. If the session already exists, the
-command only attaches. It must not start another controller or send the welcome
-turn again.
+and attaches the operator. With no host-level objective, the first controller
+turn briefly explains the lab, gives a few experiment examples, and invites the
+operator to say what they want to explore. With a recorded host-level
+objective, it acknowledges that objective and does not ask the operator to
+repeat it. Neither first turn changes lab state. Keep the startup briefing and
+objective in developer instructions. Send only the short `Hello.` user message;
+do not display the briefing as operator input. If the session already exists,
+the command only attaches. It must not start another controller or send the
+welcome turn again.
 
 Use `safeyolo-lab --help` as the operator discovery point. During initial skill
 setup, run `scripts/install-operator-entrypoint.sh` if `safeyolo-lab` is not on

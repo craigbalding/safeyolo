@@ -5,7 +5,14 @@ from __future__ import annotations
 from mitmproxy import ctx, flow, http
 
 from safeyolo.core.audit_schema import EventKind, Severity
-from safeyolo.core.utils import write_event
+from safeyolo.core.identity import (
+    attribute_traffic,
+    attribution_fields,
+    flow_attribution,
+    flow_identity,
+    snapshot_replay_attribution,
+)
+from safeyolo.core.utils import find_addon, write_event
 
 ORIGIN = "operator"
 
@@ -80,6 +87,13 @@ class OperatorProvenance:
         details = {"action": action, "source_flow_id": source_flow_id}
         if resulting_flow_id is not None:
             details["resulting_flow_id"] = resulting_flow_id
+        discovery = find_addon("service-discovery")
+        attribution = flow_attribution(item, discovery)
+        if item.metadata.get("origin") == ORIGIN:
+            # An edit/kill/revert audit can happen after the original request
+            # snapshot. Preserve its owner, but reflect this separately
+            # trusted operator action in the admin event.
+            attribution = attribute_traffic(item, flow_identity(item, discovery))
         write_event(
             "admin.traffic_operator_action",
             kind=EventKind.ADMIN,
@@ -87,7 +101,7 @@ class OperatorProvenance:
             summary=f"Operator {action} on traffic flow {source_flow_id}",
             host=getattr(getattr(item, "request", None), "pretty_host", None),
             request_id=item.metadata.get("request_id"),
-            agent=item.metadata.get("agent"),
+            **attribution_fields(attribution),
             addon=self.name,
             details=details,
         )
@@ -131,8 +145,9 @@ class OperatorProvenance:
         self._remember(flow)
 
     def request(self, flow: http.HTTPFlow) -> None:
-        """Link replay audit to the fresh request ID assigned by request-id."""
+        """Link replay audit to the request ID assigned by request-id."""
         if flow.metadata.pop("operator_audit_pending", False):
+            snapshot_replay_attribution(flow, find_addon("service-discovery"))
             self._audit(flow, "replay", resulting_flow_id=flow.id)
         self._remember(flow)
 

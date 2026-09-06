@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Supervise bounded, non-interactive Codex coord turns inside an agent.
+"""Supervise bounded, non-interactive harness turns inside an agent.
 
 This is deliberately an execution adapter, not a task queue. Coord messages
-remain authoritative. The local file only checkpoints one Codex thread, the
+remain authoritative. The local file only checkpoints one harness session, the
 attention cursor, bounded deduplication IDs, and canonical objects that were
 returned but do not yet have a terminal coord result.
 """
@@ -113,6 +113,7 @@ class Config:
     agent_name: str
     rooms: tuple[str, ...]
     coordinators: frozenset[str]
+    harness: str = "codex"
     agent_room: str | None = None
     factory_name: str | None = None
     factory_role: str | None = None
@@ -144,6 +145,9 @@ class Config:
         agent_name = _required_name(raw, "agent_name")
         rooms = _required_names(raw, "rooms")
         coordinators = frozenset(_required_names(raw, "coordinators"))
+        harness = raw.get("harness", "codex")
+        if harness not in {"codex", "pi"}:
+            raise SupervisorError("harness must be codex or pi")
         agent_room = raw.get("agent_room")
         if agent_room is not None and (
             not isinstance(agent_room, str) or re.fullmatch(r"[A-Za-z0-9_.-]+", agent_room) is None
@@ -273,8 +277,7 @@ class Config:
                 raise SupervisorError("factory contract hash is invalid")
             snapshot_id = factory.get("snapshot_id")
             if snapshot_id is not None and (
-                not isinstance(snapshot_id, str)
-                or re.fullmatch(r"[0-9a-f]{64}", snapshot_id) is None
+                not isinstance(snapshot_id, str) or re.fullmatch(r"[0-9a-f]{64}", snapshot_id) is None
             ):
                 raise SupervisorError("factory snapshot ID is invalid")
         workspace = raw.get("workspace", "/workspace")
@@ -303,6 +306,7 @@ class Config:
             agent_name=agent_name,
             rooms=rooms,
             coordinators=coordinators,
+            harness=harness,
             agent_room=agent_room,
             factory_name=factory_name,
             factory_role=factory_role,
@@ -340,6 +344,7 @@ def _required_names(raw: dict[str, Any], key: str) -> tuple[str, ...]:
 def empty_state() -> dict[str, Any]:
     return {
         "version": STATE_VERSION,
+        "harness": "codex",
         "thread_id": None,
         "safe_cursor": 0,
         "recent_attention_ids": [],
@@ -354,11 +359,7 @@ def empty_state() -> dict[str, Any]:
 def _require_drained_upgrade(version: int, raw: dict[str, Any]) -> None:
     """Reject old checkpoints with work before entering the target-only protocol."""
     pending = raw.get("in_flight")
-    awaiting = (
-        raw.get("awaiting_handoff")
-        if version in {2, 3, 4}
-        else raw.get("awaiting_handoffs")
-    )
+    awaiting = raw.get("awaiting_handoff") if version in {2, 3, 4} else raw.get("awaiting_handoffs")
     pending_work = isinstance(pending, list) and bool(pending)
     awaiting_work = bool(awaiting) if isinstance(awaiting, list) else awaiting is not None
     if pending_work or awaiting_work:
@@ -393,9 +394,14 @@ def load_state(path: Path) -> dict[str, Any]:
         "owned_process",
     }
     obsolete_compatibility_key = "accept_legacy_protocol"
-    if isinstance(raw, dict) and raw.get("version") == 1 and set(raw) in (
-        version_one_keys,
-        version_one_keys | {obsolete_compatibility_key},
+    if (
+        isinstance(raw, dict)
+        and raw.get("version") == 1
+        and set(raw)
+        in (
+            version_one_keys,
+            version_one_keys | {obsolete_compatibility_key},
+        )
     ):
         _require_drained_upgrade(1, raw)
         raw = {
@@ -404,9 +410,14 @@ def load_state(path: Path) -> dict[str, Any]:
             "awaiting_handoffs": [],
             "briefs": {},
         }
-    if isinstance(raw, dict) and raw.get("version") == 2 and set(raw) in (
-        version_one_keys | {"awaiting_handoff"},
-        version_one_keys | {"awaiting_handoff", obsolete_compatibility_key},
+    if (
+        isinstance(raw, dict)
+        and raw.get("version") == 2
+        and set(raw)
+        in (
+            version_one_keys | {"awaiting_handoff"},
+            version_one_keys | {"awaiting_handoff", obsolete_compatibility_key},
+        )
     ):
         _require_drained_upgrade(2, raw)
         awaiting = raw.pop("awaiting_handoff")
@@ -424,9 +435,14 @@ def load_state(path: Path) -> dict[str, Any]:
             "briefs": {},
         }
     version_three_keys = version_one_keys | {"awaiting_handoff"}
-    if isinstance(raw, dict) and raw.get("version") == 3 and set(raw) in (
-        version_three_keys,
-        version_three_keys | {obsolete_compatibility_key},
+    if (
+        isinstance(raw, dict)
+        and raw.get("version") == 3
+        and set(raw)
+        in (
+            version_three_keys,
+            version_three_keys | {obsolete_compatibility_key},
+        )
     ):
         _require_drained_upgrade(3, raw)
         awaiting = raw.pop("awaiting_handoff")
@@ -437,9 +453,14 @@ def load_state(path: Path) -> dict[str, Any]:
             "briefs": {},
         }
     version_four_keys = version_three_keys | {"briefs"}
-    if isinstance(raw, dict) and raw.get("version") == 4 and set(raw) in (
-        version_four_keys,
-        version_four_keys | {obsolete_compatibility_key},
+    if (
+        isinstance(raw, dict)
+        and raw.get("version") == 4
+        and set(raw)
+        in (
+            version_four_keys,
+            version_four_keys | {obsolete_compatibility_key},
+        )
     ):
         _require_drained_upgrade(4, raw)
         awaiting = raw.pop("awaiting_handoff")
@@ -449,15 +470,27 @@ def load_state(path: Path) -> dict[str, Any]:
             "awaiting_handoffs": [] if awaiting is None else [awaiting],
         }
     allowed_keys = version_one_keys | {"awaiting_handoffs", "briefs"}
+    current_keys = allowed_keys | {"harness"}
     # An unreleased candidate briefly added a compatibility flag. Discard that
     # inert field when reading its checkpoint; it never enabled old messages.
-    if isinstance(raw, dict) and raw.get("version") == STATE_VERSION and set(raw) == (
-        allowed_keys | {obsolete_compatibility_key}
+    if (
+        isinstance(raw, dict)
+        and raw.get("version") == STATE_VERSION
+        and set(raw)
+        in (
+            allowed_keys | {obsolete_compatibility_key},
+            current_keys | {obsolete_compatibility_key},
+        )
     ):
         raw = {key: value for key, value in raw.items() if key != obsolete_compatibility_key}
-    if isinstance(raw, dict) and raw.get("version") == 5 and set(raw) in (
-        allowed_keys,
-        allowed_keys | {obsolete_compatibility_key},
+    if (
+        isinstance(raw, dict)
+        and raw.get("version") == 5
+        and set(raw)
+        in (
+            allowed_keys,
+            allowed_keys | {obsolete_compatibility_key},
+        )
     ):
         _require_drained_upgrade(5, raw)
         # A drained version-5 checkpoint crosses the external-wait upgrade
@@ -467,13 +500,19 @@ def load_state(path: Path) -> dict[str, Any]:
             "version": STATE_VERSION,
             "thread_id": None,
         }
+    # Version 6 originally supervised Codex only. Preserve that session on
+    # upgrade; a later harness switch clears it in Supervisor.__init__.
+    if isinstance(raw, dict) and raw.get("version") == STATE_VERSION and set(raw) == allowed_keys:
+        raw = {**raw, "harness": "codex"}
     if (
         not isinstance(raw, dict)
         or isinstance(raw.get("version"), bool)
         or raw.get("version") != STATE_VERSION
-        or set(raw) != allowed_keys
+        or set(raw) != current_keys
     ):
         raise SupervisorError("supervisor state has an unsupported schema")
+    if raw.get("harness") not in {"codex", "pi"}:
+        raise SupervisorError("supervisor state has an invalid harness")
     thread_id = raw.get("thread_id")
     if thread_id is not None and (not isinstance(thread_id, str) or not thread_id):
         raise SupervisorError("supervisor state has an invalid thread_id")
@@ -770,10 +809,18 @@ def _bounded_diagnostic(value: Any, limit: int = 300) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
-def preflight(config: Config, state: dict[str, Any] | None = None) -> dict[str, str]:
+def preflight(
+    config: Config,
+    state: dict[str, Any] | None = None,
+    harness_args: tuple[str, ...] | list[str] = (),
+) -> dict[str, str]:
     health = _api_json("/health")
     if health.get("agent_api") != "ok":
         raise SupervisorError("SafeYolo Agent API is not healthy")
+
+    if config.harness == "pi":
+        _pi_preflight(harness_args)
+        return _coord_preflight(config, state, health=health)
 
     codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     config_path = codex_home / "config.toml"
@@ -787,9 +834,7 @@ def preflight(config: Config, state: dict[str, Any] | None = None) -> dict[str, 
         raise SupervisorError(f"Codex safeyolo-coord MCP launcher is not executable: {launcher}")
     tool_timeout = registration.get("tool_timeout_sec")
     if tool_timeout is not None and (
-        isinstance(tool_timeout, bool)
-        or not isinstance(tool_timeout, int | float)
-        or tool_timeout <= 0
+        isinstance(tool_timeout, bool) or not isinstance(tool_timeout, int | float) or tool_timeout <= 0
     ):
         raise SupervisorError("Codex safeyolo-coord MCP timeout must be positive")
 
@@ -810,6 +855,85 @@ def preflight(config: Config, state: dict[str, Any] | None = None) -> dict[str, 
         raise SupervisorError("Codex is not logged in with a ChatGPT subscription")
 
     return _coord_preflight(config, state, health=health)
+
+
+def _argument_value(arguments: tuple[str, ...] | list[str], name: str) -> str | None:
+    for index, value in enumerate(arguments):
+        if value == name and index + 1 < len(arguments):
+            return arguments[index + 1]
+        prefix = name + "="
+        if value.startswith(prefix):
+            return value[len(prefix) :]
+    return None
+
+
+def _pi_preflight(harness_args: tuple[str, ...] | list[str]) -> None:
+    supervisor_owned = {
+        "--mode",
+        "--print",
+        "-p",
+        "--session",
+        "--session-id",
+        "--no-session",
+        "--continue",
+        "-c",
+        "--resume",
+        "-r",
+        "--fork",
+        "--no-extensions",
+        "-ne",
+        "--no-tools",
+        "--tools",
+        "--exclude-tools",
+    }
+    for argument in harness_args:
+        name = argument.split("=", 1)[0]
+        if name in supervisor_owned:
+            raise SupervisorError(f"Pi option {name} is owned by the factory supervisor")
+
+    pi = os.environ.get("SAFEYOLO_PI_BIN", "pi")
+    try:
+        version = subprocess.run(
+            [pi, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SupervisorError(f"cannot check Pi installation: {exc}") from exc
+    if version.returncode != 0:
+        raise SupervisorError("Pi installation is not runnable")
+
+    provider = _argument_value(harness_args, "--provider")
+    model = _argument_value(harness_args, "--model")
+    if provider is not None and model is None:
+        raise SupervisorError("Pi --provider requires --model")
+    selector = ["--provider", provider] if provider else ["--model", model] if model else []
+    if selector:
+        try:
+            auth = subprocess.run(
+                [pi, "auth", "check", *selector, "--json"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SupervisorError(f"cannot check Pi subscription login: {exc}") from exc
+        if auth.returncode != 0:
+            raise SupervisorError("Pi is not logged in for its selected provider or model")
+        return
+
+    auth_path = Path.home() / ".pi/agent/auth.json"
+    try:
+        auth_stat = auth_path.stat()
+    except OSError as exc:
+        raise SupervisorError("Pi has no agent-local login") from exc
+    if not auth_path.is_file() or auth_stat.st_size == 0 or auth_stat.st_mode & 0o077:
+        raise SupervisorError("Pi agent-local login file is missing or has unsafe permissions")
 
 
 def _coord_preflight(
@@ -871,11 +995,7 @@ def wait_for_attention_page(config: Config, state: dict[str, Any]) -> dict[str, 
     next_cursor = page.get("next_cursor")
     if not isinstance(edges, list) or len(edges) > config.page_limit:
         raise SupervisorError("coord attention wait returned an invalid edge page")
-    if (
-        isinstance(next_cursor, bool)
-        or not isinstance(next_cursor, int)
-        or next_cursor < state["safe_cursor"]
-    ):
+    if isinstance(next_cursor, bool) or not isinstance(next_cursor, int) or next_cursor < state["safe_cursor"]:
         raise SupervisorError("coord attention wait returned an invalid cursor")
 
     objects = []
@@ -950,11 +1070,7 @@ def _canonical_own_response(message: Any, config: Config, pending: dict[str, Any
 
 
 def _valid_target_url(value: Any) -> bool:
-    if (
-        not isinstance(value, str)
-        or not value
-        or re.search(r"\s", value) is not None
-    ):
+    if not isinstance(value, str) or not value or re.search(r"\s", value) is not None:
         return False
     try:
         parsed = urllib.parse.urlsplit(value)
@@ -980,11 +1096,7 @@ def _terminal_matches(pending: dict[str, Any], body: str) -> bool:
 def _is_assigned_task(body: str, agent_name: str) -> bool:
     first_line = body.split("\n", 1)[0]
     match = TASK_HEADER_RE.fullmatch(first_line)
-    return (
-        match is not None
-        and _valid_target_url(match.group(1))
-        and match.group(2) == agent_name
-    )
+    return match is not None and _valid_target_url(match.group(1)) and match.group(2) == agent_name
 
 
 def _body_has_type(body: str, message_type: str, *, task_agent: str | None = None) -> bool:
@@ -1001,12 +1113,7 @@ def _message_fields(body: str) -> dict[str, str] | None:
     fields: dict[str, str] = {}
     for token in tokens[1:]:
         key, separator, value = token.partition("=")
-        if (
-            not separator
-            or MESSAGE_FIELD_NAME_RE.fullmatch(key) is None
-            or not value
-            or key in fields
-        ):
+        if not separator or MESSAGE_FIELD_NAME_RE.fullmatch(key) is None or not value or key in fields:
             return None
         fields[key] = value
     return fields
@@ -1121,11 +1228,7 @@ def _response_targets_match(
     if config.factory_role is None:
         return True
     handoff = _pending_request(config, pending)
-    if (
-        handoff is None
-        or not isinstance(notify, list)
-        or any(not isinstance(agent, str) for agent in notify)
-    ):
+    if handoff is None or not isinstance(notify, list) or any(not isinstance(agent, str) for agent in notify):
         return False
     expected = [_role_agents(config)[role] for role in handoff.response_roles]
     return len(notify) == len(set(notify)) and set(notify) == set(expected)
@@ -1147,9 +1250,7 @@ def _matching_awaiting_handoff(
         if handoff is None or response_fields is None:
             continue
         expected = awaiting["correlation"]
-        actual = {
-            key: value for key, value in response_fields.items() if key != "attention_id"
-        }
+        actual = {key: value for key, value in response_fields.items() if key != "attention_id"}
         if (
             awaiting["room_name"] == room_name
             and awaiting["request"] == handoff.request
@@ -1162,15 +1263,14 @@ def _matching_awaiting_handoff(
 
 def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]) -> str:
     pending = state["in_flight"]
-    recent = state["recent_attention_ids"]
     awaiting = state["awaiting_handoffs"]
+    # Historical IDs are supervisor deduplication state, not model work context.
     checkpoint = {
         "configured_room_ids": room_ids,
         "safe_cursor": state["safe_cursor"],
         "in_flight": pending,
         "awaiting_handoffs": awaiting,
         "briefs": state["briefs"],
-        "recent_attention_ids": recent,
     }
     if config.factory_name is not None:
         agents = _role_agents(config)
@@ -1184,9 +1284,7 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
                         "type": handoff.request,
                         "sender": agents[handoff.source_role],
                         "responses": list(handoff.responses),
-                        "response_recipients": [
-                            agents[role] for role in handoff.response_roles
-                        ],
+                        "response_recipients": [agents[role] for role in handoff.response_roles],
                     }
                 )
             if handoff.source_role == config.factory_role:
@@ -1197,10 +1295,7 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
                         "types": list(handoff.responses),
                     }
                 )
-            if (
-                config.factory_role in handoff.response_roles
-                and config.factory_role != handoff.source_role
-            ):
+            if config.factory_role in handoff.response_roles and config.factory_role != handoff.source_role:
                 observed_responses.append(
                     {
                         "request": handoff.request,
@@ -1287,7 +1382,17 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
     return (
         "You are in one deterministic, supervised SafeYolo factory cycle. Continue the existing factory role and "
         "context. Coord is authoritative. Do not create another queue, scheduler, task record, or transcript. "
-        "Use the safeyolo skill and canonical MCP results. Do not decide success from prose or process status. "
+        + (
+            "Use the bound role contract and canonical MCP results. "
+            if config.harness == "codex"
+            else "Use the bound role contract and canonical harness tool results. "
+        )
+        + "Do not decide success from prose or process status. "
+        + "Use the supplied checkpoint first. If a new session or compaction leaves a useful prior decision or "
+        "finding missing, recover it with read_room in the relevant Coord room. For a known message sequence N, "
+        "use since_sequence=N-1 and limit=1; verify the returned sequence, canonical sender, and work target. "
+        "A room-history cursor is separate from safe_cursor and reading history does not assign work. "
+        "Do not reread history on every wake when the needed context is already supplied. "
         + action
         + " Finish this invocation after the work above. Supervisor checkpoint:\n"
         + json.dumps(checkpoint, sort_keys=True, separators=(",", ":"))
@@ -1302,6 +1407,7 @@ class InvocationResult:
     wait_was_empty: bool = False
     wait_failed: bool = False
     protocol_failed: bool = False
+    harness_failed: bool = False
     timed_out: bool = False
     terminal_observed: bool = False
     handoff_observed: bool = False
@@ -1328,9 +1434,7 @@ def _normalize_outbound_send(item: dict[str, Any]) -> OutboundSend | None:
         canonical_arguments = {
             "room_name": arguments.get("room_name"),
             "body": arguments.get("body"),
-            "declared_content_type": arguments.get(
-                "declared_content_type", "text/markdown"
-            ),
+            "declared_content_type": arguments.get("declared_content_type", "text/markdown"),
             "notify": arguments.get("notify", "none"),
         }
     elif tool == "send_task":
@@ -1338,10 +1442,7 @@ def _normalize_outbound_send(item: dict[str, Any]) -> OutboundSend | None:
         assignee = arguments.get("assignee")
         target = arguments.get("target")
         detail = arguments.get("body")
-        if not all(
-            isinstance(value, str)
-            for value in (room_name, assignee, target, detail)
-        ):
+        if not all(isinstance(value, str) for value in (room_name, assignee, target, detail)):
             return None
         body = f"TASK target={target} assignee={assignee}"
         if detail:
@@ -1372,10 +1473,14 @@ class EventConsumer:
         self.result = InvocationResult()
         self.wait_calls = 0
         self.recovering = bool(state["in_flight"]) and not state["awaiting_handoffs"]
+        self.pi_tool_arguments: dict[str, dict[str, Any]] = {}
 
     def consume(self, event: Any) -> None:
         if not isinstance(event, dict):
             self.result.protocol_failed = True
+            return
+        if self.config.harness == "pi":
+            self._consume_pi(event)
             return
         event_type = event.get("type")
         if event_type == "thread.started":
@@ -1396,6 +1501,56 @@ class EventConsumer:
             item = event.get("item")
             if isinstance(item, dict) and item.get("type") == "mcp_tool_call":
                 self._consume_mcp(item)
+
+    def _consume_pi(self, event: dict[str, Any]) -> None:
+        event_type = event.get("type")
+        if event_type == "session":
+            session_id = event.get("id")
+            if not isinstance(session_id, str) or not session_id:
+                self.result.protocol_failed = True
+                return
+            self.state["thread_id"] = session_id
+            save_state(self.state_path, self.state)
+        elif event_type == "agent_start":
+            self.result.saw_turn_started = True
+            self.result.saw_turn_completed = False
+        elif event_type == "agent_end":
+            if event.get("willRetry") or self.result.harness_failed or self.result.protocol_failed:
+                return
+            self.result.saw_turn_completed = True
+            self._complete_nonterminal_objects()
+        elif event_type == "message_end":
+            message = event.get("message")
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                # Pi emits agent_end after failures too, and may retry inside
+                # this invocation. Only a subsequent successful response can
+                # clear a harness failure; malformed protocol stays failed.
+                self.result.harness_failed = message.get("stopReason") in {"error", "aborted"}
+        elif event_type == "tool_execution_start":
+            tool_call_id = event.get("toolCallId")
+            arguments = event.get("args")
+            if isinstance(tool_call_id, str) and isinstance(arguments, dict):
+                self.pi_tool_arguments[tool_call_id] = arguments
+        elif event_type == "tool_execution_end":
+            self._consume_pi_tool(event)
+
+    def _consume_pi_tool(self, event: dict[str, Any]) -> None:
+        tool_call_id = event.get("toolCallId")
+        arguments = self.pi_tool_arguments.pop(tool_call_id, None)
+        if event.get("toolName") != "send" or not isinstance(arguments, dict):
+            return
+        result = event.get("result")
+        details = result.get("details") if isinstance(result, dict) else None
+        item = {
+            "status": "completed" if event.get("isError") is not True else "failed",
+            "tool": "send",
+            "arguments": arguments,
+            "result": {"structured_content": details},
+        }
+        outbound = _normalize_outbound_send(item)
+        if outbound is not None:
+            self._accept_terminal_send(outbound.result, outbound.arguments)
+            self._accept_handoff_send(outbound.result, outbound.arguments)
 
     def _consume_mcp(self, item: dict[str, Any]) -> None:
         if item.get("server") != "safeyolo-coord":
@@ -1954,9 +2109,9 @@ def _record_owned_process(process: subprocess.Popen[Any], state: dict[str, Any],
     try:
         process_group = os.getpgid(process.pid)
     except ProcessLookupError as exc:
-        raise SupervisorError("Codex exited before its process identity was checkpointed") from exc
+        raise SupervisorError("harness exited before its process identity was checkpointed") from exc
     if start_time is None or process_group != process.pid:
-        raise SupervisorError("cannot establish the owned Codex process-group identity")
+        raise SupervisorError("cannot establish the owned harness process-group identity")
     state["owned_process"] = {
         "pid": process.pid,
         "start_time": start_time,
@@ -2023,7 +2178,7 @@ def cleanup_stale_owned_process(state: dict[str, Any], state_path: Path, grace: 
             os.close(leader_pidfd)
     state["owned_process"] = None
     # A checkpointed child at supervisor startup proves the prior invocation
-    # did not finish its normal cleanup. Its Codex thread may therefore contain
+    # did not finish its normal cleanup. Its harness session may therefore contain
     # a tool call whose harness-owned result was lost with the old process.
     # Preserve canonical work, but recover it in a fresh conversation.
     state["thread_id"] = None
@@ -2035,24 +2190,29 @@ def run_invocation(
     state: dict[str, Any],
     state_path: Path,
     room_ids: dict[str, str],
-    codex_args: list[str],
+    harness_args: list[str],
 ) -> InvocationResult:
     prompt = build_prompt(config, state, room_ids)
-    codex = os.environ.get("SAFEYOLO_CODEX_BIN", "codex")
     resuming = state["thread_id"] is not None
-    if resuming:
-        command = [codex, "exec", "resume", "--json", *codex_args, state["thread_id"], "-"]
+    if config.harness == "pi":
+        pi = os.environ.get("SAFEYOLO_PI_BIN", "pi")
+        session_args = ["--session", state["thread_id"]] if resuming else []
+        command = [pi, "--mode", "json", "--print", *session_args, *harness_args]
     else:
-        command = [
-            codex,
-            "exec",
-            "--json",
-            "--cd",
-            config.workspace,
-            "--skip-git-repo-check",
-            *codex_args,
-            "-",
-        ]
+        codex = os.environ.get("SAFEYOLO_CODEX_BIN", "codex")
+        if resuming:
+            command = [codex, "exec", "resume", "--json", *harness_args, state["thread_id"], "-"]
+        else:
+            command = [
+                codex,
+                "exec",
+                "--json",
+                "--cd",
+                config.workspace,
+                "--skip-git-repo-check",
+                *harness_args,
+                "-",
+            ]
     try:
         process = subprocess.Popen(
             command,
@@ -2064,7 +2224,7 @@ def run_invocation(
             start_new_session=True,
         )
     except OSError as exc:
-        raise SupervisorError(f"cannot launch Codex: {exc}") from exc
+        raise SupervisorError(f"cannot launch {config.harness}: {exc}") from exc
     try:
         leader_start_time = _record_owned_process(process, state, state_path)
     except BaseException:
@@ -2079,7 +2239,7 @@ def run_invocation(
         _terminate_process_group(process, config.terminate_grace_seconds, leader_start_time)
         state["owned_process"] = None
         save_state(state_path, state)
-        raise SupervisorError(f"cannot send the supervised prompt to Codex: {exc}") from exc
+        raise SupervisorError(f"cannot send the supervised prompt to {config.harness}: {exc}") from exc
     assert process.stdout is not None
     assert process.stderr is not None
     consumer = EventConsumer(config, state, state_path, room_ids)
@@ -2114,7 +2274,7 @@ def run_invocation(
                     sys.stderr.flush()
                     _send_agent_room_event(
                         config,
-                        "safeyolo.codex.stderr",
+                        f"safeyolo.{config.harness}.stderr",
                         text=decoded,
                     )
                     continue
@@ -2124,12 +2284,19 @@ def run_invocation(
                     if not line.strip():
                         continue
                     decoded = line.decode(errors="replace")
-                    _send_agent_room_body(config, decoded, "safeyolo.codex.stdout")
                     try:
                         event = json.loads(decoded)
                     except json.JSONDecodeError:
+                        _send_agent_room_body(config, decoded, f"safeyolo.{config.harness}.stdout")
                         consumer.result.protocol_failed = True
                         continue
+                    agent_room_body = _agent_room_stdout_body(config, event, decoded)
+                    if agent_room_body is not None:
+                        _send_agent_room_body(
+                            config,
+                            agent_room_body,
+                            f"safeyolo.{config.harness}.stdout",
+                        )
                     consumer.consume(event)
                     if consumer.result.saw_turn_started and not turn_deadline_set:
                         turn_deadline_set = True
@@ -2150,13 +2317,22 @@ def run_invocation(
                 break
         if stdout_buffer.strip():
             decoded = stdout_buffer.decode(errors="replace")
-            _send_agent_room_body(config, decoded, "safeyolo.codex.stdout")
             try:
-                consumer.consume(json.loads(decoded))
+                event = json.loads(decoded)
             except json.JSONDecodeError:
+                _send_agent_room_body(config, decoded, f"safeyolo.{config.harness}.stdout")
                 consumer.result.protocol_failed = True
+            else:
+                agent_room_body = _agent_room_stdout_body(config, event, decoded)
+                if agent_room_body is not None:
+                    _send_agent_room_body(
+                        config,
+                        agent_room_body,
+                        f"safeyolo.{config.harness}.stdout",
+                    )
+                consumer.consume(event)
     except SignalInterrupt:
-        # A Codex session interrupted during a tool call may retain the call
+        # A harness session interrupted during a tool call may retain the call
         # without its harness-owned output and cannot be resumed reliably.
         # Canonical work is already durable in this checkpoint, so recover in
         # a fresh thread without replaying or dropping the task.
@@ -2181,14 +2357,14 @@ class Supervisor:
         self,
         config: Config,
         state_path: Path,
-        codex_args: list[str],
+        harness_args: list[str],
         *,
         debug: bool = False,
     ) -> None:
         _require_pidfd_support()
         self.config = config
         self.state_path = state_path
-        self.codex_args = codex_args
+        self.harness_args = harness_args
         self.debug = debug
         self.state = load_state(state_path)
         cleanup_stale_owned_process(
@@ -2196,17 +2372,35 @@ class Supervisor:
             self.state_path,
             self.config.terminate_grace_seconds,
         )
+        if self.state["harness"] != self.config.harness:
+            # Harness sessions are private implementation state. The canonical
+            # Coord checkpoint survives a switch, but a Codex thread cannot be
+            # resumed as a Pi session (or vice versa).
+            self.state["harness"] = self.config.harness
+            self.state["thread_id"] = None
+            save_state(self.state_path, self.state)
         self._initial_preflight_complete = False
 
     def cycle(self) -> bool:
         if self._initial_preflight_complete:
             room_ids = _coord_preflight(self.config, self.state)
         else:
-            room_ids = preflight(self.config, self.state)
+            room_ids = (
+                preflight(self.config, self.state, self.harness_args)
+                if self.config.harness == "pi"
+                else preflight(self.config, self.state)
+            )
             self._initial_preflight_complete = True
         save_state(self.state_path, self.state)
         if reconcile_terminals(self.config, self.state):
             save_state(self.state_path, self.state)
+
+        if self.state["thread_id"] and not self.state["in_flight"] and not self.state["awaiting_handoffs"]:
+            # No work remains attached to this session. Keep Coord state and
+            # transcripts, but do not carry a completed exchange into new work.
+            self.state["thread_id"] = None
+            save_state(self.state_path, self.state)
+            _debug_event(self.debug, "session.retired", reason="work_settled")
 
         recovering_pending = bool(self.state["in_flight"]) and not self.state["awaiting_handoffs"]
 
@@ -2265,7 +2459,7 @@ class Supervisor:
             self.state,
             self.state_path,
             room_ids,
-            self.codex_args,
+            self.harness_args,
         )
         if had_thread and not result.saw_turn_started:
             # Exact continuation was attempted first. A new thread receives the
@@ -2293,11 +2487,7 @@ class Supervisor:
         healthy_turn = result.saw_turn_completed and complete
         success = canonical_completion or (
             healthy_turn
-            and not (
-                result.wait_failed
-                or result.protocol_failed
-                or result.timed_out
-            )
+            and not (result.wait_failed or result.protocol_failed or result.harness_failed or result.timed_out)
         )
         if success:
             self.state["consecutive_failures"] = 0
@@ -2393,6 +2583,11 @@ def _codex_event_summary(event: Any) -> dict[str, Any]:
         "message",
         "text",
         "thread_id",
+        "id",
+        "toolCallId",
+        "toolName",
+        "args",
+        "isError",
     ):
         if key in event:
             summary[key] = _short_summary_value(event[key])
@@ -2407,7 +2602,10 @@ def _codex_event_summary(event: Any) -> dict[str, Any]:
     return summary
 
 
-def _oversize_agent_room_body(body: str) -> str:
+def _oversize_agent_room_body(
+    body: str,
+    wrapper_type: str = "safeyolo.codex.oversize",
+) -> str:
     raw = body.encode("utf-8", errors="replace")
     digest = hashlib.sha256(raw).hexdigest()
     try:
@@ -2423,15 +2621,11 @@ def _oversize_agent_room_body(body: str) -> str:
         head_requested = (fragment_bytes + 1) // 2
         tail_requested = fragment_bytes // 2
         head = raw[:head_requested].decode("utf-8", errors="ignore")
-        tail = (
-            raw[-tail_requested:].decode("utf-8", errors="ignore")
-            if tail_requested
-            else ""
-        )
+        tail = raw[-tail_requested:].decode("utf-8", errors="ignore") if tail_requested else ""
         kept_bytes = len(head.encode()) + len(tail.encode())
         return json.dumps(
             {
-                "type": "safeyolo.codex.oversize",
+                "type": wrapper_type,
                 "original_type": original_type,
                 "original_bytes": len(raw),
                 "omitted_middle_bytes": len(raw) - kept_bytes,
@@ -2458,10 +2652,66 @@ def _oversize_agent_room_body(body: str) -> str:
     return best
 
 
-def _bounded_agent_room_body(body: str) -> str:
+def _bounded_agent_room_body(
+    body: str,
+    event_type: str = "safeyolo.codex.stdout",
+) -> str:
     if len(body.encode("utf-8", errors="replace")) <= MAX_AGENT_ROOM_BODY_BYTES:
         return body
-    return _oversize_agent_room_body(body)
+    harness = "pi" if event_type.startswith("safeyolo.pi.") else "codex"
+    return _oversize_agent_room_body(body, f"safeyolo.{harness}.oversize")
+
+
+def _agent_room_stdout_body(config: Config, event: dict[str, Any], raw: str) -> str | None:
+    """Keep Pi telemetry useful without retaining its token-by-token JSON stream."""
+    if config.harness != "pi":
+        return raw
+    event_type = event.get("type")
+    if event_type in {
+        "session",
+        "agent_start",
+        "tool_execution_start",
+        "tool_execution_end",
+        "extension_error",
+    }:
+        return raw
+    if event_type == "agent_end":
+        retained = {"type": "agent_end"}
+        if isinstance(event.get("willRetry"), bool):
+            retained["willRetry"] = event["willRetry"]
+        return json.dumps(retained, separators=(",", ":"))
+    if event_type != "message_end":
+        return None
+    message = event.get("message")
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return None
+    content = message.get("content")
+    text_content = []
+    if isinstance(content, list):
+        text_content = [
+            {"type": "text", "text": item["text"]}
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
+        ]
+    if not text_content and message.get("stopReason") not in {"error", "aborted"}:
+        return None
+    retained_message = {"role": "assistant", "content": text_content}
+    for key in (
+        "api",
+        "provider",
+        "model",
+        "usage",
+        "stopReason",
+        "timestamp",
+        "responseId",
+        "rawStopReason",
+    ):
+        if key in message:
+            retained_message[key] = message[key]
+    return json.dumps(
+        {"type": "message_end", "message": retained_message},
+        separators=(",", ":"),
+    )
 
 
 def _send_agent_room_body(config: Config, body: str, event_type: str) -> None:
@@ -2473,7 +2723,7 @@ def _send_agent_room_body(config: Config, body: str, event_type: str) -> None:
             f"/api/coord/rooms/{room}/send",
             method="POST",
             body={
-                "body": _bounded_agent_room_body(body),
+                "body": _bounded_agent_room_body(body, event_type),
                 "declared_content_type": "text/plain",
                 "notify": "none",
             },
@@ -2504,14 +2754,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--once", action="store_true", help="run one supervised cycle")
     parser.add_argument("--debug", action="store_true", help="trace supervisor decisions to stderr")
-    parser.add_argument("codex_args", nargs=argparse.REMAINDER)
+    parser.add_argument("harness_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
-    codex_args = args.codex_args
-    if codex_args[:1] == ["--"]:
-        codex_args = codex_args[1:]
+    harness_args = args.harness_args
+    if harness_args[:1] == ["--"]:
+        harness_args = harness_args[1:]
     if args.inspect_state is not None:
-        if codex_args:
-            parser.error("--inspect-state does not accept Codex arguments")
+        if harness_args:
+            parser.error("--inspect-state does not accept harness arguments")
         try:
             summary = inspect_state(args.inspect_state)
         except (OSError, UnicodeError, SupervisorError) as exc:
@@ -2537,7 +2787,7 @@ def main(argv: list[str] | None = None) -> int:
         supervisor = Supervisor(
             config,
             args.state,
-            codex_args,
+            harness_args,
             debug=args.debug or os.environ.get("SAFEYOLO_COORD_SUPERVISOR_DEBUG") == "1",
         )
         recovering_from_error = False

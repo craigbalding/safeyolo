@@ -79,6 +79,198 @@ def _clean(value: Any, limit: int | None, *, redact: bool = False) -> str:
     return text[: limit - 1] + "…"
 
 
+def _web_search_detail(
+    item: dict[str, Any],
+    phase: str,
+    limit: int | None,
+    *,
+    redact: bool,
+) -> str:
+    """Render the useful destination or query from a Codex web event."""
+
+    action = item.get("action")
+    action = action if isinstance(action, dict) else {}
+    action_queries = action.get("queries")
+    if isinstance(action_queries, list):
+        queries = [value for value in action_queries if isinstance(value, str) and value]
+    else:
+        queries = []
+    query = action.get("query") or item.get("query")
+    url = action.get("url") or item.get("url")
+    if not isinstance(url, str) or not url:
+        url = query if isinstance(query, str) and query.startswith(("http://", "https://")) else ""
+
+    detail = f"{phase} web_search"
+    if url:
+        detail += f" url={url}"
+    elif queries:
+        detail += " queries=" + " | ".join(queries)
+    elif isinstance(query, str) and query:
+        detail += f" query={query}"
+    return _clean(detail, limit, redact=redact)
+
+
+def _mcp_detail(
+    item: dict[str, Any],
+    phase: str,
+    limit: int | None,
+    *,
+    redact: bool,
+) -> str:
+    """Render bounded routing arguments without dumping request bodies."""
+
+    arguments = item.get("arguments")
+    arguments = arguments if isinstance(arguments, dict) else {}
+    details = [
+        f"{phase} {item.get('server', 'mcp')}.{item.get('tool', 'tool')}",
+        f"status={item.get('status', '?')}",
+    ]
+
+    aliases = (
+        (("room_name",), "room"),
+        (("assignee",), "assignee"),
+        (("target",), "target"),
+        (("repository_full_name", "repo_full_name"), "repo"),
+        (("issue_number",), "issue"),
+        (("pr_number",), "pr"),
+        (("path",), "path"),
+        (("ref",), "ref"),
+        (("commit_sha", "sha"), "sha"),
+        (("head", "head_branch"), "head"),
+        (("base", "base_branch"), "base"),
+        (("branch", "branch_name"), "branch"),
+        (("run_id",), "run"),
+        (("job_id",), "job"),
+        (("query",), "query"),
+        (("url",), "url"),
+        (("since_sequence",), "cursor"),
+        (("timeout_seconds",), "timeout"),
+        (("limit",), "limit"),
+    )
+    for source_keys, shown_key in aliases:
+        value = next((arguments[key] for key in source_keys if key in arguments), None)
+        if isinstance(value, (str, int)) and not isinstance(value, bool) and value != "":
+            details.append(f"{shown_key}={value}")
+
+    start = arguments.get("start_line")
+    end = arguments.get("end_line")
+    if isinstance(start, int) and not isinstance(start, bool):
+        lines = str(start)
+        if isinstance(end, int) and not isinstance(end, bool):
+            lines += f"-{end}"
+        details.append(f"lines={lines}")
+
+    error = item.get("error")
+    if error:
+        details.append(f"error={error}")
+    return _clean(" ".join(details), limit, redact=redact)
+
+
+def _file_change_detail(
+    item: dict[str, Any],
+    phase: str,
+    limit: int | None,
+    *,
+    redact: bool,
+) -> str:
+    changes = item.get("changes")
+    shown = []
+    if isinstance(changes, list):
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            path = change.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            kind = change.get("kind")
+            shown.append(f"{kind}:{path}" if isinstance(kind, str) and kind else path)
+    detail = f"{phase} file_change"
+    if shown:
+        detail += " " + " ".join(shown)
+    return _clean(detail, limit, redact=redact)
+
+
+def _turn_completed_detail(event: dict[str, Any]) -> str:
+    usage = event.get("usage")
+    if not isinstance(usage, dict):
+        return "turn completed"
+    labels = (
+        ("input_tokens", "input"),
+        ("cached_input_tokens", "cached"),
+        ("output_tokens", "output"),
+        ("reasoning_output_tokens", "reasoning"),
+    )
+    shown = []
+    for key, label in labels:
+        value = usage.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            shown.append(f"{label}={value:,}")
+    if not shown:
+        return "turn completed"
+    return "turn completed tokens " + " ".join(shown)
+
+
+def _pi_tool_detail(
+    event: dict[str, Any],
+    phase: str,
+    limit: int | None,
+    *,
+    redact: bool,
+) -> str:
+    name = event.get("toolName")
+    name = name if isinstance(name, str) and name else "tool"
+    arguments = event.get("args")
+    arguments = arguments if isinstance(arguments, dict) else {}
+    details = [phase, name]
+    for key in (
+        "command",
+        "path",
+        "offset",
+        "limit",
+        "room_name",
+        "target",
+        "query",
+        "url",
+    ):
+        value = arguments.get(key)
+        if isinstance(value, (str, int)) and not isinstance(value, bool) and value != "":
+            details.append(f"{key}={value}")
+    if phase == "completed":
+        details.append("status=error" if event.get("isError") is True else "status=ok")
+    return _clean(" ".join(details), limit, redact=redact)
+
+
+def _pi_message_detail(message: dict[str, Any], limit: int | None, *, redact: bool) -> str:
+    content = message.get("content")
+    text = ""
+    if isinstance(content, list):
+        fragments = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ]
+        text = " ".join(fragment for fragment in fragments if fragment)
+    if text:
+        return _clean(text, limit, redact=redact)
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return "assistant message"
+    labels = (
+        ("input", "input"),
+        ("cacheRead", "cached"),
+        ("output", "output"),
+        ("reasoning", "reasoning"),
+    )
+    shown = [
+        f"{label}={usage[key]:,}"
+        for key, label in labels
+        if isinstance(usage.get(key), int) and not isinstance(usage[key], bool)
+    ]
+    return "assistant message" + (" tokens " + " ".join(shown) if shown else "")
+
+
 def _event_line(
     event: dict[str, Any],
     limit: int | None,
@@ -87,7 +279,7 @@ def _event_line(
     show_unknown: bool = False,
 ) -> tuple[str, str] | None:
     kind = event.get("type")
-    if kind == "safeyolo.codex.oversize":
+    if kind in {"safeyolo.codex.oversize", "safeyolo.pi.oversize"}:
         original_type = str(event.get("original_type", "unknown"))
         summary = event.get("summary")
         detail = original_type
@@ -100,10 +292,7 @@ def _event_line(
                 label = "TOOL"
             elif item_type == "mcp_tool_call":
                 phase = original_type.removeprefix("item.")
-                detail = (
-                    f"{phase} {summary.get('server', 'mcp')}."
-                    f"{summary.get('tool', 'tool')} status={summary.get('status', '?')}"
-                )
+                detail = _mcp_detail(summary, phase, limit, redact=redact)
                 label = "TOOL"
             elif item_type == "agent_message":
                 detail = str(summary.get("text", ""))
@@ -118,14 +307,32 @@ def _event_line(
                 )
                 label = "TOOL"
             elif item_type in {"web_search", "web_search_call"}:
-                detail = f"{original_type.removeprefix('item.')} web_search"
+                detail = _web_search_detail(
+                    summary,
+                    original_type.removeprefix("item."),
+                    limit,
+                    redact=redact,
+                )
                 label = "TOOL"
             elif item_type in {"file_change", "file_write", "apply_patch"}:
-                detail = f"{original_type.removeprefix('item.')} {item_type}"
+                detail = _file_change_detail(
+                    summary,
+                    original_type.removeprefix("item."),
+                    limit,
+                    redact=redact,
+                )
                 label = "TOOL"
-            elif original_type == "safeyolo.codex.stderr":
+            elif original_type in {"safeyolo.codex.stderr", "safeyolo.pi.stderr"}:
                 detail = str(summary.get("text", ""))
                 label = "STDERR"
+            elif isinstance(summary.get("toolName"), str):
+                detail = _pi_tool_detail(
+                    summary,
+                    "completed" if original_type == "tool_execution_end" else "started",
+                    limit,
+                    redact=redact,
+                )
+                label = "TOOLERR" if summary.get("isError") == "true" else "TOOL"
             elif original_type == "safeyolo.supervisor":
                 action = str(summary.get("event", "event"))
                 detail = f"{action} {summary.get('message', '')}".rstrip()
@@ -138,24 +345,52 @@ def _event_line(
         )
         detail_limit = max(1, limit - len(marker) - 1)
         return label, f"{_clean(detail, detail_limit, redact=redact)} {marker}"
-    if kind == "safeyolo.codex.stderr":
+    if kind in {"safeyolo.codex.stderr", "safeyolo.pi.stderr"}:
         return "STDERR", _clean(event.get("text", ""), limit, redact=redact)
     if kind == "safeyolo.supervisor":
         action = str(event.get("event", "event"))
         details = []
-        for key in ("pid", "signal", "exit_code", "error_type", "message"):
+        for key in (
+            "pid",
+            "signal",
+            "exit_code",
+            "status",
+            "path",
+            "retry_after",
+            "error_type",
+            "message",
+        ):
             if key in event:
                 details.append(f"{key}={event[key]}")
         label = "ERROR" if action in {"error", "crashed"} else "SUPERV"
         return label, _clean(" ".join((action, *details)), limit, redact=redact)
+    if kind == "error":
+        return "ERROR", _clean(event.get("message", "error"), limit, redact=redact)
     if kind == "thread.started":
         return "SESSION", f"thread={event.get('thread_id', '?')}"
     if kind == "turn.started":
         return "TURN", "started"
     if kind == "turn.completed":
-        return "DONE", "turn completed"
+        return "DONE", _turn_completed_detail(event)
     if kind == "turn.failed":
         return "ERROR", _clean(event.get("error", "turn failed"), limit, redact=redact)
+    if kind == "session":
+        return "SESSION", f"session={event.get('id', '?')}"
+    if kind == "agent_start":
+        return "TURN", "started"
+    if kind == "agent_end":
+        return "DONE", "turn completed"
+    if kind in {"tool_execution_start", "tool_execution_end"}:
+        phase = "started" if kind.endswith("start") else "completed"
+        label = "TOOLERR" if event.get("isError") is True else "TOOL"
+        return label, _pi_tool_detail(event, phase, limit, redact=redact)
+    if kind == "message_end":
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            label = "ERROR" if message.get("stopReason") in {"error", "aborted"} else "AGENT"
+            return label, _pi_message_detail(message, limit, redact=redact)
+    if kind == "extension_error":
+        return "ERROR", _clean(event.get("error", "extension failed"), limit, redact=redact)
     if kind in {"item.started", "item.completed"}:
         item = event.get("item")
         if isinstance(item, dict):
@@ -166,31 +401,36 @@ def _event_line(
             if item_type in {"reasoning", "agent_reasoning"}:
                 return "THINK", _clean(item.get("text", ""), limit, redact=redact)
             if item.get("type") == "mcp_tool_call":
-                arguments = item.get("arguments")
-                detail = ""
-                if isinstance(arguments, dict):
-                    shown = []
-                    for key in ("room_name", "since_sequence", "timeout_seconds"):
-                        if key in arguments:
-                            shown.append(f"{key}={arguments[key]}")
-                    detail = " " + " ".join(shown) if shown else ""
-                return (
-                    "TOOL",
-                    f"{phase} {item.get('server', 'mcp')}.{item.get('tool', 'tool')}"
-                    f" status={item.get('status', '?')}{detail}",
-                )
+                detail = _mcp_detail(item, phase, limit, redact=redact)
+                label = "TOOLERR" if item.get("error") or item.get("status") == "failed" else "TOOL"
+                return label, detail
             if item_type in {"command_execution", "local_shell_call"}:
                 command = item.get("command") or item.get("action") or item.get("arguments") or ""
-                return "TOOL", f"{phase} command {_clean(command, limit, redact=redact)}"
+                prefix = f"{phase} command"
+                exit_code = item.get("exit_code")
+                if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+                    prefix += f" rc={exit_code}"
+                # A non-zero command can be an intentional rejection probe.
+                # Report the tool result, not a factory/task disposition.
+                failed = isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0
+                label = "TOOLERR" if failed else "TOOL"
+                return label, _clean(f"{prefix} {command}", limit, redact=redact)
             if item_type in {"function_call", "custom_tool_call"}:
                 name = item.get("name") or item.get("tool") or "tool"
                 return "TOOL", f"{phase} {name}"
             if item_type in {"function_call_output", "custom_tool_call_output"}:
                 return "TOOL", f"{phase} result {item.get('call_id', '')}".strip()
             if item_type in {"web_search", "web_search_call"}:
-                return "TOOL", f"{phase} web_search"
+                return "TOOL", _web_search_detail(item, phase, limit, redact=redact)
             if item_type in {"file_change", "file_write", "apply_patch"}:
-                return "TOOL", f"{phase} {item_type}"
+                return "TOOL", _file_change_detail(
+                    item,
+                    phase,
+                    limit,
+                    redact=redact,
+                )
+            if item_type == "error":
+                return "ERROR", _clean(item.get("message", "error"), limit, redact=redact)
     if not show_unknown:
         return None
     return "EVENT", _clean(json.dumps(event, separators=(",", ":")), limit, redact=redact)
@@ -244,6 +484,7 @@ def _render(
         "AGENT": "32",
         "DONE": "32;1",
         "ERROR": "31;1",
+        "TOOLERR": "31;1",
         "STDERR": "31",
         "SUPERV": "36;1",
         "OP": "34;1",
@@ -279,13 +520,20 @@ async def _watch(
     failures = 0
     while True:
         try:
-            page = await api.read_room(
-                room,
-                "operator",
-                "operator",
-                since_sequence=0,
-                limit=api.READ_PAGE_MAX,
-            )
+            history: deque[dict[str, Any]] = deque(maxlen=history_count)
+            cursor = 0
+            while True:
+                page = await api.read_room(
+                    room,
+                    "operator",
+                    "operator",
+                    since_sequence=cursor,
+                    limit=api.READ_PAGE_MAX,
+                )
+                history.extend(page["messages"])
+                cursor = page["next_cursor"]
+                if not page["has_more"]:
+                    break
             break
         except NatsUnavailable as exc:
             if once:
@@ -300,10 +548,8 @@ async def _watch(
             await asyncio.sleep(delay)
     if failures:
         _connection_line("recovered", "retained history is readable", colour=colour)
-    history: deque[dict[str, Any]] = deque(page["messages"], maxlen=history_count)
     for message in history:
         _render(message, limit, mode, colour, redact, show_unknown)
-    cursor = page["next_cursor"]
     if once:
         return
     if mode != "json":

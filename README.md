@@ -42,7 +42,8 @@ Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patt
 ### Prerequisites
 
 - macOS with Apple Silicon (M1+) **or** Linux (x86_64/arm64)
-- Python 3.12 or 3.13
+- SafeYolo supports Python 3.12 and 3.13. The installer asks uv to select or
+  acquire a matching interpreter.
 - [uv](https://docs.astral.sh/uv/) — the Python package/project manager SafeYolo uses. Grab it from your distro's package manager or the upstream installer.
 - macOS only: [Lima](https://lima-vm.io/) for the guest image build (`brew install lima`, `sudo port install lima`, or `mise use -g lima`).
 - Linux (apt-based): `safeyolo bootstrap` installs gVisor `runsc`, `uidmap`, `acl`, and other build prereqs via apt. On non-apt distros install gVisor first per its [upstream instructions](https://gvisor.dev/).
@@ -59,6 +60,9 @@ safeyolo bootstrap
 ```
 
 `./install.sh` puts `safeyolo` on your `PATH` at `~/.local/bin/safeyolo`.
+The installer reads SafeYolo's declared `requires-python` range and asks uv to
+select or acquire a matching interpreter, so a newer host default does not
+change the supported Python boundary.
 `safeyolo bootstrap` initializes configuration, builds the platform-specific
 guest artifacts, and applies host prerequisites. The command is idempotent.
 
@@ -141,9 +145,7 @@ one phase:
 # doing it manually here means bootstrap has nothing left to name).
 sudo apt-get install -y skopeo umoci mmdebstrap debootstrap acl jq curl
 
-./install.sh        # or: uv tool install --editable . --overrides <(printf '%s\n' \
-                    #      'flask>=3.1.3' 'pygments>=2.20.0' 'cryptography>=50.0.0' \
-                    #      'msgpack>=1.2.1' 'pyopenssl>=26.0.0' 'tornado>=6.5.5')
+./install.sh
 
 safeyolo init       # writes ~/.safeyolo/{policy.toml, addons.yaml, tokens, ...}
 safeyolo build      # builds + installs the guest rootfs into ~/.safeyolo/share/
@@ -311,17 +313,26 @@ Writing your own: see [`contrib/HOST_SCRIPT_GUIDE.md`](contrib/HOST_SCRIPT_GUIDE
 
 The Codex setup includes an inspectable tmux lab for experiments that benefit
 from persistent shells, visible output, and operator control. Enter the agent,
-then run one command from the guest shell at `/home/agent`:
+or use the public Lab lifecycle directly:
 
 ```bash
-safeyolo agent shell codex
+safeyolo lab
+```
+
+The command asks for the objective, shows the proposed managed agent, and
+requires confirmation before it starts anything. Use `safeyolo lab --status`,
+`--recover`, and `--teardown` for the rest of the lifecycle. The lower-level
+guest entry point remains available for an already running agent:
+
+```bash
+safeyolo agent shell AGENT
 # Inside the guest:
 safeyolo-lab
 ```
 
 The guest tmux prefix is `C-a`. Run `safeyolo-lab` again after a disconnect to
-attach to the existing lab. The controller first asks what you want to explore;
-it does not create experiment panes until you describe the work.
+attach to the existing Lab. It never adopts an unrelated guest session or
+starts a second controller.
 
 ## Custom rootfs
 
@@ -374,6 +385,15 @@ $ safeyolo watch
 ```
 
 **Try it yourself:** Run `safeyolo demo` for a guided tour, with `safeyolo watch` in a second terminal.
+
+For operator-directed experiments, run `safeyolo lab`. The Lab asks for the
+objective before it creates or starts anything, proposes a clearly identified
+managed agent, and attaches to a guest-owned tmux workspace. Use
+`safeyolo lab --status` to inspect ownership and controller liveness,
+`--recover` to relaunch an owned dead controller, and `--teardown` to capture
+redacted final evidence before removing only Lab-owned session resources.
+Lab is an independent workflow from Demo and does not require lesson,
+request-story, or Presenterm components.
 
 ## Architecture
 

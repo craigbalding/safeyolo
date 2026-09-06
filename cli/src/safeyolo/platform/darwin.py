@@ -208,7 +208,7 @@ class DarwinPlatform(AgentPlatform):
         cmd = _ssh_base_command(key_path, shell_sock)
         target = f"{ssh_user}@sandbox"  # hostname is cosmetic
 
-        if interactive and not command:
+        if interactive:
             cmd.append("-t")
         cmd.append(target)
 
@@ -218,9 +218,11 @@ class DarwinPlatform(AgentPlatform):
             # non-login non-interactive shell does neither (and Alpine has no
             # PAM fallback), so shell -c must apply both explicitly.
             cmd.append(_wrap_ssh_command(command, user=ssh_user))
-            # Close stdin for non-interactive commands so nc's UDS
-            # ProxyCommand exits when the remote command finishes.
-            stdin = subprocess.DEVNULL
+            # Keep stdin attached for an explicitly interactive command such
+            # as the Lab's tmux attach. Non-interactive commands close stdin
+            # so the UDS ProxyCommand exits when the remote command finishes.
+            if not interactive:
+                stdin = subprocess.DEVNULL
         else:
             # Run the limit setup in the initial sshd session shell, then
             # replace it with the same login shell users received before this

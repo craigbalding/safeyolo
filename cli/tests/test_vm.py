@@ -800,6 +800,54 @@ class TestPrepareConfigShare:
 
         assert "exec sleep infinity" not in source
         assert source.count("keep_pid1_alive") == 4
+        assert "trap graceful_shutdown TERM INT" in source
+        assert 'kill "$PID1_IDLE_CHILD"' in source
+        assert 'wait "$PID1_IDLE_CHILD"' in source
+        assert source.index("trap graceful_shutdown TERM INT") < source.index(
+            "per-run-started"
+        )
+
+    @pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
+    @pytest.mark.timeout(10)
+    def test_idle_shutdown_reaps_child_and_preserves_supervisor_polling(
+        self, tmp_config_dir, stop_signal
+    ):
+        """TERM and INT stop the idle shell after repeated supervisor checks."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-per-run").read_text()
+        idle_source = source.split('PID1_IDLE_CHILD=""', 1)[1].split(
+            "# All per-run setup is complete.", 1
+        )[0]
+        harness = 'PID1_IDLE_CHILD=""' + idle_source + """
+start_command_supervisor_if_needed() { printf 'supervisor-check\\n'; }
+wait() { printf 'idle=%s\\n' "$1"; builtin wait "$@"; }
+keep_pid1_alive
+"""
+        proc = _POPEN(
+            ["bash", "-c", harness],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert proc.stdout is not None
+            for _ in range(2):
+                assert proc.stdout.readline() == "supervisor-check\n"
+                child_line = proc.stdout.readline()
+                assert child_line.startswith("idle=")
+            child_pid = int(child_line.split("=", 1)[1])
+            proc.send_signal(stop_signal)
+            assert proc.wait(timeout=2) == 0
+            with pytest.raises(ProcessLookupError):
+                os.kill(child_pid, 0)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2)
 
     def test_guest_init_static_and_per_run_are_executable(self, tmp_config_dir):
         """The orchestrator execs two phase scripts -- both must be present

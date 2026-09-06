@@ -19,7 +19,7 @@ flowchart TD
     ev.review_outcome_liveness["Check outcome ownership, reachability, response routes, useful waiting, and all ordinary failure paths"]
     ev.review_authority_evidence["Check mutation authority, operator-only choices, evidence independence, and circular success claims"]
     ev.review_handoff_recovery["Check self-contained handoffs, exact work versions, duplicate delivery, supersession, restart, and recovery"]
-    ev.review_runtime_operator["Check tool and route feasibility, operator attention UX, and behavior while operator input is delayed"]
+    ev.review_runtime_operator["Check tool and route feasibility, consumer-visible resources, operator attention UX, and behavior while operator input is delayed"]
     ev.review_restriction_basis["Audit every MUST, gate, approval, exact format, limit, eligibility rule, and BLOCKED condition"]
     ev.review_reread_complete_set["After a proposed edit, re-read and re-run every review pass over the complete set"]
     cls.review_incomplete{{"Required source or approved/running-state evidence is missing; only a bounded partial review is possible"}}

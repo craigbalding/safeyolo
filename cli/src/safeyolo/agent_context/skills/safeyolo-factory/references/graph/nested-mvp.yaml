@@ -60,7 +60,8 @@ nodes:
 
   - id: ev.mvp_verify_baseline
     kind: evidence
-    label: "Check the exact nested factory sources, approved and supervisor-staged snapshots, rooms/grants, runtime health, and clean baseline"
+    label: "Check the exact nested factory sources, approved and supervisor-staged snapshots, rooms/grants, runtime health, required resources from each consuming role's actual boundary, and clean baseline"
+    detail: "A resource is usable only when it exists with the intended permissions/content and the consuming role can locate it from injected context or an ordinary inventory; controller-only metadata is insufficient."
     source: authored
 
   - id: ev.mvp_run_success

@@ -3,10 +3,16 @@
 import typer
 from rich.console import Console
 
-from ..api import APIError, get_api
 from ..traffic_session import attach_session, session_exists
 
 console = Console()
+
+
+def get_api():
+    """Load the admin API client only when traffic scope is changed."""
+    from ..api import get_api as _get_api
+
+    return _get_api()
 
 
 def traffic(
@@ -19,6 +25,8 @@ def traffic(
     attach: bool = typer.Option(True, "--attach/--no-attach", help="Attach the native console after updating scope"),
 ) -> None:
     """Scope and attach the existing shared traffic console."""
+    from ..api import APIError
+
     if agent is not None and unattributed:
         console.print("[red]--agent and --unattributed are mutually exclusive.[/red]")
         raise typer.Exit(2)

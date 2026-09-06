@@ -84,7 +84,8 @@ nodes:
 
   - id: ev.review_runtime_operator
     kind: evidence
-    label: "Check tool and route feasibility, operator attention UX, and behavior while operator input is delayed"
+    label: "Check tool and route feasibility, consumer-visible resources, operator attention UX, and behavior while operator input is delayed"
+    detail: "For each required resource, verify existence, intended permissions/content, and that the consuming role can locate it from its actual injected context or an ordinary inventory; controller-only metadata is not usable access."
     source: authored
 
   - id: ev.review_restriction_basis

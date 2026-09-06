@@ -13,9 +13,9 @@ Design decisions (per #371 comment 5421943173 + reviewer feedback):
       one of two competing clients (reviewer round-3 point 6).
     - Per-room JetStream stream `ROOM_<room_id>` on subject
       `rooms.<room_id>`. Streams created on demand (idempotent).
-      FileStorage + LimitsPolicy + DiscardOld. Finite MaxBytes /
-      MaxAge / MaxMsgSize on each stream; the global JetStream
-      max_file_store from nats_runtime caps total disk. On existing
+      FileStorage + LimitsPolicy + DiscardOld. MaxAge / MaxMsgs /
+      MaxMsgSize bound each stream; rooms share the global JetStream
+      max_file_store budget without per-room byte reservations. On existing
       streams the config is verified against the expected contract;
       drift fails loud so a silent stale-config bump can't happen
       (reviewer round-3 point 5).
@@ -67,10 +67,10 @@ from nats.js.errors import NoStreamResponseError, NotFoundError
 from . import nats_runtime
 from .envelope import INTERNAL_ATTENTION_HEADER
 
-# Per-room bounds. The global account cap from nats_runtime
-# (JETSTREAM_MAX_FILE_STORE) caps everything above; these caps stop
-# one hyperactive room from taking more than its share.
-_ROOM_MAX_BYTES = 100 * 1024 * 1024        # 100 MiB
+# Positive MaxBytes reserves that much server capacity even for an empty room.
+# Share the existing global storage budget instead of limiting room count.
+_ROOM_MAX_BYTES = -1  # DOC: docs/coord-operations.md
+_LEGACY_ROOM_MAX_BYTES = 100 * 1024 * 1024
 _ROOM_MAX_AGE_S = 7 * 24 * 60 * 60         # 7 days (nats-py takes seconds)
 # The API-layer body cap is 256 KiB (MAX_BODY_BYTES) of UTF-8. JSON
 # serialization can expand that: even with ensure_ascii=False (we do),
@@ -83,7 +83,7 @@ _ROOM_MAX_AGE_S = 7 * 24 * 60 * 60         # 7 days (nats-py takes seconds)
 # validator (MAX_BODY_BYTES) rather than at the server.
 _ROOM_MAX_MSG_SIZE = 2 * 1024 * 1024
 # Generous ceiling on the number of messages retained per room, per
-# #371 spec. Bytes/age still bound retention in most rooms; this
+# #371 spec. Age and the shared storage budget also bound retention; this
 # catches pathological write patterns where each message is tiny but
 # the flood is dense (a chatty tool loop, say) before the bytes cap
 # would trigger.
@@ -327,8 +327,8 @@ async def ensure_room_stream(room_id: str) -> None:
     exist. Idempotent.
 
     On an existing stream, verifies the config still matches the
-    SafeYolo contract and raises `StreamConfigDrift` if a prior version
-    of the code (or an operator) left different limits in place.
+    SafeYolo contract. The former byte reservation is upgraded in place;
+    unrelated configuration drift still raises `StreamConfigDrift`.
     """
     js = await get_jetstream()
     name = stream_name_for_room(room_id)
@@ -340,6 +340,7 @@ async def ensure_room_stream(room_id: str) -> None:
         raise NatsUnavailable(f"stream_info failed: {e!s}") from e
 
     if info is not None:
+        info = await _upgrade_room_stream(js, info)
         matches, mismatches = _stream_config_matches(info.config)
         if not matches:
             raise StreamConfigDrift(
@@ -347,6 +348,9 @@ async def ensure_room_stream(room_id: str) -> None:
             )
         return
 
+    # Free old reservations before provisioning another room. Ordinary reads
+    # and publishes do not enumerate streams or perform this migration.
+    await upgrade_room_streams()
     try:
         await js.add_stream(
             name=name,
@@ -363,6 +367,34 @@ async def ensure_room_stream(room_id: str) -> None:
         )
     except _UNAVAILABLE_EXCEPTIONS as e:
         raise NatsUnavailable(f"add_stream failed: {e!s}") from e
+
+
+async def _upgrade_room_stream(js: Any, info: Any) -> Any:
+    """Upgrade only the known former retention contract, without losing data."""
+    _, mismatches = _stream_config_matches(info.config)
+    if mismatches != {"max_bytes": {"expected": -1, "actual": _LEGACY_ROOM_MAX_BYTES}}:
+        return info
+    try:
+        return await js.update_stream(info.config.evolve(max_bytes=_ROOM_MAX_BYTES))
+    except _UNAVAILABLE_EXCEPTIONS as exc:
+        raise NatsUnavailable(f"room storage upgrade failed: {exc!s}") from exc
+
+
+async def upgrade_room_streams() -> None:  # DOC: docs/coord-operations.md
+    """Reconcile former room byte reservations at startup and room creation."""
+    js = await get_jetstream()
+    offset = 0
+    try:
+        while page := await js.streams_info(offset=offset):
+            for info in page:
+                name = info.config.name or ""
+                if re.fullmatch(r"ROOM_rm-[0-9a-f]{32}", name) and info.config.subjects == [
+                    subject_for_room(name.removeprefix("ROOM_"))
+                ]:
+                    await _upgrade_room_stream(js, info)
+            offset += len(page)
+    except _UNAVAILABLE_EXCEPTIONS as exc:
+        raise NatsUnavailable(f"room storage upgrade failed: {exc!s}") from exc
 
 
 async def delete_room_stream(room_id: str) -> bool:
