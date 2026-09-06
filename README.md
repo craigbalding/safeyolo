@@ -266,12 +266,15 @@ home, configuration, or overlay.
 SafeYolo also applies a host-wide admission guard before each new agent starts.
 The guard sums the actual CPU and memory allocations of running agents,
 refuses startup when a SafeYolo-used filesystem has reached its configured low
-watermark, and checks the host process capacity. It also checks a new memory
-request against live available memory; an explicit memory ceiling adds an
-aggregate configured-allocation cap. Automatic boundaries come from host
-measurements; small explicit overrides live under `host_resources` in
-`config.yaml`. Run `safeyolo doctor --verbose` to inspect detected capacity,
-effective boundaries, derivation sources, and degraded enforcement states.
+watermark, and checks the host process capacity with launch headroom. It also
+checks a new memory request against live available memory while retaining a
+one-MiB accounting quantum; an explicit memory ceiling adds an aggregate
+configured-allocation cap. Automatic CPU and disk boundaries retain one
+host-derived logical CPU and filesystem allocation block respectively.
+Automatic boundaries come from host measurements; small explicit overrides
+live under `host_resources` in `config.yaml`. Run `safeyolo doctor --verbose`
+to inspect detected capacity, effective boundaries, derivation sources, and
+degraded enforcement states.
 See [configuration](docs/CONFIGURATION.md#configyaml) for the override names
 and limitations.
 

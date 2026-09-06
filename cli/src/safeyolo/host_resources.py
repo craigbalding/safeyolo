@@ -26,7 +26,11 @@ from .config import (
     load_config,
 )
 
-DEFAULT_AGENT_CPUS = 4
+# Admission values use the host's own accounting quanta instead of an
+# unexplained percentage quota. A one-MiB memory quantum matches the integer
+# unit accepted by per-agent sizing, and one process is the launch headroom.
+_MEMORY_HEADROOM_BYTES = 1024 * 1024
+_PROCESS_LAUNCH_HEADROOM = 1
 
 _MEMINFO_RE = re.compile(r"^(MemTotal|MemAvailable):\s+(\d+)\s+kB$")
 
@@ -53,7 +57,7 @@ class DiskCapacity:
     total: int | None
     free: int | None
     block_size: int | None
-    effective_min_free: int
+    effective_min_free: int | None
     source: str
     enforcement: str
 
@@ -94,14 +98,16 @@ class HostResourceReport:
         memory_effective = _format_bytes(self.memory.effective)
         lines = [
             (
-                f"CPU capacity: {self.cpu.detected or 'unavailable'}; "
-                f"ceiling: {self.cpu.effective or 'unavailable'}; "
+                f"CPU capacity: {self.cpu.detected if self.cpu.detected is not None else 'unavailable'}; "
+                f"ceiling: {self.cpu.effective if self.cpu.effective is not None else 'unavailable'}; "
+                f"active allocation: {self.active_cpu}; "
                 f"source: {self.cpu.source}; enforcement: {self.cpu.enforcement}"
             ),
             (
                 f"Memory detected: {memory_detected}; ceiling: {memory_effective}; "
                 f"available now: {_format_bytes(self.memory_available)}; "
                 f"active allocation: {self.active_memory_mb} MiB; "
+                f"headroom: {_format_bytes(_MEMORY_HEADROOM_BYTES)}; "
                 f"source: {self.memory.source}; "
                 f"live source: {self.memory_available_source}; "
                 f"enforcement: {self.memory.enforcement}"
@@ -117,6 +123,7 @@ class HostResourceReport:
         lines.append(
             f"Processes: current {self.process_current if self.process_current is not None else 'unavailable'}; "
             f"limit {process_limit if process_limit is not None else 'unavailable'}; "
+            f"launch headroom: {_PROCESS_LAUNCH_HEADROOM}; "
             f"source: {self.processes.source}; enforcement: {self.processes.enforcement}"
         )
         return lines
@@ -361,6 +368,13 @@ def _read_memory_capacity() -> tuple[int | None, int | None, str]:
     return total, None, "automatic: sysconf physical pages; available unknown"
 
 
+def _automatic_memory_ceiling(available: int | None) -> int | None:
+    """Leave one sizing quantum beyond the live available-memory reading."""
+    if available is None:
+        return None
+    return max(0, available - _MEMORY_HEADROOM_BYTES)
+
+
 def _configured_limit(
     detected: int | None,
     override: int | None,
@@ -426,25 +440,38 @@ def _process_count() -> int | None:
 
 
 def _read_process_capacity() -> tuple[int | None, int | None, str]:
-    """Read one aggregate process boundary, not a per-agent cgroup limit."""
-    current = _process_count()
+    """Choose the most restrictive coherent aggregate process boundary."""
+    candidates: list[tuple[int, int, str]] = []
+    global_current = _process_count()
     try:
         pid_max = int(Path("/proc/sys/kernel/pid_max").read_text().strip())
     except (OSError, ValueError):
         pid_max = None
-    if pid_max is not None and pid_max > 0 and current is not None:
-        return pid_max, current, "automatic: /proc process count; kernel pid_max"
+    if pid_max is not None and pid_max > 0 and global_current is not None:
+        candidates.append(
+            (
+                pid_max,
+                global_current,
+                "automatic: /proc process count; kernel pid_max",
+            )
+        )
 
-    # A cgroup limit is only a fallback when the corresponding current count
-    # comes from that same cgroup. It must not be copied as TasksMax onto every
-    # agent scope: that would turn an aggregate limit into N separate limits.
+    # Keep a cgroup's current count paired with that cgroup's limit. A tighter
+    # cgroup boundary must win over the global PID namespace, but the selected
+    # aggregate limit must never be copied as TasksMax onto every agent scope.
     cgroup_current = _cgroup_value("pids.current")
     cgroup_limit = _cgroup_value("pids.max")
+    if cgroup_limit is not None and cgroup_current is not None:
+        candidates.append(
+            (cgroup_limit, cgroup_current, "automatic: current cgroup pids.max")
+        )
+    if candidates:
+        return min(candidates, key=lambda item: item[0] - item[1])
     if cgroup_limit is not None:
         return cgroup_limit, cgroup_current, "automatic: current cgroup pids.max"
     if pid_max is not None and pid_max > 0:
-        return pid_max, current, "automatic: kernel pid_max"
-    return None, current, "unavailable: process capacity could not be detected"
+        return pid_max, global_current, "automatic: kernel pid_max"
+    return None, global_current, "unavailable: process capacity could not be detected"
 
 
 def _existing_path(path: Path) -> Path:
@@ -486,6 +513,20 @@ def _runtime_paths(extra_paths: list[Path] | None = None) -> list[Path]:
     return list(unique.values())
 
 
+def _filesystem_block_size(path: Path, usage) -> int | None:
+    block_size = getattr(usage, "block_size", None)
+    if type(block_size) is int and block_size > 0:
+        return block_size
+    try:
+        stat = os.statvfs(path)
+    except OSError:
+        return None
+    for value in (stat.f_bsize, stat.f_frsize):
+        if value > 0:
+            return value
+    return None
+
+
 def _read_disks(
     paths: list[Path],
     override: int | None,
@@ -501,7 +542,7 @@ def _read_disks(
                     total=None,
                     free=None,
                     block_size=None,
-                    effective_min_free=override or 0,
+                    effective_min_free=override,
                     source=(
                         "operator override"
                         if override is not None
@@ -511,19 +552,30 @@ def _read_disks(
                 )
             )
             continue
+        block_size = _filesystem_block_size(path, usage)
+        minimum = override if override is not None else block_size
+        source = (
+            "operator override"
+            if override is not None
+            else (
+                "automatic: one filesystem allocation block remains before ENOSPC"
+                if minimum is not None
+                else "unavailable: filesystem allocation block could not be detected"
+            )
+        )
         disks.append(
             DiskCapacity(
                 path=str(path),
                 total=usage.total,
                 free=usage.free,
-                block_size=getattr(usage, "block_size", None),
-                effective_min_free=override if override is not None else 0,
-                source=(
-                    "operator override"
-                    if override is not None
-                    else "automatic: refuse only when filesystem free space is zero"
+                block_size=block_size,
+                effective_min_free=minimum,
+                source=source,
+                enforcement=(
+                    "admission"
+                    if minimum is not None
+                    else "degraded: admission unavailable"
                 ),
-                enforcement="admission",
             )
         )
     return tuple(disks)
@@ -558,7 +610,13 @@ def build_host_resource_report(
     process_capacity, process_current, process_source = _read_process_capacity()
 
     cpu_automatic = cpu_capacity
-    memory_automatic = memory_available
+    cpu_automatic_source = (
+        f"{cpu_source}; strict boundary leaves one logical CPU"
+    )
+    memory_automatic = _automatic_memory_ceiling(memory_available)
+    memory_automatic_source = (
+        f"{memory_source}; automatic headroom {_format_bytes(_MEMORY_HEADROOM_BYTES)}"
+    )
     # A missing available-memory measurement is not silently converted into a
     # total-memory ceiling. The latter would imply that current host users have
     # no memory cost and would fail the protection invariant.
@@ -566,7 +624,7 @@ def build_host_resource_report(
         cpu_capacity,
         overrides.get("cpu_ceiling"),
         automatic=cpu_automatic,
-        automatic_source=cpu_source,
+        automatic_source=cpu_automatic_source,
     )
     memory = _configured_limit(
         memory_total,
@@ -574,7 +632,7 @@ def build_host_resource_report(
         if overrides.get("memory_ceiling_mb") is not None
         else None,
         automatic=memory_automatic,
-        automatic_source=memory_source,
+        automatic_source=memory_automatic_source,
     )
     processes = _configured_limit(
         process_capacity,
@@ -623,19 +681,19 @@ def evaluate_admission(
     reasons: list[str] = []
     if report.cpu.effective is None:
         reasons.append("CPU capacity is unavailable; cannot establish a host ceiling")
-    elif report.active_cpu + requested_cpu > report.cpu.effective:
+    elif report.active_cpu + requested_cpu >= report.cpu.effective:
         reasons.append(
-            f"CPU allocation {report.active_cpu + requested_cpu} exceeds ceiling "
+            f"CPU allocation {report.active_cpu + requested_cpu} reaches or exceeds ceiling "
             f"{report.cpu.effective} ({report.cpu.source})"
         )
 
     if report.memory.effective is None:
         reasons.append("memory ceiling is unavailable; cannot establish a host boundary")
     elif report.memory.source.startswith("operator override"):
-        if (report.active_memory_mb + requested_memory_mb) * 1024 * 1024 > report.memory.effective:
+        if (report.active_memory_mb + requested_memory_mb) * 1024 * 1024 >= report.memory.effective:
             reasons.append(
                 f"memory allocation {report.active_memory_mb + requested_memory_mb} MiB "
-                f"exceeds ceiling {_format_bytes(report.memory.effective)} "
+                f"reaches ceiling {_format_bytes(report.memory.effective)} "
                 f"({report.memory.source})"
             )
     if report.memory_available is None:
@@ -643,20 +701,28 @@ def evaluate_admission(
             "currently available host memory is unavailable; "
             "cannot establish a live-pressure boundary"
         )
-    elif requested_memory_mb * 1024 * 1024 > report.memory_available:
-        reasons.append(
-            f"memory request {requested_memory_mb} MiB exceeds currently available "
-            f"memory {_format_bytes(report.memory_available)} "
-            f"({report.memory_available_source})"
-        )
+    else:
+        live_ceiling = _automatic_memory_ceiling(report.memory_available)
+        if live_ceiling is None:
+            reasons.append(
+                "currently available host memory is unavailable; "
+                "cannot establish a live-pressure boundary"
+            )
+        elif requested_memory_mb * 1024 * 1024 >= live_ceiling:
+            reasons.append(
+                f"memory request {requested_memory_mb} MiB reaches the live ceiling "
+                f"of {_format_bytes(live_ceiling)}; available memory "
+                f"{_format_bytes(report.memory_available)} "
+                f"({report.memory_available_source})"
+            )
 
     if report.processes.effective is None:
         reasons.append("process capacity is unavailable; cannot establish a host boundary")
     elif report.process_current is None:
         reasons.append("current process count is unavailable; cannot check exhaustion")
-    elif report.process_current >= report.processes.effective:
+    elif report.process_current + _PROCESS_LAUNCH_HEADROOM >= report.processes.effective:
         reasons.append(
-            f"process table is exhausted ({report.process_current} of "
+            f"process table has no launch headroom ({report.process_current} of "
             f"{report.processes.effective}; {report.processes.source})"
         )
     for disk in report.disks:
@@ -664,6 +730,11 @@ def evaluate_admission(
             reasons.append(
                 f"filesystem {disk.path} free space is unavailable; "
                 "cannot check disk exhaustion"
+            )
+        elif disk.effective_min_free is None:
+            reasons.append(
+                f"filesystem {disk.path} allocation block is unavailable; "
+                "cannot establish disk headroom"
             )
         elif disk.free <= disk.effective_min_free:
             reasons.append(

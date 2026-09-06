@@ -51,21 +51,22 @@ sizing. Before a start creates a runtime process, the CLI takes an instance
 lock and evaluates the requested agent against all currently running agents.
 The guard enforces these invariants:
 
-- aggregate configured CPU allocation does not exceed detected CPU capacity;
-- a new memory request does not exceed currently available host memory, and
-  an explicit aggregate memory ceiling is not exceeded;
-- a filesystem used by SafeYolo runtime writes must have free space before new
-  work starts; and
-- a new runtime process is not admitted when the detected host process limit is
-  already exhausted.
+- aggregate configured CPU allocation stays below detected CPU capacity, leaving
+  one logical CPU for the host;
+- a new memory request stays below currently available host memory with one MiB
+  of headroom, and an explicit aggregate memory ceiling is not reached;
+- a filesystem used by SafeYolo runtime writes retains one detected allocation
+  block before new work starts; and
+- a new runtime process is not admitted when the detected host process limit
+  has no launch headroom.
 
 The guard checks the configuration directory, SafeYolo log directory, agent
 workspaces, and configured mount sources. This covers persistent homes,
 container overlays, logs, snapshots, and workspace writes without pretending
 that a per-agent overlay size is a host disk quota. The automatic disk
-watermark is zero free bytes. Operators can set a small explicit
-`host_resources` override in `config.yaml` when they have a host-specific
-capacity model.
+watermark is one filesystem allocation block, the smallest host-derived
+nonzero boundary. Operators can set a small explicit `host_resources` override
+in `config.yaml` when they have a host-specific capacity model.
 
 Linux retains the existing per-agent systemd user scope for per-agent
 `MemoryMax` and `CPUQuota`. The aggregate process limit remains an admission

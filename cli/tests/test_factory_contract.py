@@ -492,7 +492,7 @@ def test_factory_run_executes_staged_worker_commands(
     # lifecycle test to the host that runs it.
     monkeypatch.setattr(
         "safeyolo.host_resources._read_cpu_capacity",
-        lambda: (12, "automatic: test CPU capacity"),
+        lambda: (13, "automatic: test CPU capacity"),
     )
     monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
     monkeypatch.setattr("safeyolo.commands.agent.is_proxy_running", lambda: True)

@@ -57,10 +57,10 @@ modes:
   test_context: block
 
 host_resources:
-  cpu_ceiling: null             # aggregate CPUs; null derives host capacity
-  memory_ceiling_mb: null       # aggregate configured MiB; null uses live available memory
-  disk_min_free_bytes: null     # per-filesystem low watermark; null means zero
-  process_limit: null           # aggregate process ceiling; null uses host capacity
+  cpu_ceiling: null             # aggregate CPUs; null leaves one host CPU
+  memory_ceiling_mb: null       # aggregate configured MiB; null leaves 1 MiB headroom
+  disk_min_free_bytes: null     # per-filesystem low watermark; null leaves one block
+  process_limit: null           # aggregate process ceiling; null leaves launch headroom
 ```
 
 `host_resources` protects the host as a whole. It is separate from the
@@ -68,12 +68,13 @@ per-agent `memory_mb` setting in `policy.toml`. SafeYolo checks the aggregate
 configured CPU and memory allocations, current live memory pressure, the host
 process capacity, and free space on the filesystems used by SafeYolo runtime
 writes before it starts an agent. With no memory override, a request is checked
-against currently available host memory; an explicit memory ceiling additionally
-caps the aggregate allocations of running agents. If a required measurement is
-unavailable, new work is refused rather than admitted without that invariant.
-The automatic disk rule refuses new work only when a used filesystem has no
-free bytes. These automatic rules do not claim a reserve that SafeYolo cannot
-defend from host measurements.
+against currently available host memory while leaving one MiB of headroom; an
+explicit memory ceiling additionally caps the aggregate allocations of running
+agents. CPU admission leaves one detected logical CPU, disk admission leaves
+one detected filesystem allocation block, and process admission leaves one
+launch task. These are minimum accounting quanta, not arbitrary workload
+quotas. If a required measurement is unavailable, new work is refused rather
+than admitted without that invariant.
 
 Set an integer override only when the operator has a host-specific capacity
 model. SafeYolo caps CPU and memory overrides at detected host capacity. The

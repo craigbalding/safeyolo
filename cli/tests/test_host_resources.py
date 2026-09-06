@@ -17,7 +17,7 @@ _UNSET = object()
 
 def _report(
     *,
-    cpu_ceiling=8,
+    cpu_ceiling=9,
     memory_ceiling_mb=8192,
     process_limit=100,
     process_current=2,
@@ -65,18 +65,18 @@ def test_aggregate_cpu_and_memory_admission_is_distinct_from_agent_shape():
     report = _report(
         active_cpu=4,
         active_memory_mb=4096,
-        memory_available=4096 * 1024 * 1024,
+        memory_available=4096 * 1024 * 1024 + 1024 * 1024,
     )
 
     allowed = evaluate_admission(
         report,
         requested_cpu=4,
-        requested_memory_mb=4096,
+        requested_memory_mb=4095,
     )
     refused = evaluate_admission(
         report,
         requested_cpu=5,
-        requested_memory_mb=4097,
+        requested_memory_mb=4096,
     )
 
     assert allowed.allowed
@@ -100,7 +100,7 @@ def test_explicit_memory_ceiling_adds_aggregate_cap():
     )
 
     assert not decision.allowed
-    assert "memory allocation 8193 MiB exceeds ceiling" in decision.reasons[0]
+    assert "memory allocation 8193 MiB reaches ceiling" in decision.reasons[0]
 
 
 def test_explicit_memory_ceiling_still_checks_live_pressure():
@@ -113,7 +113,7 @@ def test_explicit_memory_ceiling_still_checks_live_pressure():
     decision = evaluate_admission(report, requested_cpu=1, requested_memory_mb=2)
 
     assert not decision.allowed
-    assert "memory request 2 MiB exceeds currently available" in decision.reasons[0]
+    assert "memory request 2 MiB reaches the live ceiling" in decision.reasons[0]
 
 
 def test_missing_measurements_close_admission():
@@ -127,13 +127,13 @@ def test_missing_measurements_close_admission():
 
 def test_process_exhaustion_refuses_new_work():
     decision = evaluate_admission(
-        _report(process_limit=10, process_current=10),
+        _report(process_limit=10, process_current=9),
         requested_cpu=1,
         requested_memory_mb=1,
     )
 
     assert not decision.allowed
-    assert "process table is exhausted" in decision.reasons[0]
+    assert "process table has no launch headroom" in decision.reasons[0]
 
 
 def test_low_disk_refuses_new_work():
@@ -145,6 +145,60 @@ def test_low_disk_refuses_new_work():
 
     assert not decision.allowed
     assert "filesystem /runtime" in decision.reasons[0]
+
+
+def test_automatic_boundaries_leave_host_derived_headroom(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "safeyolo.host_resources._read_cpu_capacity",
+        lambda: (8, "automatic: test CPU"),
+    )
+    monkeypatch.setattr(
+        "safeyolo.host_resources._read_memory_capacity",
+        lambda: (16 * 1024**3, 4096 * 1024**2, "automatic: test memory"),
+    )
+    monkeypatch.setattr(
+        "safeyolo.host_resources._read_process_capacity",
+        lambda: (100, 2, "automatic: test process"),
+    )
+    monkeypatch.setattr("safeyolo.host_resources._runtime_paths", lambda _: [tmp_path])
+    monkeypatch.setattr(
+        "safeyolo.host_resources.shutil.disk_usage",
+        lambda _path: SimpleNamespace(total=10000, free=4096, block_size=4096),
+    )
+    monkeypatch.setattr(
+        "safeyolo.host_resources._systemd_scope_status",
+        lambda: "admission + per-agent systemd scope",
+    )
+
+    report = build_host_resource_report()
+
+    assert report.cpu.effective == 8
+    assert report.memory.effective == 4095 * 1024**2
+    assert report.disks[0].effective_min_free == 4096
+    decision = evaluate_admission(report, requested_cpu=8, requested_memory_mb=1)
+    assert not decision.allowed
+    assert any(f"filesystem {tmp_path}" in reason for reason in decision.reasons)
+
+
+def test_cgroup_process_boundary_wins_when_it_has_less_headroom(monkeypatch):
+    import safeyolo.host_resources as host_resources
+
+    monkeypatch.setattr(host_resources, "_process_count", lambda: 100)
+    monkeypatch.setattr(
+        host_resources.Path,
+        "read_text",
+        lambda path: "65536\n" if str(path) == "/proc/sys/kernel/pid_max" else "",
+    )
+    monkeypatch.setattr(
+        host_resources,
+        "_cgroup_value",
+        lambda name: {"pids.current": 120, "pids.max": 128}.get(name),
+    )
+
+    capacity, current, source = host_resources._read_process_capacity()
+
+    assert (capacity, current) == (128, 120)
+    assert source == "automatic: current cgroup pids.max"
 
 
 def test_overrides_are_explicit_and_capped_at_detected_capacity(monkeypatch, tmp_path):

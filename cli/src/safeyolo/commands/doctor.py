@@ -1439,7 +1439,11 @@ def _check_host_resources() -> DiagResult:
 
     critical_disks = [
         disk for disk in report.disks
-        if disk.free is not None and disk.free <= disk.effective_min_free
+        if (
+            disk.free is not None
+            and disk.effective_min_free is not None
+            and disk.free <= disk.effective_min_free
+        )
     ]
     degraded = report.degraded
     if critical_disks:
