@@ -40,5 +40,9 @@ guest/.scratch/
 # Regenerate via `cd vm && make build` (or `make install`).
 vm/.build/
 
+# Native macOS Command Centre build artifacts.
+# Regenerate via `command-centre/macos/build-app.sh`.
+command-centre/macos/.build/
+
 # Runtime evidence emitted by tests/blackbox/run-lane.sh.
 tests/blackbox/artifacts/

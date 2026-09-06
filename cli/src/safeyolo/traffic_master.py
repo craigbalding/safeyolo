@@ -93,11 +93,7 @@ class SafeYoloStatusBar(statusbar.StatusBar):
         state = scope.get_stats()
         agent = "unattributed" if state["unattributed"] else state["agent"] or "all agents"
         parts = [agent]
-        parts.extend(
-            value
-            for value in (state["test_id"], state["intent"], state["role"], state["expect"])
-            if value
-        )
+        parts.extend(value for value in (state["test_id"], state["intent"], state["role"], state["expect"]) if value)
         pinned = " · ".join(parts)
         stock = super().get_status()
         modes = self.master.options.mode
@@ -115,9 +111,7 @@ class SafeYoloStatusBar(statusbar.StatusBar):
                     item = f"{item[: -len(combined_suffix)]}]"
                 cleaned.append(item)
             useful = cleaned
-            useful.append(
-                f"[stream≥{self._format_stream_threshold(stream_threshold)}]"
-            )
+            useful.append(f"[stream≥{self._format_stream_threshold(stream_threshold)}]")
         return [("heading_key", f"[SafeYolo · {pinned}]"), *useful]
 
     def redraw(self) -> None:
@@ -128,11 +122,7 @@ class SafeYoloStatusBar(statusbar.StatusBar):
         else:
             offset = self.master.view.focus.index + 1
 
-        arrow = (
-            common.SYMBOL_UP
-            if self.master.options.view_order_reversed
-            else common.SYMBOL_DOWN
-        )
+        arrow = common.SYMBOL_UP if self.master.options.view_order_reversed else common.SYMBOL_DOWN
         marked = "M" if self.master.commands.execute("view.properties.marked") else ""
         text: list[tuple[str, str] | str] = [
             ("heading", f"{arrow} {marked} [{offset}/{flow_count}]".ljust(11)),
@@ -175,7 +165,11 @@ class SafeYoloIndexHandler(app.IndexHandler):
         index_path = Path(app.__file__).with_name("index.html")
         html = index_path.read_text(encoding="utf-8")
         host = escape(socket.gethostname())
-        self.write(html.replace("</head>", '<link rel="stylesheet" href="/safeyolo/scope.css"></head>').replace("<body>", f"<body>{_scope_toolbar(host)}"))
+        self.write(
+            html.replace("</head>", '<link rel="stylesheet" href="/safeyolo/scope.css"></head>').replace(
+                "<body>", f"<body>{_scope_toolbar(host)}"
+            )
+        )
 
     post = get
 
@@ -564,6 +558,172 @@ class WebTailnetShare:
         await self.reconcile(False, self.port)
 
 
+class CommandCentreTailnetShare:
+    """Publish the loopback Command Centre endpoints through Tailscale Serve."""
+
+    name = "safeyolo-command-centre-tailnet-share"
+
+    def __init__(self, master: TrafficMaster) -> None:
+        self.master = master
+        self.enabled = os.environ.get("SAFEYOLO_COMMAND_CENTRE_SHARE", "local") == "tailnet"
+        self.admin_port = int(os.environ.get("SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT", "9443"))
+        self.events_port = int(os.environ.get("SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT", "9444"))
+        raw_state_path = os.environ.get("SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE")
+        self.state_path = Path(raw_state_path) if raw_state_path else None
+        self.admin_session: TailnetServeSession | None = None
+        self.events_session: TailnetServeSession | None = None
+
+    def _write_state(self, state: str, **details: Any) -> None:
+        if self.state_path is None:
+            return
+        try:
+            write_tailnet_state(
+                self.state_path,
+                {
+                    "state": state,
+                    "enabled": self.enabled,
+                    "admin_port": self.admin_port,
+                    "events_port": self.events_port,
+                    **details,
+                },
+            )
+        except OSError as exc:
+            log.warning("Could not persist Command Centre Tailnet state: %s", exc)
+
+    def get_stats(self) -> dict[str, Any]:
+        admin_healthy = self.admin_session is not None and self.admin_session.process.poll() is None
+        events_healthy = self.events_session is not None and self.events_session.process.poll() is None
+        healthy = admin_healthy and events_healthy
+        return {
+            "enabled": self.enabled,
+            "state": "healthy" if healthy else ("degraded" if self.enabled else "disabled"),
+            "admin_url": self.admin_session.url("/") if admin_healthy else None,
+            "events_url": (
+                self.events_session.url("/admin/events").replace("https://", "wss://", 1) if events_healthy else None
+            ),
+        }
+
+    async def running(self) -> None:
+        self.enabled = self.enabled and self.master.options.command_centre_enabled
+        if not self.enabled:
+            if self.state_path is not None:
+                self.state_path.unlink(missing_ok=True)
+            return
+        validate_tailnet_port(self.admin_port)
+        validate_tailnet_port(self.events_port)
+        if self.admin_port == self.events_port:
+            message = "Command Centre Tailnet Admin and event ports must differ"
+            self._record_failure(message)
+            raise RuntimeError(message)
+
+        self._write_state("starting")
+        try:
+            admin_session = await asyncio.to_thread(
+                start_tailnet_serve,
+                self.master.options.admin_port,
+                self.admin_port,
+            )
+            try:
+                events_session = await asyncio.to_thread(
+                    start_tailnet_serve,
+                    self.master.options.command_centre_events_port,
+                    self.events_port,
+                )
+            except Exception:
+                await asyncio.to_thread(admin_session.close)
+                raise
+        except Exception as exc:
+            message = f"Command Centre Tailnet share failed: {exc}"
+            self._record_failure(message)
+            raise RuntimeError(message) from exc
+
+        self.admin_session = admin_session
+        self.events_session = events_session
+        admin_url = admin_session.url("/")
+        events_url = events_session.url("/admin/events").replace("https://", "wss://", 1)
+        self._write_state(
+            "healthy",
+            admin_url=admin_url,
+            events_url=events_url,
+            admin_pid=admin_session.process.pid,
+            events_pid=events_session.process.pid,
+        )
+        write_event(
+            "ops.command_centre_tailnet_started",
+            kind=EventKind.OPS,
+            severity=Severity.HIGH,
+            summary="Command Centre published to the tailnet",
+            addon=self.name,
+            details={"admin_url": admin_url, "events_url": events_url},
+        )
+        self._watch_session("admin", admin_session)
+        self._watch_session("events", events_session)
+
+    def _record_failure(self, message: str) -> None:
+        self._write_state("error", detail=message)
+        details = {"component": "command-centre-tailnet-share", "error": message}
+        write_event(
+            "ops.command_centre_tailnet_failed",
+            kind=EventKind.OPS,
+            severity=Severity.HIGH,
+            summary=message,
+            addon=self.name,
+            details=details,
+        )
+        write_event(
+            "ops.proxy_start_failed",
+            kind=EventKind.OPS,
+            severity=Severity.HIGH,
+            summary=message,
+            addon=self.name,
+            details=details,
+        )
+
+    def _watch_session(self, endpoint: str, session: TailnetServeSession) -> None:
+        def watch_session() -> None:
+            exit_code = session.process.wait()
+            if session.closing:
+                return
+            detail = session.read_output()
+            self._write_state(
+                "degraded",
+                failed_endpoint=endpoint,
+                exit_code=exit_code,
+                detail=detail,
+            )
+            write_event(
+                "ops.command_centre_tailnet_exited",
+                kind=EventKind.OPS,
+                severity=Severity.HIGH,
+                summary=f"Command Centre {endpoint} Tailnet share stopped unexpectedly",
+                addon=self.name,
+                details={"endpoint": endpoint, "exit_code": exit_code, "error": detail},
+            )
+
+        threading.Thread(
+            target=watch_session,
+            name=f"safeyolo-command-centre-{endpoint}-tailnet-watch",
+            daemon=True,
+        ).start()
+
+    async def done(self) -> None:
+        sessions = [self.admin_session, self.events_session]
+        self.admin_session = None
+        self.events_session = None
+        for session in sessions:
+            if session is not None:
+                await asyncio.to_thread(session.close)
+        if self.enabled:
+            self._write_state("stopped")
+            write_event(
+                "ops.command_centre_tailnet_stopped",
+                kind=EventKind.OPS,
+                severity=Severity.MEDIUM,
+                summary="Command Centre Tailnet publication stopped",
+                addon=self.name,
+            )
+
+
 class TrafficMaster(ConsoleMaster):
     """One canonical flow store with native console and web frontends."""
 
@@ -626,7 +786,11 @@ class TrafficMaster(ConsoleMaster):
                     (r"/", SafeYoloIndexHandler),
                 ],
             )
-            self.addons.add(WebFrontend(self), WebTailnetShare(self))
+            self.addons.add(
+                WebFrontend(self),
+                WebTailnetShare(self),
+                CommandCentreTailnetShare(self),
+            )
         self._register_production_addons()
         self._add_scope_keys()
         install_websocket_body_filter_cache(self)
@@ -659,7 +823,11 @@ class TrafficMaster(ConsoleMaster):
             "Set view filter",
         )
         bindings = (
-            ("\\", 'console.choose.cmd "SafeYolo agent" safeyolo.traffic.agent.options safeyolo.traffic.agent.set {choice}', "Choose SafeYolo agent"),
+            (
+                "\\",
+                'console.choose.cmd "SafeYolo agent" safeyolo.traffic.agent.options safeyolo.traffic.agent.set {choice}',
+                "Choose SafeYolo agent",
+            ),
             ("[", "safeyolo.traffic.agent.prev", "Previous SafeYolo agent"),
             ("]", "safeyolo.traffic.agent.next", "Next SafeYolo agent"),
             ("0", "safeyolo.traffic.agent.all", "Show all SafeYolo agents"),

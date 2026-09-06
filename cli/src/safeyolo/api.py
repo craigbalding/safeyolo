@@ -464,12 +464,20 @@ class AdminAPI:
         )
 
     def pending_approvals(self) -> list[dict[str, Any]]:
-        """Get pending credential approval requests.
+        """Get unresolved approval requests from SafeYolo's audit history."""
+        result = self._request("GET", "/admin/approvals")
+        return result.get("approvals", [])
 
-        TODO: Implement when proxy-side tracking is added.
-        Currently returns empty list as the feature is not yet implemented.
-        """
-        return []
+    def instance(self) -> dict[str, Any]:
+        """Get the stable SafeYolo instance identity and client capabilities."""
+        return self._request("GET", "/admin/instance")
+
+    def present_desktop(self, agent_id: str) -> dict[str, Any]:
+        """Start or reuse a local preview for a stable agent identity."""
+        return self._request(
+            "POST",
+            f"/admin/agents/{agent_id}/desktop/present",
+        )
 
 
 def get_api() -> AdminAPI:

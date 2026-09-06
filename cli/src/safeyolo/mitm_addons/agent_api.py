@@ -309,6 +309,7 @@ class AgentAPI:
             or path.startswith("/plumb")
             or path.startswith("/api/coord/")
             or path == "/api/test-context/current"
+            or path == "/desktop/present"
         ):
             self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET"]})
             return
@@ -404,6 +405,7 @@ class AgentAPI:
             "/api/flows/request-body-search": self._handle_flow_request_body_search,
             "/gateway/request-access": self._handle_gateway_request_access,
             "/gateway/submit-binding": self._handle_gateway_submit_binding,
+            "/desktop/present": self._handle_desktop_present,
         }
 
         handler = handlers.get(path)
@@ -1157,6 +1159,48 @@ class AgentAPI:
                 "agent": agent_name,
                 "authorized": agent_services,
                 "available": available,
+            },
+        )
+
+    def _handle_desktop_present(self, flow: http.HTTPFlow):
+        """Request the operator to present this agent's desktop."""
+        agent_name = self._resolve_agent_id(flow)
+        if agent_name is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
+            return
+
+        from safeyolo.agents_store import get_or_mint_agent_id
+
+        try:
+            agent_id = get_or_mint_agent_id(agent_name)
+        except KeyError:
+            self._respond(flow, 404, {"error": "Agent is not configured"})
+            return
+
+        write_event(
+            "agent.desktop_present_requested",
+            kind=EventKind.AGENT,
+            severity=Severity.HIGH,
+            summary=f"{agent_name} requests desktop presentation",
+            decision=Decision.REQUIRE_APPROVAL,
+            agent=agent_name,
+            addon=self.name,
+            approval=ApprovalRequest(
+                required=True,
+                approval_type="desktop_present",
+                key="desktop.present",
+                target=f"desktop:{agent_id}",
+                scope_hint={"agent_id": agent_id},
+            ),
+        )
+        self._respond(
+            flow,
+            202,
+            {
+                "status": "pending",
+                "agent": agent_name,
+                "agent_id": agent_id,
+                "message": "Desktop presentation submitted for operator approval.",
             },
         )
 

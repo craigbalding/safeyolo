@@ -120,6 +120,7 @@ class ApprovalType(StrEnum):
     SERVICE = "service"
     CONTRACT_BINDING = "contract_binding"
     PLUMB = "plumb"
+    DESKTOP_PRESENT = "desktop_present"
 
 
 class AttributionStatus(StrEnum):

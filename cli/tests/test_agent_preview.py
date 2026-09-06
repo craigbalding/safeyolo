@@ -33,6 +33,7 @@ from safeyolo.preview import (
     resolve_vnc_geometry,
     sanitize_request_headers,
     serve_agent_preview,
+    start_managed_preview,
     start_preview_server,
     strip_preview_cookies,
     validate_guest_port,
@@ -537,6 +538,43 @@ def test_preview_server_unlocks_with_one_time_code(monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_managed_preview_can_issue_a_fresh_code_after_unlock(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    codes = iter(("1234-5678", "8765-4321"))
+    monkeypatch.setattr("safeyolo.preview.generate_unlock_code", lambda: next(codes))
+    session = start_managed_preview(
+        PreviewConfig(agent="codey", guest_port=8000),
+        NoRelayPlatform(),
+    )
+    server = session.server
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Host": f"127.0.0.1:{server.server_address[1]}",
+        "Origin": f"http://127.0.0.1:{server.server_address[1]}",
+    }
+    try:
+        first, _ = _request(
+            server,
+            UNLOCK_PATH,
+            method="POST",
+            headers=headers,
+            body="code=1234-5678",
+        )
+        assert first.status == 303
+
+        assert session.issue_unlock_code() == "8765-4321"
+        second, _ = _request(
+            server,
+            UNLOCK_PATH,
+            method="POST",
+            headers=headers,
+            body="code=8765-4321",
+        )
+        assert second.status == 303
+    finally:
+        session.close()
 
 
 def test_preview_server_unlocks_behind_tailnet_https(monkeypatch):

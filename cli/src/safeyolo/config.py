@@ -55,6 +55,14 @@ DEFAULT_CONFIG = {
     "notifications": {
         "method": "none",
     },
+    "command_centre": {
+        # Disabled means no operator event listener is started.
+        "enabled": False,
+        "events_port": 9091,
+        "share": "local",
+        "tailnet_admin_port": 9443,
+        "tailnet_events_port": 9444,
+    },
     "plumb": {
         # Max participants in an agent-to-agent conversation, INCLUDING the
         # requester. Over-limit requests are rejected with 400, never

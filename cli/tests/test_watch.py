@@ -24,6 +24,7 @@ from safeyolo.commands.watch import (
     _parse_duration,
     _resolved_key_from_admin_event,
     _risky_route_dedup_key,
+    _service_approve,
     _service_format_row,
     build_batch_items,
     handle_batch,
@@ -100,6 +101,24 @@ def _gateway_event(
             "group": "",
             "effect": "require_approval",
         },
+    }
+
+
+def _desktop_event(agent="lens", agent_id="ag-lens"):
+    return {
+        "event": "agent.desktop_present_requested",
+        "kind": "agent",
+        "decision": "require_approval",
+        "agent": agent,
+        "summary": f"{agent} requests desktop presentation",
+        "approval": {
+            "required": True,
+            "approval_type": "desktop_present",
+            "key": "desktop.present",
+            "target": f"desktop:{agent_id}",
+            "scope_hint": {"agent_id": agent_id},
+        },
+        "details": {},
     }
 
 
@@ -1110,6 +1129,57 @@ class TestServiceDispatch:
         api.log_denial.assert_called_once_with(
             destination="gateway:gmail",
             cred_id="boris:service_access",
+            reason="user_denied",
+        )
+
+    def test_missing_capability_prompt_is_used_for_authorization(self):
+        api = _api()
+        api.authorize_service.return_value = {"status": "authorized"}
+        event = _service_event(capability="")
+        with (
+            patch(
+                "safeyolo.commands.watch.console.input",
+                return_value="mail",
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.commands.watch._pick_or_create_credential",
+                return_value="gmail-main",
+                autospec=True,
+            ),
+        ):
+            assert _service_approve(event, api) == "authorized"
+
+        api.authorize_service.assert_called_once_with(
+            agent="boris",
+            service="gmail",
+            capability="mail",
+            credential="gmail-main",
+        )
+
+
+class TestDesktopPresentDispatch:
+    def test_allow_uses_typed_desktop_endpoint(self):
+        api = _api()
+        api.present_desktop.return_value = {
+            "agent_id": "ag-lens",
+            "url": "http://127.0.0.1:12345/vnc.html",
+            "unlock_code": "1234-5678",
+        }
+
+        result = DISPATCH["desktop_present"].approve(_desktop_event(), api)
+
+        api.present_desktop.assert_called_once_with("ag-lens")
+        assert result["unlock_code"] == "1234-5678"
+
+    def test_deny_resolves_the_exact_desktop_request(self):
+        api = _api()
+
+        DISPATCH["desktop_present"].deny(_desktop_event(), api)
+
+        api.log_denial.assert_called_once_with(
+            destination="desktop:ag-lens",
+            cred_id="desktop.present",
             reason="user_denied",
         )
 

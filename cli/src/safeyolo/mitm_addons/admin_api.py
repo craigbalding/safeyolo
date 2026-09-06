@@ -15,10 +15,12 @@ Usage:
 import asyncio
 import json
 import logging
+import os
 import re
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from socketserver import TCPServer
 from urllib.parse import urlparse
 
@@ -26,9 +28,13 @@ from mitmproxy import ctx
 from mitmproxy.proxy import mode_specs
 
 from pdp import get_policy_client, is_policy_client_configured
+from safeyolo.coord.identity import get_or_create_instance_id
 from safeyolo.core.audit_schema import EventKind, Severity
+from safeyolo.core.audit_stream import scan_pending_approvals
+from safeyolo.core.operator_event_server import OperatorEventServer
 from safeyolo.core.plumb_service import get_plumb_service
 from safeyolo.core.utils import sanitize_for_log, write_event
+from safeyolo.desktop_presenter import DesktopPresentationError, DesktopPresenter
 from safeyolo.ignore_hosts import build_ignore_patterns, normalize_ignore_hosts
 from safeyolo.runtime_identity import get_runtime_identity
 from safeyolo.tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS
@@ -62,6 +68,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     credential_guard = None
     addons_with_stats: dict = {}  # name -> addon instance
     admin_token = None  # Bearer token for authentication (set by AdminAPI)
+    desktop_presenter: DesktopPresenter | None = None
 
     # Addons that support mode switching: name -> list of option names
     # All options use consistent "block" semantics: True=block, False=warn
@@ -265,6 +272,26 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(identity.to_dict())
 
+    def _handle_get_instance(self) -> None:
+        """GET /admin/instance - Stable identity and client capabilities."""
+        self._send_json(
+            {
+                "schema_version": 1,
+                "safeyolo_instance_id": get_or_create_instance_id(),
+                "capabilities": {
+                    "approvals": True,
+                    "audit_events": True,
+                    "desktop_present": True,
+                },
+            }
+        )
+
+    def _handle_get_approvals(self) -> None:
+        """GET /admin/approvals - Pending requests from the durable audit log."""
+        log_path = Path(os.environ.get("SAFEYOLO_LOG_PATH", "/app/logs/safeyolo.jsonl"))
+        approvals, _ = scan_pending_approvals(log_path)
+        self._send_json({"approvals": approvals})
+
     def _handle_get_stats(self) -> None:
         """GET /stats - Aggregate stats from all addons."""
         stats = {"proxy": "safeyolo"}
@@ -388,6 +415,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/admin/budgets": self._handle_get_budgets,
             "/admin/traffic/scope": self._handle_get_traffic_scope,
             "/admin/runtime-identity": self._handle_get_runtime_identity,
+            "/admin/instance": self._handle_get_instance,
+            "/admin/approvals": self._handle_get_approvals,
             "/admin/gateway/grants": self._handle_get_gateway_grants,
             "/admin/plumb/pending": self._handle_get_plumb_pending,
             "/admin/plumb/conversations": self._handle_get_plumb_conversations,
@@ -1104,6 +1133,42 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         log.info("Budget counters reset")
         self._send_json(result)
 
+    def _handle_post_desktop_present(self, agent_id: str) -> None:
+        """POST /admin/agents/{id}/desktop/present - Present a local desktop."""
+        if self.desktop_presenter is None:
+            self._send_json({"error": "desktop presenter is unavailable"}, 503)
+            return
+        try:
+            presentation = self.desktop_presenter.present(agent_id)
+        except DesktopPresentationError as exc:
+            status = 404 if str(exc) == "Agent not found" else 409
+            self._send_json({"error": str(exc)}, status)
+            return
+        except Exception as exc:
+            log.exception("Desktop presentation failed for agent %s", agent_id)
+            self._send_json(
+                {"error": f"Desktop presentation failed: {type(exc).__name__}"},
+                500,
+            )
+            return
+
+        result = presentation.to_dict()
+        write_event(
+            "admin.desktop_presented",
+            kind=EventKind.ADMIN,
+            severity=Severity.LOW,
+            summary=f"Desktop presented for {_sanitize_log(presentation.agent)}",
+            agent=presentation.agent,
+            addon="admin-api",
+            details={
+                "agent_id": presentation.agent_id,
+                "agent": presentation.agent,
+                "url": presentation.url,
+                "reused": presentation.reused,
+            },
+        )
+        self._send_json(result)
+
     def do_POST(self):
         """Handle POST requests."""
         if not self._require_auth():
@@ -1137,6 +1202,10 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         m = re.match(r"^/admin/agents/([^/]+)/services$", path)
         if m:
             return self._handle_post_agent_service(m.group(1))
+
+        m = re.match(r"^/admin/agents/([^/]+)/desktop/present$", path)
+        if m:
+            return self._handle_post_desktop_present(m.group(1))
 
         self._send_json({"error": "not found"}, 404)
         return None
@@ -1642,6 +1711,8 @@ class AdminAPI:
     def __init__(self):
         self.server: HTTPServer | None = None
         self.server_thread: threading.Thread | None = None
+        self.operator_event_server: OperatorEventServer | None = None
+        self.desktop_presenter = DesktopPresenter()
 
     def load(self, loader):
         """Register mitmproxy options."""
@@ -1656,6 +1727,18 @@ class AdminAPI:
             typespec=str,
             default="",
             help="Path to file containing the admin API bearer token",
+        )
+        loader.add_option(
+            name="command_centre_enabled",
+            typespec=bool,
+            default=False,
+            help="Enable the local Command Centre event WebSocket",
+        )
+        loader.add_option(
+            name="command_centre_events_port",
+            typespec=int,
+            default=9091,
+            help="Loopback port for Command Centre event WebSocket",
         )
 
     def configure(self, updates):
@@ -1710,6 +1793,7 @@ class AdminAPI:
 
         # Set token on handler class
         AdminRequestHandler.admin_token = token
+        AdminRequestHandler.desktop_presenter = self.desktop_presenter
 
         if token:
             log.info("Admin API: Authentication enabled")
@@ -1724,6 +1808,24 @@ class AdminAPI:
         # Start HTTP server in background thread with error handling.
         self.server = LoopbackHTTPServer(("127.0.0.1", port), AdminRequestHandler)  # DOC: SECURITY.md, docs/security-verification.md
         self._server_port = port
+
+        if ctx.options.command_centre_enabled:
+            if not token:
+                self.server.server_close()
+                self.server = None
+                raise RuntimeError("Command Centre events require an admin API token")
+            self.operator_event_server = OperatorEventServer(
+                log_path=Path(os.environ.get("SAFEYOLO_LOG_PATH", "/app/logs/safeyolo.jsonl")),
+                token=token,
+                port=ctx.options.command_centre_events_port,
+            )
+            try:
+                self.operator_event_server.start()
+            except Exception:
+                self.server.server_close()
+                self.server = None
+                self.operator_event_server = None
+                raise
 
         def serve_with_recovery():
             """Run server with exception handling and auto-restart."""
@@ -1796,6 +1898,11 @@ class AdminAPI:
 
     def done(self):
         """Cleanup on shutdown."""
+        if self.operator_event_server:
+            self.operator_event_server.stop()
+            self.operator_event_server = None
+        self.desktop_presenter.close_all()
+        AdminRequestHandler.desktop_presenter = None
         if self.server:
             self.server.shutdown()
             log.info("Admin API stopped")
