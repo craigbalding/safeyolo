@@ -441,15 +441,19 @@ def _startup_dynamic_paths(path: Path) -> list[tuple[Path, int]] | None:
         (Path("config-share/network.env"), 1024),
         (Path("config-share/agent-name"), name_max),
         (Path("config-share/host-mounts"), argument_max),
-        (Path("status/static-init-done"), 0),
-        (Path("status/per-run-started"), 0),
-        (Path("status/vm-status"), 0),
+        # guest-init writes non-empty status markers after the host-side share
+        # is prepared; reserve representative upper bounds for their output.
+        (Path("status/static-init-done"), 64),
+        (Path("status/per-run-started"), 64),
+        (Path("status/vm-status"), 64),
     ]
 
 
 def _startup_extra_sources() -> list[tuple[Path, Path, int | None]]:
     """Return optional files copied or generated during startup."""
     config_dir = get_config_dir()
+    ssh_key = get_ssh_key_path()
+    ssh_key_missing = not ssh_key.is_file()
     extras = [
         (
             config_dir / "certs" / "mitmproxy-ca-cert.pem",
@@ -457,9 +461,9 @@ def _startup_extra_sources() -> list[tuple[Path, Path, int | None]]:
             None,
         ),
         (
-            get_ssh_key_path().with_suffix(".pub"),
+            ssh_key.with_suffix(".pub"),
             Path("config-share/authorized_keys"),
-            None,
+            1024 if ssh_key_missing else None,
         ),
         (config_dir / "data" / "agent_token", Path("config-share/agent_token"), None),
         (get_share_dir() / "vsock-term", Path("config-share/vsock-term"), None),
@@ -467,8 +471,7 @@ def _startup_extra_sources() -> list[tuple[Path, Path, int | None]]:
     # _ensure_ssh_key() creates an Ed25519 private/public pair before the
     # public key is copied. Include a conservative bound only when generation
     # is still required; existing files are already reflected in free space.
-    ssh_key = get_ssh_key_path()
-    if not ssh_key.is_file():
+    if ssh_key_missing:
         extras.extend(
             [
                 (ssh_key, Path("generated/vm_ssh_key"), 4096),
@@ -544,51 +547,27 @@ def _minimum_start_disk_headroom(path: Path, block_size: int) -> int | None:
                 return True
             return False
 
-        # Model the existing destination first. Free space already excludes
-        # these old files, but they remain beside temporary replacements.
+        # Build every new payload and temporary replacement while the old
+        # destination would still be present. Free space already excludes old
+        # files, so summing this complete new allocation is a conservative
+        # incremental bound for the replacement overlap.
         for source, relative_destination in source_paths:
             if not copy_probe_source(source, probe / relative_destination):
-                return None
-        for source, relative_destination, _fallback_size in _startup_extra_sources():
-            if source.is_file() and not copy_probe_source(
-                source, probe / relative_destination
-            ):
-                return None
-        for relative_destination, _size in dynamic_paths:
-            destination = probe / relative_destination
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.touch()
-        baseline = _allocation_bytes(probe, block_size)
-        if baseline is None:
-            return None
-
-        # Build the new tree and temporary replacement files while the old
-        # destination remains present. The returned delta is the additional
-        # allocation required beyond the already-free-space baseline.
-        for source, relative_destination in source_paths:
-            if relative_destination == skills_destination:
-                destination = probe / "config-share" / ".skills-new"
-            else:
-                destination = (
-                    probe / relative_destination.parent / f".{relative_destination.name}-new"
-                )
-            if not copy_probe_source(source, destination):
                 return None
         for source, relative_destination, fallback_size in _startup_extra_sources():
             if not source.is_file() and fallback_size is None:
                 continue
-            destination = (
-                probe / relative_destination.parent / f".{relative_destination.name}-new"
-            )
-            if not copy_probe_source(source, destination, fallback_size):
+            if not copy_probe_source(
+                source, probe / relative_destination, fallback_size
+            ):
                 return None
         for relative_destination, size in dynamic_paths:
             destination = probe / relative_destination
             destination.parent.mkdir(parents=True, exist_ok=True)
             with destination.open("wb") as handle:
-                handle.truncate(size)
-        total = _allocation_bytes(probe, block_size)
-        return total - baseline if total is not None else None
+                if size:
+                    handle.write(b"x" * size)
+        return _allocation_bytes(probe, block_size)
     except OSError:
         return None
     finally:

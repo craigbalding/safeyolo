@@ -239,13 +239,16 @@ def test_disk_headroom_boundary_covers_target_allocations(monkeypatch, tmp_path)
     monkeypatch.setattr(
         host_resources,
         "_startup_dynamic_paths",
-        lambda _path: [(Path("config-share/agent.env"), 1)],
+        lambda _path: [
+            (Path("config-share/agent.env"), 1),
+            (Path("status/vm-status"), 64),
+        ],
     )
     monkeypatch.setattr(host_resources, "_startup_extra_sources", lambda: [])
 
     required = host_resources._minimum_start_disk_headroom(tmp_path, 4096)
     assert required is not None
-    assert required >= 4 * 4096
+    assert required >= 9 * 4096
 
     monkeypatch.setattr(
         host_resources,
