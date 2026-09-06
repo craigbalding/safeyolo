@@ -861,7 +861,7 @@ def _run_agent_impl(
     try:
         if rename_tmux_window:
             rename_window_for_agent(name)
-        write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
+        write_event("agent.started", kind="agent", severity="low", summary=f"Agent {name} started", agent=name)
     except BaseException:
         host_guard.release()
         raise
@@ -901,6 +901,12 @@ def _run_agent_impl(
                 restore_from_path=restore_src,
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
             )
+            if host_guard is not None:
+                try:
+                    host_guard.record_started()
+                except Exception:
+                    plat.stop_sandbox(name)
+                    raise
             # Keep the host-resource lock through restore readiness. A failed
             # restore is stopped before the cold-boot fallback below.
             # agent_map was populated pre-start_sandbox (attribution_ip +
@@ -989,6 +995,11 @@ def _run_agent_impl(
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
             )
             if host_guard is not None:
+                try:
+                    host_guard.record_started()
+                except Exception:
+                    plat.stop_sandbox(name)
+                    raise
                 host_guard.release()
             if _start_lock is not None:
                 _start_lock.release()

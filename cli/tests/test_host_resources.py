@@ -12,6 +12,8 @@ from safeyolo.host_resources import (
     evaluate_admission,
 )
 
+_UNSET = object()
+
 
 def _report(
     *,
@@ -24,13 +26,15 @@ def _report(
     enforcement="admission",
     active_cpu=0,
     active_memory_mb=0,
+    memory_available=_UNSET,
+    memory_source="test",
 ):
     return HostResourceReport(
         cpu=ResourceLimit(cpu_ceiling, cpu_ceiling, "test", enforcement),
         memory=ResourceLimit(
             memory_ceiling_mb * 1024 * 1024,
             memory_ceiling_mb * 1024 * 1024,
-            "test",
+            memory_source,
             enforcement,
         ),
         disks=(
@@ -49,11 +53,20 @@ def _report(
         active_cpu=active_cpu,
         active_memory_mb=active_memory_mb,
         platform="Linux",
+        memory_available=(
+            memory_ceiling_mb * 1024 * 1024
+            if memory_available is _UNSET
+            else memory_available
+        ),
     )
 
 
 def test_aggregate_cpu_and_memory_admission_is_distinct_from_agent_shape():
-    report = _report(active_cpu=4, active_memory_mb=4096)
+    report = _report(
+        active_cpu=4,
+        active_memory_mb=4096,
+        memory_available=4096 * 1024 * 1024,
+    )
 
     allowed = evaluate_admission(
         report,
@@ -69,7 +82,47 @@ def test_aggregate_cpu_and_memory_admission_is_distinct_from_agent_shape():
     assert allowed.allowed
     assert not refused.allowed
     assert any("CPU allocation" in reason for reason in refused.reasons)
-    assert any("memory allocation" in reason for reason in refused.reasons)
+    assert any("memory request" in reason for reason in refused.reasons)
+
+
+def test_explicit_memory_ceiling_adds_aggregate_cap():
+    report = _report(
+        active_memory_mb=4096,
+        memory_ceiling_mb=8192,
+        memory_available=8192 * 1024 * 1024,
+        memory_source="operator override",
+    )
+
+    decision = evaluate_admission(
+        report,
+        requested_cpu=1,
+        requested_memory_mb=4097,
+    )
+
+    assert not decision.allowed
+    assert "memory allocation 8193 MiB exceeds ceiling" in decision.reasons[0]
+
+
+def test_explicit_memory_ceiling_still_checks_live_pressure():
+    report = _report(
+        memory_ceiling_mb=16_384,
+        memory_available=1024 * 1024,
+        memory_source="operator override",
+    )
+
+    decision = evaluate_admission(report, requested_cpu=1, requested_memory_mb=2)
+
+    assert not decision.allowed
+    assert "memory request 2 MiB exceeds currently available" in decision.reasons[0]
+
+
+def test_missing_measurements_close_admission():
+    report = _report(memory_available=None)
+
+    decision = evaluate_admission(report, requested_cpu=1, requested_memory_mb=1)
+
+    assert not decision.allowed
+    assert any("available host memory is unavailable" in reason for reason in decision.reasons)
 
 
 def test_process_exhaustion_refuses_new_work():
@@ -166,6 +219,59 @@ def test_missing_memory_measurement_is_visible_as_degraded(monkeypatch, tmp_path
     assert "available unknown" in report.memory.source
     assert report.degraded
     assert any("degraded" in line for line in report.as_detail_lines())
+
+
+def test_disk_measurement_failure_closes_admission():
+    decision = evaluate_admission(
+        _report(disk_free=None),
+        requested_cpu=1,
+        requested_memory_mb=1,
+    )
+
+    assert not decision.allowed
+    assert "free space is unavailable" in decision.reasons[0]
+
+
+def test_darwin_memory_read_keeps_total_when_available_probe_fails(monkeypatch):
+    import subprocess
+
+    import safeyolo.host_resources as host_resources
+
+    def run(command, **_kwargs):
+        if command[0] == "sysctl":
+            return subprocess.CompletedProcess(command, 0, "17179869184\n", "")
+        return subprocess.CompletedProcess(command, 1, "", "vm_stat unavailable")
+
+    monkeypatch.setattr(host_resources.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(host_resources.subprocess, "run", run)
+
+    total, available, source = host_resources._read_memory_capacity()
+
+    assert total == 16 * 1024**3
+    assert available is None
+    assert "available unknown" in source
+
+
+def test_running_allocation_uses_runtime_record_not_mutable_policy(
+    monkeypatch, tmp_path
+):
+    import safeyolo.host_resources as host_resources
+    from safeyolo import agents_store, platform
+
+    monkeypatch.setattr(
+        agents_store,
+        "load_all_agents",
+        lambda: {"worker": {"memory_mb": 999}},
+    )
+    monkeypatch.setattr(platform, "get_platform", lambda: type(
+        "Platform", (), {"is_sandbox_running": lambda _self, _name: True}
+    )())
+    monkeypatch.setattr(host_resources, "get_agents_dir", lambda: tmp_path)
+    host_resources.record_running_agent_allocation(
+        "worker", cpus=2, memory_mb=4096
+    )
+
+    assert host_resources.running_agent_allocations() == (2, 4096)
 
 
 def test_invalid_override_is_rejected():

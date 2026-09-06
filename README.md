@@ -264,9 +264,11 @@ Changing memory does not recreate the agent or alter its workspace, persistent
 home, configuration, or overlay.
 
 SafeYolo also applies a host-wide admission guard before each new agent starts.
-The guard sums the configured per-agent CPU and memory sizes, refuses startup
-when a SafeYolo-used filesystem has reached its configured low watermark, and
-checks the host process capacity. Automatic boundaries come from host
+The guard sums the actual CPU and memory allocations of running agents,
+refuses startup when a SafeYolo-used filesystem has reached its configured low
+watermark, and checks the host process capacity. It also checks a new memory
+request against live available memory; an explicit memory ceiling adds an
+aggregate configured-allocation cap. Automatic boundaries come from host
 measurements; small explicit overrides live under `host_resources` in
 `config.yaml`. Run `safeyolo doctor --verbose` to inspect detected capacity,
 effective boundaries, derivation sources, and degraded enforcement states.

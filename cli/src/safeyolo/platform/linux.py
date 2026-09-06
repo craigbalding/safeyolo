@@ -746,13 +746,6 @@ def _wrap_in_systemd_scope(
     ] + cmd
 
 
-def _host_tasks_max() -> int | None:
-    """Return a finite host-derived TasksMax value, if one is available."""
-    from ..host_resources import configured_process_limit  # noqa: PLC0415
-
-    return configured_process_limit()
-
-
 def _systemd_user_scope_available(
     environ: dict[str, str] | None = None,
     *,
@@ -806,7 +799,10 @@ def _sandbox_launch_command(
     """Use the normal systemd scope, or direct runsc for a nested lab."""
     available, reason = _systemd_user_scope_available()
     if available:
-        return _wrap_in_systemd_scope(cmd, name, memory_mb, cpus, _host_tasks_max())
+        # TasksMax is intentionally not applied here. The host process limit is
+        # an aggregate admission boundary, while this is one per-agent scope;
+        # copying the aggregate value to every scope would multiply the limit.
+        return _wrap_in_systemd_scope(cmd, name, memory_mb, cpus)
     log.warning(
         "systemd user scope unavailable (%s); starting %s directly. "
         "Inner MemoryMax and CPUQuota limits are not enforced.",
@@ -1262,6 +1258,9 @@ class LinuxPlatform(AgentPlatform):
         _kill_userns(name)
         if temp_userns:
             _kill_userns(name)
+
+        from ..host_resources import clear_running_agent_allocation  # noqa: PLC0415
+        clear_running_agent_allocation(name)
 
         pid_path = agent_dir / "container.pid"
         pid_path.unlink(missing_ok=True)

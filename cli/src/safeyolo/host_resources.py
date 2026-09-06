@@ -8,14 +8,23 @@ start. It does not schedule or resize running agents.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import platform
 import re
 import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import get_config_dir, get_data_dir, get_logs_dir, load_config
+from .config import (
+    get_agents_dir,
+    get_config_dir,
+    get_data_dir,
+    get_logs_dir,
+    load_config,
+)
 
 DEFAULT_AGENT_CPUS = 4
 
@@ -61,13 +70,16 @@ class HostResourceReport:
     active_cpu: int
     active_memory_mb: int
     platform: str
+    memory_available: int | None = None
+    memory_available_source: str = "unavailable: available memory could not be detected"
 
     @property
     def degraded(self) -> bool:
         """Return whether any protection is unavailable or admission-only."""
         limits = (self.cpu, self.memory, self.processes)
         return (
-            any(limit.effective is None for limit in limits)
+            self.memory_available is None
+            or any(limit.effective is None for limit in limits)
             or any(
                 "degraded" in limit.enforcement
                 or "admission-only" in limit.enforcement
@@ -88,8 +100,11 @@ class HostResourceReport:
             ),
             (
                 f"Memory detected: {memory_detected}; ceiling: {memory_effective}; "
+                f"available now: {_format_bytes(self.memory_available)}; "
                 f"active allocation: {self.active_memory_mb} MiB; "
-                f"source: {self.memory.source}; enforcement: {self.memory.enforcement}"
+                f"source: {self.memory.source}; "
+                f"live source: {self.memory_available_source}; "
+                f"enforcement: {self.memory.enforcement}"
             ),
         ]
         for disk in self.disks:
@@ -124,6 +139,76 @@ def _format_bytes(value: int | None) -> str:
     if value % (1024 * 1024) == 0:
         return f"{value // (1024 * 1024)} MiB"
     return f"{value} bytes"
+
+
+def _runtime_allocation_path(name: str) -> Path:
+    return get_agents_dir() / name / "runtime-resources.json"
+
+
+def record_running_agent_allocation(
+    name: str, *, cpus: int, memory_mb: int
+) -> None:
+    """Persist the resources used by the currently running guest.
+
+    This is deliberately separate from policy metadata: an operator may edit
+    next-run sizing while a guest is running, but admission must account for
+    the allocation that was actually launched.
+    """
+    if type(cpus) is not int or cpus <= 0:
+        raise ValueError("runtime CPU allocation must be a positive integer")
+    if type(memory_mb) is not int or memory_mb <= 0:
+        raise ValueError("runtime memory allocation must be a positive integer")
+    path = _runtime_allocation_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=".runtime-resources-", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump({"cpus": cpus, "memory_mb": memory_mb}, handle)
+            handle.write("\n")
+        fd = -1
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        temporary.unlink(missing_ok=True)
+
+
+def clear_running_agent_allocation(name: str) -> None:
+    """Remove the runtime allocation after a guest has stopped."""
+    _runtime_allocation_path(name).unlink(missing_ok=True)
+
+
+def _read_running_agent_allocation(name: str) -> tuple[int, int] | None:
+    path = _runtime_allocation_path(name)
+    try:
+        payload = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HostResourceAdmissionError(
+            f"cannot inspect runtime allocation for agent {name!r}: "
+            f"{type(exc).__name__}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise HostResourceAdmissionError(
+            f"runtime allocation for agent {name!r} is invalid"
+        )
+    cpus = payload.get("cpus")
+    memory_mb = payload.get("memory_mb")
+    if (
+        type(cpus) is not int
+        or cpus <= 0
+        or type(memory_mb) is not int
+        or memory_mb <= 0
+    ):
+        raise HostResourceAdmissionError(
+            f"runtime allocation for agent {name!r} is invalid"
+        )
+    return cpus, memory_mb
 
 
 def _host_resource_config(config: dict | None = None) -> dict:
@@ -175,8 +260,73 @@ def _read_cpu_capacity() -> tuple[int | None, str]:
     return None, "unavailable: host CPU count could not be detected"
 
 
+def _read_darwin_memory_capacity() -> tuple[int | None, int | None, str]:
+    """Read macOS memory without relying on unsupported sysconf names."""
+    total: int | None = None
+    try:
+        result = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            value = int(result.stdout.strip())
+            if value > 0:
+                total = value
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+    available: int | None = None
+    try:
+        result = subprocess.run(
+            ["vm_stat"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            page_match = re.search(r"page size of (\d+) bytes", result.stdout)
+            page_size = int(page_match.group(1)) if page_match else None
+            page_names = "free|inactive|speculative"
+            pages = re.findall(
+                rf"^Pages ({page_names}):\s+(\d+)",
+                result.stdout,
+                re.MULTILINE,
+            )
+            if page_size and pages:
+                available = page_size * sum(int(value) for _name, value in pages)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+    if total is None:
+        return None, available, "unavailable: Darwin hw.memsize could not be detected"
+    if available is None:
+        return total, None, "automatic: Darwin sysctl hw.memsize; available unknown"
+    return (
+        total,
+        available,
+        "automatic: Darwin sysctl hw.memsize; vm_stat free+inactive+speculative",
+    )
+
+
+def _sysconf_positive(name: str) -> int | None:
+    try:
+        value = os.sysconf(name)
+    except (AttributeError, OSError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def _read_memory_capacity() -> tuple[int | None, int | None, str]:
     """Return total bytes, currently available bytes, and derivation source."""
+    if platform.system() == "Darwin":
+        return _read_darwin_memory_capacity()
+
     total: int | None = None
     available: int | None = None
     if platform.system() == "Linux":
@@ -197,16 +347,15 @@ def _read_memory_capacity() -> tuple[int | None, int | None, str]:
                 return total, available, "automatic: /proc/meminfo MemAvailable"
             return total, None, "automatic: /proc/meminfo MemTotal; available unknown"
 
-    try:
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        total_pages = os.sysconf("SC_PHYS_PAGES")
-        available_pages = os.sysconf("SC_AVPHYS_PAGES")
-        total = page_size * total_pages if total_pages > 0 else None
-        available = page_size * available_pages if available_pages > 0 else None
-    except (AttributeError, OSError, ValueError):
-        pass
+    page_size = _sysconf_positive("SC_PAGE_SIZE")
+    total_pages = _sysconf_positive("SC_PHYS_PAGES")
+    available_pages = _sysconf_positive("SC_AVPHYS_PAGES")
+    if page_size is not None and total_pages is not None:
+        total = page_size * total_pages
+    if page_size is not None and available_pages is not None:
+        available = page_size * available_pages
     if total is None:
-        return None, None, "unavailable: host memory capacity could not be detected"
+        return None, available, "unavailable: host memory capacity could not be detected"
     if available is not None:
         return total, available, "automatic: sysconf available physical pages"
     return total, None, "automatic: sysconf physical pages; available unknown"
@@ -277,16 +426,22 @@ def _process_count() -> int | None:
 
 
 def _read_process_capacity() -> tuple[int | None, int | None, str]:
-    current = _cgroup_value("pids.current")
-    limit = _cgroup_value("pids.max")
-    if current is None:
-        current = _process_count()
-    if limit is not None:
-        return limit, current, "automatic: current cgroup pids.max"
+    """Read one aggregate process boundary, not a per-agent cgroup limit."""
+    current = _process_count()
     try:
         pid_max = int(Path("/proc/sys/kernel/pid_max").read_text().strip())
     except (OSError, ValueError):
         pid_max = None
+    if pid_max is not None and pid_max > 0 and current is not None:
+        return pid_max, current, "automatic: /proc process count; kernel pid_max"
+
+    # A cgroup limit is only a fallback when the corresponding current count
+    # comes from that same cgroup. It must not be copied as TasksMax onto every
+    # agent scope: that would turn an aggregate limit into N separate limits.
+    cgroup_current = _cgroup_value("pids.current")
+    cgroup_limit = _cgroup_value("pids.max")
+    if cgroup_limit is not None:
+        return cgroup_limit, cgroup_current, "automatic: current cgroup pids.max"
     if pid_max is not None and pid_max > 0:
         return pid_max, current, "automatic: kernel pid_max"
     return None, current, "unavailable: process capacity could not be detected"
@@ -433,7 +588,7 @@ def build_host_resource_report(
     scope_status = _systemd_scope_status()
     cpu = ResourceLimit(cpu.detected, cpu.effective, cpu.source, scope_status)
     memory = ResourceLimit(memory.detected, memory.effective, memory.source, scope_status)
-    process_enforcement = scope_status
+    process_enforcement = "admission"
     if process_current is None:
         process_enforcement = "degraded: current process count unavailable"
     processes = ResourceLimit(
@@ -451,6 +606,8 @@ def build_host_resource_report(
         active_cpu=active_cpu,
         active_memory_mb=active_memory_mb,
         platform=platform.system(),
+        memory_available=memory_available,
+        memory_available_source=memory_source,
     )
 
 
@@ -464,32 +621,51 @@ def evaluate_admission(
     if requested_cpu <= 0 or requested_memory_mb <= 0:
         raise ValueError("requested agent resources must be positive")
     reasons: list[str] = []
-    if report.cpu.effective is not None and (
-        report.active_cpu + requested_cpu > report.cpu.effective
-    ):
+    if report.cpu.effective is None:
+        reasons.append("CPU capacity is unavailable; cannot establish a host ceiling")
+    elif report.active_cpu + requested_cpu > report.cpu.effective:
         reasons.append(
             f"CPU allocation {report.active_cpu + requested_cpu} exceeds ceiling "
             f"{report.cpu.effective} ({report.cpu.source})"
         )
-    if report.memory.effective is not None and (
-        (report.active_memory_mb + requested_memory_mb) * 1024 * 1024
-        > report.memory.effective
-    ):
-        reasons.append(
-            f"memory allocation {report.active_memory_mb + requested_memory_mb} MiB "
-            f"exceeds ceiling {_format_bytes(report.memory.effective)} "
-            f"({report.memory.source})"
-        )
-    if report.processes.effective is not None and report.process_current is not None:
-        if report.process_current >= report.processes.effective:
+
+    if report.memory.effective is None:
+        reasons.append("memory ceiling is unavailable; cannot establish a host boundary")
+    elif report.memory.source.startswith("operator override"):
+        if (report.active_memory_mb + requested_memory_mb) * 1024 * 1024 > report.memory.effective:
             reasons.append(
-                f"process table is exhausted ({report.process_current} of "
-                f"{report.processes.effective}; {report.processes.source})"
+                f"memory allocation {report.active_memory_mb + requested_memory_mb} MiB "
+                f"exceeds ceiling {_format_bytes(report.memory.effective)} "
+                f"({report.memory.source})"
             )
+    if report.memory_available is None:
+        reasons.append(
+            "currently available host memory is unavailable; "
+            "cannot establish a live-pressure boundary"
+        )
+    elif requested_memory_mb * 1024 * 1024 > report.memory_available:
+        reasons.append(
+            f"memory request {requested_memory_mb} MiB exceeds currently available "
+            f"memory {_format_bytes(report.memory_available)} "
+            f"({report.memory_available_source})"
+        )
+
+    if report.processes.effective is None:
+        reasons.append("process capacity is unavailable; cannot establish a host boundary")
+    elif report.process_current is None:
+        reasons.append("current process count is unavailable; cannot check exhaustion")
+    elif report.process_current >= report.processes.effective:
+        reasons.append(
+            f"process table is exhausted ({report.process_current} of "
+            f"{report.processes.effective}; {report.processes.source})"
+        )
     for disk in report.disks:
         if disk.free is None:
-            continue
-        if disk.free <= disk.effective_min_free:
+            reasons.append(
+                f"filesystem {disk.path} free space is unavailable; "
+                "cannot check disk exhaustion"
+            )
+        elif disk.free <= disk.effective_min_free:
             reasons.append(
                 f"filesystem {disk.path} has {_format_bytes(disk.free)} free; "
                 f"minimum is {_format_bytes(disk.effective_min_free)} "
@@ -499,7 +675,7 @@ def evaluate_admission(
 
 
 def running_agent_allocations(exclude: str | None = None) -> tuple[int, int]:
-    """Return configured CPU and memory for currently running agents."""
+    """Return launched CPU and memory allocations for running agents."""
     try:
         from .agents_store import load_all_agents
         from .platform import get_platform
@@ -523,13 +699,14 @@ def running_agent_allocations(exclude: str | None = None) -> tuple[int, int]:
             ) from exc
         if not running:
             continue
-        active_cpu += DEFAULT_AGENT_CPUS
-        value = metadata.get("memory_mb", 4096)
-        if type(value) is not int or value <= 0:
+        allocation = _read_running_agent_allocation(name)
+        if allocation is None:
             raise HostResourceAdmissionError(
-                f"agent {name!r} has invalid memory_mb; fix its configuration first"
+                f"cannot determine the runtime allocation for running agent {name!r}"
             )
-        active_memory_mb += value
+        cpus, memory_mb = allocation
+        active_cpu += cpus
+        active_memory_mb += memory_mb
     return active_cpu, active_memory_mb
 
 
@@ -552,6 +729,14 @@ class HostResourceGuard:
         self._lock_file = open(lock_path, "a+")
         fcntl.flock(self._lock_file, fcntl.LOCK_EX)
         return self
+
+    def record_started(self) -> None:
+        """Record the allocation after the runtime launch has succeeded."""
+        record_running_agent_allocation(
+            self.name,
+            cpus=self.requested_cpu,
+            memory_mb=self.requested_memory_mb,
+        )
 
     def admit(self, *, extra_paths: list[Path] | None = None) -> HostResourceReport:
         if self._lock_file is None:
@@ -585,16 +770,3 @@ class HostResourceGuard:
     def __exit__(self, exc_type, exc, traceback) -> bool:
         self.release()
         return False
-
-
-def configured_process_limit() -> int | None:
-    """Return the finite process ceiling used for a Linux TasksMax setting."""
-    try:
-        overrides = _host_resource_config()
-    except ValueError:
-        return None
-    detected, _current, _source = _read_process_capacity()
-    override = overrides.get("process_limit")
-    if override is not None:
-        return min(override, detected) if detected is not None else override
-    return detected

@@ -52,8 +52,8 @@ lock and evaluates the requested agent against all currently running agents.
 The guard enforces these invariants:
 
 - aggregate configured CPU allocation does not exceed detected CPU capacity;
-- aggregate configured memory allocation does not exceed currently available
-  host memory by default;
+- a new memory request does not exceed currently available host memory, and
+  an explicit aggregate memory ceiling is not exceeded;
 - a filesystem used by SafeYolo runtime writes must have free space before new
   work starts; and
 - a new runtime process is not admitted when the detected host process limit is
@@ -67,12 +67,13 @@ watermark is zero free bytes. Operators can set a small explicit
 `host_resources` override in `config.yaml` when they have a host-specific
 capacity model.
 
-Linux extends the existing per-agent systemd user scope with a finite
-`TasksMax` when the host exposes a process limit. Linux systems without a
-usable user scope and macOS retain aggregate admission checks but report
-admission-only or degraded enforcement in `safeyolo doctor --verbose`.
-SafeYolo does not resize or stop active agents and does not implement a quota
-scheduler.
+Linux retains the existing per-agent systemd user scope for per-agent
+`MemoryMax` and `CPUQuota`. The aggregate process limit remains an admission
+check rather than being copied into every per-agent scope: doing so would
+multiply the aggregate limit. Linux systems without a usable user scope and
+macOS retain aggregate admission checks but report admission-only or degraded
+enforcement in `safeyolo doctor --verbose`. SafeYolo does not resize or stop
+active agents and does not implement a quota scheduler.
 
 ## Policy Model
 

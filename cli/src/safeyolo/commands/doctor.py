@@ -1417,11 +1417,19 @@ def _check_flow_store() -> DiagResult:
 
 def _check_host_resources() -> DiagResult:
     """Report host capacity, admission ceilings, and enforcement state."""
-    from ..host_resources import build_host_resource_report
+    from ..host_resources import (
+        HostResourceAdmissionError,
+        build_host_resource_report,
+        running_agent_allocations,
+    )
 
     try:
-        report = build_host_resource_report()
-    except (OSError, ValueError) as exc:
+        active_cpu, active_memory_mb = running_agent_allocations()
+        report = build_host_resource_report(
+            active_cpu=active_cpu,
+            active_memory_mb=active_memory_mb,
+        )
+    except (HostResourceAdmissionError, OSError, ValueError) as exc:
         return DiagResult(
             name="Host resource protection",
             status="warn",

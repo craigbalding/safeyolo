@@ -367,10 +367,16 @@ class TestCheckHostResources:
             active_cpu=0,
             active_memory_mb=0,
             platform="Linux",
+            memory_available=6 * 1024**3,
+            memory_available_source="automatic: test available memory",
+        )
+        monkeypatch.setattr(
+            "safeyolo.host_resources.running_agent_allocations",
+            lambda: (0, 0),
         )
         monkeypatch.setattr(
             "safeyolo.host_resources.build_host_resource_report",
-            lambda: report,
+            lambda **_kwargs: report,
         )
 
         result = _check_host_resources()
@@ -395,8 +401,12 @@ class TestCheckHostResources:
             platform="Linux",
         )
         monkeypatch.setattr(
+            "safeyolo.host_resources.running_agent_allocations",
+            lambda: (0, 0),
+        )
+        monkeypatch.setattr(
             "safeyolo.host_resources.build_host_resource_report",
-            lambda: report,
+            lambda **_kwargs: report,
         )
 
         result = _check_host_resources()
