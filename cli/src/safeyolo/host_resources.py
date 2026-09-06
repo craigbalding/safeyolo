@@ -421,7 +421,22 @@ def _startup_source_paths() -> list[tuple[Path, Path]]:
     ]
 
 
-def _startup_dynamic_paths(path: Path) -> list[tuple[Path, int]] | None:
+def startup_mount_manifest_size(
+    host_mounts: list[tuple[str, str, bool]] | None,
+) -> int:
+    """Return the UTF-8 bytes written for a pending host-mount manifest."""
+    if not host_mounts:
+        return 0
+    return sum(
+        len(f"extra{index}:{guest_path}\n".encode())
+        for index, (_host_path, guest_path, _read_only) in enumerate(host_mounts)
+    )
+
+
+def _startup_dynamic_paths(
+    path: Path,
+    host_mount_manifest_bytes: int | None = None,
+) -> list[tuple[Path, int]] | None:
     """Return bounded dynamic files written by prepare_config_share()."""
     try:
         argument_max = os.sysconf("SC_ARG_MAX")
@@ -430,8 +445,14 @@ def _startup_dynamic_paths(path: Path) -> list[tuple[Path, int]] | None:
         return None
     if argument_max <= 0 or name_max <= 0:
         return None
-    # agent.env and host-mounts contain caller-controlled values. Bound each
-    # by the host's exec/path limits rather than inventing a workload quota.
+    # agent.env contains caller-controlled values. Bound it by the host's exec
+    # limit rather than inventing a workload quota. The pending mount manifest
+    # is exact for an agent start; doctor uses the conservative host bound.
+    mount_manifest_bytes = (
+        argument_max
+        if host_mount_manifest_bytes is None
+        else max(0, host_mount_manifest_bytes)
+    )
     return [
         (Path("config-share/per-run-go"), 0),
         (Path("config-share/debug-mode"), 0),
@@ -440,7 +461,7 @@ def _startup_dynamic_paths(path: Path) -> list[tuple[Path, int]] | None:
         (Path("config-share/agent.env"), argument_max),
         (Path("config-share/network.env"), 1024),
         (Path("config-share/agent-name"), name_max),
-        (Path("config-share/host-mounts"), argument_max),
+        (Path("config-share/host-mounts"), mount_manifest_bytes),
         # guest-init writes non-empty status markers after the host-side share
         # is prepared; reserve representative upper bounds for their output.
         (Path("status/static-init-done"), 64),
@@ -526,7 +547,11 @@ def _startup_path_allocation(path: Path, block_size: int) -> int | None:
         return None
 
 
-def _minimum_start_disk_headroom(path: Path, block_size: int) -> int | None:
+def _minimum_start_disk_headroom(
+    path: Path,
+    block_size: int,
+    host_mount_manifest_bytes: int | None = None,
+) -> int | None:
     """Compute prepare_config_share's target-filesystem allocation bound.
 
     This is intentionally non-writing: it rounds every source and dynamic
@@ -536,7 +561,7 @@ def _minimum_start_disk_headroom(path: Path, block_size: int) -> int | None:
     free space, so the complete new allocation is the conservative overlap
     bound needed before startup begins.
     """
-    dynamic_paths = _startup_dynamic_paths(path)
+    dynamic_paths = _startup_dynamic_paths(path, host_mount_manifest_bytes)
     if dynamic_paths is None or block_size <= 0:
         return None
     source_paths = _startup_source_paths()
@@ -799,6 +824,7 @@ def _filesystem_block_size(path: Path, usage) -> int | None:
 def _read_disks(
     paths: list[Path],
     override: int | None,
+    host_mount_manifest_bytes: int | None = None,
 ) -> tuple[DiskCapacity, ...]:
     disks: list[DiskCapacity] = []
     for path in paths:
@@ -825,7 +851,9 @@ def _read_disks(
         measured_payload = (
             None
             if override is not None or block_size is None
-            else _minimum_start_disk_headroom(path, block_size)
+            else _minimum_start_disk_headroom(
+                path, block_size, host_mount_manifest_bytes
+            )
         )
         minimum = (
             override
@@ -884,6 +912,7 @@ def build_host_resource_report(
     active_cpu: int = 0,
     active_memory_mb: int = 0,
     config: dict | None = None,
+    host_mount_manifest_bytes: int | None = None,
 ) -> HostResourceReport:
     """Detect host capacity and derive effective protection boundaries."""
     overrides = _host_resource_config(config)
@@ -928,7 +957,9 @@ def build_host_resource_report(
         automatic_source=process_source,
     )
     disks = _read_disks(
-        _runtime_paths(extra_paths), overrides.get("disk_min_free_bytes")
+        _runtime_paths(extra_paths),
+        overrides.get("disk_min_free_bytes"),
+        host_mount_manifest_bytes,
     )
     scope_status = _systemd_scope_status()
     cpu = ResourceLimit(cpu.detected, cpu.effective, cpu.source, scope_status)
@@ -1105,7 +1136,12 @@ class HostResourceGuard:
             memory_mb=self.requested_memory_mb,
         )
 
-    def admit(self, *, extra_paths: list[Path] | None = None) -> HostResourceReport:
+    def admit(
+        self,
+        *,
+        extra_paths: list[Path] | None = None,
+        host_mount_manifest_bytes: int | None = None,
+    ) -> HostResourceReport:
         if self._lock_file is None:
             raise RuntimeError("host resource guard must be acquired before admission")
         active_cpu, active_memory_mb = running_agent_allocations(exclude=self.name)
@@ -1113,6 +1149,7 @@ class HostResourceGuard:
             extra_paths=extra_paths,
             active_cpu=active_cpu,
             active_memory_mb=active_memory_mb,
+            host_mount_manifest_bytes=host_mount_manifest_bytes,
         )
         decision = evaluate_admission(
             report,

@@ -73,11 +73,11 @@ detected host total, and each new request is also checked against current
 available memory. An explicit memory ceiling additionally caps the aggregate
 allocations of running agents. CPU admission reserves one detected logical
 CPU. Automatic disk admission reserves a computed target-filesystem
-allocation bound for startup writes plus one filesystem allocation block. Linux
-process admission reserves
-the minimum runtime launch tasks (two for the user-namespace holder and
-launcher). These are measured or runtime-derived boundaries, not workload
-quotas. If a required measurement is unavailable, new work is refused rather
+allocation bound for startup writes plus one filesystem allocation block.
+Linux process admission reserves the minimum runtime launch tasks (two for the
+user-namespace holder and launcher). These are computed or runtime-derived
+boundaries, not workload quotas. If a required measurement is unavailable, new
+work is refused rather
 than admitted without that invariant.
 
 Set an integer override only when the operator has a host-specific capacity
@@ -85,8 +85,8 @@ model. SafeYolo caps CPU and memory overrides at detected host capacity. An
 explicit disk watermark can replace the automatic startup-payload reserve
 when the operator has a host-specific capacity model. Explicit CPU, memory,
 and disk values are operator choices and can replace their automatic reserve.
-The process limit is an aggregate admission boundary; it is not copied into each per-agent
-systemd scope because that would multiply the limit. SafeYolo never
+The process limit is an aggregate admission boundary; it is not copied into
+each per-agent systemd scope because that would multiply the limit. SafeYolo never
 stops an active agent when disk space crosses the low watermark; the guard
 applies to new work.
 

@@ -67,9 +67,10 @@ The guard checks the configuration directory, SafeYolo log directory, agent
 workspaces, and configured mount sources. This covers persistent homes,
 container overlays, logs, snapshots, and workspace writes without pretending
 that a per-agent overlay size is a host disk quota. The automatic disk
-watermark is the measured startup payload plus one filesystem allocation
-block. Operators can set a positive explicit `host_resources` override in
-`config.yaml` when they have a host-specific capacity model; explicit values
+watermark is the computed target-filesystem startup allocation bound plus one
+filesystem allocation block. Operators can set a positive explicit
+`host_resources` override in `config.yaml` when they have a host-specific
+capacity model; explicit values
 replace their automatic reserve.
 
 Linux retains the existing per-agent systemd user scope for per-agent

@@ -822,7 +822,11 @@ def _run_agent_impl(
     # allocations instead of racing on a stale aggregate total.
     host_guard = None
     try:
-        from ..host_resources import HostResourceAdmissionError, HostResourceGuard
+        from ..host_resources import (
+            HostResourceAdmissionError,
+            HostResourceGuard,
+            startup_mount_manifest_size,
+        )
 
         host_guard = HostResourceGuard(
             name=name,
@@ -830,7 +834,8 @@ def _run_agent_impl(
             requested_memory_mb=memory_for_run,
         ).acquire()
         host_guard.admit(
-            extra_paths=[workspace_path, *(Path(share[0]) for share in extra_shares)]
+            extra_paths=[workspace_path, *(Path(share[0]) for share in extra_shares)],
+            host_mount_manifest_bytes=startup_mount_manifest_size(extra_shares),
         )
     except (HostResourceAdmissionError, ValueError) as err:
         if host_guard is not None:

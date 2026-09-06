@@ -11,6 +11,7 @@ from safeyolo.host_resources import (
     ResourceLimit,
     build_host_resource_report,
     evaluate_admission,
+    startup_mount_manifest_size,
 )
 
 _UNSET = object()
@@ -179,7 +180,7 @@ def test_automatic_boundaries_leave_host_derived_headroom(monkeypatch, tmp_path)
     )
     monkeypatch.setattr(
         "safeyolo.host_resources._minimum_start_disk_headroom",
-        lambda _path, _block_size: 8192,
+        lambda _path, _block_size, _manifest: 8192,
     )
     monkeypatch.setattr(
         "safeyolo.host_resources._systemd_scope_status",
@@ -239,7 +240,7 @@ def test_disk_headroom_boundary_covers_target_allocations(monkeypatch, tmp_path)
     monkeypatch.setattr(
         host_resources,
         "_startup_dynamic_paths",
-        lambda _path: [
+        lambda _path, _manifest: [
             (Path("config-share/agent.env"), 1),
             (Path("status/vm-status"), 64),
         ],
@@ -253,7 +254,7 @@ def test_disk_headroom_boundary_covers_target_allocations(monkeypatch, tmp_path)
     monkeypatch.setattr(
         host_resources,
         "_minimum_start_disk_headroom",
-        lambda _path, _block_size: required,
+        lambda _path, _block_size, _manifest: required,
     )
     monkeypatch.setattr(
         host_resources.shutil,
@@ -272,6 +273,63 @@ def test_disk_headroom_boundary_covers_target_allocations(monkeypatch, tmp_path)
         requested_cpu=1,
         requested_memory_mb=1,
     ).allowed
+
+
+def test_mount_manifest_bound_uses_every_pending_entry(tmp_path):
+    import os
+
+    import safeyolo.host_resources as host_resources
+
+    mounts = [
+        ("/source", f"/guest/{index:04d}/" + "x" * 400, False)
+        for index in range(6000)
+    ]
+    manifest_size = startup_mount_manifest_size(mounts)
+    assert manifest_size > os.sysconf("SC_ARG_MAX")
+
+    dynamic = host_resources._startup_dynamic_paths(tmp_path, manifest_size)
+
+    assert dynamic is not None
+    assert dict(dynamic)[Path("config-share/host-mounts")] == manifest_size
+
+
+def test_pending_mount_manifest_size_reaches_host_report(monkeypatch, tmp_path):
+    import safeyolo.host_resources as host_resources
+
+    manifest_size = startup_mount_manifest_size(
+        [("/source", "/guest/a", False), ("/source", "/guest/b", True)]
+    )
+    observed = {}
+    monkeypatch.setattr(
+        host_resources,
+        "_read_cpu_capacity",
+        lambda: (8, "automatic: test CPU"),
+    )
+    monkeypatch.setattr(
+        host_resources,
+        "_read_memory_capacity",
+        lambda: (16 * 1024**3, 12 * 1024**3, "automatic: test memory"),
+    )
+    monkeypatch.setattr(
+        host_resources,
+        "_read_process_capacity",
+        lambda: (100, 2, "automatic: test process"),
+    )
+    monkeypatch.setattr(host_resources, "_runtime_paths", lambda _: [tmp_path])
+    def read_disks(_paths, _override, pending=None):
+        observed["pending"] = pending
+        return _report().disks
+
+    monkeypatch.setattr(host_resources, "_read_disks", read_disks)
+    monkeypatch.setattr(
+        host_resources,
+        "_systemd_scope_status",
+        lambda: "admission + per-agent systemd scope",
+    )
+
+    build_host_resource_report(host_mount_manifest_bytes=manifest_size)
+
+    assert observed["pending"] == manifest_size
 
 
 def test_disk_headroom_low_and_override_paths_do_not_probe(monkeypatch, tmp_path):
