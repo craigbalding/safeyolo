@@ -24,13 +24,14 @@ def _report(
     disk_free=1024,
     disk_min_free=0,
     enforcement="admission",
+    cpu_source="test",
     active_cpu=0,
     active_memory_mb=0,
     memory_available=_UNSET,
     memory_source="test",
 ):
     return HostResourceReport(
-        cpu=ResourceLimit(cpu_ceiling, cpu_ceiling, "test", enforcement),
+        cpu=ResourceLimit(cpu_ceiling, cpu_ceiling, cpu_source, enforcement),
         memory=ResourceLimit(
             memory_ceiling_mb * 1024 * 1024,
             memory_ceiling_mb * 1024 * 1024,
@@ -65,7 +66,7 @@ def test_aggregate_cpu_and_memory_admission_is_distinct_from_agent_shape():
     report = _report(
         active_cpu=4,
         active_memory_mb=4096,
-        memory_available=4096 * 1024 * 1024 + 1024 * 1024,
+        memory_available=4096 * 1024 * 1024,
     )
 
     allowed = evaluate_admission(
@@ -83,6 +84,16 @@ def test_aggregate_cpu_and_memory_admission_is_distinct_from_agent_shape():
     assert not refused.allowed
     assert any("CPU allocation" in reason for reason in refused.reasons)
     assert any("memory request" in reason for reason in refused.reasons)
+
+
+def test_explicit_cpu_ceiling_can_admit_the_default_small_host_shape():
+    decision = evaluate_admission(
+        _report(cpu_ceiling=4, cpu_source="operator override"),
+        requested_cpu=4,
+        requested_memory_mb=1,
+    )
+
+    assert decision.allowed
 
 
 def test_explicit_memory_ceiling_adds_aggregate_cap():
@@ -113,7 +124,7 @@ def test_explicit_memory_ceiling_still_checks_live_pressure():
     decision = evaluate_admission(report, requested_cpu=1, requested_memory_mb=2)
 
     assert not decision.allowed
-    assert "memory request 2 MiB reaches the live ceiling" in decision.reasons[0]
+    assert "memory request 2 MiB reaches currently available memory" in decision.reasons[0]
 
 
 def test_missing_measurements_close_admission():
@@ -127,7 +138,7 @@ def test_missing_measurements_close_admission():
 
 def test_process_exhaustion_refuses_new_work():
     decision = evaluate_admission(
-        _report(process_limit=10, process_current=9),
+        _report(process_limit=10, process_current=8),
         requested_cpu=1,
         requested_memory_mb=1,
     )
@@ -166,6 +177,10 @@ def test_automatic_boundaries_leave_host_derived_headroom(monkeypatch, tmp_path)
         lambda _path: SimpleNamespace(total=10000, free=4096, block_size=4096),
     )
     monkeypatch.setattr(
+        "safeyolo.host_resources._minimum_start_disk_headroom",
+        lambda: 8192,
+    )
+    monkeypatch.setattr(
         "safeyolo.host_resources._systemd_scope_status",
         lambda: "admission + per-agent systemd scope",
     )
@@ -173,11 +188,33 @@ def test_automatic_boundaries_leave_host_derived_headroom(monkeypatch, tmp_path)
     report = build_host_resource_report()
 
     assert report.cpu.effective == 8
-    assert report.memory.effective == 4095 * 1024**2
-    assert report.disks[0].effective_min_free == 4096
+    assert report.memory.effective == 12 * 1024**3
+    assert report.disks[0].effective_min_free == 12_288
     decision = evaluate_admission(report, requested_cpu=8, requested_memory_mb=1)
     assert not decision.allowed
     assert any(f"filesystem {tmp_path}" in reason for reason in decision.reasons)
+
+
+def test_cgroup_process_boundaries_include_a_constrained_parent(monkeypatch, tmp_path):
+    import safeyolo.host_resources as host_resources
+
+    parent = tmp_path / "parent"
+    leaf = parent / "leaf"
+    leaf.mkdir(parents=True)
+    (parent / "pids.max").write_text("128\n")
+    (parent / "pids.current").write_text("120\n")
+    (leaf / "pids.max").write_text("max\n")
+    (leaf / "pids.current").write_text("2\n")
+    monkeypatch.setattr(
+        host_resources,
+        "_cgroup_v2_paths",
+        lambda: [parent, leaf],
+    )
+
+    boundaries = host_resources._cgroup_process_boundaries()
+
+    assert (128, 120, "automatic: " + str(parent) + "/pids.max") in boundaries
+    assert (None, 2, "automatic: " + str(leaf) + "/pids.max") in boundaries
 
 
 def test_cgroup_process_boundary_wins_when_it_has_less_headroom(monkeypatch):
@@ -191,14 +228,17 @@ def test_cgroup_process_boundary_wins_when_it_has_less_headroom(monkeypatch):
     )
     monkeypatch.setattr(
         host_resources,
-        "_cgroup_value",
-        lambda name: {"pids.current": 120, "pids.max": 128}.get(name),
+        "_cgroup_process_boundaries",
+        lambda: [
+            (None, 2, "automatic: leaf cgroup pids.max= max"),
+            (128, 120, "automatic: parent cgroup pids.max"),
+        ],
     )
 
     capacity, current, source = host_resources._read_process_capacity()
 
     assert (capacity, current) == (128, 120)
-    assert source == "automatic: current cgroup pids.max"
+    assert source == "automatic: parent cgroup pids.max"
 
 
 def test_overrides_are_explicit_and_capped_at_detected_capacity(monkeypatch, tmp_path):
@@ -269,7 +309,7 @@ def test_missing_memory_measurement_is_visible_as_degraded(monkeypatch, tmp_path
 
     report = build_host_resource_report()
 
-    assert report.memory.effective is None
+    assert report.memory.effective == 12 * 1024**3
     assert "available unknown" in report.memory.source
     assert report.degraded
     assert any("degraded" in line for line in report.as_detail_lines())

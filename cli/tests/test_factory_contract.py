@@ -494,6 +494,23 @@ def test_factory_run_executes_staged_worker_commands(
         "safeyolo.host_resources._read_cpu_capacity",
         lambda: (13, "automatic: test CPU capacity"),
     )
+    monkeypatch.setattr(
+        "safeyolo.host_resources._read_memory_capacity",
+        lambda: (64 * 1024**3, 32 * 1024**3, "automatic: test memory capacity"),
+    )
+    monkeypatch.setattr(
+        "safeyolo.host_resources._read_process_capacity",
+        lambda: (10_000, 10, "automatic: test process capacity"),
+    )
+    monkeypatch.setattr(
+        "safeyolo.host_resources._host_resource_config",
+        lambda _config=None: {
+            "cpu_ceiling": 13,
+            "memory_ceiling_mb": 16_384,
+            "disk_min_free_bytes": 1,
+            "process_limit": 10_000,
+        },
+    )
     monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
     monkeypatch.setattr("safeyolo.commands.agent.is_proxy_running", lambda: True)
     monkeypatch.setattr(

@@ -53,11 +53,15 @@ DEFAULT_CONFIG = {
         "size": "auto",
     },
     # Host protection is separate from per-agent sizing in policy.toml.
-    # Null values use host-derived admission boundaries.
+    # Null values use host-derived admission boundaries; explicit values replace
+    # the automatic reserve when an operator has a host-specific model.
     "host_resources": {
         "cpu_ceiling": None,
+        # Null memory retains one default-agent allocation from detected RAM.
         "memory_ceiling_mb": None,
+        # Null disk measures the static startup payload plus one allocation block.
         "disk_min_free_bytes": None,
+        # Null process admission retains the runtime's launch headroom.
         "process_limit": None,
     },
     "notifications": {

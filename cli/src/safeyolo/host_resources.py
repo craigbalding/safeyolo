@@ -26,11 +26,13 @@ from .config import (
     load_config,
 )
 
-# Admission values use the host's own accounting quanta instead of an
-# unexplained percentage quota. A one-MiB memory quantum matches the integer
-# unit accepted by per-agent sizing, and one process is the launch headroom.
-_MEMORY_HEADROOM_BYTES = 1024 * 1024
-_PROCESS_LAUNCH_HEADROOM = 1
+# Automatic memory admission retains the existing default per-agent sizing as
+# a host reserve. Disk admission measures the payload copied during startup
+# instead of inventing a filesystem percentage. Process headroom is derived
+# from the minimum runtime launch sequence below.
+_DEFAULT_AGENT_MEMORY_BYTES = 4096 * 1024 * 1024
+_LINUX_PROCESS_LAUNCH_HEADROOM = 2  # userns holder + bash/runsc launcher
+_DARWIN_PROCESS_LAUNCH_HEADROOM = 1  # safeyolo-vm helper
 
 _MEMINFO_RE = re.compile(r"^(MemTotal|MemAvailable):\s+(\d+)\s+kB$")
 
@@ -107,7 +109,6 @@ class HostResourceReport:
                 f"Memory detected: {memory_detected}; ceiling: {memory_effective}; "
                 f"available now: {_format_bytes(self.memory_available)}; "
                 f"active allocation: {self.active_memory_mb} MiB; "
-                f"headroom: {_format_bytes(_MEMORY_HEADROOM_BYTES)}; "
                 f"source: {self.memory.source}; "
                 f"live source: {self.memory_available_source}; "
                 f"enforcement: {self.memory.enforcement}"
@@ -123,7 +124,7 @@ class HostResourceReport:
         lines.append(
             f"Processes: current {self.process_current if self.process_current is not None else 'unavailable'}; "
             f"limit {process_limit if process_limit is not None else 'unavailable'}; "
-            f"launch headroom: {_PROCESS_LAUNCH_HEADROOM}; "
+            f"launch headroom: {_process_launch_headroom(self.platform)}; "
             f"source: {self.processes.source}; enforcement: {self.processes.enforcement}"
         )
         return lines
@@ -146,6 +147,14 @@ def _format_bytes(value: int | None) -> str:
     if value % (1024 * 1024) == 0:
         return f"{value // (1024 * 1024)} MiB"
     return f"{value} bytes"
+
+
+def _process_launch_headroom(system: str | None = None) -> int:
+    """Return the minimum host tasks needed to launch a runtime."""
+    system = system or platform.system()
+    if system == "Linux":
+        return _LINUX_PROCESS_LAUNCH_HEADROOM
+    return _DARWIN_PROCESS_LAUNCH_HEADROOM
 
 
 def _runtime_allocation_path(name: str) -> Path:
@@ -368,11 +377,49 @@ def _read_memory_capacity() -> tuple[int | None, int | None, str]:
     return total, None, "automatic: sysconf physical pages; available unknown"
 
 
-def _automatic_memory_ceiling(available: int | None) -> int | None:
-    """Leave one sizing quantum beyond the live available-memory reading."""
-    if available is None:
+def _automatic_memory_ceiling(total: int | None) -> int | None:
+    """Retain one existing default agent allocation for the host."""
+    if total is None:
         return None
-    return max(0, available - _MEMORY_HEADROOM_BYTES)
+    return max(0, total - _DEFAULT_AGENT_MEMORY_BYTES)
+
+
+def _startup_path_size(path: Path) -> int | None:
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        if not path.is_dir():
+            return None
+        return sum(
+            child.stat().st_size
+            for child in path.rglob("*")
+            if child.is_file()
+        )
+    except OSError:
+        return None
+
+
+def _minimum_start_disk_headroom() -> int | None:
+    """Measure the static payload copied by prepare_config_share()."""
+    package_dir = Path(__file__).parent
+    paths = [
+        package_dir / "agent_context" / "skills",
+        package_dir / "guest-init.sh",
+        package_dir / "guest-init-static.sh",
+        package_dir / "guest-init-per-run.sh",
+        package_dir / "guest-command-supervisor.py",
+        package_dir / "guest-proxy-forwarder.sh",
+        package_dir / "guest-shell-bridge.sh",
+        package_dir / "guest-diag.py",
+        package_dir / "guest-desktop.sh",
+        # The compatibility sudo shim is sourced from the repository guest
+        # tree rather than the Python package directory.
+        package_dir.parents[2] / "guest" / "rootfs" / "safeyolo-sudo",
+    ]
+    sizes = [_startup_path_size(path) for path in paths]
+    if any(size is None for size in sizes):
+        return None
+    return sum(size for size in sizes if size is not None)
 
 
 def _configured_limit(
@@ -412,16 +459,23 @@ def _configured_limit(
     )
 
 
-def _cgroup_value(filename: str) -> int | None:
-    """Read a finite cgroup-v2 value for this process, if exposed."""
+def _cgroup_v2_paths() -> list[Path]:
+    """Return the current cgroup-v2 path and all applicable ancestors."""
     try:
         relative = Path("/proc/self/cgroup").read_text().splitlines()
         relative_path = next(
             line.split(":", 2)[2] for line in relative if line.startswith("0::")
         )
-        path = Path("/sys/fs/cgroup") / relative_path.lstrip("/") / filename
-        value = path.read_text().strip()
     except (OSError, StopIteration, IndexError):
+        return []
+    parts = [part for part in relative_path.split("/") if part]
+    return [Path("/sys/fs/cgroup", *parts[:depth]) for depth in range(len(parts) + 1)]
+
+
+def _read_cgroup_value(path: Path, filename: str) -> int | None:
+    try:
+        value = (path / filename).read_text().strip()
+    except OSError:
         return None
     if value == "max":
         return None
@@ -430,6 +484,23 @@ def _cgroup_value(filename: str) -> int | None:
     except ValueError:
         return None
     return parsed if parsed >= 0 else None
+
+
+def _cgroup_value(filename: str) -> int | None:
+    """Read a value from this process's leaf cgroup, if exposed."""
+    paths = _cgroup_v2_paths()
+    return _read_cgroup_value(paths[-1], filename) if paths else None
+
+
+def _cgroup_process_boundaries() -> list[tuple[int | None, int | None, str]]:
+    """Read matching process counts and limits at every cgroup level."""
+    boundaries = []
+    for path in _cgroup_v2_paths():
+        limit = _read_cgroup_value(path, "pids.max")
+        current = _read_cgroup_value(path, "pids.current")
+        if limit is not None or current is not None:
+            boundaries.append((limit, current, f"automatic: {path}/pids.max"))
+    return boundaries
 
 
 def _process_count() -> int | None:
@@ -456,19 +527,23 @@ def _read_process_capacity() -> tuple[int | None, int | None, str]:
             )
         )
 
-    # Keep a cgroup's current count paired with that cgroup's limit. A tighter
-    # cgroup boundary must win over the global PID namespace, but the selected
-    # aggregate limit must never be copied as TasksMax onto every agent scope.
-    cgroup_current = _cgroup_value("pids.current")
-    cgroup_limit = _cgroup_value("pids.max")
-    if cgroup_limit is not None and cgroup_current is not None:
-        candidates.append(
-            (cgroup_limit, cgroup_current, "automatic: current cgroup pids.max")
-        )
+    # Keep every cgroup's current count paired with that cgroup's limit. A
+    # tighter hierarchical boundary must win over the global PID namespace,
+    # but the selected aggregate limit must never be copied as TasksMax onto
+    # every agent scope.
+    incomplete_limit: tuple[int, str] | None = None
+    for cgroup_limit, cgroup_current, source in _cgroup_process_boundaries():
+        if cgroup_limit is not None and cgroup_current is not None:
+            candidates.append((cgroup_limit, cgroup_current, source))
+        elif cgroup_limit is not None and (
+            incomplete_limit is None or cgroup_limit < incomplete_limit[0]
+        ):
+            incomplete_limit = cgroup_limit, source
     if candidates:
         return min(candidates, key=lambda item: item[0] - item[1])
-    if cgroup_limit is not None:
-        return cgroup_limit, cgroup_current, "automatic: current cgroup pids.max"
+    if incomplete_limit is not None:
+        limit, source = incomplete_limit
+        return limit, None, source
     if pid_max is not None and pid_max > 0:
         return pid_max, global_current, "automatic: kernel pid_max"
     return None, global_current, "unavailable: process capacity could not be detected"
@@ -553,14 +628,23 @@ def _read_disks(
             )
             continue
         block_size = _filesystem_block_size(path, usage)
-        minimum = override if override is not None else block_size
+        measured_payload = _minimum_start_disk_headroom()
+        minimum = (
+            override
+            if override is not None
+            else (
+                measured_payload + block_size
+                if measured_payload is not None and block_size is not None
+                else None
+            )
+        )
         source = (
             "operator override"
             if override is not None
             else (
-                "automatic: one filesystem allocation block remains before ENOSPC"
+                "automatic: measured startup payload plus one allocation block"
                 if minimum is not None
-                else "unavailable: filesystem allocation block could not be detected"
+                else "unavailable: SafeYolo startup payload or allocation block could not be detected"
             )
         )
         disks.append(
@@ -608,14 +692,19 @@ def build_host_resource_report(
     cpu_capacity, cpu_source = _read_cpu_capacity()
     memory_total, memory_available, memory_source = _read_memory_capacity()
     process_capacity, process_current, process_source = _read_process_capacity()
+    process_source = (
+        f"{process_source}; launch headroom "
+        f"{_process_launch_headroom(platform.system())}"
+    )
 
     cpu_automatic = cpu_capacity
     cpu_automatic_source = (
         f"{cpu_source}; strict boundary leaves one logical CPU"
     )
-    memory_automatic = _automatic_memory_ceiling(memory_available)
+    memory_automatic = _automatic_memory_ceiling(memory_total)
     memory_automatic_source = (
-        f"{memory_source}; automatic headroom {_format_bytes(_MEMORY_HEADROOM_BYTES)}"
+        f"automatic: detected host memory less one default agent allocation "
+        f"({_format_bytes(_DEFAULT_AGENT_MEMORY_BYTES)}); live source: {memory_source}"
     )
     # A missing available-memory measurement is not silently converted into a
     # total-memory ceiling. The latter would imply that current host users have
@@ -681,19 +770,36 @@ def evaluate_admission(
     reasons: list[str] = []
     if report.cpu.effective is None:
         reasons.append("CPU capacity is unavailable; cannot establish a host ceiling")
-    elif report.active_cpu + requested_cpu >= report.cpu.effective:
-        reasons.append(
-            f"CPU allocation {report.active_cpu + requested_cpu} reaches or exceeds ceiling "
-            f"{report.cpu.effective} ({report.cpu.source})"
-        )
+    else:
+        aggregate_cpu = report.active_cpu + requested_cpu
+        if report.cpu.source.startswith("operator override"):
+            cpu_reached = aggregate_cpu > report.cpu.effective
+        else:
+            cpu_reached = aggregate_cpu >= report.cpu.effective
+        if cpu_reached:
+            reasons.append(
+                f"CPU allocation {aggregate_cpu} reaches or exceeds ceiling "
+                f"{report.cpu.effective} ({report.cpu.source})"
+            )
 
     if report.memory.effective is None:
         reasons.append("memory ceiling is unavailable; cannot establish a host boundary")
-    elif report.memory.source.startswith("operator override"):
-        if (report.active_memory_mb + requested_memory_mb) * 1024 * 1024 >= report.memory.effective:
+    else:
+        aggregate_memory = (
+            report.active_memory_mb + requested_memory_mb
+        ) * 1024 * 1024
+        if report.memory.source.startswith("operator override"):
+            aggregate_reached = aggregate_memory >= report.memory.effective
+        else:
+            # The total-memory reserve is already a host-wide allocation, so
+            # equality is safe here: it retains that reserve. Do not add the
+            # active allocation to the live MemAvailable reading below.
+            aggregate_reached = aggregate_memory > report.memory.effective
+        if aggregate_reached:
+            verb = "reaches" if report.memory.source.startswith("operator override") else "exceeds"
             reasons.append(
                 f"memory allocation {report.active_memory_mb + requested_memory_mb} MiB "
-                f"reaches ceiling {_format_bytes(report.memory.effective)} "
+                f"{verb} ceiling {_format_bytes(report.memory.effective)} "
                 f"({report.memory.source})"
             )
     if report.memory_available is None:
@@ -701,26 +807,18 @@ def evaluate_admission(
             "currently available host memory is unavailable; "
             "cannot establish a live-pressure boundary"
         )
-    else:
-        live_ceiling = _automatic_memory_ceiling(report.memory_available)
-        if live_ceiling is None:
-            reasons.append(
-                "currently available host memory is unavailable; "
-                "cannot establish a live-pressure boundary"
-            )
-        elif requested_memory_mb * 1024 * 1024 >= live_ceiling:
-            reasons.append(
-                f"memory request {requested_memory_mb} MiB reaches the live ceiling "
-                f"of {_format_bytes(live_ceiling)}; available memory "
-                f"{_format_bytes(report.memory_available)} "
-                f"({report.memory_available_source})"
-            )
+    elif requested_memory_mb * 1024 * 1024 >= report.memory_available:
+        reasons.append(
+            f"memory request {requested_memory_mb} MiB reaches currently "
+            f"available memory {_format_bytes(report.memory_available)} "
+            f"({report.memory_available_source})"
+        )
 
     if report.processes.effective is None:
         reasons.append("process capacity is unavailable; cannot establish a host boundary")
     elif report.process_current is None:
         reasons.append("current process count is unavailable; cannot check exhaustion")
-    elif report.process_current + _PROCESS_LAUNCH_HEADROOM >= report.processes.effective:
+    elif report.process_current + _process_launch_headroom(report.platform) >= report.processes.effective:
         reasons.append(
             f"process table has no launch headroom ({report.process_current} of "
             f"{report.processes.effective}; {report.processes.source})"

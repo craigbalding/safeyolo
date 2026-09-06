@@ -52,21 +52,24 @@ lock and evaluates the requested agent against all currently running agents.
 The guard enforces these invariants:
 
 - aggregate configured CPU allocation stays below detected CPU capacity, leaving
-  one logical CPU for the host;
-- a new memory request stays below currently available host memory with one MiB
-  of headroom, and an explicit aggregate memory ceiling is not reached;
-- a filesystem used by SafeYolo runtime writes retains one detected allocation
-  block before new work starts; and
+  one logical CPU for the host unless the operator explicitly overrides it;
+- aggregate configured memory retains one existing default-agent allocation
+  from detected host memory, and a new request stays below current available
+  memory; an explicit aggregate memory ceiling is not reached;
+- a filesystem used by SafeYolo runtime writes retains the measured static
+  startup payload plus one detected allocation block before new work starts;
+  if that footprint cannot be measured, admission is closed; and
 - a new runtime process is not admitted when the detected host process limit
-  has no launch headroom.
+  has the minimum runtime launch headroom (two Linux tasks, one macOS helper).
 
 The guard checks the configuration directory, SafeYolo log directory, agent
 workspaces, and configured mount sources. This covers persistent homes,
 container overlays, logs, snapshots, and workspace writes without pretending
 that a per-agent overlay size is a host disk quota. The automatic disk
-watermark is one filesystem allocation block, the smallest host-derived
-nonzero boundary. Operators can set a small explicit `host_resources` override
-in `config.yaml` when they have a host-specific capacity model.
+watermark is the measured startup payload plus one filesystem allocation
+block. Operators can set a positive explicit `host_resources` override in
+`config.yaml` when they have a host-specific capacity model; explicit values
+replace their automatic reserve.
 
 Linux retains the existing per-agent systemd user scope for per-agent
 `MemoryMax` and `CPUQuota`. The aggregate process limit remains an admission
