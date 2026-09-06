@@ -42,7 +42,8 @@ or useful parallel throughput.
 
 Treat these as warning signs:
 
-- a mandatory gate with no stated safety property or operator requirement;
+- a mandatory gate with no operator requirement, established security
+  requirement, or evidenced technical necessity;
 - a wait, approval, exact format, or limit that can strand useful work;
 - a role whose responsibility is shared with no final owner;
 - a handoff whose recipient must reconstruct required meaning elsewhere;

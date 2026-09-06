@@ -36,6 +36,7 @@ class Role:
     contract_bytes: int
     contract_sha256: str
     contract_text: str
+    repair: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class FactoryContract:
     roles: tuple[Role, ...]
     handoffs: tuple[Handoff, ...]
     operator_input: OperatorInput
+    updates: tuple[dict[str, Any], ...] = ()
 
     @property
     def agents(self) -> tuple[str, ...]:
@@ -75,6 +77,7 @@ class FactoryContract:
                     "agent": role.agent,
                     "harness": role.harness,
                     **({"args": list(role.args)} if role.args is not None else {}),
+                    **({"repair": role.repair} if role.repair is not None else {}),
                     "contract": role.contract,
                     "contract_bytes": role.contract_bytes,
                     "contract_sha256": role.contract_sha256,
@@ -96,7 +99,69 @@ class FactoryContract:
                 "to": self.operator_input.destination,
                 "types": list(self.operator_input.types),
             },
+            **({"updates": list(self.updates)} if self.updates else {}),
         }
+
+
+def _validate_extensions(
+    roles: dict[str, Any],
+    updates: Any,
+    handoffs: list[dict[str, Any]],
+    operator_types: Iterable[str],
+) -> None:
+    """Validate context routes and the optional two-choice repair policy."""
+    reserved = {token for route in handoffs for token in (route["request"], *route["responses"])}
+    reserved.update(operator_types)
+    reserved.add("PROTOCOL_WARNING")
+    routes: set[tuple[str, str, str]] = set()
+    if not isinstance(updates, list):
+        raise FactoryContractError("updates must be an array of tables")
+    for update in updates:
+        _exact_keys("update", update, {"type", "from", "to", "fields"})
+        token = _message_type("update.type", update["type"])
+        if (
+            token in reserved
+            or not isinstance(update["from"], str)
+            or update["from"] not in roles
+            or not isinstance(update["to"], str)
+            or update["to"] not in roles
+        ):
+            raise FactoryContractError("update has a conflicting type or unknown role")
+        fields = update["fields"]
+        if (
+            not isinstance(fields, list)
+            or any(
+                not isinstance(field, str) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", field) is None for field in fields
+            )
+            or len(fields) != len(set(fields))
+        ):
+            raise FactoryContractError("update.fields must contain distinct header field names")
+        key = (token, update["from"], update["to"])
+        if key in routes:
+            raise FactoryContractError("duplicate update route")
+        routes.add(key)
+    _validate_repairs(roles, handoffs, reserved | {update["type"] for update in updates})
+
+
+def _validate_repairs(roles: dict[str, Any], handoffs: list[dict[str, Any]], reserved: set[str]) -> None:
+    for name, role in roles.items():
+        if "repair" not in role:
+            continue
+        repair = role["repair"]
+        _exact_keys("repair", repair, {"request", "from", "args", "after_rounds", "max_rounds", "release_on"})
+        token = _message_type("repair.request", repair["request"])
+        if token in reserved or not isinstance(repair["from"], str) or repair["from"] not in roles:
+            raise FactoryContractError("repair has a conflicting request type or unknown selecting role")
+        args = repair["args"]
+        if not isinstance(args, list) or not args or any(not isinstance(arg, str) or "\0" in arg for arg in args):
+            raise FactoryContractError("repair.args must be non-empty command arguments")
+        for field in ("after_rounds", "max_rounds"):
+            if type(repair[field]) is not int or repair[field] < 1:
+                raise FactoryContractError(f"repair.{field} must be a positive integer")
+        if not any(route["from"] == name and route["request"] == repair["release_on"] for route in handoffs):
+            raise FactoryContractError("repair.release_on must name this role's outbound handoff")
+        if not any(route["from"] == repair["from"] and route["to"] == name for route in handoffs):
+            raise FactoryContractError("repair selecting role must already assign work to this role")
 
 
 def _simple_name(label: str, value: Any) -> str:
@@ -135,7 +200,8 @@ def load_factory_file(path: Path) -> FactoryContract:
     _exact_keys(
         "factory",
         raw,
-        {"schema", "name", "room", "roles", "handoffs", "operator_input"},
+        {"schema", "name", "room", "roles", "handoffs", "operator_input"}
+        | ({"updates"} if "updates" in raw else set()),
     )
     if raw["schema"] != SCHEMA:
         raise FactoryContractError(f"schema must be {SCHEMA!r}")
@@ -156,7 +222,8 @@ def load_factory_file(path: Path) -> FactoryContract:
             raw_role,
             {"agent", "contract"}
             | ({"harness"} if "harness" in raw_role else set())
-            | ({"args"} if "args" in raw_role else set()),
+            | ({"args"} if "args" in raw_role else set())
+            | ({"repair"} if "repair" in raw_role else set()),
         )
         agent = _simple_name(f"roles.{role_name}.agent", raw_role["agent"])
         harness = raw_role.get("harness", "codex")
@@ -192,6 +259,7 @@ def load_factory_file(path: Path) -> FactoryContract:
                 len(contract_encoded),
                 contract_hash,
                 contract_text,
+                raw_role.get("repair"),
             )
         )
 
@@ -280,12 +348,15 @@ def load_factory_file(path: Path) -> FactoryContract:
         ((handoff.source, handoff.destination) for handoff in handoffs),
         operator_destination,
     )
+    updates = raw.get("updates", [])
+    _validate_extensions(raw_roles, updates, raw_handoffs, operator_types)
     return FactoryContract(
         name,
         room,
         tuple(roles),
         tuple(handoffs),
         OperatorInput(operator_destination, operator_types),
+        tuple(updates),
     )
 
 
@@ -412,7 +483,8 @@ def _validate_snapshot_payload(payload: dict[str, Any], *, expected_name: str) -
     _exact_keys(
         "snapshot",
         payload,
-        {"schema", "name", "room", "roles", "handoffs", "operator_input"},
+        {"schema", "name", "room", "roles", "handoffs", "operator_input"}
+        | ({"updates"} if "updates" in payload else set()),
     )
     if payload["schema"] != SCHEMA or payload["name"] != expected_name:
         raise FactoryContractError("snapshot schema or factory name does not match")
@@ -424,7 +496,7 @@ def _validate_snapshot_payload(payload: dict[str, Any], *, expected_name: str) -
     for role_name, role in roles.items():
         _simple_name("snapshot role", role_name)
         required_role_keys = {"agent", "contract", "contract_bytes", "contract_sha256", "contract_text"}
-        optional_role_keys = {"harness", "args"}
+        optional_role_keys = {"harness", "args", "repair"}
         if (
             not isinstance(role, dict)
             or not required_role_keys.issubset(role)
@@ -510,6 +582,7 @@ def _validate_snapshot_payload(payload: dict[str, Any], *, expected_name: str) -
     if overlap:
         raise FactoryContractError(f"snapshot operator input masquerades as handoff type {sorted(overlap)[0]!r}")
     _validate_reachable_roles(set(roles), handoff_edges, destination)
+    _validate_extensions(roles, payload.get("updates", []), handoffs, operator_types)
 
 
 def _atomic_write(path: Path, encoded: bytes) -> None:

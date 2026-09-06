@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import shlex
 import signal
 import subprocess
@@ -26,6 +27,7 @@ from safeyolo.platform import AgentPlatform
 
 BACKLOG_COORDINATOR_CONTRACT = Path(__file__).parents[2] / "docs/factories/backlog-coordinator.md"
 BACKLOG_REVIEWER_CONTRACT = Path(__file__).parents[2] / "docs/agent-roles/independent-reviewer.md"
+BACKLOG_OWNER_CONTRACT = Path(__file__).parents[2] / "docs/agent-roles/issue-owner.md"
 
 
 def _passing_factory_report(name: str = "backlog") -> FactoryDoctorReport:
@@ -65,11 +67,77 @@ def test_backlog_reviewer_contract_binds_install_trust_and_complexity_checks():
     assert "outside both trusted-base inventories" in contract
     assert "it does not grant itself standing approval" in contract
     assert "Run deterministic post-change quality analysis" in contract
-    assert "--select C901,PLR0911,PLR0912,PLR0913,PLR0915" in contract
+    # Repository-specific invocations live in repository guidance, not the
+    # shared multi-repository role contract.
+    developer_guide = BACKLOG_REVIEWER_CONTRACT.parents[1] / "DEVELOPERS.md"
+    assert "--select C901,PLR0911,PLR0912,PLR0913,PLR0915" in developer_guide.read_text()
     assert "A tool finding is evidence, not an automatic veto" in contract
-    assert "maintains reusable acceptance capability" in contract
     assert "product acceptance graph" in contract
     assert "rather than from a candidate as self-authorization" in contract
+
+
+def test_backlog_alert_intake_reuses_issue_flow_and_distinguishes_lookup_failure():
+    contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+
+    assert "open issues, pull requests, and code-scanning alerts" in contract
+    assert "do not create one task per alert by default" in contract
+    assert "Use that issue as the ordinary task target." in contract
+    assert "assign Lens a bounded triage task" in contract
+    assert "existing coding rule or a focused prevention improvement" in contract
+    assert "A failed or unauthorized alert lookup is not an empty inventory" in contract
+    assert "Do not require the whole alert inventory to be cleared" in contract
+
+
+def test_backlog_intake_preserves_requirements_and_starting_revision():
+    contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+
+    assert "issue title and body verbatim" in contract
+    assert "pull-request title and body" in contract
+    assert "Record each source URL and when Relay read it in UTC." in contract
+    assert "Keep this captured source text separate from Relay's instructions and assessment." in contract
+    assert "repository, branch and exact starting commit" in contract
+    assert "retain the complete text in Coord messages" in contract
+    assert "their exact room and message sequences" in contract
+    assert "do not silently truncate requirements" in contract
+
+
+@pytest.mark.parametrize("path", [BACKLOG_OWNER_CONTRACT, BACKLOG_REVIEWER_CONTRACT])
+def test_worker_contract_establishes_checkout_before_repo_map(path):
+    contract = " ".join(path.read_text().split()).lower()
+
+    assert "establish the task checkout before using `repo-map`" in contract
+    assert "behaviour, concepts and symbols, not issue/pr numbers or factory wording" in contract
+    assert "after a revision change, refresh it before relying on its locations" in contract
+
+
+def test_review_handoff_reuses_original_coord_requirements_not_owner_copy():
+    owner = " ".join(BACKLOG_OWNER_CONTRACT.read_text().split())
+    reviewer = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
+
+    assert "Relay's original Coord room and canonical message sequence" in owner
+    assert "Keep the new candidate head distinct from Relay's starting commit." in owner
+    assert "do not reset them to the original starting commit" in owner
+    assert "Check the canonical Relay sender and assigned target." in reviewer
+    assert "A copy quoted by Forge is not a substitute for Relay's retained message." in reviewer
+    assert "Do not routinely reread the linked issue on first involvement." in reviewer
+    assert "Obtain missing source text when the capture is unavailable" in reviewer
+
+
+def test_acceptance_checklist_has_evidence_owner_and_publication_recovery():
+    coordinator = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+    owner = " ".join(BACKLOG_OWNER_CONTRACT.read_text().split())
+    reviewer = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
+
+    assert "Lens owns acceptance evidence and the issue's acceptance checklist." in coordinator
+    assert "own that recovery using Lens's supplied evidence" in coordinator
+    assert "do not mark them passed on the strength of Forge's implementation claims" in owner
+    assert "tick an item only when independent acceptance establishes that it passed" in reviewer
+    assert "Leave failed or untested items unchecked and explain why." in reviewer
+    assert "correct any checkmark whose evidence no longer holds" in reviewer
+    assert "Do not overwrite the current issue with Relay's historical capture." in reviewer
+    assert "If publication fails, include the unposted item outcomes and evidence" in reviewer
+    assert "The issue acceptance record above is required." in reviewer
+    assert "GitHub findings are an optional additional record" not in reviewer
 
 
 def test_reviewer_repairs_execution_failures_and_escalates_without_false_blocked():
@@ -165,6 +233,68 @@ def test_factory_role_can_snapshot_explicit_harness_arguments(tmp_path):
         "--thinking",
         "xhigh",
     ]
+
+
+def _extension_toml(harness="codex"):
+    args = (
+        ["--model", "stronger", "--thinking", "medium"]
+        if harness == "pi"
+        else [
+            "--model",
+            "stronger",
+            "-c",
+            "model_reasoning_effort=medium",
+        ]
+    )
+    return (
+        '\n[[updates]]\ntype = "CONTEXT"\nfrom = "coordinator"\nto = "owner"\nfields = ["target"]\n'
+        '\n[roles.owner.repair]\nrequest = "REPAIR"\nfrom = "coordinator"\n'
+        f'args = {json.dumps(args)}\nafter_rounds = 5\nmax_rounds = 3\nrelease_on = "REVIEW_READY"\n'
+    )
+
+
+@pytest.mark.parametrize("harness", ["codex", "pi"])
+def test_protocol_extensions_survive_approval_staging_and_doctor(tmp_path, tmp_config_dir, cli_runner, harness):
+    from safeyolo.factory_doctor import _expected_supervisor_config, _validate_supervisor_config
+
+    source = _factory_file(tmp_path, owner_harness=harness, extra=_extension_toml(harness))
+    contract = load_factory_file(source)
+    approve_snapshot(contract)
+    _, _, snapshot = load_approved_snapshot("backlog")
+    assert snapshot["updates"] == list(contract.updates)
+    assert snapshot["roles"]["owner"]["repair"]["max_rounds"] == 3
+    staging = runpy.run_path(str(Path(__file__).parents[2] / "contrib/lib/stage-factory-supervisor.py"))
+    for role, binding in snapshot["roles"].items():
+        staged, text = staging["runtime_factory"](snapshot, binding["agent"], role, binding["harness"])
+        expected = _expected_supervisor_config(binding["agent"], role, snapshot)
+        assert staged == expected
+        _validate_supervisor_config(staged, expected)
+        assert text == binding["contract_text"]
+        assert staged["factory"]["repairs"]["owner"]["after_rounds"] == 5
+    result = cli_runner.invoke(app, ["factory", "check", str(source)])
+    assert result.exit_code == 0, result.output
+    assert "update=CONTEXT from=coordinator to=owner fields=target" in result.output
+    assert "repair=REPAIR from=coordinator to=owner" in result.output
+    assert "after_rounds=5 max_rounds=3" in result.output
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ('type = "CONTEXT"', 'type = "TASK"'),
+        ('fields = ["target"]', 'fields = ["target", "target"]'),
+        ('fields = ["target"]', 'fields = ["not a field"]'),
+        ("max_rounds = 3", "max_rounds = true"),
+        ("after_rounds = 5", "after_rounds = 0"),
+        ('release_on = "REVIEW_READY"', 'release_on = "UNKNOWN"'),
+        ('request = "REPAIR"', 'request = "CONTEXT"'),
+        ('from = "coordinator"', 'from = ["coordinator"]'),
+    ],
+)
+def test_invalid_protocol_extensions_fail_at_source(tmp_path, old, new):
+    source = _factory_file(tmp_path, extra=_extension_toml().replace(old, new))
+    with pytest.raises(FactoryContractError):
+        load_factory_file(source)
 
 
 def test_factory_role_rejects_non_string_harness_arguments(tmp_path):

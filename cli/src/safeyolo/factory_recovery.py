@@ -38,6 +38,11 @@ def _release_state(supervisor, state: dict[str, Any], room: str, targets: set[st
         item for item in updated["awaiting_handoffs"]
         if not (item["room_name"] == room and item["correlation"].get("target") in targets)
     ]
+    selection = updated["repair_selection"]
+    if selection is not None and not any(
+        item["attention_id"] == selection["attention_id"] for item in updated["in_flight"]
+    ):
+        updated["repair_selection"] = None
     if updated != state:
         # A fresh turn must not resume instructions for the released work.
         # Unrelated pending work remains in the canonical checkpoint.

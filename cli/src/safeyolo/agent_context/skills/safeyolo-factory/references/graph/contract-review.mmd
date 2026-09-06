@@ -25,12 +25,12 @@ flowchart TD
     cls.review_incomplete{{"Required source or approved/running-state evidence is missing; only a bounded partial review is possible"}}
     cls.review_source_snapshot_drift{{"Source, approved snapshot, and supervisor-staged snapshot differ; the running factory is not using the reviewed bytes"}}
     cls.review_material_gap{{"Material contradiction, unreachable transition, false-success path, or ownerless failure exists"}}
-    cls.review_unjustified_restriction{{"A mandatory restriction has no established operator, safety, or technical basis"}}
-    cls.review_operator_hinge{{"A material design choice depends on operator intent or risk tolerance not present in the sources"}}
+    cls.review_unjustified_restriction{{"A mandatory restriction has no operator requirement, established security requirement, or evidenced technical necessity"}}
+    cls.review_operator_hinge{{"Completing the requested work requires an operator decision not present in the sources"}}
     cls.review_no_known_material_gap{{"All passes completed with no known material contradiction, uncovered transition, ownerless failure, or unjustified restriction"}}
     con.review_state_partial_scope(["Continue only as a clearly scoped partial review; list missing sources and limit every conclusion"])
     con.review_rank_smallest_diff(["Rank the finding by material effect and propose the smallest coherent cross-contract diff"])
-    con.review_remove_or_demote(["Remove the unsupported restriction or demote it to non-blocking guidance"])
+    con.review_remove_or_demote(["Remove unsupported policy and compensating machinery; keep material suggestions unapplied and advisory"])
     con.review_report_bounded_result(["Report no known material gaps after the stated review; disclose residual assumptions and unavailable evidence"])
     con.review_repeat_complete_review(["Do not stop at the edited file; repeat the complete-set review before acceptance"])
     ask.review_provide_sources[["Ask for the exact TOML and all linked contracts, or a mount containing them"]]
@@ -60,7 +60,7 @@ flowchart TD
     ev.review_handoff_recovery -->|"implies: handoff identity/context or recovery behavior is materially incomplete"| cls.review_material_gap
     ev.review_runtime_operator -->|"implies: a required capability/route is unavailable or ordinary waiting strands work"| cls.review_material_gap
     ev.review_restriction_basis -->|"implies: a mandatory rule has no established basis"| cls.review_unjustified_restriction
-    ev.review_restriction_basis -->|"implies: the correct rule depends on an unstated operator choice"| cls.review_operator_hinge
+    ev.review_restriction_basis -->|"implies: completion requires an unstated operator decision, not merely an optional policy suggestion"| cls.review_operator_hinge
     cls.review_material_gap -->|"implies"| con.review_rank_smallest_diff
     cls.review_unjustified_restriction -->|"implies"| con.review_remove_or_demote
     cls.review_operator_hinge -->|"escalates_to"| ask.review_resolve_hinge

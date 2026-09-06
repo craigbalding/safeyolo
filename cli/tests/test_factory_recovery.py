@@ -79,6 +79,24 @@ def _messages():
     return asyncio.run(api.read_room("backlog", "operator", "operator"))["messages"]
 
 
+def test_release_clears_only_the_released_tasks_repair_selection():
+    supervisor = recovery._supervisor()
+    state = supervisor.empty_state()
+    state["in_flight"] = [_pending(), _pending(OTHER, digit="b")]
+    state["repair_selection"] = {
+        "attention_id": state["in_flight"][0]["attention_id"], "snapshot_id": "a" * 64,
+        "instruction": {
+            **_pending(digit="c"), "requires_terminal": False,
+            "body": f"REPAIR target={TARGET} attention_id={'attn-' + 'a' * 32}",
+        },
+    }
+    kept = recovery._release_state(supervisor, state, "backlog", {OTHER})
+    assert kept["repair_selection"] == state["repair_selection"]
+    cleared = recovery._release_state(supervisor, state, "backlog", {TARGET})
+    assert cleared["repair_selection"] is None
+    assert cleared["in_flight"] == [state["in_flight"][1]]
+
+
 def test_release_preserves_unrelated_work_and_records_operator_action(stopped_factory, tmp_path):
     env = stopped_factory
     before = {name: path.read_bytes() for name, path in env.paths.items()}

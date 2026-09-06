@@ -35,8 +35,9 @@ outbound handoff remains pending. Once both lists are empty, the supervisor
 retires the session before admitting new attention. The next work starts a
 fresh session; Coord state, local files, and old transcripts are retained.
 This uses the existing checkpoint, not role names, response labels, or URL
-heuristics. Forge therefore keeps its session through a pending review and
-repair. After Lens sends a disposition, its review request is settled; a later
+heuristics. Forge therefore normally keeps its session through a pending review
+and repair. An explicit stronger-model selection starts a fresh session scoped
+to that task, as described below. After Lens sends a disposition, its review request is settled; a later
 review starts fresh and can retrieve still-valid findings from Coord.
 The injected prompt explains conditional recovery with `read_room`. For a
 known room message sequence N, `since_sequence=N-1, limit=1` retrieves the
@@ -67,8 +68,14 @@ Each factory agent also has a room named `<agent>-agent`. The supervisor sends
 useful harness events to that room without attention. Codex JSONL is retained
 as emitted. Pi telemetry retains sessions, turn lifecycle, complete tool
 calls/results, final assistant text and usage, errors, and stderr; its
-token-by-token deltas and duplicate transcript payloads are not stored. The
-operator can send targeted natural-language direction to the agent in the same
+token-by-token deltas and duplicate transcript payloads are not stored.
+Pi completion event retains summed token usage for that agent loop, including
+tool-only assistant responses. The watcher shows these counts on its completion
+line. `uncached` and `cached` are separate input counts; `reasoning` is part of
+output, not an extra amount to add to the provider's `total`. The summary is
+not a session lifetime total or a subscription charge. If an older retained
+event has no usage, the watcher reports that the counts are unavailable.
+The operator can send targeted natural-language direction to the agent in the same
 room. Other agents can receive the retained stream when the operator grants
 them receive permission; receive permission does not let them send or steer
 the supervised agent.
@@ -108,8 +115,9 @@ when coord reports the canonical sender kind as `operator`. Declared leading
 types remain compatibility shorthand; neither the CLI, coord server, nor
 supervisor parses natural language. Canonical operator messages have no agent
 ID or agent name. The supervisor normalizes those null fields only after
-checking the sender kind, limits the body to 4 KiB of UTF-8, and checkpoints it
-as non-terminal input. It never lets an operator message impersonate an agent
+checking the sender kind and checkpoints the message as non-terminal input.
+Operator messages use the supervisor's shared 64 KiB UTF-8 message limit, with
+no separate operator limit. It never lets an operator message impersonate an agent
 handoff or peer text impersonate operator direction.
 
 Factory workers also admit canonical `brief_changed` attention as trusted
@@ -153,6 +161,7 @@ single-owner lock protect it across supervisor restarts. It contains only:
 - at most 16 narrow returned objects that are still in flight;
 - at most 16 independently correlated outbound handoffs awaiting responses;
 - one current, bounded brief revision and Markdown body per configured room;
+- an optional task-local repair selection and its canonical selecting message;
 - one process-group PID plus at most 64 PID-reuse-safe descendant identities
   while an invocation is running; and
 - a bounded consecutive-failure count.
@@ -213,6 +222,78 @@ missing tool result. Subsequent restarts preserve the healthy external-wait-era
 thread, including across an outbound handoff and its response.
 
 ## Configuration
+
+### Context messages and protocol warnings
+
+Factory TOML can declare informational routes separately from work handoffs:
+
+```toml
+[[updates]]
+type = "CONTEXT"
+from = "coordinator"
+to = "owner"
+fields = ["target"]
+```
+
+The matching message starts `CONTEXT target=<absolute-url>`. The declared
+sender role, receiver role and exact header fields must match. Its body carries
+the update. It is supplied once as context, creates no assignment, and needs no
+terminal response. Other factories can name their own update types and fields.
+
+An unknown or malformed agent message targeted into a configured factory room
+is retained with `protocol_warning` and delivered as information. It cannot
+create an assignment, satisfy a response, or clear a waiting handoff. The
+supervisor also reports the message reference and mismatch on stderr, in its
+agent room, and in a factory-room `PROTOCOL_WARNING` notifying the sender and
+coordinator. The operator can see that shared diagnostic. Publication is
+best-effort: a send failure is reported on stderr and never removes the
+checkpointed original. Canonical sender identity still governs authority;
+the diagnostic's body prefix does not prove supervisor authorship.
+
+Diagnostics themselves are informational and generate no further warning or
+acknowledgement. Ordinary attention deduplication prevents repeat delivery.
+An unrelated room remains outside this worker's configuration.
+
+### One stronger repair round
+
+An optional role `repair` table selects one stronger set of arguments. See
+[`backlog.toml`](factories/backlog.toml) for the complete Codex example.
+For a Pi owner, both ordinary `roles.owner.args` and `roles.owner.repair.args`
+use Pi syntax: `--provider openai-codex --model MODEL --thinking LEVEL`.
+The harness itself does not change.
+
+`after_rounds` and `max_rounds` are coordinator instructions: the coordinator
+counts completed fix-and-review rounds from Coord, selects escalation, and
+asks the operator if the stronger rounds are exhausted. They are not supervisor
+invocation counters. The selecting message has this exact first line:
+
+```text
+REPAIR target=<original-task-url> attention_id=<original-task-attention-id>
+```
+
+`REPAIR` is the example's configured `request` value. Only the policy's `from`
+role can select a matching active task it originally assigned. Its body must
+supply the relevant findings or exact Coord references. A stale or mismatched
+selection becomes a visible protocol warning, not a new task.
+
+The supervisor checkpoints that selection, uses only the named task and
+selecting message as invocation inputs, and preserves other pending work for
+later. It overrides matching model arguments while retaining the launcher's
+instructions and other arguments. It does not alter the checkout or saved
+agent defaults. Selection takes effect at the next invocation, not by
+interrupting a running harness. It survives a restart while that repair is
+unfinished, but expires at the next configured `release_on` handoff or the
+original task's terminal result. Retained history recovers expiry if the send
+event was lost. A changed factory snapshot or released task also clears it.
+Selection and expiry appear in the agent room.
+
+The selected turn is instructed to finish after its handoff. The next task uses
+ordinary arguments and a fresh session. This is model selection, not a sandbox
+restriction: the model still has the agent's ordinary tools and workspace.
+Checkpoint version 7 adds the optional selection; version 6 work and cursors
+upgrade without a drain because the target protocol is unchanged.
+
+### Runtime settings
 
 The host setup writes the private, non-secret configuration file
 `~/.safeyolo/codex-coord-supervisor.json`. In factory mode that configuration

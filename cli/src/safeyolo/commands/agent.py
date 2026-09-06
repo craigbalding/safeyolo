@@ -337,7 +337,9 @@ def _open_safe_setup_directory(path: Path, name: str) -> int:
     except OSError as exc:
         raise RuntimeError(f"unsafe host setup directory for agent {name!r}: {exc}") from None
 
-    flags = os.O_RDONLY
+    # Only metadata and relative lock opens need this handle. O_PATH also
+    # avoids gVisor following a final symlink with O_RDONLY | O_DIRECTORY.
+    flags = getattr(os, "O_PATH", os.O_RDONLY)
     if hasattr(os, "O_DIRECTORY"):
         flags |= os.O_DIRECTORY
     if hasattr(os, "O_NOFOLLOW"):

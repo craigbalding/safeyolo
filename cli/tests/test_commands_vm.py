@@ -1903,13 +1903,17 @@ class TestRunAgent:
                 pass
 
     def test_setup_lock_rejects_symlinked_state_directory(self, config_dir, tmp_path):
-        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.commands.agent import _agent_host_setup_lock, _open_safe_setup_directory
         from safeyolo.vm import ensure_agent_persistent_dirs, get_agent_home_dir
 
         ensure_agent_persistent_dirs("unsafe-parent")
         state_dir = get_agent_home_dir("unsafe-parent") / ".safeyolo"
         outside = tmp_path / "outside"
         outside.mkdir()
+        # A permission rejection must not masquerade as symlink rejection.
+        outside.chmod(0o700)
+        fd = _open_safe_setup_directory(outside, "unsafe-parent")
+        os.close(fd)
         state_dir.symlink_to(outside, target_is_directory=True)
 
         with pytest.raises(RuntimeError, match="unsafe host setup directory"):
@@ -1917,6 +1921,40 @@ class TestRunAgent:
                 pass
 
         assert not (outside / "host-setup.lock").exists()
+
+    @pytest.mark.parametrize("entry_kind", ("file", "fifo"))
+    def test_setup_directory_rejects_non_directory(self, tmp_path, entry_kind):
+        from safeyolo.commands.agent import _open_safe_setup_directory
+
+        entry = tmp_path / "not-a-directory"
+        if entry_kind == "file":
+            entry.write_text("synthetic")
+        else:
+            os.mkfifo(entry, 0o600)
+
+        with pytest.raises(RuntimeError, match="unsafe host setup directory"):
+            _open_safe_setup_directory(entry, "non-directory")
+
+    @pytest.mark.parametrize("mode", (0o720, 0o702))
+    def test_setup_directory_rejects_group_or_world_write(self, tmp_path, mode):
+        from safeyolo.commands.agent import _open_safe_setup_directory
+
+        directory = tmp_path / "unsafe-mode"
+        directory.mkdir()
+        directory.chmod(mode)
+
+        with pytest.raises(RuntimeError, match="group/world write is not allowed"):
+            _open_safe_setup_directory(directory, "unsafe-mode")
+
+    def test_setup_lock_works_without_o_path(self, config_dir, monkeypatch):
+        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.vm import get_agent_home_dir
+
+        monkeypatch.delattr(os, "O_PATH", raising=False)
+        with _agent_host_setup_lock("portable-lock"):
+            lock = get_agent_home_dir("portable-lock") / ".safeyolo/host-setup.lock"
+            assert lock.is_file()
+            assert stat.S_IMODE(lock.stat().st_mode) == 0o600
 
     @staticmethod
     def _patch_setup_lock_descriptor_primitives(monkeypatch, config_dir):

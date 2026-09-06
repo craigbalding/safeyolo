@@ -11,6 +11,13 @@ paths = []
 source = "pyproject.toml; .github/workflows/ci.yml; .pre-commit-config.yaml; docs/DEVELOPERS.md"
 
 [[hints]]
+id = "python-defect-prevention"
+triggers = ["codeql", "code scanning", "exception", "except", "cancellation", "unused", "cyclic import", "import cycle", "toml"]
+advice = "Apply docs/DEVELOPERS.md#python-defect-prevention: reuse established helpers; catch expected failures with explicit recovery; explain harmless suppression; preserve cancellation; remove dead code without losing required effects. Check scanner findings against actual behaviour: Protocol ellipses and intentional re-exports are not automatically defects. Ruff and CodeQL have different coverage."
+paths = []
+source = "AGENTS.md; docs/DEVELOPERS.md#python-defect-prevention; ruff.toml"
+
+[[hints]]
 id = "installed-agent-context"
 triggers = [
   "agent context",

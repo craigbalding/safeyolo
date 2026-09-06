@@ -190,8 +190,33 @@ def test_renders_pi_session_tools_messages_and_completion(watcher_module):
     ) == ("AGENT", "Implemented the change.")
     assert watcher_module._event_line({"type": "agent_end"}, None) == (
         "DONE",
-        "turn completed",
+        "turn completed (token usage unavailable)",
     )
+
+
+def test_pi_completion_renders_usage_even_with_a_text_limit(watcher_module):
+    assert watcher_module._event_line(
+        {
+            "type": "agent_end",
+            "usage": {
+                "input": 1234,
+                "cacheRead": 20000,
+                "cacheWrite": 0,
+                "output": 90,
+                "reasoning": 60,
+                "totalTokens": 21324,
+            },
+        },
+        40,
+    ) == (
+        "DONE",
+        "turn completed tokens uncached=1,234 cached=20,000 cache_write=0 output=90 reasoning=60 total=21,324",
+    )
+
+
+def test_pi_usage_does_not_invent_missing_counts(watcher_module):
+    assert watcher_module._pi_usage_detail({"input": 0, "output": 0}) == "uncached=0 output=0"
+    assert watcher_module._pi_usage_detail({"input": True, "output": -1, "totalTokens": "10"}) == ""
 
 
 def test_pi_tool_failure_is_distinct_from_harness_failure(watcher_module):
