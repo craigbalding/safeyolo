@@ -23,6 +23,8 @@ from .config import (
     get_config_dir,
     get_data_dir,
     get_logs_dir,
+    get_share_dir,
+    get_ssh_key_path,
     load_config,
 )
 
@@ -253,10 +255,7 @@ def _host_resource_config(config: dict | None = None) -> dict:
             continue
         if type(value) is not int:
             raise ValueError(f"host_resources.{key} must be an integer or null")
-        if key == "disk_min_free_bytes":
-            if value < 0:
-                raise ValueError(f"host_resources.{key} must be non-negative")
-        elif value <= 0:
+        if value <= 0:
             raise ValueError(f"host_resources.{key} must be positive")
         result[key] = value
     return result
@@ -384,42 +383,217 @@ def _automatic_memory_ceiling(total: int | None) -> int | None:
     return max(0, total - _DEFAULT_AGENT_MEMORY_BYTES)
 
 
-def _startup_path_size(path: Path) -> int | None:
+def _startup_source_paths() -> list[tuple[Path, Path]]:
+    """Return source files and their relative config-share destinations."""
+    package_dir = Path(__file__).parent
+    return [
+        (
+            package_dir / "agent_context" / "skills",
+            Path("config-share/skills"),
+        ),
+        (package_dir / "guest-init.sh", Path("config-share/guest-init")),
+        (
+            package_dir / "guest-init-static.sh",
+            Path("config-share/guest-init-static"),
+        ),
+        (
+            package_dir / "guest-init-per-run.sh",
+            Path("config-share/guest-init-per-run"),
+        ),
+        (
+            package_dir / "guest-command-supervisor.py",
+            Path("config-share/guest-command-supervisor.py"),
+        ),
+        (
+            package_dir / "guest-proxy-forwarder.sh",
+            Path("config-share/guest-proxy-forwarder"),
+        ),
+        (
+            package_dir / "guest-shell-bridge.sh",
+            Path("config-share/guest-shell-bridge"),
+        ),
+        (package_dir / "guest-diag.py", Path("config-share/guest-diag")),
+        (package_dir / "guest-desktop.sh", Path("config-share/guest-desktop")),
+        (
+            package_dir.parents[2] / "guest" / "rootfs" / "safeyolo-sudo",
+            Path("config-share/guest-sudo"),
+        ),
+    ]
+
+
+def _startup_dynamic_paths(path: Path) -> list[tuple[Path, int]] | None:
+    """Return bounded dynamic files written by prepare_config_share()."""
     try:
-        if path.is_file():
-            return path.stat().st_size
-        if not path.is_dir():
-            return None
-        return sum(
-            child.stat().st_size
-            for child in path.rglob("*")
-            if child.is_file()
+        argument_max = os.sysconf("SC_ARG_MAX")
+        name_max = os.pathconf(path, "PC_NAME_MAX")
+    except (AttributeError, OSError, ValueError):
+        return None
+    if argument_max <= 0 or name_max <= 0:
+        return None
+    # agent.env and host-mounts contain caller-controlled values. Bound each
+    # by the host's exec/path limits rather than inventing a workload quota.
+    return [
+        (Path("config-share/per-run-go"), 0),
+        (Path("config-share/debug-mode"), 0),
+        (Path("config-share/desktop-size"), name_max),
+        (Path("config-share/proxy.env"), 1024),
+        (Path("config-share/agent.env"), argument_max),
+        (Path("config-share/network.env"), 1024),
+        (Path("config-share/agent-name"), name_max),
+        (Path("config-share/host-mounts"), argument_max),
+        (Path("status/static-init-done"), 0),
+        (Path("status/per-run-started"), 0),
+        (Path("status/vm-status"), 0),
+    ]
+
+
+def _startup_extra_sources() -> list[tuple[Path, Path, int | None]]:
+    """Return optional files copied or generated during startup."""
+    config_dir = get_config_dir()
+    extras = [
+        (
+            config_dir / "certs" / "mitmproxy-ca-cert.pem",
+            Path("config-share/mitmproxy-ca-cert.pem"),
+            None,
+        ),
+        (
+            get_ssh_key_path().with_suffix(".pub"),
+            Path("config-share/authorized_keys"),
+            None,
+        ),
+        (config_dir / "data" / "agent_token", Path("config-share/agent_token"), None),
+        (get_share_dir() / "vsock-term", Path("config-share/vsock-term"), None),
+    ]
+    # _ensure_ssh_key() creates an Ed25519 private/public pair before the
+    # public key is copied. Include a conservative bound only when generation
+    # is still required; existing files are already reflected in free space.
+    ssh_key = get_ssh_key_path()
+    if not ssh_key.is_file():
+        extras.extend(
+            [
+                (ssh_key, Path("generated/vm_ssh_key"), 4096),
+                (ssh_key.with_suffix(".pub"), Path("generated/vm_ssh_key.pub"), 1024),
+            ]
         )
+    return extras
+
+
+def _allocation_bytes(path: Path, block_size: int) -> int | None:
+    """Measure allocated bytes for a probe tree on its target filesystem."""
+    try:
+        paths = [path, *path.rglob("*")]
+        total = 0
+        for item in paths:
+            stat = item.stat()
+            allocated = getattr(stat, "st_blocks", 0) * 512
+            if item.is_dir():
+                total += max(block_size, allocated)
+            elif item.is_file():
+                rounded = max(
+                    block_size,
+                    ((stat.st_size + block_size - 1) // block_size) * block_size,
+                )
+                total += max(rounded, allocated)
+        return total
     except OSError:
         return None
 
 
-def _minimum_start_disk_headroom() -> int | None:
-    """Measure the static payload copied by prepare_config_share()."""
-    package_dir = Path(__file__).parent
-    paths = [
-        package_dir / "agent_context" / "skills",
-        package_dir / "guest-init.sh",
-        package_dir / "guest-init-static.sh",
-        package_dir / "guest-init-per-run.sh",
-        package_dir / "guest-command-supervisor.py",
-        package_dir / "guest-proxy-forwarder.sh",
-        package_dir / "guest-shell-bridge.sh",
-        package_dir / "guest-diag.py",
-        package_dir / "guest-desktop.sh",
-        # The compatibility sudo shim is sourced from the repository guest
-        # tree rather than the Python package directory.
-        package_dir.parents[2] / "guest" / "rootfs" / "safeyolo-sudo",
-    ]
-    sizes = [_startup_path_size(path) for path in paths]
-    if any(size is None for size in sizes):
+def _minimum_start_disk_headroom(path: Path, block_size: int) -> int | None:
+    """Measure prepare_config_share's allocation on the target filesystem.
+
+    The probe copies every static source using the same temporary-file and
+    replacement shape as startup, then adds bounded dynamic outputs. Its
+    temporary new skill tree is measured while a destination-shaped tree is
+    retained, so old/new replacement overlap is represented without counting
+    the existing destination twice against already-free space.
+    """
+    dynamic_paths = _startup_dynamic_paths(path)
+    if dynamic_paths is None or block_size <= 0:
         return None
-    return sum(size for size in sizes if size is not None)
+    probe: Path | None = None
+    try:
+        probe = Path(tempfile.mkdtemp(prefix=".safeyolo-disk-probe-", dir=path))
+        source_paths = _startup_source_paths()
+        skills_destination = Path("config-share/skills")
+        skills_source = next(
+            (
+                source
+                for source, relative_destination in source_paths
+                if relative_destination == skills_destination
+            ),
+            None,
+        )
+        if skills_source is None or not skills_source.is_dir():
+            return None
+
+        def copy_probe_source(
+            source: Path, destination: Path, fallback_size: int | None = None
+        ) -> bool:
+            if source.is_dir():
+                shutil.copytree(source, destination)
+                return True
+            if source.is_file():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+                return True
+            if fallback_size is not None:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with destination.open("wb") as handle:
+                    handle.truncate(fallback_size)
+                return True
+            return False
+
+        # Model the existing destination first. Free space already excludes
+        # these old files, but they remain beside temporary replacements.
+        for source, relative_destination in source_paths:
+            if not copy_probe_source(source, probe / relative_destination):
+                return None
+        for source, relative_destination, _fallback_size in _startup_extra_sources():
+            if source.is_file() and not copy_probe_source(
+                source, probe / relative_destination
+            ):
+                return None
+        for relative_destination, _size in dynamic_paths:
+            destination = probe / relative_destination
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.touch()
+        baseline = _allocation_bytes(probe, block_size)
+        if baseline is None:
+            return None
+
+        # Build the new tree and temporary replacement files while the old
+        # destination remains present. The returned delta is the additional
+        # allocation required beyond the already-free-space baseline.
+        for source, relative_destination in source_paths:
+            if relative_destination == skills_destination:
+                destination = probe / "config-share" / ".skills-new"
+            else:
+                destination = (
+                    probe / relative_destination.parent / f".{relative_destination.name}-new"
+                )
+            if not copy_probe_source(source, destination):
+                return None
+        for source, relative_destination, fallback_size in _startup_extra_sources():
+            if not source.is_file() and fallback_size is None:
+                continue
+            destination = (
+                probe / relative_destination.parent / f".{relative_destination.name}-new"
+            )
+            if not copy_probe_source(source, destination, fallback_size):
+                return None
+        for relative_destination, size in dynamic_paths:
+            destination = probe / relative_destination
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open("wb") as handle:
+                handle.truncate(size)
+        total = _allocation_bytes(probe, block_size)
+        return total - baseline if total is not None else None
+    except OSError:
+        return None
+    finally:
+        if probe is not None:
+            shutil.rmtree(probe, ignore_errors=True)
 
 
 def _configured_limit(
@@ -503,9 +677,31 @@ def _cgroup_process_boundaries() -> list[tuple[int | None, int | None, str]]:
     return boundaries
 
 
-def _process_count() -> int | None:
+def _process_task_count(process_path: Path) -> int | None:
+    """Count tasks in one Linux process's task directory."""
     try:
-        return sum(1 for item in Path("/proc").iterdir() if item.name.isdigit())
+        return sum(
+            1 for item in (process_path / "task").iterdir() if item.name.isdigit()
+        )
+    except FileNotFoundError:
+        # A process may exit between /proc enumeration and task inspection.
+        return 0
+    except OSError:
+        return None
+
+
+def _process_count() -> int | None:
+    """Count Linux tasks, not just process-leader directories."""
+    try:
+        total = 0
+        for process_path in Path("/proc").iterdir():
+            if not process_path.name.isdigit():
+                continue
+            task_count = _process_task_count(process_path)
+            if task_count is None:
+                return None
+            total += task_count
+        return total
     except OSError:
         return None
 
@@ -514,18 +710,28 @@ def _read_process_capacity() -> tuple[int | None, int | None, str]:
     """Choose the most restrictive coherent aggregate process boundary."""
     candidates: list[tuple[int, int, str]] = []
     global_current = _process_count()
-    try:
-        pid_max = int(Path("/proc/sys/kernel/pid_max").read_text().strip())
-    except (OSError, ValueError):
-        pid_max = None
-    if pid_max is not None and pid_max > 0 and global_current is not None:
-        candidates.append(
-            (
-                pid_max,
-                global_current,
-                "automatic: /proc process count; kernel pid_max",
+    kernel_limits: list[tuple[str, str]] = [("pid_max", "/proc/sys/kernel/pid_max")]
+    if platform.system() == "Linux":
+        kernel_limits.append(("threads-max", "/proc/sys/kernel/threads-max"))
+    kernel_fallback: tuple[int, str] | None = None
+    for limit_name, limit_path in kernel_limits:
+        try:
+            limit = int(Path(limit_path).read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if limit <= 0:
+            continue
+        source = f"automatic: kernel {limit_name}"
+        if kernel_fallback is None or limit < kernel_fallback[0]:
+            kernel_fallback = limit, source
+        if global_current is not None:
+            candidates.append(
+                (
+                    limit,
+                    global_current,
+                    f"automatic: /proc task count; kernel {limit_name}",
+                )
             )
-        )
 
     # Keep every cgroup's current count paired with that cgroup's limit. A
     # tighter hierarchical boundary must win over the global PID namespace,
@@ -544,8 +750,9 @@ def _read_process_capacity() -> tuple[int | None, int | None, str]:
     if incomplete_limit is not None:
         limit, source = incomplete_limit
         return limit, None, source
-    if pid_max is not None and pid_max > 0:
-        return pid_max, global_current, "automatic: kernel pid_max"
+    if kernel_fallback is not None:
+        limit, source = kernel_fallback
+        return limit, global_current, source
     return None, global_current, "unavailable: process capacity could not be detected"
 
 
@@ -628,7 +835,7 @@ def _read_disks(
             )
             continue
         block_size = _filesystem_block_size(path, usage)
-        measured_payload = _minimum_start_disk_headroom()
+        measured_payload = _minimum_start_disk_headroom(path, block_size)
         minimum = (
             override
             if override is not None

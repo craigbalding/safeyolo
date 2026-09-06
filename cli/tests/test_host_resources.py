@@ -1,5 +1,6 @@
 """Acceptance tests for the aggregate host resource guard."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -178,7 +179,7 @@ def test_automatic_boundaries_leave_host_derived_headroom(monkeypatch, tmp_path)
     )
     monkeypatch.setattr(
         "safeyolo.host_resources._minimum_start_disk_headroom",
-        lambda: 8192,
+        lambda _path, _block_size: 8192,
     )
     monkeypatch.setattr(
         "safeyolo.host_resources._systemd_scope_status",
@@ -193,6 +194,81 @@ def test_automatic_boundaries_leave_host_derived_headroom(monkeypatch, tmp_path)
     decision = evaluate_admission(report, requested_cpu=8, requested_memory_mb=1)
     assert not decision.allowed
     assert any(f"filesystem {tmp_path}" in reason for reason in decision.reasons)
+
+
+def test_process_task_count_uses_thread_entries(tmp_path):
+    import safeyolo.host_resources as host_resources
+
+    process = tmp_path / "123"
+    task_dir = process / "task"
+    task_dir.mkdir(parents=True)
+    for task_id in ("123", "456", "789"):
+        (task_dir / task_id).mkdir()
+
+    assert host_resources._process_task_count(process) == 3
+
+
+def test_thread_limit_is_compared_in_the_same_task_unit(monkeypatch):
+    import safeyolo.host_resources as host_resources
+
+    monkeypatch.setattr(host_resources, "_process_count", lambda: 60)
+    monkeypatch.setattr(host_resources, "_cgroup_process_boundaries", lambda: [])
+    monkeypatch.setattr(
+        host_resources.Path,
+        "read_text",
+        lambda path: {"/proc/sys/kernel/pid_max": "100\n", "/proc/sys/kernel/threads-max": "64\n"}[str(path)],
+    )
+
+    capacity, current, source = host_resources._read_process_capacity()
+
+    assert (capacity, current) == (64, 60)
+    assert "threads-max" in source
+
+
+def test_disk_headroom_boundary_covers_target_allocations(monkeypatch, tmp_path):
+    import safeyolo.host_resources as host_resources
+
+    source = tmp_path / "source"
+    (source / "nested").mkdir(parents=True)
+    (source / "nested" / "payload").write_bytes(b"x" * 4097)
+    monkeypatch.setattr(
+        host_resources,
+        "_startup_source_paths",
+        lambda: [(source, Path("config-share/skills"))],
+    )
+    monkeypatch.setattr(
+        host_resources,
+        "_startup_dynamic_paths",
+        lambda _path: [(Path("config-share/agent.env"), 1)],
+    )
+    monkeypatch.setattr(host_resources, "_startup_extra_sources", lambda: [])
+
+    required = host_resources._minimum_start_disk_headroom(tmp_path, 4096)
+    assert required is not None
+    assert required >= 4 * 4096
+
+    monkeypatch.setattr(
+        host_resources,
+        "_minimum_start_disk_headroom",
+        lambda _path, _block_size: required,
+    )
+    monkeypatch.setattr(
+        host_resources.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=100_000, free=required + 4097, block_size=4096),
+    )
+    disk = host_resources._read_disks([tmp_path], None)[0]
+    assert disk.effective_min_free == required + 4096
+    assert evaluate_admission(
+        _report(disk_free=disk.effective_min_free + 1, disk_min_free=disk.effective_min_free),
+        requested_cpu=1,
+        requested_memory_mb=1,
+    ).allowed
+    assert not evaluate_admission(
+        _report(disk_free=disk.effective_min_free, disk_min_free=disk.effective_min_free),
+        requested_cpu=1,
+        requested_memory_mb=1,
+    ).allowed
 
 
 def test_cgroup_process_boundaries_include_a_constrained_parent(monkeypatch, tmp_path):
@@ -371,3 +447,10 @@ def test_running_allocation_uses_runtime_record_not_mutable_policy(
 def test_invalid_override_is_rejected():
     with pytest.raises(ValueError, match="must be positive"):
         build_host_resource_report(config={"host_resources": {"cpu_ceiling": 0}})
+
+
+def test_zero_disk_override_is_rejected():
+    with pytest.raises(ValueError, match="disk_min_free_bytes must be positive"):
+        build_host_resource_report(
+            config={"host_resources": {"disk_min_free_bytes": 0}}
+        )

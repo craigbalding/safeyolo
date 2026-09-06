@@ -83,8 +83,8 @@ Set an integer override only when the operator has a host-specific capacity
 model. SafeYolo caps CPU and memory overrides at detected host capacity. An
 explicit disk watermark can replace the automatic startup-payload reserve
 when the operator has a host-specific capacity model. Explicit CPU, memory,
-and disk values are operator choices and can replace their automatic reserve. The process limit is
-an aggregate admission boundary; it is not copied into each per-agent
+and disk values are operator choices and can replace their automatic reserve.
+The process limit is an aggregate admission boundary; it is not copied into each per-agent
 systemd scope because that would multiply the limit. SafeYolo never
 stops an active agent when disk space crosses the low watermark; the guard
 applies to new work.
