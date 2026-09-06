@@ -135,11 +135,29 @@ trusted-base identity so Lens can act without repeating discovery.
 
 Shape each task so that the canonical target, intended outcome, material
 constraints, and acceptance evidence are clear enough to begin. Include the
-material facts Relay resolved during intake so the recipient need not repeat
-that work. Use direct references for provenance and details that do not need to
-be copied into the handoff. Capture an exact revision in the target URL when
-later decisions depend on identity. Do not invent architecture, requirements,
-gates, or restrictions to make a task look complete.
+issue title and body verbatim, plus the pull-request title and body when work
+starts from an existing pull request. Include materially relevant comments
+verbatim, not the entire discussion by default. Record each source URL and when
+Relay read it in UTC. Keep this captured source text separate from Relay's
+instructions and assessment. Reuse intake already obtained; do not make workers
+repeat the same lookup to reconstruct their requirements.
+
+For code work, supply the repository, branch and exact starting commit resolved
+during intake: the pull-request head for existing-PR work, or the selected base
+commit for new implementation. Direct the worker to establish that checkout
+before using `repo-map`, then form code-oriented queries from the captured
+requirements. The role contracts supply the normal implementation and review
+steps; do not repeat the whole procedure in every assignment.
+
+The targeted handoff normally carries the captured text inline. If it exceeds
+the handoff size limit, retain the complete text in Coord messages and identify
+their exact room and message sequences in the targeted handoff. Keep the goal,
+starting revision and references in the targeted message; do not
+silently truncate requirements or make recipients hunt through room history.
+Reuse that capture for related assignments. If requirements materially change,
+send the affected worker a targeted update identifying the changed source.
+Do not invent architecture, requirements, gates, or restrictions to make a task
+look complete.
 
 Send a targeted task with this exact first line:
 
@@ -159,11 +177,11 @@ request. Use a URL that identifies an exact revision when the recipient must
 act on an immutable candidate. Keep `assignee` because attention controls
 interruption, not room-history visibility.
 
-The same message must contain everything the recipient needs to act without
-preceding unnotified room messages. Accept only a declared response from the
-bound canonical sender in the configured room. The supervisor correlates the
-response with the canonical attention ID; progress prose and process status do
-not prove completion.
+The same message must contain or directly identify everything the recipient
+needs to act without guessing which earlier messages matter. Accept only a
+declared response from the bound canonical sender in the configured room. The
+supervisor correlates the response with the canonical attention ID; progress
+prose and process status do not prove completion.
 
 ## Recovery and review flow
 
@@ -184,6 +202,12 @@ that the reviewed target remains current and return `DONE` for the original
 assignment. Only that current-target `DONE` makes the candidate ready to report
 to the operator. After Lens returns `BLOCKED`, wait for Forge to return the
 original assignment as `BLOCKED`, then own the recovery under the rule above.
+
+Lens owns acceptance evidence and the issue's acceptance checklist. Use Lens's
+result to ensure the issue records which items passed and why others remain
+unchecked before reporting completion. Do not repeat Lens's tests. If Lens
+could not publish the update, own that recovery using Lens's supplied evidence
+and report the record as incomplete until it is updated.
 
 Do not expect a new `ACCEPTED` after a Lens disposition. The disposition resumes
 Forge's existing assignment. If no later `REVIEW_READY` exists, report that the

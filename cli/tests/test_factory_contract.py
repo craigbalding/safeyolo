@@ -26,6 +26,7 @@ from safeyolo.platform import AgentPlatform
 
 BACKLOG_COORDINATOR_CONTRACT = Path(__file__).parents[2] / "docs/factories/backlog-coordinator.md"
 BACKLOG_REVIEWER_CONTRACT = Path(__file__).parents[2] / "docs/agent-roles/independent-reviewer.md"
+BACKLOG_OWNER_CONTRACT = Path(__file__).parents[2] / "docs/agent-roles/issue-owner.md"
 
 
 def _passing_factory_report(name: str = "backlog") -> FactoryDoctorReport:
@@ -70,6 +71,58 @@ def test_backlog_reviewer_contract_binds_install_trust_and_complexity_checks():
     assert "maintains reusable acceptance capability" in contract
     assert "product acceptance graph" in contract
     assert "rather than from a candidate as self-authorization" in contract
+
+
+def test_backlog_intake_preserves_requirements_and_starting_revision():
+    contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+
+    assert "issue title and body verbatim" in contract
+    assert "pull-request title and body" in contract
+    assert "Record each source URL and when Relay read it in UTC." in contract
+    assert "Keep this captured source text separate from Relay's instructions and assessment." in contract
+    assert "repository, branch and exact starting commit" in contract
+    assert "retain the complete text in Coord messages" in contract
+    assert "their exact room and message sequences" in contract
+    assert "do not silently truncate requirements" in contract
+
+
+@pytest.mark.parametrize("path", [BACKLOG_OWNER_CONTRACT, BACKLOG_REVIEWER_CONTRACT])
+def test_worker_contract_establishes_checkout_before_repo_map(path):
+    contract = " ".join(path.read_text().split()).lower()
+
+    assert "establish the task checkout before using `repo-map`" in contract
+    assert "behaviour, concepts and symbols, not issue/pr numbers or factory wording" in contract
+    assert "after a revision change, refresh it before relying on its locations" in contract
+
+
+def test_review_handoff_reuses_original_coord_requirements_not_owner_copy():
+    owner = " ".join(BACKLOG_OWNER_CONTRACT.read_text().split())
+    reviewer = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
+
+    assert "Relay's original Coord room and canonical message sequence" in owner
+    assert "Keep the new candidate head distinct from Relay's starting commit." in owner
+    assert "do not reset them to the original starting commit" in owner
+    assert "Check the canonical Relay sender and assigned target." in reviewer
+    assert "A copy quoted by Forge is not a substitute for Relay's retained message." in reviewer
+    assert "Do not routinely reread the linked issue on first involvement." in reviewer
+    assert "Obtain missing source text when the capture is unavailable" in reviewer
+
+
+def test_acceptance_checklist_has_evidence_owner_and_publication_recovery():
+    coordinator = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+    owner = " ".join(BACKLOG_OWNER_CONTRACT.read_text().split())
+    reviewer = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
+
+    assert "Lens owns acceptance evidence and the issue's acceptance checklist." in coordinator
+    assert "own that recovery using Lens's supplied evidence" in coordinator
+    assert "do not mark them passed on the strength of Forge's implementation claims" in owner
+    assert "tick an item only when independent acceptance establishes that it passed" in reviewer
+    assert "Leave failed or untested items unchecked and explain why." in reviewer
+    assert "correct any checkmark whose evidence no longer holds" in reviewer
+    assert "Do not overwrite the current issue with Relay's historical capture." in reviewer
+    assert "If publication fails, include the unposted item outcomes and evidence" in reviewer
+    assert "The issue acceptance record above is required." in reviewer
+    assert "GitHub findings are an optional additional record" not in reviewer
 
 
 def test_reviewer_repairs_execution_failures_and_escalates_without_false_blocked():

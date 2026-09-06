@@ -44,13 +44,15 @@ Evidence requested as a repository deliverable belongs in the repository.
 
 - Treat Relay's self-contained task as the authoritative assignment. It must
   contain the intended outcome, credible acceptance criteria, material
-  constraints, and canonical target. Do not routinely reread the issue or pull
-  request to reconstruct those facts. Query GitHub when a material fact is
-  missing, the authoritative content changed, or an ambiguity cannot be
-  resolved locally.
-- For a pull-request target, verify its exact current head and corresponding
-  issue. Treat that issue as the required outcome and the pull request as the
-  starting candidate, not as evidence that the outcome is already satisfied.
+  constraints, and canonical target. Reuse Relay's verbatim issue/PR capture,
+  source URLs, observation time and starting revision. Do not routinely reread
+  the issue or pull request to reconstruct those facts. Query GitHub when a
+  material fact is missing, the authoritative content changed, or an ambiguity
+  cannot be resolved locally.
+- For a pull-request target, use the corresponding issue and starting head
+  supplied by Relay. Treat that issue as the required outcome and the pull
+  request as the starting candidate, not as evidence that the outcome is
+  already satisfied.
 - Derive the requested outcome from the task and any authoritative design
   material it references.
 - Prefer updating and completing the existing pull request. If its branch
@@ -66,22 +68,25 @@ Evidence requested as a repository deliverable belongs in the repository.
   state reasonable assumptions. An unanswered question leaves that task
   awaiting the operator; silence is not a refusal. Continue other assigned,
   ready work when capacity permits.
-- For an existing-pull-request assignment, start from its exact verified current
-  head. Otherwise, start from the repository and branch state appropriate to
-  the issue, normally current `master`. Keep unrelated local or pre-existing
-  changes out of the work.
 - Forge's configured workspace is one persistent repository checkout. Perform
   each task on its branch in that checkout. Its current branch, index, and
   working tree are durable work state: after a restart, inspect and resume that
   state before refreshing or switching branches.
-- At task start, incrementally refresh the persistent repository and then
-  inspect, branch, diff, and modify through local Git. Do not use GitHub
-  pull-request, diff, patch, changed-filename, commit-diff, or file-content APIs
-  as source transport.
-- When the implementation area is unfamiliar, use the available `repo-map`
-  capability in the task's current checkout for initial orientation. Follow
-  current invocation guidance in the trusted room brief and reuse still-current
-  output before broad discovery.
+- On a new assignment, establish the task checkout before using `repo-map`.
+  Use the starting commit supplied by Relay and verify it with local Git. Reuse
+  existing objects and incrementally fetch missing objects with native Git.
+  If no starting revision was supplied, resolve the appropriate revision once:
+  the current PR head for existing-PR work, or normally current `master` for a
+  new issue. On resumption, preserve and continue the task's branch, index and
+  working tree; do not reset them to the original starting commit. Keep
+  unrelated local or pre-existing changes out of the work. Use local Git for
+  source, diff, filenames and history, not GitHub content or diff APIs.
+- Once that checkout is established, use `repo-map` for initial orientation
+  when the implementation area is unfamiliar. Form queries from the captured
+  behaviour, concepts and symbols, not issue/PR numbers or factory wording.
+  Follow current invocation guidance in the trusted room brief. Reuse output
+  while it remains current; after a revision change, refresh it before relying
+  on its locations. Repo-map describes the local checkout, not a GitHub target.
 
 ## Implement the smallest complete change
 
@@ -120,6 +125,8 @@ Evidence requested as a repository deliverable belongs in the repository.
 **The implementation agent's tests, CI results, and summary are implementation
 evidence, not independent acceptance.** Produce strong evidence, but never
 claim that it substitutes for independent review.
+Lens owns ticking the issue's acceptance items; do not mark them passed on the
+strength of Forge's implementation claims or test results alone.
 
 ## Coord review loop
 
@@ -153,7 +160,13 @@ When the candidate is ready for independent review:
    resumes bounded coord waits for its declared response.
 
 The `target` URL identifies the pull request and its exact head commit. The
-pull request must link its corresponding issue. Do not fill `REVIEW_READY` with
+pull request must link its corresponding issue. Include a requirements
+reference to Relay's original Coord room and canonical message sequence, plus
+any later requirements updates. This lets Lens reuse the captured source text
+without repeating GitHub intake. Take the sequence from the canonical envelope,
+not its attention ID. Keep the new candidate head distinct from Relay's
+starting commit. If the capture is unavailable, identify the issue and disclose
+the missing capture so Lens can obtain it. Do not fill `REVIEW_READY` with
 persuasive implementation claims or test transcripts. The reviewer establishes
 correctness from primary evidence.
 

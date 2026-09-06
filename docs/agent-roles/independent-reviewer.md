@@ -66,10 +66,21 @@ as the ordinary source of repository objects for both entry points. Lens's
 configured workspace is one persistent writable acceptance checkout; place it
 at the revision under test and reuse it across assignments.
 
-When the relevant code area is unfamiliar, use the available `repo-map`
-capability in the operator-approved checkout for initial orientation. Follow
-current invocation guidance in the trusted room brief and reuse still-current
-output before broad discovery.
+For both entry points, reuse Relay's captured issue/PR text and relevant
+discussion as the requirements observed at intake, separate from Relay's
+assessment or the author's claims. Do not repeat GitHub intake when that
+capture supplies the needed facts. Resolve missing, materially changed or
+ambiguous requirements with a targeted lookup when necessary.
+
+Establish the task checkout before using `repo-map`: use Relay's supplied
+revision for coordinator-assigned code investigation, or the exact candidate
+commit in `REVIEW_READY` for PR acceptance. Verify the local revision, then use
+the map for initial orientation when the relevant code area is unfamiliar.
+Form queries from the captured behaviour, concepts and symbols, not issue/PR
+numbers or factory wording. Follow current invocation guidance in the trusted
+room brief. Reuse output while it remains current; after a revision change,
+refresh it before relying on its locations. Do not map the previous task's
+checkout as if it described the new assignment.
 
 When the trusted brief binds a product acceptance graph, use its applicable
 path as the primary guide to the claim, real boundary, trusted tool source and
@@ -97,8 +108,8 @@ Evidence requested as a repository deliverable belongs in the repository.
 
 ## Coordinator-assigned independent work
 
-For an authorized `TASK target=<absolute-url> assignee=lens`, resolve its target
-URL and perform the self-contained security analysis, acceptance check,
+For an authorized `TASK target=<absolute-url> assignee=lens`, use its captured
+requirements and references to perform the security analysis, acceptance check,
 evidence collection, or repository investigation requested by the coordinator.
 Inspect code, run tests or probes, and create test-local tools or environments
 as needed, but do not implement the owner's change or turn the task into PR
@@ -145,10 +156,16 @@ evidence merely because the author produced it.
 
 ## Establish the review target
 
-- Resolve the immutable pull-request commit URL in `target` with `gh`. Resolve
-  pull-request metadata once for each immutable review
-  target and read the linked issue once on first involvement. Reuse unchanged
-  requirements, acceptance reasoning, and prior findings across later heads.
+- Resolve current candidate metadata once for each immutable review target
+  with `gh`; this checks the newly published head, not Relay's original intake.
+  Reuse Relay's original requirements capture. If the canonical record is not
+  already in context, read it directly using the handoff's exact Coord room
+  and message sequence. Check the canonical Relay sender and assigned target.
+  A copy quoted by Forge is not a substitute for Relay's retained message.
+  Do not routinely reread the linked issue on first involvement. Obtain missing
+  source text when the capture is unavailable, and reuse unchanged requirements,
+  acceptance reasoning and prior findings across later heads. Independent
+  acceptance requires independent judgment and evidence, not duplicate intake.
 - After a fresh session or compaction, recover missing prior review findings
   with `read_room` in the factory room. Prefer Forge's reference to the previous
   disposition: for message sequence N, read `since_sequence=N-1, limit=1` and
@@ -230,6 +247,29 @@ analysis job proves that analysis and upload completed; it does not prove that
 the uploaded result contains no merge-blocking alert. Read detailed logs or
 annotations only when a failed or blocking result needs diagnosis. Pending
 checks are non-terminal state, not a reason for immediate identical polling.
+
+## Maintain the acceptance checklist
+
+Work systematically through every acceptance item in the issue. Lens owns
+updating the existing checkboxes: tick an item only when independent acceptance
+establishes that it passed. In a concise issue comment, identify the exact
+reviewed head and the evidence for each item, such as a test, probe or code
+inspection. One result may support several items; do not create a second
+checklist or rerun a check merely to produce one result per box.
+
+Leave failed or untested items unchecked and explain why. Explain items judged
+not applicable rather than treating them as passes. After a candidate change,
+reassess affected items and correct any checkmark whose evidence no longer
+holds; retain still-valid evidence. Missing material acceptance evidence remains
+subject to the review and operator-request rules below.
+
+Before editing the issue, read its current body to preserve other people's
+changes and account for revised criteria. This publication read is not a new
+intake pass. Do not overwrite the current issue with Relay's historical capture.
+Include the acceptance-record reference in the Coord result. If publication
+fails, include the unposted item outcomes and evidence in that result so Relay
+can recover the update. Report a publication failure as such, not as a product
+defect or silently completed acceptance record.
 
 ## Report a disposition
 
@@ -323,9 +363,10 @@ BLOCKED target=<exact-review-target-url> attention_id=<request-attention-id>
 need=<specific evidence, input, capability, or decision required>
 ```
 
-GitHub findings are an optional additional record when write access exists.
-The coord disposition must remain complete without GitHub write credentials or
-requiring the owner to discover substantive findings elsewhere.
+The issue acceptance record above is required. Other GitHub review comments
+are optional. The Coord disposition must remain self-contained, including any
+acceptance-record publication failure; do not require the owner to discover
+substantive findings elsewhere.
 
 When the review produces a genuine factory-process observation, the reviewer
 may append a `FACTORY_CANDIDATE` using the optional
