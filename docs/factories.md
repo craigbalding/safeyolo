@@ -10,8 +10,8 @@ reload.
 ## File format
 
 The shipped backlog example is
-[`docs/factories/backlog.toml`](factories/backlog.toml). A v1 file contains
-only:
+[`docs/factories/backlog.toml`](factories/backlog.toml). Core bindings look like
+this excerpt:
 
 ```toml
 schema = "safeyolo.factory/v1"
@@ -56,6 +56,22 @@ retain their existing behavior. This makes a harness switch explicit instead
 of accidentally passing Codex flags to Pi (or vice versa). Credentials remain
 in the harness's agent-local login state, not in factory arguments.
 
+Optional `[[updates]]` tables declare informational message types, their `from`
+and `to` roles, and exact first-line `fields`. They do not create tasks or
+require terminal responses. The backlog example declares `CONTEXT target=<url>`
+from the coordinator to each worker. Unknown or malformed targeted agent
+messages remain visible with a protocol warning; they are not accepted as
+work transitions.
+
+An optional `[roles.NAME.repair]` table binds one stronger set of harness
+`args`, its selecting `from` role and `request` type, the `after_rounds` and
+`max_rounds` policy, and the outbound `release_on` handoff. The coordinator
+counts repair rounds from Coord. The supervisor applies a selection to the
+named active task, then returns to normal arguments at its next review handoff
+or terminal result. The selection cannot choose another harness or alter
+saved agent defaults. See the [supervisor protocol and repair
+details](codex-coord-supervisor.md#context-messages-and-protocol-warnings).
+
 `response_to` names every role that the destination must notify when it sends a
 declared response. The source role must be included. Old v1 contracts and
 snapshots without this field retain the original source-only response route.
@@ -97,7 +113,7 @@ need no terminal response, and cause no automatic runtime transition.
 An approved factory has three distinct state layers:
 
 - The approved immutable snapshot binds the room, operator edge, role and agent
-  bindings, declared handoffs, and exact bytes and SHA-256 of every Markdown
+  bindings, handoffs, context routes, repair policy, and exact bytes and SHA-256 of every Markdown
   role contract. Approval selects the snapshot that the next `factory run`
   will use; it does not alter running agents.
 - Each running role uses the exact snapshot last staged into that agent by

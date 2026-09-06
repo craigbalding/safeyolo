@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-STATE_VERSION = 6
+STATE_VERSION = 7
 DEFAULT_CONFIG = Path.home() / ".safeyolo/codex-coord-supervisor.json"
 DEFAULT_STATE = Path.home() / ".safeyolo/codex-coord-supervisor-state.json"
 TERMINAL_RE = re.compile(r"^(DONE|BLOCKED|FAILED)\b")
@@ -64,7 +64,6 @@ AWAITING_KEYS = frozenset(
 MAX_RECENT_ATTENTION_IDS = 256
 MAX_IN_FLIGHT = 16
 MAX_CANONICAL_BODY_BYTES = 64 * 1024
-MAX_OPERATOR_CONTROL_BYTES = 4 * 1024
 MAX_AGENT_ROOM_BODY_BYTES = 256 * 1024
 MAX_STATE_BYTES = 2 * 1024 * 1024
 MAX_OWNED_DESCENDANTS = 64
@@ -119,6 +118,8 @@ class Config:
     factory_role: str | None = None
     factory_roles: tuple[tuple[str, str], ...] = ()
     factory_handoffs: tuple[Handoff, ...] = ()
+    factory_updates: tuple[dict[str, Any], ...] = ()
+    factory_repairs: tuple[tuple[str, dict[str, Any]], ...] = ()
     factory_operator_role: str | None = None
     factory_operator_types: tuple[str, ...] = ()
     contract_sha256: str | None = None
@@ -139,6 +140,10 @@ class Config:
             raw = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError) as exc:
             raise SupervisorError(f"cannot read supervisor config {path}: {exc}") from exc
+        return cls.from_dict(raw)
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> Config:
         if not isinstance(raw, dict):
             raise SupervisorError("supervisor config must be a JSON object")
 
@@ -157,6 +162,8 @@ class Config:
         factory_role = None
         factory_roles: tuple[tuple[str, str], ...] = ()
         factory_handoffs: tuple[Handoff, ...] = ()
+        factory_updates: tuple[dict[str, Any], ...] = ()
+        factory_repairs: tuple[tuple[str, dict[str, Any]], ...] = ()
         factory_operator_role = None
         factory_operator_types: tuple[str, ...] = ()
         contract_sha256 = None
@@ -172,9 +179,10 @@ class Config:
                 "operator_input",
                 "contract_sha256",
             }
-            if not isinstance(factory, dict) or set(factory) not in (
-                required_factory_keys,
-                required_factory_keys | {"snapshot_id"},
+            if (
+                not isinstance(factory, dict)
+                or not required_factory_keys.issubset(factory)
+                or set(factory) - required_factory_keys - {"snapshot_id", "updates", "repairs"}
             ):
                 raise SupervisorError("factory config has an invalid shape")
             if factory.get("schema") != "safeyolo.factory/v1":
@@ -280,6 +288,7 @@ class Config:
                 not isinstance(snapshot_id, str) or re.fullmatch(r"[0-9a-f]{64}", snapshot_id) is None
             ):
                 raise SupervisorError("factory snapshot ID is invalid")
+            factory_updates, factory_repairs = _load_protocol_extensions(factory, role_map, factory_handoffs)
         workspace = raw.get("workspace", "/workspace")
         if not isinstance(workspace, str) or not workspace.startswith("/"):
             raise SupervisorError("workspace must be an absolute path")
@@ -312,6 +321,8 @@ class Config:
             factory_role=factory_role,
             factory_roles=factory_roles,
             factory_handoffs=factory_handoffs,
+            factory_updates=factory_updates,
+            factory_repairs=factory_repairs,
             factory_operator_role=factory_operator_role,
             factory_operator_types=factory_operator_types,
             contract_sha256=contract_sha256,
@@ -341,6 +352,71 @@ def _required_names(raw: dict[str, Any], key: str) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _load_protocol_extensions(factory, roles, handoffs):
+    updates = factory.get("updates", [])
+    repairs = factory.get("repairs", {})
+    reserved = {token for route in handoffs for token in (route.request, *route.responses)}
+    reserved.update(factory["operator_input"]["types"])
+    reserved.add("PROTOCOL_WARNING")
+    if not isinstance(updates, list) or not isinstance(repairs, dict):
+        raise SupervisorError("factory updates or repairs have an invalid shape")
+    seen = set()
+    for update in updates:
+        if not isinstance(update, dict) or set(update) != {"type", "from", "to", "fields"}:
+            raise SupervisorError("factory update has an invalid shape")
+        token = update["type"]
+        fields = update["fields"]
+        if (
+            not isinstance(token, str)
+            or re.fullmatch(r"[A-Z][A-Z0-9_]*", token) is None
+            or token in reserved
+            or not isinstance(update["from"], str)
+            or update["from"] not in roles
+            or not isinstance(update["to"], str)
+            or update["to"] not in roles
+            or not isinstance(fields, list)
+            or any(not isinstance(field, str) or MESSAGE_FIELD_NAME_RE.fullmatch(field) is None for field in fields)
+            or len(set(fields)) != len(fields)
+        ):
+            raise SupervisorError("factory update has invalid values")
+        key = (token, update["from"], update["to"])
+        if key in seen:
+            raise SupervisorError("factory update route is duplicated")
+        seen.add(key)
+    for role, policy in repairs.items():
+        if (
+            role not in roles
+            or not isinstance(policy, dict)
+            or set(policy)
+            != {
+                "request",
+                "from",
+                "args",
+                "after_rounds",
+                "max_rounds",
+                "release_on",
+            }
+        ):
+            raise SupervisorError("factory repair policy has an invalid shape")
+        token = policy["request"]
+        args = policy["args"]
+        if (
+            not isinstance(token, str)
+            or re.fullmatch(r"[A-Z][A-Z0-9_]*", token) is None
+            or token in reserved | {update["type"] for update in updates}
+            or not isinstance(policy["from"], str)
+            or policy["from"] not in roles
+            or not isinstance(args, list)
+            or not args
+            or any(not isinstance(arg, str) or "\0" in arg for arg in args)
+            or any(type(policy[key]) is not int or policy[key] < 1 for key in ("after_rounds", "max_rounds"))
+            or not any(route.source_role == role and route.request == policy["release_on"] for route in handoffs)
+            or not any(route.source_role == policy["from"] and route.destination_role == role for route in handoffs)
+        ):
+            raise SupervisorError("factory repair policy has invalid values")
+    return tuple(copy.deepcopy(updates)), tuple(copy.deepcopy(repairs).items())
+
+
 def empty_state() -> dict[str, Any]:
     return {
         "version": STATE_VERSION,
@@ -353,6 +429,7 @@ def empty_state() -> dict[str, Any]:
         "briefs": {},
         "consecutive_failures": 0,
         "owned_process": None,
+        "repair_selection": None,
     }
 
 
@@ -471,6 +548,10 @@ def load_state(path: Path) -> dict[str, Any]:
         }
     allowed_keys = version_one_keys | {"awaiting_handoffs", "briefs"}
     current_keys = allowed_keys | {"harness"}
+    # Version 6 work uses the same target protocol. Adding repair selection
+    # does not require draining or discarding its accepted work.
+    if isinstance(raw, dict) and raw.get("version") == 6:
+        raw = {**raw, "version": STATE_VERSION}
     # An unreleased candidate briefly added a compatibility flag. Discard that
     # inert field when reading its checkpoint; it never enabled old messages.
     if (
@@ -504,6 +585,9 @@ def load_state(path: Path) -> dict[str, Any]:
     # upgrade; a later harness switch clears it in Supervisor.__init__.
     if isinstance(raw, dict) and raw.get("version") == STATE_VERSION and set(raw) == allowed_keys:
         raw = {**raw, "harness": "codex"}
+    if isinstance(raw, dict) and raw.get("version") == STATE_VERSION and set(raw) == current_keys:
+        raw = {**raw, "repair_selection": None}
+    current_keys |= {"repair_selection"}
     if (
         not isinstance(raw, dict)
         or isinstance(raw.get("version"), bool)
@@ -532,6 +616,7 @@ def load_state(path: Path) -> dict[str, Any]:
         raise SupervisorError("supervisor state has too many in-flight objects")
     for item in pending:
         _validate_pending(item)
+    _validate_repair_selection(raw["repair_selection"])
     awaiting_handoffs = raw.get("awaiting_handoffs")
     if not isinstance(awaiting_handoffs, list) or len(awaiting_handoffs) > MAX_IN_FLIGHT:
         raise SupervisorError("supervisor state has too many awaiting handoffs")
@@ -691,8 +776,10 @@ def _update_brief_context(
 
 
 def _validate_awaiting_handoff(value: Any) -> None:
-    if not isinstance(value, dict) or set(value) != AWAITING_KEYS:
+    if not isinstance(value, dict) or set(value) not in (AWAITING_KEYS, AWAITING_KEYS | {"parent_attention_id"}):
         raise SupervisorError("supervisor state has invalid awaiting-handoff data")
+    if "parent_attention_id" in value and not _valid_attention_id(value["parent_attention_id"]):
+        raise SupervisorError("supervisor state has invalid awaiting-handoff parent")
     for key in ("room_name", "request", "recipient_agent", "body"):
         if not isinstance(value.get(key), str) or not value[key]:
             raise SupervisorError("supervisor state has invalid awaiting-handoff data")
@@ -702,6 +789,31 @@ def _validate_awaiting_handoff(value: Any) -> None:
     expected = _request_correlation(value["body"])
     if not expected or correlation != expected:
         raise SupervisorError("supervisor state has mismatched awaiting-handoff correlation")
+
+
+def _validate_repair_selection(selection: Any) -> None:
+    if selection is None:
+        return
+    if not isinstance(selection, dict) or set(selection) != {"attention_id", "instruction", "snapshot_id"}:
+        raise SupervisorError("supervisor state has an invalid repair selection")
+    instruction = selection["instruction"]
+    _validate_pending(instruction)
+    fields = _message_fields(instruction["body"])
+    if (
+        not _valid_attention_id(selection["attention_id"])
+        or not isinstance(selection["snapshot_id"], str)
+        or instruction["requires_terminal"] or "protocol_warning" in instruction
+        or fields is None or set(fields) != {"target", "attention_id"}
+        or fields["attention_id"] != selection["attention_id"] or not _valid_target_url(fields["target"])
+    ):
+        raise SupervisorError("supervisor state has an invalid repair identity")
+
+
+def _remember_handoff(state: dict[str, Any], awaiting: dict[str, Any]) -> None:
+    if awaiting not in state["awaiting_handoffs"]:
+        if len(state["awaiting_handoffs"]) >= MAX_IN_FLIGHT:
+            raise SupervisorError("too many outbound factory handoffs are awaiting responses")
+        state["awaiting_handoffs"].append(awaiting)
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
@@ -735,7 +847,7 @@ def _valid_attention_id(value: Any) -> bool:
 
 
 def _validate_pending(item: Any) -> None:
-    if not isinstance(item, dict) or set(item) != PENDING_KEYS:
+    if not isinstance(item, dict) or set(item) not in (PENDING_KEYS, PENDING_KEYS | {"protocol_warning"}):
         raise SupervisorError("supervisor state has an invalid in-flight object")
     if not _valid_attention_id(item.get("attention_id")):
         raise SupervisorError("in-flight object has an invalid attention ID")
@@ -747,6 +859,8 @@ def _validate_pending(item: Any) -> None:
         raise SupervisorError("in-flight object has an invalid sequence")
     if not isinstance(item.get("requires_terminal"), bool):
         raise SupervisorError("in-flight object has an invalid terminal flag")
+    if "protocol_warning" in item and (not isinstance(item["protocol_warning"], str) or item["requires_terminal"]):
+        raise SupervisorError("in-flight protocol warning cannot authorize work")
     if len(item["body"].encode()) > MAX_CANONICAL_BODY_BYTES:
         raise SupervisorError("in-flight object body is too large")
     if item["requires_terminal"] and not _request_correlation(item["body"]):
@@ -1035,6 +1149,8 @@ def reconcile_terminals(config: Config, state: dict[str, Any]) -> bool:
                 for pending in pending_items:
                     if _canonical_own_response(message, config, pending):
                         found.add(pending["attention_id"])
+                if _recover_repair_handoff(config, state, room_name, message):
+                    changed = True
             if not page.get("has_more"):
                 break
             if next_cursor <= cursor:
@@ -1043,8 +1159,44 @@ def reconcile_terminals(config: Config, state: dict[str, Any]) -> bool:
     if found:
         for attention_id in found:
             _complete_attention(state, attention_id)
+            if state["repair_selection"] is not None and state["repair_selection"]["attention_id"] == attention_id:
+                _clear_repair(config, state, "retained_terminal")
         changed = True
     return changed
+
+
+def _recover_repair_handoff(config: Config, state: dict[str, Any], room: str, message: Any) -> bool:
+    selection = state["repair_selection"]
+    policy = _repair_policy(config)
+    if not (
+        selection is not None
+        and policy is not None
+        and isinstance(message, dict)
+        and room == selection["instruction"]["room_name"]
+        and message.get("sender_kind") == "agent"
+        and message.get("sender_agent_name") == config.agent_name
+        and isinstance(message.get("sequence"), int)
+        and message["sequence"] > selection["instruction"]["sequence"]
+        and _body_has_type(message.get("body", ""), policy["release_on"])
+        and _request_correlation(message["body"])
+    ):
+        return False
+    route = next(
+        route
+        for route in config.factory_handoffs
+        if (route.source_role == config.factory_role and route.request == policy["release_on"])
+    )
+    recovered = {
+        "room_name": room,
+        "request": route.request,
+        "recipient_agent": _role_agents(config)[route.destination_role],
+        "body": message["body"],
+        "correlation": _request_correlation(message["body"]),
+        "parent_attention_id": selection["attention_id"],
+    }
+    _remember_handoff(state, recovered)
+    _clear_repair(config, state, "retained_review_handoff")
+    return True
 
 
 def _canonical_own_terminal(message: Any, agent_name: str) -> bool:
@@ -1134,6 +1286,103 @@ def _role_agents(config: Config) -> dict[str, str]:
     return dict(config.factory_roles)
 
 
+def _inbound_update(config: Config, sender: str, body: str) -> bool:
+    fields = _message_fields(body)
+    if fields is None:
+        return False
+    agents = _role_agents(config)
+    return any(
+        update["to"] == config.factory_role
+        and agents[update["from"]] == sender
+        and _body_has_type(body, update["type"])
+        and set(fields) == set(update["fields"])
+        and ("target" not in fields or _valid_target_url(fields["target"]))
+        for update in config.factory_updates
+    )
+
+
+def _repair_policy(config: Config) -> dict[str, Any] | None:
+    return dict(config.factory_repairs).get(config.factory_role)
+
+
+def _repair_control(config: Config, pending: dict[str, Any]) -> bool:
+    policy = _repair_policy(config)
+    if policy is None:
+        return False
+    fields = _message_fields(pending["body"])
+    return (
+        pending["room_name"] in config.rooms
+        and pending["sender_agent_name"] == _role_agents(config)[policy["from"]]
+        and _body_has_type(pending["body"], policy["request"])
+        and fields is not None
+        and set(fields) == {"target", "attention_id"}
+        and _valid_target_url(fields["target"])
+        and _valid_attention_id(fields["attention_id"])
+    )
+
+
+def _invocation_objects(state: dict[str, Any]) -> list[dict[str, Any]]:
+    selection = state["repair_selection"]
+    if selection is None:
+        return state["in_flight"]
+    target = _message_fields(selection["instruction"]["body"])["target"]
+    return [
+        item for item in state["in_flight"]
+        if item["attention_id"] == selection["attention_id"] or (
+            not item["requires_terminal"] and (
+                not item["sender_agent_name"] or (_message_fields(item["body"]) or {}).get("target") == target
+            )
+        )
+    ] + [selection["instruction"]]
+
+
+def _ready_after_repair(state: dict[str, Any]) -> bool:
+    """A repair's exact parent link leaves other accepted work runnable."""
+    awaiting = state["awaiting_handoffs"]
+    if not awaiting or any("parent_attention_id" not in item for item in awaiting):
+        return False
+    suspended = {item["parent_attention_id"] for item in awaiting}
+    return any(item["attention_id"] not in suspended for item in state["in_flight"])
+
+
+def _repair_arguments(config: Config, state: dict[str, Any], baseline: list[str]) -> list[str]:
+    """Override model settings, preserving the launcher's instructions and environment options."""
+    policy = _repair_policy(config)
+    if state["repair_selection"] is None or policy is None:
+        return baseline
+    replacements = policy["args"]
+    model_flags = {"--model", "-m", "--provider", "--thinking"}
+
+    def parts(arguments):
+        index = 0
+        while index < len(arguments):
+            arg = arguments[index]
+            name, equals, value = arg.partition("=")
+            width = 1
+            if name in model_flags | {"-c", "--config"} and not equals and index + 1 < len(arguments):
+                value = arguments[index + 1]
+                width = 2
+            key = "--model" if name == "-m" else name
+            if config.harness == "codex" and name in {"-c", "--config"}:
+                key = "config:" + value.partition("=")[0]
+            yield key, arguments[index : index + width]
+            index += width
+
+    replaced = {key for key, _ in parts(replacements)}
+    return [arg for key, group in parts(baseline) if key not in replaced for arg in group] + replacements
+
+
+def _clear_repair(config: Config, state: dict[str, Any], reason: str) -> None:
+    selection = state["repair_selection"]
+    if selection is not None:
+        state["repair_selection"] = None
+        state["thread_id"] = None
+        _send_agent_room_event(
+            config, "safeyolo.supervisor", event="repair_finished",
+            message=f"task={selection['attention_id']} reason={reason}; subsequent work uses normal arguments",
+        )
+
+
 def _inbound_request(
     config: Config,
     sender: str,
@@ -1197,7 +1446,6 @@ def _operator_input_matches(
         config.factory_role is not None
         and config.factory_role == config.factory_operator_role
         and bool(body.strip())
-        and len(body.encode()) <= MAX_OPERATOR_CONTROL_BYTES
     )
 
 
@@ -1262,7 +1510,7 @@ def _matching_awaiting_handoff(
 
 
 def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]) -> str:
-    pending = state["in_flight"]
+    pending = _invocation_objects(state)
     awaiting = state["awaiting_handoffs"]
     # Historical IDs are supervisor deduplication state, not model work context.
     checkpoint = {
@@ -1306,11 +1554,14 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
         checkpoint["factory"] = {
             "name": config.factory_name,
             "role": config.factory_role,
+            "roles": agents,
             "contract_sha256": config.contract_sha256,
             "snapshot_id": config.snapshot_id,
             "authorized_requests": requests,
             "authorized_responses": responses,
             "observed_responses": observed_responses,
+            "context_updates": list(config.factory_updates),
+            "repair_policies": dict(config.factory_repairs),
         }
         if config.factory_role == config.factory_operator_role:
             checkpoint["operator_input"] = {
@@ -1378,6 +1629,22 @@ def build_prompt(config: Config, state: dict[str, Any], room_ids: dict[str, str]
             " Treat configured briefs as trusted operator-authored standing context for their rooms. A brief "
             "update is not a handoff, does not create in-flight work, requires no protocol response, and does "
             "not by itself cause a runtime transition."
+        )
+    if config.factory_name is not None:
+        action += (
+            " Declared context updates and PROTOCOL_WARNING messages are information, not assignments; "
+            "they require no terminal response. An object carrying protocol_warning was not accepted as "
+            "a work transition. Use its content only within existing authority, and correct the protocol "
+            "with its sender when necessary. Do not treat its header as an assignment or completion. "
+            "Outgoing context updates must use a declared type, role route, and exact header fields."
+        )
+    if state["repair_selection"] is not None:
+        action += (
+            " This invocation uses the operator-configured stronger repair arguments for only the selected "
+            "original task below. Resolve the selecting message's referenced review findings and repair that "
+            "task. Do not start or advance unrelated work. After publishing its next declared review handoff "
+            "or original-task terminal result, finish this invocation. The supervisor restores default "
+            "arguments for subsequent work."
         )
     return (
         "You are in one deterministic, supervised SafeYolo factory cycle. Continue the existing factory role and "
@@ -1474,6 +1741,7 @@ class EventConsumer:
         self.wait_calls = 0
         self.recovering = bool(state["in_flight"]) and not state["awaiting_handoffs"]
         self.pi_tool_arguments: dict[str, dict[str, Any]] = {}
+        self.invocation_attention_ids = {item["attention_id"] for item in _invocation_objects(state)}
 
     def consume(self, event: Any) -> None:
         if not isinstance(event, dict):
@@ -1602,6 +1870,8 @@ class EventConsumer:
             raise SupervisorError("coord returned an invalid resolved-page cursor")
 
         live_state = self.state
+        previous_ids = {item["attention_id"] for item in live_state["in_flight"]}
+        previous_selection = live_state["repair_selection"]
         candidate_state = copy.deepcopy(live_state)
         self.state = candidate_state
         try:
@@ -1613,6 +1883,15 @@ class EventConsumer:
         live_state.clear()
         live_state.update(candidate_state)
         self.state = live_state
+        for pending in live_state["in_flight"]:
+            if "protocol_warning" in pending and pending["attention_id"] not in previous_ids:
+                _publish_protocol_warning(self.config, pending)
+        if live_state["repair_selection"] is not None and live_state["repair_selection"] != previous_selection:
+            _send_agent_room_event(
+                self.config, "safeyolo.supervisor", event="repair_selected",
+                message=f"task={live_state['repair_selection']['attention_id']}; next invocation uses stronger arguments",
+            )
+        self.invocation_attention_ids = {item["attention_id"] for item in _invocation_objects(live_state)}
         return added
 
     def _apply_attention_page(self, objects: list[Any], next_cursor: int) -> int:
@@ -1634,6 +1913,8 @@ class EventConsumer:
             if len(pending_by_id) >= MAX_IN_FLIGHT:
                 raise SupervisorError("wait_for_coord returned more in-flight objects than can be checkpointed")
             pending_by_id[attention_id] = pending
+            if "protocol_warning" in pending:
+                continue
             awaiting_index = _matching_awaiting_handoff(
                 self.config,
                 self.state["awaiting_handoffs"],
@@ -1646,7 +1927,42 @@ class EventConsumer:
         self.state["in_flight"] = list(pending_by_id.values())
         self.state["recent_attention_ids"] = recent_ids[-MAX_RECENT_ATTENTION_IDS:]
         self.state["safe_cursor"] = next_cursor
+        self._select_repair()
         return len(set(pending_by_id) - pending_before)
+
+    def _select_repair(self) -> None:
+        for instruction in list(self.state["in_flight"]):
+            if "protocol_warning" in instruction or not _repair_control(self.config, instruction):
+                continue
+            fields = _message_fields(instruction["body"])
+            task = next(
+                (item for item in self.state["in_flight"] if item["attention_id"] == fields["attention_id"]), None
+            )
+            if (
+                task is None
+                or not task["requires_terminal"]
+                or _request_correlation(task["body"]).get("target") != fields["target"]
+                or task["sender_agent_name"] != instruction["sender_agent_name"]
+            ):
+                instruction["protocol_warning"] = "Repair selection does not match an active task from this sender."
+                continue
+            current = self.state["repair_selection"]
+            if current is not None and current["instruction"]["attention_id"] == instruction["attention_id"]:
+                continue
+            if current is not None and current["attention_id"] != task["attention_id"]:
+                instruction["protocol_warning"] = (
+                    "Another task already has a selected repair round; this request was not applied."
+                )
+                continue
+            self.state["repair_selection"] = {
+                "attention_id": task["attention_id"],
+                "instruction": copy.deepcopy(instruction),
+                "snapshot_id": self.config.snapshot_id or "",
+            }
+            self.state["thread_id"] = None
+            # Keep the canonical instruction with the selection, not as a
+            # replayable control after the selection has expired.
+            _complete_attention(self.state, instruction["attention_id"])
 
     def _narrow_resolved_object(self, resolved: Any) -> dict[str, Any] | None:
         if not isinstance(resolved, dict):
@@ -1708,6 +2024,7 @@ class EventConsumer:
         else:
             return None
         room_name = self.room_ids[room_id]
+        warning = None
         if self.config.factory_name is not None:
             if sender_kind == "operator":
                 if room_name != self.config.agent_room and not _operator_input_matches(self.config, body):
@@ -1719,9 +2036,14 @@ class EventConsumer:
                     self.config,
                     sender_name,
                     body,
-                )
+                ) if room_name in self.config.rooms else None
+                context = (
+                    room_name in self.config.rooms and _inbound_update(self.config, sender_name, body)
+                ) or _body_has_type(body, "PROTOCOL_WARNING")
+                repair = _repair_control(self.config, {"room_name": room_name, "sender_agent_name": sender_name, "body": body})
                 if (
                     request is None
+                    and not context and not repair
                     and _matching_awaiting_handoff(
                         self.config,
                         self.state["awaiting_handoffs"],
@@ -1737,7 +2059,10 @@ class EventConsumer:
                     )
                     is None
                 ):
-                    return None
+                    warning = (
+                        "Message type, header, sender route, or response correlation does not match the "
+                        "factory contract. Delivered as information only; no work transition was applied."
+                    )
                 requires_terminal = request is not None
             else:
                 return None
@@ -1760,6 +2085,8 @@ class EventConsumer:
             "body": body,
             "requires_terminal": requires_terminal,
         }
+        if warning is not None:
+            pending["protocol_warning"] = warning
         return pending
 
     def _accept_terminal_send(self, structured: Any, arguments: Any) -> None:
@@ -1781,6 +2108,7 @@ class EventConsumer:
                 and _response_targets_match(self.config, pending, notify)
             ):
                 _complete_attention(self.state, pending["attention_id"])
+                self._release_repair(pending["attention_id"])
         if len(self.state["in_flight"]) < before:
             self.result.terminal_observed = True
         save_state(self.state_path, self.state)
@@ -1828,17 +2156,24 @@ class EventConsumer:
                 "body": body,
                 "correlation": correlation,
             }
-            if awaiting not in self.state["awaiting_handoffs"]:
-                if len(self.state["awaiting_handoffs"]) >= MAX_IN_FLIGHT:
-                    raise SupervisorError("too many outbound factory handoffs are awaiting responses")
-                self.state["awaiting_handoffs"].append(awaiting)
+            if self.state["repair_selection"] is not None:
+                awaiting["parent_attention_id"] = self.state["repair_selection"]["attention_id"]
+            _remember_handoff(self.state, awaiting)
             self.result.handoff_observed = True
+            policy = _repair_policy(self.config)
+            if policy is not None and handoff.request == policy["release_on"]:
+                self._release_repair()
             save_state(self.state_path, self.state)
             return
 
+    def _release_repair(self, task_attention: str | None = None) -> None:
+        selection = self.state["repair_selection"]
+        if selection is not None and (task_attention is None or selection["attention_id"] == task_attention):
+            _clear_repair(self.config, self.state, "terminal" if task_attention else "review_handoff")
+
     def _complete_nonterminal_objects(self) -> None:
         for pending in list(self.state["in_flight"]):
-            if not pending["requires_terminal"]:
+            if not pending["requires_terminal"] and pending["attention_id"] in self.invocation_attention_ids:
                 _complete_attention(self.state, pending["attention_id"])
         save_state(self.state_path, self.state)
 
@@ -2392,6 +2727,16 @@ class Supervisor:
             )
             self._initial_preflight_complete = True
         save_state(self.state_path, self.state)
+
+        selection = self.state["repair_selection"]
+        if selection is not None and (
+            _repair_policy(self.config) is None
+            or selection["snapshot_id"] != (self.config.snapshot_id or "")
+            or not any(item["attention_id"] == selection["attention_id"] for item in self.state["in_flight"])
+        ):
+            _clear_repair(self.config, self.state, "task_or_configuration_changed")
+            save_state(self.state_path, self.state)
+
         if reconcile_terminals(self.config, self.state):
             save_state(self.state_path, self.state)
 
@@ -2404,7 +2749,9 @@ class Supervisor:
 
         recovering_pending = bool(self.state["in_flight"]) and not self.state["awaiting_handoffs"]
 
-        if self.state["awaiting_handoffs"] or not self.state["in_flight"]:
+        if self.state["repair_selection"] is None and (
+            (self.state["awaiting_handoffs"] and not _ready_after_repair(self.state)) or not self.state["in_flight"]
+        ):
             _debug_event(
                 self.debug,
                 "wait.begin",
@@ -2459,7 +2806,7 @@ class Supervisor:
             self.state,
             self.state_path,
             room_ids,
-            self.harness_args,
+            _repair_arguments(self.config, self.state, self.harness_args),
         )
         if had_thread and not result.saw_turn_started:
             # Exact continuation was attempted first. A new thread receives the
@@ -2679,6 +3026,11 @@ def _agent_room_stdout_body(config: Config, event: dict[str, Any], raw: str) -> 
         retained = {"type": "agent_end"}
         if isinstance(event.get("willRetry"), bool):
             retained["willRetry"] = event["willRetry"]
+        # Pi includes only this loop's new messages here, including tool-only
+        # assistant responses. Sum once before dropping the duplicate transcript.
+        usage = _pi_completed_usage(event.get("messages"))  # DOC: docs/codex-coord-supervisor.md
+        if usage:
+            retained["usage"] = usage
         return json.dumps(retained, separators=(",", ":"))
     if event_type != "message_end":
         return None
@@ -2714,6 +3066,24 @@ def _agent_room_stdout_body(config: Config, event: dict[str, Any], raw: str) -> 
     )
 
 
+def _pi_completed_usage(messages: Any) -> dict[str, int]:
+    """Sum provider-reported token fields, not cost estimates or message text."""
+    totals: dict[str, int] = {}
+    if not isinstance(messages, list):
+        return totals
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        for key in ("input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"):
+            value = usage.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                totals[key] = totals.get(key, 0) + value
+    return totals
+
+
 def _send_agent_room_body(config: Config, body: str, event_type: str) -> None:
     if config.agent_room is None:
         return
@@ -2741,6 +3111,30 @@ def _send_agent_room_event(config: Config, event_type: str, **fields: Any) -> No
         json.dumps({"type": event_type, **fields}, separators=(",", ":")),
         event_type,
     )
+
+
+def _publish_protocol_warning(config: Config, pending: dict[str, Any]) -> None:
+    """Best-effort shared diagnostic; the original warning is already checkpointed."""
+    detail = (
+        f"PROTOCOL_WARNING attention_id={pending['attention_id']}\n"
+        f"{config.agent_name} received message {pending['sequence']} in {pending['room_name']} "
+        f"from {pending['sender_agent_name']}. {pending['protocol_warning']} "
+        "The recipient received the original text. Correct and resend if a work transition was intended. "
+        "This diagnostic needs no acknowledgement."
+    )
+    print(f"codex-coord-supervisor: {detail}", file=sys.stderr)
+    _send_agent_room_event(config, "safeyolo.supervisor", event="protocol_warning", message=detail)
+    recipients = {pending["sender_agent_name"], *config.coordinators} - {config.agent_name, ""}
+    room_name = pending["room_name"] if pending["room_name"] in config.rooms else config.rooms[0]
+    room = urllib.parse.quote(room_name, safe="")
+    try:
+        _api_json(
+            f"/api/coord/rooms/{room}/send",
+            method="POST",
+            body={"body": detail, "declared_content_type": "text/plain", "notify": sorted(recipients) or "none"},
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve delivery even if the diagnostic cannot be sent
+        print(f"codex-coord-supervisor: cannot publish protocol warning: {exc}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:

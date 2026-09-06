@@ -53,7 +53,7 @@ flowchart TD
     con.accept_record_evidence(["Record the exact evidence and keep the reusable environment ready"])
     con.accept_report_defect(["Report the concrete defect with boundary, reproducer, and exact evidence"])
     con.accept_repair_environment(["Repair the approved acceptance environment, then rerun the same trusted probe"])
-    con.accept_extend_harness(["Build the smallest reusable trusted probe that closes this graph gap"])
+    con.accept_extend_harness(["Create and run the missing test with approved tools"])
     ask.accept_trusted_tool_update[["Ask the operator to approve the specific new tool source/version/hash"]]
     ask.accept_resource[["Ask the operator for the specific missing platform, service, or capability"]]
 
@@ -78,7 +78,7 @@ flowchart TD
     ev.accept_select_boundary -->|"next_check: structural complexity or maintainability regression is material"| ev.accept_radon_lane
     ev.accept_select_boundary -->|"next_check: security, taint, or data-flow analysis is material"| ev.accept_codeql_lane
     sym.accept_install_proxy -->|"next_check: exercise the installed real proxy and sinkhole boundary"| ev.accept_proxy_lane
-    sym.accept_python_behavior -->|"next_check: select the smallest existing pytest or Hypothesis node"| ev.accept_python_lane
+    sym.accept_python_behavior -->|"next_check: reuse or write a focused pytest or Hypothesis test"| ev.accept_python_lane
     sym.accept_policy_assurance -->|"next_check: generated transaction sequences or concurrency are material"| ev.accept_policy_chaos_lane
     sym.accept_policy_assurance -->|"next_check: the claim is actual loaded-proxy enforcement rather than the policy transaction engine"| ev.accept_proxy_lane
     sym.accept_agent_isolation -->|"next_check: the affected production platform is Linux/gVisor"| ev.accept_runsc_lane

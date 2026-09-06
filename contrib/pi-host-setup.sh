@@ -104,7 +104,6 @@ pi_launcher_tmp="$(mktemp "$AGENT_HOME/.safeyolo-command.tmp.XXXXXX")" ||
 cat > "$pi_launcher_tmp" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-umask 077
 
 : "${SAFEYOLO_PI_NODE_SPEC:=node@22.19.0}"
 : "${SAFEYOLO_PI_PREFIX:=$HOME/.local}"

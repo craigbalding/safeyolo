@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import runpy
 import sys
 import time
 import urllib.error
@@ -37,6 +38,14 @@ def supervisor_module() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse=True)
+def protocol_warnings(supervisor_module, monkeypatch):
+    original = supervisor_module._publish_protocol_warning
+    captured = []
+    monkeypatch.setattr(supervisor_module, "_publish_protocol_warning", lambda config, item: captured.append(item.copy()))
+    return original, captured
 
 
 def _config(module: ModuleType, tmp_path: Path, **overrides):
@@ -843,8 +852,10 @@ def test_factory_rejects_a_response_for_a_different_review_object(
     )
 
     assert state["awaiting_handoffs"] == [awaiting]
-    assert [item["attention_id"] for item in state["in_flight"]] == [task_attention]
-    assert state["recent_attention_ids"] == [response_attention]
+    assert [item["attention_id"] for item in state["in_flight"]] == [task_attention, response_attention]
+    assert state["in_flight"][-1]["protocol_warning"]
+    assert not state["in_flight"][-1]["requires_terminal"]
+    assert state["recent_attention_ids"] == []
 
 
 @pytest.mark.parametrize(
@@ -876,8 +887,14 @@ def test_factory_rejects_unauthorized_or_malformed_objects(supervisor_module, tm
         )
     )
 
-    assert state["in_flight"] == []
-    assert state["recent_attention_ids"] == [attention_id]
+    if sender_kind == "agent":
+        assert state["in_flight"][0]["body"] == body
+        assert state["in_flight"][0]["protocol_warning"]
+        assert not state["in_flight"][0]["requires_terminal"]
+        assert state["recent_attention_ids"] == []
+    else:
+        assert state["in_flight"] == []
+        assert state["recent_attention_ids"] == [attention_id]
 
 
 def test_factory_rejects_an_other_room_even_for_an_exact_handoff(supervisor_module, tmp_path):
@@ -1000,8 +1017,9 @@ def test_factory_rejects_peer_text_that_impersonates_a_brief(
     )
 
     assert state["briefs"] == {}
-    assert state["in_flight"] == []
-    assert state["recent_attention_ids"] == [attention_id]
+    assert state["in_flight"][0]["protocol_warning"]
+    assert not state["in_flight"][0]["requires_terminal"]
+    assert state["recent_attention_ids"] == []
 
 
 @pytest.mark.parametrize(
@@ -1046,6 +1064,39 @@ def test_factory_admits_canonical_operator_prose_to_coordinator(
     prompt = module.build_prompt(consumer.config, state, {"room-1": "backlog"})
     assert '"sender_kind":"operator"' in prompt
     assert '"accepts":"natural_language"' in prompt
+
+
+@pytest.mark.parametrize(
+    ("role", "room"),
+    [("coordinator", "backlog"), ("owner", "forge-agent"), ("reviewer", "lens-agent")],
+)
+@pytest.mark.parametrize("body_bytes", [4097, 64 * 1024, 64 * 1024 + 1])
+def test_operator_direction_uses_shared_message_limit(supervisor_module, tmp_path, role, room, body_bytes):
+    module = supervisor_module
+    config = _factory_config(module, tmp_path, role)
+    config = replace(config, agent_room=f"{config.agent_name}-agent")
+    state = module.empty_state()
+    state_path = tmp_path / "state.json"
+    consumer = module.EventConsumer(config, state, state_path, {"room-1": room})
+    attention_id = "attn-" + "4" * 32
+    # Multibyte text checks the UTF-8 byte limit, not a character count.
+    body = "é" * (body_bytes // 2) + "x" * (body_bytes % 2)
+    resolved = _resolved(attention_id, sender_kind="operator", body=body)
+
+    if body_bytes > module.MAX_CANONICAL_BODY_BYTES:
+        with pytest.raises(module.SupervisorError, match="invalid canonical message"):
+            consumer.accept_attention_page([resolved], 12)
+        assert state["in_flight"] == []
+        assert state["safe_cursor"] == 0
+        return
+
+    consumer.accept_attention_page([resolved], 12)
+    persisted = module.load_state(state_path)
+    assert persisted["in_flight"][0]["body"] == body
+    assert persisted["in_flight"][0]["requires_terminal"] is False
+    assert persisted["safe_cursor"] == 12
+    prompt = module.build_prompt(config, persisted, consumer.room_ids)
+    assert json.dumps(body) in prompt
 
 
 def test_factory_agent_room_admits_operator_input_to_worker(
@@ -1139,7 +1190,6 @@ def test_factory_status_question_creates_no_persisted_workflow_object(
         ("coordinator", "agent", "ACTIVATE"),
         ("owner", "operator", "ACTIVATE"),
         ("coordinator", "operator", "   "),
-        ("coordinator", "operator", "DIRECTION\n" + "x" * 4096),
     ],
 )
 def test_factory_rejects_operator_lockout_and_peer_impersonation_cases(
@@ -1168,8 +1218,13 @@ def test_factory_rejects_operator_lockout_and_peer_impersonation_cases(
         )
     )
 
-    assert state["in_flight"] == []
-    assert state["recent_attention_ids"] == [attention_id]
+    if sender_kind == "agent":
+        assert state["in_flight"][0]["protocol_warning"]
+        assert not state["in_flight"][0]["requires_terminal"]
+        assert state["recent_attention_ids"] == []
+    else:
+        assert state["in_flight"] == []
+        assert state["recent_attention_ids"] == [attention_id]
 
 
 def test_factory_canonical_operator_to_terminal_chain(supervisor_module, tmp_path):
@@ -1384,8 +1439,10 @@ def test_factory_response_requires_a_correlated_outbound_handoff(supervisor_modu
 
     consumer.consume(_wait_event(module, state, [_resolved(attention_id, sender="lens", body=body)]))
 
-    assert state["in_flight"] == []
-    assert state["recent_attention_ids"] == [attention_id]
+    assert state["in_flight"][0]["protocol_warning"]
+    assert not state["in_flight"][0]["requires_terminal"]
+    assert state["awaiting_handoffs"] == []
+    assert not consumer.result.terminal_observed
 
 
 def test_factory_outbound_request_suspends_parent_for_next_bounded_wait(supervisor_module, tmp_path):
@@ -2244,7 +2301,11 @@ def test_fake_pi_harness_receives_checkpoint_and_resumes_exact_session(
         "{'type':'text_delta','delta':'noisy'}}), flush=True)\n"
         "print(json.dumps({'type':'message_end','message':"
         "{'role':'user','content':[{'type':'text','text':'checkpoint'}]}}), flush=True)\n"
-        "print(json.dumps({'type':'agent_end'}), flush=True)\n"
+        "print(json.dumps({'type':'agent_end','messages':["
+        "{'role':'assistant','content':[{'type':'toolCall','name':'read'}],"
+        "'usage':{'input':120,'cacheRead':64,'output':8,'totalTokens':192}},"
+        "{'role':'assistant','content':[{'type':'text','text':'Finished'}],"
+        "'usage':{'input':10,'cacheRead':128,'output':2,'totalTokens':140}}]}), flush=True)\n"
     )
     fake_pi.chmod(0o755)
     monkeypatch.setenv("SAFEYOLO_PI_BIN", str(fake_pi))
@@ -2298,6 +2359,15 @@ def test_fake_pi_harness_receives_checkpoint_and_resumes_exact_session(
         "agent_end",
     ]
     assert all(call[0] == "/api/coord/rooms/forge-agent/send" for call in published)
+    completions = [json.loads(call[2]["body"]) for call in published if '"agent_end"' in call[2]["body"]]
+    assert len(completions) == 2
+    assert all(
+        event == {
+            "type": "agent_end",
+            "usage": {"input": 130, "cacheRead": 192, "output": 10, "totalTokens": 332},
+        }
+        for event in completions
+    )
 
 
 def test_pi_agent_room_retains_final_text_without_stream_or_reasoning_payload(
@@ -2334,6 +2404,54 @@ def test_pi_agent_room_retains_final_text_without_stream_or_reasoning_payload(
             "stopReason": "stop",
         },
     }
+
+
+def test_pi_completion_retains_usage_without_duplicate_transcript(supervisor_module, tmp_path):
+    module = supervisor_module
+    config = _config(module, tmp_path, harness="pi", agent_room="forge-agent")
+    event = {
+        "type": "agent_end",
+        "willRetry": True,
+        "messages": [
+            {"role": "user", "usage": {"input": 999}},
+            {"role": "toolResult", "usage": {"output": 999}},
+            {
+                "role": "assistant",
+                "content": [{"type": "toolCall", "name": "read", "arguments": {"path": "large.py"}}],
+                "usage": {"input": 10, "cacheRead": 100, "cacheWrite": 0, "output": 20, "reasoning": 10,
+                          "totalTokens": 130, "cost": {"total": 42}},
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "large repeated text" * 10000}],
+                "usage": {"input": 5, "cacheRead": 120, "cacheWrite": 0, "output": 3, "reasoning": 0,
+                          "totalTokens": 128},
+            },
+        ],
+    }
+
+    retained = module._agent_room_stdout_body(config, event, json.dumps(event))
+
+    assert json.loads(retained) == {
+        "type": "agent_end",
+        "willRetry": True,
+        "usage": {"input": 15, "cacheRead": 220, "cacheWrite": 0, "output": 23, "reasoning": 10,
+                  "totalTokens": 258},
+    }
+    assert len(retained) < 300
+    # A subsequent invocation carries its own messages, not these totals.
+    assert module._pi_completed_usage([{"role": "assistant", "usage": {"input": 1}}]) == {"input": 1}
+
+
+@pytest.mark.parametrize("messages", [None, [], [{"role": "assistant"}], [{"role": "assistant", "usage": None}]])
+def test_pi_missing_usage_is_not_reported_as_zero(supervisor_module, messages):
+    assert supervisor_module._pi_completed_usage(messages) == {}
+
+
+def test_pi_usage_accepts_zero_but_not_invalid_counts(supervisor_module):
+    assert supervisor_module._pi_completed_usage([
+        {"role": "assistant", "usage": {"input": True, "output": -1, "cacheRead": 0, "totalTokens": "10"}},
+    ]) == {"cacheRead": 0}
 
 
 def test_backoff_is_exponential_and_bounded(supervisor_module, tmp_path):
@@ -2466,6 +2584,7 @@ def test_pre_target_checkpoint_requires_verified_drain_before_upgrade(
     state = module.empty_state()
     state["version"] = version
     state.pop("harness")
+    state.pop("repair_selection")
     state["in_flight"] = [
         {
             "attention_id": "attn-" + "6" * 32,
@@ -2500,6 +2619,7 @@ def test_pre_target_checkpoint_rejects_awaiting_work_before_upgrade(
     state = module.empty_state()
     state["version"] = version
     state.pop("harness")
+    state.pop("repair_selection")
     state["in_flight"] = []
     if version < 5:
         state["awaiting_handoff"] = {
@@ -2532,6 +2652,7 @@ def test_version_five_checkpoint_migrates_only_after_drain(supervisor_module, tm
     state = module.empty_state()
     state["version"] = 5
     state.pop("harness")
+    state.pop("repair_selection")
     state["thread_id"] = "legacy-wait-thread"
 
     migrated = module.load_state(_write_json(tmp_path / "v5-empty-state.json", state))
@@ -2550,6 +2671,7 @@ def test_late_legacy_task_is_rejected_after_empty_v5_upgrade(
     state = module.empty_state()
     state["version"] = 5
     state.pop("harness")
+    state.pop("repair_selection")
     state_path = _write_json(tmp_path / "v5-empty-state.json", state)
     migrated = module.load_state(state_path)
     consumer = module.EventConsumer(
@@ -2574,8 +2696,9 @@ def test_late_legacy_task_is_rejected_after_empty_v5_upgrade(
         )
     )
 
-    assert migrated["in_flight"] == []
-    assert migrated["recent_attention_ids"] == ["attn-" + "8" * 32]
+    assert migrated["in_flight"][0]["protocol_warning"]
+    assert not migrated["in_flight"][0]["requires_terminal"]
+    assert migrated["recent_attention_ids"] == []
 
 
 def test_inspect_state_rejects_pending_pre_target_checkpoint_without_mutation(
@@ -2587,6 +2710,7 @@ def test_inspect_state_rejects_pending_pre_target_checkpoint_without_mutation(
     state = module.empty_state()
     state["version"] = 5
     state.pop("harness")
+    state.pop("repair_selection")
     state["in_flight"] = [
         {
             "attention_id": "attn-" + "5" * 32,
@@ -2619,6 +2743,7 @@ def test_version_three_checkpoint_migrates_with_empty_brief_context(
     state = module.empty_state()
     state["version"] = 3
     state.pop("harness")
+    state.pop("repair_selection")
     state["awaiting_handoff"] = None
     state.pop("awaiting_handoffs")
     state.pop("briefs")
@@ -2638,6 +2763,7 @@ def test_version_four_checkpoint_requires_drain_for_awaiting_handoff(
     state = module.empty_state()
     state["version"] = 4
     state.pop("harness")
+    state.pop("repair_selection")
     state["awaiting_handoff"] = {
         "room_name": "backlog",
         "request": "REVIEW_READY",
@@ -2659,6 +2785,7 @@ def test_version_five_checkpoint_requires_drain_for_target_work(
     state = module.empty_state()
     state["version"] = 5
     state.pop("harness")
+    state.pop("repair_selection")
     state["in_flight"] = [
         {
             "attention_id": "attn-" + "5" * 32,
@@ -3465,6 +3592,442 @@ def test_signal_interrupt_carries_signal_number(supervisor_module):
         supervisor_module._interrupt_for_signal(supervisor_module.signal.SIGTERM, None)
 
     assert caught.value.signum == supervisor_module.signal.SIGTERM
+
+
+def _repair_config(module, tmp_path, harness="codex"):
+    args = (
+        ["--model", "stronger", "--thinking", "medium"]
+        if harness == "pi"
+        else [
+            "--model",
+            "stronger",
+            "-c",
+            "model_reasoning_effort=medium",
+        ]
+    )
+    return replace(
+        _factory_config(module, tmp_path, "owner"),
+        harness=harness,
+        factory_updates=({"type": "CONTEXT", "from": "coordinator", "to": "owner", "fields": ["target"]},),
+        factory_repairs=(
+            (
+                "owner",
+                {
+                    "request": "REPAIR",
+                    "from": "coordinator",
+                    "args": args,
+                    "after_rounds": 5,
+                    "max_rounds": 3,
+                    "release_on": "REVIEW_READY",
+                },
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize("message_type", ["CURRENT_TASK_EVIDENCE", "ACCEPTANCE_EVIDENCE_CORRECTION", "CONTEXT"])
+def test_context_and_unknown_messages_reach_prompt_once_without_work_authority(
+    supervisor_module,
+    tmp_path,
+    protocol_warnings,
+    message_type,
+):
+    module = supervisor_module
+    config = _repair_config(module, tmp_path)
+    state = module.empty_state()
+    path = tmp_path / "state.json"
+    consumer = module.EventConsumer(config, state, path, {"room-1": "backlog"})
+    attention = "attn-" + "a" * 32
+    body = f"{message_type} target={WORK_ONE_TARGET}\nCorrect the earlier acceptance evidence."
+    page = [_resolved(attention, body=body)]
+    assert consumer.accept_attention_page(page, 12) == 1
+    assert consumer.accept_attention_page(page, 12) == 0
+    item = module.load_state(path)["in_flight"][0]
+    assert item["body"] == body and not item["requires_terminal"]
+    assert ("protocol_warning" in item) == (message_type != "CONTEXT")
+    assert len(protocol_warnings[1]) == (message_type != "CONTEXT")
+    assert "Correct the earlier acceptance evidence." in module.build_prompt(config, state, {"room-1": "backlog"})
+    consumer.consume(_terminal_event(attention, notify=["relay"]))
+    assert not consumer.result.terminal_observed
+    consumer.consume({"type": "turn.completed"})
+    assert state["in_flight"] == [] and state["awaiting_handoffs"] == []
+    assert consumer.accept_attention_page(page, 12) == 0
+
+
+def test_protocol_warning_publication_and_no_diagnostic_loop(
+    supervisor_module, tmp_path, protocol_warnings, monkeypatch
+):
+    module = supervisor_module
+    config = replace(_repair_config(module, tmp_path), agent_room="forge-agent")
+    state = module.empty_state()
+    consumer = module.EventConsumer(config, state, tmp_path / "state.json", {"room-1": "backlog"})
+    consumer.accept_attention_page([_resolved("attn-" + "a" * 32, sender="lens", body="UNRECOGNIZED")], 12)
+    calls = []
+    monkeypatch.setattr(module, "_api_json", lambda path, **kwargs: calls.append((path, kwargs)))
+    protocol_warnings[0](config, state["in_flight"][0])
+    assert calls[-1][0] == "/api/coord/rooms/backlog/send"
+    assert calls[-1][1]["body"]["notify"] == ["lens", "relay"]
+    assert calls[0][0] == "/api/coord/rooms/forge-agent/send"
+    diagnostic = calls[-1][1]["body"]["body"]
+    consumer.accept_attention_page([_resolved("attn-" + "b" * 32, sender="lens", body=diagnostic)], 13)
+    assert len(protocol_warnings[1]) == 1
+    assert not state["in_flight"][-1]["requires_terminal"]
+    assert "protocol_warning" not in state["in_flight"][-1]
+
+
+def test_warning_send_failure_does_not_lose_checkpoint(
+    supervisor_module, tmp_path, protocol_warnings, monkeypatch, capsys
+):
+    module = supervisor_module
+    monkeypatch.setattr(module, "_publish_protocol_warning", protocol_warnings[0])
+
+    def unavailable(*args, **kwargs):
+        raise OSError("NATS unavailable")
+
+    monkeypatch.setattr(module, "_api_json", unavailable)
+    state = module.empty_state()
+    path = tmp_path / "state.json"
+    consumer = module.EventConsumer(_repair_config(module, tmp_path), state, path, {"room-1": "backlog"})
+    consumer.accept_attention_page([_resolved("attn-" + "c" * 32, body="NEW_VALUE")], 12)
+    assert module.load_state(path)["in_flight"][0]["body"] == "NEW_VALUE"
+    assert "cannot publish protocol warning: NATS unavailable" in capsys.readouterr().err
+
+
+def test_repair_and_warning_events_are_visible_in_the_default_watcher(
+    supervisor_module, tmp_path, monkeypatch, protocol_warnings,
+):
+    module = supervisor_module
+    render = runpy.run_path(str(REPO_ROOT / "contrib/watch-agent-room.py"))["_event_line"]
+    config = replace(_repair_config(module, tmp_path), agent_room="forge-agent")
+    bodies = []
+    def publish(path, **kwargs):
+        if path == "/api/coord/rooms/forge-agent/send":
+            bodies.append(json.loads(kwargs["body"]["body"]))
+        return {}
+    monkeypatch.setattr(module, "_api_json", publish)
+    state = module.empty_state()
+    consumer, task, _ = _select_test_repair(module, config, state, tmp_path / "state.json")
+    consumer.consume(_terminal_event(task, notify=["relay"]))
+    consumer.accept_attention_page([_resolved("attn-" + "3" * 32, body="UNRECOGNIZED")], 14)
+    protocol_warnings[0](config, state["in_flight"][0])
+    rendered = [render(body, None) for body in bodies]
+    assert [body["event"] for body in bodies] == ["repair_selected", "repair_finished", "protocol_warning"]
+    assert all(label == "SUPERV" for label, _ in rendered)
+    assert "stronger arguments" in rendered[0][1]
+    assert "normal arguments" in rendered[1][1]
+    assert "PROTOCOL_WARNING" in rendered[2][1]
+
+
+def _select_test_repair(module, config, state, path):
+    task = "attn-" + "1" * 32
+    control = "attn-" + "2" * 32
+    consumer = module.EventConsumer(config, state, path, {"room-1": "backlog"})
+    consumer.accept_attention_page([_resolved(task)], 12)
+    state["thread_id"] = "normal-session"
+    instruction = _resolved(
+        control, body=f"REPAIR target={WORK_ONE_TARGET} attention_id={task}\nRead backlog message 9."
+    )
+    consumer.accept_attention_page([instruction], 13)
+    return consumer, task, instruction
+
+
+def _harness_send_events(harness, event):
+    if harness == "codex":
+        return [event]
+    item = event["item"]
+    return [
+        {"type": "tool_execution_start", "toolCallId": "send-1", "toolName": "send", "args": item["arguments"]},
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "send-1",
+            "toolName": "send",
+            "result": {"content": [], "details": item["result"]["structured_content"]},
+            "isError": False,
+        },
+    ]
+
+
+@pytest.mark.parametrize("harness", ["codex", "pi"])
+def test_repair_selection_is_task_scoped_and_survives_restart(supervisor_module, tmp_path, harness):
+    module = supervisor_module
+    config = _repair_config(module, tmp_path, harness)
+    state = module.empty_state()
+    state["harness"] = harness
+    path = tmp_path / "state.json"
+    consumer, task, instruction = _select_test_repair(module, config, state, path)
+    other = "attn-" + "3" * 32
+    consumer.accept_attention_page([_resolved(other, body=f"TASK target={SECURITY_TARGET} assignee=forge")], 14)
+    restored = module.load_state(path)
+    assert restored["thread_id"] is None
+    assert restored["repair_selection"]["attention_id"] == task
+    prompt = module.build_prompt(config, restored, {"room-1": "backlog"})
+    assert WORK_ONE_TARGET in prompt and "Read backlog message 9." in prompt
+    assert SECURITY_TARGET not in prompt
+    assert {item["attention_id"] for item in restored["in_flight"]} == {task, other}
+    assert consumer.accept_attention_page([instruction], 14) == 0
+    for event in _harness_send_events(
+        harness, _terminal_event(task, body=f"REVIEW_READY target={_review_target()}", notify=["lens"])
+    ):
+        consumer.consume(event)
+    assert state["repair_selection"] is None and state["thread_id"] is None
+    assert consumer.accept_attention_page([instruction], 14) == 0
+    assert state["repair_selection"] is None
+    assert {item["attention_id"] for item in state["in_flight"]} == {task, other}
+
+
+@pytest.mark.parametrize("mutation", ["sender", "target", "attention", "missing"])
+def test_repair_requires_selector_and_its_exact_active_task(supervisor_module, tmp_path, mutation):
+    module = supervisor_module
+    config = _repair_config(module, tmp_path)
+    state = module.empty_state()
+    path = tmp_path / "state.json"
+    consumer = module.EventConsumer(config, state, path, {"room-1": "backlog"})
+    task = "attn-" + "1" * 32
+    if mutation != "missing":
+        consumer.accept_attention_page([_resolved(task)], 12)
+    target = SECURITY_TARGET if mutation == "target" else WORK_ONE_TARGET
+    reference = "attn-" + "4" * 32 if mutation == "attention" else task
+    consumer.accept_attention_page(
+        [
+            _resolved(
+                "attn-" + "2" * 32,
+                sender="lens" if mutation == "sender" else "relay",
+                body=f"REPAIR target={target} attention_id={reference}",
+            )
+        ],
+        13,
+    )
+    assert state["repair_selection"] is None
+    assert state["in_flight"][-1]["protocol_warning"]
+    assert not state["in_flight"][-1]["requires_terminal"]
+
+
+@pytest.mark.parametrize("harness", ["codex", "pi"])
+def test_repair_arguments_keep_launcher_instructions_and_return_to_default(supervisor_module, tmp_path, harness):
+    module = supervisor_module
+    config = _repair_config(module, tmp_path, harness)
+    state = module.empty_state()
+    consumer, task, _ = _select_test_repair(module, config, state, tmp_path / "state.json")
+    baseline = ["--model=normal", "--cwd", str(tmp_path)]
+    if harness == "pi":
+        baseline += [
+            "--provider",
+            "openai-codex",
+            "--thinking=xhigh",
+            "--approve",
+            "--append-system-prompt",
+            "role rules",
+        ]
+        retained = ["--approve", "--append-system-prompt", "role rules"]
+    else:
+        baseline += [
+            "-c",
+            "model_reasoning_effort=xhigh",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-c",
+            "developer_instructions=role rules",
+        ]
+        retained = ["--dangerously-bypass-approvals-and-sandbox", "-c", "developer_instructions=role rules"]
+    chosen = module._repair_arguments(config, state, baseline)
+    assert "--model=normal" not in chosen and "stronger" in chosen
+    assert not any("xhigh" in arg for arg in chosen)
+    assert all(arg in chosen for arg in retained)
+    for event in _harness_send_events(harness, _terminal_event(task, notify=["relay"])):
+        consumer.consume(event)
+    assert state["repair_selection"] is None
+    assert module._repair_arguments(config, state, baseline) == baseline
+
+
+@pytest.mark.parametrize("terminal", [True, False])
+def test_retained_send_expires_repair_after_lost_tool_event(supervisor_module, tmp_path, monkeypatch, terminal):
+    module = supervisor_module
+    config = _repair_config(module, tmp_path)
+    state = module.empty_state()
+    _, task, _ = _select_test_repair(module, config, state, tmp_path / "state.json")
+    body = (
+        f"DONE target={WORK_ONE_TARGET} attention_id={task}" if terminal else f"REVIEW_READY target={_review_target()}"
+    )
+    message = _resolved("attn-" + "3" * 32, sender="forge", body=body)["object"]
+    message["sequence"] = 20
+    monkeypatch.setattr(module, "_history_page", lambda *args: {"messages": [message], "next_cursor": 20})
+    assert module.reconcile_terminals(config, state)
+    assert state["repair_selection"] is None
+    assert bool(state["in_flight"]) is not terminal
+
+
+def test_version_six_upgrade_preserves_active_work(supervisor_module, tmp_path):
+    module = supervisor_module
+    state = module.empty_state()
+    path = tmp_path / "state.json"
+    consumer = module.EventConsumer(_repair_config(module, tmp_path), state, path, {"room-1": "backlog"})
+    consumer.accept_attention_page([_resolved("attn-" + "1" * 32)], 12)
+    state["version"] = 6
+    state.pop("repair_selection")
+    state["thread_id"] = "existing-thread"
+    restored = module.load_state(_write_json(path, state))
+    assert restored["version"] == module.STATE_VERSION and restored["repair_selection"] is None
+    assert restored["in_flight"] == state["in_flight"] and restored["safe_cursor"] == 12
+    assert restored["thread_id"] == "existing-thread"
+
+
+@pytest.mark.parametrize("harness", ["codex", "pi"])
+def test_real_fake_harness_gets_stronger_then_normal_arguments_without_waiting_for_review(
+    supervisor_module,
+    tmp_path,
+    monkeypatch,
+    harness,
+):
+    module = supervisor_module
+    config = _repair_config(module, tmp_path, harness)
+    path = tmp_path / "state.json"
+    state = module.empty_state()
+    state["harness"] = harness
+    consumer, task, _ = _select_test_repair(module, config, state, path)
+    consumer.accept_attention_page(
+        [
+            _resolved("attn-" + "3" * 32, body=f"TASK target={SECURITY_TARGET} assignee=forge"),
+        ],
+        14,
+    )
+    fake = tmp_path / "fake-harness"
+    capture = tmp_path / "capture.jsonl"
+    start = (
+        [{"type": "thread.started", "thread_id": "new-session"}, {"type": "turn.started"}]
+        if harness == "codex"
+        else [
+            {"type": "session", "id": "new-session"},
+            {"type": "agent_start"},
+        ]
+    )
+    end = {"type": "turn.completed"} if harness == "codex" else {"type": "agent_end"}
+    send = _terminal_event(task, body=f"REVIEW_READY target={_review_target()}", notify=["lens"])
+    events = start + _harness_send_events(harness, send) + [end]
+    other = "attn-" + "3" * 32
+    done = _terminal_event(other, body=f"DONE target={SECURITY_TARGET} attention_id={other}", notify=["relay"])
+    ordinary_events = start + _harness_send_events(harness, done) + [end]
+    fake.write_text(
+        f"#!{sys.executable}\nimport json, sys\n"
+        f"with open({str(capture)!r}, 'a') as f:\n"
+        "    f.write(json.dumps({'args': sys.argv[1:], 'prompt': sys.stdin.read()}) + '\\n')\n"
+        f"events = {events!r} if 'stronger' in sys.argv else {ordinary_events!r}\n"
+        "for event in events:\n    print(json.dumps(event), flush=True)\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("SAFEYOLO_CODEX_BIN" if harness == "codex" else "SAFEYOLO_PI_BIN", str(fake))
+    monkeypatch.setattr(module, "preflight", lambda *args: {"room-1": "backlog"})
+    monkeypatch.setattr(module, "_coord_preflight", lambda *args: {"room-1": "backlog"})
+    monkeypatch.setattr(module, "_history_page", lambda *args: {"messages": [], "next_cursor": 20})
+
+    def unexpected_wait(*args):
+        pytest.fail("Other already-assigned work must resume on the normal model without waiting for this review")
+
+    monkeypatch.setattr(module, "wait_for_attention_page", unexpected_wait)
+    runner = module.Supervisor(config, path, ["--model", "normal"])
+    runner.cycle()
+    assert runner.state["repair_selection"] is None
+    runner = module.Supervisor(config, path, ["--model", "normal"])
+    runner.cycle()
+    observed = [json.loads(line) for line in capture.read_text().splitlines()]
+    assert len(observed) == 2
+    assert "stronger" in observed[0]["args"] and "normal" not in observed[0]["args"]
+    assert "normal" in observed[1]["args"] and "stronger" not in observed[1]["args"]
+    assert SECURITY_TARGET not in observed[0]["prompt"] and SECURITY_TARGET in observed[1]["prompt"]
+    assert not any(arg in observed[1]["args"] for arg in ("resume", "--session"))
+    assert [item["attention_id"] for item in runner.state["in_flight"]] == [task]
+    assert len(runner.state["awaiting_handoffs"]) == 1
+
+
+def test_repair_prompt_keeps_its_updates_and_operator_direction_without_consuming_other_context(
+    supervisor_module, tmp_path,
+):
+    module = supervisor_module
+    config = replace(_repair_config(module, tmp_path), agent_room="forge-agent")
+    state = module.empty_state()
+    path = tmp_path / "state.json"
+    _, task, _ = _select_test_repair(module, config, state, path)
+    consumer = module.EventConsumer(config, state, path, {"room-1": "backlog", "private": "forge-agent"})
+    context_id, other_id, operator_id = ["attn-" + digit * 32 for digit in "345"]
+    consumer.accept_attention_page([
+        _resolved(context_id, body=f"CONTEXT target={WORK_ONE_TARGET}\nAdditional relevant evidence."),
+        _resolved(other_id, body=f"CONTEXT target={SECURITY_TARGET}\nOther task evidence."),
+        _resolved(operator_id, sender_kind="operator", room_id="private", body="Please preserve the working tree."),
+    ], 14)
+    prompt = module.build_prompt(config, state, {})
+    assert "Additional relevant evidence." in prompt and "Please preserve the working tree." in prompt
+    assert "Other task evidence." not in prompt
+    consumer.consume({"type": "turn.completed"})
+    assert {item["attention_id"] for item in state["in_flight"]} == {task, other_id}
+
+
+def test_snapshot_change_clears_repair_without_discarding_task(supervisor_module, tmp_path, monkeypatch):
+    module = supervisor_module
+    config = _repair_config(module, tmp_path)
+    state = module.empty_state()
+    path = tmp_path / "state.json"
+    _, task, _ = _select_test_repair(module, config, state, path)
+    calls = []
+    monkeypatch.setattr(module, "preflight", lambda *args: {"room-1": "backlog"})
+    monkeypatch.setattr(module, "reconcile_terminals", lambda *args: False)
+    def invoke(config, state, path, rooms, args):
+        calls.append(args)
+        return module.InvocationResult()
+    monkeypatch.setattr(module, "run_invocation", invoke)
+    runner = module.Supervisor(replace(config, snapshot_id="b" * 64), path, ["--model", "normal"])
+    runner.cycle()
+    assert calls == [["--model", "normal"]]
+    assert runner.state["repair_selection"] is None
+    assert runner.state["in_flight"][0]["attention_id"] == task
+
+
+def test_repair_handoff_with_no_other_work_waits_without_a_default_model_wake(supervisor_module, tmp_path, monkeypatch):
+    module = supervisor_module
+    config = _repair_config(module, tmp_path)
+    state = module.empty_state()
+    path = tmp_path / "state.json"
+    consumer, task, _ = _select_test_repair(module, config, state, path)
+    consumer.consume(_terminal_event(task, body=f"REVIEW_READY target={_review_target()}", notify=["lens"]))
+    monkeypatch.setattr(module, "preflight", lambda *args: {"room-1": "backlog"})
+    monkeypatch.setattr(module, "_coord_preflight", lambda *args: {"room-1": "backlog"})
+    monkeypatch.setattr(module, "_history_page", lambda *args: {"messages": [], "next_cursor": 20})
+    monkeypatch.setattr(module, "wait_for_attention_page", lambda *args: {"objects": [], "next_cursor": 13})
+    monkeypatch.setattr(module, "run_invocation", lambda *args: pytest.fail("No model is needed while the only task awaits review"))
+    runner = module.Supervisor(config, path, ["--model", "normal"])
+    assert runner.cycle()
+    assert runner.cycle()
+    assert runner.state["repair_selection"] is None
+
+
+def test_warning_is_not_published_before_the_checkpoint_commits(supervisor_module, tmp_path, protocol_warnings, monkeypatch):
+    module = supervisor_module
+    state = module.empty_state()
+    consumer = module.EventConsumer(_repair_config(module, tmp_path), state, tmp_path / "state.json", {"room-1": "backlog"})
+    def failed_save(*args):
+        raise OSError("disk full")
+    monkeypatch.setattr(module, "save_state", failed_save)
+    with pytest.raises(OSError, match="disk full"):
+        consumer.accept_attention_page([_resolved("attn-" + "1" * 32, body="UNKNOWN")], 12)
+    assert not protocol_warnings[1]
+    assert state["in_flight"] == [] and state["safe_cursor"] == 0
+
+
+def test_invalid_repair_checkpoint_is_rejected_by_the_shared_decoder(supervisor_module, tmp_path):
+    module = supervisor_module
+    state = module.empty_state()
+    path = tmp_path / "state.json"
+    _select_test_repair(module, _repair_config(module, tmp_path), state, path)
+    state["repair_selection"]["instruction"]["body"] = "REPAIR missing-target"
+    with pytest.raises(module.SupervisorError, match="invalid repair identity"):
+        module.load_state(_write_json(path, state))
+
+
+def test_private_peer_task_does_not_gain_factory_assignment_authority(supervisor_module, tmp_path):
+    module = supervisor_module
+    config = replace(_repair_config(module, tmp_path), agent_room="forge-agent")
+    state = module.empty_state()
+    consumer = module.EventConsumer(config, state, tmp_path / "state.json", {"private": "forge-agent"})
+    consumer.accept_attention_page([_resolved("attn-" + "1" * 32, room_id="private")], 12)
+    assert state["in_flight"][0]["protocol_warning"]
+    assert not state["in_flight"][0]["requires_terminal"]
 
 
 def test_signal_during_invocation_discards_only_interrupted_thread(

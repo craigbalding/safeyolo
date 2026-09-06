@@ -13,10 +13,31 @@ contract = "backlog-coordinator.md"
 [roles.owner]
 agent = "forge"
 contract = "../agent-roles/issue-owner.md"
+args = ["--model", "gpt-5.6-luna", "-c", "model_reasoning_effort=xhigh"]
+
+[roles.owner.repair]
+request = "REPAIR"
+from = "coordinator"
+args = ["--model", "gpt-5.6-sol", "-c", "model_reasoning_effort=medium"]
+after_rounds = 5
+max_rounds = 3
+release_on = "REVIEW_READY"
 
 [roles.reviewer]
 agent = "lens"
 contract = "../agent-roles/independent-reviewer.md"
+
+[[updates]]
+type = "CONTEXT"
+from = "coordinator"
+to = "owner"
+fields = ["target"]
+
+[[updates]]
+type = "CONTEXT"
+from = "coordinator"
+to = "reviewer"
+fields = ["target"]
 
 [[handoffs]]
 request = "TASK"

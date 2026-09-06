@@ -1,9 +1,13 @@
 # Acceptance graph: "which trusted tool proves this SafeYolo claim?"
 #
 # This is an acceptance and environment-maintenance graph in the same style as
-# the SafeYolo troubleshooting graphs. Bind the claim under test to an entry,
-# run the primary trusted tool named by the evidence node, classify the result,
-# and stop at a bounded conclusion or operator ask.
+# the SafeYolo troubleshooting graphs. Choose tools that can exercise the claim,
+# prepare the environment, then create and run the test the issue needs.
+# Listed commands provide setup, existing checks, and invocation examples;
+# they are not a complete acceptance suite for every issue. Lens can write
+# new tests and scripts using these approved tools without separate approval
+# for each test. Retain the test source, exact candidate, command, environment,
+# actual output, and exit status; classify only what the result establishes.
 #
 # The ordinary graph schema is documented in `triage-request-failing.yaml`.
 # Executable evidence nodes may additionally carry a `tool` annotation:
@@ -155,16 +159,20 @@ nodes:
     detail: |
       For candidate review, start with the claimed behavior and changed system
       boundary. For background work, prefer a recent failure, a missing real
-      boundary, or a trusted tool that no longer runs. Do not run broad suites
-      merely to fill time.
+      boundary, or a trusted tool that no longer runs. Identify an action and
+      an observable result that would establish the claim. Reuse a suitable
+      existing check; otherwise write and execute a focused test using the
+      selected tools. Do not run broad suites merely to fill time.
     source: authored
 
   - id: ev.accept_python_lane
     kind: evidence
     label: "Use focused pytest, pytest-cov, and Hypothesis for Python behavior"
     detail: |
-      Select the smallest existing test node that exercises the changed
-      behavior. Add coverage only when the claim concerns unexercised paths.
+      Use pytest to drive the affected Python API or command and assert its
+      results. Reuse the smallest existing test that covers the claim, or
+      write and run a focused test when none does. Add coverage only when the
+      claim concerns unexercised paths.
       Use Hypothesis for input spaces and state transitions, not as decoration
       around a few examples. Test-assurance checks verify the repository's
       explicitly pinned high-value acceptance functions.
@@ -194,6 +202,10 @@ nodes:
       concurrent mutation, failure stages, and crash-recovery semantics. The
       normal mode is hermetic and retains replayable machine-readable output;
       guarded power-cut mode belongs only on an approved disposable KVM guest.
+      For a new state-transition claim, write a focused Hypothesis scenario
+      that generates the relevant operations and checks the invariant after
+      each step. Reuse the runner's replay and evidence facilities where they
+      fit; a passing published seed set does not cover an untested operation.
     source: tools/policy_chaos.py
     tool:
       obtain_from: "the exact trusted-base sources plus Hypothesis and tomlkit distributions hash-locked in uv.lock"
@@ -218,6 +230,11 @@ nodes:
       policy, rate limits, attribution, and upstream capture against the real
       sinkhole. It is the primary proxy-system tool, not a substitute for
       sandbox isolation.
+      Use the prepared proxy and sinkhole to send request sequences for the
+      issue. Write a focused test that checks both the client response and
+      what reached the upstream sinkhole. For example, change a policy between
+      requests and check that the running proxy applies it. Reuse the current
+      harness setup; do not require the whole lane for each new assertion.
     source: tests/blackbox/run-lane.sh
     tool:
       obtain_from: "the trusted-base harness; mitmproxy and Python tools are hash-locked in uv.lock and fetched through the approved SafeYolo proxy"
@@ -245,6 +262,13 @@ nodes:
       platform, and runs both ordinary-user and guest-root isolation/lifecycle
       probes. Systrap is the deterministic no-KVM path; KVM must prove actual
       device selection and must never silently fall back.
+      With runsc and SafeYolo installed, create a disposable agent and write a
+      script that drives the behavior under review. You can execute workloads
+      in the guest, stop and restart it, and inspect persistence, process exits,
+      resource use, and runtime logs. For a host-enforced resource limit, check
+      actual host enforcement as well as guest behavior; a generated setting
+      alone does not prove the limit works. Reuse a suitable prepared instance
+      instead of rerunning the full isolation lane for every issue.
     source: tests/blackbox/run-lane.sh
     tool:
       obtain_from: "runsc from gVisor's official signed apt repository, or its official tarball plus published SHA-512, through trusted-base safeyolo setup"
@@ -273,6 +297,10 @@ nodes:
       guest-root, isolation, and lifecycle boundary. The snapshot smoke tool
       separately exercises save, restore, and fingerprint mismatch behavior.
       Hosted macOS cannot establish this boundary.
+      Use a disposable agent to create an issue-specific lifecycle or snapshot
+      script. For example, write guest state, save and restore the VM, then
+      check the restored state and reported runtime configuration. Retain the
+      commands and host/guest results, not just a successful helper build.
     source: vm/Makefile
     tool:
       obtain_from: "safeyolo-vm built from the exact trusted-base Swift sources with the operator-approved Apple toolchain"
@@ -299,6 +327,10 @@ nodes:
       These tests own an isolated dynamic-port NATS instance and exercise real
       JetStream and schema migration behavior. They are stronger evidence for
       Coord durability than mocked API tests.
+      Reuse their fixtures to write focused publish, receive, retention, or
+      restart sequences. Assert the resulting messages and durable state for
+      the issue, including an intended failure when relevant; successful NATS
+      startup alone does not establish those behaviors.
     source: cli/tests/test_coord_kernel_upgrade_acceptance.py
     tool:
       obtain_from: "the trusted-base tests; nats-server from the official nats-io GitHub release with archive and binary SHA-256 pins in nats_runtime.py"
@@ -342,12 +374,13 @@ nodes:
     label: "Use a controlled nested lab to prove real supervisor and checkout recovery"
     detail: |
       The lab controller provides labeled panes, identity-checked fault
-      injection, evidence capture, and teardown. The repository does not yet
-      contain a bounded reusable scenario that proves a restarted supervisor
-      resumes the same task, branch, index, and dirty files. Until that gap is
-      filled, perform the controlled procedure explicitly and classify the
-      missing scenario as a coverage gap rather than treating unit tests as
-      equivalent evidence.
+      injection, evidence capture, and teardown. Use those facilities to write
+      and run the recovery scenario the issue needs. For example, record an
+      assigned task, branch, index, and dirty files; interrupt the supervised
+      process; restart it; then observe whether it resumes the same work and
+      preserves those files. Retain the procedure and actual before/after
+      results. A missing prebuilt scenario is work to create, not a reason to
+      substitute unit tests for the real recovery observation.
     source: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/safeyolo-lab
     tool:
       obtain_from: "the safeyolo-lab-controller skill staged from the exact operator-approved trusted-base SafeYolo Git object"
@@ -371,6 +404,12 @@ nodes:
       proves loop handling, starts a real agent, and verifies bundled Coord MCP
       connectivity. It owns a dedicated guest-local lab root and must not point
       at the mounted working checkout.
+      Reuse an approved inner instance when it is suitable. Use its CLI and
+      agent shell to run scripts you create for the issue, then inspect inner
+      proxy, Coord, guest, and supervisor results as applicable. Ordinary
+      lifecycle or transport checks need no logged-in coding model. Keep the
+      inner state and evidence in the acceptance environment, and test the
+      exact candidate rather than assuming the installed version is current.
     source: tests/nested-linux/acceptance.sh
     tool:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
@@ -395,6 +434,10 @@ nodes:
       sources install declared packages, and e2fsprogs emits the VZ image.
       Record the resolved OCI digest because the current default Debian tag is
       not pinned; that is a reproducibility gap, not permission to conceal it.
+      Write focused image checks for the changed claim: inspect file ownership,
+      executable modes, package versions, or contents in the built filesystem.
+      When the claim concerns guest behavior, boot the image through the
+      applicable runsc or VZ path and execute the check there.
     source: guest/build-rootfs.sh
     tool:
       obtain_from: "trusted-base build scripts; skopeo, umoci, and e2fsprogs from operator-approved signed OS repositories or the checksum-pinned umoci fallback in safeyolo bootstrap"
@@ -501,6 +544,10 @@ nodes:
       process state. xdist does not make one test internally concurrent, and a
       passing sample does not prove race freedom. Retain worker count, repeat
       count, seed, and any first failing iteration.
+      For an in-process race, write a test with concurrent actors and an
+      explicit synchronization point that reaches the suspected interleaving.
+      Assert the resulting shared state; repetition alone does not create the
+      schedule needed to expose the defect.
     source: tools/acceptance/requirements-stress.txt
     tool:
       obtain_from: "pytest-repeat and pytest-xdist in the hash-bearing tools/acceptance stress requirements export, layered over the exact root project environment"
@@ -667,6 +714,12 @@ nodes:
   - id: con.accept_record_evidence
     kind: conclusion
     label: "Record the exact evidence and keep the reusable environment ready"
+    detail: |
+      Record the candidate, test source, command, environment, actual output,
+      exit status, and claim established. Reference retained evidence from the
+      acceptance record. Keep material planned-but-unrun checks visible across
+      review rounds until tested, replaced by sufficient evidence, or explained
+      as no longer needed. A plan or installed tool is not a passing test.
     source: authored
 
   - id: con.accept_report_defect
@@ -681,7 +734,15 @@ nodes:
 
   - id: con.accept_extend_harness
     kind: conclusion
-    label: "Build the smallest reusable trusted probe that closes this graph gap"
+    label: "Create and run the missing test with approved tools"
+    detail: |
+      Write the smallest test or script that exercises the missing behavior
+      in Lens's checkout or acceptance environment, not the owner's branch.
+      Use the tools and environments already approved here; no separate
+      approval is needed to author the test. Execute it and classify its
+      result with ev.accept_classify_result. Retain useful tests for later
+      runs. Ask for a specific missing resource only when approved resources
+      cannot establish the material claim.
     source: authored
 
   - id: ask.accept_trusted_tool_update
@@ -718,7 +779,7 @@ edges:
   - {from: ev.accept_select_boundary, to: ev.accept_codeql_lane, kind: next_check, when: "security, taint, or data-flow analysis is material"}
 
   - {from: sym.accept_install_proxy, to: ev.accept_proxy_lane, kind: next_check, when: "exercise the installed real proxy and sinkhole boundary"}
-  - {from: sym.accept_python_behavior, to: ev.accept_python_lane, kind: next_check, when: "select the smallest existing pytest or Hypothesis node"}
+  - {from: sym.accept_python_behavior, to: ev.accept_python_lane, kind: next_check, when: "reuse or write a focused pytest or Hypothesis test"}
   - {from: sym.accept_policy_assurance, to: ev.accept_policy_chaos_lane, kind: next_check, when: "generated transaction sequences or concurrency are material"}
   - {from: sym.accept_policy_assurance, to: ev.accept_proxy_lane, kind: next_check, when: "the claim is actual loaded-proxy enforcement rather than the policy transaction engine"}
   - {from: sym.accept_agent_isolation, to: ev.accept_runsc_lane, kind: next_check, when: "the affected production platform is Linux/gVisor"}

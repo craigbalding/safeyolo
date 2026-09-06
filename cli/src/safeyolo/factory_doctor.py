@@ -23,7 +23,7 @@ from .platform import AgentPlatform, get_platform
 DoctorStatus = Literal["PASS", "WARN", "FAIL"]
 _AGENT_ID_RE = re.compile(r"ag-[0-9a-f]{32}")
 _SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
-_BACKLOG_COORDINATOR_CONTRACT_SHA256 = "456e1a8cb2c95fb5a28e1bc0f739c386cd4f1cb821d439d57d365d7f2c75170b"
+_BACKLOG_COORDINATOR_CONTRACT_SHA256 = "03c3c962d786c3c4b8a2d9cafe514e0976d110f926642d3ed2b63184eee6a15c"
 _SUPERVISOR_LIMITS = {
     "wait_seconds": (1, 300, 300),
     "page_limit": (1, 16, 16),
@@ -571,6 +571,10 @@ def _expected_supervisor_config(agent_name: str, role_name: str, payload: dict[s
             "operator_input": payload["operator_input"],
             "contract_sha256": payload["roles"][role_name]["contract_sha256"],
             "snapshot_id": snapshot_id(payload),
+            **({"updates": payload["updates"]} if "updates" in payload else {}),
+            **({"repairs": {
+                name: role["repair"] for name, role in payload["roles"].items() if "repair" in role
+            }} if any("repair" in role for role in payload["roles"].values()) else {}),
         },
     }
 

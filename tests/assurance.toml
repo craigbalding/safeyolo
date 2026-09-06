@@ -58,9 +58,9 @@ sha256 = "1644f0d1d69d372bc1470f13262b3fa12f97b53d95a918aee2761a2bcf4672d4"
 
 [[factory_acceptance]]
 id = "FACTORY-HANDOFF-AUTHORITY"
-description = "The supervisor rejects unauthorized or malformed factory objects."
+description = "The supervisor rejects unauthorized or malformed work transitions while retaining agent text with a protocol warning."
 node = "cli/tests/test_codex_coord_supervisor.py::test_factory_rejects_unauthorized_or_malformed_objects"
-sha256 = "aa96381e6a17c5752d917333d989ccde7c4728225be79a9ffb469fcb64f357d9"
+sha256 = "d11469430f2717b11014d5d7ec9409033e436f3e79948ddec5b96ba81247df83"
 
 [[factory_acceptance]]
 id = "FACTORY-HANDOFF-ROOM"
@@ -72,7 +72,7 @@ sha256 = "cae62cd486096c4be3ee2090bd665742a4d100020e83cb559fdce63626082e23"
 id = "FACTORY-HANDOFF-CORRELATION"
 description = "A response cannot complete a different review object."
 node = "cli/tests/test_codex_coord_supervisor.py::test_factory_rejects_a_response_for_a_different_review_object"
-sha256 = "b267373db50b49126206729586fd986c19482b32e5f550bca8414eee00c44b2a"
+sha256 = "977a60336c9c3793a87bf2fd6bc50b023a864a360ca69ad5d48ebbc0e1d17eff"
 
 [[factory_acceptance]]
 id = "FACTORY-REVIEW-CHANGE-RESUMES-OWNER"

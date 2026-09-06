@@ -136,6 +136,17 @@ def _print_contract(contract: FactoryContract) -> None:
             f"source={role.contract_source} bytes={role.contract_bytes} "
             f"sha256={role.contract_sha256}"
         )
+        if role.repair is not None:
+            repair = role.repair
+            console.print(
+                f"repair={repair['request']} from={repair['from']} to={role.name} "
+                f"after_rounds={repair['after_rounds']} max_rounds={repair['max_rounds']} "
+                f"release_on={repair['release_on']} args={shlex.join(repair['args'])}"
+            )
+    for update in contract.updates:
+        console.print(
+            f"update={update['type']} from={update['from']} to={update['to']} fields={','.join(update['fields'])}"
+        )
     console.print(
         f"operator_input=operator to={contract.operator_input.destination} "
         f"types={','.join(contract.operator_input.types)}"

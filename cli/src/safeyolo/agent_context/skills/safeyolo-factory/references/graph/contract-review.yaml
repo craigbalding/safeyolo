@@ -85,13 +85,13 @@ nodes:
   - id: ev.review_runtime_operator
     kind: evidence
     label: "Check tool and route feasibility, consumer-visible resources, operator attention UX, and behavior while operator input is delayed"
-    detail: "For each required resource, verify existence, intended permissions/content, and that the consuming role can locate it from its actual injected context or an ordinary inventory; controller-only metadata is not usable access."
+    detail: "For each required resource, verify existence, intended permissions/content, and that the consuming role can locate it from its actual injected context or an ordinary inventory; controller-only metadata is not usable access. For multi-repo factories, check different default branches, languages, tools, repository checkouts and access requirements; keep instance details discoverable outside shared contracts."
     source: authored
 
   - id: ev.review_restriction_basis
     kind: evidence
     label: "Audit every MUST, gate, approval, exact format, limit, eligibility rule, and BLOCKED condition"
-    detail: "Each restriction needs an operator requirement, concrete safety property, or external/technical necessity."
+    detail: "Identify what the change newly forbids, limits, hides or makes harder. Compare operator requirements, established security requirements, evidenced technical necessities and similar implementations. A possible safety benefit is not authority for new policy; a concrete vulnerability still needs repair or explicit escalation."
     source: authored
 
   - id: ev.review_reread_complete_set
@@ -117,12 +117,12 @@ nodes:
 
   - id: cls.review_unjustified_restriction
     kind: classification
-    label: "A mandatory restriction has no established operator, safety, or technical basis"
+    label: "A mandatory restriction has no operator requirement, established security requirement, or evidenced technical necessity"
     source: authored
 
   - id: cls.review_operator_hinge
     kind: classification
-    label: "A material design choice depends on operator intent or risk tolerance not present in the sources"
+    label: "Completing the requested work requires an operator decision not present in the sources"
     source: authored
 
   - id: cls.review_no_known_material_gap
@@ -143,7 +143,8 @@ nodes:
 
   - id: con.review_remove_or_demote
     kind: conclusion
-    label: "Remove the unsupported restriction or demote it to non-blocking guidance"
+    label: "Remove unsupported policy and compensating machinery; keep material suggestions unapplied and advisory"
+    detail: "Explain the benefit, behavioural cost and differences from existing implementations. State that the suggestion was not applied; continue ordinary work without awaiting a reply."
     source: authored
 
   - id: con.review_report_bounded_result
@@ -203,7 +204,7 @@ edges:
   - {from: ev.review_handoff_recovery, to: cls.review_material_gap, kind: implies, when: "handoff identity/context or recovery behavior is materially incomplete"}
   - {from: ev.review_runtime_operator, to: cls.review_material_gap, kind: implies, when: "a required capability/route is unavailable or ordinary waiting strands work"}
   - {from: ev.review_restriction_basis, to: cls.review_unjustified_restriction, kind: implies, when: "a mandatory rule has no established basis"}
-  - {from: ev.review_restriction_basis, to: cls.review_operator_hinge, kind: implies, when: "the correct rule depends on an unstated operator choice"}
+  - {from: ev.review_restriction_basis, to: cls.review_operator_hinge, kind: implies, when: "completion requires an unstated operator decision, not merely an optional policy suggestion"}
   - {from: cls.review_material_gap, to: con.review_rank_smallest_diff, kind: implies}
   - {from: cls.review_unjustified_restriction, to: con.review_remove_or_demote, kind: implies}
   - {from: cls.review_operator_hinge, to: ask.review_resolve_hinge, kind: escalates_to}

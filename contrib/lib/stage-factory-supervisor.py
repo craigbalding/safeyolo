@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import sys
 import tempfile
 from pathlib import Path
@@ -48,7 +49,7 @@ def load_snapshot(path: Path) -> dict[str, Any]:
         snapshot = json.loads(path.read_bytes())
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         fail(f"cannot read factory snapshot: {exc}")
-    if not isinstance(snapshot, dict) or set(snapshot) != {
+    if not isinstance(snapshot, dict) or set(snapshot) - {"updates"} != {
         "schema",
         "name",
         "room",
@@ -75,7 +76,7 @@ def runtime_factory(
     if (
         not isinstance(role, dict)
         or not ROLE_KEYS.issubset(role)
-        or not set(role).issubset(ROLE_KEYS | {"harness", "args"})
+        or not set(role).issubset(ROLE_KEYS | {"harness", "args", "repair"})
     ):
         fail("factory role binding is invalid")
     role_harness = role.get("harness", "codex")
@@ -198,6 +199,19 @@ def runtime_factory(
             "snapshot_id": snapshot_id,
         },
     }
+    if "updates" in snapshot:
+        config["factory"]["updates"] = snapshot["updates"]
+    repairs = {name: item["repair"] for name, item in roles.items() if "repair" in item}
+    if repairs:
+        config["factory"]["repairs"] = repairs
+    # Use the decoder that will run in the guest, including its extension
+    # validation, rather than adding another protocol validator to staging.
+    path = Path(__file__).resolve().parents[1] / "codex-coord-supervisor.py"
+    runtime = runpy.run_path(str(path))
+    try:
+        runtime["Config"].from_dict(config)
+    except runtime["SupervisorError"] as exc:
+        fail(str(exc))
     return config, contract_text
 
 

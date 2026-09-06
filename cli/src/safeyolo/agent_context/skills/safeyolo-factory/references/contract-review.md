@@ -37,6 +37,14 @@ At minimum capture:
 Use exact message types and canonical role bindings from the TOML. Do not infer
 authority from role names or from prose-like message bodies.
 
+Keep shared responsibilities separate from instance details. For a multi-repo
+software factory, check a task switch between repositories with different
+default branches, languages, tooling and access requirements. Repository
+guidance supplies project rules; the brief can bind scope and resource
+locations. Neither a single-checkout assumption nor a project-specific command
+should silently restrict the shared contract. When moving guidance, preserve
+its content and a path by which the consuming role will find it.
+
 ## Run all passes
 
 Traverse [`graph/contract-review.yaml`](graph/contract-review.yaml), then test
@@ -72,13 +80,25 @@ List every `MUST`, gate, approval, exact format, numerical limit, eligibility
 rule, and condition that can cause `BLOCKED`. For each, identify its basis:
 
 - an explicit operator requirement;
-- a concrete safety property;
-- an external or technical necessity.
+- an established security requirement;
+- an evidenced external or technical necessity.
 
-If none applies, remove it or demote it to guidance. If precision is real but
-the value is not known, ask the operator; do not invent a threshold. Check that
-several individually reasonable restrictions do not compose into an
-accidental deadlock.
+Ask what the change newly forbids, limits, hides, or makes harder, and compare
+similar implementations. A possible safety benefit is not authority to impose
+new policy. Remove unsupported restrictions introduced by the change and
+unnecessary compensating machinery. Keep material policy suggestions
+unimplemented and advisory: explain their benefit, behavioural cost, and
+differences from existing implementations; state that they were not applied.
+Continue ordinary work without awaiting a reply. Ask only when completion
+genuinely needs an operator decision; do not invent a threshold.
+
+An actual vulnerability is not optional advice. Identify its concrete failure
+path and affected security property; fix an in-scope defect and verify the
+repair, or promptly surface the specific scope or authority needed. Do not
+weaken existing security boundaries or silently accept a material exposure.
+For SafeYolo repository work, apply the target checkout's root `AGENTS.md`
+rule on security boundaries and operator policy. Check that individually
+reasonable restrictions do not compose into an accidental deadlock.
 
 ## Revise iteratively, then globally
 

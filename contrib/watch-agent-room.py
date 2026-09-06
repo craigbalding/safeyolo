@@ -254,21 +254,27 @@ def _pi_message_detail(message: dict[str, Any], limit: int | None, *, redact: bo
         text = " ".join(fragment for fragment in fragments if fragment)
     if text:
         return _clean(text, limit, redact=redact)
-    usage = message.get("usage")
+    usage = _pi_usage_detail(message.get("usage"))
+    return "assistant message" + (" tokens " + usage if usage else "")
+
+
+def _pi_usage_detail(usage: Any) -> str:
     if not isinstance(usage, dict):
-        return "assistant message"
+        return ""
     labels = (
-        ("input", "input"),
+        ("input", "uncached"),
         ("cacheRead", "cached"),
+        ("cacheWrite", "cache_write"),
         ("output", "output"),
         ("reasoning", "reasoning"),
+        ("totalTokens", "total"),
     )
     shown = [
         f"{label}={usage[key]:,}"
         for key, label in labels
-        if isinstance(usage.get(key), int) and not isinstance(usage[key], bool)
+        if isinstance(usage.get(key), int) and not isinstance(usage[key], bool) and usage[key] >= 0
     ]
-    return "assistant message" + (" tokens " + " ".join(shown) if shown else "")
+    return " ".join(shown)
 
 
 def _event_line(
@@ -379,7 +385,8 @@ def _event_line(
     if kind == "agent_start":
         return "TURN", "started"
     if kind == "agent_end":
-        return "DONE", "turn completed"
+        usage = _pi_usage_detail(event.get("usage"))
+        return "DONE", "turn completed" + (" tokens " + usage if usage else " (token usage unavailable)")
     if kind in {"tool_execution_start", "tool_execution_end"}:
         phase = "started" if kind.endswith("start") else "completed"
         label = "TOOLERR" if event.get("isError") is True else "TOOL"

@@ -679,7 +679,85 @@ All contributions must:
 - Use descriptive variable names (no single letters except loop counters)
 - Keep functions focused and single-purpose
 - Add docstrings for public functions
-- Avoid bare `except:` - always catch specific exceptions or log the type
+- Follow the Python defect-prevention rules below for exception handling.
+
+#### Python defect prevention
+
+Apply these rules to changed code during implementation and independent review.
+They address recurring findings; they do not require unrelated cleanup in every
+pull request.
+
+- **Reuse the existing implementation.** Before adding a parser, configuration
+  writer, subprocess wrapper, or state helper, find the repository's existing
+  entrypoint and its tests. Use the established helper when it fits. For
+  structured formats such as TOML, use the existing parser/writer rather than
+  a regular expression that guesses at the format.
+- **Catch only failures the code can handle.** Keep the `try` block focused on
+  the operation that can raise the expected exception. Do not turn an
+  unexpected failure into an empty result or a success return. A handler must
+  recover, propagate, or report the failure through the existing error path;
+  logging alone does not make the failed operation successful.
+- **Explain deliberate exception suppression.** An expected race can be
+  harmless: for example, another process created a directory that the next
+  operation will open and validate. Catch the specific exception and state why
+  continuing is correct at that handler. Do not add a generic comment, switch
+  to `contextlib.suppress`, or log and continue merely to silence a finding.
+  Test material recovery paths and ensure unexpected errors remain visible.
+- **Preserve cancellation and shutdown.** Do not use bare `except:` or
+  `BaseException` as ordinary application error handling. Prefer `finally` or
+  a context manager for cleanup. If a worker boundary genuinely must catch
+  `BaseException`, explain and test how cancellation, `KeyboardInterrupt`, and
+  `SystemExit` reach the caller or terminate the worker. Do not silently convert
+  them into normal task success.
+- **Remove dead code, not required work.** Delete unused imports, variables,
+  constants, and expressions when they have no purpose. If a call is needed
+  for its effect, keep the call without an unused assignment. Use `_` for a
+  deliberately unused unpacked value. Do not rename a value to `_value` just
+  to hide a missing check or discard error information the caller needs.
+- **Keep imports consistent and dependencies one-way.** Reuse the file's
+  existing import style for a module instead of importing it both directly
+  and through `from`. Put genuinely shared behaviour in an existing common
+  module when possible, rather than making two command modules import each
+  other. A local import can be appropriate for optional or deferred loading;
+  explain that need instead of using it to conceal a new cycle. Preserve
+  intentional public re-exports and document their consumers.
+- **Distinguish valid Python from scanner mistakes.** An ellipsis in a
+  `typing.Protocol` method declares an interface; it is not an unfinished
+  implementation. Check the reported symbol and its callers before changing
+  behaviour or removing an apparent unused export. For a verified false
+  positive, use the existing query-specific CodeQL suppression with a concrete
+  rationale. Do not suppress the rule across a file or repository.
+
+Run the configured Ruff checks on changed Python paths during development and
+the existing pre-commit hooks before publication. A clean Ruff result is not
+equivalent to a clean CodeQL analysis: their coverage differs. If local CodeQL
+is unavailable, retain that limitation and inspect the GitHub analysis findings
+for the candidate; a successful analysis/upload job does not mean no findings.
+
+### Acceptance tooling
+
+For SafeYolo, tracked lockfiles, package manifests, pre-commit and CI
+configuration, and build/rootfs/install scripts form the dependency inventory
+until a unified software bill of materials (SBOM) manifest exists. An
+operator-bound acceptance graph supplies the separate validation-tool
+inventory. Use both from the trusted base revision; a candidate's changes to
+these inventories remain review subject matter, not standing approval to
+install new tools. The factory reviewer contract defines installation authority
+and how to request a tool outside those inventories.
+
+For changed production Python, the trusted-base Ruff installation supports the
+configured lint pass and this focused structural-complexity check:
+
+```sh
+uv run ruff check --select C901,PLR0911,PLR0912,PLR0913,PLR0915 <changed-production-python-paths>
+```
+
+Replace the placeholder with the changed production Python paths. Inspect
+flagged symbols and compare with the base when attribution is unclear. A tool
+finding is evidence, not an automatic veto: report new material complexity and
+code smells; keep pre-existing findings, minor cleanup, and preferences
+non-blocking. The command supplements the configured lint and static checks;
+it does not replace independent acceptance of the behaviour being changed.
 
 ### Testing Requirements
 

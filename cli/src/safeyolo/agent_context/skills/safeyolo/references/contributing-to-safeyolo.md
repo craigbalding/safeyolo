@@ -6,6 +6,12 @@ docs; CI configs). Do not load for unrelated project work — SafeYolo
 being the sandbox boundary does not mean every task inside it is
 SafeYolo development.
 
+Before implementation or review, read the target checkout's root `AGENTS.md`,
+including "Security boundaries and operator policy". Keep unrequested policy
+ideas advisory and unapplied; preserve the existing security boundaries and
+fix concrete in-scope vulnerabilities. That repository file holds the rule;
+this skill does not add another approval stage.
+
 For the *why* behind these rules, read the "Documentation drift
 protection" section of `docs/DEVELOPERS.md`. This file is the operational
 counterpart: the exact commands and the anti-patterns that bite.
