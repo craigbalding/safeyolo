@@ -6,6 +6,10 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from safeyolo.agents_store import (
+    reserve_agent_tailnet_port_change,
+    restore_agent_tailnet_port,
+)
 from safeyolo.desktop_presenter import DesktopPresentationError, DesktopPresenter
 from safeyolo.preview import start_managed_preview
 from safeyolo.vm import stage_guest_desktop_launcher
@@ -42,6 +46,7 @@ class FakePreview:
 
 
 def test_present_starts_desktop_once_and_reuses_preview(monkeypatch):
+    monkeypatch.delenv("SAFEYOLO_COMMAND_CENTRE_SHARE", raising=False)
     platform = FakePlatform()
     preview = FakePreview()
     staged = create_autospec(stage_guest_desktop_launcher, spec_set=True)
@@ -78,9 +83,88 @@ def test_present_starts_desktop_once_and_reuses_preview(monkeypatch):
     ]
     staged.assert_called_once_with("forge", preferred_size="1280x800")
     start_preview.assert_called_once()
+    assert start_preview.call_args.args[0].tailnet_port is None
 
     presenter.close_all()
     assert preview.closed
+
+
+def test_present_publishes_preview_to_tailnet_for_remote_command_centre(monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_COMMAND_CENTRE_SHARE", "tailnet")
+    platform = FakePlatform()
+    preview = FakePreview()
+    preview.url = "https://host.example.ts.net:8443/vnc.html"
+    reserve = create_autospec(
+        reserve_agent_tailnet_port_change,
+        spec_set=True,
+        return_value=(8443, None),
+    )
+    start_preview = create_autospec(
+        start_managed_preview,
+        spec_set=True,
+        return_value=preview,
+    )
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.get_agent_by_id",
+        lambda agent_id: ("forge", {"agent_id": agent_id}),
+    )
+    monkeypatch.setattr("safeyolo.desktop_presenter.get_platform", lambda: platform)
+    monkeypatch.setattr("safeyolo.desktop_presenter.get_desktop_size", lambda: "1280x800")
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.resolve_vnc_geometry",
+        lambda size: (size, None),
+    )
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.stage_guest_desktop_launcher",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.reserve_agent_tailnet_port_change",
+        reserve,
+    )
+    monkeypatch.setattr("safeyolo.desktop_presenter.start_managed_preview", start_preview)
+
+    result = DesktopPresenter().present("ag-forge")
+
+    assert result.url == "https://host.example.ts.net:8443/vnc.html"
+    reserve.assert_called_once_with("forge")
+    assert start_preview.call_args.args[0].tailnet_port == 8443
+
+
+def test_present_rolls_back_new_tailnet_port_when_preview_start_fails(monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_COMMAND_CENTRE_SHARE", "tailnet")
+    platform = FakePlatform(exit_code=1)
+    restore = create_autospec(
+        restore_agent_tailnet_port,
+        spec_set=True,
+    )
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.get_agent_by_id",
+        lambda agent_id: ("forge", {"agent_id": agent_id}),
+    )
+    monkeypatch.setattr("safeyolo.desktop_presenter.get_platform", lambda: platform)
+    monkeypatch.setattr("safeyolo.desktop_presenter.get_desktop_size", lambda: "1280x800")
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.resolve_vnc_geometry",
+        lambda size: (size, None),
+    )
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.stage_guest_desktop_launcher",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.reserve_agent_tailnet_port_change",
+        lambda _agent: (8443, None),
+    )
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.restore_agent_tailnet_port",
+        restore,
+    )
+
+    with pytest.raises(DesktopPresentationError, match="failed to start"):
+        DesktopPresenter().present("ag-forge")
+
+    restore.assert_called_once_with("forge", 8443, None)
 
 
 def test_present_requires_configured_running_agent(monkeypatch):
