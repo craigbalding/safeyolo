@@ -8,6 +8,7 @@ flowchart TD
     classDef operator_ask fill:#f0d0ff,stroke:#748
 
     sym.desktop_operator_sees_404(["Operator opens the preview URL and gets 404 / connection refused"])
+    sym.desktop_remote_url_is_loopback(["Remote operator receives a 127.0.0.1 desktop preview URL"])
     sym.desktop_operator_sees_blank(["Operator sees the noVNC page but the desktop area is blank / black"])
     sym.desktop_novnc_connect_drops(["noVNC in the operator's browser connects then immediately disconnects"])
     sym.desktop_xdg_open_missing(["In-guest tool tried to launch a browser and failed with 'xdg-open' missing"])
@@ -24,6 +25,7 @@ flowchart TD
     cls.desktop_stack_not_started{{"The Xvfb + VNC + noVNC stack was never started in this agent"}}
     cls.desktop_preview_not_started{{"Operator hasn't run 'safeyolo preview' yet, or the session expired"}}
     cls.desktop_port_mismatch{{"The preview URL points at a port different from where noVNC is listening"}}
+    cls.desktop_remote_loopback_url{{"The preview exists on the SafeYolo host but its URL is not published to the remote operator"}}
     cls.desktop_no_browser_in_guest{{"No browser binary is installed in the guest; xdg-open has nothing to launch"}}
     cls.desktop_headless_expected{{"Trying to run a browser without DISPLAY set; browser exits because there's no X server visible to it"}}
     cls.desktop_operator_cannot_view{{"Everything is running but the operator's browser cannot render the noVNC page (host-side network / cert / TTL issue)"}}
@@ -31,11 +33,13 @@ flowchart TD
     con.desktop_print_url_manually(["Do NOT retry launching a browser via xdg-open. Print the URL to stdout and ask the operator to open it manually."])
     con.desktop_set_display_before_browser(["Set DISPLAY (e.g. ':1') before launching a headed browser, OR use the browser's --headless mode"])
     con.desktop_report_port_and_url(["Report the actual noVNC listening port + expected URL back to the operator so they can compare with what they've been given"])
+    con.desktop_publish_tailnet_preview(["When Command Centre uses Tailnet, publish the managed preview on the agent's Tailnet port and return that HTTPS URL"])
     ask.desktop_run_preview[["Ask operator to run 'safeyolo preview <agent>' (with '--ttl' if a long-lived session is wanted) and share the URL"]]
     ask.desktop_check_status[["Ask operator to 'safeyolo status' and confirm the preview session and port for this agent"]]
     ask.desktop_install_browser[["Ask operator to add a browser binary to the agent's rootfs (chromium is a common minimal choice); explain why the visual task needs it"]]
 
     sym.desktop_operator_sees_404 -->|"next_check"| ev.desktop_check_preview_process
+    sym.desktop_remote_url_is_loopback -->|"next_check"| ev.desktop_check_preview_url_reach
     sym.desktop_operator_sees_blank -->|"next_check"| ev.desktop_check_xvfb_running
     sym.desktop_novnc_connect_drops -->|"next_check"| ev.desktop_check_novnc_running
     sym.desktop_novnc_connect_drops -->|"next_check"| ev.desktop_check_novnc_logs
@@ -51,7 +55,9 @@ flowchart TD
     ev.desktop_check_preview_process -->|"next_check: operator says the session was open but is not now"| ev.desktop_check_operator_ttl
     ev.desktop_check_operator_ttl -->|"implies: TTL had passed"| cls.desktop_preview_not_started
     ev.desktop_check_preview_url_reach -->|"implies: URL port differs from listening noVNC port"| cls.desktop_port_mismatch
+    ev.desktop_check_preview_url_reach -->|"implies: operator is remote and the returned URL uses 127.0.0.1 or localhost"| cls.desktop_remote_loopback_url
     cls.desktop_port_mismatch -->|"implies"| con.desktop_report_port_and_url
+    cls.desktop_remote_loopback_url -->|"implies"| con.desktop_publish_tailnet_preview
     sym.desktop_operator_sees_404 -->|"next_check: stack is running but operator still 404s"| ev.desktop_check_preview_url_reach
     ev.desktop_check_browser_binary -->|"implies: no browser binary present"| cls.desktop_no_browser_in_guest
     cls.desktop_no_browser_in_guest -->|"implies"| con.desktop_print_url_manually
@@ -62,6 +68,7 @@ flowchart TD
     cls.desktop_operator_cannot_view -->|"escalates_to"| ask.desktop_check_status
 
     class sym.desktop_operator_sees_404 symptom
+    class sym.desktop_remote_url_is_loopback symptom
     class sym.desktop_operator_sees_blank symptom
     class sym.desktop_novnc_connect_drops symptom
     class sym.desktop_xdg_open_missing symptom
@@ -78,6 +85,7 @@ flowchart TD
     class cls.desktop_stack_not_started classification
     class cls.desktop_preview_not_started classification
     class cls.desktop_port_mismatch classification
+    class cls.desktop_remote_loopback_url classification
     class cls.desktop_no_browser_in_guest classification
     class cls.desktop_headless_expected classification
     class cls.desktop_operator_cannot_view classification
@@ -85,12 +93,14 @@ flowchart TD
     class con.desktop_print_url_manually conclusion
     class con.desktop_set_display_before_browser conclusion
     class con.desktop_report_port_and_url conclusion
+    class con.desktop_publish_tailnet_preview conclusion
     class ask.desktop_run_preview operator_ask
     class ask.desktop_check_status operator_ask
     class ask.desktop_install_browser operator_ask
 
     %% Entry symptoms (bind an observed symptom here)
     style sym.desktop_operator_sees_404 stroke-width:3px
+    style sym.desktop_remote_url_is_loopback stroke-width:3px
     style sym.desktop_operator_sees_blank stroke-width:3px
     style sym.desktop_novnc_connect_drops stroke-width:3px
     style sym.desktop_xdg_open_missing stroke-width:3px
