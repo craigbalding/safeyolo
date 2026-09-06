@@ -280,12 +280,17 @@ def test_mount_manifest_bound_uses_every_pending_entry(tmp_path):
 
     import safeyolo.host_resources as host_resources
 
-    mounts = [
-        ("/source", f"/guest/{index:04d}/" + "x" * 400, False)
-        for index in range(6000)
-    ]
-    manifest_size = startup_mount_manifest_size(mounts)
-    assert manifest_size > os.sysconf("SC_ARG_MAX")
+    argument_max = os.sysconf("SC_ARG_MAX")
+    mounts = []
+    manifest_size = 0
+    for index in range(100_000):
+        guest_path = f"/guest/{index:05d}/" + "x" * 400
+        mounts.append(("/source", guest_path, False))
+        manifest_size += len(f"extra{index}:{guest_path}\n".encode())
+        if manifest_size > argument_max:
+            break
+    assert manifest_size > argument_max
+    assert startup_mount_manifest_size(mounts) == manifest_size
 
     dynamic = host_resources._startup_dynamic_paths(tmp_path, manifest_size)
 
