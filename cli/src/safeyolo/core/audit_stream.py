@@ -219,6 +219,26 @@ def resolved_approval_key(event: AuditEvent) -> str | None:
     return None
 
 
+def _desktop_resolution_key(event: AuditEvent) -> str | None:
+    """Return the stable pending group closed by a desktop decision."""
+    event_type = event.get("event", "")
+    details = event.get("details", {})
+    if event_type == "admin.desktop_presented":
+        agent_id = details.get("agent_id", "")
+        return f"desktop.present:desktop:{agent_id}" if agent_id else None
+    if event_type == "admin.denial":
+        cred_id = details.get("cred_id", "")
+        destination = details.get("destination", "")
+        if cred_id == "desktop.present" and destination.startswith("desktop:"):
+            return f"{cred_id}:{destination}"
+    return None
+
+
+def _approval_request_id(event: AuditEvent) -> str:
+    """Return the request correlation identity carried by an approval event."""
+    return str(event.get("request_id", ""))
+
+
 def scan_pending_approvals(
     log_path: Path,
     *,
@@ -239,8 +259,7 @@ def scan_pending_approvals(
         return [], set()
 
     parsed_events: list[AuditEvent] = []
-    resolved_keys: set[str] = set()
-    for line in reversed(recent_lines):
+    for line in recent_lines:
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -248,16 +267,51 @@ def scan_pending_approvals(
         if not isinstance(event, dict):
             continue
         parsed_events.append(event)
-        if resolved_key := resolved_approval_key(event):
-            resolved_keys.add(resolved_key)
 
+    # Most resolutions represent durable policy (for example, approving or
+    # denying a credential), so a retry with the same key must stay resolved.
+    # Desktop presentation is a repeatable action. Its stable key coalesces an
+    # agent's repeated requests into one operator prompt, while request_id lets
+    # a decision close exactly the request the operator saw.
+    resolved_keys = {
+        key
+        for event in parsed_events
+        if (key := resolved_approval_key(event)) and _desktop_resolution_key(event) is None
+    }
     pending_by_key: dict[str, AuditEvent] = {}
-    for event in parsed_events:
+    for event in reversed(parsed_events):
         approval = event.get("approval", {})
-        if approval and approval.get("required"):
+        if approval and approval.get("required") and approval.get("approval_type") != "desktop_present":
             key = approval_dedup_key(event)
             if key not in pending_by_key and key not in resolved_keys:
                 pending_by_key[key] = event
+
+    desktop_pending: dict[str, AuditEvent] = {}
+    desktop_resolved: set[str] = set()
+    for event in parsed_events:
+        approval = event.get("approval", {})
+        if approval and approval.get("required") and approval.get("approval_type") == "desktop_present":
+            key = approval_dedup_key(event)
+            # Replacement, not accumulation: repeated requests from one agent
+            # remain one pending operator item.
+            desktop_pending[key] = event
+            desktop_resolved.discard(key)
+            continue
+
+        key = _desktop_resolution_key(event)
+        if key is None:
+            continue
+        current = desktop_pending.get(key)
+        resolved_request_id = str(event.get("details", {}).get("approval_request_id", ""))
+        if current is not None and resolved_request_id and _approval_request_id(current) != resolved_request_id:
+            # The agent made a newer request while the operator was deciding
+            # an older one. Leave that newer request pending.
+            continue
+        desktop_pending.pop(key, None)
+        desktop_resolved.add(key)
+
+    pending_by_key.update(desktop_pending)
+    resolved_keys.update(desktop_resolved)
 
     pending = list(pending_by_key.values())
     pending.sort(key=lambda event: event.get("ts", ""))

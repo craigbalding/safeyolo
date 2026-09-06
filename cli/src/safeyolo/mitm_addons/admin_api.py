@@ -513,6 +513,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         destination = data.get("destination")
         cred_id = data.get("cred_id")
         reason = data.get("reason", "user_denied")
+        approval_request_id = data.get("approval_request_id")
 
         if not destination:
             self._send_json({"error": "missing 'destination' field"}, 400)
@@ -528,7 +529,13 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             severity=Severity.MEDIUM,
             summary=f"Credential denied: {_sanitize_log(cred_id)} -> {_sanitize_log(destination)}",
             addon="admin-api",
-            details={"client_ip": client_ip, "destination": destination, "cred_id": cred_id, "reason": reason},
+            details={
+                "client_ip": client_ip,
+                "destination": destination,
+                "cred_id": cred_id,
+                "reason": reason,
+                **({"approval_request_id": approval_request_id} if approval_request_id else {}),
+            },
         )
         log.info("Credential denial recorded")
 
@@ -1135,6 +1142,10 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_post_desktop_present(self, agent_id: str) -> None:
         """POST /admin/agents/{id}/desktop/present - Present a local desktop."""
+        data = self._read_json() if self.headers.get("Content-Length") else {}
+        if data is None:
+            return
+        approval_request_id = data.get("approval_request_id")
         if self.desktop_presenter is None:
             self._send_json({"error": "desktop presenter is unavailable"}, 503)
             return
@@ -1165,6 +1176,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 "agent": presentation.agent,
                 "url": presentation.url,
                 "reused": presentation.reused,
+                **({"approval_request_id": approval_request_id} if approval_request_id else {}),
             },
         )
         self._send_json(result)

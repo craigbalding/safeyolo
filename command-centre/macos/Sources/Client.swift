@@ -130,7 +130,7 @@ final class SafeYoloClient: ObservableObject {
             let fresh = try JSONDecoder().decode(PendingApprovals.self, from: data).approvals
             approvals = fresh
             let newApprovals = fresh.filter { !knownApprovalIDs.contains($0.id) }
-            knownApprovalIDs.formUnion(fresh.map(\.id))
+            knownApprovalIDs = Set(fresh.map(\.id))
             if let first = newApprovals.first {
                 onNewApproval?(first)
             }

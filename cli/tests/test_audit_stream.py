@@ -90,6 +90,95 @@ def test_desktop_presented_resolves_its_exact_pending_request(tmp_path):
     assert "desktop.present:desktop:ag-lens" in resolved
 
 
+def test_new_desktop_request_after_resolution_is_pending(tmp_path):
+    log = tmp_path / "safeyolo.jsonl"
+    first_request = {
+        **_event("evt-request-one"),
+        "event": "agent.desktop_present_requested",
+        "approval": {
+            "required": True,
+            "approval_type": "desktop_present",
+            "key": "desktop.present",
+            "target": "desktop:ag-lens",
+        },
+    }
+    resolution = {
+        **_event("evt-resolution"),
+        "event": "admin.desktop_presented",
+        "details": {"agent_id": "ag-lens"},
+    }
+    latest_request = {
+        **first_request,
+        "event_id": "evt-request-two",
+    }
+    log.write_text("\n".join(json.dumps(event) for event in (first_request, resolution, latest_request)) + "\n")
+
+    pending, resolved = scan_pending_approvals(log)
+
+    assert [event["event_id"] for event in pending] == ["evt-request-two"]
+    assert "desktop.present:desktop:ag-lens" not in resolved
+
+
+def test_duplicate_desktop_requests_before_resolution_stay_resolved(tmp_path):
+    log = tmp_path / "safeyolo.jsonl"
+    request = {
+        **_event("evt-request-one"),
+        "event": "agent.desktop_present_requested",
+        "approval": {
+            "required": True,
+            "approval_type": "desktop_present",
+            "key": "desktop.present",
+            "target": "desktop:ag-lens",
+        },
+    }
+    duplicate = {**request, "event_id": "evt-request-two"}
+    resolution = {
+        **_event("evt-resolution"),
+        "event": "admin.desktop_presented",
+        "details": {"agent_id": "ag-lens"},
+    }
+    log.write_text("\n".join(json.dumps(event) for event in (request, duplicate, resolution)) + "\n")
+
+    pending, resolved = scan_pending_approvals(log)
+
+    assert pending == []
+    assert "desktop.present:desktop:ag-lens" in resolved
+
+
+def test_desktop_decision_does_not_consume_a_newer_request(tmp_path):
+    log = tmp_path / "safeyolo.jsonl"
+    first_request = {
+        **_event("evt-request-one"),
+        "request_id": "req-one",
+        "event": "agent.desktop_present_requested",
+        "approval": {
+            "required": True,
+            "approval_type": "desktop_present",
+            "key": "desktop.present",
+            "target": "desktop:ag-lens",
+        },
+    }
+    newer_request = {
+        **first_request,
+        "event_id": "evt-request-two",
+        "request_id": "req-two",
+    }
+    first_resolution = {
+        **_event("evt-resolution"),
+        "event": "admin.desktop_presented",
+        "details": {
+            "agent_id": "ag-lens",
+            "approval_request_id": "req-one",
+        },
+    }
+    log.write_text("\n".join(json.dumps(event) for event in (first_request, newer_request, first_resolution)) + "\n")
+
+    pending, resolved = scan_pending_approvals(log)
+
+    assert [event["request_id"] for event in pending] == ["req-two"]
+    assert "desktop.present:desktop:ag-lens" not in resolved
+
+
 def _replace_later(log, event, *, replace: bool) -> threading.Thread:
     def update() -> None:
         time.sleep(0.2)

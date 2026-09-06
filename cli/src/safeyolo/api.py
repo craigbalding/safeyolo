@@ -193,6 +193,7 @@ class AdminAPI:
         destination: str,
         cred_id: str,
         reason: str = "user_denied",
+        approval_request_id: str | None = None,
     ) -> dict[str, Any]:
         """Log a credential denial event.
 
@@ -206,6 +207,8 @@ class AdminAPI:
             "cred_id": cred_id,
             "reason": reason,
         }
+        if approval_request_id:
+            payload["approval_request_id"] = approval_request_id
         return self._request("POST", "/admin/policy/baseline/deny", json=payload)
 
     def add_gateway_grant(
@@ -472,11 +475,18 @@ class AdminAPI:
         """Get the stable SafeYolo instance identity and client capabilities."""
         return self._request("GET", "/admin/instance")
 
-    def present_desktop(self, agent_id: str) -> dict[str, Any]:
+    def present_desktop(
+        self,
+        agent_id: str,
+        *,
+        approval_request_id: str | None = None,
+    ) -> dict[str, Any]:
         """Start or reuse a local preview for a stable agent identity."""
+        payload = {"approval_request_id": approval_request_id} if approval_request_id else None
         return self._request(
             "POST",
             f"/admin/agents/{agent_id}/desktop/present",
+            json=payload,
         )
 
 

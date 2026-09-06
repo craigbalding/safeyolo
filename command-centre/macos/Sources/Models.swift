@@ -54,6 +54,7 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
     }
 
     let eventID: String?
+    let requestID: String?
     let event: String
     let summary: String
     let agent: String?
@@ -63,6 +64,7 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case eventID = "event_id"
+        case requestID = "request_id"
         case event
         case summary
         case agent
@@ -114,7 +116,7 @@ struct MutationPlan: Equatable {
             }
             return MutationPlan(
                 path: "/admin/agents/\(encodedAgentID)/desktop/present",
-                body: [:],
+                body: event.requestID.map { ["approval_request_id": $0] } ?? [:],
                 expectsDesktop: true
             )
         }
@@ -133,6 +135,10 @@ struct MutationPlan: Equatable {
         ]
         if !allow {
             body["reason"] = "user_denied"
+        }
+        if event.approval.approvalType == "desktop_present",
+           let requestID = event.requestID {
+            body["approval_request_id"] = requestID
         }
         return MutationPlan(
             path: allow ? "/admin/policy/baseline/approve" : "/admin/policy/baseline/deny",

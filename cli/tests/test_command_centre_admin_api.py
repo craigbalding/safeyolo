@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from unittest.mock import create_autospec
+from unittest.mock import create_autospec, patch
 
 import httpx
 import pytest
@@ -108,11 +108,19 @@ def test_desktop_present_uses_stable_agent_id(command_centre_admin):
     AdminRequestHandler.desktop_presenter = presenter
     api = AdminAPI(base_url=base_url, token="test-admin-token")
 
-    assert api.present_desktop("ag-forge") == {
-        "agent_id": "ag-forge",
-        "agent": "forge",
-        "url": "http://127.0.0.1:12345/vnc.html",
-        "unlock_code": "1234-5678",
-        "reused": False,
-    }
+    with patch(
+        "safeyolo.mitm_addons.admin_api.write_event",
+        autospec=True,
+    ) as write_event:
+        assert api.present_desktop(
+            "ag-forge",
+            approval_request_id="req-desktop",
+        ) == {
+            "agent_id": "ag-forge",
+            "agent": "forge",
+            "url": "http://127.0.0.1:12345/vnc.html",
+            "unlock_code": "1234-5678",
+            "reused": False,
+        }
     presenter.present.assert_called_once_with("ag-forge")
+    assert write_event.call_args.kwargs["details"]["approval_request_id"] == "req-desktop"

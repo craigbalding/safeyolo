@@ -98,6 +98,7 @@ class TestAPIRouting:
 
     def test_desktop_present_submits_typed_operator_approval(self, api, agent_token):
         flow = _make_api_flow("/desktop/present", method="POST", token=agent_token)
+        flow.metadata["request_id"] = "req-00000000000000000000000000000001"
         with (
             _patch_active_token(agent_token),
             patch.object(
@@ -120,8 +121,10 @@ class TestAPIRouting:
             "status": "pending",
             "agent": "forge",
             "agent_id": "ag-forge",
+            "request_id": "req-00000000000000000000000000000001",
             "message": "Desktop presentation submitted for operator approval.",
         }
+        assert write_event.call_args.kwargs["request_id"] == "req-00000000000000000000000000000001"
         approval = write_event.call_args.kwargs["approval"]
         assert approval.approval_type == "desktop_present"
         assert approval.key == "desktop.present"

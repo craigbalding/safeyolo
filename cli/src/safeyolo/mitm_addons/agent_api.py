@@ -1177,12 +1177,14 @@ class AgentAPI:
             self._respond(flow, 404, {"error": "Agent is not configured"})
             return
 
+        request_id = flow.metadata.get("request_id")
         write_event(
             "agent.desktop_present_requested",
             kind=EventKind.AGENT,
             severity=Severity.HIGH,
             summary=f"{agent_name} requests desktop presentation",
             decision=Decision.REQUIRE_APPROVAL,
+            request_id=request_id,
             agent=agent_name,
             addon=self.name,
             approval=ApprovalRequest(
@@ -1200,6 +1202,7 @@ class AgentAPI:
                 "status": "pending",
                 "agent": agent_name,
                 "agent_id": agent_id,
+                "request_id": request_id,
                 "message": "Desktop presentation submitted for operator approval.",
             },
         )

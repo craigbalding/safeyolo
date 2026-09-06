@@ -112,6 +112,7 @@ struct ModelTests {
             from: Data("""
             {
               "event_id":"evt-desktop",
+              "request_id":"req-desktop",
               "event":"agent.desktop_present_requested",
               "summary":"Lens requests desktop presentation",
               "agent":"lens",
@@ -130,8 +131,21 @@ struct ModelTests {
         precondition(
             desktopAllow == MutationPlan(
                 path: "/admin/agents/ag-lens/desktop/present",
-                body: [:],
+                body: ["approval_request_id": "req-desktop"],
                 expectsDesktop: true
+            )
+        )
+        let desktopDeny = try MutationPlan.forApproval(desktop, allow: false)
+        precondition(
+            desktopDeny == MutationPlan(
+                path: "/admin/policy/baseline/deny",
+                body: [
+                    "destination": "desktop:ag-lens",
+                    "cred_id": "desktop.present",
+                    "reason": "user_denied",
+                    "approval_request_id": "req-desktop",
+                ],
+                expectsDesktop: false
             )
         )
     }

@@ -85,7 +85,10 @@ def approve(
         agent_id = approval.get("scope_hint", {}).get("agent_id", "")
         if not agent_id:
             raise ApprovalActionError("Desktop presentation is missing agent_id")
-        return api.present_desktop(agent_id)
+        return api.present_desktop(
+            agent_id,
+            approval_request_id=event.get("request_id"),
+        )
 
     raise ApprovalActionError(f"Unsupported approval type: {approval_type!r}")
 
@@ -137,6 +140,7 @@ def deny(event: dict, api: AdminAPI) -> None:
             destination=approval.get("target", ""),
             cred_id=approval.get("key", "desktop.present"),
             reason="user_denied",
+            approval_request_id=event.get("request_id"),
         )
         return
 

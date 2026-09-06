@@ -106,6 +106,7 @@ def _gateway_event(
 
 def _desktop_event(agent="lens", agent_id="ag-lens"):
     return {
+        "request_id": "req-desktop",
         "event": "agent.desktop_present_requested",
         "kind": "agent",
         "decision": "require_approval",
@@ -1169,7 +1170,10 @@ class TestDesktopPresentDispatch:
 
         result = DISPATCH["desktop_present"].approve(_desktop_event(), api)
 
-        api.present_desktop.assert_called_once_with("ag-lens")
+        api.present_desktop.assert_called_once_with(
+            "ag-lens",
+            approval_request_id="req-desktop",
+        )
         assert result["unlock_code"] == "1234-5678"
 
     def test_deny_resolves_the_exact_desktop_request(self):
@@ -1181,6 +1185,7 @@ class TestDesktopPresentDispatch:
             destination="desktop:ag-lens",
             cred_id="desktop.present",
             reason="user_denied",
+            approval_request_id="req-desktop",
         )
 
 
