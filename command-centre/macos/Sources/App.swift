@@ -9,6 +9,27 @@ struct SafeYoloCommandCentreApp: App {
     private let securityPresenter: SecurityEventWindowPresenter
     private let errorPresenter = ErrorWindowPresenter()
 
+    private var statusImage: NSImage {
+        // MenuBarExtra extracts an image, rather than laying out arbitrary
+        // SwiftUI views. Compose the mark and its indicator as one image.
+        let mark = NSImage(named: "MenuBarTemplate")!
+        let indicator = controller.hasSecurityEvents || controller.hasPendingApprovals
+            ? "!" : controller.client == nil ? "×" : ""
+        let image = NSImage(size: NSSize(width: 25, height: 18), flipped: false) { bounds in
+            mark.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18))
+            (indicator as NSString).draw(at: NSPoint(x: 19, y: 2), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .bold), .foregroundColor: NSColor.black
+            ])
+            if controller.hasSecurityEvents {
+                NSColor.systemRed.setFill()
+                bounds.fill(using: .sourceAtop)
+            }
+            return true
+        }
+        image.isTemplate = !controller.hasSecurityEvents
+        return image
+    }
+
     init() {
         NSApplication.shared.setActivationPolicy(.accessory)
         let presenter = ApprovalWindowPresenter()
@@ -48,18 +69,7 @@ struct SafeYoloCommandCentreApp: App {
                 }
             }
         } label: {
-            HStack(spacing: 1) {
-                Image("MenuBarTemplate")
-                    .renderingMode(.template)
-                    .resizable()
-                    .frame(width: 18, height: 18)
-                // Preserve the old shield's attention and unconfigured states.
-                Text(controller.hasSecurityEvents || controller.hasPendingApprovals
-                     ? "!" : controller.client == nil ? "×" : "")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 6)
-            }
-            .foregroundStyle(controller.hasSecurityEvents ? Color.red : Color.primary)
+            Image(nsImage: statusImage)
             .accessibilityLabel(controller.hasSecurityEvents ? "SafeYolo, security events"
                                 : controller.hasPendingApprovals ? "SafeYolo, approvals waiting"
                                 : controller.client == nil ? "SafeYolo, not configured" : "SafeYolo")
