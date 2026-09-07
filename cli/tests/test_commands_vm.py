@@ -56,7 +56,7 @@ def config_dir(tmp_path, monkeypatch):
     logs.mkdir(parents=True)
 
     (cfg / "config.yaml").write_text(
-        "version: 1\nsandbox: true\nproxy:\n  port: 8080\n  admin_port: 9090\n"
+        "version: 1\nsandbox: true\nproxy:\n  port: 8080\n  admin_port: 9090\nhost_resources:\n  cpu_ceiling: 8\n  memory_ceiling_mb: 16384\n  disk_min_free_bytes: 1\n  process_limit: 10000\n"
     )
     (cfg / "policy.toml").write_text(
         'version = "2.0"\n\n[hosts]\n"*" = { rate = 600 }\n'

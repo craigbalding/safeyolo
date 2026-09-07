@@ -55,7 +55,46 @@ modes:
   network_guard: block
   pattern_scanner: warn
   test_context: block
+
+host_resources:
+  cpu_ceiling: null             # aggregate CPUs; null reserves one host CPU
+  memory_ceiling_mb: null       # aggregate MiB; null reserves one default agent
+  disk_min_free_bytes: null     # low watermark; null measures startup writes
+  process_limit: null           # aggregate process ceiling; null reserves launch tasks
 ```
+
+`host_resources` protects the host as a whole. It is separate from the
+per-agent `memory_mb` setting in `policy.toml`. SafeYolo checks the aggregate
+configured CPU and memory allocations, current live memory pressure, the host
+process capacity, and free space on the filesystems used by SafeYolo runtime
+writes before it starts an agent. With no memory override, the aggregate
+configured allocation retains one existing default-agent allocation from the
+detected host total, and each new request is also checked against current
+available memory. An explicit memory ceiling additionally caps the aggregate
+allocations of running agents. CPU admission reserves one detected logical
+CPU. Automatic disk admission reserves a computed target-filesystem
+allocation bound for startup writes plus one filesystem allocation block.
+Linux process admission reserves the minimum runtime launch tasks (two for the
+user-namespace holder and launcher). These are computed or runtime-derived
+boundaries, not workload quotas. If a required measurement is unavailable, new
+work is refused rather
+than admitted without that invariant.
+
+Set an integer override only when the operator has a host-specific capacity
+model. SafeYolo caps CPU and memory overrides at detected host capacity. An
+explicit disk watermark can replace the automatic startup-payload reserve
+when the operator has a host-specific capacity model. Explicit CPU, memory,
+and disk values are operator choices and can replace their automatic reserve.
+The process limit is an aggregate admission boundary; it is not copied into
+each per-agent systemd scope because that would multiply the limit. SafeYolo never
+stops an active agent when disk space crosses the low watermark; the guard
+applies to new work.
+
+`safeyolo doctor --verbose` reports detected capacity, each effective ceiling
+or low watermark, its derivation source, and whether enforcement is an
+aggregate admission check, an existing Linux systemd scope, or a degraded
+fallback. If a host cannot expose a capacity or an enforcement mechanism,
+the report says so instead of implying protection.
 
 Manage `proxy.ignore_hosts` with `safeyolo proxy ignore-host add`,
 `safeyolo proxy ignore-host list`, and `safeyolo proxy ignore-host remove`.

@@ -44,6 +44,43 @@ SafeYolo is built as a mitmproxy addon stack with a centralized Policy Decision 
                    └───────────────┘
 ```
 
+## Host Resource Protection
+
+SafeYolo keeps host protection separate from per-agent VM or container
+sizing. Before a start creates a runtime process, the CLI takes an instance
+lock and evaluates the requested agent against all currently running agents.
+The guard enforces these invariants:
+
+- aggregate configured CPU allocation stays below detected CPU capacity, leaving
+  one logical CPU for the host unless the operator explicitly overrides it;
+- aggregate configured memory retains one existing default-agent allocation
+  from detected host memory, and a new request stays below current available
+  memory; an explicit aggregate memory ceiling is not reached;
+- a filesystem used by SafeYolo runtime writes retains a computed target-
+  filesystem startup allocation bound (including dynamic files and replacement
+  overlap) plus one detected allocation block before new work starts;
+  if that bound cannot be computed, admission is closed; and
+- a new runtime process is not admitted when the detected host process limit
+  has the minimum runtime launch headroom (two Linux tasks, one macOS helper).
+
+The guard checks the configuration directory, SafeYolo log directory, agent
+workspaces, and configured mount sources. This covers persistent homes,
+container overlays, logs, snapshots, and workspace writes without pretending
+that a per-agent overlay size is a host disk quota. The automatic disk
+watermark is the computed target-filesystem startup allocation bound plus one
+filesystem allocation block. Operators can set a positive explicit
+`host_resources` override in `config.yaml` when they have a host-specific
+capacity model; explicit values
+replace their automatic reserve.
+
+Linux retains the existing per-agent systemd user scope for per-agent
+`MemoryMax` and `CPUQuota`. The aggregate process limit remains an admission
+check rather than being copied into every per-agent scope: doing so would
+multiply the aggregate limit. Linux systems without a usable user scope and
+macOS retain aggregate admission checks but report admission-only or degraded
+enforcement in `safeyolo doctor --verbose`. SafeYolo does not resize or stop
+active agents and does not implement a quota scheduler.
+
 ## Policy Model
 
 ### UnifiedPolicy

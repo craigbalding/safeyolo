@@ -187,6 +187,8 @@ class DarwinPlatform(AgentPlatform):
 
     def stop_sandbox(self, name: str) -> None:
         stop_vm(name)
+        from ..host_resources import clear_running_agent_allocation  # noqa: PLC0415
+        clear_running_agent_allocation(name)
 
     def exec_in_sandbox(self, name: str, command: str | None,
                         user: str = "agent",

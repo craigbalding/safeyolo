@@ -280,7 +280,7 @@ nodes:
         - path: cli/src/safeyolo/commands/setup.py
           sha256: 63c87cd0790a9b29f177487eed9a021cc569605dcda1d2413a98ded581dabad7
         - path: cli/src/safeyolo/platform/linux.py
-          sha256: 13b88e47b1675df8e3b746f82ce12c861e2bd5d3a6163348bf4ce841864dbc31
+          sha256: ed2b7f87f617c4d942f47e212c1cce9bb60d754a1f5e5dbd4c4e37cac0b37926
       setup: "Use an approved Linux host; run the product bootstrap/setup path and preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostic evidence."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh cli/src/safeyolo/commands/setup.py cli/src/safeyolo/platform/linux.py && runsc --version && safeyolo doctor --json"
       run:
@@ -476,7 +476,7 @@ nodes:
         - path: cli/tests/test_sockets.py
           sha256: 1fd1b1f63296f8a8ae031aba9b7a89bf15dc13933bb059c40581927168670221
         - path: cli/tests/test_linux_platform_oci.py
-          sha256: 76bc42883c6832c0d5a5975d0062a1844f9652377d1b17a67b715a47acdd0192
+          sha256: b68949ae09121622312ce312150f3565cac4ecfa15451bc937b161b6dd63b8ed
       setup: "Use the prepared proxy lane for system evidence or the locked Python environment for a focused implementation probe."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py cli/tests/test_sockets.py cli/tests/test_linux_platform_oci.py"
       run:

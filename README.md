@@ -263,6 +263,22 @@ safeyolo agent run work
 Changing memory does not recreate the agent or alter its workspace, persistent
 home, configuration, or overlay.
 
+SafeYolo also applies a host-wide admission guard before each new agent starts.
+The guard sums the actual CPU and memory allocations of running agents,
+refuses startup when a SafeYolo-used filesystem has reached its configured low
+watermark, and checks the host process capacity with runtime launch headroom.
+It retains one existing default-agent allocation from detected host memory,
+and checks each new request against live available memory; an explicit memory
+ceiling adds an aggregate configured-allocation cap. Automatic disk protection
+reserves a computed target-filesystem startup allocation bound plus one
+filesystem allocation block.
+Automatic boundaries come from host measurements; explicit overrides live
+under `host_resources` in `config.yaml` and replace their automatic reserve.
+Run `safeyolo doctor --verbose` to inspect detected capacity, effective
+boundaries, derivation sources, and degraded enforcement states.
+See [configuration](docs/CONFIGURATION.md#configyaml) for the override names
+and limitations.
+
 Agents can collaborate through SafeYolo's retained coord rooms. Operators who
 run that message plane should use the [coord operations
 runbook](docs/coord-operations.md) for its managed NATS credential lifecycle,
