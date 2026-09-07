@@ -544,6 +544,13 @@ def _run_agent(*args, launch_mode="foreground", interactive=False, **kwargs) -> 
 
     name = kwargs.get("name") if "name" in kwargs else args[0]
     _validate_instance_name(name)
+    # Validate local setup before runtime inspection or launch-state creation.
+    # A missing agent must not require an installed sandbox runtime to report.
+    rootfs = get_platform().agent_rootfs_path(name)
+    if not rootfs.exists():
+        console.print(f"[red]Agent not found: {escape(name)}[/red]")
+        console.print("Run [bold]safeyolo agent add <name> <folder>[/bold] first.")
+        raise typer.Exit(1)
     record = None
     with _agent_host_setup_lock(name):
         with launch_lock(name):
@@ -622,15 +629,6 @@ def _run_agent_impl(
     """
     _t("cli entry (metadata, proxy check)")
     _validate_instance_name(name)
-
-    # Rootfs path is platform-specific. Darwin uses a per-agent ext4 image.
-    # Linux selects the shared unpacked tree or a custom per-agent tree.
-    from ..platform import get_platform
-    rootfs = get_platform().agent_rootfs_path(name)
-    if not rootfs.exists():
-        console.print(f"[red]Agent not found: {escape(name)}[/red]")
-        console.print("Run [bold]safeyolo agent add <name> <folder>[/bold] first.")
-        raise typer.Exit(1)
 
     # Load metadata for user_default_args
     metadata = _load_agent_metadata(name)

@@ -1761,15 +1761,25 @@ class TestRunAgent:
         assert result.exit_code == 1
         rename.assert_not_called()
 
-    def test_rootfs_missing_exits_one(self, runner, config_dir):
-        """_run_agent via `agent run` exits 1 if rootfs doesn't exist."""
-        # Use the run command which calls _run_agent
+    @pytest.mark.parametrize("options", [[], ["--detach"], ["--sandbox-only"]])
+    def test_rootfs_missing_exits_one(self, runner, config_dir, options):
+        """Missing rootfs is reported before inspecting the installed runtime."""
+        from safeyolo.platform import get_platform
+
+        platform = get_platform()
         with (
             patch("safeyolo.commands.agent._load_agent_metadata", return_value={"folder": "."}, autospec=True,),
+            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+            patch.object(
+                platform, "is_sandbox_running", autospec=True,
+                side_effect=RuntimeError("runsc not found"),
+            ) as running,
         ):
-            result = runner.invoke(app, ["agent", "run", "no-rootfs"])
+            result = runner.invoke(app, ["agent", "run", "no-rootfs", *options])
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
+        running.assert_not_called()
+        assert not (config_dir / "agents" / "no-rootfs").exists()
 
     def test_run_host_script_reapplies_existing_agent_setup(self, runner, config_dir, tmp_path):
         """agent run --host-script runs setup against the persistent home before boot."""
