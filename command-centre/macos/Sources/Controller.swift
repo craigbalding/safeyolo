@@ -132,7 +132,10 @@ final class CommandCentreController: ObservableObject {
     func openAgentTerminal(_ agent: AgentInfo) throws {
         let command = try agentAttachCommand(
             name: agent.name, remote: remoteTerminal,
-            terminalTarget: savedRemoteProfile?.terminalTarget
+            terminalTarget: savedRemoteProfile?.terminalTarget,
+            adminURL: savedRemoteProfile?.adminURL,
+            hostUser: client?.hostUser,
+            transport: savedRemoteProfile?.transport ?? .tailnet
         )
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")

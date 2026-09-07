@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 private final class MemoryCredentialStore: CredentialStore {
@@ -22,6 +23,7 @@ private final class StubURLProtocol: URLProtocol {
     static var observedAuthorization: String?
     static var failuresRemaining = 0
     static var requestCount = 0
+    static var responsesByPath: [String: (Int, Data)] = [:]
 
     override class func canInit(with request: URLRequest) -> Bool {
         true
@@ -39,14 +41,15 @@ private final class StubURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
             return
         }
+        let (status, data) = Self.responsesByPath[request.url!.path] ?? (Self.responseStatus, Self.responseData)
         let response = HTTPURLResponse(
             url: request.url!,
-            statusCode: Self.responseStatus,
+            statusCode: status,
             httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "application/json"]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Self.responseData)
+        client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
 
@@ -64,9 +67,102 @@ struct ModelTests {
         try testPinnedInstanceIdentity()
         try testAgentAndSecurityModels()
         try testTransportURLs()
+        try testAutomaticTerminalTarget()
         try await testClientIngestsAndCoalescesSecurityEvents()
         try await testClientRetriesInitialConnection()
+        try await testRequestErrorsRecoverIndependently()
         print("model-tests: PASS")
+    }
+
+    private static func testAutomaticTerminalTarget() throws {
+        let adminURL = "https://server.example.ts.net:9443"
+        let automatic = try agentAttachCommand(
+            name: "probe", remote: true, terminalTarget: nil, adminURL: adminURL, hostUser: "operator"
+        )
+        let explicit = try agentAttachCommand(name: "probe", remote: true, terminalTarget: "operator@server.example.ts.net")
+        precondition(automatic == explicit)
+        precondition(!automatic.contains("9443"))
+        let override = try agentAttachCommand(
+            name: "probe", remote: true, terminalTarget: "custom-alias", adminURL: adminURL, hostUser: "operator"
+        )
+        precondition(override.hasPrefix("ssh -t -- 'custom-alias' "))
+        let local = try agentAttachCommand(
+            name: "probe", remote: false, terminalTarget: "ignored", adminURL: adminURL, hostUser: "operator"
+        )
+        precondition(local == "safeyolo agent attach -- 'probe'")
+        do {
+            _ = try agentAttachCommand(
+                name: "probe", remote: true, terminalTarget: nil,
+                adminURL: "http://localhost:19090", hostUser: "operator", transport: .sshTunnel
+            )
+            preconditionFailure("A forwarded API URL is not the SSH server")
+        } catch ConnectionError.missingTerminalTarget {}
+        let tunnel = try agentAttachCommand(
+            name: "probe", remote: true, terminalTarget: "tunnel-alias",
+            adminURL: "http://localhost:19090", hostUser: "operator", transport: .sshTunnel
+        )
+        precondition(tunnel.hasPrefix("ssh -t -- 'tunnel-alias' "))
+
+        // Exercise both shell boundaries without making any SSH connection.
+        func shellArguments(_ command: String, function: String) throws -> [String] {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", function + "() { printf '%s\\0' \"$@\"; }; " + command]
+            process.standardOutput = output
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            precondition(process.terminationStatus == 0)
+            return String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init)
+        }
+        let name = "probe'; echo SHOULD_NOT_EXECUTE; #"
+        let target = "user'$(echo SHOULD_NOT_EXECUTE)@host"
+        let command = try agentAttachCommand(name: name, remote: true, terminalTarget: target)
+        let sshArgs = try shellArguments(command, function: "ssh")
+        precondition(sshArgs.count == 4 && sshArgs[0] == "-t" && sshArgs[1] == "--" && sshArgs[2] == target)
+        let attachArgs = try shellArguments(sshArgs[3], function: "safeyolo")
+        precondition(attachArgs == ["agent", "attach", "--", name])
+    }
+
+    @MainActor
+    private static func testRequestErrorsRecoverIndependently() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        StubURLProtocol.responsesByPath = [
+            "/admin/instance": (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-remote-test","host_user":"operator"}"#.utf8)),
+            "/admin/approvals": (200, Data(#"{"approvals":[]}"#.utf8)),
+            "/admin/agents": (503, Data(#"{"error":"agent inventory unavailable"}"#.utf8)),
+        ]
+        defer { StubURLProtocol.responsesByPath = [:] }
+        let client = try SafeYoloClient(
+            adminURL: "https://dev.example.ts.net:9443", eventsURL: "wss://dev.example.ts.net:9444/admin/events",
+            token: "fixture-token", expectedInstanceID: "sy-remote-test",
+            session: URLSession(configuration: configuration)
+        )
+        defer { client.stop() }
+        let failedRefresh = await client.refreshAgents()
+        precondition(!failedRefresh && client.connectionState == .connecting,
+                     "A manual inventory failure must not claim the event connection is reconnecting")
+        var agentErrors: [String?] = []
+        let subscription = client.$requestErrors.sink { agentErrors.append($0["Agent status"]) }
+        defer { subscription.cancel() }
+        client.start()
+        let deadline = Date().addingTimeInterval(4)
+        while agentErrors.compactMap({ $0 }).count < 3, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard let firstFailure = agentErrors.firstIndex(where: { $0 != nil }) else {
+            preconditionFailure("Expected agent inventory failure")
+        }
+        precondition(agentErrors.compactMap { $0 }.count >= 3)
+        precondition(agentErrors[firstFailure...].allSatisfy { $0 != nil }, "Successful identity/approval retries cleared the agent error")
+        precondition(client.hostUser == "operator")
+        precondition(client.errorDetails?.contains("agent inventory unavailable") == true)
+        client.stop()
+        StubURLProtocol.responsesByPath["/admin/agents"] = (200, Data(#"{"agents":[]}"#.utf8))
+        let recovered = await client.refreshAgents()
+        precondition(recovered && client.errorDetails == nil)
     }
 
     private static func testTransportURLs() throws {
@@ -144,7 +240,7 @@ struct ModelTests {
         precondition(!remote.contains("agent run"))
         do {
             _ = try agentAttachCommand(name: "probe", remote: true, terminalTarget: nil)
-            preconditionFailure("Remote terminal must require separately configured SSH access")
+            preconditionFailure("Remote terminal needs a discovered or explicitly configured target")
         } catch ConnectionError.missingTerminalTarget {}
 
         let decoded = try JSONDecoder().decode(

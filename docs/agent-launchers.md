@@ -151,26 +151,39 @@ first be stopped so debugging cannot start a competing harness.
 ## Remote connections
 
 Tailscale is the default remote transport. Use Command Centre's Tailnet
-Admin/events URLs and a tailnet hostname or SSH configuration alias for the
-optional terminal target. Standard SSH works over the tailnet, including
+Admin/events URLs. The authenticated `/admin/instance` response reports
+`host_user`, the OS account running the proxy (looked up by effective UID).
+Open Agent Terminal defaults to that username and the connected Tailnet
+hostname; it does not use the Mac's login or the Admin URL's port.
+Standard SSH works over the tailnet, including
 when Tailscale SSH provides authentication on that host.
 
 For the initial non-Tailscale fallback, set up your own SSH forwards, select
 **SSH tunnel**, and enter their loopback Admin/events URLs. For example, forward
 local ports 19090 and 19091 to the remote host's loopback ports 9090 and 9091.
 Keep the existing Admin credential and instance-ID check. The app treats this
-as a remote instance even though its forwarded URLs use localhost.
+as a remote instance even though its forwarded URLs use localhost. Set the
+optional SSH target to the real host or an SSH configuration alias; the
+forwarded loopback URL cannot identify an SSH destination.
 
 Run Agent uses the named Admin API operation and needs no SSH connection.
 Open Agent Terminal opens Terminal.app and runs `ssh -t TARGET` followed by
-`safeyolo agent attach NAME` on that host. The target comes from local connection
-settings; no command, script path, or arbitrary argv is accepted by the Admin
+`safeyolo agent attach NAME` on that host. An explicit SSH target in local
+connection settings overrides discovery, for example to use another login.
+If the host's effective UID has no OS account entry, `host_user` is null and an
+explicit SSH target is needed. No command, script path, or arbitrary argv is accepted by the Admin
 API. SSH configuration can select users, ports, identities, or a jump host.
 Closing either connection loses the view, not the running agent.
 
 Desktop previews also need a reachable preview endpoint. Forwarding only the
 Admin/events ports does not forward a dynamically allocated preview port.
 The app does not create or silently rewrite SSH tunnels.
+
+The menu has a fixed **Error details…** entry. It opens full, selectable errors
+in a resizable window with **Copy Details**; long errors do not resize the menu.
+An unresolved request error remains until that operation succeeds. A successful
+identity request does not clear a failed inventory request. Live event gaps
+remain available in the details window until dismissed.
 
 ## Upgrade and acceptance
 

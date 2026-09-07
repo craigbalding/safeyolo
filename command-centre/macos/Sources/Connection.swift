@@ -123,13 +123,23 @@ final class RemoteConnectionVerifier {
     }
 }
 
-func agentAttachCommand(name: String, remote: Bool, terminalTarget: String?) throws -> String {
+func agentAttachCommand(
+    name: String, remote: Bool, terminalTarget: String?,
+    adminURL: String? = nil, hostUser: String? = nil, transport: RemoteTransport = .tailnet
+) throws -> String {
     func quoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
     let attach = "safeyolo agent attach -- " + quoted(name)
     guard remote else { return attach }
-    guard let target = terminalTarget, !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    let target: String
+    if let override = terminalTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
+        target = override
+    } else if transport == .tailnet,
+              let host = URL(string: adminURL ?? "")?.host,
+              let user = hostUser, !user.isEmpty {
+        target = user + "@" + host
+    } else {
         throw ConnectionError.missingTerminalTarget
     }
     // This connects a viewer to an existing host session; it never starts an
@@ -169,7 +179,7 @@ enum ConnectionError: LocalizedError {
         case .missingToken:
             return "Enter the remote Admin API credential"
         case .missingTerminalTarget:
-            return "Set an SSH host or user@host in Connection Settings to open a remote terminal. Run Agent does not need SSH."
+            return "The remote terminal target is unavailable. Tailscale uses the connected host and its reported username. For an SSH tunnel or a different login, set user@host or an SSH alias in Connection Settings. Run Agent does not need SSH."
         case .missingCredential(let instanceID):
             return "No Keychain credential is stored for \(instanceID)"
         case .requestFailed(let status):

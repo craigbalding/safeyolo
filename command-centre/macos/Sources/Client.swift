@@ -16,8 +16,14 @@ final class SafeYoloClient: ObservableObject {
     @Published private(set) var securityEvents: [SecurityObservation] = []
     @Published private(set) var busyAgentIDs = Set<String>()
     @Published private(set) var instanceID = ""
-    @Published private(set) var lastError: String?
+    @Published private(set) var hostUser: String?
+    @Published private(set) var requestErrors: [String: String] = [:]
     @Published private(set) var eventFeedGap: String?
+
+    var errorDetails: String? {
+        guard !requestErrors.isEmpty else { return nil }
+        return requestErrors.keys.sorted().map { "\($0):\n\(requestErrors[$0]!)" }.joined(separator: "\n\n")
+    }
 
     var onNewApproval: ((ApprovalEvent) -> Void)?
     var onNewSecurityEvent: ((SecurityObservation) -> Void)?
@@ -83,6 +89,8 @@ final class SafeYoloClient: ObservableObject {
                         return
                     }
                 }
+                guard !Task.isCancelled, !stopping else { return }
+                connectionState = .reconnecting
                 try? await Task.sleep(for: .seconds(1))
             }
         }
@@ -104,9 +112,10 @@ final class SafeYoloClient: ObservableObject {
                     result = .decided(allow ? "Allowed" : "Denied")
                 }
                 await refreshApprovals()
+                requestErrors["Approval decision"] = nil
                 completion(.success(result))
             } catch {
-                lastError = error.localizedDescription
+                requestErrors["Approval decision"] = error.localizedDescription
                 completion(.failure(error))
             }
         }
@@ -133,9 +142,10 @@ final class SafeYoloClient: ObservableObject {
                 )
                 let updated = try JSONDecoder().decode(AgentInfo.self, from: data)
                 await refreshAgents()
+                requestErrors["Run or stop agent"] = nil
                 completion(.success(updated))
             } catch {
-                lastError = error.localizedDescription
+                requestErrors["Run or stop agent"] = error.localizedDescription
                 completion(.failure(error))
             }
         }
@@ -157,9 +167,11 @@ final class SafeYoloClient: ObservableObject {
                     path: "/admin/agents/\(encodedID)/desktop/present",
                     method: "POST"
                 )
-                completion(.success(try JSONDecoder().decode(DesktopPresentation.self, from: data)))
+                let presentation = try JSONDecoder().decode(DesktopPresentation.self, from: data)
+                requestErrors["Present desktop"] = nil
+                completion(.success(presentation))
             } catch {
-                lastError = error.localizedDescription
+                requestErrors["Present desktop"] = error.localizedDescription
                 completion(.failure(error))
             }
         }
@@ -177,19 +189,19 @@ final class SafeYoloClient: ObservableObject {
     private func refreshInstance() async -> Bool {
         do {
             let data = try await request(path: "/admin/instance")
-            let actualInstanceID = try JSONDecoder().decode(
+            let instance = try JSONDecoder().decode(
                 InstanceInfo.self,
                 from: data
-            ).safeyoloInstanceID
+            )
             instanceID = try validatePinnedInstanceID(
-                actual: actualInstanceID,
+                actual: instance.safeyoloInstanceID,
                 expected: expectedInstanceID
             )
-            lastError = nil
+            hostUser = instance.hostUser
+            requestErrors["Instance identity"] = nil
             return true
         } catch {
-            connectionState = .reconnecting
-            lastError = error.localizedDescription
+            requestErrors["Instance identity"] = error.localizedDescription
             return false
         }
     }
@@ -205,11 +217,10 @@ final class SafeYoloClient: ObservableObject {
             if let first = newApprovals.first {
                 onNewApproval?(first)
             }
-            lastError = nil
+            requestErrors["Pending approvals"] = nil
             return true
         } catch {
-            connectionState = .reconnecting
-            lastError = error.localizedDescription
+            requestErrors["Pending approvals"] = error.localizedDescription
             return false
         }
     }
@@ -219,11 +230,10 @@ final class SafeYoloClient: ObservableObject {
         do {
             let data = try await request(path: "/admin/agents")
             agents = try JSONDecoder().decode(AgentInventory.self, from: data).agents
-            lastError = nil
+            requestErrors["Agent status"] = nil
             return true
         } catch {
-            connectionState = .reconnecting
-            lastError = error.localizedDescription
+            requestErrors["Agent status"] = error.localizedDescription
             return false
         }
     }
@@ -245,7 +255,7 @@ final class SafeYoloClient: ObservableObject {
                 if eventFeedGap != nil {
                     eventFeedGap = "Live event feed reconnected after a gap; events during the gap may be missing."
                 }
-                lastError = nil
+                requestErrors["Live events"] = nil
                 await receiveEvents(from: socket)
             } catch {
                 handleEventDisconnect(socket, error: error)
@@ -305,7 +315,7 @@ final class SafeYoloClient: ObservableObject {
         guard !stopping, webSocket === socket else { return }
         connectionState = .reconnecting
         eventFeedGap = "Live event feed interrupted; events during this gap may be missing."
-        lastError = "Live events disconnected: \(error.localizedDescription)"
+        requestErrors["Live events"] = error.localizedDescription
         webSocket = nil
         reconnectUntilAvailable()
     }

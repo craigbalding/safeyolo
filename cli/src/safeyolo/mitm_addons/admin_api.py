@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import pwd
 import re
 import secrets
 import threading
@@ -289,10 +290,15 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_get_instance(self) -> None:
         """GET /admin/instance - Stable identity and client capabilities."""
+        try:
+            host_user = pwd.getpwuid(os.geteuid()).pw_name
+        except KeyError:
+            host_user = None
         self._send_json(
             {
                 "schema_version": 1,
                 "safeyolo_instance_id": get_or_create_instance_id(),
+                "host_user": host_user,
                 "capabilities": {
                     "agent_inventory": True,
                     "agent_lifecycle": True,

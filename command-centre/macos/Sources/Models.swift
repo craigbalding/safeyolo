@@ -3,10 +3,12 @@ import Foundation
 struct InstanceInfo: Decodable {
     let schemaVersion: Int
     let safeyoloInstanceID: String
+    let hostUser: String?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case safeyoloInstanceID = "safeyolo_instance_id"
+        case hostUser = "host_user"
     }
 }
 

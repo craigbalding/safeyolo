@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import pwd
 import threading
 from unittest.mock import create_autospec, patch
 
@@ -89,7 +91,9 @@ def _approval_event(event_id: str = "evt-approval") -> dict:
     }
 
 
-def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin):
+def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin, monkeypatch):
+    monkeypatch.setenv("USER", "not-the-proxy-user")
+    monkeypatch.setenv("LOGNAME", "not-the-proxy-user")
     base_url, _ = command_centre_admin
     unauthorized = httpx.get(f"{base_url}/admin/instance")
     assert unauthorized.status_code == 401
@@ -100,6 +104,7 @@ def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin):
 
     assert first == second
     assert first["safeyolo_instance_id"].startswith("sy-")
+    assert first["host_user"] == pwd.getpwuid(os.geteuid()).pw_name
     assert first["capabilities"] == {
         "agent_inventory": True,
         "agent_lifecycle": True,
@@ -107,6 +112,15 @@ def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin):
         "audit_events": True,
         "desktop_present": True,
     }
+
+
+def test_instance_identity_survives_unmapped_host_uid(command_centre_admin):
+    base_url, _ = command_centre_admin
+    api = AdminAPI(base_url=base_url, token="test-admin-token")
+    with patch("safeyolo.mitm_addons.admin_api.pwd.getpwuid", side_effect=KeyError, autospec=True):
+        instance = api.instance()
+    assert instance["host_user"] is None
+    assert instance["safeyolo_instance_id"].startswith("sy-")
 
 
 def test_pending_approvals_come_from_durable_audit_log(command_centre_admin):

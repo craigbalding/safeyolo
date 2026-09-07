@@ -7,6 +7,7 @@ struct SafeYoloCommandCentreApp: App {
     private let presenter: ApprovalWindowPresenter
     private let settingsPresenter: ConnectionSettingsWindowPresenter
     private let securityPresenter: SecurityEventWindowPresenter
+    private let errorPresenter = ErrorWindowPresenter()
 
     init() {
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -36,7 +37,8 @@ struct SafeYoloCommandCentreApp: App {
                 controller: controller,
                 presenter: presenter,
                 settingsPresenter: settingsPresenter,
-                securityPresenter: securityPresenter
+                securityPresenter: securityPresenter,
+                errorPresenter: errorPresenter
             )
             .onAppear {
                 Task { _ = await controller.client?.refreshAgents() }
