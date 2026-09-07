@@ -51,13 +51,13 @@ def test_start_agent_rejects_unknown_identity():
     assert caught.value.status_code == 404
 
 
-def test_start_agent_preserves_failure_detail_for_operator():
+def test_start_agent_preserves_failure_detail_for_operator(caplog):
     platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
     platform.is_sandbox_running.return_value = False
     with (
         patch(
             "safeyolo.agent_lifecycle.get_agent_by_id",
-            return_value=("probe", {"agent_id": "ag-probe"}),
+            return_value=("probe\r\n\x1b[31m\u202e", {"agent_id": "ag-probe"}),
             autospec=True,
         ),
         patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
@@ -75,6 +75,11 @@ def test_start_agent_preserves_failure_detail_for_operator():
         ),
     ):
         start_agent("ag-probe")
+
+    record = caplog.records[-1]
+    assert record.getMessage() == "Agent probe? failed to start"
+    assert record.exc_info is not None
+    assert str(record.exc_info[1]) == "configured workspace is unavailable"
 
 
 def test_stop_agent_stops_supervisor_and_running_sandbox():

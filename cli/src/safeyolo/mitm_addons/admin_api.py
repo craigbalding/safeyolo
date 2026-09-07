@@ -85,7 +85,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         """Override to use mitmproxy logging."""
-        log.debug(f"Admin API: {format % args}")
+        log.debug("Admin API: %s", _sanitize_log(format % args, max_len=None))
 
     def _check_auth(self) -> bool:
         """Verify bearer token authentication.
@@ -1180,7 +1180,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, status)
             return
         except Exception as exc:
-            log.exception("Desktop presentation failed for agent %s", agent_id)
+            log.exception("Desktop presentation failed for agent %s", _sanitize_log(agent_id, max_len=None))
             self._send_json(
                 {"error": f"Desktop presentation failed: {type(exc).__name__}"},
                 500,
@@ -1229,7 +1229,11 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, exc.status_code)
             return
         except Exception as exc:
-            log.exception("Agent %s failed for %s", action, agent_id)
+            log.exception(
+                "Agent %s failed for %s",
+                _sanitize_log(action, max_len=None),
+                _sanitize_log(agent_id, max_len=None),
+            )
             self._send_json({"error": f"Agent {action} failed: {type(exc).__name__}"}, 500)
             return
         if action == "stop" and self.desktop_presenter is not None:

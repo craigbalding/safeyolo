@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from .audit_schema import sanitize_for_log
 from .audit_stream import AuditLineParser, follow_jsonl, resolved_approval_key
 
 log = logging.getLogger("safeyolo.operator-events")
@@ -118,7 +119,9 @@ class OperatorEventServer:
                 log.exception("Operator event server stopped unexpectedly")
 
     def _handle_connection(self, connection) -> None:
-        parser = AuditLineParser(on_schema_drift=lambda exc: log.warning("Audit schema drift: %s", exc))
+        parser = AuditLineParser(
+            on_schema_drift=lambda exc: log.warning("Audit schema drift: %s", sanitize_for_log(exc, max_len=None))
+        )
         try:
             for event in follow_jsonl(
                 self.log_path,
@@ -131,7 +134,7 @@ class OperatorEventServer:
                     connection.send(json.dumps(event, separators=(",", ":")))
         except Exception as exc:
             if not self._stop.is_set():
-                log.debug("Operator event client disconnected: %s", exc)
+                log.debug("Operator event client disconnected: %s", sanitize_for_log(exc, max_len=None))
 
     def stop(self) -> None:
         """Stop the listener and connected stream handlers."""

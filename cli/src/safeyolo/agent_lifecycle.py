@@ -77,7 +77,9 @@ def start_agent(agent_id: str) -> AgentRuntime:
             rename_tmux_window=False,
         )
     except Exception as exc:
-        log.exception("Agent %s failed to start", name)
+        from .core.audit_schema import sanitize_for_log
+
+        log.exception("Agent %s failed to start", sanitize_for_log(name, max_len=None))
         detail = str(exc).strip() or "no additional detail"
         exit_code = getattr(exc, "exit_code", None)
         if exit_code is not None:

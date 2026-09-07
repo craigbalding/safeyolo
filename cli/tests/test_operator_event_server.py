@@ -3,15 +3,39 @@
 from __future__ import annotations
 
 import json
+import logging
+from unittest.mock import patch
 
 import pytest
 from websockets.exceptions import InvalidStatus
 from websockets.sync.client import connect
 
+from safeyolo.core.audit_schema import InvalidAuditEvent
 from safeyolo.core.operator_event_server import (
     OperatorEventServer,
     is_operator_event,
 )
+
+
+def test_stream_diagnostics_sanitize_errors_without_truncating(tmp_path, caplog):
+    server = OperatorEventServer(log_path=tmp_path / "audit.jsonl", token="operator-token")
+    detail = "broken\r\n\x1b[31m\u202e" + "x" * 250
+
+    def read_events(path, *, parse_line, **kwargs):
+        parse_line("{}")
+        raise ConnectionError(detail)
+
+    with (
+        caplog.at_level(logging.DEBUG, logger="safeyolo.operator-events"),
+        patch("safeyolo.core.audit_stream.parse_audit_event", side_effect=InvalidAuditEvent(detail, {}), autospec=True),
+        patch("safeyolo.core.operator_event_server.follow_jsonl", side_effect=read_events, autospec=True),
+    ):
+        server._handle_connection(object())
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "Audit schema drift: broken?" + "x" * 250,
+        "Operator event client disconnected: broken?" + "x" * 250,
+    ]
 
 
 def _event(event_id: str, event_type: str, **extra) -> dict:

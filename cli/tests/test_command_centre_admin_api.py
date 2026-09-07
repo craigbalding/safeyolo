@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from unittest.mock import create_autospec, patch
 
@@ -13,6 +14,41 @@ from safeyolo.agent_lifecycle import AgentRuntime
 from safeyolo.api import AdminAPI
 from safeyolo.desktop_presenter import DesktopPresentation, DesktopPresenter
 from safeyolo.mitm_addons.admin_api import AdminRequestHandler, LoopbackHTTPServer
+
+
+def test_request_logging_sanitizes_formatted_text_without_truncating(caplog):
+    handler = object.__new__(AdminRequestHandler)
+    suffix = "x" * 250
+    with caplog.at_level(logging.DEBUG, logger="safeyolo.admin"):
+        handler.log_message("request %s", "ag-probe\r\n\x1b[31m\u202e" + suffix)
+
+    assert caplog.records[-1].getMessage() == "Admin API: request ag-probe?" + suffix
+
+
+@pytest.mark.parametrize("action", ["desktop", "start", "stop"])
+def test_failed_actions_sanitize_log_identity_and_preserve_traceback(action, caplog):
+    handler = object.__new__(AdminRequestHandler)
+    agent_id = "ag-probe\r\n\x1b[31m\u202e" + "x" * 250
+    presenter = create_autospec(DesktopPresenter, instance=True, spec_set=True)
+    presenter.present.side_effect = RuntimeError("presentation failed")
+    handler.desktop_presenter = presenter
+    with (
+        patch.object(handler, "_read_optional_json_object", return_value={}, autospec=True),
+        patch.object(handler, "_send_json", autospec=True) as send_json,
+        patch("safeyolo.agent_lifecycle.start_agent", side_effect=RuntimeError("start failed"), autospec=True),
+        patch("safeyolo.agent_lifecycle.stop_agent", side_effect=RuntimeError("stop failed"), autospec=True),
+    ):
+        if action == "desktop":
+            handler._handle_post_desktop_present(agent_id)
+        else:
+            handler._handle_post_agent_lifecycle(agent_id, action)
+
+    record = caplog.records[-1]
+    prefix = "Desktop presentation failed for agent" if action == "desktop" else f"Agent {action} failed for"
+    assert record.getMessage() == prefix + " ag-probe?" + "x" * 250
+    assert record.exc_info is not None
+    assert record.exc_info[0] is RuntimeError
+    assert send_json.call_args.args[1] == 500
 
 
 @pytest.fixture
