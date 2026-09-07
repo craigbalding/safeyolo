@@ -295,12 +295,15 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             host_user = pwd.getpwuid(os.geteuid()).pw_name
         except KeyError:
             host_user = None
+        web_share = self._get_addon("safeyolo-web-tailnet-share")
+        webmitm_url = web_share.get_stats().get("url") if web_share is not None else None
         self._send_json(
             {
                 "schema_version": 1,
                 "safeyolo_instance_id": get_or_create_instance_id(),
                 "host_user": host_user,
                 "host_python": sys.executable,
+                "webmitm_url": webmitm_url,
                 "capabilities": {
                     "agent_inventory": True,
                     "agent_lifecycle": True,

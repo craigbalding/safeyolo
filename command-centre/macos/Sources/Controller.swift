@@ -13,6 +13,7 @@ final class CommandCentreController: ObservableObject {
     private let profileStore: any ConnectionProfileStore
     private let verifier: RemoteConnectionVerifier
     private var clientUpdates: AnyCancellable?
+    private var notificationUpdates: AnyCancellable?
     private var remoteTerminal = false
 
     init(
@@ -27,7 +28,12 @@ final class CommandCentreController: ObservableObject {
         self.keychain = keychain
         self.profileStore = profileStore
         self.verifier = verifier
+        notificationUpdates = securityNotifier.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
+
+    var notificationError: String? { securityNotifier.error }
 
     var savedRemoteProfile: RemoteConnectionProfile? {
         try? profileStore.load()
@@ -130,13 +136,22 @@ final class CommandCentreController: ObservableObject {
     }
 
     func openAgentTerminal(_ agent: AgentInfo) throws {
-        let command = try agentAttachCommand(
+        try openTerminal(agent, action: .attach)
+    }
+
+    func openSandboxShell(_ agent: AgentInfo) throws {
+        try openTerminal(agent, action: .shell)
+    }
+
+    private func openTerminal(_ agent: AgentInfo, action: AgentTerminalAction) throws {
+        let command = try agentTerminalCommand(
             name: agent.name, remote: remoteTerminal,
             terminalTarget: savedRemoteProfile?.terminalTarget,
             adminURL: savedRemoteProfile?.adminURL,
             hostUser: client?.hostUser,
             hostPython: client?.hostPython,
-            transport: savedRemoteProfile?.transport ?? .tailnet
+            transport: savedRemoteProfile?.transport ?? .tailnet,
+            action: action
         )
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")

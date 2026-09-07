@@ -123,15 +123,20 @@ final class RemoteConnectionVerifier {
     }
 }
 
-func agentAttachCommand(
+enum AgentTerminalAction: String {
+    case attach
+    case shell
+}
+
+func agentTerminalCommand(
     name: String, remote: Bool, terminalTarget: String?,
     adminURL: String? = nil, hostUser: String? = nil, hostPython: String? = nil,
-    transport: RemoteTransport = .tailnet
+    transport: RemoteTransport = .tailnet, action: AgentTerminalAction = .attach
 ) throws -> String {
     func quoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
-    guard remote else { return "safeyolo agent attach -- " + quoted(name) }
+    guard remote else { return "safeyolo agent \(action.rawValue) -- " + quoted(name) }
     let target: String
     if let override = terminalTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
         target = override
@@ -147,10 +152,10 @@ func agentAttachCommand(
     }
     // Keep the interpreter's venv path intact: resolving its symlink would
     // select the base Python and lose the installed SafeYolo package.
-    let attach = quoted(python) + " -m safeyolo.cli agent attach -- " + quoted(name)
-    // This connects a viewer to an existing host session; it never starts an
-    // agent. SSH credentials are separate from the Admin API credential.
-    return "ssh -t -- " + quoted(target) + " " + quoted(attach)
+    let command = quoted(python) + " -m safeyolo.cli agent \(action.rawValue) -- " + quoted(name)
+    // Attach or open an independent shell; neither action starts the agent.
+    // SSH credentials are separate from the Admin API credential.
+    return "ssh -t -- " + quoted(target) + " " + quoted(command)
 }
 
 func validatedRemoteURL(_ value: String, scheme: String, transport: RemoteTransport) throws -> URL {

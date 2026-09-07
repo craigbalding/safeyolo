@@ -5,12 +5,14 @@ struct InstanceInfo: Decodable {
     let safeyoloInstanceID: String
     let hostUser: String?
     let hostPython: String?
+    let webmitmURL: String?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case safeyoloInstanceID = "safeyolo_instance_id"
         case hostUser = "host_user"
         case hostPython = "host_python"
+        case webmitmURL = "webmitm_url"
     }
 }
 
@@ -69,6 +71,16 @@ struct AgentInfo: Decodable, Equatable, Hashable, Identifiable {
     var sandboxReady: Bool { sandboxState == "ready" }
     var canStart: Bool { ["stopped", "exited", "failed"].contains(agentState) }
     var managed: Bool { ["supervisor", "manager"].contains(launcher?.kind ?? "") }
+    var statusSymbol: String {
+        switch agentState {
+        case "running": return "play.circle.fill"
+        case "stopped", "exited": return "stop.circle"
+        case "starting", "launching", "restarting": return "arrow.triangle.2.circlepath"
+        case "stopping", "finishing": return "hourglass"
+        case "failed": return "exclamationmark.triangle.fill"
+        default: return "questionmark.circle"
+        }
+    }
 }
 
 enum JSONValue: Decodable, Hashable, CustomStringConvertible {

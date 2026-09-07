@@ -56,19 +56,12 @@ dependencies = [
 
 [project.scripts]
 safeyolo = "safeyolo.cli:app"
-safeyolo-command-centre = "safeyolo.command_centre.app:main"
 
 [project.urls]
 Homepage = "https://github.com/craigbalding/safeyolo"
 Documentation = "https://github.com/craigbalding/safeyolo#readme"
 Repository = "https://github.com/craigbalding/safeyolo"
 Issues = "https://github.com/craigbalding/safeyolo/issues"
-
-[project.optional-dependencies]
-command-centre = [
-    "keyring>=25.7,<26",
-    "pyside6>=6.8,<7",
-]
 
 [dependency-groups]
 dev = [
@@ -79,8 +72,6 @@ dev = [
     "pytest-timeout>=2.0.0",
     "pre-commit>=3.0.0",
     "ruff>=0.9.4",
-    "keyring>=25.7,<26",
-    "pyside6>=6.8,<7",
     "websockets>=16.1,<17",
 ]
 # SBOM generation

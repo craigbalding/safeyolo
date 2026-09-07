@@ -107,6 +107,7 @@ def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin, mon
     assert first["safeyolo_instance_id"].startswith("sy-")
     assert first["host_user"] == pwd.getpwuid(os.geteuid()).pw_name
     assert first["host_python"] == sys.executable
+    assert first["webmitm_url"] is None
     assert first["capabilities"] == {
         "agent_inventory": True,
         "agent_lifecycle": True,
@@ -114,6 +115,19 @@ def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin, mon
         "audit_events": True,
         "desktop_present": True,
     }
+
+
+def test_instance_reports_live_webmitm_url_without_guessing_port(command_centre_admin, monkeypatch):
+    from safeyolo.traffic_master import WebTailnetShare
+
+    share = create_autospec(WebTailnetShare, instance=True, spec_set=True)
+    share.get_stats.return_value = {"state": "healthy", "url": "https://dev.example.ts.net:8443/"}
+    monkeypatch.setattr(AdminRequestHandler, "addons_with_stats", {"safeyolo-web-tailnet-share": share})
+    base_url, _ = command_centre_admin
+    api = AdminAPI(base_url=base_url, token="test-admin-token")
+    assert api.instance()["webmitm_url"] == "https://dev.example.ts.net:8443/"
+    share.get_stats.return_value = {"state": "disabled", "url": None}
+    assert api.instance()["webmitm_url"] is None
 
 
 def test_instance_identity_survives_unmapped_host_uid(command_centre_admin):

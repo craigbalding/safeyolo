@@ -11,6 +11,13 @@ lets the operator recheck after host/session-manager failure, which cannot
 reliably emit its own final event. These are observations, not a heartbeat or
 a new recovery manager.
 
+Agent rows use status icons; their submenus retain the full agent and sandbox
+state. **Run Agent** starts the agent without opening a viewer. **Run Agent
+and Open Terminal** waits until the persistent launch is attachable, then
+opens its terminal once. A failed launch reports the error instead of opening
+an unusable terminal. **Open Sandbox Shell** opens a separate shell in a ready
+sandbox; it does not start or attach to the coding agent.
+
 ## Run, attach, or open a shell
 
 | Command | Result |
@@ -200,6 +207,25 @@ remain available in the details window until dismissed.
 Failed user actions (run, stop, open terminal, or present desktop) open the
 details window immediately. Background retries update the menu entry without
 opening windows repeatedly.
+
+When the host publishes WebMITM, **Open WebMITM** uses its current URL from
+`/admin/instance`, including the actual port. It does not guess the URL from
+the Tailnet hostname. The action is absent when the host reports no active
+WebMITM share.
+
+Security observations use native macOS notifications. Allow notifications for
+SafeYolo Command Centre in macOS settings to see banners. Permission and
+submission failures appear in Error details. The menu retains security events
+even if macOS does not show a banner. Repeated matching events update their
+count rather than send another banner. Long menu summaries end with an
+ellipsis; opening the event retains the complete summary and details.
+
+The macOS app uses SwiftUI and native Keychain support. SafeYolo no longer
+installs the earlier Qt/PySide frontend or a Python Keychain wrapper. Build
+the app with `bash command-centre/macos/build-app.sh` on the Mac, install the
+resulting app in Applications, then open its icon or use
+`safeyolo command-centre run`. Linux hosts provide the Admin API and event
+stream; the graphical app runs on the operator's Mac.
 
 ## Upgrade and acceptance
 

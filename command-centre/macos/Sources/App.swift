@@ -41,7 +41,11 @@ struct SafeYoloCommandCentreApp: App {
                 errorPresenter: errorPresenter
             )
             .onAppear {
-                Task { _ = await controller.client?.refreshAgents() }
+                Task {
+                    guard let client = controller.client else { return }
+                    await client.refreshInstance()
+                    await client.refreshAgents()
+                }
             }
         } label: {
             Image(

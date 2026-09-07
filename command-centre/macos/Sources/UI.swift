@@ -1,6 +1,25 @@
 import AppKit
 import SwiftUI
 
+private func securityMenuTitle(_ event: SecurityObservation) -> String {
+    // Native menus size themselves to the label. Bound only this preview;
+    // retain the complete summary in the event and its details window.
+    let suffix = event.count > 1 ? " (×\(event.count))" : ""
+    let font = NSFont.menuFont(ofSize: 0)
+    func width(_ text: String) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: font]).width
+    }
+    let full = event.summary + suffix
+    guard width(full) > 320 else { return full }
+    var preview = ""
+    for character in event.summary {
+        let next = preview + String(character)
+        if width(next + "…" + suffix) > 320 { break }
+        preview = next
+    }
+    return preview + "…" + suffix
+}
+
 @MainActor
 final class ApprovalWindowPresenter {
     private var windows: [String: NSWindow] = [:]
@@ -466,6 +485,9 @@ struct CommandCentreMenu: View {
             if !client.instanceID.isEmpty {
                 Text(client.instanceID).font(.caption)
             }
+            if let webmitmURL = client.webmitmURL {
+                Button("Open WebMITM") { NSWorkspace.shared.open(webmitmURL) }
+            }
             Divider()
             if client.approvals.isEmpty {
                 Text("No pending approvals")
@@ -486,8 +508,12 @@ struct CommandCentreMenu: View {
                     Task { _ = await client.refreshAgents() }
                 }
                 ForEach(client.agents) { agent in
-                    Menu("\(agent.name) · agent \(agent.agentState)") {
+                    Menu {
+                        Text("Agent: \(agent.agentState)")
                         Text("Sandbox: \(agent.sandboxState)")
+                        if client.pendingTerminalIDs.contains(agent.agentID) {
+                            Text("Waiting for agent terminal…")
+                        }
                         if let launcher = agent.launcher {
                             Text("Launcher: \(launcher.script ?? launcher.kind) (\(launcher.source))")
                         }
@@ -499,9 +525,13 @@ struct CommandCentreMenu: View {
                         if let code = agent.exitCode { Text("Last command exit: \(code)") }
                         if agent.sandboxReady {
                             Button("Present Desktop") { present(agent, client: client) }
+                            Button("Open Sandbox Shell") { openTerminal(agent, shell: true) }
                         }
                         if agent.canStart {
                             Button("Run Agent") { setRunning(agent, running: true, client: client) }
+                            if agent.launcher?.kind != "supervisor" {
+                                Button("Run Agent and Open Terminal") { runAndOpen(agent, client: client) }
+                            }
                             if agent.managed {
                                 Button("Run Interactively") { setRunning(agent, running: true, interactive: true, client: client) }
                             }
@@ -514,7 +544,10 @@ struct CommandCentreMenu: View {
                         if agent.sandboxReady || !agent.canStart {
                             Button("Stop Agent and Sandbox") { setRunning(agent, running: false, client: client) }
                         }
+                    } label: {
+                        Label(agent.name, systemImage: agent.statusSymbol)
                     }
+                    .accessibilityLabel("\(agent.name), agent \(agent.agentState)")
                     .disabled(client.busyAgentIDs.contains(agent.agentID))
                 }
             }
@@ -522,7 +555,7 @@ struct CommandCentreMenu: View {
                 Divider()
                 Text("Security events observed this session (\(client.securityEvents.count))")
                 ForEach(client.securityEvents) { event in
-                    Button(event.count > 1 ? "\(event.summary) (×\(event.count))" : event.summary) {
+                    Button(securityMenuTitle(event)) {
                         securityPresenter.show(event)
                     }
                 }
@@ -550,7 +583,7 @@ struct CommandCentreMenu: View {
     }
 
     private var errorDetails: String {
-        [controller.startupError, controller.client?.errorDetails, actionError, controller.client?.eventFeedGap]
+        [controller.startupError, controller.client?.errorDetails, controller.notificationError, actionError, controller.client?.eventFeedGap]
             .compactMap { $0 }.joined(separator: "\n\n")
     }
 
@@ -562,13 +595,26 @@ struct CommandCentreMenu: View {
         }
     }
 
-    private func openTerminal(_ agent: AgentInfo) {
+    private func openTerminal(_ agent: AgentInfo, shell: Bool = false) {
         do {
-            try controller.openAgentTerminal(agent)
+            if shell { try controller.openSandboxShell(agent) }
+            else { try controller.openAgentTerminal(agent) }
             actionError = nil
         } catch {
             actionError = error.localizedDescription
-            errorPresenter.show("Open terminal for \(agent.name):\n\(error.localizedDescription)")
+            errorPresenter.show("Open \(shell ? "sandbox shell" : "agent terminal") for \(agent.name):\n\(error.localizedDescription)")
+        }
+    }
+
+    private func runAndOpen(_ agent: AgentInfo, client: SafeYoloClient) {
+        client.runAndWaitForTerminal(agent) { result in
+            switch result {
+            case .success(let ready): openTerminal(ready)
+            case .failure(let error):
+                if error is CancellationError { return }
+                actionError = error.localizedDescription
+                errorPresenter.show("Run and open terminal for \(agent.name):\n\(error.localizedDescription)")
+            }
         }
     }
 

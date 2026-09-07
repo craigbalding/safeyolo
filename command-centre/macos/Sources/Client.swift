@@ -15,9 +15,11 @@ final class SafeYoloClient: ObservableObject {
     @Published private(set) var agents: [AgentInfo] = []
     @Published private(set) var securityEvents: [SecurityObservation] = []
     @Published private(set) var busyAgentIDs = Set<String>()
+    @Published private(set) var pendingTerminalIDs = Set<String>()
     @Published private(set) var instanceID = ""
     @Published private(set) var hostUser: String?
     @Published private(set) var hostPython: String?
+    @Published private(set) var webmitmURL: URL?
     @Published private(set) var requestErrors: [String: String] = [:]
     @Published private(set) var eventFeedGap: String?
 
@@ -39,6 +41,7 @@ final class SafeYoloClient: ObservableObject {
     private var knownApprovalIDs = Set<String>()
     private var knownSecurityEventIDs = Set<String>()
     private var stopping = false
+    private var pendingTerminals: [String: (Result<AgentInfo, Error>) -> Void] = [:]
 
     init(
         adminURL: String,
@@ -68,6 +71,10 @@ final class SafeYoloClient: ObservableObject {
 
     func stop() {
         stopping = true
+        let cancelled = pendingTerminals.values
+        pendingTerminals.removeAll()
+        pendingTerminalIDs.removeAll()
+        for completion in cancelled { completion(.failure(CancellationError())) }
         connectionState = .stopped
         connectionTask?.cancel()
         connectionTask = nil
@@ -129,6 +136,11 @@ final class SafeYoloClient: ObservableObject {
         completion: @escaping (Result<AgentInfo, Error>) -> Void
     ) {
         guard !busyAgentIDs.contains(agent.agentID) else { return }
+        if !running {
+            let cancelled = pendingTerminals.removeValue(forKey: agent.agentID)
+            pendingTerminalIDs.remove(agent.agentID)
+            cancelled?(.failure(CancellationError()))
+        }
         busyAgentIDs.insert(agent.agentID)
         Task {
             defer { busyAgentIDs.remove(agent.agentID) }
@@ -142,12 +154,50 @@ final class SafeYoloClient: ObservableObject {
                     method: "POST"
                 )
                 let updated = try JSONDecoder().decode(AgentInfo.self, from: data)
-                await refreshAgents()
+                let refreshed = await refreshAgents()
                 requestErrors["Run or stop agent"] = nil
-                completion(.success(updated))
+                completion(.success(refreshed ? agents.first(where: { $0.agentID == updated.agentID }) ?? updated : updated))
             } catch {
                 requestErrors["Run or stop agent"] = error.localizedDescription
                 completion(.failure(error))
+            }
+        }
+    }
+
+    func runAndWaitForTerminal(
+        _ agent: AgentInfo,
+        completion: @escaping (Result<AgentInfo, Error>) -> Void
+    ) {
+        guard !pendingTerminalIDs.contains(agent.agentID) else { return }
+        setRunning(agent, running: true) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error): completion(.failure(error))
+            case .success(let updated):
+                guard !self.stopping else { completion(.failure(CancellationError())); return }
+                self.pendingTerminals[agent.agentID] = completion
+                self.pendingTerminalIDs.insert(agent.agentID)
+                self.finishPendingTerminals([updated])
+            }
+        }
+    }
+
+    private func finishPendingTerminals(_ inventory: [AgentInfo], completeInventory: Bool = false) {
+        for (id, completion) in pendingTerminals {
+            let agent = inventory.first { $0.agentID == id }
+            if agent == nil && !completeInventory { continue }
+            if let agent, !agent.attachable && ["starting", "launching", "restarting"].contains(agent.agentState) { continue }
+            pendingTerminals.removeValue(forKey: id)
+            pendingTerminalIDs.remove(id)
+            if let agent, agent.attachable {
+                completion(.success(agent))
+            } else {
+                let message = agent.map {
+                    $0.error.flatMap { $0.isEmpty ? nil : $0 }
+                        ?? "Agent \($0.name) is \($0.agentState), without an attachable terminal."
+                } ?? "Agent \(id) is no longer listed by this SafeYolo host."
+                completion(.failure(NSError(domain: "SafeYolo.Terminal", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: message])))
             }
         }
     }
@@ -187,7 +237,8 @@ final class SafeYoloClient: ObservableObject {
         eventFeedGap = nil
     }
 
-    private func refreshInstance() async -> Bool {
+    @discardableResult
+    func refreshInstance() async -> Bool {
         do {
             let data = try await request(path: "/admin/instance")
             let instance = try JSONDecoder().decode(
@@ -200,6 +251,7 @@ final class SafeYoloClient: ObservableObject {
             )
             hostUser = instance.hostUser
             hostPython = instance.hostPython
+            webmitmURL = instance.webmitmURL.flatMap { URL(string: $0) }
             requestErrors["Instance identity"] = nil
             return true
         } catch {
@@ -232,6 +284,7 @@ final class SafeYoloClient: ObservableObject {
         do {
             let data = try await request(path: "/admin/agents")
             agents = try JSONDecoder().decode(AgentInventory.self, from: data).agents
+            finishPendingTerminals(agents, completeInventory: true)
             requestErrors["Agent status"] = nil
             return true
         } catch {

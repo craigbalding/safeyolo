@@ -71,34 +71,100 @@ struct ModelTests {
         try await testClientIngestsAndCoalescesSecurityEvents()
         try await testClientRetriesInitialConnection()
         try await testRequestErrorsRecoverIndependently()
+        try await testRunAndWaitForTerminal()
         print("model-tests: PASS")
+    }
+
+    @MainActor
+    private static func testRunAndWaitForTerminal() async throws {
+        func agentData(_ state: String, attachable: Bool = false) -> Data {
+            Data("""
+            {"agent_id":"ag-probe","name":"probe","sandbox_state":"ready","agent_state":"\(state)","attachable":\(attachable)}
+            """.utf8)
+        }
+        func inventory(_ data: Data) -> Data {
+            Data(("{\"agents\":[" + String(decoding: data, as: UTF8.self) + "]}").utf8)
+        }
+        func waitFor(_ predicate: () -> Bool) async throws {
+            let deadline = Date().addingTimeInterval(5)
+            while !predicate(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            precondition(predicate(), "Expected client transition")
+        }
+        let stopped = try JSONDecoder().decode(AgentInfo.self, from: agentData("stopped"))
+        let starting = agentData("starting")
+        let ready = agentData("running", attachable: true)
+        let event = Data(#"{"event":"agent.launch_state","kind":"agent","severity":"low","summary":"changed"}"#.utf8)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        defer { StubURLProtocol.responsesByPath = [:] }
+        for end in ["running", "failed", "exited", "unknown", "missing", "cancelled", "immediate", "request-error"] {
+            let client = try SafeYoloClient(
+                adminURL: "https://fixture.invalid", eventsURL: "wss://fixture.invalid/admin/events",
+                token: "fixture-token", expectedInstanceID: "sy-fixture",
+                session: URLSession(configuration: configuration)
+            )
+            let initial = end == "immediate" ? ready : starting
+            StubURLProtocol.responsesByPath = [
+                "/admin/agents/ag-probe/start": (end == "request-error" ? 503 : 200, initial),
+                "/admin/agents": (200, inventory(initial)),
+            ]
+            var results: [Result<AgentInfo, Error>] = []
+            client.runAndWaitForTerminal(stopped) { results.append($0) }
+            try await waitFor { !client.pendingTerminalIDs.isEmpty || !results.isEmpty }
+            if end == "immediate" || end == "request-error" {
+                precondition(results.count == 1 && client.pendingTerminalIDs.isEmpty)
+            } else {
+                precondition(results.isEmpty, "HTTP start success is not terminal readiness")
+                if end == "cancelled" {
+                    client.stop()
+                } else {
+                    let final = agentData(end, attachable: end == "running")
+                    let finalInventory = end == "missing" ? Data(#"{"agents":[]}"#.utf8) : inventory(final)
+                    StubURLProtocol.responsesByPath["/admin/agents"] = (200, finalInventory)
+                    try await client.ingestOperatorEventData(event)
+                    try await client.ingestOperatorEventData(event)
+                }
+            }
+            precondition(results.count == 1 && client.pendingTerminalIDs.isEmpty)
+            switch results[0] {
+            case .success(let agent):
+                precondition(["running", "immediate"].contains(end) && agent.attachable)
+            case .failure(let error):
+                precondition(!["running", "immediate"].contains(end))
+                if end == "cancelled" { precondition(error is CancellationError) }
+            }
+            client.stop()
+        }
+        let states = ["running", "stopped", "starting", "failed", "unknown"]
+        let icons = try states.map { try JSONDecoder().decode(AgentInfo.self, from: agentData($0)).statusSymbol }
+        precondition(Set(icons).count == states.count, "Agent states need distinct shapes, not color alone")
     }
 
     private static func testAutomaticTerminalTarget() throws {
         let adminURL = "https://server.example.ts.net:9443"
         let python = "/opt/safeyolo/bin/python"
-        let automatic = try agentAttachCommand(
+        let automatic = try agentTerminalCommand(
             name: "probe", remote: true, terminalTarget: nil, adminURL: adminURL, hostUser: "operator", hostPython: python
         )
-        let explicit = try agentAttachCommand(name: "probe", remote: true, terminalTarget: "operator@server.example.ts.net", hostPython: python)
+        let explicit = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@server.example.ts.net", hostPython: python)
         precondition(automatic == explicit)
         precondition(!automatic.contains("9443"))
-        let override = try agentAttachCommand(
+        let override = try agentTerminalCommand(
             name: "probe", remote: true, terminalTarget: "custom-alias", adminURL: adminURL, hostUser: "operator", hostPython: python
         )
         precondition(override.hasPrefix("ssh -t -- 'custom-alias' "))
-        let local = try agentAttachCommand(
+        let local = try agentTerminalCommand(
             name: "probe", remote: false, terminalTarget: "ignored", adminURL: adminURL, hostUser: "operator"
         )
         precondition(local == "safeyolo agent attach -- 'probe'")
         do {
-            _ = try agentAttachCommand(
+            _ = try agentTerminalCommand(
                 name: "probe", remote: true, terminalTarget: nil,
                 adminURL: "http://localhost:19090", hostUser: "operator", transport: .sshTunnel
             )
             preconditionFailure("A forwarded API URL is not the SSH server")
         } catch ConnectionError.missingTerminalTarget {}
-        let tunnel = try agentAttachCommand(
+        let tunnel = try agentTerminalCommand(
             name: "probe", remote: true, terminalTarget: "tunnel-alias",
             adminURL: "http://localhost:19090", hostUser: "operator", hostPython: python, transport: .sshTunnel
         )
@@ -129,13 +195,20 @@ struct ModelTests {
         let executable = root.appendingPathComponent("python fixture")
         try Data("#!/bin/sh\nprintf '%s\\0' \"$@\"\n".utf8).write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
-        let command = try agentAttachCommand(name: name, remote: true, terminalTarget: target, hostPython: executable.path)
+        let command = try agentTerminalCommand(name: name, remote: true, terminalTarget: target, hostPython: executable.path)
         let sshArgs = try shellArguments(command, function: "ssh")
         precondition(sshArgs.count == 4 && sshArgs[0] == "-t" && sshArgs[1] == "--" && sshArgs[2] == target)
         let attachArgs = try shellArguments(sshArgs[3])
         precondition(attachArgs == ["-m", "safeyolo.cli", "agent", "attach", "--", name])
+        let shellCommand = try agentTerminalCommand(name: name, remote: true, terminalTarget: target,
+                                                   hostPython: executable.path, action: .shell)
+        let shellSSHArgs = try shellArguments(shellCommand, function: "ssh")
+        let shellArgs = try shellArguments(shellSSHArgs[3])
+        precondition(shellArgs == ["-m", "safeyolo.cli", "agent", "shell", "--", name])
+        let localShell = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil, action: .shell)
+        precondition(localShell == "safeyolo agent shell -- 'probe'")
         do {
-            _ = try agentAttachCommand(name: "probe", remote: true, terminalTarget: "operator@host")
+            _ = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@host")
             preconditionFailure("A missing installation must not fall back to the remote shell's PATH")
         } catch ConnectionError.missingRemoteInstallation {}
     }
@@ -174,6 +247,10 @@ struct ModelTests {
         precondition(agentErrors[firstFailure...].allSatisfy { $0 != nil }, "Successful identity/approval retries cleared the agent error")
         precondition(client.hostUser == "operator")
         precondition(client.hostPython == "/opt/safeyolo/bin/python")
+        precondition(client.webmitmURL == nil)
+        StubURLProtocol.responsesByPath["/admin/instance"] = (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-remote-test","webmitm_url":"https://dev.example.ts.net:8443/"}"#.utf8))
+        await client.refreshInstance()
+        precondition(client.webmitmURL?.absoluteString == "https://dev.example.ts.net:8443/")
         precondition(client.errorDetails?.contains("agent inventory unavailable") == true)
         client.stop()
         StubURLProtocol.responsesByPath["/admin/agents"] = (200, Data(#"{"agents":[]}"#.utf8))
@@ -249,13 +326,13 @@ struct ModelTests {
         precondition(inventory.agents[0].sandboxReady)
         precondition(inventory.agents[0].canStart)
         precondition(!inventory.agents[0].attachable)
-        let local = try agentAttachCommand(name: "probe", remote: false, terminalTarget: nil)
+        let local = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil)
         precondition(local == "safeyolo agent attach -- 'probe'")
-        let remote = try agentAttachCommand(name: "probe", remote: true, terminalTarget: "operator@host", hostPython: "/opt/safeyolo/bin/python")
+        let remote = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@host", hostPython: "/opt/safeyolo/bin/python")
         precondition(remote.hasPrefix("ssh -t -- 'operator@host' "))
         precondition(!remote.contains("agent run"))
         do {
-            _ = try agentAttachCommand(name: "probe", remote: true, terminalTarget: nil)
+            _ = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: nil)
             preconditionFailure("Remote terminal needs a discovered or explicitly configured target")
         } catch ConnectionError.missingTerminalTarget {}
 
