@@ -95,6 +95,34 @@ def main() -> None:
         subprocess.run(["tmux", "send-keys", "-t", pane, "-l", value], check=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
 
+    viewer_env = {**os.environ, "TERM": "xterm-256color"}
+    viewer_env.pop("TMUX", None)
+    viewer_env.pop("TMUX_PANE", None)
+
+    def exercise_viewer(record: dict, marker: str) -> None:
+        master, slave = pty.openpty()
+        viewer = subprocess.Popen([*command, "agent", "attach", name], stdin=slave,
+                                  stdout=slave, stderr=slave, env=viewer_env, start_new_session=True)
+        os.close(slave)
+        try:
+            screen = bytearray()
+
+            def viewer_ready():
+                read_terminal(master, screen)
+                return b"TTY ready" in screen
+
+            until(viewer_ready, "attached viewer screen")
+            (evidence / f"{marker}.raw").write_bytes(screen)
+            os.write(master, (marker + "\n").encode())
+            until(lambda: (workspace / "input").exists() and marker in (workspace / "input").read_text(), "viewer input")
+        finally:
+            os.close(master)
+            if viewer.poll() is None:
+                os.killpg(viewer.pid, signal.SIGHUP)
+            viewer.wait(timeout=10)
+        assert active()["launch_id"] == record["launch_id"]
+        assert observe_launch(name, sandbox_ready=True)["agent_state"] == "running"
+
     print(f"agent={name} evidence={evidence}", flush=True)
     cli("agent", "add", name, str(workspace), "--no-run")
     cli("agent", "config", name, "--memory", "1024")
@@ -146,31 +174,7 @@ esac
         # change. No second command or hook runs when a viewer attaches.
         cli("agent", "config", name, "--launcher", "tmux-window")
         assert read_launch(name)["launcher"] == original["launcher"]
-        master, slave = pty.openpty()
-        viewer_env = {**os.environ, "TERM": "xterm-256color"}
-        viewer_env.pop("TMUX", None)
-        viewer_env.pop("TMUX_PANE", None)
-        viewer = subprocess.Popen([*command, "agent", "attach", name], stdin=slave,
-                                  stdout=slave, stderr=slave, env=viewer_env, start_new_session=True)
-        os.close(slave)
-        try:
-            screen = bytearray()
-
-            def viewer_ready():
-                read_terminal(master, screen)
-                return b"TTY ready" in screen
-
-            until(viewer_ready, "attached viewer screen")
-            (evidence / "viewer.raw").write_bytes(screen)
-            os.write(master, b"from-viewer\n")
-            until(lambda: (workspace / "input").exists() and "from-viewer" in (workspace / "input").read_text(), "viewer input")
-        finally:
-            os.close(master)
-            if viewer.poll() is None:
-                os.killpg(viewer.pid, signal.SIGHUP)
-            viewer.wait(timeout=10)
-        assert active()["launch_id"] == original["launch_id"]
-        assert observe_launch(name, sandbox_ready=True)["agent_state"] == "running"
+        exercise_viewer(original, "from-viewer")
         assert len(hooks.read_text().splitlines()) == 2
         send(original["pane_id"], "quit")
 
@@ -225,6 +229,7 @@ while true; do sleep 1; done
         assert load_agent(name)["launcher"] == "supervisor"
         assert retained.read_text() == "retain this agent-local configuration across debug mode\n"
         assert debug["command"] == "/home/agent/.safeyolo-interactive-command"
+        exercise_viewer(debug, "debug-viewer")
         cli("agent", "stop", name)
         until(lambda: read_launch(name)["state"] in {"exited", "failed"}, "debug exit")
         previous_starts = len((workspace / "managed-starts").read_text().splitlines())
@@ -232,7 +237,7 @@ while true; do sleep 1; done
         until(managed_running, "managed mode restored")
         until(lambda: len((workspace / "managed-starts").read_text().splitlines()) > previous_starts, "restored managed command")
         assert read_launch(name)["launcher"]["kind"] == "supervisor"
-        print("PASS real supervisor restart, intentional stop, interactive override, retained config, managed-mode restoration", flush=True)
+        print("PASS real supervisor restart, intentional stop, interactive override with viewer disconnect, retained config, managed-mode restoration", flush=True)
 
         cli("agent", "stop", name)
         before = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}"], capture_output=True, text=True).stdout
