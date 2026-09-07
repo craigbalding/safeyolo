@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 
 import typer
 from rich.console import Console
@@ -52,8 +54,7 @@ def enable(
     """Enable Command Centre locally or over an explicit Tailnet share."""
     if importlib.util.find_spec("websockets") is None:
         console.print(
-            "[red]The Command Centre event-server dependency is missing.[/red]\n"
-            "Reinstall SafeYolo from this checkout."
+            "[red]The Command Centre event-server dependency is missing.[/red]\nReinstall SafeYolo from this checkout."
         )
         raise typer.Exit(1)
 
@@ -115,13 +116,17 @@ def status() -> None:
 
 @command_centre_app.command(name="run")
 def run_app() -> None:
-    """Run the macOS menu-bar application."""
-    try:
-        from ..command_centre.app import main
-    except (ImportError, ModuleNotFoundError) as exc:
+    """Open the installed native macOS menu-bar application."""
+    if sys.platform != "darwin":
+        console.print("Run Command Centre on your Mac and connect it to this SafeYolo host.")
+        raise typer.Exit(1)
+    result = subprocess.run(
+        ["/usr/bin/open", "-b", "io.safeyolo.command-centre"], capture_output=True, text=True, check=False
+    )
+    if result.returncode:
         console.print(
-            "[red]Command Centre dependencies are unavailable.[/red]\n"
-            "Install SafeYolo with its [bold]command-centre[/bold] extra."
+            "[red]Could not open SafeYolo Command Centre.[/red]\n"
+            "Install the native macOS app first; no Python UI extra is needed."
         )
-        raise typer.Exit(1) from exc
-    raise typer.Exit(main())
+        console.print(result.stderr.strip(), markup=False)
+    raise typer.Exit(result.returncode)

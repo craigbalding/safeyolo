@@ -7,6 +7,28 @@ struct SafeYoloCommandCentreApp: App {
     private let presenter: ApprovalWindowPresenter
     private let settingsPresenter: ConnectionSettingsWindowPresenter
     private let securityPresenter: SecurityEventWindowPresenter
+    private let errorPresenter = ErrorWindowPresenter()
+
+    private var statusImage: NSImage {
+        // MenuBarExtra extracts an image, rather than laying out arbitrary
+        // SwiftUI views. Compose the mark and its indicator as one image.
+        let mark = NSImage(named: "MenuBarTemplate")!
+        let indicator = controller.hasSecurityEvents || controller.hasPendingApprovals
+            ? "!" : controller.client == nil ? "×" : ""
+        let image = NSImage(size: NSSize(width: 25, height: 18), flipped: false) { bounds in
+            mark.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18))
+            (indicator as NSString).draw(at: NSPoint(x: 19, y: 2), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .bold), .foregroundColor: NSColor.black
+            ])
+            if controller.hasSecurityEvents {
+                NSColor.systemRed.setFill()
+                bounds.fill(using: .sourceAtop)
+            }
+            return true
+        }
+        image.isTemplate = !controller.hasSecurityEvents
+        return image
+    }
 
     init() {
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -36,21 +58,21 @@ struct SafeYoloCommandCentreApp: App {
                 controller: controller,
                 presenter: presenter,
                 settingsPresenter: settingsPresenter,
-                securityPresenter: securityPresenter
+                securityPresenter: securityPresenter,
+                errorPresenter: errorPresenter
             )
+            .onAppear {
+                Task {
+                    guard let client = controller.client else { return }
+                    await client.refreshInstance()
+                    await client.refreshAgents()
+                }
+            }
         } label: {
-            Image(
-                systemName: controller.hasSecurityEvents
-                    ? "exclamationmark.shield.fill"
-                    : controller.hasPendingApprovals
-                        ? "exclamationmark.shield.fill"
-                        : controller.client == nil
-                        ? "shield.slash"
-                        : "shield.lefthalf.filled"
-            )
-            .symbolRenderingMode(.palette)
-            .foregroundStyle(controller.hasSecurityEvents ? Color.red : Color.primary)
-            .accessibilityLabel("SafeYolo")
+            Image(nsImage: statusImage)
+            .accessibilityLabel(controller.hasSecurityEvents ? "SafeYolo, security events"
+                                : controller.hasPendingApprovals ? "SafeYolo, approvals waiting"
+                                : controller.client == nil ? "SafeYolo, not configured" : "SafeYolo")
         }
         .menuBarExtraStyle(.menu)
     }

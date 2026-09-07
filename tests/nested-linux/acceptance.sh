@@ -93,7 +93,7 @@ uv run safeyolo agent add "$INNER_AGENT" "$LAB_SOURCE" \
     --host-script "$LAB_SOURCE/contrib/codex-host-setup.sh" --no-run
 uv run safeyolo coord room create "$COORD_ROOM" \
     --member "$INNER_AGENT" --no-operator
-uv run safeyolo agent run "$INNER_AGENT" --detach
+uv run safeyolo agent run "$INNER_AGENT" --sandbox-only
 
 inner_shell() {
     uv run safeyolo agent shell "$INNER_AGENT" -c "$1"

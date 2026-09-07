@@ -220,6 +220,7 @@ fi
 exec codex "${args[@]}" "$@"
 EOF
 chmod +x "$AGENT_HOME/.safeyolo-command"
+install -m 0755 "$AGENT_HOME/.safeyolo-command" "$AGENT_HOME/.safeyolo-interactive-command"
 
 if [ "${SAFEYOLO_CODEX_COORD_SUPERVISOR:-0}" = "1" ]; then
     python3 - "$AGENT_HOME/.safeyolo-command" <<'PY'

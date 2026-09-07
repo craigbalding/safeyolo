@@ -13,6 +13,8 @@ final class CommandCentreController: ObservableObject {
     private let profileStore: any ConnectionProfileStore
     private let verifier: RemoteConnectionVerifier
     private var clientUpdates: AnyCancellable?
+    private var notificationUpdates: AnyCancellable?
+    private var remoteTerminal = false
 
     init(
         presenter: ApprovalWindowPresenter,
@@ -26,7 +28,12 @@ final class CommandCentreController: ObservableObject {
         self.keychain = keychain
         self.profileStore = profileStore
         self.verifier = verifier
+        notificationUpdates = securityNotifier.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
+
+    var notificationError: String? { securityNotifier.error }
 
     var savedRemoteProfile: RemoteConnectionProfile? {
         try? profileStore.load()
@@ -69,6 +76,7 @@ final class CommandCentreController: ObservableObject {
                         warning: nil
                     )
                 )
+                remoteTerminal = true
                 return
             }
             let credential = try LocalCredentialLoader.live().load()
@@ -106,6 +114,7 @@ final class CommandCentreController: ObservableObject {
                             warning: nil
                         )
                     )
+                    self.remoteTerminal = true
                     completion(.success(profile))
                 } catch {
                     completion(.failure(error))
@@ -126,6 +135,50 @@ final class CommandCentreController: ObservableObject {
         disconnect()
     }
 
+    func openAgentTerminal(_ agent: AgentInfo) throws {
+        try openTerminal(agent, action: .attach)
+    }
+
+    func openSandboxShell(_ agent: AgentInfo) throws {
+        try openTerminal(agent, action: .shell)
+    }
+
+    func showWebMITMSignInNotice() {
+        securityNotifier.showWebMITMSignInNotice()
+    }
+
+    private func openTerminal(_ agent: AgentInfo, action: AgentTerminalAction) throws {
+        let command = try agentTerminalCommand(
+            name: agent.name, remote: remoteTerminal,
+            terminalTarget: savedRemoteProfile?.terminalTarget,
+            adminURL: savedRemoteProfile?.adminURL,
+            hostUser: client?.hostUser,
+            hostPython: client?.hostPython,
+            transport: savedRemoteProfile?.transport ?? .tailnet,
+            action: action
+        )
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", """
+            on run argv
+                tell application "Terminal"
+                    activate
+                    do script (item 1 of argv)
+                end tell
+            end run
+            """, command]
+        let errors = Pipe()
+        process.standardError = errors
+        try process.run()
+        let detail = errors.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "SafeYolo.Terminal", code: Int(process.terminationStatus), userInfo: [
+                NSLocalizedDescriptionKey: String(decoding: detail, as: UTF8.self)
+            ])
+        }
+    }
+
     private func connect(
         name: String,
         adminURL: String,
@@ -133,6 +186,7 @@ final class CommandCentreController: ObservableObject {
         credential: LoadedCredential
     ) throws {
         disconnect()
+        remoteTerminal = !["127.0.0.1", "localhost", "::1"].contains(URL(string: adminURL)?.host ?? "")
         let nextClient = try SafeYoloClient(
             adminURL: adminURL,
             eventsURL: eventsURL,

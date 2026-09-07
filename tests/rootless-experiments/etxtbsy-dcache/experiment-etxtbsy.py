@@ -1219,7 +1219,7 @@ def run_variant(
         recorder.log(f"{name}: booting detached", overrides=overrides)
         boot_start = time.perf_counter_ns()
         boot = run_command(
-            [cli, "agent", "run", agent, "--detach"],
+            [cli, "agent", "run", agent, "--sandbox-only"],
             env=env,
             timeout=240,
         )
@@ -1786,7 +1786,7 @@ def edge_controller(args: argparse.Namespace) -> int:
         recorder.log("stopping stale/running sandbox")
         run_command([cli, "agent", "stop", args.agent], env=env, timeout=180)
         recorder.log(f"booting edge variant {args.variant}")
-        boot = run_command([cli, "agent", "run", args.agent, "--detach"], env=env, timeout=240)
+        boot = run_command([cli, "agent", "run", args.agent, "--sandbox-only"], env=env, timeout=240)
         summary["boot"] = {"returncode": boot.returncode, "output": boot.stdout[-4000:]}
         if boot.returncode != 0:
             raise RuntimeError(f"edge experiment boot failed:\n{boot.stdout[-2000:]}")
@@ -2052,7 +2052,7 @@ def deep_controller(args: argparse.Namespace) -> int:
         recorder.log(f"booting deep variant {args.variant}")
         boot_start = time.perf_counter_ns()
         boot = run_command(
-            [cli, "agent", "run", args.agent, "--detach"],
+            [cli, "agent", "run", args.agent, "--sandbox-only"],
             env=env,
             timeout=240,
         )

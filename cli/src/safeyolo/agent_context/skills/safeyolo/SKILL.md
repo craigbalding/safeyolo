@@ -38,6 +38,9 @@ do not reload Coord or GitHub references already supplied by the role contract.
 
 ## Select the needed reference
 
+- Read [Agent launch and terminal troubleshooting](references/agent-launchers.md)
+  for sandbox-ready/agent-stopped confusion, persistent host launchers,
+  run versus attach versus shell, or managed-agent interactive debugging.
 - Read [Coord work coordination](references/coord.md) before joining or using
   coord rooms, delegating or accepting peer work, waiting for attention, or
   choosing between targeted attention and retained room history. It contains

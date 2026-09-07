@@ -16,8 +16,10 @@ import asyncio
 import json
 import logging
 import os
+import pwd
 import re
 import secrets
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -289,10 +291,19 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_get_instance(self) -> None:
         """GET /admin/instance - Stable identity and client capabilities."""
+        try:
+            host_user = pwd.getpwuid(os.geteuid()).pw_name
+        except KeyError:
+            host_user = None
+        web_share = self._get_addon("safeyolo-web-tailnet-share")
+        webmitm_url = web_share.get_stats().get("url") if web_share is not None else None
         self._send_json(
             {
                 "schema_version": 1,
                 "safeyolo_instance_id": get_or_create_instance_id(),
+                "host_user": host_user,
+                "host_python": sys.executable,
+                "webmitm_url": webmitm_url,
                 "capabilities": {
                     "agent_inventory": True,
                     "agent_lifecycle": True,
@@ -1224,7 +1235,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         )
 
         try:
-            runtime = start_agent(agent_id) if action == "start" else stop_agent(agent_id)
+            if action == "stop":
+                runtime = stop_agent(agent_id)
+            elif action == "start-interactive":
+                runtime = start_agent(agent_id, interactive=True)
+            else:
+                runtime = start_agent(agent_id)
         except AgentLifecycleError as exc:
             self._send_json({"error": str(exc)}, exc.status_code)
             return
@@ -1278,7 +1294,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if m:
             return self._handle_post_desktop_present(m.group(1))
 
-        m = re.match(r"^/admin/agents/([^/]+)/(start|stop)$", path)
+        m = re.match(r"^/admin/agents/([^/]+)/(start|start-interactive|stop)$", path)
         if m:
             return self._handle_post_agent_lifecycle(m.group(1), m.group(2))
 

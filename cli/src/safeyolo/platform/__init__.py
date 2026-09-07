@@ -125,7 +125,7 @@ class AgentPlatform(ABC):
     @abstractmethod
     def exec_in_sandbox(self, name: str, command: str | None,
                         user: str = "agent",
-                        interactive: bool = True) -> int:
+                        interactive: bool = True, *, on_start=None) -> int:
         """Execute a command in a running sandbox. Returns exit code."""
 
     @abstractmethod

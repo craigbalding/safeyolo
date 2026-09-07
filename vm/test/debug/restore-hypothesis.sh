@@ -49,7 +49,7 @@ run_variant() {
 
     echo
     echo "--- capture ---"
-    if ! safeyolo agent run --detach "$AGENT"; then
+    if ! safeyolo agent run --sandbox-only "$AGENT"; then
         echo "FAIL: capture run failed"
         tail -20 "$BASE/serial.log" 2>/dev/null | sed 's/^/  /'
         return 1
@@ -93,7 +93,7 @@ run_variant() {
     echo
     echo "--- restore ---"
     local t_start=$(date +%s.%N)
-    if safeyolo agent run --detach "$AGENT"; then
+    if safeyolo agent run --sandbox-only "$AGENT"; then
         local t_end=$(date +%s.%N)
         local dt=$(awk -v s="$t_start" -v e="$t_end" 'BEGIN{printf "%.2f", e-s}')
         echo "  CLI returned in ${dt}s"

@@ -33,6 +33,12 @@ make_icon 512 1024 "@2x"
 iconutil -c icns "$ICONSET" -o "$ICON"
 test -s "$ICON"
 
+# Named template representations keep the status item crisp at both scales.
+sips -s format png -z 18 18 "$ROOT/Resources/MenuBarTemplate.svg" \
+  --out "$APP/Contents/Resources/MenuBarTemplate.png" >/dev/null
+sips -s format png -z 36 36 "$ROOT/Resources/MenuBarTemplate.svg" \
+  --out "$APP/Contents/Resources/MenuBarTemplate@2x.png" >/dev/null
+
 xcrun swiftc -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/Credentials.swift" \

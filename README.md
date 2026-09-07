@@ -204,7 +204,7 @@ See [docs/networking-vsock-uds.md](docs/networking-vsock-uds.md) for hop-by-hop 
 
 ## Key Features
 
-- **One-command agent setup** — host scripts configure Claude Code, OpenAI Codex, or your own agent; `mise-shell-host-setup.sh` gives you a ready sandbox for anything else
+- **One-command agent setup** — host scripts configure Claude Code, OpenAI Codex, or your own agent; `mise-shell-host-setup.sh` gives you a ready sandbox for anything else. [Host launchers](docs/agent-launchers.md) support shared defaults, persistent background runs, and reconnecting with `safeyolo agent attach`.
 - **Strong isolation** — each agent gets its own sandbox: a hardware-backed Linux microVM on macOS, rootless gVisor on Linux
 - **Structural egress control** — sandboxes have no external network interface; the only path out is a per-agent host socket through SafeYolo. No firewall rules to bypass or misconfigure.
 - **Safe browser and desktop previews** — agents can run browsers, graphical tools and the webapps they are building inside the sandbox, while giving the operator a safe window onto the result without exposing the host

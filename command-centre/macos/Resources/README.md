@@ -22,3 +22,9 @@ and is therefore a visual reference rather than the bundled source.
 standard size and create the standard icon
 representations and package them as `AppIcon.icns`; generated files remain
 under `.build`.
+
+`MenuBarTemplate.svg` is the monochrome form of the same rails-and-switch mark.
+The build creates 18-point and Retina representations. The native menu-bar
+label uses template rendering so macOS supplies the light/dark appearance.
+The separate attention mark retains pending-approval and security-event state;
+the logo does not replace those signals.

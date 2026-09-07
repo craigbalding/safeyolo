@@ -70,7 +70,7 @@ The VM terminal uses vsock (virtio socket) with a proper PTY:
 
 **Host side (`VSockTerminal.swift`)**: Connects to vsock after VM boots. Full `cfmakeraw` terminal mode. `write_all()` with retry to prevent split ANSI sequences. SIGWINCH → 4-byte resize message on control channel. Drains PTY output before closing.
 
-For detached agents (`safeyolo agent run --detach`), the foreground terminal is skipped and shell access goes via SSH through `VSockShellBridge` → `vsock:2220` → `guest-shell-bridge` → sshd.
+For background agents (`safeyolo agent run --detach`), a configured host launcher owns the agent terminal, or an explicit supervisor owns headless harness turns. `--sandbox-only` boots without a coding agent. Guest shell and terminal execution use SSH through `VSockShellBridge` → `vsock:2220` → `guest-shell-bridge` → sshd; see [agent launchers](agent-launchers.md).
 
 ## Config Share Architecture
 

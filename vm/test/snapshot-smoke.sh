@@ -22,13 +22,13 @@
 #   bash vm/test/snapshot-smoke.sh <agent-name>
 #
 # The agent must use the byoa template (or have no SAFEYOLO_AGENT_CMD)
-# and have been run once with --detach so its config-share is populated
+# and have been run once with --sandbox-only so its config-share is populated
 # and SAFEYOLO_DETACH=1 keeps guest-init's `exec sleep infinity` path
 # alive without network. Setup:
 #
 #   mkdir -p ~/tmp/snaptest
 #   safeyolo agent add snaptest byoa ~/tmp/snaptest --no-run
-#   safeyolo agent run --detach snaptest
+#   safeyolo agent run --sandbox-only snaptest
 #   sleep 5
 #   safeyolo agent stop snaptest
 #
@@ -72,7 +72,7 @@ if [[ ! -d "$SHARE" ]]; then
     cat >&2 <<EOF
 ERROR: $SHARE not present.
 Run the agent once normally to populate the config-share, then re-run this test:
-    safeyolo agent run --detach $AGENT
+    safeyolo agent run --sandbox-only $AGENT
     safeyolo agent stop $AGENT
 EOF
     exit 1

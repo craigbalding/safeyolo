@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 private final class MemoryCredentialStore: CredentialStore {
@@ -22,6 +23,7 @@ private final class StubURLProtocol: URLProtocol {
     static var observedAuthorization: String?
     static var failuresRemaining = 0
     static var requestCount = 0
+    static var responsesByPath: [String: (Int, Data)] = [:]
 
     override class func canInit(with request: URLRequest) -> Bool {
         true
@@ -39,14 +41,15 @@ private final class StubURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
             return
         }
+        let (status, data) = Self.responsesByPath[request.url!.path] ?? (Self.responseStatus, Self.responseData)
         let response = HTTPURLResponse(
             url: request.url!,
-            statusCode: Self.responseStatus,
+            statusCode: status,
             httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "application/json"]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Self.responseData)
+        client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
 
@@ -63,9 +66,284 @@ struct ModelTests {
         try testRemoteConnectionVerification()
         try testPinnedInstanceIdentity()
         try testAgentAndSecurityModels()
+        try testHarnessMarks()
+        try testTransportURLs()
+        try testAutomaticTerminalTarget()
         try await testClientIngestsAndCoalescesSecurityEvents()
         try await testClientRetriesInitialConnection()
+        try await testRequestErrorsRecoverIndependently()
+        try await testRunAndWaitForTerminal()
+        try await testWebMITMSignInHandoff()
         print("model-tests: PASS")
+    }
+
+    @MainActor
+    private static func testHarnessMarks() throws {
+        for (harness, label, mark) in [
+            ("codex", "Codex", ">_"), ("pi", "Pi", "π"),
+            ("claude", "Claude Code", "✳"), ("shell", "Shell", "⌨"),
+            ("custom", "Custom or unknown", "⌨")
+        ] {
+            let agent = try JSONDecoder().decode(AgentInfo.self, from: Data("""
+            {"agent_id":"ag-probe","name":"probe","sandbox_state":"stopped",
+             "agent_state":"stopped","attachable":false,"harness":"\(harness)"}
+            """.utf8))
+            precondition(agent.harnessLabel == label && agent.harnessMark == mark)
+            precondition(agent.statusSymbol == "stop.circle", "Harness must not replace state")
+        }
+        let unknown = try JSONDecoder().decode(AgentInfo.self, from: Data(#"{"agent_id":"ag-probe","name":"probe","sandbox_state":"ready","agent_state":"running","attachable":true}"#.utf8))
+        precondition(unknown.harnessLabel == "Custom or unknown" && unknown.harnessMark == "⌨")
+    }
+
+    @MainActor
+    private static func testWebMITMSignInHandoff() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        defer { StubURLProtocol.responsesByPath = [:] }
+        let url = "https://dev.example.ts.net:8443/"
+        for key in ["fixture-first", "fixture-second"] {
+            let client = try SafeYoloClient(
+                adminURL: "https://fixture.invalid", eventsURL: "wss://fixture.invalid/admin/events",
+                token: key, expectedInstanceID: "sy-fixture",
+                session: URLSession(configuration: configuration)
+            )
+            defer { client.stop() }
+            do {
+                try client.openWebMITM(copyKey: { _ in preconditionFailure("No URL: no copy") },
+                                      openBrowser: { _ in preconditionFailure("No URL: no browser") })
+                preconditionFailure("Expected missing WebMITM URL")
+            } catch WebMITMOpenError.unavailable {}
+            precondition(!client.webMITMKeyCopied)
+            StubURLProtocol.responsesByPath = [
+                "/admin/instance": (200, Data("""
+                {"schema_version":1,"safeyolo_instance_id":"sy-fixture","webmitm_url":"\(url)"}
+                """.utf8))
+            ]
+            let refreshed = await client.refreshInstance()
+            precondition(refreshed)
+            let requestsBeforeOpen = StubURLProtocol.requestCount
+            var actions: [String] = []
+            try client.openWebMITM(copyKey: {
+                precondition($0 == key, "Copy the active connection credential")
+                actions.append("copy")
+                return true
+            }, openBrowser: {
+                precondition($0.absoluteString == url, "Do not add the key to the URL")
+                actions.append("open")
+                return true
+            })
+            precondition(actions == ["copy", "open"] && client.webMITMKeyCopied)
+            precondition(StubURLProtocol.requestCount == requestsBeforeOpen, "No extra API request")
+            do {
+                try client.openWebMITM(copyKey: { _ in false },
+                                      openBrowser: { _ in preconditionFailure("Copy failed: no browser") })
+                preconditionFailure("Expected clipboard failure")
+            } catch WebMITMOpenError.clipboard {}
+            precondition(!client.webMITMKeyCopied)
+            do {
+                try client.openWebMITM(copyKey: { _ in true }, openBrowser: { _ in false })
+                preconditionFailure("Expected browser failure")
+            } catch WebMITMOpenError.browser {}
+            precondition(client.webMITMKeyCopied)
+        }
+    }
+
+    @MainActor
+    private static func testRunAndWaitForTerminal() async throws {
+        func agentData(_ state: String, attachable: Bool = false) -> Data {
+            Data("""
+            {"agent_id":"ag-probe","name":"probe","sandbox_state":"ready","agent_state":"\(state)","attachable":\(attachable)}
+            """.utf8)
+        }
+        func inventory(_ data: Data) -> Data {
+            Data(("{\"agents\":[" + String(decoding: data, as: UTF8.self) + "]}").utf8)
+        }
+        func waitFor(_ predicate: () -> Bool) async throws {
+            let deadline = Date().addingTimeInterval(5)
+            while !predicate(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            precondition(predicate(), "Expected client transition")
+        }
+        let stopped = try JSONDecoder().decode(AgentInfo.self, from: agentData("stopped"))
+        let starting = agentData("starting")
+        let ready = agentData("running", attachable: true)
+        let event = Data(#"{"event":"agent.launch_state","kind":"agent","severity":"low","summary":"changed"}"#.utf8)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        defer { StubURLProtocol.responsesByPath = [:] }
+        for end in ["running", "failed", "exited", "unknown", "missing", "cancelled", "immediate", "request-error"] {
+            let client = try SafeYoloClient(
+                adminURL: "https://fixture.invalid", eventsURL: "wss://fixture.invalid/admin/events",
+                token: "fixture-token", expectedInstanceID: "sy-fixture",
+                session: URLSession(configuration: configuration)
+            )
+            let initial = end == "immediate" ? ready : starting
+            StubURLProtocol.responsesByPath = [
+                "/admin/agents/ag-probe/start": (end == "request-error" ? 503 : 200, initial),
+                "/admin/agents": (200, inventory(initial)),
+            ]
+            var results: [Result<AgentInfo, Error>] = []
+            client.runAndWaitForTerminal(stopped) { results.append($0) }
+            try await waitFor { !client.pendingTerminalIDs.isEmpty || !results.isEmpty }
+            if end == "immediate" || end == "request-error" {
+                precondition(results.count == 1 && client.pendingTerminalIDs.isEmpty)
+            } else {
+                precondition(results.isEmpty, "HTTP start success is not terminal readiness")
+                if end == "cancelled" {
+                    client.stop()
+                } else {
+                    let final = agentData(end, attachable: end == "running")
+                    let finalInventory = end == "missing" ? Data(#"{"agents":[]}"#.utf8) : inventory(final)
+                    StubURLProtocol.responsesByPath["/admin/agents"] = (200, finalInventory)
+                    try await client.ingestOperatorEventData(event)
+                    try await client.ingestOperatorEventData(event)
+                }
+            }
+            precondition(results.count == 1 && client.pendingTerminalIDs.isEmpty)
+            switch results[0] {
+            case .success(let agent):
+                precondition(["running", "immediate"].contains(end) && agent.attachable)
+            case .failure(let error):
+                precondition(!["running", "immediate"].contains(end))
+                if end == "cancelled" { precondition(error is CancellationError) }
+            }
+            client.stop()
+        }
+        let states = ["running", "stopped", "starting", "failed", "unknown"]
+        let icons = try states.map { try JSONDecoder().decode(AgentInfo.self, from: agentData($0)).statusSymbol }
+        precondition(Set(icons).count == states.count, "Agent states need distinct shapes, not color alone")
+    }
+
+    private static func testAutomaticTerminalTarget() throws {
+        let adminURL = "https://server.example.ts.net:9443"
+        let python = "/opt/safeyolo/bin/python"
+        let automatic = try agentTerminalCommand(
+            name: "probe", remote: true, terminalTarget: nil, adminURL: adminURL, hostUser: "operator", hostPython: python
+        )
+        let explicit = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@server.example.ts.net", hostPython: python)
+        precondition(automatic == explicit)
+        precondition(!automatic.contains("9443"))
+        let override = try agentTerminalCommand(
+            name: "probe", remote: true, terminalTarget: "custom-alias", adminURL: adminURL, hostUser: "operator", hostPython: python
+        )
+        precondition(override.hasPrefix("ssh -t -- 'custom-alias' "))
+        let local = try agentTerminalCommand(
+            name: "probe", remote: false, terminalTarget: "ignored", adminURL: adminURL, hostUser: "operator"
+        )
+        precondition(local == "safeyolo agent attach -- 'probe'")
+        do {
+            _ = try agentTerminalCommand(
+                name: "probe", remote: true, terminalTarget: nil,
+                adminURL: "http://localhost:19090", hostUser: "operator", transport: .sshTunnel
+            )
+            preconditionFailure("A forwarded API URL is not the SSH server")
+        } catch ConnectionError.missingTerminalTarget {}
+        let tunnel = try agentTerminalCommand(
+            name: "probe", remote: true, terminalTarget: "tunnel-alias",
+            adminURL: "http://localhost:19090", hostUser: "operator", hostPython: python, transport: .sshTunnel
+        )
+        precondition(tunnel.hasPrefix("ssh -t -- 'tunnel-alias' "))
+
+        // Exercise both shell boundaries without making any SSH connection.
+        func shellArguments(_ command: String, function: String? = nil) throws -> [String] {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            let prelude = function.map { $0 + "() { printf '%s\\0' \"$@\"; }; " } ?? ""
+            process.arguments = ["-c", prelude + command]
+            var environment = ProcessInfo.processInfo.environment
+            environment["PATH"] = "/usr/bin:/bin"
+            process.environment = environment
+            process.standardOutput = output
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            precondition(process.terminationStatus == 0)
+            return String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init)
+        }
+        let name = "probe'; echo SHOULD_NOT_EXECUTE; #"
+        let target = "user'$(echo SHOULD_NOT_EXECUTE)@host"
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("attach '\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let executable = root.appendingPathComponent("python fixture")
+        try Data("#!/bin/sh\nprintf '%s\\0' \"$@\"\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let command = try agentTerminalCommand(name: name, remote: true, terminalTarget: target, hostPython: executable.path)
+        let sshArgs = try shellArguments(command, function: "ssh")
+        precondition(sshArgs.count == 4 && sshArgs[0] == "-t" && sshArgs[1] == "--" && sshArgs[2] == target)
+        let attachArgs = try shellArguments(sshArgs[3])
+        precondition(attachArgs == ["-m", "safeyolo.cli", "agent", "attach", "--", name])
+        let shellCommand = try agentTerminalCommand(name: name, remote: true, terminalTarget: target,
+                                                   hostPython: executable.path, action: .shell)
+        let shellSSHArgs = try shellArguments(shellCommand, function: "ssh")
+        let shellArgs = try shellArguments(shellSSHArgs[3])
+        precondition(shellArgs == ["-m", "safeyolo.cli", "agent", "shell", "--", name])
+        let localShell = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil, action: .shell)
+        precondition(localShell == "safeyolo agent shell -- 'probe'")
+        do {
+            _ = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@host")
+            preconditionFailure("A missing installation must not fall back to the remote shell's PATH")
+        } catch ConnectionError.missingRemoteInstallation {}
+    }
+
+    @MainActor
+    private static func testRequestErrorsRecoverIndependently() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        StubURLProtocol.responsesByPath = [
+            "/admin/instance": (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-remote-test","host_user":"operator","host_python":"/opt/safeyolo/bin/python"}"#.utf8)),
+            "/admin/approvals": (200, Data(#"{"approvals":[]}"#.utf8)),
+            "/admin/agents": (503, Data(#"{"error":"agent inventory unavailable"}"#.utf8)),
+        ]
+        defer { StubURLProtocol.responsesByPath = [:] }
+        let client = try SafeYoloClient(
+            adminURL: "https://dev.example.ts.net:9443", eventsURL: "wss://dev.example.ts.net:9444/admin/events",
+            token: "fixture-token", expectedInstanceID: "sy-remote-test",
+            session: URLSession(configuration: configuration)
+        )
+        defer { client.stop() }
+        let failedRefresh = await client.refreshAgents()
+        precondition(!failedRefresh && client.connectionState == .connecting,
+                     "A manual inventory failure must not claim the event connection is reconnecting")
+        var agentErrors: [String?] = []
+        let subscription = client.$requestErrors.sink { agentErrors.append($0["Agent status"]) }
+        defer { subscription.cancel() }
+        client.start()
+        let deadline = Date().addingTimeInterval(4)
+        while agentErrors.compactMap({ $0 }).count < 3, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard let firstFailure = agentErrors.firstIndex(where: { $0 != nil }) else {
+            preconditionFailure("Expected agent inventory failure")
+        }
+        precondition(agentErrors.compactMap { $0 }.count >= 3)
+        precondition(agentErrors[firstFailure...].allSatisfy { $0 != nil }, "Successful identity/approval retries cleared the agent error")
+        precondition(client.hostUser == "operator")
+        precondition(client.hostPython == "/opt/safeyolo/bin/python")
+        precondition(client.webmitmURL == nil)
+        StubURLProtocol.responsesByPath["/admin/instance"] = (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-remote-test","webmitm_url":"https://dev.example.ts.net:8443/"}"#.utf8))
+        await client.refreshInstance()
+        precondition(client.webmitmURL?.absoluteString == "https://dev.example.ts.net:8443/")
+        precondition(client.errorDetails?.contains("agent inventory unavailable") == true)
+        client.stop()
+        StubURLProtocol.responsesByPath["/admin/agents"] = (200, Data(#"{"agents":[]}"#.utf8))
+        let recovered = await client.refreshAgents()
+        precondition(recovered && client.errorDetails == nil)
+    }
+
+    private static func testTransportURLs() throws {
+        let secure = try validatedRemoteURL("https://host.example.ts.net:9443", scheme: "https", transport: .tailnet)
+        precondition(secure.host == "host.example.ts.net")
+        let forwarded = try validatedRemoteURL("http://127.0.0.1:19090", scheme: "https", transport: .sshTunnel)
+        precondition(forwarded.port == 19090)
+        let events = try validatedRemoteURL("ws://localhost:19091/admin/events", scheme: "wss", transport: .sshTunnel)
+        precondition(events.path == "/admin/events")
+        do {
+            _ = try validatedRemoteURL("http://public.example:9090", scheme: "https", transport: .sshTunnel)
+            preconditionFailure("A tunnel option must not send an Admin credential over public plaintext HTTP")
+        } catch ConnectionError.invalidRemoteURL {}
+        let input = RemoteConnectionInput(friendlyName: "remote", adminURL: "", eventsURL: "", token: "")
+        precondition(input.transport == .tailnet)
     }
 
     @MainActor
@@ -110,15 +388,26 @@ struct ModelTests {
         let inventory = try JSONDecoder().decode(
             AgentInventory.self,
             from: Data("""
-            {"agents":[{"agent_id":"ag-probe","name":"probe","state":"running"}]}
+            {"agents":[{"agent_id":"ag-probe","name":"probe","sandbox_state":"ready","agent_state":"exited","attachable":false}]}
             """.utf8)
         )
         precondition(
             inventory.agents == [
-                AgentInfo(agentID: "ag-probe", name: "probe", state: "running")
+                AgentInfo(agentID: "ag-probe", name: "probe", sandboxState: "ready", agentState: "exited", launcher: nil, attachable: false, error: nil)
             ]
         )
-        precondition(inventory.agents[0].isRunning)
+        precondition(inventory.agents[0].sandboxReady)
+        precondition(inventory.agents[0].canStart)
+        precondition(!inventory.agents[0].attachable)
+        let local = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil)
+        precondition(local == "safeyolo agent attach -- 'probe'")
+        let remote = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@host", hostPython: "/opt/safeyolo/bin/python")
+        precondition(remote.hasPrefix("ssh -t -- 'operator@host' "))
+        precondition(!remote.contains("agent run"))
+        do {
+            _ = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: nil)
+            preconditionFailure("Remote terminal needs a discovered or explicitly configured target")
+        } catch ConnectionError.missingTerminalTarget {}
 
         let decoded = try JSONDecoder().decode(
             OperatorEventEnvelope.self,

@@ -1,6 +1,25 @@
 import AppKit
 import SwiftUI
 
+private func securityMenuTitle(_ event: SecurityObservation) -> String {
+    // Native menus size themselves to the label. Bound only this preview;
+    // retain the complete summary in the event and its details window.
+    let suffix = event.count > 1 ? " (×\(event.count))" : ""
+    let font = NSFont.menuFont(ofSize: 0)
+    func width(_ text: String) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: font]).width
+    }
+    let full = event.summary + suffix
+    guard width(full) > 320 else { return full }
+    var preview = ""
+    for character in event.summary {
+        let next = preview + String(character)
+        if width(next + "…" + suffix) > 320 { break }
+        preview = next
+    }
+    return preview + "…" + suffix
+}
+
 @MainActor
 final class ApprovalWindowPresenter {
     private var windows: [String: NSWindow] = [:]
@@ -116,6 +135,59 @@ final class SecurityEventWindowPresenter {
     }
 }
 
+@MainActor
+final class ErrorWindowPresenter {
+    private var window: NSWindow?
+
+    func show(_ details: String, dismissFeedGap: (() -> Void)? = nil) {
+        let window = self.window ?? NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 340),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered, defer: false
+        )
+        window.title = "SafeYolo Error Details"
+        window.isReleasedWhenClosed = false
+        window.contentViewController = NSHostingController(rootView: ErrorDetailsView(
+            details: details, dismissFeedGap: dismissFeedGap,
+            close: { [weak window] in window?.close() }
+        ))
+        if self.window == nil { window.center() }
+        self.window = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+}
+
+struct ErrorDetailsView: View {
+    let details: String
+    let dismissFeedGap: (() -> Void)?
+    let close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Error details").font(.headline)
+            ScrollView {
+                Text(details)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Button("Copy Details") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(details, forType: .string)
+                }
+                if let dismissFeedGap {
+                    Button("Dismiss Feed Gap") { dismissFeedGap(); close() }
+                }
+                Spacer()
+                Button("Close") { close() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 460, minHeight: 240)
+    }
+}
+
 struct SecurityEventView: View {
     let event: SecurityObservation
     let close: () -> Void
@@ -177,6 +249,8 @@ struct ConnectionSettingsView: View {
     @State private var friendlyName: String
     @State private var adminURL: String
     @State private var eventsURL: String
+    @State private var terminalTarget: String
+    @State private var transport: RemoteTransport
     @State private var token = ""
     @State private var busy = false
     @State private var error: String?
@@ -188,17 +262,28 @@ struct ConnectionSettingsView: View {
         _friendlyName = State(initialValue: profile?.friendlyName ?? "Remote SafeYolo")
         _adminURL = State(initialValue: profile?.adminURL ?? "https://")
         _eventsURL = State(initialValue: profile?.eventsURL ?? "wss://")
+        _terminalTarget = State(initialValue: profile?.terminalTarget ?? "")
+        _transport = State(initialValue: profile?.transport ?? .tailnet)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Connect to a remote SafeYolo")
                 .font(.title2.weight(.semibold))
-            Text("Use the two Tailnet URLs shown by `safeyolo command-centre status` on the remote host.")
+            Text(transport == .tailnet
+                 ? "Use the two Tailnet URLs shown by `safeyolo command-centre status` on the remote host."
+                 : "Start your SSH port forwards, then enter their local Admin and Events URLs. The forwarded instance is still remote.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                settingsRow("Transport") {
+                    Picker("Transport", selection: $transport) {
+                        ForEach(RemoteTransport.allCases, id: \.self) { transport in
+                            Text(transport.label).tag(transport)
+                        }
+                    }.labelsHidden()
+                }
                 settingsRow("Name") {
                     TextField("Remote SafeYolo", text: $friendlyName)
                 }
@@ -211,8 +296,13 @@ struct ConnectionSettingsView: View {
                 settingsRow("Admin credential") {
                     SecureField("Stored in Keychain", text: $token)
                 }
+                settingsRow("SSH target (optional)") {
+                    TextField("Override: user@host or SSH alias", text: $terminalTarget)
+                }
             }
             .textFieldStyle(.roundedBorder)
+            Text("Tailscale terminals use the connected host and its SafeYolo username automatically. Set an SSH target for a different login or an SSH tunnel. Run Agent uses the Admin API and survives disconnects.")
+                .font(.caption).foregroundStyle(.secondary)
 
             if let error {
                 Text(error)
@@ -257,7 +347,9 @@ struct ConnectionSettingsView: View {
                 friendlyName: friendlyName.trimmingCharacters(in: .whitespacesAndNewlines),
                 adminURL: adminURL.trimmingCharacters(in: .whitespacesAndNewlines),
                 eventsURL: eventsURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                token: token
+                token: token,
+                terminalTarget: terminalTarget.trimmingCharacters(in: .whitespacesAndNewlines),
+                transport: transport
             )
         ) { result in
             busy = false
@@ -382,6 +474,7 @@ struct CommandCentreMenu: View {
     let presenter: ApprovalWindowPresenter
     let settingsPresenter: ConnectionSettingsWindowPresenter
     let securityPresenter: SecurityEventWindowPresenter
+    let errorPresenter: ErrorWindowPresenter
 
     @State private var actionError: String?
 
@@ -392,12 +485,11 @@ struct CommandCentreMenu: View {
             if !client.instanceID.isEmpty {
                 Text(client.instanceID).font(.caption)
             }
-            if let error = client.lastError {
-                Text(error).foregroundStyle(.red)
-            }
-            if let gap = client.eventFeedGap {
-                Text(gap).foregroundStyle(.orange)
-                Button("Dismiss Feed Gap") { client.clearEventFeedGap() }
+            if client.webmitmURL != nil {
+                Button("Open WebMITM") { openWebMITM(client) }
+                if client.webMITMKeyCopied {
+                    Text("Key copied—paste to sign in")
+                }
             }
             Divider()
             if client.approvals.isEmpty {
@@ -415,15 +507,55 @@ struct CommandCentreMenu: View {
                 Text("No configured agents")
             } else {
                 Text("Agents")
+                Button("Refresh Agent Status") {
+                    Task { _ = await client.refreshAgents() }
+                }
                 ForEach(client.agents) { agent in
-                    Menu("\(agent.name) · \(agent.state)") {
-                        if agent.isRunning {
+                    Menu {
+                        Text("Agent: \(agent.agentState)")
+                        Text("Sandbox: \(agent.sandboxState)")
+                        Text("Configured harness: \(agent.harnessLabel)")
+                        if client.pendingTerminalIDs.contains(agent.agentID) {
+                            Text("Waiting for agent terminal…")
+                        }
+                        if let launcher = agent.launcher {
+                            Text("Launcher: \(launcher.script ?? launcher.kind) (\(launcher.source))")
+                        }
+                        let failures = ([agent.error].compactMap { $0 }.filter { !$0.isEmpty }
+                            + (agent.hookErrors ?? []).map { "\($0.hook) failed (\($0.exitCode)): \($0.detail)" })
+                            .joined(separator: "\n\n")
+                        Button("Error details…") { errorPresenter.show(failures) }
+                            .disabled(failures.isEmpty)
+                        if let code = agent.exitCode { Text("Last command exit: \(code)") }
+                        if agent.sandboxReady {
                             Button("Present Desktop") { present(agent, client: client) }
-                            Button("Stop Agent") { setRunning(agent, running: false, client: client) }
-                        } else {
-                            Button("Start Agent") { setRunning(agent, running: true, client: client) }
+                            Button("Open Sandbox Shell") { openTerminal(agent, shell: true) }
+                        }
+                        if agent.canStart {
+                            Button("Run Agent") { setRunning(agent, running: true, client: client) }
+                            if agent.launcher?.kind != "supervisor" {
+                                Button("Run Agent and Open Terminal") { runAndOpen(agent, client: client) }
+                            }
+                            if agent.managed {
+                                Button("Run Interactively") { setRunning(agent, running: true, interactive: true, client: client) }
+                            }
+                        }
+                        if agent.attachable {
+                            Button("Open Agent Terminal") { openTerminal(agent) }
+                        } else if agent.managed && !agent.canStart {
+                            Text("Headless agent: use Coord output or agent diag")
+                        }
+                        if agent.sandboxReady || !agent.canStart {
+                            Button("Stop Agent and Sandbox") { setRunning(agent, running: false, client: client) }
+                        }
+                    } label: {
+                        Label {
+                            Text("\(agent.name)  \(agent.harnessMark)")
+                        } icon: {
+                            Image(systemName: agent.statusSymbol)
                         }
                     }
+                    .accessibilityLabel("\(agent.name), \(agent.harnessLabel), agent \(agent.agentState)")
                     .disabled(client.busyAgentIDs.contains(agent.agentID))
                 }
             }
@@ -431,22 +563,24 @@ struct CommandCentreMenu: View {
                 Divider()
                 Text("Security events observed this session (\(client.securityEvents.count))")
                 ForEach(client.securityEvents) { event in
-                    Button(event.count > 1 ? "\(event.summary) (×\(event.count))" : event.summary) {
+                    Button(securityMenuTitle(event)) {
                         securityPresenter.show(event)
                     }
                 }
                 Button("Clear Security Events") { client.clearSecurityEvents() }
             }
-            if let actionError {
-                Text(actionError).foregroundStyle(.red)
-            }
         } else {
             Text("Not connected")
-            if let error = controller.startupError {
-                Text(error).foregroundStyle(.red)
-            }
         }
         Divider()
+        Button("Error details…") {
+            let client = controller.client
+            errorPresenter.show(errorDetails, dismissFeedGap: client?.eventFeedGap == nil ? nil : {
+                client?.clearEventFeedGap()
+            })
+        }
+        .foregroundStyle(errorDetails.isEmpty ? Color.secondary : Color.red)
+        .disabled(errorDetails.isEmpty)
         Button("Connection Settings…") {
             settingsPresenter.show(controller: controller)
         }
@@ -456,17 +590,57 @@ struct CommandCentreMenu: View {
         }
     }
 
-    private func setRunning(_ agent: AgentInfo, running: Bool, client: SafeYoloClient) {
-        actionError = nil
-        client.setRunning(agent, running: running) { result in
+    private var errorDetails: String {
+        [controller.startupError, controller.client?.errorDetails, controller.notificationError, actionError, controller.client?.eventFeedGap]
+            .compactMap { $0 }.joined(separator: "\n\n")
+    }
+
+    private func openWebMITM(_ client: SafeYoloClient) {
+        do {
+            try client.openWebMITM(copyKey: { key in
+                NSPasteboard.general.clearContents()
+                return NSPasteboard.general.setString(key, forType: .string)
+            }, openBrowser: { NSWorkspace.shared.open($0) })
+            actionError = nil
+            controller.showWebMITMSignInNotice()
+        } catch {
+            actionError = error.localizedDescription
+            errorPresenter.show("Open WebMITM:\n\(error.localizedDescription)")
+        }
+    }
+
+    private func setRunning(_ agent: AgentInfo, running: Bool, interactive: Bool = false, client: SafeYoloClient) {
+        client.setRunning(agent, running: running, interactive: interactive) { result in
             if case .failure(let error) = result {
+                errorPresenter.show("\(running ? "Run" : "Stop") \(agent.name):\n\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func openTerminal(_ agent: AgentInfo, shell: Bool = false) {
+        do {
+            if shell { try controller.openSandboxShell(agent) }
+            else { try controller.openAgentTerminal(agent) }
+            actionError = nil
+        } catch {
+            actionError = error.localizedDescription
+            errorPresenter.show("Open \(shell ? "sandbox shell" : "agent terminal") for \(agent.name):\n\(error.localizedDescription)")
+        }
+    }
+
+    private func runAndOpen(_ agent: AgentInfo, client: SafeYoloClient) {
+        client.runAndWaitForTerminal(agent) { result in
+            switch result {
+            case .success(let ready): openTerminal(ready)
+            case .failure(let error):
+                if error is CancellationError { return }
                 actionError = error.localizedDescription
+                errorPresenter.show("Run and open terminal for \(agent.name):\n\(error.localizedDescription)")
             }
         }
     }
 
     private func present(_ agent: AgentInfo, client: SafeYoloClient) {
-        actionError = nil
         client.presentDesktop(for: agent) { result in
             switch result {
             case .success(let presentation):
@@ -476,7 +650,7 @@ struct CommandCentreMenu: View {
                     NSWorkspace.shared.open(url)
                 }
             case .failure(let error):
-                actionError = error.localizedDescription
+                errorPresenter.show("Present desktop for \(agent.name):\n\(error.localizedDescription)")
             }
         }
     }

@@ -515,6 +515,9 @@ stop.write_text(json.dumps({"name": "demo", "requested_at": "worker"}))
         "setsid su agent -s /bin/bash -c \\",
         "setsid bash -c \\",
     )
+    enabled = tmp_path / "command-supervisor-enabled"
+    enabled.touch()
+    owner_fragment = owner_fragment.replace("/safeyolo/command-supervisor-enabled", str(enabled))
     owner_fragment += (
         "\nexport SAFEYOLO_COMMAND_SUPERVISOR_STATE SAFEYOLO_COMMAND_SUPERVISOR_STOP\n"
         "SAFEYOLO_COMMAND_SUPERVISOR_STATE=\"$COMMAND_SUPERVISOR_STATE\"\n"
@@ -526,7 +529,7 @@ stop.write_text(json.dumps({"name": "demo", "requested_at": "worker"}))
     owner = subprocess.Popen(
         ["/bin/bash", str(owner_script)],
         stderr=subprocess.PIPE,
-        env={**os.environ, "SAFEYOLO_COMMAND_SUPERVISED": "1"},
+        env=dict(os.environ),
     )
     try:
         deadline = time.monotonic() + 5
@@ -603,13 +606,16 @@ def test_stop_intent_prevents_restart_after_command_crash(tmp_config_dir):
 
 
 def test_start_publishes_command_for_guest_pid1_owner(tmp_config_dir):
+    (tmp_config_dir / "agents/demo/config-share").mkdir(parents=True)
     supervisor.start_command_supervisor("demo", "exec worker")
 
     assert _state(tmp_config_dir, "demo")["command"] == "exec worker"
     assert _state(tmp_config_dir, "demo")["runtime_owner"] == "guest-pid1"
+    assert (tmp_config_dir / "agents/demo/config-share/command-supervisor-enabled").is_file()
 
 
 def test_start_replaces_a_fenced_guest_owned_run(tmp_config_dir):
+    (tmp_config_dir / "agents/demo/config-share").mkdir(parents=True)
     _seed_state(tmp_config_dir, "demo", "exec old-worker")
     state_path = get_agent_command_supervisor_state_path("demo")
     state = _state(tmp_config_dir, "demo")

@@ -363,7 +363,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
 
     echo "Booting test VM ($AGENT_NAME)..."
-    safeyolo agent run "$AGENT_NAME" --detach
+    safeyolo agent run "$AGENT_NAME" --sandbox-only
     STARTED_VM=true
 
     echo "  Waiting for VM..."

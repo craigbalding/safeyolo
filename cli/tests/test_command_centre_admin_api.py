@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import pwd
+import sys
 import threading
 from unittest.mock import create_autospec, patch
 
@@ -89,7 +92,9 @@ def _approval_event(event_id: str = "evt-approval") -> dict:
     }
 
 
-def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin):
+def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin, monkeypatch):
+    monkeypatch.setenv("USER", "not-the-proxy-user")
+    monkeypatch.setenv("LOGNAME", "not-the-proxy-user")
     base_url, _ = command_centre_admin
     unauthorized = httpx.get(f"{base_url}/admin/instance")
     assert unauthorized.status_code == 401
@@ -100,6 +105,9 @@ def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin):
 
     assert first == second
     assert first["safeyolo_instance_id"].startswith("sy-")
+    assert first["host_user"] == pwd.getpwuid(os.geteuid()).pw_name
+    assert first["host_python"] == sys.executable
+    assert first["webmitm_url"] is None
     assert first["capabilities"] == {
         "agent_inventory": True,
         "agent_lifecycle": True,
@@ -107,6 +115,28 @@ def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin):
         "audit_events": True,
         "desktop_present": True,
     }
+
+
+def test_instance_reports_live_webmitm_url_without_guessing_port(command_centre_admin, monkeypatch):
+    from safeyolo.traffic_master import WebTailnetShare
+
+    share = create_autospec(WebTailnetShare, instance=True, spec_set=True)
+    share.get_stats.return_value = {"state": "healthy", "url": "https://dev.example.ts.net:8443/"}
+    monkeypatch.setattr(AdminRequestHandler, "addons_with_stats", {"safeyolo-web-tailnet-share": share})
+    base_url, _ = command_centre_admin
+    api = AdminAPI(base_url=base_url, token="test-admin-token")
+    assert api.instance()["webmitm_url"] == "https://dev.example.ts.net:8443/"
+    share.get_stats.return_value = {"state": "disabled", "url": None}
+    assert api.instance()["webmitm_url"] is None
+
+
+def test_instance_identity_survives_unmapped_host_uid(command_centre_admin):
+    base_url, _ = command_centre_admin
+    api = AdminAPI(base_url=base_url, token="test-admin-token")
+    with patch("safeyolo.mitm_addons.admin_api.pwd.getpwuid", side_effect=KeyError, autospec=True):
+        instance = api.instance()
+    assert instance["host_user"] is None
+    assert instance["safeyolo_instance_id"].startswith("sy-")
 
 
 def test_pending_approvals_come_from_durable_audit_log(command_centre_admin):
@@ -168,8 +198,8 @@ def test_desktop_present_uses_stable_agent_id(command_centre_admin):
 def test_agent_inventory_and_lifecycle_use_stable_agent_ids(command_centre_admin):
     base_url, _ = command_centre_admin
     api = AdminAPI(base_url=base_url, token="test-admin-token")
-    stopped = AgentRuntime(agent_id="ag-probe", name="probe", state="stopped")
-    running = AgentRuntime(agent_id="ag-probe", name="probe", state="running")
+    stopped = AgentRuntime(agent_id="ag-probe", name="probe", sandbox_state="stopped")
+    running = AgentRuntime(agent_id="ag-probe", name="probe", sandbox_state="ready", agent_state="running")
 
     with (
         patch(
@@ -188,19 +218,9 @@ def test_agent_inventory_and_lifecycle_use_stable_agent_ids(command_centre_admin
             autospec=True,
         ) as stop,
     ):
-        assert api.agents() == [
-            {"agent_id": "ag-probe", "name": "probe", "state": "stopped"}
-        ]
-        assert api.start_agent("ag-probe") == {
-            "agent_id": "ag-probe",
-            "name": "probe",
-            "state": "running",
-        }
-        assert api.stop_agent("ag-probe") == {
-            "agent_id": "ag-probe",
-            "name": "probe",
-            "state": "stopped",
-        }
+        assert api.agents() == [stopped.to_dict()]
+        assert api.start_agent("ag-probe") == running.to_dict()
+        assert api.stop_agent("ag-probe") == stopped.to_dict()
 
     start.assert_called_once_with("ag-probe")
     stop.assert_called_once_with("ag-probe")
@@ -208,7 +228,7 @@ def test_agent_inventory_and_lifecycle_use_stable_agent_ids(command_centre_admin
 
 def test_stopping_agent_closes_its_active_desktop(command_centre_admin):
     base_url, _ = command_centre_admin
-    stopped = AgentRuntime(agent_id="ag-probe", name="probe", state="stopped")
+    stopped = AgentRuntime(agent_id="ag-probe", name="probe", sandbox_state="stopped")
     presenter = create_autospec(DesktopPresenter, instance=True, spec_set=True)
     AdminRequestHandler.desktop_presenter = presenter
     api = AdminAPI(base_url=base_url, token="test-admin-token")
@@ -223,15 +243,30 @@ def test_stopping_agent_closes_its_active_desktop(command_centre_admin):
     presenter.close.assert_called_once_with("ag-probe")
 
 
-def test_agent_lifecycle_rejects_command_arguments(command_centre_admin):
+@pytest.mark.parametrize("action", ["start", "start-interactive", "stop"])
+@pytest.mark.parametrize("payload", [{"command": "anything"}, {"launcher": "/tmp/host.sh"}, {"argv": ["--option"]}])
+def test_agent_lifecycle_rejects_command_arguments(command_centre_admin, action, payload):
     base_url, _ = command_centre_admin
-    with patch("safeyolo.agent_lifecycle.start_agent", autospec=True) as start:
+    with (
+        patch("safeyolo.agent_lifecycle.start_agent", autospec=True) as start,
+        patch("safeyolo.agent_lifecycle.stop_agent", autospec=True) as stop,
+    ):
         response = httpx.post(
-            f"{base_url}/admin/agents/ag-probe/start",
+            f"{base_url}/admin/agents/ag-probe/{action}",
             headers={"Authorization": "Bearer test-admin-token"},
-            json={"command": "anything"},
+            json=payload,
         )
 
     assert response.status_code == 400
     assert response.json()["error"] == "Agent lifecycle requests do not accept arguments"
     start.assert_not_called()
+    stop.assert_not_called()
+
+
+def test_interactive_start_is_a_fixed_named_action(command_centre_admin):
+    base_url, _ = command_centre_admin
+    api = AdminAPI(base_url=base_url, token="test-admin-token")
+    runtime = AgentRuntime(agent_id="ag-probe", name="probe", sandbox_state="ready", agent_state="starting")
+    with patch("safeyolo.agent_lifecycle.start_agent", return_value=runtime, autospec=True) as start:
+        assert api.start_agent("ag-probe", interactive=True) == runtime.to_dict()
+    start.assert_called_once_with("ag-probe", interactive=True)

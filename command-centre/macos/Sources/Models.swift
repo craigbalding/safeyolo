@@ -3,10 +3,16 @@ import Foundation
 struct InstanceInfo: Decodable {
     let schemaVersion: Int
     let safeyoloInstanceID: String
+    let hostUser: String?
+    let hostPython: String?
+    let webmitmURL: String?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case safeyoloInstanceID = "safeyolo_instance_id"
+        case hostUser = "host_user"
+        case hostPython = "host_python"
+        case webmitmURL = "webmitm_url"
     }
 }
 
@@ -26,18 +32,73 @@ struct AgentInventory: Decodable {
 }
 
 struct AgentInfo: Decodable, Equatable, Hashable, Identifiable {
+    struct Launcher: Decodable, Equatable, Hashable {
+        let kind: String
+        let source: String
+        let script: String?
+    }
+    struct HookFailure: Decodable, Equatable, Hashable {
+        let hook: String
+        let detail: String
+        let exitCode: Int
+
+        enum CodingKeys: String, CodingKey {
+            case hook, detail
+            case exitCode = "exit_code"
+        }
+    }
     let agentID: String
     let name: String
-    let state: String
+    let sandboxState: String
+    let agentState: String
+    let launcher: Launcher?
+    let attachable: Bool
+    let error: String?
+    var hookErrors: [HookFailure]? = nil
+    var exitCode: Int? = nil
+    var harness: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
         case name
-        case state
+        case sandboxState = "sandbox_state"
+        case agentState = "agent_state"
+        case launcher, attachable, error, harness
+        case hookErrors = "hook_errors"
+        case exitCode = "exit_code"
     }
 
     var id: String { agentID }
-    var isRunning: Bool { state == "running" }
+    var sandboxReady: Bool { sandboxState == "ready" }
+    var canStart: Bool { ["stopped", "exited", "failed"].contains(agentState) }
+    var managed: Bool { ["supervisor", "manager"].contains(launcher?.kind ?? "") }
+    var harnessLabel: String {
+        switch harness {
+        case "codex": return "Codex"
+        case "pi": return "Pi"
+        case "claude": return "Claude Code"
+        case "shell": return "Shell"
+        default: return "Custom or unknown"
+        }
+    }
+    var harnessMark: String {
+        switch harness {
+        case "codex": return ">_"
+        case "pi": return "π"
+        case "claude": return "✳"
+        default: return "⌨"
+        }
+    }
+    var statusSymbol: String {
+        switch agentState {
+        case "running": return "play.circle.fill"
+        case "stopped", "exited": return "stop.circle"
+        case "starting", "launching", "restarting": return "arrow.triangle.2.circlepath"
+        case "stopping", "finishing": return "hourglass"
+        case "failed": return "exclamationmark.triangle.fill"
+        default: return "questionmark.circle"
+        }
+    }
 }
 
 enum JSONValue: Decodable, Hashable, CustomStringConvertible {
@@ -289,6 +350,18 @@ struct MutationPlan: Equatable {
 enum ResolutionResult: Equatable {
     case decided(String)
     case desktop(DesktopPresentation)
+}
+
+enum WebMITMOpenError: LocalizedError {
+    case unavailable, clipboard, browser
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable: return "This SafeYolo host has not reported an active WebMITM URL."
+        case .clipboard: return "Could not copy the WebMITM sign-in key. The browser was not opened."
+        case .browser: return "The sign-in key was copied, but macOS could not open WebMITM in the browser."
+        }
+    }
 }
 
 enum ClientError: LocalizedError {

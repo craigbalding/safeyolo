@@ -56,19 +56,12 @@ dependencies = [
 
 [project.scripts]
 safeyolo = "safeyolo.cli:app"
-safeyolo-command-centre = "safeyolo.command_centre.app:main"
 
 [project.urls]
 Homepage = "https://github.com/craigbalding/safeyolo"
 Documentation = "https://github.com/craigbalding/safeyolo#readme"
 Repository = "https://github.com/craigbalding/safeyolo"
 Issues = "https://github.com/craigbalding/safeyolo/issues"
-
-[project.optional-dependencies]
-command-centre = [
-    "keyring>=25.7,<26",
-    "pyside6>=6.8,<7",
-]
 
 [dependency-groups]
 dev = [
@@ -79,8 +72,6 @@ dev = [
     "pytest-timeout>=2.0.0",
     "pre-commit>=3.0.0",
     "ruff>=0.9.4",
-    "keyring>=25.7,<26",
-    "pyside6>=6.8,<7",
     "websockets>=16.1,<17",
 ]
 # SBOM generation
@@ -146,6 +137,9 @@ packages = ["cli/src/safeyolo"]
 "contrib/lib/stage-codex-state.py"      = "safeyolo/contrib/lib/stage-codex-state.py"
 "contrib/lib/stage-factory-supervisor.py" = "safeyolo/contrib/lib/stage-factory-supervisor.py"
 "contrib/HOST_SCRIPT_GUIDE.md"          = "safeyolo/contrib/HOST_SCRIPT_GUIDE.md"
+"contrib/agent-launcher-template.sh"    = "safeyolo/contrib/agent-launcher-template.sh"
+"contrib/agent-launcher-prompt.md"      = "safeyolo/contrib/agent-launcher-prompt.md"
+"docs/agent-launchers.md"              = "safeyolo/docs/agent-launchers.md"
 "contrib/coord-mcp-bootstrap.sh"        = "safeyolo/contrib/coord-mcp-bootstrap.sh"
 "contrib/safeyolo-coord-mcp-launcher.sh" = "safeyolo/contrib/safeyolo-coord-mcp-launcher.sh"
 "contrib/safeyolo-coord-mcp.py"         = "safeyolo/contrib/safeyolo-coord-mcp.py"

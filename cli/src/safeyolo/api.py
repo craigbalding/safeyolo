@@ -480,9 +480,10 @@ class AdminAPI:
         result = self._request("GET", "/admin/agents")
         return result.get("agents", [])
 
-    def start_agent(self, agent_id: str) -> dict[str, Any]:
+    def start_agent(self, agent_id: str, *, interactive: bool = False) -> dict[str, Any]:
         """Start one configured agent by stable identity."""
-        return self._request("POST", f"/admin/agents/{agent_id}/start")
+        action = "start-interactive" if interactive else "start"
+        return self._request("POST", f"/admin/agents/{agent_id}/{action}")
 
     def stop_agent(self, agent_id: str) -> dict[str, Any]:
         """Stop one configured agent by stable identity."""
