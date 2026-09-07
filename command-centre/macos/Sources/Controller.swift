@@ -135,6 +135,7 @@ final class CommandCentreController: ObservableObject {
             terminalTarget: savedRemoteProfile?.terminalTarget,
             adminURL: savedRemoteProfile?.adminURL,
             hostUser: client?.hostUser,
+            hostPython: client?.hostPython,
             transport: savedRemoteProfile?.transport ?? .tailnet
         )
         let process = Process()

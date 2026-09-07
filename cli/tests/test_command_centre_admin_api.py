@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import pwd
+import sys
 import threading
 from unittest.mock import create_autospec, patch
 
@@ -105,6 +106,7 @@ def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin, mon
     assert first == second
     assert first["safeyolo_instance_id"].startswith("sy-")
     assert first["host_user"] == pwd.getpwuid(os.geteuid()).pw_name
+    assert first["host_python"] == sys.executable
     assert first["capabilities"] == {
         "agent_inventory": True,
         "agent_lifecycle": True,

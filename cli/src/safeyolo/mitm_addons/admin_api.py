@@ -19,6 +19,7 @@ import os
 import pwd
 import re
 import secrets
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -299,6 +300,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 "schema_version": 1,
                 "safeyolo_instance_id": get_or_create_instance_id(),
                 "host_user": host_user,
+                "host_python": sys.executable,
                 "capabilities": {
                     "agent_inventory": True,
                     "agent_lifecycle": True,

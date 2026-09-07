@@ -76,14 +76,15 @@ struct ModelTests {
 
     private static func testAutomaticTerminalTarget() throws {
         let adminURL = "https://server.example.ts.net:9443"
+        let python = "/opt/safeyolo/bin/python"
         let automatic = try agentAttachCommand(
-            name: "probe", remote: true, terminalTarget: nil, adminURL: adminURL, hostUser: "operator"
+            name: "probe", remote: true, terminalTarget: nil, adminURL: adminURL, hostUser: "operator", hostPython: python
         )
-        let explicit = try agentAttachCommand(name: "probe", remote: true, terminalTarget: "operator@server.example.ts.net")
+        let explicit = try agentAttachCommand(name: "probe", remote: true, terminalTarget: "operator@server.example.ts.net", hostPython: python)
         precondition(automatic == explicit)
         precondition(!automatic.contains("9443"))
         let override = try agentAttachCommand(
-            name: "probe", remote: true, terminalTarget: "custom-alias", adminURL: adminURL, hostUser: "operator"
+            name: "probe", remote: true, terminalTarget: "custom-alias", adminURL: adminURL, hostUser: "operator", hostPython: python
         )
         precondition(override.hasPrefix("ssh -t -- 'custom-alias' "))
         let local = try agentAttachCommand(
@@ -99,16 +100,20 @@ struct ModelTests {
         } catch ConnectionError.missingTerminalTarget {}
         let tunnel = try agentAttachCommand(
             name: "probe", remote: true, terminalTarget: "tunnel-alias",
-            adminURL: "http://localhost:19090", hostUser: "operator", transport: .sshTunnel
+            adminURL: "http://localhost:19090", hostUser: "operator", hostPython: python, transport: .sshTunnel
         )
         precondition(tunnel.hasPrefix("ssh -t -- 'tunnel-alias' "))
 
         // Exercise both shell boundaries without making any SSH connection.
-        func shellArguments(_ command: String, function: String) throws -> [String] {
+        func shellArguments(_ command: String, function: String? = nil) throws -> [String] {
             let process = Process()
             let output = Pipe()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-c", function + "() { printf '%s\\0' \"$@\"; }; " + command]
+            let prelude = function.map { $0 + "() { printf '%s\\0' \"$@\"; }; " } ?? ""
+            process.arguments = ["-c", prelude + command]
+            var environment = ProcessInfo.processInfo.environment
+            environment["PATH"] = "/usr/bin:/bin"
+            process.environment = environment
             process.standardOutput = output
             try process.run()
             let data = output.fileHandleForReading.readDataToEndOfFile()
@@ -118,11 +123,21 @@ struct ModelTests {
         }
         let name = "probe'; echo SHOULD_NOT_EXECUTE; #"
         let target = "user'$(echo SHOULD_NOT_EXECUTE)@host"
-        let command = try agentAttachCommand(name: name, remote: true, terminalTarget: target)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("attach '\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let executable = root.appendingPathComponent("python fixture")
+        try Data("#!/bin/sh\nprintf '%s\\0' \"$@\"\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let command = try agentAttachCommand(name: name, remote: true, terminalTarget: target, hostPython: executable.path)
         let sshArgs = try shellArguments(command, function: "ssh")
         precondition(sshArgs.count == 4 && sshArgs[0] == "-t" && sshArgs[1] == "--" && sshArgs[2] == target)
-        let attachArgs = try shellArguments(sshArgs[3], function: "safeyolo")
-        precondition(attachArgs == ["agent", "attach", "--", name])
+        let attachArgs = try shellArguments(sshArgs[3])
+        precondition(attachArgs == ["-m", "safeyolo.cli", "agent", "attach", "--", name])
+        do {
+            _ = try agentAttachCommand(name: "probe", remote: true, terminalTarget: "operator@host")
+            preconditionFailure("A missing installation must not fall back to the remote shell's PATH")
+        } catch ConnectionError.missingRemoteInstallation {}
     }
 
     @MainActor
@@ -130,7 +145,7 @@ struct ModelTests {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         StubURLProtocol.responsesByPath = [
-            "/admin/instance": (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-remote-test","host_user":"operator"}"#.utf8)),
+            "/admin/instance": (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-remote-test","host_user":"operator","host_python":"/opt/safeyolo/bin/python"}"#.utf8)),
             "/admin/approvals": (200, Data(#"{"approvals":[]}"#.utf8)),
             "/admin/agents": (503, Data(#"{"error":"agent inventory unavailable"}"#.utf8)),
         ]
@@ -158,6 +173,7 @@ struct ModelTests {
         precondition(agentErrors.compactMap { $0 }.count >= 3)
         precondition(agentErrors[firstFailure...].allSatisfy { $0 != nil }, "Successful identity/approval retries cleared the agent error")
         precondition(client.hostUser == "operator")
+        precondition(client.hostPython == "/opt/safeyolo/bin/python")
         precondition(client.errorDetails?.contains("agent inventory unavailable") == true)
         client.stop()
         StubURLProtocol.responsesByPath["/admin/agents"] = (200, Data(#"{"agents":[]}"#.utf8))
@@ -235,7 +251,7 @@ struct ModelTests {
         precondition(!inventory.agents[0].attachable)
         let local = try agentAttachCommand(name: "probe", remote: false, terminalTarget: nil)
         precondition(local == "safeyolo agent attach -- 'probe'")
-        let remote = try agentAttachCommand(name: "probe", remote: true, terminalTarget: "operator@host")
+        let remote = try agentAttachCommand(name: "probe", remote: true, terminalTarget: "operator@host", hostPython: "/opt/safeyolo/bin/python")
         precondition(remote.hasPrefix("ssh -t -- 'operator@host' "))
         precondition(!remote.contains("agent run"))
         do {

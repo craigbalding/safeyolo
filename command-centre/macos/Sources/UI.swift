@@ -555,7 +555,11 @@ struct CommandCentreMenu: View {
     }
 
     private func setRunning(_ agent: AgentInfo, running: Bool, interactive: Bool = false, client: SafeYoloClient) {
-        client.setRunning(agent, running: running, interactive: interactive) { _ in }
+        client.setRunning(agent, running: running, interactive: interactive) { result in
+            if case .failure(let error) = result {
+                errorPresenter.show("\(running ? "Run" : "Stop") \(agent.name):\n\(error.localizedDescription)")
+            }
+        }
     }
 
     private func openTerminal(_ agent: AgentInfo) {
@@ -564,6 +568,7 @@ struct CommandCentreMenu: View {
             actionError = nil
         } catch {
             actionError = error.localizedDescription
+            errorPresenter.show("Open terminal for \(agent.name):\n\(error.localizedDescription)")
         }
     }
 
@@ -576,8 +581,8 @@ struct CommandCentreMenu: View {
                 if let url = URL(string: presentation.url) {
                     NSWorkspace.shared.open(url)
                 }
-            case .failure:
-                break // The client retains this operation's error for Error details.
+            case .failure(let error):
+                errorPresenter.show("Present desktop for \(agent.name):\n\(error.localizedDescription)")
             }
         }
     }

@@ -125,13 +125,13 @@ final class RemoteConnectionVerifier {
 
 func agentAttachCommand(
     name: String, remote: Bool, terminalTarget: String?,
-    adminURL: String? = nil, hostUser: String? = nil, transport: RemoteTransport = .tailnet
+    adminURL: String? = nil, hostUser: String? = nil, hostPython: String? = nil,
+    transport: RemoteTransport = .tailnet
 ) throws -> String {
     func quoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
-    let attach = "safeyolo agent attach -- " + quoted(name)
-    guard remote else { return attach }
+    guard remote else { return "safeyolo agent attach -- " + quoted(name) }
     let target: String
     if let override = terminalTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
         target = override
@@ -142,6 +142,12 @@ func agentAttachCommand(
     } else {
         throw ConnectionError.missingTerminalTarget
     }
+    guard let python = hostPython, !python.isEmpty else {
+        throw ConnectionError.missingRemoteInstallation
+    }
+    // Keep the interpreter's venv path intact: resolving its symlink would
+    // select the base Python and lose the installed SafeYolo package.
+    let attach = quoted(python) + " -m safeyolo.cli agent attach -- " + quoted(name)
     // This connects a viewer to an existing host session; it never starts an
     // agent. SSH credentials are separate from the Admin API credential.
     return "ssh -t -- " + quoted(target) + " " + quoted(attach)
@@ -171,6 +177,7 @@ enum ConnectionError: LocalizedError {
     case missingCredential(String)
     case requestFailed(Int)
     case missingTerminalTarget
+    case missingRemoteInstallation
 
     var errorDescription: String? {
         switch self {
@@ -180,6 +187,8 @@ enum ConnectionError: LocalizedError {
             return "Enter the remote Admin API credential"
         case .missingTerminalTarget:
             return "The remote terminal target is unavailable. Tailscale uses the connected host and its reported username. For an SSH tunnel or a different login, set user@host or an SSH alias in Connection Settings. Run Agent does not need SSH."
+        case .missingRemoteInstallation:
+            return "The connected SafeYolo server did not report its Python executable. Update and restart that server, then reconnect Command Centre. Terminal attachment uses the server's installation without relying on the SSH shell's PATH."
         case .missingCredential(let instanceID):
             return "No Keychain credential is stored for \(instanceID)"
         case .requestFailed(let status):

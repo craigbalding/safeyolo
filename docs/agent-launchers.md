@@ -168,7 +168,11 @@ forwarded loopback URL cannot identify an SSH destination.
 
 Run Agent uses the named Admin API operation and needs no SSH connection.
 Open Agent Terminal opens Terminal.app and runs `ssh -t TARGET` followed by
-`safeyolo agent attach NAME` on that host. An explicit SSH target in local
+the server's reported `host_python` executable with
+`-m safeyolo.cli agent attach -- NAME` on that host. This uses the running
+instance's SafeYolo installation even when the non-interactive SSH shell has
+no `safeyolo` on its PATH. The interpreter's virtual-environment path is kept
+intact, not resolved to its base Python. An explicit SSH target in local
 connection settings overrides discovery, for example to use another login.
 If the host's effective UID has no OS account entry, `host_user` is null and an
 explicit SSH target is needed. No command, script path, or arbitrary argv is accepted by the Admin
@@ -184,6 +188,9 @@ in a resizable window with **Copy Details**; long errors do not resize the menu.
 An unresolved request error remains until that operation succeeds. A successful
 identity request does not clear a failed inventory request. Live event gaps
 remain available in the details window until dismissed.
+Failed user actions (run, stop, open terminal, or present desktop) open the
+details window immediately. Background retries update the menu entry without
+opening windows repeatedly.
 
 ## Upgrade and acceptance
 

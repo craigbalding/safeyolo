@@ -17,6 +17,7 @@ final class SafeYoloClient: ObservableObject {
     @Published private(set) var busyAgentIDs = Set<String>()
     @Published private(set) var instanceID = ""
     @Published private(set) var hostUser: String?
+    @Published private(set) var hostPython: String?
     @Published private(set) var requestErrors: [String: String] = [:]
     @Published private(set) var eventFeedGap: String?
 
@@ -198,6 +199,7 @@ final class SafeYoloClient: ObservableObject {
                 expected: expectedInstanceID
             )
             hostUser = instance.hostUser
+            hostPython = instance.hostPython
             requestErrors["Instance identity"] = nil
             return true
         } catch {
