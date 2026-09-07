@@ -1870,6 +1870,7 @@ def run(  # DOC: README.md, docs/AGENTS.md
 def shell(  # DOC: docs/agent-debugging.md
     name: str = typer.Argument(..., help="Agent instance name"),
     command: str = typer.Option(None, "--command", "-c", help="Run a command instead of interactive shell"),
+    persistent: bool = typer.Option(False, "--persistent", help="Open or reattach a host-tmux-backed operator shell"),
     root: bool = typer.Option(
         False,
         "--root",
@@ -1894,6 +1895,9 @@ def shell(  # DOC: docs/agent-debugging.md
     """
     _validate_instance_name(name)
 
+    if persistent and (command is not None or agent_command or launch_id):
+        raise typer.BadParameter("--persistent opens an interactive operator shell; it cannot be combined with --command, --agent-command, or --launch-id")
+
     if agent_command:
         if command or root or not launch_id:
             raise typer.BadParameter("--agent-command requires --launch-id and cannot be combined with --command or --root")
@@ -1908,6 +1912,16 @@ def shell(  # DOC: docs/agent-debugging.md
         console.print(f"[red]Agent '{name}' is not running.[/red]")
         console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
         raise typer.Exit(1)
+
+    if persistent:
+        from ..shell_sessions import open_persistent_shell
+
+        try:
+            exit_code = open_persistent_shell(name, root=root)
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            raise typer.Exit(1) from None
+        raise typer.Exit(exit_code)
 
     user = "root" if root else "agent"
     exit_code = plat.exec_in_sandbox(

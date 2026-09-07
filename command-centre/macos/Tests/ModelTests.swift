@@ -278,9 +278,9 @@ struct ModelTests {
                                                    hostPython: executable.path, action: .shell)
         let shellSSHArgs = try shellArguments(shellCommand, function: "ssh")
         let shellArgs = try shellArguments(shellSSHArgs[3])
-        precondition(shellArgs == ["-m", "safeyolo.cli", "agent", "shell", "--", name])
+        precondition(shellArgs == ["-m", "safeyolo.cli", "agent", "shell", "--persistent", "--", name])
         let localShell = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil, action: .shell)
-        precondition(localShell == "safeyolo agent shell -- 'probe'")
+        precondition(localShell == "safeyolo agent shell --persistent -- 'probe'")
         do {
             _ = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@host")
             preconditionFailure("A missing installation must not fall back to the remote shell's PATH")

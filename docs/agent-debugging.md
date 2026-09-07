@@ -9,6 +9,12 @@ guest shell; `agent attach NAME` reconnects to the existing coding-agent
 terminal. See [agent launchers](agent-launchers.md) for persistent runs and
 temporary interactive debugging of managed agents.
 
+For a shell that survives loss of the operator connection, use
+`safeyolo agent shell NAME --persistent`. Repeating the command reattaches to
+the same independent shell through host tmux. You can still run guest tmux
+inside that shell and start the coding agent manually for guest-side lab work.
+The plain `agent shell NAME` command keeps its direct-shell behavior.
+
 ## Philosophy
 
 The sandbox is the security boundary. Processes *inside* one agent's

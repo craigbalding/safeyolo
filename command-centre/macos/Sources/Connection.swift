@@ -136,7 +136,8 @@ func agentTerminalCommand(
     func quoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
-    guard remote else { return "safeyolo agent \(action.rawValue) -- " + quoted(name) }
+    let actionArguments = action == .shell ? "shell --persistent" : "attach"
+    guard remote else { return "safeyolo agent \(actionArguments) -- " + quoted(name) }
     let target: String
     if let override = terminalTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
         target = override
@@ -152,8 +153,9 @@ func agentTerminalCommand(
     }
     // Keep the interpreter's venv path intact: resolving its symlink would
     // select the base Python and lose the installed SafeYolo package.
-    let command = quoted(python) + " -m safeyolo.cli agent \(action.rawValue) -- " + quoted(name)
-    // Attach or open an independent shell; neither action starts the agent.
+    let command = quoted(python) + " -m safeyolo.cli agent \(actionArguments) -- " + quoted(name)
+    // Both sessions survive viewer disconnection. The persistent shell is independent
+    // of the coding-agent terminal; neither action starts the coding agent.
     // SSH credentials are separate from the Admin API credential.
     return "ssh -t -- " + quoted(target) + " " + quoted(command)
 }
