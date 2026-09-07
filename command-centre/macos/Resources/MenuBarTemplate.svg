@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- Monochrome version of AppIcon.svg. Empty areas remain transparent so
+       macOS can tint the rails-and-switch mark for the current menu bar. -->
+  <path d="M10 18H90 M10 82H90" fill="none" stroke="black" stroke-width="6" stroke-linecap="square"/>
+  <rect x="18" y="30" width="64" height="40" rx="20" fill="none" stroke="black" stroke-width="6"/>
+  <path d="M78 50a12 12 0 1 0-24 0a12 12 0 1 0 24 0 M71 50a5 5 0 1 0-10 0a5 5 0 1 0 10 0" fill="black" fill-rule="evenodd"/>
+</svg>

@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
-from .agents_store import get_agent_by_id, get_or_mint_agent_id, load_all_agents
+from .agents_store import get_agent_by_id, get_or_mint_agent_id, load_agent, load_all_agents
 
 log = logging.getLogger(__name__)
 
@@ -33,12 +34,26 @@ class AgentRuntime:
     exit_code: int | None = None
     error: str | None = None
     hook_errors: list[dict] = field(default_factory=list)
+    harness: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-def _runtime(name: str, agent_id: str) -> AgentRuntime:
+def _configured_harness(metadata: dict) -> str | None:
+    """Identify bundled setup scripts; do not guess what custom scripts run."""
+    script = Path(metadata.get("host_script") or "").name
+    return {
+        "codex-host-setup.sh": "codex",
+        "codex-coord-host-setup.sh": "codex",
+        "pi-host-setup.sh": "pi",
+        "pi-coord-host-setup.sh": "pi",
+        "claude-host-setup.sh": "claude",
+        "mise-shell-host-setup.sh": "shell",
+    }.get(script)
+
+
+def _runtime(name: str, agent_id: str, *, metadata: dict | None = None) -> AgentRuntime:
     from .agent_launchers import observe_launch
     from .platform import get_platform
 
@@ -48,7 +63,10 @@ def _runtime(name: str, agent_id: str) -> AgentRuntime:
     except (OSError, ValueError, RuntimeError) as exc:
         # One broken launcher must not hide every other configured agent.
         observed = {"agent_state": "unknown", "error": str(exc)}
-    return AgentRuntime(agent_id=agent_id, name=name, sandbox_state="ready" if ready else "stopped", **observed)
+    if metadata is None:
+        metadata = load_agent(name) or {}
+    return AgentRuntime(agent_id=agent_id, name=name, sandbox_state="ready" if ready else "stopped",
+                        harness=_configured_harness(metadata), **observed)
 
 
 def list_agent_runtimes() -> list[AgentRuntime]:
@@ -57,7 +75,7 @@ def list_agent_runtimes() -> list[AgentRuntime]:
     runtimes = []
     for name, metadata in sorted(agents.items()):
         agent_id = str(metadata.get("agent_id") or get_or_mint_agent_id(name))
-        runtimes.append(_runtime(name, agent_id))
+        runtimes.append(_runtime(name, agent_id, metadata=metadata))
     return runtimes
 
 

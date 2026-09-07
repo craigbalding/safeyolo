@@ -514,6 +514,7 @@ struct CommandCentreMenu: View {
                     Menu {
                         Text("Agent: \(agent.agentState)")
                         Text("Sandbox: \(agent.sandboxState)")
+                        Text("Configured harness: \(agent.harnessLabel)")
                         if client.pendingTerminalIDs.contains(agent.agentID) {
                             Text("Waiting for agent terminal…")
                         }
@@ -548,9 +549,13 @@ struct CommandCentreMenu: View {
                             Button("Stop Agent and Sandbox") { setRunning(agent, running: false, client: client) }
                         }
                     } label: {
-                        Label(agent.name, systemImage: agent.statusSymbol)
+                        Label {
+                            Text("\(agent.name)  \(agent.harnessMark)")
+                        } icon: {
+                            Image(systemName: agent.statusSymbol)
+                        }
                     }
-                    .accessibilityLabel("\(agent.name), agent \(agent.agentState)")
+                    .accessibilityLabel("\(agent.name), \(agent.harnessLabel), agent \(agent.agentState)")
                     .disabled(client.busyAgentIDs.contains(agent.agentID))
                 }
             }

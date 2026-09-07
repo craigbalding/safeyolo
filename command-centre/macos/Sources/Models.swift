@@ -56,13 +56,14 @@ struct AgentInfo: Decodable, Equatable, Hashable, Identifiable {
     let error: String?
     var hookErrors: [HookFailure]? = nil
     var exitCode: Int? = nil
+    var harness: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
         case name
         case sandboxState = "sandbox_state"
         case agentState = "agent_state"
-        case launcher, attachable, error
+        case launcher, attachable, error, harness
         case hookErrors = "hook_errors"
         case exitCode = "exit_code"
     }
@@ -71,6 +72,23 @@ struct AgentInfo: Decodable, Equatable, Hashable, Identifiable {
     var sandboxReady: Bool { sandboxState == "ready" }
     var canStart: Bool { ["stopped", "exited", "failed"].contains(agentState) }
     var managed: Bool { ["supervisor", "manager"].contains(launcher?.kind ?? "") }
+    var harnessLabel: String {
+        switch harness {
+        case "codex": return "Codex"
+        case "pi": return "Pi"
+        case "claude": return "Claude Code"
+        case "shell": return "Shell"
+        default: return "Custom or unknown"
+        }
+    }
+    var harnessMark: String {
+        switch harness {
+        case "codex": return ">_"
+        case "pi": return "π"
+        case "claude": return "✳"
+        default: return "⌨"
+        }
+    }
     var statusSymbol: String {
         switch agentState {
         case "running": return "play.circle.fill"

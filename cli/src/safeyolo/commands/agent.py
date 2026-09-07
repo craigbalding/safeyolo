@@ -600,7 +600,9 @@ def _run_agent(*args, launch_mode="foreground", interactive=False, **kwargs) -> 
     if launch_mode == "background":
         followup = f"safeyolo agent diag {name}" if selection.kind == "supervisor" else f"safeyolo agent attach {name}"
         console.print(f"Agent {name}: launch requested. Use {followup}.")
-    return result
+    # Launcher is frozen: the complementary interactive/non-interactive paths
+    # above always assign result. CodeQL does not correlate these two checks.
+    return result  # lgtm[py/uninitialized-local-variable]
 
 
 def _run_agent_impl(

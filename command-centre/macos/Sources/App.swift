@@ -48,18 +48,21 @@ struct SafeYoloCommandCentreApp: App {
                 }
             }
         } label: {
-            Image(
-                systemName: controller.hasSecurityEvents
-                    ? "exclamationmark.shield.fill"
-                    : controller.hasPendingApprovals
-                        ? "exclamationmark.shield.fill"
-                        : controller.client == nil
-                        ? "shield.slash"
-                        : "shield.lefthalf.filled"
-            )
-            .symbolRenderingMode(.palette)
+            HStack(spacing: 1) {
+                Image("MenuBarTemplate")
+                    .renderingMode(.template)
+                    .resizable()
+                    .frame(width: 18, height: 18)
+                // Preserve the old shield's attention and unconfigured states.
+                Text(controller.hasSecurityEvents || controller.hasPendingApprovals
+                     ? "!" : controller.client == nil ? "×" : "")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 6)
+            }
             .foregroundStyle(controller.hasSecurityEvents ? Color.red : Color.primary)
-            .accessibilityLabel("SafeYolo")
+            .accessibilityLabel(controller.hasSecurityEvents ? "SafeYolo, security events"
+                                : controller.hasPendingApprovals ? "SafeYolo, approvals waiting"
+                                : controller.client == nil ? "SafeYolo, not configured" : "SafeYolo")
         }
         .menuBarExtraStyle(.menu)
     }

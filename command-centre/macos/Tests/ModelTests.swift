@@ -66,6 +66,7 @@ struct ModelTests {
         try testRemoteConnectionVerification()
         try testPinnedInstanceIdentity()
         try testAgentAndSecurityModels()
+        try testHarnessMarks()
         try testTransportURLs()
         try testAutomaticTerminalTarget()
         try await testClientIngestsAndCoalescesSecurityEvents()
@@ -74,6 +75,24 @@ struct ModelTests {
         try await testRunAndWaitForTerminal()
         try await testWebMITMSignInHandoff()
         print("model-tests: PASS")
+    }
+
+    @MainActor
+    private static func testHarnessMarks() throws {
+        for (harness, label, mark) in [
+            ("codex", "Codex", ">_"), ("pi", "Pi", "π"),
+            ("claude", "Claude Code", "✳"), ("shell", "Shell", "⌨"),
+            ("custom", "Custom or unknown", "⌨")
+        ] {
+            let agent = try JSONDecoder().decode(AgentInfo.self, from: Data("""
+            {"agent_id":"ag-probe","name":"probe","sandbox_state":"stopped",
+             "agent_state":"stopped","attachable":false,"harness":"\(harness)"}
+            """.utf8))
+            precondition(agent.harnessLabel == label && agent.harnessMark == mark)
+            precondition(agent.statusSymbol == "stop.circle", "Harness must not replace state")
+        }
+        let unknown = try JSONDecoder().decode(AgentInfo.self, from: Data(#"{"agent_id":"ag-probe","name":"probe","sandbox_state":"ready","agent_state":"running","attachable":true}"#.utf8))
+        precondition(unknown.harnessLabel == "Custom or unknown" && unknown.harnessMark == "⌨")
     }
 
     @MainActor

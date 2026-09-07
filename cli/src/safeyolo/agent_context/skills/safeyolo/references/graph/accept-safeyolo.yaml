@@ -181,9 +181,9 @@ nodes:
       obtain_from: "pytest, pytest-cov, and Hypothesis distributions named and hash-locked in uv.lock, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 332dd4b2f9cf863be57dae75f73769df4f7860740e7813d87cd9e3327b32abbd
+          sha256: 1cd54f8d23583d518e04ee1d268e2ddb97bb978fe82db9b8ef564b51c98112ed
         - path: uv.lock
-          sha256: 53f9cacfe5de60085405cdc78cb62a63c41a58bdc696d055bcd716629e3dd695
+          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
         - path: scripts/check_test_assurance.py
           sha256: 3dc6bc589625ea3058b7ca20711d97f3007ca41b0ebd1653a671a4642dc91974
       setup: "uv sync --frozen --group dev"
@@ -215,7 +215,7 @@ nodes:
         - path: experiments/policy_assurance/run_experiments.py
           sha256: 898fa727527e70de2f3cf9f33e0ca870e39f66385b0e80b21d0551b3f0ccb916
         - path: uv.lock
-          sha256: 53f9cacfe5de60085405cdc78cb62a63c41a58bdc696d055bcd716629e3dd695
+          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
       setup: "uv sync --frozen --group dev; use a durable evidence directory outside the checkout"
       verify: "sha256sum tools/policy_chaos.py experiments/policy_assurance/run_experiments.py uv.lock"
       run: "uv run python -m tools.policy_chaos run --published-seeds --output <evidence-dir>/policy-chaos.json"
@@ -246,7 +246,7 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: 6fd663f4c52157c97e831c3642a5e6d0f5561f80f331516bcc34723e1a4ccbc7
         - path: uv.lock
-          sha256: 53f9cacfe5de60085405cdc78cb62a63c41a58bdc696d055bcd716629e3dd695
+          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
       setup: "Use an approved host; the lane owns a separate .safeyolo-test instance, ports, certificates, and sinkhole."
       verify: "sha256sum install.sh tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh uv.lock"
       run:
@@ -501,7 +501,7 @@ nodes:
         - path: .pre-commit-config.yaml
           sha256: 802f279395812ff087e09ad750e4f36226e10e4dfb1de29c0a87bab487eb826c
         - path: uv.lock
-          sha256: 53f9cacfe5de60085405cdc78cb62a63c41a58bdc696d055bcd716629e3dd695
+          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."
       verify: "sha256sum ruff.toml .pre-commit-config.yaml uv.lock && uv run ruff --version"
       run:
@@ -553,9 +553,9 @@ nodes:
       obtain_from: "pytest-repeat and pytest-xdist in the hash-bearing tools/acceptance stress requirements export, layered over the exact root project environment"
       sources:
         - path: pyproject.toml
-          sha256: 332dd4b2f9cf863be57dae75f73769df4f7860740e7813d87cd9e3327b32abbd
+          sha256: 1cd54f8d23583d518e04ee1d268e2ddb97bb978fe82db9b8ef564b51c98112ed
         - path: uv.lock
-          sha256: 53f9cacfe5de60085405cdc78cb62a63c41a58bdc696d055bcd716629e3dd695
+          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
         - path: tools/acceptance/requirements-stress.txt
           sha256: 5ef03fb3b4dbceda038ab1c919061096bb3c1e0548d244da0015f7ea4939e20e
       setup: "uv sync --frozen --group dev; select only hermetic focused nodes and give each test-owned external service a distinct endpoint"
@@ -607,9 +607,9 @@ nodes:
       obtain_from: "pip-audit declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 332dd4b2f9cf863be57dae75f73769df4f7860740e7813d87cd9e3327b32abbd
+          sha256: 1cd54f8d23583d518e04ee1d268e2ddb97bb978fe82db9b8ef564b51c98112ed
         - path: uv.lock
-          sha256: 53f9cacfe5de60085405cdc78cb62a63c41a58bdc696d055bcd716629e3dd695
+          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
         - path: tools/acceptance/pyproject.toml
           sha256: 95d5d041dea3951f039ad4ffeebf8fb2897dd216df6ddf2bd1da0e03e7804d2c
         - path: tools/acceptance/uv.lock

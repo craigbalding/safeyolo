@@ -11,8 +11,13 @@ lets the operator recheck after host/session-manager failure, which cannot
 reliably emit its own final event. These are observations, not a heartbeat or
 a new recovery manager.
 
-Agent rows use status icons; their submenus retain the full agent and sandbox
-state. **Run Agent** starts the agent without opening a viewer. **Run Agent
+Agent rows keep the status icon on the left and show a harness mark beside the
+name: `>_` for Codex, `π` for Pi, and `✳` for Claude Code. The configured bundled
+setup script supplies this identity; it is not a process-liveness check. Shells
+and custom or unknown setups use a generic keyboard mark. Submenus name the
+configured harness and retain the full agent and sandbox state.
+
+**Run Agent** starts the agent without opening a viewer. **Run Agent
 and Open Terminal** waits until the persistent launch is attachable, then
 opens its terminal once. A failed launch reports the error instead of opening
 an unusable terminal. **Open Sandbox Shell** opens a separate shell in a ready
