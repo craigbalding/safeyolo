@@ -1,11 +1,16 @@
 import Foundation
 
 struct InstanceInfo: Decodable {
+    struct EventEndpoint: Decodable, Equatable {
+        let enabled: Bool
+        let port: Int?
+    }
     let schemaVersion: Int
     let safeyoloInstanceID: String
     let hostUser: String?
     let hostPython: String?
     let webmitmURL: String?
+    let commandCentreEvents: EventEndpoint?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -13,6 +18,7 @@ struct InstanceInfo: Decodable {
         case hostUser = "host_user"
         case hostPython = "host_python"
         case webmitmURL = "webmitm_url"
+        case commandCentreEvents = "command_centre_events"
     }
 }
 

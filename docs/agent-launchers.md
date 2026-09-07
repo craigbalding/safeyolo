@@ -236,6 +236,34 @@ resulting app in Applications, then open its icon or use
 `safeyolo command-centre run`. Linux hosts provide the Admin API and event
 stream; the graphical app runs on the operator's Mac.
 
+Installing the app does not enable the host's live-event listener. For a local
+connection, enable the listener on the Mac that runs SafeYolo:
+
+```sh
+safeyolo command-centre enable
+safeyolo stop
+safeyolo start
+```
+
+The restart briefly interrupts agent networking and Coord. Agents stay running
+unless you add `--all` to the stop command. Local mode loads the existing local
+Admin API credential automatically; it does not require pasting a key.
+
+If the running host reports live events disabled, the app shows **Live events
+disabled** and **Set Up Live Events…** with the commands. A working Admin API
+can still provide agent status and actions when live events are unavailable.
+The client paces retries and does not republish unchanged status snapshots.
+Older hosts that do not report listener state receive conditional setup
+guidance; a connection failure alone does not establish that events are disabled.
+
+Use **Copy Diagnostics** in the main menu or the connection error window to
+share connection state, endpoint origins, retry counts, timestamps, and recent
+failures. The report retains failures after reconnecting. History is kept only
+for the current connection session, with the latest 100 entries and consecutive
+duplicates combined. It excludes credentials, headers, URL paths and queries,
+and response bodies. Hostnames remain visible. **Copy Details** continues to
+copy the displayed error text.
+
 ## Upgrade and acceptance
 
 Replace old boot-only `--detach` calls with `--sandbox-only`. Supervision is

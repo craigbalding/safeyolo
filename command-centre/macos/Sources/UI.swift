@@ -139,7 +139,7 @@ final class SecurityEventWindowPresenter {
 final class ErrorWindowPresenter {
     private var window: NSWindow?
 
-    func show(_ details: String, dismissFeedGap: (() -> Void)? = nil) {
+    func show(_ details: String, dismissFeedGap: (() -> Void)? = nil, diagnostics: (() -> String)? = nil) {
         let window = self.window ?? NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 580, height: 340),
             styleMask: [.titled, .closable, .resizable],
@@ -148,7 +148,7 @@ final class ErrorWindowPresenter {
         window.title = "SafeYolo Error Details"
         window.isReleasedWhenClosed = false
         window.contentViewController = NSHostingController(rootView: ErrorDetailsView(
-            details: details, dismissFeedGap: dismissFeedGap,
+            details: details, dismissFeedGap: dismissFeedGap, diagnostics: diagnostics,
             close: { [weak window] in window?.close() }
         ))
         if self.window == nil { window.center() }
@@ -161,6 +161,7 @@ final class ErrorWindowPresenter {
 struct ErrorDetailsView: View {
     let details: String
     let dismissFeedGap: (() -> Void)?
+    let diagnostics: (() -> String)?
     let close: () -> Void
 
     var body: some View {
@@ -175,6 +176,12 @@ struct ErrorDetailsView: View {
                 Button("Copy Details") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(details, forType: .string)
+                }
+                if let diagnostics {
+                    Button("Copy Diagnostics") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(diagnostics(), forType: .string)
+                    }
                 }
                 if let dismissFeedGap {
                     Button("Dismiss Feed Gap") { dismissFeedGap(); close() }
@@ -481,7 +488,12 @@ struct CommandCentreMenu: View {
     var body: some View {
         Text(controller.connectionName)
         if let client = controller.client {
-            Text(client.connectionState.rawValue)
+            Text(client.connectionSummary)
+            if client.connectionGuidance != nil {
+                Button(client.eventEndpoint?.enabled == false ? "Set Up Live Events…" : "Connection Help…") {
+                    errorPresenter.show(client.connectionGuidance ?? "", diagnostics: { client.diagnosticReport })
+                }
+            }
             if !client.instanceID.isEmpty {
                 Text(client.instanceID).font(.caption)
             }
@@ -577,10 +589,16 @@ struct CommandCentreMenu: View {
             let client = controller.client
             errorPresenter.show(errorDetails, dismissFeedGap: client?.eventFeedGap == nil ? nil : {
                 client?.clearEventFeedGap()
-            })
+            }, diagnostics: client.map { client in { client.diagnosticReport } })
         }
         .foregroundStyle(errorDetails.isEmpty ? Color.secondary : Color.red)
         .disabled(errorDetails.isEmpty)
+        if let client = controller.client {
+            Button("Copy Diagnostics") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(client.diagnosticReport, forType: .string)
+            }
+        }
         Button("Connection Settings…") {
             settingsPresenter.show(controller: controller)
         }
@@ -591,7 +609,8 @@ struct CommandCentreMenu: View {
     }
 
     private var errorDetails: String {
-        [controller.startupError, controller.client?.errorDetails, controller.notificationError, actionError, controller.client?.eventFeedGap]
+        [controller.client?.connectionGuidance, controller.startupError, controller.client?.errorDetails,
+         controller.notificationError, actionError, controller.client?.eventFeedGap]
             .compactMap { $0 }.joined(separator: "\n\n")
     }
 

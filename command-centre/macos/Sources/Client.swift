@@ -1,12 +1,24 @@
 import Combine
 import Foundation
 
+protocol EventSocket: AnyObject {
+    var response: URLResponse? { get }
+    var closeCode: URLSessionWebSocketTask.CloseCode { get }
+    func resume()
+    func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void)
+    func receive() async throws -> URLSessionWebSocketTask.Message
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+}
+
+extension URLSessionWebSocketTask: EventSocket {}
+
 @MainActor
 final class SafeYoloClient: ObservableObject {
     enum ConnectionState: String {
         case connecting = "Connecting…"
         case connected = "Connected"
         case reconnecting = "Reconnecting…"
+        case eventsDisabled = "Live events disabled"
         case stopped = "Stopped"
     }
 
@@ -23,6 +35,63 @@ final class SafeYoloClient: ObservableObject {
     @Published private(set) var webMITMKeyCopied = false
     @Published private(set) var requestErrors: [String: String] = [:]
     @Published private(set) var eventFeedGap: String?
+    @Published private(set) var adminConnected = false
+    @Published private(set) var eventEndpoint: InstanceInfo.EventEndpoint?
+
+    var connectionSummary: String {
+        if adminConnected && connectionState == .reconnecting {
+            return "Admin API connected; live events unavailable"
+        }
+        return connectionState.rawValue
+    }
+
+    var connectionGuidance: String? {
+        guard adminConnected, connectionState != .connected, connectionState != .stopped else { return nil }
+        let host = isLocalConnection ? "this Mac" : "the connected SafeYolo host"
+        if eventEndpoint?.enabled == false {
+            return """
+            Admin API connected. Live events are disabled in the running SafeYolo host.
+            On \(host), run:
+            safeyolo command-centre enable
+            safeyolo stop
+            safeyolo start
+
+            If you already enabled live events, restart SafeYolo to apply the change.
+            Restarting briefly interrupts agent networking and Coord. Agents stay running; do not add --all.
+            """
+        }
+        if requestErrors["Live events"] != nil {
+            return """
+            Admin API connected, but the live-event connection failed.
+            On \(host), check: safeyolo command-centre status
+            If disabled, run safeyolo command-centre enable and restart SafeYolo.
+            If enabled, check the event port and any SSH tunnel or Tailnet forwarding.
+            Copy Diagnostics includes the connection failure and retry history.
+            """
+        }
+        return nil
+    }
+
+    var diagnosticReport: String {
+        let endpointState = eventEndpoint.map { "enabled=\($0.enabled), port=\($0.port.map(String.init) ?? "none")" }
+            ?? "Not reported by this host (older backend)"
+        let report = """
+        \(diagnostics.report())
+        Admin endpoint origin: \(ConnectionDiagnostics.endpoint(adminURL))
+        Event endpoint origin: \(ConnectionDiagnostics.endpoint(eventsURL))
+        Mode: \(isLocalConnection ? "local" : "remote or explicit endpoint")
+        State: \(connectionSummary)
+        Admin API authenticated: \(adminConnected)
+        Host event listener: \(endpointState)
+        Agents in snapshot: \(agents.count)
+        Pending approvals in snapshot: \(approvals.count)
+        Current failed operations: \(requestErrors.keys.sorted().joined(separator: ", "))
+        Feed gap: \(eventFeedGap ?? "None")
+        Guidance: \(connectionGuidance ?? "None")
+        Headers, credentials, URL paths/query/userinfo, and response bodies are excluded.
+        """
+        return token.isEmpty ? report : report.replacingOccurrences(of: token, with: "[redacted]")
+    }
 
     var errorDetails: String? {
         guard !requestErrors.isEmpty else { return nil }
@@ -37,7 +106,11 @@ final class SafeYoloClient: ObservableObject {
     private let token: String
     private let expectedInstanceID: String
     private let session: URLSession
-    private var webSocket: URLSessionWebSocketTask?
+    private let isLocalConnection: Bool
+    private let makeEventSocket: (URLRequest) -> any EventSocket
+    private let retryPause: @MainActor () async throws -> Void
+    private var diagnostics = ConnectionDiagnostics()
+    private var webSocket: (any EventSocket)?
     private var connectionTask: Task<Void, Never>?
     private var knownApprovalIDs = Set<String>()
     private var knownSecurityEventIDs = Set<String>()
@@ -49,7 +122,10 @@ final class SafeYoloClient: ObservableObject {
         eventsURL: String,
         token: String,
         expectedInstanceID: String,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        isLocalConnection: Bool = false,
+        makeEventSocket: ((URLRequest) -> any EventSocket)? = nil,
+        retryPause: @escaping @MainActor () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }
     ) throws {
         guard let parsedAdminURL = URL(string: adminURL) else {
             throw ClientError.invalidURL(adminURL)
@@ -62,11 +138,14 @@ final class SafeYoloClient: ObservableObject {
         self.token = token
         self.expectedInstanceID = expectedInstanceID
         self.session = session
+        self.isLocalConnection = isLocalConnection
+        self.makeEventSocket = makeEventSocket ?? { session.webSocketTask(with: $0) }
+        self.retryPause = retryPause
     }
 
     func start() {
         stopping = false
-        connectionState = .connecting
+        setConnectionState(.connecting)
         reconnectUntilAvailable()
     }
 
@@ -76,7 +155,7 @@ final class SafeYoloClient: ObservableObject {
         pendingTerminals.removeAll()
         pendingTerminalIDs.removeAll()
         for completion in cancelled { completion(.failure(CancellationError())) }
-        connectionState = .stopped
+        setConnectionState(.stopped)
         connectionTask?.cancel()
         connectionTask = nil
         webSocket?.cancel(with: .goingAway, reason: nil)
@@ -85,24 +164,48 @@ final class SafeYoloClient: ObservableObject {
 
     private func reconnectUntilAvailable() {
         connectionTask?.cancel()
+        webSocket?.cancel(with: .goingAway, reason: nil)
+        webSocket = nil
         connectionTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled, !stopping {
+                diagnostics.attempts += 1
                 if await refreshInstance() {
                     let approvalsReady = await refreshApprovals()
                     let agentsReady = await refreshAgents()
                     guard !Task.isCancelled, !stopping else { return }
-                    if approvalsReady && agentsReady {
-                        connectionTask = nil
-                        connectEvents()
-                        return
+                    if eventEndpoint?.enabled == false {
+                        setRequestError("Live events", nil)
+                        setConnectionState(.eventsDisabled)
+                    } else if approvalsReady && agentsReady {
+                        await connectEvents()
+                    } else {
+                        setConnectionState(.reconnecting)
                     }
+                } else {
+                    guard !Task.isCancelled, !stopping else { return }
+                    setConnectionState(.reconnecting)
                 }
                 guard !Task.isCancelled, !stopping else { return }
-                connectionState = .reconnecting
-                try? await Task.sleep(for: .seconds(1))
+                diagnostics.retries += 1
+                // Every retry, including a successful HTTP snapshot followed by
+                // a failed WebSocket, passes through this cancellable delay.
+                do { try await retryPause() } catch { return }
             }
         }
+    }
+
+    private func setConnectionState(_ state: ConnectionState) {
+        guard connectionState != state else { return }
+        diagnostics.record("State: \(state.rawValue)")
+        connectionState = state
+    }
+
+    private func setRequestError(_ operation: String, _ error: Error?) {
+        if let error { diagnostics.failure(operation, error: error) }
+        let description = error?.localizedDescription
+        guard requestErrors[operation] != description else { return }
+        requestErrors[operation] = description
     }
 
     func resolve(
@@ -121,10 +224,10 @@ final class SafeYoloClient: ObservableObject {
                     result = .decided(allow ? "Allowed" : "Denied")
                 }
                 await refreshApprovals()
-                requestErrors["Approval decision"] = nil
+                setRequestError("Approval decision", nil)
                 completion(.success(result))
             } catch {
-                requestErrors["Approval decision"] = error.localizedDescription
+                setRequestError("Approval decision", error)
                 completion(.failure(error))
             }
         }
@@ -156,10 +259,10 @@ final class SafeYoloClient: ObservableObject {
                 )
                 let updated = try JSONDecoder().decode(AgentInfo.self, from: data)
                 let refreshed = await refreshAgents()
-                requestErrors["Run or stop agent"] = nil
+                setRequestError("Run or stop agent", nil)
                 completion(.success(refreshed ? agents.first(where: { $0.agentID == updated.agentID }) ?? updated : updated))
             } catch {
-                requestErrors["Run or stop agent"] = error.localizedDescription
+                setRequestError("Run or stop agent", error)
                 completion(.failure(error))
             }
         }
@@ -220,10 +323,10 @@ final class SafeYoloClient: ObservableObject {
                     method: "POST"
                 )
                 let presentation = try JSONDecoder().decode(DesktopPresentation.self, from: data)
-                requestErrors["Present desktop"] = nil
+                setRequestError("Present desktop", nil)
                 completion(.success(presentation))
             } catch {
-                requestErrors["Present desktop"] = error.localizedDescription
+                setRequestError("Present desktop", error)
                 completion(.failure(error))
             }
         }
@@ -254,17 +357,24 @@ final class SafeYoloClient: ObservableObject {
                 InstanceInfo.self,
                 from: data
             )
-            instanceID = try validatePinnedInstanceID(
+            let validatedID = try validatePinnedInstanceID(
                 actual: instance.safeyoloInstanceID,
                 expected: expectedInstanceID
             )
-            hostUser = instance.hostUser
-            hostPython = instance.hostPython
-            webmitmURL = instance.webmitmURL.flatMap { URL(string: $0) }
-            requestErrors["Instance identity"] = nil
+            if instanceID != validatedID { instanceID = validatedID }
+            if hostUser != instance.hostUser { hostUser = instance.hostUser }
+            if hostPython != instance.hostPython { hostPython = instance.hostPython }
+            let freshWebURL = instance.webmitmURL.flatMap { URL(string: $0) }
+            if webmitmURL != freshWebURL { webmitmURL = freshWebURL }
+            if eventEndpoint != instance.commandCentreEvents { eventEndpoint = instance.commandCentreEvents }
+            if !adminConnected { adminConnected = true }
+            diagnostics.lastAdminSuccess = Date()
+            setRequestError("Instance identity", nil)
             return true
         } catch {
-            requestErrors["Instance identity"] = error.localizedDescription
+            guard !Task.isCancelled else { return false }
+            if adminConnected { adminConnected = false }
+            setRequestError("Instance identity", error)
             return false
         }
     }
@@ -274,16 +384,17 @@ final class SafeYoloClient: ObservableObject {
         do {
             let data = try await request(path: "/admin/approvals")
             let fresh = try JSONDecoder().decode(PendingApprovals.self, from: data).approvals
-            approvals = fresh
+            if approvals != fresh { approvals = fresh }
             let newApprovals = fresh.filter { !knownApprovalIDs.contains($0.id) }
             knownApprovalIDs = Set(fresh.map(\.id))
             if let first = newApprovals.first {
                 onNewApproval?(first)
             }
-            requestErrors["Pending approvals"] = nil
+            setRequestError("Pending approvals", nil)
             return true
         } catch {
-            requestErrors["Pending approvals"] = error.localizedDescription
+            guard !Task.isCancelled else { return false }
+            setRequestError("Pending approvals", error)
             return false
         }
     }
@@ -292,55 +403,71 @@ final class SafeYoloClient: ObservableObject {
     func refreshAgents() async -> Bool {
         do {
             let data = try await request(path: "/admin/agents")
-            agents = try JSONDecoder().decode(AgentInventory.self, from: data).agents
+            let fresh = try JSONDecoder().decode(AgentInventory.self, from: data).agents
+            if agents != fresh { agents = fresh }
             finishPendingTerminals(agents, completeInventory: true)
-            requestErrors["Agent status"] = nil
+            setRequestError("Agent status", nil)
             return true
         } catch {
-            requestErrors["Agent status"] = error.localizedDescription
+            guard !Task.isCancelled else { return false }
+            setRequestError("Agent status", error)
             return false
         }
     }
 
-    private func connectEvents() {
-        guard !stopping else {
+    private func connectEvents() async {
+        guard !stopping, !Task.isCancelled else {
             return
         }
         var request = URLRequest(url: eventsURL)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let socket = session.webSocketTask(with: request)
+        let socket = makeEventSocket(request)
+        diagnostics.socketAttempts += 1
         webSocket = socket
         socket.resume()
-        Task {
-            do {
-                try await ping(socket)
-                guard !stopping, webSocket === socket else { return }
-                connectionState = .connected
-                if eventFeedGap != nil {
-                    eventFeedGap = "Live event feed reconnected after a gap; events during the gap may be missing."
-                }
-                requestErrors["Live events"] = nil
-                await receiveEvents(from: socket)
-            } catch {
-                handleEventDisconnect(socket, error: error)
+        defer {
+            socket.cancel(with: .goingAway, reason: nil)
+            if webSocket === socket { webSocket = nil }
+        }
+        do {
+            try await ping(socket)
+            guard !stopping, !Task.isCancelled, webSocket === socket else { return }
+            diagnostics.lastEventSuccess = Date()
+            setConnectionState(.connected)
+            if eventFeedGap != nil {
+                eventFeedGap = "Live event feed reconnected after a gap; events during the gap may be missing."
             }
+            setRequestError("Live events", nil)
+            try await receiveEvents(from: socket)
+        } catch {
+            guard !stopping, !Task.isCancelled, webSocket === socket else { return }
+            if let response = socket.response as? HTTPURLResponse {
+                diagnostics.record("WebSocket HTTP status: \(response.statusCode)")
+            }
+            if socket.closeCode != .invalid {
+                diagnostics.record("WebSocket close code: \(socket.closeCode.rawValue)")
+            }
+            setConnectionState(.reconnecting)
+            if diagnostics.lastEventSuccess != nil {
+                let gap = "Live event feed interrupted; events during this gap may be missing."
+                if eventFeedGap != gap { eventFeedGap = gap }
+            }
+            setRequestError("Live events", error)
         }
     }
 
-    private func receiveEvents(from socket: URLSessionWebSocketTask) async {
-        do {
-            while !stopping, webSocket === socket {
-                let message = try await socket.receive()
-                let data: Data
-                switch message {
-                case .data(let value): data = value
-                case .string(let value): data = Data(value.utf8)
-                @unknown default: continue
-                }
-                try await ingestOperatorEventData(data)
+    private func receiveEvents(from socket: any EventSocket) async throws {
+        while !stopping, !Task.isCancelled, webSocket === socket {
+            let message = try await socket.receive()
+            try Task.checkCancellation()
+            let data: Data
+            switch message {
+            case .data(let value): data = value
+            case .string(let value): data = Data(value.utf8)
+            @unknown default: continue
             }
-        } catch {
-            handleEventDisconnect(socket, error: error)
+            try await ingestOperatorEventData(data)
+            diagnostics.lastEventReceived = Date()
         }
     }
 
@@ -375,16 +502,7 @@ final class SafeYoloClient: ObservableObject {
         onNewSecurityEvent?(observation)
     }
 
-    private func handleEventDisconnect(_ socket: URLSessionWebSocketTask, error: Error) {
-        guard !stopping, webSocket === socket else { return }
-        connectionState = .reconnecting
-        eventFeedGap = "Live event feed interrupted; events during this gap may be missing."
-        requestErrors["Live events"] = error.localizedDescription
-        webSocket = nil
-        reconnectUntilAvailable()
-    }
-
-    private func ping(_ socket: URLSessionWebSocketTask) async throws {
+    private func ping(_ socket: any EventSocket) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             socket.sendPing { error in
                 if let error {
@@ -412,6 +530,7 @@ final class SafeYoloClient: ObservableObject {
             request.httpBody = try JSONSerialization.data(withJSONObject: json)
         }
         let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ClientError.invalidResponse
         }
