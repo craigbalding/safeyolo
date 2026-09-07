@@ -279,6 +279,7 @@ class PreviewHTTPServer(http.server.ThreadingHTTPServer):
         self.unlock_expires_at = time.time() + UNLOCK_CODE_TTL_SECONDS
         self.unlock_failures = 0
         self.unlock_locked = False
+        self.unlock_lock = threading.Lock()
         self.started_at = time.time()
 
 
@@ -375,26 +376,45 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "unlock request rejected"})
             self._log_event("traffic.preview_error", "preview unlock origin rejected", status=403, started=started)
             return
-        if self.server.unlock_locked or self.server.unlock_code is None:
-            self._send_json(HTTPStatus.LOCKED, {"error": "preview unlock is locked"})
-            self._log_event("traffic.preview_error", "preview unlock locked", status=423, started=started)
-            return
-        if time.time() > self.server.unlock_expires_at:
-            self.server.unlock_locked = True
-            self._send_json(HTTPStatus.GONE, {"error": "preview unlock code expired"})
-            self._log_event("traffic.preview_error", "preview unlock expired", status=410, started=started)
-            return
-
         provided = self._read_unlock_code()
-        if not secrets.compare_digest(provided, self.server.unlock_code):
-            self.server.unlock_failures += 1
-            if self.server.unlock_failures >= MAX_UNLOCK_FAILURES:
+        with self.server.unlock_lock:
+            if self.server.unlock_locked or self.server.unlock_code is None:
+                self._send_json(HTTPStatus.LOCKED, {"error": "preview unlock is locked"})
+                self._log_event(
+                    "traffic.preview_error",
+                    "preview unlock locked",
+                    status=423,
+                    started=started,
+                )
+                return
+            if time.time() > self.server.unlock_expires_at:
                 self.server.unlock_locked = True
-            self._send_json(HTTPStatus.FORBIDDEN, {"error": "preview unlock code invalid"})
-            self._log_event("traffic.preview_error", "preview unlock failed", status=403, started=started)
-            return
+                self._send_json(HTTPStatus.GONE, {"error": "preview unlock code expired"})
+                self._log_event(
+                    "traffic.preview_error",
+                    "preview unlock expired",
+                    status=410,
+                    started=started,
+                )
+                return
 
-        self.server.unlock_code = None
+            if not secrets.compare_digest(provided, self.server.unlock_code):
+                self.server.unlock_failures += 1
+                if self.server.unlock_failures >= MAX_UNLOCK_FAILURES:
+                    self.server.unlock_locked = True
+                self._send_json(
+                    HTTPStatus.FORBIDDEN,
+                    {"error": "preview unlock code invalid"},
+                )
+                self._log_event(
+                    "traffic.preview_error",
+                    "preview unlock failed",
+                    status=403,
+                    started=started,
+                )
+                return
+
+            self.server.unlock_code = None
         self._set_session_cookie_and_redirect()
         self._log_event("agent.preview_unlock", "preview unlocked", status=303, started=started)
 
@@ -1286,7 +1306,112 @@ def start_preview_server(
     )
 
 
-def serve_agent_preview(config: PreviewConfig, platform) -> int:
+class ManagedPreview:
+    """A running preview whose lifecycle can be owned outside a CLI command."""
+
+    def __init__(
+        self,
+        *,
+        config: PreviewConfig,
+        server: PreviewHTTPServer,
+        url: str,
+        unlock_code: str,
+        tailnet_session: TailnetServeSession | None,
+    ) -> None:
+        self.config = config
+        self.server = server
+        self.url = url
+        self.unlock_code = unlock_code
+        self.tailnet_session = tailnet_session
+        self._closed = False
+        self._close_lock = threading.Lock()
+        self._thread = threading.Thread(
+            target=server.serve_forever,
+            daemon=True,
+            name=f"preview-{config.agent}",
+        )
+        self._timer: threading.Timer | None = None
+
+    def start(self) -> None:
+        self._thread.start()
+        if self.tailnet_session:
+            tailnet_session = self.tailnet_session
+
+            def watch_tailnet_serve() -> None:
+                tailnet_session.process.wait()
+                if not tailnet_session.closing and not self._closed:
+                    self.server.shutdown()
+
+            threading.Thread(
+                target=watch_tailnet_serve,
+                daemon=True,
+                name=f"preview-tailnet-{self.config.agent}",
+            ).start()
+        if self.config.ttl_seconds:
+            self._timer = threading.Timer(self.config.ttl_seconds, self.close)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def wait(self) -> None:
+        self._thread.join()
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread.is_alive() and not self._closed
+
+    def issue_unlock_code(self) -> str:
+        """Issue a fresh one-time code while retaining the running preview."""
+        code = generate_unlock_code()
+        with self.server.unlock_lock:
+            self.server.unlock_code = code
+            self.server.unlock_expires_at = time.time() + UNLOCK_CODE_TTL_SECONDS
+            self.server.unlock_failures = 0
+            self.server.unlock_locked = False
+        self.unlock_code = code
+        return code
+
+    def close(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+
+        if self._timer:
+            self._timer.cancel()
+        if self.tailnet_session:
+            try:
+                self.tailnet_session.close()
+            except Exception:  # noqa: BLE001 - cleanup steps remain independent
+                log.exception("preview tailnet close failed")
+        if self._thread.is_alive():
+            self.server.shutdown()
+            if threading.current_thread() is not self._thread:
+                self._thread.join(timeout=5)
+        try:
+            self.server.server_close()
+        except Exception:  # noqa: BLE001 - auditing must still happen
+            log.exception("preview server close failed")
+        try:
+            write_event(
+                "agent.preview_close",
+                kind=EventKind.AGENT,
+                severity=Severity.LOW,
+                summary=(f"Preview closed for {self.config.agent}:127.0.0.1:{self.config.guest_port}"),
+                agent=self.config.agent,
+                addon="agent-preview",
+                details={
+                    "agent": self.config.agent,
+                    "guest_port": self.config.guest_port,
+                    "host_port": self.server.server_address[1],
+                    "tailnet_port": self.config.tailnet_port,
+                },
+            )
+        except Exception:  # noqa: BLE001 - auditing must not mask cleanup
+            log.exception("preview close event write failed")
+
+
+def start_managed_preview(config: PreviewConfig, platform) -> ManagedPreview:
+    """Start a preview and return its URL, unlock code, and lifecycle handle."""
     validate_guest_port(config.guest_port)
     session_token = secrets.token_urlsafe(32)
     unlock_code = generate_unlock_code()
@@ -1294,7 +1419,6 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
     host, port = server.server_address
     display_path = normalize_display_path(config.display_path)
     tailnet_session: TailnetServeSession | None = None
-    preview_opened = False
     try:
         if config.tailnet_port is not None:
             tailnet_session = start_tailnet_serve(port, config.tailnet_port)
@@ -1302,6 +1426,14 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
         else:
             url = f"http://{host}:{port}{display_path}"
 
+        session = ManagedPreview(
+            config=config,
+            server=server,
+            url=url,
+            unlock_code=unlock_code,
+            tailnet_session=tailnet_session,
+        )
+        session.start()
         write_event(
             "agent.preview_open",
             kind=EventKind.AGENT,
@@ -1315,21 +1447,34 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
                 "host": host,
                 "host_port": port,
                 "tailnet_port": config.tailnet_port,
+                "url": url,
             },
         )
-        preview_opened = True
+        return session
+    except Exception:
+        if tailnet_session:
+            try:
+                tailnet_session.close()
+            except Exception:  # noqa: BLE001 - preserve startup error
+                log.exception("preview tailnet close failed after startup error")
+        server.server_close()
+        raise
 
-        print("Tailnet preview:" if tailnet_session else "Preview open:")
-        print(f"  {url}")
+
+def serve_agent_preview(config: PreviewConfig, platform) -> int:
+    session = start_managed_preview(config, platform)
+    try:
+        print("Tailnet preview:" if session.tailnet_session else "Preview open:")
+        print(f"  {session.url}")
         print("Unlock code:")
-        print(f"  {unlock_code}")
+        print(f"  {session.unlock_code}")
         print("Agent:")
         print(f"  {config.agent} -> 127.0.0.1:{config.guest_port}")
         print("Press Ctrl-C to close.")
 
         if config.open_browser:
             try:
-                webbrowser.open(url)
+                webbrowser.open(session.url)
             except Exception as exc:  # noqa: BLE001 - webbrowser.open can raise anything
                 # webbrowser.get() dispatches to platform-specific launchers
                 # (BROWSER env, xdg-open, /usr/bin/open, ...). Any of them can
@@ -1339,25 +1484,13 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
                     file=sys.stderr,
                 )
 
-        if tailnet_session:
-
-            def watch_tailnet_serve() -> None:
-                tailnet_session.process.wait()
-                if not tailnet_session.closing:
-                    server.shutdown()
-
-            threading.Thread(target=watch_tailnet_serve, daemon=True).start()
-        if config.ttl_seconds:
-            timer = threading.Timer(config.ttl_seconds, server.shutdown)
-            timer.daemon = True
-            timer.start()
-        with _shutdown_on_signals(server):
-            server.serve_forever()
-        if tailnet_session and tailnet_session.process.poll() is not None:
-            output = tailnet_session.read_output()
+        with _shutdown_on_signals(session.server):
+            session.wait()
+        if session.tailnet_session and session.tailnet_session.process.poll() is not None:
+            output = session.tailnet_session.read_output()
             suffix = f": {output}" if output else ""
             print(
-                f"Tailscale Serve stopped unexpectedly (exit {tailnet_session.process.returncode}){suffix}",
+                f"Tailscale Serve stopped unexpectedly (exit {session.tailnet_session.process.returncode}){suffix}",
                 file=sys.stderr,
             )
             return 1
@@ -1365,34 +1498,4 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        # Each cleanup step is independent: a failure in one must not skip
-        # the others. Previously a raise from tailnet_session.close() would
-        # leak the server socket and drop the audit event, and a raise from
-        # server.server_close() would drop the audit event.
-        if tailnet_session:
-            try:
-                tailnet_session.close()
-            except Exception:  # noqa: BLE001 - best-effort cleanup
-                log.exception("preview tailnet close failed")
-        try:
-            server.server_close()
-        except Exception:  # noqa: BLE001 - best-effort cleanup
-            log.exception("preview server close failed")
-        if preview_opened:
-            try:
-                write_event(
-                    "agent.preview_close",
-                    kind=EventKind.AGENT,
-                    severity=Severity.LOW,
-                    summary=f"Preview closed for {config.agent}:127.0.0.1:{config.guest_port}",
-                    agent=config.agent,
-                    addon="agent-preview",
-                    details={
-                        "agent": config.agent,
-                        "guest_port": config.guest_port,
-                        "host_port": port,
-                        "tailnet_port": config.tailnet_port,
-                    },
-                )
-            except Exception:  # noqa: BLE001 - auditing must not mask exit path
-                log.exception("preview close event write failed")
+        session.close()

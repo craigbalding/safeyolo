@@ -25,9 +25,11 @@ class _HealthResponse:
     def __exit__(self, exc_type, exc, traceback):
         return False
 
+
 # ---------------------------------------------------------------------------
 # TestAddonChain
 # ---------------------------------------------------------------------------
+
 
 class TestAddonChain:
     """Tests for ADDON_CHAIN ordering and completeness."""
@@ -50,6 +52,7 @@ class TestAddonChain:
     def test_addon_chain_has_expected_count(self):
         """ADDON_CHAIN contains the complete ordered addon set."""
         from safeyolo.proxy import ADDON_CHAIN
+
         assert len(ADDON_CHAIN) == 27
 
     def test_addon_chain_starts_with_readiness_writer(self):
@@ -59,6 +62,7 @@ class TestAddonChain:
         bootstrap_mode is obsolete now that initial modes bind in setup.
         """
         from safeyolo.proxy import ADDON_CHAIN
+
         assert ADDON_CHAIN[0] == "pid_writer.py"
 
     def test_reserved_destination_guards_have_required_order(self):
@@ -77,18 +81,15 @@ class TestAddonChain:
         addons' docstrings and the ADDON_CHAIN comment block.
         """
         from safeyolo.proxy import ADDON_CHAIN
+
         assert ADDON_CHAIN[-1] == "transport_guard.py"
         # And probe_sink is immediately before it:
         assert ADDON_CHAIN[-2] == "probe_sink.py"
         api_index = ADDON_CHAIN.index("agent_api.py")
         assert ADDON_CHAIN[api_index + 1] == "agent_api_guard.py"
-        assert ADDON_CHAIN.index("agent_api_guard.py") < ADDON_CHAIN.index(
-            "network_guard.py"
-        )
+        assert ADDON_CHAIN.index("agent_api_guard.py") < ADDON_CHAIN.index("network_guard.py")
 
-    def test_agent_api_import_failure_keeps_independent_containment(
-        self, monkeypatch
-    ):
+    def test_agent_api_import_failure_keeps_independent_containment(self, monkeypatch):
         """Only handler import failure is recoverable; its guards still load."""
         from mitmproxy.test import tflow
 
@@ -112,13 +113,8 @@ class TestAddonChain:
 
         flow = tflow.tflow()
         flow.request.url = "http://_safeyolo.proxy.internal/health?token=secret"
-        guard = next(
-            addon for addon in production.addons
-            if getattr(addon, "name", None) == "agent-api-request-guard"
-        )
-        with patch(
-            "safeyolo.mitm_addons.agent_api_guard.write_event", autospec=True
-        ):
+        guard = next(addon for addon in production.addons if getattr(addon, "name", None) == "agent-api-request-guard")
+        with patch("safeyolo.mitm_addons.agent_api_guard.write_event", autospec=True):
             guard.request(flow)
 
         assert flow.response.status_code == 503
@@ -127,6 +123,7 @@ class TestAddonChain:
     def test_policy_engine_before_network_guard(self):
         """policy_engine.py loads before network_guard.py (policy must exist before enforcement)."""
         from safeyolo.proxy import ADDON_CHAIN
+
         pe_idx = ADDON_CHAIN.index("policy_engine.py")
         ng_idx = ADDON_CHAIN.index("network_guard.py")
         assert pe_idx < ng_idx
@@ -134,6 +131,7 @@ class TestAddonChain:
     def test_credential_guard_after_network_guard(self):
         """credential_guard.py loads after network_guard.py (network check before credential inspection)."""
         from safeyolo.proxy import ADDON_CHAIN
+
         ng_idx = ADDON_CHAIN.index("network_guard.py")
         cg_idx = ADDON_CHAIN.index("credential_guard.py")
         assert ng_idx < cg_idx
@@ -141,6 +139,7 @@ class TestAddonChain:
     def test_request_id_before_all_guards(self):
         """request_id.py loads before network_guard and credential_guard (needed for correlation)."""
         from safeyolo.proxy import ADDON_CHAIN
+
         rid_idx = ADDON_CHAIN.index("request_id.py")
         ng_idx = ADDON_CHAIN.index("network_guard.py")
         cg_idx = ADDON_CHAIN.index("credential_guard.py")
@@ -150,6 +149,7 @@ class TestAddonChain:
     def test_service_discovery_before_policy_engine(self):
         """service_discovery.py loads before policy_engine.py (agent identity needed for policy)."""
         from safeyolo.proxy import ADDON_CHAIN
+
         sd_idx = ADDON_CHAIN.index("service_discovery.py")
         pe_idx = ADDON_CHAIN.index("policy_engine.py")
         assert sd_idx < pe_idx
@@ -157,6 +157,7 @@ class TestAddonChain:
     def test_all_addon_filenames_end_with_py(self):
         """Every entry in ADDON_CHAIN ends with .py."""
         from safeyolo.proxy import ADDON_CHAIN
+
         for addon in ADDON_CHAIN:
             assert addon.endswith(".py"), f"{addon} does not end with .py"
 
@@ -164,6 +165,7 @@ class TestAddonChain:
 # ---------------------------------------------------------------------------
 # TestFindAddonsDir
 # ---------------------------------------------------------------------------
+
 
 class TestFindAddonsDir:
     """Tests for _find_addons_dir() — locating addons directory."""
@@ -232,6 +234,7 @@ class TestFindAddonsDir:
 # TestFindPdpDir
 # ---------------------------------------------------------------------------
 
+
 class TestFindPdpDir:
     """Tests for _find_pdp_dir() — locating PDP directory."""
 
@@ -271,6 +274,7 @@ class TestFindPdpDir:
 # TestEnsureCerts
 # ---------------------------------------------------------------------------
 
+
 class TestEnsureCerts:
     """Tests for _ensure_certs() — CA certificate generation via mitmdump.
 
@@ -280,8 +284,7 @@ class TestEnsureCerts:
     perceived state of the child process.
     """
 
-    def _fake_popen_factory(self, on_start=None, exit_after=None,
-                            exit_code=0):
+    def _fake_popen_factory(self, on_start=None, exit_after=None, exit_code=0):
         """Build a Popen-compatible stub.
 
         - ``on_start``: callable invoked on construction (typically used to
@@ -289,6 +292,7 @@ class TestEnsureCerts:
         - ``exit_after``: how many ``poll()`` calls return None before
           surfacing ``exit_code`` (None = never exit).
         """
+
         class _FakePopen:
             def __init__(self, *args, **kwargs):
                 self._polls = 0
@@ -341,7 +345,10 @@ class TestEnsureCerts:
         ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
         ca_cert.write_text("EXISTING CERT")
 
-        with patch("safeyolo.proxy.subprocess.Popen", autospec=True,) as mock_popen:
+        with patch(
+            "safeyolo.proxy.subprocess.Popen",
+            autospec=True,
+        ) as mock_popen:
             result = _ensure_certs(cert_dir)
 
         assert result == ca_cert
@@ -408,26 +415,10 @@ class TestEnsureCerts:
 
 # Reusable PEM-like blocks for CA merge tests.  The function splits on
 # "-----END CERTIFICATE-----" boundaries, so these need valid bookends.
-_CERT_A = (
-    "-----BEGIN CERTIFICATE-----\n"
-    "AAAA-certifi-root-one\n"
-    "-----END CERTIFICATE-----\n"
-)
-_CERT_B = (
-    "-----BEGIN CERTIFICATE-----\n"
-    "BBBB-certifi-root-two\n"
-    "-----END CERTIFICATE-----\n"
-)
-_CERT_C = (
-    "-----BEGIN CERTIFICATE-----\n"
-    "CCCC-system-only-root\n"
-    "-----END CERTIFICATE-----\n"
-)
-_CERT_D = (
-    "-----BEGIN CERTIFICATE-----\n"
-    "DDDD-system-only-extra\n"
-    "-----END CERTIFICATE-----\n"
-)
+_CERT_A = "-----BEGIN CERTIFICATE-----\nAAAA-certifi-root-one\n-----END CERTIFICATE-----\n"
+_CERT_B = "-----BEGIN CERTIFICATE-----\nBBBB-certifi-root-two\n-----END CERTIFICATE-----\n"
+_CERT_C = "-----BEGIN CERTIFICATE-----\nCCCC-system-only-root\n-----END CERTIFICATE-----\n"
+_CERT_D = "-----BEGIN CERTIFICATE-----\nDDDD-system-only-extra\n-----END CERTIFICATE-----\n"
 
 
 class TestMergeSystemCasIntoCertifi:
@@ -455,9 +446,11 @@ class TestMergeSystemCasIntoCertifi:
                 return _CERT_C + _CERT_D
             return original_read_text(self, *args, **kwargs)
 
-        with patch.dict("sys.modules", {"certifi": fake_certifi}), \
-             patch.object(Path, "exists", fake_exists), \
-             patch.object(Path, "read_text", fake_read_text):
+        with (
+            patch.dict("sys.modules", {"certifi": fake_certifi}),
+            patch.object(Path, "exists", fake_exists),
+            patch.object(Path, "read_text", fake_read_text),
+        ):
             _merge_system_cas_into_certifi()
 
         result = certifi_file.read_text()
@@ -490,9 +483,11 @@ class TestMergeSystemCasIntoCertifi:
                 return _CERT_A + _CERT_B
             return original_read_text(self, *args, **kwargs)
 
-        with patch.dict("sys.modules", {"certifi": fake_certifi}), \
-             patch.object(Path, "exists", fake_exists), \
-             patch.object(Path, "read_text", fake_read_text):
+        with (
+            patch.dict("sys.modules", {"certifi": fake_certifi}),
+            patch.object(Path, "exists", fake_exists),
+            patch.object(Path, "read_text", fake_read_text),
+        ):
             _merge_system_cas_into_certifi()
 
         # File should be unchanged — no new certs appended
@@ -519,8 +514,7 @@ class TestMergeSystemCasIntoCertifi:
                 return False
             return original_exists(self)
 
-        with patch.dict("sys.modules", {"certifi": fake_certifi}), \
-             patch.object(Path, "exists", fake_exists):
+        with patch.dict("sys.modules", {"certifi": fake_certifi}), patch.object(Path, "exists", fake_exists):
             _merge_system_cas_into_certifi()
 
         # certifi bundle should be unchanged
@@ -541,13 +535,21 @@ class TestMergeSystemCasIntoCertifi:
                 raise ImportError("No module named 'certifi'")
             return original_import(name, *args, **kwargs)
 
-        with patch("builtins.__import__", side_effect=fail_certifi, autospec=True,), \
-             patch("safeyolo.proxy.log", autospec=True,) as mock_log:
+        with (
+            patch(
+                "builtins.__import__",
+                side_effect=fail_certifi,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy.log",
+                autospec=True,
+            ) as mock_log,
+        ):
             _merge_system_cas_into_certifi()
 
         mock_log.warning.assert_called_once()
-        assert "certifi" in mock_log.warning.call_args[0][0].lower() or \
-               "certifi" in str(mock_log.warning.call_args[0])
+        assert "certifi" in mock_log.warning.call_args[0][0].lower() or "certifi" in str(mock_log.warning.call_args[0])
 
     def test_deduplicates_certs(self, tmp_path):
         """System bundle has 3 certs, 1 already in certifi -> only 2 appended."""
@@ -575,10 +577,15 @@ class TestMergeSystemCasIntoCertifi:
                 return system_content
             return original_read_text(self, *args, **kwargs)
 
-        with patch.dict("sys.modules", {"certifi": fake_certifi}), \
-             patch.object(Path, "exists", fake_exists), \
-             patch.object(Path, "read_text", fake_read_text), \
-             patch("safeyolo.proxy.log", autospec=True,) as mock_log:
+        with (
+            patch.dict("sys.modules", {"certifi": fake_certifi}),
+            patch.object(Path, "exists", fake_exists),
+            patch.object(Path, "read_text", fake_read_text),
+            patch(
+                "safeyolo.proxy.log",
+                autospec=True,
+            ) as mock_log,
+        ):
             _merge_system_cas_into_certifi()
 
         result = certifi_file.read_text()
@@ -601,7 +608,7 @@ class TestMergeSystemCasIntoCertifi:
         fake_certifi = SimpleNamespace(where=lambda: str(certifi_file))
 
         debian_content = _CERT_C  # Unique to Debian bundle
-        macos_content = _CERT_D   # Unique to macOS bundle
+        macos_content = _CERT_D  # Unique to macOS bundle
 
         original_exists = Path.exists
 
@@ -623,9 +630,11 @@ class TestMergeSystemCasIntoCertifi:
                 return macos_content
             return original_read_text(self, *args, **kwargs)
 
-        with patch.dict("sys.modules", {"certifi": fake_certifi}), \
-             patch.object(Path, "exists", fake_exists), \
-             patch.object(Path, "read_text", fake_read_text):
+        with (
+            patch.dict("sys.modules", {"certifi": fake_certifi}),
+            patch.object(Path, "exists", fake_exists),
+            patch.object(Path, "read_text", fake_read_text),
+        ):
             _merge_system_cas_into_certifi()
 
         result = certifi_file.read_text()
@@ -638,6 +647,7 @@ class TestMergeSystemCasIntoCertifi:
 # ---------------------------------------------------------------------------
 # TestEnsureTokens
 # ---------------------------------------------------------------------------
+
 
 class TestEnsureTokens:
     """Tests for _ensure_tokens() — admin and agent token management."""
@@ -715,6 +725,7 @@ class TestEnsureTokens:
 # ---------------------------------------------------------------------------
 # TestBuildCommand
 # ---------------------------------------------------------------------------
+
 
 class TestFlowCacheConfiguration:
     def test_cli_overrides_environment(self):
@@ -804,6 +815,59 @@ class TestBuildCommand:
         assert "listen_port=0" not in cmd
         assert "flow_pruner_max=5000" in cmd
         assert "flow_pruner_max_body_bytes=1073741824" in cmd
+        assert "command_centre_enabled=false" in cmd
+        assert "command_centre_events_port=9091" in cmd
+
+    def test_command_centre_listener_is_explicitly_enabled(self, cmd_env):
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(
+            admin_token="tok",
+            command_centre_config={"enabled": True, "events_port": 9191},
+            **cmd_env,
+        )
+
+        assert "command_centre_enabled=true" in cmd
+        assert "command_centre_events_port=9191" in cmd
+
+    def test_command_centre_tailnet_config_is_validated(self, cmd_env):
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(
+            admin_token="tok",
+            command_centre_config={
+                "enabled": True,
+                "events_port": 9191,
+                "share": "tailnet",
+                "tailnet_admin_port": 10443,
+                "tailnet_events_port": 10444,
+            },
+            **cmd_env,
+        )
+
+        assert "command_centre_enabled=true" in cmd
+
+    @pytest.mark.parametrize(
+        "config, message",
+        [
+            ({"enabled": "yes"}, "enabled must be true or false"),
+            ({"events_port": 0}, "events_port must be an integer"),
+            ({"share": "lan"}, "share must be local or tailnet"),
+            (
+                {"tailnet_admin_port": 9443, "tailnet_events_port": 9443},
+                "Admin and event ports must differ",
+            ),
+        ],
+    )
+    def test_invalid_command_centre_config_fails(self, cmd_env, config, message):
+        from safeyolo.proxy import _build_command
+
+        with pytest.raises(ValueError, match=message):
+            _build_command(
+                admin_token="tok",
+                command_centre_config=config,
+                **cmd_env,
+            )
 
     def test_explicit_flow_cache_is_forwarded(self, cmd_env):
         from safeyolo.proxy import _build_command
@@ -1026,6 +1090,7 @@ class TestBuildCommand:
 # TestBlockingModes
 # ---------------------------------------------------------------------------
 
+
 class TestBlockingModes:
     """Tests for blocking mode configuration in _build_command() (lines 172-197).
 
@@ -1203,6 +1268,7 @@ class TestBlockingModes:
 # TestTlsPassthrough
 # ---------------------------------------------------------------------------
 
+
 class TestTlsPassthrough:
     """Tests for TLS passthrough (--ignore-hosts) in _build_command()."""
 
@@ -1236,6 +1302,7 @@ class TestTlsPassthrough:
 # TestIgnoreCidrsEnv — SAFEYOLO_IGNORE_CIDRS: converter + integration
 # ---------------------------------------------------------------------------
 
+
 class TestCidrToIgnoreRegex:
     """Pin the CIDR → --ignore-hosts regex conversion shape.
 
@@ -1246,18 +1313,22 @@ class TestCidrToIgnoreRegex:
 
     def test_slash_32_single_host(self):
         from safeyolo.ignore_hosts import cidr_to_ignore_regex
+
         assert cidr_to_ignore_regex("10.0.0.5/32") == r"^10\.0\.0\.5(?::\d+)?$"
 
     def test_slash_24(self):
         from safeyolo.ignore_hosts import cidr_to_ignore_regex
+
         assert cidr_to_ignore_regex("192.168.1.0/24") == r"^192\.168\.1\.\d+(?::\d+)?$"
 
     def test_slash_16(self):
         from safeyolo.ignore_hosts import cidr_to_ignore_regex
+
         assert cidr_to_ignore_regex("192.168.0.0/16") == r"^192\.168\.\d+\.\d+(?::\d+)?$"
 
     def test_slash_8(self):
         from safeyolo.ignore_hosts import cidr_to_ignore_regex
+
         assert cidr_to_ignore_regex("10.0.0.0/8") == r"^10\.\d+\.\d+\.\d+(?::\d+)?$"
 
     def test_slash_10_tailscale_cgnat(self):
@@ -1265,6 +1336,7 @@ class TestCidrToIgnoreRegex:
         import re
 
         from safeyolo.ignore_hosts import cidr_to_ignore_regex
+
         regex = cidr_to_ignore_regex("100.64.0.0/10")
         # Structural shape
         assert regex.startswith(r"^100\.(?:64|")
@@ -1284,14 +1356,16 @@ class TestCidrToIgnoreRegex:
         normalise to the actual network and produce the same regex as the
         canonical form."""
         from safeyolo.ignore_hosts import cidr_to_ignore_regex
-        a = cidr_to_ignore_regex("192.168.1.5/24")    # host bits set
-        b = cidr_to_ignore_regex("192.168.1.0/24")    # canonical
+
+        a = cidr_to_ignore_regex("192.168.1.5/24")  # host bits set
+        b = cidr_to_ignore_regex("192.168.1.0/24")  # canonical
         assert a == b
 
     def test_rejects_invalid_cidr(self):
         import pytest as _pytest
 
         from safeyolo.ignore_hosts import cidr_to_ignore_regex
+
         with _pytest.raises(ValueError, match="Invalid CIDR"):
             cidr_to_ignore_regex("not-a-cidr")
         with _pytest.raises(ValueError, match="Invalid CIDR"):
@@ -1301,6 +1375,7 @@ class TestCidrToIgnoreRegex:
         import pytest as _pytest
 
         from safeyolo.ignore_hosts import cidr_to_ignore_regex
+
         with _pytest.raises(ValueError, match="IPv6"):
             cidr_to_ignore_regex("fd00::/8")
 
@@ -1310,6 +1385,7 @@ class TestCidrToIgnoreRegex:
         import pytest as _pytest
 
         from safeyolo.ignore_hosts import cidr_to_ignore_regex
+
         with _pytest.raises(ValueError, match="too wide"):
             cidr_to_ignore_regex("0.0.0.0/0")
         with _pytest.raises(ValueError, match="too wide"):
@@ -1343,12 +1419,14 @@ class TestIgnoreCidrsIntegration:
     def test_no_env_is_a_noop(self, cmd_env, monkeypatch):
         """With the env unset, only the built-in frp pattern is present."""
         from safeyolo.proxy import _build_command
+
         monkeypatch.delenv("SAFEYOLO_IGNORE_CIDRS", raising=False)
         cmd = _build_command(admin_token="tok", **cmd_env)
         assert self._ignore_hosts(cmd) == [r"^api\.asterfold\.ai:7000$"]
 
     def test_single_cidr_appended(self, cmd_env, monkeypatch):
         from safeyolo.proxy import _build_command
+
         monkeypatch.setenv("SAFEYOLO_IGNORE_CIDRS", "100.64.0.0/10")
         cmd = _build_command(admin_token="tok", **cmd_env)
         entries = self._ignore_hosts(cmd)
@@ -1358,6 +1436,7 @@ class TestIgnoreCidrsIntegration:
 
     def test_multiple_cidrs_with_whitespace(self, cmd_env, monkeypatch):
         from safeyolo.proxy import _build_command
+
         monkeypatch.setenv(
             "SAFEYOLO_IGNORE_CIDRS",
             " 100.64.0.0/10 , 10.0.0.0/8 ,,  192.168.1.0/24 ",
@@ -1373,12 +1452,14 @@ class TestIgnoreCidrsIntegration:
     def test_empty_env_is_a_noop(self, cmd_env, monkeypatch):
         """Empty/whitespace-only env value shouldn't add anything."""
         from safeyolo.proxy import _build_command
+
         monkeypatch.setenv("SAFEYOLO_IGNORE_CIDRS", "  ,, ")
         cmd = _build_command(admin_token="tok", **cmd_env)
         assert self._ignore_hosts(cmd) == [r"^api\.asterfold\.ai:7000$"]
 
     def test_operator_hosts_are_appended_as_exact_patterns(self, cmd_env, monkeypatch):
         from safeyolo.proxy import _build_command
+
         monkeypatch.delenv("SAFEYOLO_IGNORE_CIDRS", raising=False)
         cmd = _build_command(
             admin_token="tok",
@@ -1392,6 +1473,7 @@ class TestIgnoreCidrsIntegration:
 
     def test_invalid_operator_host_fails_startup(self, cmd_env, monkeypatch):
         from safeyolo.proxy import _build_command
+
         monkeypatch.delenv("SAFEYOLO_IGNORE_CIDRS", raising=False)
         with pytest.raises(ValueError, match="valid hostname"):
             _build_command(
@@ -1404,12 +1486,14 @@ class TestIgnoreCidrsIntegration:
         """Fail-fast: one bad entry refuses to build the command at all, so
         the proxy never starts with a silently-dropped passthrough."""
         from safeyolo.proxy import _build_command
+
         monkeypatch.setenv("SAFEYOLO_IGNORE_CIDRS", "100.64.0.0/10,not-a-cidr")
         with pytest.raises(ValueError, match="Invalid CIDR"):
             _build_command(admin_token="tok", **cmd_env)
 
     def test_too_wide_cidr_fails_startup(self, cmd_env, monkeypatch):
         from safeyolo.proxy import _build_command
+
         monkeypatch.setenv("SAFEYOLO_IGNORE_CIDRS", "0.0.0.0/0")
         with pytest.raises(ValueError, match="too wide"):
             _build_command(admin_token="tok", **cmd_env)
@@ -1418,6 +1502,7 @@ class TestIgnoreCidrsIntegration:
 # ---------------------------------------------------------------------------
 # TestRateLimitConfig
 # ---------------------------------------------------------------------------
+
 
 class TestRateLimitConfig:
     """Tests for rate_limits.json conditional loading in _build_command()."""
@@ -1466,6 +1551,7 @@ class TestRateLimitConfig:
 # TestSafeyoloCaCert
 # ---------------------------------------------------------------------------
 
+
 class TestSafeyoloCaCert:
     """Tests for additional upstream CA handling in _build_command()."""
 
@@ -1513,9 +1599,7 @@ class TestSafeyoloCaCert:
         with pytest.raises(RuntimeError, match="CA cert not found"):
             _build_command(admin_token="tok", **cmd_env)
 
-    def test_upstream_ca_set_from_persistent_proxy_config(
-        self, cmd_env, tmp_path, monkeypatch
-    ):
+    def test_upstream_ca_set_from_persistent_proxy_config(self, cmd_env, tmp_path, monkeypatch):
         from safeyolo.proxy import _build_command
 
         monkeypatch.delenv("SAFEYOLO_CA_CERT", raising=False)
@@ -1528,15 +1612,11 @@ class TestSafeyoloCaCert:
             **cmd_env,
         )
 
-        bundle_arg = next(
-            arg for arg in cmd if arg.startswith("ssl_verify_upstream_trusted_ca=")
-        )
+        bundle_arg = next(arg for arg in cmd if arg.startswith("ssl_verify_upstream_trusted_ca="))
         bundle_path = Path(bundle_arg.split("=", 1)[1])
         assert "PERSISTENT CA CERT" in bundle_path.read_text()
 
-    def test_environment_ca_overrides_persistent_config(
-        self, cmd_env, tmp_path, monkeypatch
-    ):
+    def test_environment_ca_overrides_persistent_config(self, cmd_env, tmp_path, monkeypatch):
         from safeyolo.proxy import _build_command
 
         environment_ca = tmp_path / "environment-ca.pem"
@@ -1551,16 +1631,12 @@ class TestSafeyoloCaCert:
             **cmd_env,
         )
 
-        bundle_arg = next(
-            arg for arg in cmd if arg.startswith("ssl_verify_upstream_trusted_ca=")
-        )
+        bundle_arg = next(arg for arg in cmd if arg.startswith("ssl_verify_upstream_trusted_ca="))
         bundle = Path(bundle_arg.split("=", 1)[1]).read_text()
         assert "ENVIRONMENT CA CERT" in bundle
         assert "PERSISTENT CA CERT" not in bundle
 
-    def test_raises_when_persistent_ca_file_missing(
-        self, cmd_env, tmp_path, monkeypatch
-    ):
+    def test_raises_when_persistent_ca_file_missing(self, cmd_env, tmp_path, monkeypatch):
         from safeyolo.proxy import _build_command
 
         monkeypatch.delenv("SAFEYOLO_CA_CERT", raising=False)
@@ -1594,18 +1670,14 @@ class TestNestedProxyConfiguration:
 
         monkeypatch.setenv("SAFEYOLO_UPSTREAM_PROXY", "http://127.0.0.1:8080")
 
-        assert resolve_upstream_proxy({"upstream_proxy": ""}) == (
-            "http://127.0.0.1:8080"
-        )
+        assert resolve_upstream_proxy({"upstream_proxy": ""}) == ("http://127.0.0.1:8080")
 
     def test_persistent_upstream_proxy_is_supported(self, monkeypatch):
         from safeyolo.proxy import resolve_upstream_proxy
 
         monkeypatch.delenv("SAFEYOLO_UPSTREAM_PROXY", raising=False)
 
-        assert resolve_upstream_proxy(
-            {"upstream_proxy": "https://proxy.example"}
-        ) == "https://proxy.example:443"
+        assert resolve_upstream_proxy({"upstream_proxy": "https://proxy.example"}) == "https://proxy.example:443"
 
     @pytest.mark.parametrize(
         "value",
@@ -1640,9 +1712,7 @@ class TestNestedProxyConfiguration:
 
         monkeypatch.setenv("SAFEYOLO_VIA_TOKEN", "safeyolo-explicit-inner")
 
-        assert resolve_via_token({"via_token": "persistent-token"}) == (
-            "safeyolo-explicit-inner"
-        )
+        assert resolve_via_token({"via_token": "persistent-token"}) == ("safeyolo-explicit-inner")
 
     @pytest.mark.parametrize("value", ["two words", "bad,comma", "x" * 129])
     def test_invalid_via_token_is_rejected(self, monkeypatch, value):
@@ -1657,6 +1727,7 @@ class TestNestedProxyConfiguration:
 # ---------------------------------------------------------------------------
 # TestCertDirPermissions
 # ---------------------------------------------------------------------------
+
 
 class TestCertDirPermissions:
     """Tests for cert directory permission hardening in _ensure_certs()."""
@@ -1700,6 +1771,7 @@ class TestCertDirPermissions:
 # TestPidFileManagement
 # ---------------------------------------------------------------------------
 
+
 class TestPidFileManagement:
     """Tests for is_proxy_running() and stop_proxy() PID file handling."""
 
@@ -1733,7 +1805,11 @@ class TestPidFileManagement:
         pid_file = data_dir / "proxy.pid"
         pid_file.write_text("99999999")  # Almost certainly not a real PID
 
-        with patch("safeyolo.proxy.os.kill", side_effect=ProcessLookupError, autospec=True,):
+        with patch(
+            "safeyolo.proxy.os.kill",
+            side_effect=ProcessLookupError,
+            autospec=True,
+        ):
             result = is_proxy_running()
 
         assert result is False
@@ -1756,8 +1832,17 @@ class TestPidFileManagement:
                 return  # "Process received signal"
             raise ProcessLookupError  # Process already exited when we check
 
-        with patch("safeyolo.proxy.os.kill", side_effect=mock_kill, autospec=True,), \
-             patch("safeyolo.proxy.time.sleep", autospec=True,):
+        with (
+            patch(
+                "safeyolo.proxy.os.kill",
+                side_effect=mock_kill,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy.time.sleep",
+                autospec=True,
+            ),
+        ):
             stop_proxy()
 
         # First call is SIGTERM
@@ -1783,7 +1868,11 @@ class TestPidFileManagement:
         pid_file = data_dir / "proxy.pid"
         pid_file.write_text("12345")
 
-        with patch("safeyolo.proxy.os.kill", side_effect=ProcessLookupError, autospec=True,):
+        with patch(
+            "safeyolo.proxy.os.kill",
+            side_effect=ProcessLookupError,
+            autospec=True,
+        ):
             stop_proxy()
 
         assert not pid_file.exists()
@@ -1804,8 +1893,17 @@ class TestPidFileManagement:
             # Process never dies — signal 0 always succeeds (no exception)
             return None
 
-        with patch("safeyolo.proxy.os.kill", side_effect=mock_kill, autospec=True,), \
-             patch("safeyolo.proxy.time.sleep", autospec=True,):
+        with (
+            patch(
+                "safeyolo.proxy.os.kill",
+                side_effect=mock_kill,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy.time.sleep",
+                autospec=True,
+            ),
+        ):
             stop_proxy()
 
         signals_sent = [sig for _, sig in kill_calls]
@@ -1816,6 +1914,7 @@ class TestPidFileManagement:
 # ---------------------------------------------------------------------------
 # TestGetCaCertPath
 # ---------------------------------------------------------------------------
+
 
 class TestGetCaCertPath:
     """Tests for get_ca_cert_path() — CA certificate path lookup."""
@@ -1849,6 +1948,7 @@ class TestGetCaCertPath:
 # TestProxyStartupSmoke
 # ---------------------------------------------------------------------------
 
+
 class TestProxyStartupSmoke:
     """Exercise the production addon chain in a real mitmdump process."""
 
@@ -1874,11 +1974,18 @@ class TestProxyStartupSmoke:
             with socket.socket() as port_reservation:
                 port_reservation.bind(("127.0.0.1", 0))
                 web_port = port_reservation.getsockname()[1]
+            with socket.socket() as port_reservation:
+                port_reservation.bind(("127.0.0.1", 0))
+                events_port = port_reservation.getsockname()[1]
 
             from safeyolo.config import save_config
 
             config = proxy.load_config()
             config["proxy"]["web_port"] = web_port
+            config["command_centre"] = {
+                "enabled": True,
+                "events_port": events_port,
+            }
             save_config(config)
 
             proxy.start_proxy(admin_port=admin_port)
@@ -1921,10 +2028,63 @@ class TestProxyStartupSmoke:
             assert runtime_identity["process"]["pid"] == proxy_pid
             assert runtime_identity["process"]["started_at"]
             assert runtime_identity["process"]["start_token_state"] == "known"
-            health_response = httpx.get(
-                f"http://127.0.0.1:{admin_port}/health"
-            )
+            health_response = httpx.get(f"http://127.0.0.1:{admin_port}/health")
             assert health_response.json() == {"status": "ok"}
+
+            from websockets.sync.client import connect
+
+            from safeyolo.core.audit_schema import (
+                ApprovalRequest,
+                ApprovalType,
+                AuditEvent,
+                Decision,
+                EventKind,
+                Severity,
+            )
+            from safeyolo.events import append_event_strict, write_event
+            from safeyolo.operator_approvals import approve
+
+            with connect(
+                f"ws://127.0.0.1:{events_port}/admin/events",
+                additional_headers={"Authorization": f"Bearer {token}"},
+                proxy=None,
+            ) as event_client:
+                write_event(
+                    "agent.started",
+                    kind=EventKind.AGENT,
+                    severity=Severity.LOW,
+                    summary="Agent smoke-test started",
+                    agent="smoke-test",
+                )
+                streamed_event = json.loads(event_client.recv(timeout=3))
+                assert streamed_event["event"] == "agent.started"
+                assert streamed_event["agent"] == "smoke-test"
+
+                approval_event = AuditEvent(
+                    event_id="evt-command-centre-smoke",
+                    event="security.credential_guard",
+                    kind=EventKind.SECURITY,
+                    severity=Severity.HIGH,
+                    decision=Decision.REQUIRE_APPROVAL,
+                    summary="Credential needs operator approval",
+                    host="api.command-centre.test",
+                    agent="smoke-test",
+                    approval=ApprovalRequest(
+                        required=True,
+                        approval_type=ApprovalType.CREDENTIAL,
+                        key="hmac:command-centre-smoke",
+                        target="api.command-centre.test",
+                    ),
+                )
+                append_event_strict(approval_event)
+                streamed_approval = json.loads(event_client.recv(timeout=3))
+                assert streamed_approval == approval_event.to_jsonl()
+                assert api.pending_approvals() == [approval_event.to_jsonl()]
+
+                assert approve(streamed_approval, api) == "added"
+                resolution = json.loads(event_client.recv(timeout=3))
+                assert resolution["event"] == "admin.approval_added"
+                assert api.pending_approvals() == []
 
             with httpx.Client(
                 base_url=f"http://127.0.0.1:{web_port}",
@@ -1958,6 +2118,7 @@ class TestProxyStartupSmoke:
 # TestStartProxy
 # ---------------------------------------------------------------------------
 
+
 class TestStartProxy:
     """Tests for start_proxy() — the orchestrator function."""
 
@@ -1967,8 +2128,17 @@ class TestStartProxy:
 
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,), \
-             patch("safeyolo.proxy._find_addons_dir", autospec=True,) as mock_find:
+        with (
+            patch(
+                "safeyolo.proxy.is_proxy_running",
+                return_value=True,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._find_addons_dir",
+                autospec=True,
+            ) as mock_find,
+        ):
             start_proxy()
 
         # _find_addons_dir should never be called if already running
@@ -1981,8 +2151,18 @@ class TestStartProxy:
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
         (tmp_path / "data").mkdir(exist_ok=True)
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,), \
-             patch("safeyolo.proxy._find_addons_dir", return_value=None, autospec=True,):
+        with (
+            patch(
+                "safeyolo.proxy.is_proxy_running",
+                return_value=False,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._find_addons_dir",
+                return_value=None,
+                autospec=True,
+            ),
+        ):
             with pytest.raises(RuntimeError, match="Cannot find the SafeYolo addons directory"):
                 start_proxy()
 
@@ -1999,9 +2179,7 @@ class TestStartProxy:
 
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
-        monkeypatch.setenv(
-            "SAFEYOLO_COORD_DATA_DIR", str(tmp_path / "data" / "coord")
-        )
+        monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path / "data" / "coord"))
         monkeypatch.setenv("SAFEYOLO_UPSTREAM_PROXY", "http://127.0.0.1:8080")
         data_dir = tmp_path / "data"
         data_dir.mkdir(exist_ok=True)
@@ -2025,40 +2203,64 @@ class TestStartProxy:
             pid_file.write_text("42\n")
             launched.update(kwargs)
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,), \
-             patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir, autospec=True,), \
-             patch("safeyolo.proxy._find_pdp_dir", return_value=pdp_dir if dev else None, autospec=True,), \
-             patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem", autospec=True,), \
-             patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent"), autospec=True,), \
-             patch("safeyolo.proxy._build_command", return_value=["traffic-master"], autospec=True,), \
-             patch(
-                 "safeyolo.proxy._profile_child_environment",
-                 return_value={
-                     "SAFEYOLO_PROFILE_PATH": "/tmp/profile.jsonl",
-                     "SAFEYOLO_PROFILE_OPERATION": "proxy start",
-                     "SAFEYOLO_PROFILE_PROCESS": "traffic-master",
-                 },
-             autospec=True,
-             ), \
-             patch("safeyolo.proxy.start_session", side_effect=_start_simulate_addon, autospec=True,):
+        with (
+            patch(
+                "safeyolo.proxy.is_proxy_running",
+                return_value=False,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._find_addons_dir",
+                return_value=addons_dir,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._find_pdp_dir",
+                return_value=pdp_dir if dev else None,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._ensure_certs",
+                return_value=tmp_path / "certs" / "ca.pem",
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._ensure_tokens",
+                return_value=("admin", "agent"),
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._build_command",
+                return_value=["traffic-master"],
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._profile_child_environment",
+                return_value={
+                    "SAFEYOLO_PROFILE_PATH": "/tmp/profile.jsonl",
+                    "SAFEYOLO_PROFILE_OPERATION": "proxy start",
+                    "SAFEYOLO_PROFILE_PROCESS": "traffic-master",
+                },
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy.start_session",
+                side_effect=_start_simulate_addon,
+                autospec=True,
+            ),
+        ):
             start_proxy(dev=dev)
 
         assert pid_file.exists()
         assert pid_file.read_text().strip() == "42"
         assert launched["env"]["SAFEYOLO_WEB_TAILNET_ENABLED"] == "0"
         assert launched["env"]["SAFEYOLO_WEB_TAILNET_PORT"] == "443"
-        assert launched["env"]["SAFEYOLO_WEB_TAILNET_STATUS_FILE"] == str(
-            data_dir / "web-tailnet-status.json"
-        )
+        assert launched["env"]["SAFEYOLO_WEB_TAILNET_STATUS_FILE"] == str(data_dir / "web-tailnet-status.json")
         assert json.loads(launched["env"]["SAFEYOLO_INITIAL_MODES"]) == []
-        assert launched["env"]["SAFEYOLO_UPSTREAM_PROXY"] == (
-            "http://127.0.0.1:8080"
-        )
+        assert launched["env"]["SAFEYOLO_UPSTREAM_PROXY"] == ("http://127.0.0.1:8080")
         assert launched["env"]["SAFEYOLO_VIA_TOKEN"].startswith("sy-")
         assert launched["env"]["SAFEYOLO_PROFILE_PROCESS"] == "traffic-master"
-        assert launched["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(
-            package_dir.parent
-        )
+        assert launched["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(package_dir.parent)
         assert launched["env"]["SAFEYOLO_DEV_MODE"] == ("1" if dev else "0")
         if dev:
             assert json.loads(launched["env"]["SAFEYOLO_DEV_SOURCE_ROOTS"]) == {
@@ -2080,8 +2282,7 @@ class TestStartProxy:
         logs_dir.mkdir(exist_ok=True)
         (tmp_path / "policy.toml").touch()
         (logs_dir / "mitmproxy.log").write_text(
-            "Loading script /app/addons/file_logging.py\n"
-            "ModuleNotFoundError: No module named 'yaml'\n"
+            "Loading script /app/addons/file_logging.py\nModuleNotFoundError: No module named 'yaml'\n"
         )
 
         package_dir = tmp_path / "checkout" / "cli" / "src" / "safeyolo"
@@ -2091,20 +2292,62 @@ class TestStartProxy:
         (addons_dir / "__init__.py").touch()
 
         def _write_structured_failure(*args, **kwargs):
-            (logs_dir / "safeyolo.jsonl").write_text(json.dumps({
-                "event": "ops.proxy_start_failed",
-                "summary": "Traffic master startup failed: address already in use",
-            }) + "\n")
+            (logs_dir / "safeyolo.jsonl").write_text(
+                json.dumps(
+                    {
+                        "event": "ops.proxy_start_failed",
+                        "summary": "Traffic master startup failed: address already in use",
+                    }
+                )
+                + "\n"
+            )
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,), \
-             patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir, autospec=True,), \
-             patch("safeyolo.proxy._find_pdp_dir", return_value=None, autospec=True,), \
-             patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem", autospec=True,), \
-             patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent"), autospec=True,), \
-             patch("safeyolo.proxy._build_command", return_value=["traffic-master"], autospec=True,), \
-             patch("safeyolo.proxy.start_session", side_effect=_write_structured_failure, autospec=True,), \
-             patch("safeyolo.proxy.session_process_alive", return_value=False, autospec=True,), \
-             patch("safeyolo.proxy.stop_session", autospec=True,) as stop_session:
+        with (
+            patch(
+                "safeyolo.proxy.is_proxy_running",
+                return_value=False,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._find_addons_dir",
+                return_value=addons_dir,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._find_pdp_dir",
+                return_value=None,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._ensure_certs",
+                return_value=tmp_path / "certs" / "ca.pem",
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._ensure_tokens",
+                return_value=("admin", "agent"),
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy._build_command",
+                return_value=["traffic-master"],
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy.start_session",
+                side_effect=_write_structured_failure,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy.session_process_alive",
+                return_value=False,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy.stop_session",
+                autospec=True,
+            ) as stop_session,
+        ):
             with pytest.raises(RuntimeError, match="address already in use"):
                 start_proxy()
         stop_session.assert_called_once_with()
@@ -2163,6 +2406,7 @@ def test_startup_diagnostics_capture_state_before_cleanup(tmp_path, monkeypatch)
 # TestWaitForHealthy
 # ---------------------------------------------------------------------------
 
+
 class TestWaitForHealthy:
     """Tests for wait_for_healthy() — admin API health polling."""
 
@@ -2177,8 +2421,18 @@ class TestWaitForHealthy:
 
         mock_resp = _HealthResponse()
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,), \
-             patch("urllib.request.urlopen", return_value=mock_resp, autospec=True,):
+        with (
+            patch(
+                "safeyolo.proxy.is_proxy_running",
+                return_value=True,
+                autospec=True,
+            ),
+            patch(
+                "urllib.request.urlopen",
+                return_value=mock_resp,
+                autospec=True,
+            ),
+        ):
             result = wait_for_healthy(timeout=1, admin_port=9090)
 
         assert result is True
@@ -2192,9 +2446,22 @@ class TestWaitForHealthy:
         data_dir = tmp_path / "data"
         data_dir.mkdir(exist_ok=True)
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,), \
-             patch("urllib.request.urlopen", side_effect=ConnectionError, autospec=True,), \
-             patch("safeyolo.proxy.time.sleep", autospec=True,):
+        with (
+            patch(
+                "safeyolo.proxy.is_proxy_running",
+                return_value=True,
+                autospec=True,
+            ),
+            patch(
+                "urllib.request.urlopen",
+                side_effect=ConnectionError,
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.proxy.time.sleep",
+                autospec=True,
+            ),
+        ):
             result = wait_for_healthy(timeout=2, admin_port=9090)
 
         assert result is False
@@ -2217,8 +2484,18 @@ class TestWaitForHealthy:
             captured_request = req
             return mock_resp
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,), \
-             patch("urllib.request.urlopen", side_effect=capture_urlopen, autospec=True,):
+        with (
+            patch(
+                "safeyolo.proxy.is_proxy_running",
+                return_value=True,
+                autospec=True,
+            ),
+            patch(
+                "urllib.request.urlopen",
+                side_effect=capture_urlopen,
+                autospec=True,
+            ),
+        ):
             wait_for_healthy(timeout=1, admin_port=9090)
 
         assert captured_request is not None
@@ -2230,9 +2507,21 @@ class TestWaitForHealthy:
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
         (tmp_path / "data").mkdir()
 
-        with patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,), \
-             patch("urllib.request.urlopen", autospec=True,) as urlopen, \
-             patch("safeyolo.proxy.time.sleep", autospec=True,) as sleep:
+        with (
+            patch(
+                "safeyolo.proxy.is_proxy_running",
+                return_value=False,
+                autospec=True,
+            ),
+            patch(
+                "urllib.request.urlopen",
+                autospec=True,
+            ) as urlopen,
+            patch(
+                "safeyolo.proxy.time.sleep",
+                autospec=True,
+            ) as sleep,
+        ):
             result = wait_for_healthy(timeout=30, admin_port=9090)
 
         assert result is False

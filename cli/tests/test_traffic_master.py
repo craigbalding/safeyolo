@@ -21,6 +21,7 @@ from safeyolo.tailnet import TailnetServeSession
 from safeyolo.traffic_master import (
     _SCOPE_SCRIPT,
     _SCOPE_STYLE,
+    CommandCentreTailnetShare,
     SafeYoloStatusBar,
     TrafficMaster,
     WebFrontend,
@@ -30,13 +31,19 @@ from safeyolo.traffic_master import (
 )
 
 
-def _tailnet_session(url: str, exposed_port: int, *, pid: int):
+def _tailnet_session(
+    url: str,
+    exposed_port: int,
+    *,
+    pid: int,
+    target: str = "http://127.0.0.1:8081",
+):
     process = SimpleNamespace(pid=pid, poll=lambda: None)
     real = TailnetServeSession(
         process=process,
         dns_name="host.example.ts.net",
         exposed_port=exposed_port,
-        target="http://127.0.0.1:8081",
+        target=target,
     )
     session = create_autospec(real, spec_set=True)
     session.url.return_value = url
@@ -72,6 +79,7 @@ def test_hybrid_master_has_one_canonical_view_and_proxyserver(monkeypatch):
     assert sum(addon is master.view for addon in chain) == 1
     assert master.addons.get("safeyolo-web-frontend") is not None
     assert master.addons.get("safeyolo-web-tailnet-share") is not None
+    assert master.addons.get("safeyolo-command-centre-tailnet-share") is not None
     assert master.web_app.master is master
 
 
@@ -119,14 +127,9 @@ def test_agent_api_load_failure_keeps_request_and_transport_guards(monkeypatch):
 
     flow = tflow.tflow()
     flow.request.url = "http://_safeyolo.proxy.internal/health?token=secret"
-    guard = next(
-        addon for addon in production.addons
-        if getattr(addon, "name", None) == "agent-api-request-guard"
-    )
+    guard = next(addon for addon in production.addons if getattr(addon, "name", None) == "agent-api-request-guard")
     with (
-        patch(
-            "safeyolo.mitm_addons.agent_api_guard.write_event", autospec=True
-        ),
+        patch("safeyolo.mitm_addons.agent_api_guard.write_event", autospec=True),
         patch("safeyolo.mitm_addons.agent_api_guard.log", autospec=True),
     ):
         guard.request(flow)
@@ -158,7 +161,7 @@ def test_agent_api_and_coord_dependency_change_only_as_one_process_generation(
         marker = "\nISSUE_397_GENERATION = "
         if marker in source:
             source = source[: source.index(marker)]
-        path.write_text(f'{source}{marker}{generation!r}\n')
+        path.write_text(f"{source}{marker}{generation!r}\n")
 
     set_generation(agent_api_path, "generation-one")
     set_generation(coord_api_path, "generation-one")
@@ -288,8 +291,15 @@ def test_normal_console_exit_prompt_does_not_shutdown_data_plane(monkeypatch):
     assert master.keymap.get("global", "Q") is None
 
     with (
-        patch.object(master, "shutdown", autospec=True,) as shutdown,
-        patch("safeyolo.traffic_master.console_signals.status_message.send", autospec=True,) as status,
+        patch.object(
+            master,
+            "shutdown",
+            autospec=True,
+        ) as shutdown,
+        patch(
+            "safeyolo.traffic_master.console_signals.status_message.send",
+            autospec=True,
+        ) as status,
     ):
         master.prompt_for_exit()
 
@@ -309,8 +319,15 @@ def test_web_bind_failure_is_written_at_source_to_structured_event_log():
     server.listen.side_effect = OSError(errno.EADDRINUSE, "Address already in use")
 
     with (
-        patch("safeyolo.traffic_master.tornado.httpserver.HTTPServer", return_value=server, autospec=True,),
-        patch("safeyolo.traffic_master.write_event", autospec=True,) as write_event,
+        patch(
+            "safeyolo.traffic_master.tornado.httpserver.HTTPServer",
+            return_value=server,
+            autospec=True,
+        ),
+        patch(
+            "safeyolo.traffic_master.write_event",
+            autospec=True,
+        ) as write_event,
         pytest.raises(OSError, match="127.0.0.1:8081"),
     ):
         asyncio.run(frontend.running())
@@ -325,16 +342,25 @@ def test_web_tailnet_share_owns_foreground_session(tmp_path, monkeypatch):
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_ENABLED", "1")
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_PORT", "8445")
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_STATUS_FILE", str(state_path))
-    master = SimpleNamespace(
-        options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
-    )
+    master = SimpleNamespace(options=SimpleNamespace(web_host="127.0.0.1", web_port=8081))
     session = _tailnet_session("https://host.example.ts.net:8445/", 8445, pid=1234)
     share = WebTailnetShare(master)
 
     with (
-        patch("safeyolo.traffic_master.start_tailnet_serve", return_value=session, autospec=True,) as start,
-        patch.object(share, "_watch_session", autospec=True,) as watch,
-        patch("safeyolo.traffic_master.write_event", autospec=True,) as write_event,
+        patch(
+            "safeyolo.traffic_master.start_tailnet_serve",
+            return_value=session,
+            autospec=True,
+        ) as start,
+        patch.object(
+            share,
+            "_watch_session",
+            autospec=True,
+        ) as watch,
+        patch(
+            "safeyolo.traffic_master.write_event",
+            autospec=True,
+        ) as write_event,
     ):
         asyncio.run(share.running())
         assert '"state": "healthy"' in state_path.read_text()
@@ -356,19 +382,18 @@ def test_web_tailnet_share_failure_blocks_proxy_readiness(tmp_path, monkeypatch)
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_ENABLED", "1")
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_PORT", "443")
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_STATUS_FILE", str(state_path))
-    share = WebTailnetShare(
-        SimpleNamespace(
-            options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
-        )
-    )
+    share = WebTailnetShare(SimpleNamespace(options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)))
 
     with (
         patch(
             "safeyolo.traffic_master.start_tailnet_serve",
             side_effect=RuntimeError("port already mapped"),
-        autospec=True,
+            autospec=True,
         ),
-        patch("safeyolo.traffic_master.write_event", autospec=True,) as write_event,
+        patch(
+            "safeyolo.traffic_master.write_event",
+            autospec=True,
+        ) as write_event,
         pytest.raises(RuntimeError, match="port already mapped"),
     ):
         asyncio.run(share.running())
@@ -381,34 +406,136 @@ def test_web_tailnet_share_failure_blocks_proxy_readiness(tmp_path, monkeypatch)
     assert '"state": "error"' in state_path.read_text()
 
 
-def test_web_tailnet_live_port_change_preserves_old_share_until_ready(
-    tmp_path, monkeypatch
-):
+def test_command_centre_tailnet_share_owns_both_mappings(tmp_path, monkeypatch):
+    state_path = tmp_path / "command-centre-tailnet-status.json"
+    monkeypatch.setenv("SAFEYOLO_COMMAND_CENTRE_SHARE", "tailnet")
+    monkeypatch.setenv("SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT", "9443")
+    monkeypatch.setenv("SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT", "9444")
+    monkeypatch.setenv(
+        "SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE",
+        str(state_path),
+    )
+    master = SimpleNamespace(
+        options=SimpleNamespace(
+            admin_port=9090,
+            command_centre_enabled=True,
+            command_centre_events_port=9091,
+        )
+    )
+    admin_session = _tailnet_session(
+        "https://host.example.ts.net:9443/",
+        9443,
+        pid=1234,
+        target="http://127.0.0.1:9090",
+    )
+    events_session = _tailnet_session(
+        "https://host.example.ts.net:9444/admin/events",
+        9444,
+        pid=5678,
+        target="http://127.0.0.1:9091",
+    )
+    share = CommandCentreTailnetShare(master)
+
+    with (
+        patch(
+            "safeyolo.traffic_master.start_tailnet_serve",
+            side_effect=[admin_session, events_session],
+            autospec=True,
+        ) as start,
+        patch.object(share, "_watch_session", autospec=True) as watch,
+        patch("safeyolo.traffic_master.write_event", autospec=True) as write_event,
+    ):
+        asyncio.run(share.running())
+        stats = share.get_stats()
+        asyncio.run(share.done())
+
+    assert start.call_args_list == [
+        ((9090, 9443),),
+        ((9091, 9444),),
+    ]
+    assert stats == {
+        "enabled": True,
+        "state": "healthy",
+        "admin_url": "https://host.example.ts.net:9443/",
+        "events_url": "wss://host.example.ts.net:9444/admin/events",
+    }
+    assert watch.call_count == 2
+    admin_session.close.assert_called_once_with()
+    events_session.close.assert_called_once_with()
+    assert '"state": "stopped"' in state_path.read_text()
+    events = [call.args[0] for call in write_event.call_args_list]
+    assert events == [
+        "ops.command_centre_tailnet_started",
+        "ops.command_centre_tailnet_stopped",
+    ]
+
+
+def test_command_centre_tailnet_second_mapping_failure_cleans_first(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_COMMAND_CENTRE_SHARE", "tailnet")
+    monkeypatch.setenv(
+        "SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE",
+        str(tmp_path / "command-centre-tailnet-status.json"),
+    )
+    master = SimpleNamespace(
+        options=SimpleNamespace(
+            admin_port=9090,
+            command_centre_enabled=True,
+            command_centre_events_port=9091,
+        )
+    )
+    admin_session = _tailnet_session(
+        "https://host.example.ts.net:9443/",
+        9443,
+        pid=1234,
+        target="http://127.0.0.1:9090",
+    )
+    share = CommandCentreTailnetShare(master)
+
+    with (
+        patch(
+            "safeyolo.traffic_master.start_tailnet_serve",
+            side_effect=[admin_session, RuntimeError("port already mapped")],
+            autospec=True,
+        ),
+        patch("safeyolo.traffic_master.write_event", autospec=True) as write_event,
+        pytest.raises(RuntimeError, match="port already mapped"),
+    ):
+        asyncio.run(share.running())
+
+    admin_session.close.assert_called_once_with()
+    assert [call.args[0] for call in write_event.call_args_list] == [
+        "ops.command_centre_tailnet_failed",
+        "ops.proxy_start_failed",
+    ]
+
+
+def test_web_tailnet_live_port_change_preserves_old_share_until_ready(tmp_path, monkeypatch):
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_ENABLED", "1")
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_PORT", "8445")
     monkeypatch.setenv(
         "SAFEYOLO_WEB_TAILNET_STATUS_FILE",
         str(tmp_path / "web-tailnet-status.json"),
     )
-    share = WebTailnetShare(
-        SimpleNamespace(
-            options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
-        )
-    )
+    share = WebTailnetShare(SimpleNamespace(options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)))
     old = _tailnet_session("https://host.example.ts.net:8445/", 8445, pid=1234)
-    replacement = _tailnet_session(
-        "https://host.example.ts.net:8446/", 8446, pid=4321
-    )
+    replacement = _tailnet_session("https://host.example.ts.net:8446/", 8446, pid=4321)
     share.session = old
 
     with (
         patch(
             "safeyolo.traffic_master.start_tailnet_serve",
             return_value=replacement,
-        autospec=True,
+            autospec=True,
         ) as start,
-        patch.object(share, "_watch_session", autospec=True,),
-        patch("safeyolo.traffic_master.write_event", autospec=True,),
+        patch.object(
+            share,
+            "_watch_session",
+            autospec=True,
+        ),
+        patch(
+            "safeyolo.traffic_master.write_event",
+            autospec=True,
+        ),
     ):
         result = asyncio.run(share.reconcile(True, 8446))
 
@@ -419,18 +546,12 @@ def test_web_tailnet_live_port_change_preserves_old_share_until_ready(
     assert result["port"] == 8446
 
 
-def test_web_tailnet_live_failure_keeps_existing_healthy_share(
-    tmp_path, monkeypatch
-):
+def test_web_tailnet_live_failure_keeps_existing_healthy_share(tmp_path, monkeypatch):
     state_path = tmp_path / "web-tailnet-status.json"
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_ENABLED", "1")
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_PORT", "8445")
     monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_STATUS_FILE", str(state_path))
-    share = WebTailnetShare(
-        SimpleNamespace(
-            options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
-        )
-    )
+    share = WebTailnetShare(SimpleNamespace(options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)))
     old = _tailnet_session("https://host.example.ts.net:8445/", 8445, pid=1234)
     share.session = old
 
@@ -438,9 +559,12 @@ def test_web_tailnet_live_failure_keeps_existing_healthy_share(
         patch(
             "safeyolo.traffic_master.start_tailnet_serve",
             side_effect=RuntimeError("serve denied"),
-        autospec=True,
+            autospec=True,
         ),
-        patch("safeyolo.traffic_master.write_event", autospec=True,),
+        patch(
+            "safeyolo.traffic_master.write_event",
+            autospec=True,
+        ),
         pytest.raises(RuntimeError, match="serve denied"),
     ):
         asyncio.run(share.reconcile(True, 8446))
@@ -457,10 +581,7 @@ def test_native_scope_keys_do_not_replace_stock_bindings(monkeypatch):
 
     assert master.keymap.get("global", "q").command == "console.view.pop"
     assert master.keymap.get("global", "]").command == "safeyolo.traffic.agent.next"
-    assert (
-        master.keymap.get("global", "}").command
-        == "safeyolo.traffic.test.choose"
-    )
+    assert master.keymap.get("global", "}").command == "safeyolo.traffic.test.choose"
     assert master.keymap.get("global", "ctrl 0").command == "safeyolo.traffic.scope.clear"
 
 
@@ -493,7 +614,11 @@ def test_status_bar_leads_with_host_and_pinned_evidence_scope():
     )
 
     with (
-        patch("safeyolo.traffic_master.socket.gethostname", return_value="workstation", autospec=True,),
+        patch(
+            "safeyolo.traffic_master.socket.gethostname",
+            return_value="workstation",
+            autospec=True,
+        ),
         patch(
             "safeyolo.traffic_master.statusbar.StatusBar.get_status",
             return_value=[
@@ -502,7 +627,7 @@ def test_status_bar_leads_with_host_and_pinned_evidence_scope():
                 "[scripts:2]",
                 "[10m]",
             ],
-        autospec=True,
+            autospec=True,
         ),
     ):
         result = bar.get_status()
@@ -528,15 +653,13 @@ def test_status_bar_extracts_stream_threshold_from_combined_stock_modes():
     bar = SafeYoloStatusBar.__new__(SafeYoloStatusBar)
     bar.master = SimpleNamespace(
         addons=SimpleNamespace(get=lambda _name: scope),
-        options=SimpleNamespace(
-            mode=["regular"], scripts=[], stream_large_bodies="1g"
-        ),
+        options=SimpleNamespace(mode=["regular"], scripts=[], stream_large_bodies="1g"),
     )
 
     with patch(
         "safeyolo.traffic_master.statusbar.StatusBar.get_status",
         return_value=["[anticache:1g]"],
-    autospec=True,
+        autospec=True,
     ):
         result = bar.get_status()
 
@@ -599,7 +722,10 @@ def test_websocket_broadcasts_only_flows_in_composed_live_view(monkeypatch):
     hidden.metadata["agent"] = "bob"
     master.view.filter = flowfilter.parse('~meta "^agent: alice$" & (~m GET)')
 
-    with patch("safeyolo.traffic_master.app.ClientConnection.broadcast_flow", autospec=True,) as broadcast:
+    with patch(
+        "safeyolo.traffic_master.app.ClientConnection.broadcast_flow",
+        autospec=True,
+    ) as broadcast:
         master.view.add([matching, hidden])
 
     broadcast.assert_called_once_with("flows/add", matching)

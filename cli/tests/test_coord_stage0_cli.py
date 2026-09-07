@@ -648,8 +648,7 @@ def test_chat_rejects_piped_stdin_with_terminal_stdout():
 
 
 def test_watch_accepts_coord_event_and_deduplicates_event_id(capsys):
-    watch._seen_event_ids.clear()
-    watch._seen_event_id_set.clear()
+    watch._reset_audit_line_parser()
     watch._drift_warnings_emitted = 0
     event = AuditEvent(
         event_id="evt-dedup",

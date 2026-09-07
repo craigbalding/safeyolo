@@ -25,6 +25,13 @@ nodes:
     keywords: ["404", "preview URL", "connection refused", "not found", "operator can't reach"]
     source: authored
 
+  - id: sym.desktop_remote_url_is_loopback
+    kind: symptom
+    label: "Remote operator receives a 127.0.0.1 desktop preview URL"
+    detail: "Loopback identifies the SafeYolo host, not the remote operator's computer."
+    keywords: ["remote command centre", "127.0.0.1", "localhost", "safari can't connect", "tailnet preview"]
+    source: authored
+
   - id: sym.desktop_operator_sees_blank
     kind: symptom
     label: "Operator sees the noVNC page but the desktop area is blank / black"
@@ -113,6 +120,11 @@ nodes:
     label: "The preview URL points at a port different from where noVNC is listening"
     source: authored
 
+  - id: cls.desktop_remote_loopback_url
+    kind: classification
+    label: "The preview exists on the SafeYolo host but its URL is not published to the remote operator"
+    source: authored
+
   - id: cls.desktop_no_browser_in_guest
     kind: classification
     label: "No browser binary is installed in the guest; xdg-open has nothing to launch"
@@ -149,6 +161,11 @@ nodes:
     label: "Report the actual noVNC listening port + expected URL back to the operator so they can compare with what they've been given"
     source: authored
 
+  - id: con.desktop_publish_tailnet_preview
+    kind: conclusion
+    label: "When Command Centre uses Tailnet, publish the managed preview on the agent's Tailnet port and return that HTTPS URL"
+    source: authored
+
   # ---- Operator asks ---------------------------------------------------
   - id: ask.desktop_run_preview
     kind: operator_ask
@@ -169,6 +186,7 @@ nodes:
 edges:
   # Every desktop entry starts by confirming the stack is up in the guest
   - {from: sym.desktop_operator_sees_404,   to: ev.desktop_check_preview_process, kind: next_check}
+  - {from: sym.desktop_remote_url_is_loopback, to: ev.desktop_check_preview_url_reach, kind: next_check}
   - {from: sym.desktop_operator_sees_blank, to: ev.desktop_check_xvfb_running,    kind: next_check}
   - {from: sym.desktop_novnc_connect_drops, to: ev.desktop_check_novnc_running,   kind: next_check}
   - {from: sym.desktop_novnc_connect_drops, to: ev.desktop_check_novnc_logs,      kind: next_check}
@@ -190,7 +208,9 @@ edges:
 
   # URL / port mismatch
   - {from: ev.desktop_check_preview_url_reach, to: cls.desktop_port_mismatch, kind: implies, when: "URL port differs from listening noVNC port"}
+  - {from: ev.desktop_check_preview_url_reach, to: cls.desktop_remote_loopback_url, kind: implies, when: "operator is remote and the returned URL uses 127.0.0.1 or localhost"}
   - {from: cls.desktop_port_mismatch,          to: con.desktop_report_port_and_url, kind: implies}
+  - {from: cls.desktop_remote_loopback_url,    to: con.desktop_publish_tailnet_preview, kind: implies}
   - {from: sym.desktop_operator_sees_404,      to: ev.desktop_check_preview_url_reach, kind: next_check, when: "stack is running but operator still 404s"}
 
   # No browser inside the guest
@@ -209,6 +229,7 @@ edges:
 
 entries:
   - symptom: sym.desktop_operator_sees_404
+  - symptom: sym.desktop_remote_url_is_loopback
   - symptom: sym.desktop_operator_sees_blank
   - symptom: sym.desktop_novnc_connect_drops
   - symptom: sym.desktop_xdg_open_missing

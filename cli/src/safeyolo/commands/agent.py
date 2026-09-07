@@ -2314,50 +2314,23 @@ def stop(
     _t("validate agent and inspect sandbox state")
     _validate_instance_name(name)
 
+    from ..agent_lifecycle import AgentLifecycleError, stop_agent_by_name
     from ..platform import get_platform
-    plat = get_platform()
 
-    # Stop intent is durable and must reach the runtime supervisor even when
-    # the sandbox has already disappeared.
-    from ..agent_command_supervisor import request_command_supervisor_stop
-
-    if not request_command_supervisor_stop(name):
-        console.print(
-            f"[red]Could not stop the command supervisor for {name}.[/red]\n"
-            "The sandbox was left intact to prevent an automatic restart. "
-            f"Run `safeyolo agent diag {name}` and retry."
-        )
+    was_running = get_platform().is_sandbox_running(name)
+    if was_running:
+        console.print(f"Stopping {name}...")
+    try:
+        stop_agent_by_name(name, on_phase=_t)
+    except AgentLifecycleError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        if "command supervisor" in str(exc):
+            console.print(f"Run `safeyolo agent diag {name}` and retry.")
         raise typer.Exit(1)
-
-    if not plat.is_sandbox_running(name):
+    if was_running:
+        console.print(f"[green]Stopped {name}.[/green]")
+    else:
         console.print(f"Agent '{name}' sandbox is not running; command supervisor stopped.")
-        raise typer.Exit(0)
-
-    console.print(f"Stopping {name}...")
-    _t("platform sandbox shutdown and cleanup")
-    plat.stop_sandbox(name)
-    # Drop the per-agent UnixInstance. `stop_sandbox` already removed
-    # the agent from agent_map.json, so this push reflects its absence.
-    # If the proxy is down, its next start reads the already-updated map. Avoid
-    # a guaranteed refused admin connection (and noisy warning) in that case.
-    from ..proxy import is_proxy_running as _proxy_is_running
-    from ..proxy import sync_proxy_modes
-    _t("check proxy before listener reconciliation")
-    if _proxy_is_running():
-        config = load_config()
-        admin_port = config.get("proxy", {}).get("admin_port", 9090)
-        _t("remove proxy listener for stopped agent")
-        sync_proxy_modes(admin_port=admin_port)
-    _t("record and render stop result")
-    write_event(
-        "agent.stopped",
-        kind="agent",
-        severity="low",
-        summary=f"Agent {name} stopped by user",
-        agent=name,
-        details={"reason": "user_request"},
-    )
-    console.print(f"[green]Stopped {name}.[/green]")
 
 
 @agent_app.command(name="rebuild-snapshot")

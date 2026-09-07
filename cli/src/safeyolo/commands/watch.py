@@ -20,6 +20,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from .. import operator_approvals
 from .._tactics import TACTIC_LABELS
 from ..config import get_logs_dir
 
@@ -41,6 +42,7 @@ class _LazyModule:
 
 admin_api = _LazyModule("safeyolo.api")
 audit_schema = _LazyModule("safeyolo.core.audit_schema")
+audit_stream = _LazyModule("safeyolo.core.audit_stream")
 
 # Default status file location
 STATUS_FILE = Path.home() / ".cache" / "safeyolo" / "tmux_status.txt"
@@ -55,47 +57,41 @@ BATCH_WINDOW = 2.0  # seconds
 # Schema-drift warnings: track how many we've emitted to avoid log-spam.
 _drift_warnings_emitted = 0
 _MAX_DRIFT_WARNINGS = 10
-_SEEN_EVENT_IDS_MAX = 2048
-_seen_event_ids: deque[str] = deque()
-_seen_event_id_set: set[str] = set()
+
+
+def _show_schema_drift(exc: audit_schema.InvalidAuditEvent) -> None:
+    """Bound repeated schema-drift notices in the terminal renderer."""
+    global _drift_warnings_emitted
+    if _drift_warnings_emitted < _MAX_DRIFT_WARNINGS:
+        _drift_warnings_emitted += 1
+        console.print(f"[dim yellow]schema drift: {exc}[/dim yellow]")
+        if _drift_warnings_emitted == _MAX_DRIFT_WARNINGS:
+            console.print("[dim yellow]further schema-drift warnings suppressed[/dim yellow]")
+
+
+_audit_line_parser = None
+
+
+def _get_audit_line_parser():
+    """Create the command-only parser without loading Pydantic at CLI import."""
+    global _audit_line_parser
+    if _audit_line_parser is None:
+        _audit_line_parser = audit_stream.AuditLineParser(
+            on_schema_drift=_show_schema_drift,
+            seen_event_ids=2048,
+        )
+    return _audit_line_parser
+
+
+def _reset_audit_line_parser() -> None:
+    """Discard parser state before an independent watch run or test."""
+    global _audit_line_parser
+    _audit_line_parser = None
 
 
 def _parse_jsonl_line(line: str) -> dict | None:
-    """Parse a JSONL audit line, warn on schema drift, skip on JSON errors.
-
-    Returns the event dict on success (even if schema validation warns), or
-    None if the line is not valid JSON. Schema drift is logged once per event
-    class (up to `_MAX_DRIFT_WARNINGS`) and does not drop the event — the
-    downstream formatting code is lenient and reads fields via dict.get.
-    """
-    global _drift_warnings_emitted
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-
-    try:
-        audit_schema.parse_audit_event(event)
-    except audit_schema.InvalidAuditEvent as exc:
-        if _drift_warnings_emitted < _MAX_DRIFT_WARNINGS:
-            _drift_warnings_emitted += 1
-            console.print(f"[dim yellow]schema drift: {exc}[/dim yellow]")
-            if _drift_warnings_emitted == _MAX_DRIFT_WARNINGS:
-                console.print(
-                    "[dim yellow]further schema-drift warnings suppressed[/dim yellow]"
-                )
-
-    event_id = event.get("event_id")
-    if isinstance(event_id, str) and event_id:
-        if event_id in _seen_event_id_set:
-            return None
-        _seen_event_ids.append(event_id)
-        _seen_event_id_set.add(event_id)
-        if len(_seen_event_ids) > _SEEN_EVENT_IDS_MAX:
-            expired = _seen_event_ids.popleft()
-            _seen_event_id_set.discard(expired)
-
-    return event
+    """Parse one audit line with the shared reader used by operator clients."""
+    return _get_audit_line_parser().parse(line)
 
 
 def is_in_tmux() -> bool:
@@ -237,125 +233,25 @@ class RollingStats:
 
 
 def tail_jsonl(path: Path, follow: bool = True, tick_interval: float = 0):
-    """Tail a JSONL file, yielding parsed events.
+    """Tail audit JSONL using the UI-independent stream reader."""
 
-    Handles log rotation and proxy restarts: if the file is replaced
-    (inode changes) or truncated, reopens from the beginning of the
-    new file.
-
-    Args:
-        path: Path to JSONL file
-        follow: If True, keep watching for new lines
-        tick_interval: If >0 and idle, yield None every tick_interval seconds
-
-    Yields:
-        Parsed JSON objects from each line, or None for tick events
-    """
-    if not path.exists():
-        if follow:
-            # Wait for file to appear
+    def show_status(status: str) -> None:
+        if status.startswith("waiting:"):
             console.print(f"[dim]Waiting for log file: {path}[/dim]")
-            while not path.exists():
-                time.sleep(0.5)
-        else:
-            return
+        elif status == "removed":
+            console.print("[dim]Log file removed, waiting...[/dim]")
+        elif status == "rotated":
+            console.print("[dim]Log rotated, reopening...[/dim]")
+        elif status == "truncated":
+            console.print("[dim]Log truncated, reopening...[/dim]")
 
-    check_interval = 0  # counter for periodic stale-file checks
-    idle_cycles = 0  # counter for tick generation
-    tick_cycles = int(tick_interval / 0.1) if tick_interval > 0 else 0
-
-    with open(path) as f:
-        original_inode = os.fstat(f.fileno()).st_ino
-
-        # Start from end for follow mode
-        if follow:
-            f.seek(0, 2)  # Seek to end
-
-        while True:
-            line = f.readline()
-            if line:
-                check_interval = 0
-                idle_cycles = 0
-                line = line.strip()
-                if line:
-                    event = _parse_jsonl_line(line)
-                    if event is not None:
-                        yield event
-            elif follow:
-                time.sleep(0.1)
-                check_interval += 1
-                idle_cycles += 1
-
-                # Yield tick if configured and enough idle time has passed
-                if tick_cycles and idle_cycles >= tick_cycles:
-                    idle_cycles = 0
-                    yield None
-
-                # Every ~2 seconds of no data, check if the file was rotated
-                if check_interval >= 20:
-                    check_interval = 0
-                    try:
-                        if path.exists():
-                            current_inode = path.stat().st_ino
-                            if current_inode != original_inode:
-                                # File was rotated — reopen from start of new file
-                                console.print("[dim]Log rotated, reopening...[/dim]")
-                                f.close()
-                                # Re-enter with new file via recursive yield
-                                yield from _tail_reopened(path)
-                                return
-                        else:
-                            # File disappeared (proxy stopped) — wait for it
-                            console.print("[dim]Log file removed, waiting...[/dim]")
-                            while not path.exists():
-                                time.sleep(0.5)
-                            console.print("[dim]Log file reappeared, reopening...[/dim]")
-                            f.close()
-                            yield from _tail_reopened(path)
-                            return
-                    except OSError:
-                        continue  # stat failed, try again next cycle
-            else:
-                break
-
-
-def _tail_reopened(path: Path):
-    """Reopen a rotated/recreated log file and tail from the beginning."""
-    with open(path) as f:
-        original_inode = os.fstat(f.fileno()).st_ino
-        check_interval = 0
-
-        while True:
-            line = f.readline()
-            if line:
-                check_interval = 0
-                line = line.strip()
-                if line:
-                    event = _parse_jsonl_line(line)
-                    if event is not None:
-                        yield event
-            else:
-                time.sleep(0.1)
-                check_interval += 1
-                if check_interval >= 20:
-                    check_interval = 0
-                    try:
-                        if path.exists():
-                            current_inode = path.stat().st_ino
-                            if current_inode != original_inode:
-                                console.print("[dim]Log rotated again, reopening...[/dim]")
-                                f.close()
-                                yield from _tail_reopened(path)
-                                return
-                        else:
-                            while not path.exists():
-                                time.sleep(0.5)
-                            console.print("[dim]Log file reappeared, reopening...[/dim]")
-                            f.close()
-                            yield from _tail_reopened(path)
-                            return
-                    except OSError:
-                        continue  # Transient stat error, retry next cycle
+    yield from audit_stream.follow_jsonl(
+        path,
+        parse_line=_parse_jsonl_line,
+        follow=follow,
+        tick_interval=tick_interval,
+        on_status=show_status,
+    )
 
 
 def _risky_route_dedup_key(event: dict) -> str:
@@ -388,27 +284,18 @@ class BatchItem:
 class ApprovalDispatch:
     """Per-approval-type handlers for approve/deny/format."""
 
-    approve: Callable[[dict, admin_api.AdminAPI], str | None]  # returns grant_id/status or None
+    approve: Callable[[dict, admin_api.AdminAPI], str | dict | None]
     deny: Callable[[dict, admin_api.AdminAPI], None]
     format_row: Callable[[dict], tuple[str, str, str, str]]  # agent, action, risk, description
     format_detail: Callable[[dict], Panel]  # full panel for review mode
 
 
 def _credential_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
-    approval = event.get("approval", {})
-    details = event.get("details", {})
-    fingerprint = approval.get("key", details.get("fingerprint", ""))
-    host = event.get("host", approval.get("target", ""))
-    result = api.add_approval(destination=host, cred_id=fingerprint)
-    return result.get("status", "ok")
+    return operator_approvals.approve(event, api)
 
 
 def _credential_deny(event: dict, api: admin_api.AdminAPI) -> None:
-    approval = event.get("approval", {})
-    details = event.get("details", {})
-    fingerprint = approval.get("key", details.get("fingerprint", ""))
-    host = event.get("host", approval.get("target", ""))
-    api.log_denial(destination=host, cred_id=fingerprint, reason="user_denied")
+    operator_approvals.deny(event, api)
 
 
 def _credential_format_row(event: dict) -> tuple[str, str, str, str]:
@@ -424,24 +311,11 @@ def _credential_format_row(event: dict) -> tuple[str, str, str, str]:
 
 
 def _gateway_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
-    details = event.get("details", {})
-    agent = event.get("agent", "unknown")
-    service = details.get("service", "unknown")
-    method = details.get("method", "")
-    path = details.get("path", details.get("risky_route", ""))
-    result = api.add_gateway_grant(
-        agent=agent, service=service, method=method, path=path, lifetime="once",
-    )
-    return result.get("grant_id")
+    return operator_approvals.approve(event, api)
 
 
 def _gateway_deny(event: dict, api: admin_api.AdminAPI) -> None:
-    details = event.get("details", {})
-    agent = event.get("agent", "unknown")
-    service = details.get("service", "unknown")
-    method = details.get("method", "")
-    path = details.get("path", details.get("risky_route", ""))
-    api.log_gateway_denial(agent=agent, service=service, method=method, path=path)
+    operator_approvals.deny(event, api)
 
 
 def _gateway_format_row(event: dict) -> tuple[str, str, str, str]:
@@ -538,6 +412,13 @@ def _service_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
             ).strip()
             if not capability:
                 raise NotImplementedError("Capability required")
+            event = {
+                **event,
+                "approval": {
+                    **approval,
+                    "scope_hint": {**scope, "capability": capability},
+                },
+            }
 
         # Credential flow: pick existing or create new
         cred_name = _pick_or_create_credential(service)
@@ -547,13 +428,11 @@ def _service_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
     except (KeyboardInterrupt, EOFError):
         raise NotImplementedError("Interrupted")
 
-    result = api.authorize_service(
-        agent=agent,
-        service=service,
-        capability=capability,
-        credential=cred_name,
+    return operator_approvals.approve(
+        event,
+        api,
+        service_credential=cred_name,
     )
-    return result.get("status", "authorized")
 
 
 def _pick_or_create_credential(service: str) -> str | None:
@@ -630,15 +509,7 @@ def _pick_or_create_credential(service: str) -> str | None:
 
 
 def _service_deny(event: dict, api: admin_api.AdminAPI) -> None:
-    # Log the denial via the generic denial endpoint
-    approval = event.get("approval", {})
-    agent = event.get("agent", "unknown")
-    target = approval.get("target", "unknown")
-    api.log_denial(
-        destination=f"gateway:{target}",
-        cred_id=f"{agent}:service_access",
-        reason="user_denied",
-    )
+    operator_approvals.deny(event, api)
 
 
 def _unsupported_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
@@ -710,18 +581,12 @@ def _host_to_domain(host: str) -> str:
 
 def _network_egress_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
     """Approve with defaults — used by batch approve and fallback."""
-    approval = event.get("approval", {})
-    host = event.get("host", approval.get("target", ""))
-    result = api.allow_host(host=host, rate=600)
-    return result.get("status", "ok")
+    return operator_approvals.approve(event, api)
 
 
 def _network_egress_deny(event: dict, api: admin_api.AdminAPI) -> None:
     """Deny with defaults — used by batch deny and fallback."""
-    approval = event.get("approval", {})
-    host = event.get("host", approval.get("target", ""))
-    expires = (datetime.now(UTC) + timedelta(days=1)).isoformat()
-    api.deny_host(host=host, expires=expires)
+    operator_approvals.deny(event, api)
 
 
 def _prompt_egress_approval(item: BatchItem, api: admin_api.AdminAPI) -> bool:
@@ -924,53 +789,17 @@ def _contract_binding_format_detail(event: dict) -> Panel:
 
 
 def _contract_binding_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
-    approval = event.get("approval", {})
-    scope = approval.get("scope_hint", {})
-    agent = event.get("agent", "")
-    service = approval.get("target", "")
-    capability = scope.get("capability", "")
-    template = scope.get("template", "")
-    bindings = scope.get("bindings", {})
-    grantable_ops = scope.get("grantable_operations", [])
-
-    if not agent or not service or not capability:
-        raise NotImplementedError(
-            "Contract binding event missing agent, service, or capability"
-        )
-
-    # Approve the contract binding
-    result = api.approve_contract_binding(
-        agent=agent,
-        service=service,
-        capability=capability,
-        template=template,
-        bindings=bindings,
-        grantable_operations=grantable_ops,
-    )
-
-    # Contract binding and service authorization are separate concerns.
-    # If the agent isn't already authorized for this service, a separate
-    # "service" approval event will appear in watch for credential selection.
-
-    return result.get("status", "bound")
+    return operator_approvals.approve(event, api)
 
 
 def _contract_binding_deny(event: dict, api: admin_api.AdminAPI) -> None:
-    approval = event.get("approval", {})
-    agent = event.get("agent", "unknown")
-    target = approval.get("target", "unknown")
-    api.log_denial(
-        destination=f"gateway:{target}",
-        cred_id=f"{agent}:contract_binding",
-        reason="user_denied",
-    )
+    operator_approvals.deny(event, api)
 
 
 
 def _dedup_key_from_approval(event: dict) -> str:
     """Derive dedup key from the approval field on an event."""
-    approval = event.get("approval", {})
-    return f"{approval.get('key', '')}:{approval.get('target', '')}"
+    return audit_stream.approval_dedup_key(event)
 
 
 def build_batch_items(events: list[dict]) -> list[BatchItem]:
@@ -1363,66 +1192,7 @@ def _batch_select(
 
 def _resolved_key_from_admin_event(event: dict) -> str | None:
     """Extract the dedup key that an admin action resolved, if possible."""
-    event_type = event.get("event", "")
-    details = event.get("details", {})
-
-    if event_type in ("admin.approval_added", "admin.denial"):
-        # Credential resolution: details has destination + cred_id
-        cred_id = details.get("cred_id", "")
-        destination = details.get("destination", "")
-        if cred_id and destination:
-            # Gateway denials use destination="gateway:{service}", cred_id="{agent}:{method}:{path}"
-            if destination.startswith("gateway:"):
-                parts = cred_id.split(":", 2)
-                if len(parts) == 3:
-                    agent, method, path = parts
-                    service = destination.removeprefix("gateway:")
-                    return f"gw:{agent}:{service}:{method}:{path}:{service}"
-            return f"{cred_id}:{destination}"
-        return None
-
-    if event_type == "admin.gateway_grant":
-        agent = details.get("agent", "")
-        service = details.get("service", "")
-        method = details.get("method", "")
-        path = details.get("path", "")
-        if agent and service:
-            return f"gw:{agent}:{service}:{method}:{path}:{service}"
-        return None
-
-    if event_type in ("admin.agent_service_authorized", "admin.agent_service_revoked"):
-        agent = details.get("agent", "")
-        service = details.get("service", "")
-        if agent and service:
-            return f"{agent}:{service}:{service}"
-        return None
-
-    if event_type == "admin.contract_binding_approved":
-        agent = details.get("agent", "")
-        service = details.get("service", "")
-        capability = details.get("capability", "")
-        if agent and service and capability:
-            return f"{agent}:{service}:{capability}:{service}"
-        return None
-
-    if event_type in ("admin.host_allowed", "admin.host_denied"):
-        host = details.get("host", "")
-        if host:
-            # Matches network_egress dedup key format: key:target = domain:domain
-            return f"{host}:{host}"
-        return None
-
-    if event_type in ("plumb.approved", "plumb.denied"):
-        # Reconstruct the plumb dedup key: approval.key:approval.target ==
-        # request_id:",".join(members). Both events carry request_id +
-        # participants (the sorted member set) in details.
-        request_id = details.get("request_id", "")
-        participants = details.get("participants", [])
-        if request_id and participants:
-            return f"{request_id}:{','.join(participants)}"
-        return None
-
-    return None
+    return audit_stream.resolved_approval_key(event)
 
 
 def scan_pending_approvals(log_path: Path) -> tuple[list[dict], set[str]]:
@@ -1439,56 +1209,11 @@ def scan_pending_approvals(log_path: Path) -> tuple[list[dict], set[str]]:
         caller to seed its live-event dedup set so that retries of credentials
         already acted on don't re-prompt.
     """
-    if not log_path.exists():
-        return [], set()
 
-    # Read lines from file (we need to scan backwards, so read all then reverse)
-    # Bounded: only keep last 50K lines to avoid reading huge files
-    MAX_SCAN_LINES = 50_000
-    recent_lines: deque[str] = deque(maxlen=MAX_SCAN_LINES)
-    try:
-        with open(log_path) as f:
-            for line in f:
-                recent_lines.append(line)
-    except Exception as e:
-        console.print(f"[yellow]Warning:[/yellow] Failed to scan log for pending approvals: {escape(str(e))}")
-        return [], set()
+    def show_error(exc: Exception) -> None:
+        console.print(f"[yellow]Warning:[/yellow] Failed to scan log for pending approvals: {escape(str(exc))}")
 
-    # Two-pass scan: first collect all resolution keys, then filter approvals.
-    # This avoids a bug where a recent approval event (retry after denial) is
-    # encountered before its corresponding denial when scanning backwards,
-    # causing it to be incorrectly treated as pending.
-    parsed_events: list[dict] = []
-    resolved_keys: set[str] = set()
-
-    for line in reversed(recent_lines):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        parsed_events.append(event)
-
-        resolved_key = _resolved_key_from_admin_event(event)
-        if resolved_key:
-            resolved_keys.add(resolved_key)
-
-    # Pass 2: collect unresolved approval requests (most-recent-first dedup)
-    pending_blocks: dict[str, dict] = {}  # dedup_key -> event
-    for event in parsed_events:
-        approval = event.get("approval", {})
-        if approval and approval.get("required"):
-            key = _dedup_key_from_approval(event)
-            if key not in pending_blocks and key not in resolved_keys:
-                pending_blocks[key] = event
-
-    # Sort by timestamp (oldest first) so prompts appear in chronological order
-    pending = list(pending_blocks.values())
-    pending.sort(key=lambda e: e.get("ts", ""))
-
-    return pending, resolved_keys
+    return audit_stream.scan_pending_approvals(log_path, on_error=show_error)
 
 
 def format_approval_request(event: dict) -> Panel:
@@ -1608,16 +1333,12 @@ def format_risky_route_approval(event: dict) -> Panel:
 
 def _plumb_approve(event: dict, api: admin_api.AdminAPI) -> str | None:
     """Approve a plumb agent-to-agent chat request -> creates a grant."""
-    approval = event.get("approval", {})
-    request_id = approval.get("key", "")
-    result = api.plumb_approve(request_id=request_id)
-    return result.get("conversation_id") or result.get("status", "ok")
+    return operator_approvals.approve(event, api)
 
 
 def _plumb_deny(event: dict, api: admin_api.AdminAPI) -> None:
     """Deny a plumb chat request."""
-    approval = event.get("approval", {})
-    api.plumb_deny(request_id=approval.get("key", ""))
+    operator_approvals.deny(event, api)
 
 
 def _plumb_format_row(event: dict) -> tuple[str, str, str, str]:
@@ -1670,6 +1391,40 @@ def _plumb_format_detail(event: dict) -> Panel:
     )
 
 
+def _desktop_present_approve(event: dict, api: admin_api.AdminAPI) -> dict:
+    result = operator_approvals.approve(event, api)
+    if not isinstance(result, dict):
+        raise NotImplementedError("Desktop presentation returned an invalid result")
+    return result
+
+
+def _desktop_present_deny(event: dict, api: admin_api.AdminAPI) -> None:
+    operator_approvals.deny(event, api)
+
+
+def _desktop_present_format_row(event: dict) -> tuple[str, str, str, str]:
+    agent = event.get("agent", "—")
+    target = event.get("approval", {}).get("target", "?")
+    return (agent, "present desktop", "desktop access", target)
+
+
+def _desktop_present_format_detail(event: dict) -> Panel:
+    approval = event.get("approval", {})
+    scope = approval.get("scope_hint", {})
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("Key", style="dim")
+    table.add_column("Value")
+    table.add_row("Agent", escape(str(event.get("agent", "unknown"))))
+    table.add_row("Agent ID", escape(str(scope.get("agent_id", "unknown"))))
+    table.add_row("Action", "Start or reuse a local desktop preview")
+    return Panel(
+        table,
+        title="[bold]Desktop Presentation Request[/bold]",
+        subtitle="[green][A]pprove[/green] · [red][D]eny[/red] · [dim][L]ater[/dim]",
+        border_style="yellow",
+    )
+
+
 # DISPATCH must be defined after format_approval_request and
 # format_risky_route_approval so the names resolve at module load time.
 DISPATCH: dict[str, ApprovalDispatch] = {
@@ -1708,6 +1463,12 @@ DISPATCH: dict[str, ApprovalDispatch] = {
         deny=_plumb_deny,
         format_row=_plumb_format_row,
         format_detail=_plumb_format_detail,
+    ),
+    "desktop_present": ApprovalDispatch(
+        approve=_desktop_present_approve,
+        deny=_desktop_present_deny,
+        format_row=_desktop_present_format_row,
+        format_detail=_desktop_present_format_detail,
     ),
 }
 

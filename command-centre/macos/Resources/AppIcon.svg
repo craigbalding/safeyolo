@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="1024" height="1024">
+  <!--
+    SafeYolo's published rails-and-switch mark in the square composition used
+    by the site's touch icon. The canvas intentionally remains unmasked so
+    macOS can apply its current icon shape.
+  -->
+  <line x1="10" y1="18" x2="90" y2="18"
+        stroke="#373737" stroke-width="6" stroke-linecap="square"/>
+  <line x1="10" y1="82" x2="90" y2="82"
+        stroke="#373737" stroke-width="6" stroke-linecap="square"/>
+  <rect x="18" y="30" width="64" height="40" rx="20"
+        fill="#FCE139" stroke="#373737" stroke-width="6"/>
+  <circle cx="66" cy="50" r="12" fill="#373737"/>
+  <circle cx="66" cy="50" r="5" fill="#FCE139"/>
+</svg>

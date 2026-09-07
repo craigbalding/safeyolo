@@ -10,6 +10,7 @@ from .commands.admin import check, mode, policies
 from .commands.agent import agent_app
 from .commands.bootstrap import bootstrap
 from .commands.cert import cert_app
+from .commands.command_centre import command_centre_app
 from .commands.coord import coord_app
 from .commands.demo import demo
 from .commands.doctor import doctor
@@ -90,6 +91,7 @@ app.command()(traffic)
 # Register subcommand groups
 app.add_typer(agent_app, name="agent")
 app.add_typer(cert_app, name="cert")
+app.add_typer(command_centre_app, name="command-centre")
 app.add_typer(coord_app, name="coord")
 app.add_typer(factory_app, name="factory")
 app.add_typer(mount_app, name="mount")

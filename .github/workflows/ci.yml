@@ -69,7 +69,7 @@ jobs:
       - name: Install CLI test system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends socat
+          sudo apt-get install -y -qq --no-install-recommends libegl1 socat
 
       - name: Install dependencies
         run: uv sync --frozen --group dev

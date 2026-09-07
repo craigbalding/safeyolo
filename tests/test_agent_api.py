@@ -96,6 +96,41 @@ class TestAPIRouting:
             asyncio.run(addon.request(flow))
             assert flow.response is None
 
+    def test_desktop_present_submits_typed_operator_approval(self, api, agent_token):
+        flow = _make_api_flow("/desktop/present", method="POST", token=agent_token)
+        flow.metadata["request_id"] = "req-00000000000000000000000000000001"
+        with (
+            _patch_active_token(agent_token),
+            patch.object(
+                api,
+                "_resolve_agent_id",
+                return_value="forge",
+                autospec=True,
+            ),
+            patch(
+                "safeyolo.agents_store.get_or_mint_agent_id",
+                return_value="ag-forge",
+                autospec=True,
+            ),
+            patch("agent_api.write_event", autospec=True) as write_event,
+        ):
+            asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 202
+        assert json.loads(flow.response.content) == {
+            "status": "pending",
+            "agent": "forge",
+            "agent_id": "ag-forge",
+            "request_id": "req-00000000000000000000000000000001",
+            "message": "Desktop presentation submitted for operator approval.",
+        }
+        assert write_event.call_args.kwargs["request_id"] == "req-00000000000000000000000000000001"
+        approval = write_event.call_args.kwargs["approval"]
+        assert approval.approval_type == "desktop_present"
+        assert approval.key == "desktop.present"
+        assert approval.target == "desktop:ag-forge"
+        assert approval.scope_hint == {"agent_id": "ag-forge"}
+
 
 class TestAuth:
     def test_missing_auth_returns_401(self, api):

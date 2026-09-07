@@ -67,7 +67,7 @@ class TestApprovalType:
     def test_value_set(self):
         assert {a.value for a in ApprovalType} == {
             "credential", "network_egress", "gateway_route", "service",
-            "contract_binding", "plumb"
+            "contract_binding", "plumb", "desktop_present"
         }
 
 

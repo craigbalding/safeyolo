@@ -45,6 +45,11 @@ def web_tailnet_status_file() -> Path:
     return get_data_dir() / "web-tailnet-status.json"
 
 
+def command_centre_tailnet_status_file() -> Path:
+    """Return the Command Centre Tailnet publication state path."""
+    return get_data_dir() / "command-centre-tailnet-status.json"
+
+
 def resolve_upstream_proxy(proxy_config: dict | None) -> str | None:
     """Return a validated HTTP(S) parent proxy URL, if configured.
 
@@ -65,10 +70,7 @@ def resolve_upstream_proxy(proxy_config: dict | None) -> str | None:
 
     parsed = urlsplit(value)
     if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
-        raise ValueError(
-            "SAFEYOLO_UPSTREAM_PROXY/proxy.upstream_proxy must use "
-            "http:// or https:// with a host"
-        )
+        raise ValueError("SAFEYOLO_UPSTREAM_PROXY/proxy.upstream_proxy must use http:// or https:// with a host")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("authenticated upstream proxy URLs are not supported")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
@@ -96,10 +98,7 @@ def resolve_via_token(proxy_config: dict | None) -> str:
         # against the fixed word "safeyolo".
         value = get_or_create_instance_id()
     if not isinstance(value, str) or not _VIA_TOKEN_RE.fullmatch(value):
-        raise ValueError(
-            "SAFEYOLO_VIA_TOKEN/proxy.via_token must be one RFC token "
-            "without whitespace"
-        )
+        raise ValueError("SAFEYOLO_VIA_TOKEN/proxy.via_token must be one RFC token without whitespace")
     if len(value) > 128:
         raise ValueError("SAFEYOLO_VIA_TOKEN/proxy.via_token must be at most 128 characters")
     return value
@@ -176,9 +175,7 @@ def resolve_flow_cache(cli_value: int | None, environ: dict[str, str] | None = N
     """Resolve CLI > environment > default flow-cache configuration."""
     environment = os.environ if environ is None else environ
     raw_value: int | str = (
-        cli_value
-        if cli_value is not None
-        else environment.get("SAFEYOLO_FLOW_CACHE", DEFAULT_FLOW_CACHE)
+        cli_value if cli_value is not None else environment.get("SAFEYOLO_FLOW_CACHE", DEFAULT_FLOW_CACHE)
     )
     try:
         value = int(raw_value)
@@ -197,9 +194,7 @@ def resolve_flow_cache_bytes(
     """Resolve CLI > environment > default retained-body byte limit."""
     environment = os.environ if environ is None else environ
     raw_value: int | str = (
-        cli_value
-        if cli_value is not None
-        else environment.get("SAFEYOLO_FLOW_CACHE_BYTES", DEFAULT_FLOW_CACHE_BYTES)
+        cli_value if cli_value is not None else environment.get("SAFEYOLO_FLOW_CACHE_BYTES", DEFAULT_FLOW_CACHE_BYTES)
     )
     try:
         value = int(raw_value)
@@ -221,9 +216,7 @@ def _addons_package_root(addons_dir: Path) -> Path:
         or not (resolved / "__init__.py").is_file()
         or not (package_dir / "__init__.py").is_file()
     ):
-        raise ValueError(
-            "the addons directory must be a safeyolo/mitm_addons package directory"
-        )
+        raise ValueError("the addons directory must be a safeyolo/mitm_addons package directory")
     return package_dir.parent
 
 
@@ -576,6 +569,7 @@ def _build_command(
     flow_cache_bytes: int = DEFAULT_FLOW_CACHE_BYTES,
     test_config: dict | None = None,
     proxy_config: dict | None = None,
+    command_centre_config: dict | None = None,
 ) -> list[str]:
     """Build the mitmdump command line."""
     # The SafeYolo entrypoint composes ConsoleMaster and mitmweb around one
@@ -599,6 +593,29 @@ def _build_command(
     cmd.extend(["--set", f"web_host={(proxy_config or {}).get('web_host', '127.0.0.1')}"])  # DOC: docs/security-verification.md
     cmd.extend(["--set", f"web_port={(proxy_config or {}).get('web_port', 8081)}"])
     cmd.extend(["--set", f"admin_port={admin_port}"])
+    command_centre_enabled = (command_centre_config or {}).get("enabled", False)
+    if type(command_centre_enabled) is not bool:
+        raise ValueError("command_centre.enabled must be true or false")
+    command_centre_events_port = (command_centre_config or {}).get("events_port", 9091)
+    if type(command_centre_events_port) is not int or not 1 <= command_centre_events_port <= 65535:
+        raise ValueError("command_centre.events_port must be an integer from 1 to 65535")
+    command_centre_share = (command_centre_config or {}).get("share", "local")
+    if command_centre_share not in {"local", "tailnet"}:
+        raise ValueError("command_centre.share must be local or tailnet")
+    command_centre_tailnet_admin_port = (command_centre_config or {}).get("tailnet_admin_port", 9443)
+    command_centre_tailnet_events_port = (command_centre_config or {}).get("tailnet_events_port", 9444)
+    validate_tailnet_port(command_centre_tailnet_admin_port)
+    validate_tailnet_port(command_centre_tailnet_events_port)
+    if command_centre_tailnet_admin_port == command_centre_tailnet_events_port:
+        raise ValueError("Command Centre Tailnet Admin and event ports must differ")
+    cmd.extend(
+        [
+            "--set",
+            f"command_centre_enabled={'true' if command_centre_enabled else 'false'}",
+            "--set",
+            f"command_centre_events_port={command_centre_events_port}",
+        ]
+    )
     # Pass token via file path, NOT on the command line. The cmdline is
     # visible to any local user via /proc/PID/cmdline or `ps aux` — putting
     # the admin token there leaks it to every process on the host.
@@ -673,8 +690,7 @@ def _build_command(
         cmd.extend(["--set", f"policy_file={policy_yaml}"])
     else:
         raise RuntimeError(
-            f"No policy file found in {config_dir}. "
-            f"Run 'safeyolo init' to create a default configuration."
+            f"No policy file found in {config_dir}. Run 'safeyolo init' to create a default configuration."
         )
 
     # Rate limit config (optional)
@@ -698,9 +714,7 @@ def _build_command(
         try:
             registry.load(strict=True)
         except ServiceRegistryError as error:
-            raise RuntimeError(
-                f"Service gateway configuration is invalid: {error}"
-            ) from error
+            raise RuntimeError(f"Service gateway configuration is invalid: {error}") from error
         cmd.extend(["--set", "gateway_enabled=true"])
         cmd.extend(["--set", f"gateway_services_dir={service_directories.user}"])
         cmd.extend(
@@ -777,9 +791,9 @@ def _merge_system_cas_into_certifi() -> None:
 
     # Collect candidate system CA bundle paths (Linux + macOS)
     system_bundles = [
-        Path("/etc/ssl/certs/ca-certificates.crt"),   # Debian/Ubuntu
-        Path("/etc/pki/tls/certs/ca-bundle.crt"),      # RHEL/Fedora
-        Path("/etc/ssl/cert.pem"),                      # macOS / Alpine
+        Path("/etc/ssl/certs/ca-certificates.crt"),  # Debian/Ubuntu
+        Path("/etc/pki/tls/certs/ca-bundle.crt"),  # RHEL/Fedora
+        Path("/etc/ssl/cert.pem"),  # macOS / Alpine
     ]
     system_bundle = next((p for p in system_bundles if p.exists()), None)
     if not system_bundle:
@@ -815,12 +829,11 @@ def _build_combined_ca_bundle(custom_ca: Path, data_dir: Path) -> Path:
     it always reflects the current certifi bundle + custom CA.
     """
     import certifi
+
     certifi_bundle = Path(certifi.where())
 
     combined = data_dir / "combined-ca-bundle.pem"
-    combined.write_text(
-        certifi_bundle.read_text() + "\n" + custom_ca.read_text()
-    )
+    combined.write_text(certifi_bundle.read_text() + "\n" + custom_ca.read_text())
     return combined
 
 
@@ -883,8 +896,7 @@ def start_proxy(
     pdp_dir = _find_pdp_dir()
     if dev and pdp_dir is None:
         raise RuntimeError(
-            "--dev requires the selected PDP checkout source; set "
-            "SAFEYOLO_PDP_DIR to its pdp package directory"
+            "--dev requires the selected PDP checkout source; set SAFEYOLO_PDP_DIR to its pdp package directory"
         )
 
     # Ensure certs, tokens, log dirs
@@ -911,6 +923,9 @@ def start_proxy(
         raise ValueError("proxy configuration must be a mapping")
     upstream_proxy = resolve_upstream_proxy(proxy_config)
     via_token = resolve_via_token(proxy_config)
+    command_centre_config = full_config.get("command_centre", {})
+    if not isinstance(command_centre_config, dict):
+        raise ValueError("command_centre configuration must be a mapping")
 
     resolved_flow_cache = resolve_flow_cache(flow_cache)
     resolved_flow_cache_bytes = resolve_flow_cache_bytes(flow_cache_bytes)
@@ -928,6 +943,7 @@ def start_proxy(
         flow_cache_bytes=resolved_flow_cache_bytes,
         test_config=test_config,
         proxy_config=proxy_config,
+        command_centre_config=command_centre_config,
     )
 
     # Select the entire package containing the chosen addons, not the flat
@@ -993,6 +1009,11 @@ def start_proxy(
     env["SAFEYOLO_WEB_TAILNET_ENABLED"] = "1" if web_tailnet_enabled else "0"
     env["SAFEYOLO_WEB_TAILNET_PORT"] = str(web_tailnet_port)
     env["SAFEYOLO_WEB_TAILNET_STATUS_FILE"] = str(web_tailnet_status_file())
+    command_centre_share = command_centre_config.get("share", "local")
+    env["SAFEYOLO_COMMAND_CENTRE_SHARE"] = str(command_centre_share)
+    env["SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT"] = str(command_centre_config.get("tailnet_admin_port", 9443))
+    env["SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT"] = str(command_centre_config.get("tailnet_events_port", 9444))
+    env["SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE"] = str(command_centre_tailnet_status_file())
 
     # Pass test sinkhole config to child process (read by sinkhole_router addon)
     if test_config:
@@ -1011,6 +1032,7 @@ def start_proxy(
     # A crash can leave filesystem socket inodes behind. No proxy is alive at
     # this point, so none can be a functioning listener.
     from .sockets import remove_stale_sockets
+
     remove_stale_sockets()
 
     # Start inside SafeYolo's private terminal server. ConsoleMaster receives
@@ -1048,10 +1070,7 @@ def start_proxy(
                     logs_dir=logs_dir,
                     pid_file=pid_file,
                 )
-                raise RuntimeError(
-                    "shared traffic master exited during startup.\n"
-                    f"{failure}\n{diagnostics}"
-                )
+                raise RuntimeError(f"shared traffic master exited during startup.\n{failure}\n{diagnostics}")
             time.sleep(0.05)
         else:
             failure = _read_startup_failure(event_log, event_offset) or (
@@ -1063,10 +1082,7 @@ def start_proxy(
                 logs_dir=logs_dir,
                 pid_file=pid_file,
             )
-            raise RuntimeError(
-                f"Proxy did not signal ready within {startup_timeout:g}s.\n"
-                f"{failure}\n{diagnostics}"
-            )
+            raise RuntimeError(f"Proxy did not signal ready within {startup_timeout:g}s.\n{failure}\n{diagnostics}")
     except Exception:
         pid_file.unlink(missing_ok=True)
         stop_session()

@@ -193,6 +193,7 @@ class AdminAPI:
         destination: str,
         cred_id: str,
         reason: str = "user_denied",
+        approval_request_id: str | None = None,
     ) -> dict[str, Any]:
         """Log a credential denial event.
 
@@ -206,6 +207,8 @@ class AdminAPI:
             "cred_id": cred_id,
             "reason": reason,
         }
+        if approval_request_id:
+            payload["approval_request_id"] = approval_request_id
         return self._request("POST", "/admin/policy/baseline/deny", json=payload)
 
     def add_gateway_grant(
@@ -464,12 +467,40 @@ class AdminAPI:
         )
 
     def pending_approvals(self) -> list[dict[str, Any]]:
-        """Get pending credential approval requests.
+        """Get unresolved approval requests from SafeYolo's audit history."""
+        result = self._request("GET", "/admin/approvals")
+        return result.get("approvals", [])
 
-        TODO: Implement when proxy-side tracking is added.
-        Currently returns empty list as the feature is not yet implemented.
-        """
-        return []
+    def instance(self) -> dict[str, Any]:
+        """Get the stable SafeYolo instance identity and client capabilities."""
+        return self._request("GET", "/admin/instance")
+
+    def agents(self) -> list[dict[str, Any]]:
+        """List configured agents and their live state."""
+        result = self._request("GET", "/admin/agents")
+        return result.get("agents", [])
+
+    def start_agent(self, agent_id: str) -> dict[str, Any]:
+        """Start one configured agent by stable identity."""
+        return self._request("POST", f"/admin/agents/{agent_id}/start")
+
+    def stop_agent(self, agent_id: str) -> dict[str, Any]:
+        """Stop one configured agent by stable identity."""
+        return self._request("POST", f"/admin/agents/{agent_id}/stop")
+
+    def present_desktop(
+        self,
+        agent_id: str,
+        *,
+        approval_request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Start or reuse a local preview for a stable agent identity."""
+        payload = {"approval_request_id": approval_request_id} if approval_request_id else None
+        return self._request(
+            "POST",
+            f"/admin/agents/{agent_id}/desktop/present",
+            json=payload,
+        )
 
 
 def get_api() -> AdminAPI:
