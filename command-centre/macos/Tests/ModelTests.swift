@@ -72,7 +72,61 @@ struct ModelTests {
         try await testClientRetriesInitialConnection()
         try await testRequestErrorsRecoverIndependently()
         try await testRunAndWaitForTerminal()
+        try await testWebMITMSignInHandoff()
         print("model-tests: PASS")
+    }
+
+    @MainActor
+    private static func testWebMITMSignInHandoff() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        defer { StubURLProtocol.responsesByPath = [:] }
+        let url = "https://dev.example.ts.net:8443/"
+        for key in ["fixture-first", "fixture-second"] {
+            let client = try SafeYoloClient(
+                adminURL: "https://fixture.invalid", eventsURL: "wss://fixture.invalid/admin/events",
+                token: key, expectedInstanceID: "sy-fixture",
+                session: URLSession(configuration: configuration)
+            )
+            defer { client.stop() }
+            do {
+                try client.openWebMITM(copyKey: { _ in preconditionFailure("No URL: no copy") },
+                                      openBrowser: { _ in preconditionFailure("No URL: no browser") })
+                preconditionFailure("Expected missing WebMITM URL")
+            } catch WebMITMOpenError.unavailable {}
+            precondition(!client.webMITMKeyCopied)
+            StubURLProtocol.responsesByPath = [
+                "/admin/instance": (200, Data("""
+                {"schema_version":1,"safeyolo_instance_id":"sy-fixture","webmitm_url":"\(url)"}
+                """.utf8))
+            ]
+            let refreshed = await client.refreshInstance()
+            precondition(refreshed)
+            let requestsBeforeOpen = StubURLProtocol.requestCount
+            var actions: [String] = []
+            try client.openWebMITM(copyKey: {
+                precondition($0 == key, "Copy the active connection credential")
+                actions.append("copy")
+                return true
+            }, openBrowser: {
+                precondition($0.absoluteString == url, "Do not add the key to the URL")
+                actions.append("open")
+                return true
+            })
+            precondition(actions == ["copy", "open"] && client.webMITMKeyCopied)
+            precondition(StubURLProtocol.requestCount == requestsBeforeOpen, "No extra API request")
+            do {
+                try client.openWebMITM(copyKey: { _ in false },
+                                      openBrowser: { _ in preconditionFailure("Copy failed: no browser") })
+                preconditionFailure("Expected clipboard failure")
+            } catch WebMITMOpenError.clipboard {}
+            precondition(!client.webMITMKeyCopied)
+            do {
+                try client.openWebMITM(copyKey: { _ in true }, openBrowser: { _ in false })
+                preconditionFailure("Expected browser failure")
+            } catch WebMITMOpenError.browser {}
+            precondition(client.webMITMKeyCopied)
+        }
     }
 
     @MainActor

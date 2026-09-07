@@ -13,14 +13,21 @@ final class SecurityNotificationPresenter: NSObject, ObservableObject, UNUserNot
     }
 
     func show(_ event: SecurityObservation) {
-        let title = "SafeYolo \(event.severity.capitalized) security event"
-        let body = event.summary
-        let identifier = "safeyolo-security-\(event.id)"
+        show(title: "SafeYolo \(event.severity.capitalized) security event",
+             body: event.summary, identifier: "safeyolo-security-\(event.id)")
+    }
+
+    func showWebMITMSignInNotice() {
+        show(title: "WebMITM sign-in", body: "Key copied—paste it into the token field to sign in.",
+             identifier: "safeyolo-webmitm-sign-in")
+    }
+
+    private func show(title: String, body: String, identifier: String) {
         Task {
             do {
                 let granted = try await center.requestAuthorization(options: [.alert, .sound])
                 guard granted else {
-                    error = "Notifications are disabled for SafeYolo Command Centre. Enable them in macOS System Settings → Notifications. Security events remain available in the menu."
+                    error = "Notifications are disabled for SafeYolo Command Centre. Enable them in macOS System Settings → Notifications. Messages remain available in the menu."
                     return
                 }
                 let content = UNMutableNotificationContent()
@@ -31,10 +38,10 @@ final class SecurityNotificationPresenter: NSObject, ObservableObject, UNUserNot
                 try await center.add(request)
                 let settings = await center.notificationSettings()
                 error = settings.alertSetting == .disabled || settings.alertStyle == .none
-                    ? "Notification banners are disabled for SafeYolo Command Centre. Select Banners or Alerts in macOS System Settings → Notifications. Security events remain available in the menu."
+                    ? "Notification banners are disabled for SafeYolo Command Centre. Select Banners or Alerts in macOS System Settings → Notifications. Messages remain available in the menu."
                     : nil
             } catch {
-                self.error = "macOS could not accept the security notification: \(error.localizedDescription)"
+                self.error = "macOS could not accept the notification: \(error.localizedDescription)"
             }
         }
     }

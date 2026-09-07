@@ -20,6 +20,7 @@ final class SafeYoloClient: ObservableObject {
     @Published private(set) var hostUser: String?
     @Published private(set) var hostPython: String?
     @Published private(set) var webmitmURL: URL?
+    @Published private(set) var webMITMKeyCopied = false
     @Published private(set) var requestErrors: [String: String] = [:]
     @Published private(set) var eventFeedGap: String?
 
@@ -231,6 +232,14 @@ final class SafeYoloClient: ObservableObject {
     func clearSecurityEvents() {
         securityEvents = []
         knownSecurityEventIDs = []
+    }
+
+    func openWebMITM(copyKey: (String) -> Bool, openBrowser: (URL) -> Bool) throws {
+        webMITMKeyCopied = false
+        guard let url = webmitmURL else { throw WebMITMOpenError.unavailable }
+        guard copyKey(token) else { throw WebMITMOpenError.clipboard }
+        webMITMKeyCopied = true
+        guard openBrowser(url) else { throw WebMITMOpenError.browser }
     }
 
     func clearEventFeedGap() {

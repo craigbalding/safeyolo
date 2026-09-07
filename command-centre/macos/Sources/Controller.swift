@@ -143,6 +143,10 @@ final class CommandCentreController: ObservableObject {
         try openTerminal(agent, action: .shell)
     }
 
+    func showWebMITMSignInNotice() {
+        securityNotifier.showWebMITMSignInNotice()
+    }
+
     private func openTerminal(_ agent: AgentInfo, action: AgentTerminalAction) throws {
         let command = try agentTerminalCommand(
             name: agent.name, remote: remoteTerminal,

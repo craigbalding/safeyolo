@@ -211,7 +211,11 @@ opening windows repeatedly.
 When the host publishes WebMITM, **Open WebMITM** uses its current URL from
 `/admin/instance`, including the actual port. It does not guess the URL from
 the Tailnet hostname. The action is absent when the host reports no active
-WebMITM share.
+WebMITM share. The action copies the active connection's Admin key to the
+clipboard before opening the browser. Paste it into WebMITM's token field to
+sign in. Commander shows a native notification and a menu message confirming
+the copy. It reuses the credential already loaded for that connection; it does
+not read Keychain again or put the key in the URL.
 
 Security observations use native macOS notifications. Allow notifications for
 SafeYolo Command Centre in macOS settings to see banners. Permission and

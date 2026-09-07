@@ -334,6 +334,18 @@ enum ResolutionResult: Equatable {
     case desktop(DesktopPresentation)
 }
 
+enum WebMITMOpenError: LocalizedError {
+    case unavailable, clipboard, browser
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable: return "This SafeYolo host has not reported an active WebMITM URL."
+        case .clipboard: return "Could not copy the WebMITM sign-in key. The browser was not opened."
+        case .browser: return "The sign-in key was copied, but macOS could not open WebMITM in the browser."
+        }
+    }
+}
+
 enum ClientError: LocalizedError {
     case invalidURL(String)
     case invalidResponse

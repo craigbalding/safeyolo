@@ -485,8 +485,11 @@ struct CommandCentreMenu: View {
             if !client.instanceID.isEmpty {
                 Text(client.instanceID).font(.caption)
             }
-            if let webmitmURL = client.webmitmURL {
-                Button("Open WebMITM") { NSWorkspace.shared.open(webmitmURL) }
+            if client.webmitmURL != nil {
+                Button("Open WebMITM") { openWebMITM(client) }
+                if client.webMITMKeyCopied {
+                    Text("Key copied—paste to sign in")
+                }
             }
             Divider()
             if client.approvals.isEmpty {
@@ -585,6 +588,20 @@ struct CommandCentreMenu: View {
     private var errorDetails: String {
         [controller.startupError, controller.client?.errorDetails, controller.notificationError, actionError, controller.client?.eventFeedGap]
             .compactMap { $0 }.joined(separator: "\n\n")
+    }
+
+    private func openWebMITM(_ client: SafeYoloClient) {
+        do {
+            try client.openWebMITM(copyKey: { key in
+                NSPasteboard.general.clearContents()
+                return NSPasteboard.general.setString(key, forType: .string)
+            }, openBrowser: { NSWorkspace.shared.open($0) })
+            actionError = nil
+            controller.showWebMITMSignInNotice()
+        } catch {
+            actionError = error.localizedDescription
+            errorPresenter.show("Open WebMITM:\n\(error.localizedDescription)")
+        }
     }
 
     private func setRunning(_ agent: AgentInfo, running: Bool, interactive: Bool = false, client: SafeYoloClient) {
