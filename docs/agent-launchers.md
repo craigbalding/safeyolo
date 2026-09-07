@@ -20,8 +20,10 @@ configured harness and retain the full agent and sandbox state.
 **Run Agent** starts the agent without opening a viewer. **Run Agent
 and Open Terminal** waits until the persistent launch is attachable, then
 opens its terminal once. A failed launch reports the error instead of opening
-an unusable terminal. **Open Sandbox Shell** opens a separate shell in a ready
-sandbox; it does not start or attach to the coding agent.
+an unusable terminal. **Open Sandbox Shell** opens a separate, persistent operator
+shell in a ready sandbox. It does not start or attach to the coding agent.
+The shell runs inside host tmux, so a dropped SSH connection or closed viewer
+does not end the shell. Reopening the action attaches to the same shell.
 
 ## Run, attach, or open a shell
 
@@ -32,6 +34,7 @@ sandbox; it does not start or attach to the coding agent.
 | `safeyolo agent run NAME --sandbox-only` | Boot the sandbox without a coding agent, launch script, or launch hooks. |
 | `safeyolo agent attach NAME` | Connect to the existing agent session. Never start a new agent. |
 | `safeyolo agent shell NAME` | Open an independent guest shell, not the agent's terminal. |
+| `safeyolo agent shell NAME --persistent` | Open or reattach an independent operator shell protected by host tmux. |
 | `safeyolo agent stop NAME` | Stop this agent's manager/session and sandbox. Leave unrelated host panes alone. |
 
 A second run request reuses the current live launch. A ready sandbox with a
@@ -40,6 +43,21 @@ foreground command retains the existing behavior: a clean exit stops the
 sandbox; an interrupted or failed command leaves it available for diagnosis.
 For persistent launchers, command exit leaves the sandbox ready. Attaching and
 disconnecting never stop the agent.
+
+Command Centre uses `agent shell --persistent` for both local and remote
+sandbox shells. Host tmux is required; the command reports a missing dependency
+instead of falling back to an unprotected shell. Persistent shells use a
+dedicated tmux server per SafeYolo configuration, with separate sessions for
+each agent identity and guest user. They do not use or modify coding-agent
+launcher records. Multiple viewers of the same shell share its input and output.
+Exiting the guest shell ends that shell session; reopening then creates a new
+one. Host or sandbox shutdown is outside this connection-loss protection.
+
+Inside an operator shell, you can start guest tmux and then start a coding
+agent manually. That nested tmux server remains available to the coding agent
+for lab panes and other guest-side work. The outer host tmux session protects
+the operator connection. With the default tmux prefix on both servers, press
+`Ctrl-b` twice to send a prefix to the inner server.
 
 When `run` is invoked over SSH outside host tmux, SafeYolo starts a persistent
 host session and then attaches the terminal as a viewer. Inside host tmux, the
