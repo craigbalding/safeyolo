@@ -51,6 +51,32 @@ def test_start_agent_rejects_unknown_identity():
     assert caught.value.status_code == 404
 
 
+def test_start_agent_preserves_failure_detail_for_operator():
+    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
+    platform.is_sandbox_running.return_value = False
+    with (
+        patch(
+            "safeyolo.agent_lifecycle.get_agent_by_id",
+            return_value=("probe", {"agent_id": "ag-probe"}),
+            autospec=True,
+        ),
+        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+        patch(
+            "safeyolo.commands.agent._run_agent",
+            side_effect=RuntimeError("configured workspace is unavailable"),
+            autospec=True,
+        ),
+        pytest.raises(
+            AgentLifecycleError,
+            match=(
+                "Agent start failed: RuntimeError: "
+                "configured workspace is unavailable"
+            ),
+        ),
+    ):
+        start_agent("ag-probe")
+
+
 def test_stop_agent_stops_supervisor_and_running_sandbox():
     platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
     platform.is_sandbox_running.side_effect = [True, False]

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 from .agents_store import get_agent_by_id, get_or_mint_agent_id, load_all_agents
+
+log = logging.getLogger(__name__)
 
 
 class AgentLifecycleError(RuntimeError):
@@ -74,8 +77,13 @@ def start_agent(agent_id: str) -> AgentRuntime:
             rename_tmux_window=False,
         )
     except Exception as exc:
+        log.exception("Agent %s failed to start", name)
+        detail = str(exc).strip() or "no additional detail"
+        exit_code = getattr(exc, "exit_code", None)
+        if exit_code is not None:
+            detail = f"exit code {exit_code}: {detail}"
         raise AgentLifecycleError(
-            f"Agent start failed with exit code {getattr(exc, 'exit_code', 'unknown')}",
+            f"Agent start failed: {type(exc).__name__}: {detail}",
         ) from exc
     if exit_code != 0 or not platform.is_sandbox_running(name):
         raise AgentLifecycleError(f"Agent start failed with exit code {exit_code}")
