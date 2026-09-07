@@ -22,7 +22,7 @@ SERIAL_CAPTURE=/tmp/restore-debug-serial.log
 echo "=== Step 1: clean slate + fresh capture ==="
 safeyolo agent stop "$AGENT" 2>/dev/null
 rm -rf "$BASE"/snapshot.*
-safeyolo agent run --detach "$AGENT" || { echo "capture failed"; exit 1; }
+safeyolo agent run --sandbox-only "$AGENT" || { echo "capture failed"; exit 1; }
 safeyolo agent stop "$AGENT"
 
 if [[ ! -f "$BASE/snapshot.bin" ]]; then
@@ -42,7 +42,7 @@ sleep 0.2   # let tail attach before anything writes
 
 echo
 echo "=== Step 3: restore (CLI fallback allowed; tail keeps both logs) ==="
-safeyolo agent run --detach "$AGENT"
+safeyolo agent run --sandbox-only "$AGENT"
 safeyolo agent stop "$AGENT" 2>/dev/null
 
 # Give tail a beat to flush, then stop it.

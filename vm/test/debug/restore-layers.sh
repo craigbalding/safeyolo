@@ -58,7 +58,7 @@ probe() {
 echo "=== Step 1: clean slate + fresh capture ==="
 safeyolo agent stop "$AGENT" 2>/dev/null
 rm -rf "$BASE"/snapshot.*
-safeyolo agent run --detach "$AGENT" || { echo "capture failed"; exit 1; }
+safeyolo agent run --sandbox-only "$AGENT" || { echo "capture failed"; exit 1; }
 safeyolo agent stop "$AGENT"
 if [[ ! -f "$BASE/snapshot.bin" ]]; then
     echo "FAIL: no snapshot.bin after capture"
@@ -69,7 +69,7 @@ echo "  snapshot.bin: $(ls -lh "$BASE/snapshot.bin" | awk '{print $5}')"
 echo
 echo "=== Step 2: restore with per-run-started gate bypassed ==="
 # Gate is only honored when SAFEYOLO_DEBUG=1 — both must be set together.
-SAFEYOLO_DEBUG=1 SAFEYOLO_RESTORE_SKIP_MARKER=1 safeyolo agent run --detach "$AGENT" || {
+SAFEYOLO_DEBUG=1 SAFEYOLO_RESTORE_SKIP_MARKER=1 safeyolo agent run --sandbox-only "$AGENT" || {
     echo "CLI returned non-zero"
 }
 

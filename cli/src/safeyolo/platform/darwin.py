@@ -190,7 +190,7 @@ class DarwinPlatform(AgentPlatform):
 
     def exec_in_sandbox(self, name: str, command: str | None,
                         user: str = "agent",
-                        interactive: bool = True) -> int:
+                        interactive: bool = True, *, on_start=None) -> int:
         """Execute via SSH. The VM has no TCP interface, so we
         ProxyCommand through the per-agent shell-bridge UDS —
         safeyolo-vm accepts on that UDS and forwards to vsock:2220
@@ -229,8 +229,11 @@ class DarwinPlatform(AgentPlatform):
             # wrapper existed. The exec preserves the repaired limit.
             cmd.append(_wrap_ssh_command("exec /bin/bash -l", user=ssh_user))
 
-        result = subprocess.run(cmd, stdin=stdin)
-        return result.returncode
+        if on_start is None:
+            return subprocess.run(cmd, stdin=stdin).returncode
+        with subprocess.Popen(cmd, stdin=stdin) as process:
+            on_start(process)
+            return process.wait()
 
     def popen_in_sandbox(
         self,

@@ -315,6 +315,31 @@ def _check_command_supervisor(name: str) -> Check:
     )
 
 
+def _check_agent_launcher(name: str) -> Check:
+    from .agent_command_supervisor import sanitize_terminal_text
+    from .agent_launchers import observe_launch
+    from .platform import get_platform
+
+    try:
+        ready = get_platform().is_sandbox_running(name)
+        state = observe_launch(name, sandbox_ready=ready)
+        launcher = state["launcher"]
+        detail = (
+            f"sandbox={'ready' if ready else 'stopped'} agent={state['agent_state']} "
+            f"launcher={launcher.get('script') or launcher['kind']} ({launcher['source']})"
+        )
+        if state.get("exit_code") is not None:
+            detail += f" exit={state['exit_code']}"
+        if state.get("error"):
+            detail += f" error={state['error']}"
+        if state.get("hook_errors"):
+            detail += f" hook_errors={state['hook_errors']}"
+        status = "FAIL" if state["agent_state"] == "failed" else "WARN" if state.get("error") or state.get("hook_errors") or state["agent_state"] == "unknown" else "PASS"
+        return Check("Agent launcher", status, sanitize_terminal_text(detail))
+    except (OSError, ValueError, RuntimeError) as exc:
+        return Check("Agent launcher", "FAIL", sanitize_terminal_text(str(exc)))
+
+
 def _check_proxy_transport(
     name: str,
     entry: dict,
@@ -493,6 +518,9 @@ def run_agent_diag(name: str) -> int:
     command_check = _check_command_supervisor(name)
     checks.append(command_check)
     _print(command_check)
+    launch_check = _check_agent_launcher(name)
+    checks.append(launch_check)
+    _print(launch_check)
 
     r2, entry = _check_agent_map(name)
     checks.append(r2)

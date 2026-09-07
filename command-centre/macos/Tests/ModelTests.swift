@@ -63,9 +63,25 @@ struct ModelTests {
         try testRemoteConnectionVerification()
         try testPinnedInstanceIdentity()
         try testAgentAndSecurityModels()
+        try testTransportURLs()
         try await testClientIngestsAndCoalescesSecurityEvents()
         try await testClientRetriesInitialConnection()
         print("model-tests: PASS")
+    }
+
+    private static func testTransportURLs() throws {
+        let secure = try validatedRemoteURL("https://host.example.ts.net:9443", scheme: "https", transport: .tailnet)
+        precondition(secure.host == "host.example.ts.net")
+        let forwarded = try validatedRemoteURL("http://127.0.0.1:19090", scheme: "https", transport: .sshTunnel)
+        precondition(forwarded.port == 19090)
+        let events = try validatedRemoteURL("ws://localhost:19091/admin/events", scheme: "wss", transport: .sshTunnel)
+        precondition(events.path == "/admin/events")
+        do {
+            _ = try validatedRemoteURL("http://public.example:9090", scheme: "https", transport: .sshTunnel)
+            preconditionFailure("A tunnel option must not send an Admin credential over public plaintext HTTP")
+        } catch ConnectionError.invalidRemoteURL {}
+        let input = RemoteConnectionInput(friendlyName: "remote", adminURL: "", eventsURL: "", token: "")
+        precondition(input.transport == .tailnet)
     }
 
     @MainActor
@@ -110,15 +126,26 @@ struct ModelTests {
         let inventory = try JSONDecoder().decode(
             AgentInventory.self,
             from: Data("""
-            {"agents":[{"agent_id":"ag-probe","name":"probe","state":"running"}]}
+            {"agents":[{"agent_id":"ag-probe","name":"probe","sandbox_state":"ready","agent_state":"exited","attachable":false}]}
             """.utf8)
         )
         precondition(
             inventory.agents == [
-                AgentInfo(agentID: "ag-probe", name: "probe", state: "running")
+                AgentInfo(agentID: "ag-probe", name: "probe", sandboxState: "ready", agentState: "exited", launcher: nil, attachable: false, error: nil)
             ]
         )
-        precondition(inventory.agents[0].isRunning)
+        precondition(inventory.agents[0].sandboxReady)
+        precondition(inventory.agents[0].canStart)
+        precondition(!inventory.agents[0].attachable)
+        let local = try agentAttachCommand(name: "probe", remote: false, terminalTarget: nil)
+        precondition(local == "safeyolo agent attach -- 'probe'")
+        let remote = try agentAttachCommand(name: "probe", remote: true, terminalTarget: "operator@host")
+        precondition(remote.hasPrefix("ssh -t -- 'operator@host' "))
+        precondition(!remote.contains("agent run"))
+        do {
+            _ = try agentAttachCommand(name: "probe", remote: true, terminalTarget: nil)
+            preconditionFailure("Remote terminal must require separately configured SSH access")
+        } catch ConnectionError.missingTerminalTarget {}
 
         let decoded = try JSONDecoder().decode(
             OperatorEventEnvelope.self,

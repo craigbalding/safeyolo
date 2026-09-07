@@ -1261,7 +1261,7 @@ class LinuxPlatform(AgentPlatform):
 
     def exec_in_sandbox(self, name: str, command: str | None,  # DOC: README.md
                         user: str = "agent",
-                        interactive: bool = True) -> int:
+                        interactive: bool = True, *, on_start=None) -> int:
         """Execute a command in a running sandbox via runsc exec.
 
         Requires nsenter into the userns because the runsc state dir
@@ -1290,8 +1290,11 @@ class LinuxPlatform(AgentPlatform):
         else:
             cmd.extend(["/bin/bash", "-l"])
 
-        result = subprocess.run(cmd)
-        return result.returncode
+        if on_start is None:
+            return subprocess.run(cmd).returncode
+        with subprocess.Popen(cmd) as process:
+            on_start(process)
+            return process.wait()
 
     def popen_in_sandbox(
         self,

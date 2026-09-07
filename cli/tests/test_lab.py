@@ -102,10 +102,9 @@ def test_lab_boot_uses_existing_agent_lifecycle_without_starting_codex_command()
     assert run_agent.call_args.kwargs == {
         "yolo": True,
         "dangerously_allow_unowned": False,
-        "detach": True,
+        "launch_mode": "sandbox",
         "no_snapshot": True,
         "rename_tmux_window": False,
-        "skip_configured_command": True,
     }
 
 

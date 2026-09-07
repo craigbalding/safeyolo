@@ -435,6 +435,7 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
                 resolved_host_script: Path = host_script,
             ) -> None:
                 current["host_script"] = str(resolved_host_script)
+                current["launcher"] = "supervisor"
 
             try:
                 mutate_agent(agent_name, persist_host_script)
@@ -468,8 +469,7 @@ def _run_snapshot(snapshot_path: Path, payload: dict[str, Any]) -> None:
                 yolo=True,
                 agent_args=role_args,
                 skip_default_args=role_args is not None,
-                detach=True,
-                run_command_detached=True,
+                launch_mode="background",
                 no_snapshot=True,
             )
             if exit_code != 0:

@@ -1176,6 +1176,15 @@ def prepare_config_share(
         # One-off mounts must not survive into a later run via stale config.
         host_mount_manifest.unlink(missing_ok=True)
 
+    # Retain actual boot inputs, including --folder and one-off --mount values.
+    # Host launchers need these after the booting CLI has exited. This share is
+    # host-owned and read-only in the guest; agent metadata describes future runs.
+    (share_dir / "host-launch-context.json").write_text(json.dumps({
+        "workspace": str(Path(workspace_path).expanduser().resolve()),
+        "writable_mounts": [str(Path(host).resolve()) for host, _guest, read_only in (host_mounts or [])
+                            if not read_only],
+    }) + "\n")
+
     return share_dir
 
 

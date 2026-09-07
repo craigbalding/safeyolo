@@ -38,6 +38,9 @@ struct SafeYoloCommandCentreApp: App {
                 settingsPresenter: settingsPresenter,
                 securityPresenter: securityPresenter
             )
+            .onAppear {
+                Task { _ = await controller.client?.refreshAgents() }
+            }
         } label: {
             Image(
                 systemName: controller.hasSecurityEvents

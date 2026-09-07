@@ -1224,7 +1224,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         )
 
         try:
-            runtime = start_agent(agent_id) if action == "start" else stop_agent(agent_id)
+            if action == "stop":
+                runtime = stop_agent(agent_id)
+            elif action == "start-interactive":
+                runtime = start_agent(agent_id, interactive=True)
+            else:
+                runtime = start_agent(agent_id)
         except AgentLifecycleError as exc:
             self._send_json({"error": str(exc)}, exc.status_code)
             return
@@ -1278,7 +1283,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if m:
             return self._handle_post_desktop_present(m.group(1))
 
-        m = re.match(r"^/admin/agents/([^/]+)/(start|stop)$", path)
+        m = re.match(r"^/admin/agents/([^/]+)/(start|start-interactive|stop)$", path)
         if m:
             return self._handle_post_agent_lifecycle(m.group(1), m.group(2))
 

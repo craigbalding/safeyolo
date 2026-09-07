@@ -431,6 +431,19 @@ class TestPrepareConfigShare:
         result = prepare_config_share("agent1", "/workspace")
         assert result.is_dir()
 
+    def test_host_launch_context_uses_this_boot_not_previous_mounts(self, tmp_config_dir, tmp_path):
+        share = prepare_config_share("agent1", str(tmp_path / "override"), host_mounts=[
+            (str(tmp_path / "writable"), "/extra", False),
+            (str(tmp_path / "readonly"), "/reference", True),
+        ])
+        context = json.loads((share / "host-launch-context.json").read_text())
+        assert context == {"workspace": str(tmp_path / "override"),
+                           "writable_mounts": [str(tmp_path / "writable")]}
+        prepare_config_share("agent1", str(tmp_path / "next"))
+        assert json.loads((share / "host-launch-context.json").read_text()) == {
+            "workspace": str(tmp_path / "next"), "writable_mounts": [],
+        }
+
     def test_bundled_skills_are_refreshed_exactly_on_each_run(self, tmp_config_dir):
         import safeyolo.vm as vm_mod
 

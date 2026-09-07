@@ -349,6 +349,7 @@ fi
 
 exec "$pi_bin" "${args[@]}" "$@"
 EOF
+install -m 0755 "$pi_launcher_tmp" "$AGENT_HOME/.safeyolo-interactive-command"
 if [ "${SAFEYOLO_PI_COORD_SUPERVISOR:-0}" = "1" ]; then
     python3 - "$pi_launcher_tmp" <<'PY'
 import sys

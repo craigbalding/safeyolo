@@ -153,7 +153,7 @@ are never copied into the agent.
 safeyolo agent add relay "$PWD" --host-script @codex --no-run
 safeyolo agent add forge "$PWD" --host-script @pi --no-run
 safeyolo agent add lens "$PWD" --host-script @codex --no-run
-safeyolo agent run relay --host-script @codex --detach
+safeyolo agent run relay --host-script @codex --sandbox-only
 safeyolo agent shell relay
 # In the relay agent shell:
 #   codex login --device-auth

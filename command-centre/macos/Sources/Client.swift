@@ -115,6 +115,7 @@ final class SafeYoloClient: ObservableObject {
     func setRunning(
         _ agent: AgentInfo,
         running: Bool,
+        interactive: Bool = false,
         completion: @escaping (Result<AgentInfo, Error>) -> Void
     ) {
         guard !busyAgentIDs.contains(agent.agentID) else { return }
@@ -125,7 +126,7 @@ final class SafeYoloClient: ObservableObject {
                 guard let encodedID = encodePathComponent(agent.agentID) else {
                     throw ClientError.invalidURL(agent.agentID)
                 }
-                let action = running ? "start" : "stop"
+                let action = running ? (interactive ? "start-interactive" : "start") : "stop"
                 let data = try await request(
                     path: "/admin/agents/\(encodedID)/\(action)",
                     method: "POST"
@@ -214,7 +215,7 @@ final class SafeYoloClient: ObservableObject {
     }
 
     @discardableResult
-    private func refreshAgents() async -> Bool {
+    func refreshAgents() async -> Bool {
         do {
             let data = try await request(path: "/admin/agents")
             agents = try JSONDecoder().decode(AgentInventory.self, from: data).agents

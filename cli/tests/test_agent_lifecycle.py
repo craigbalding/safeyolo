@@ -10,7 +10,7 @@ from safeyolo.platform import AgentPlatform
 
 def test_start_agent_uses_only_fixed_configured_options():
     platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.is_sandbox_running.side_effect = [False, True, True]
+    platform.is_sandbox_running.return_value = True
     with (
         patch(
             "safeyolo.agent_lifecycle.get_agent_by_id",
@@ -26,15 +26,16 @@ def test_start_agent_uses_only_fixed_configured_options():
     ):
         result = start_agent("ag-probe")
 
-    assert result.to_dict() == {
-        "agent_id": "ag-probe",
-        "name": "probe",
-        "state": "running",
-    }
+    assert result.agent_id == "ag-probe"
+    assert result.name == "probe"
+    assert result.sandbox_state == "ready"
+    # A successful launch request is not proof of a live coding-agent session.
+    assert result.agent_state == "stopped"
     run.assert_called_once_with(
         name="probe",
         yolo=True,
-        detach=True,
+        launch_mode="background",
+        interactive=False,
         no_snapshot=True,
         rename_tmux_window=False,
     )
@@ -104,5 +105,6 @@ def test_stop_agent_stops_supervisor_and_running_sandbox():
 
     stop_supervisor.assert_called_once_with("probe")
     platform.stop_sandbox.assert_called_once_with("probe")
-    assert result.state == "stopped"
+    assert result.sandbox_state == "stopped"
+    assert result.agent_state == "stopped"
     assert write_event.call_args.args[0] == "agent.stopped"

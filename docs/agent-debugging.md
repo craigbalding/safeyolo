@@ -3,6 +3,12 @@
 What an agent can observe about itself and the processes it owns inside a
 SafeYolo sandbox — and what it deliberately cannot.
 
+For a stopped coding harness inside a ready sandbox, use `safeyolo agent diag
+NAME` to inspect its recorded launch. `agent shell NAME` opens an independent
+guest shell; `agent attach NAME` reconnects to the existing coding-agent
+terminal. See [agent launchers](agent-launchers.md) for persistent runs and
+temporary interactive debugging of managed agents.
+
 ## Philosophy
 
 The sandbox is the security boundary. Processes *inside* one agent's

@@ -245,7 +245,7 @@ stop_command_supervisor_if_requested() {
 }
 
 start_command_supervisor_if_needed() {
-    [ "${SAFEYOLO_COMMAND_SUPERVISED:-}" = "1" ] || return 0
+    [ -f /safeyolo/command-supervisor-enabled ] || return 0
     [ -x "$COMMAND_SUPERVISOR_SCRIPT" ] || return 0
     stop_command_supervisor_if_requested
     [ -f "$COMMAND_SUPERVISOR_STOP" ] && return 0

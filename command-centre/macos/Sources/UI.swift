@@ -177,6 +177,8 @@ struct ConnectionSettingsView: View {
     @State private var friendlyName: String
     @State private var adminURL: String
     @State private var eventsURL: String
+    @State private var terminalTarget: String
+    @State private var transport: RemoteTransport
     @State private var token = ""
     @State private var busy = false
     @State private var error: String?
@@ -188,17 +190,28 @@ struct ConnectionSettingsView: View {
         _friendlyName = State(initialValue: profile?.friendlyName ?? "Remote SafeYolo")
         _adminURL = State(initialValue: profile?.adminURL ?? "https://")
         _eventsURL = State(initialValue: profile?.eventsURL ?? "wss://")
+        _terminalTarget = State(initialValue: profile?.terminalTarget ?? "")
+        _transport = State(initialValue: profile?.transport ?? .tailnet)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Connect to a remote SafeYolo")
                 .font(.title2.weight(.semibold))
-            Text("Use the two Tailnet URLs shown by `safeyolo command-centre status` on the remote host.")
+            Text(transport == .tailnet
+                 ? "Use the two Tailnet URLs shown by `safeyolo command-centre status` on the remote host."
+                 : "Start your SSH port forwards, then enter their local Admin and Events URLs. The forwarded instance is still remote.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                settingsRow("Transport") {
+                    Picker("Transport", selection: $transport) {
+                        ForEach(RemoteTransport.allCases, id: \.self) { transport in
+                            Text(transport.label).tag(transport)
+                        }
+                    }.labelsHidden()
+                }
                 settingsRow("Name") {
                     TextField("Remote SafeYolo", text: $friendlyName)
                 }
@@ -211,8 +224,13 @@ struct ConnectionSettingsView: View {
                 settingsRow("Admin credential") {
                     SecureField("Stored in Keychain", text: $token)
                 }
+                settingsRow("SSH target (optional)") {
+                    TextField("user@host or SSH config alias", text: $terminalTarget)
+                }
             }
             .textFieldStyle(.roundedBorder)
+            Text("SSH is used only for Open Agent Terminal. Run Agent uses the Admin API and survives disconnects.")
+                .font(.caption).foregroundStyle(.secondary)
 
             if let error {
                 Text(error)
@@ -257,7 +275,9 @@ struct ConnectionSettingsView: View {
                 friendlyName: friendlyName.trimmingCharacters(in: .whitespacesAndNewlines),
                 adminURL: adminURL.trimmingCharacters(in: .whitespacesAndNewlines),
                 eventsURL: eventsURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                token: token
+                token: token,
+                terminalTarget: terminalTarget.trimmingCharacters(in: .whitespacesAndNewlines),
+                transport: transport
             )
         ) { result in
             busy = false
@@ -415,13 +435,36 @@ struct CommandCentreMenu: View {
                 Text("No configured agents")
             } else {
                 Text("Agents")
+                Button("Refresh Agent Status") {
+                    Task { _ = await client.refreshAgents() }
+                }
                 ForEach(client.agents) { agent in
-                    Menu("\(agent.name) · \(agent.state)") {
-                        if agent.isRunning {
+                    Menu("\(agent.name) · agent \(agent.agentState)") {
+                        Text("Sandbox: \(agent.sandboxState)")
+                        if let launcher = agent.launcher {
+                            Text("Launcher: \(launcher.script ?? launcher.kind) (\(launcher.source))")
+                        }
+                        if let error = agent.error, !error.isEmpty { Text(error) }
+                        if let code = agent.exitCode { Text("Last command exit: \(code)") }
+                        ForEach(agent.hookErrors ?? [], id: \.self) { failure in
+                            Text("\(failure.hook) failed (\(failure.exitCode)): \(failure.detail)")
+                        }
+                        if agent.sandboxReady {
                             Button("Present Desktop") { present(agent, client: client) }
-                            Button("Stop Agent") { setRunning(agent, running: false, client: client) }
-                        } else {
-                            Button("Start Agent") { setRunning(agent, running: true, client: client) }
+                        }
+                        if agent.canStart {
+                            Button("Run Agent") { setRunning(agent, running: true, client: client) }
+                            if agent.managed {
+                                Button("Run Interactively") { setRunning(agent, running: true, interactive: true, client: client) }
+                            }
+                        }
+                        if agent.attachable {
+                            Button("Open Agent Terminal") { openTerminal(agent) }
+                        } else if agent.managed && !agent.canStart {
+                            Text("Headless agent: use Coord output or agent diag")
+                        }
+                        if agent.sandboxReady || !agent.canStart {
+                            Button("Stop Agent and Sandbox") { setRunning(agent, running: false, client: client) }
                         }
                     }
                     .disabled(client.busyAgentIDs.contains(agent.agentID))
@@ -456,12 +499,21 @@ struct CommandCentreMenu: View {
         }
     }
 
-    private func setRunning(_ agent: AgentInfo, running: Bool, client: SafeYoloClient) {
+    private func setRunning(_ agent: AgentInfo, running: Bool, interactive: Bool = false, client: SafeYoloClient) {
         actionError = nil
-        client.setRunning(agent, running: running) { result in
+        client.setRunning(agent, running: running, interactive: interactive) { result in
             if case .failure(let error) = result {
                 actionError = error.localizedDescription
             }
+        }
+    }
+
+    private func openTerminal(_ agent: AgentInfo) {
+        do {
+            try controller.openAgentTerminal(agent)
+            actionError = nil
+        } catch {
+            actionError = error.localizedDescription
         }
     }
 

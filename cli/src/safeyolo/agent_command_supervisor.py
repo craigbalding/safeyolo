@@ -466,11 +466,19 @@ def start_command_supervisor(name: str, command: str) -> None:
     state = _base_state(name, command)
     _stop_path(name).unlink(missing_ok=True)
     _write_json(_state_path(name), state)
+    from .vm import get_agent_config_share_dir
+
+    # The read-only configuration share is host-owned. PID 1 checks this
+    # marker on each pass, including when a sandbox was booted without an agent.
+    (get_agent_config_share_dir(name) / "command-supervisor-enabled").touch()
 
 
 def request_command_supervisor_stop(name: str, *, timeout: float = STOP_WAIT_SECONDS) -> bool:
     """Suppress and stop the matching supervisor, verifying PID identity."""
     _validate_name(name)
+    from .vm import get_agent_config_share_dir
+
+    (get_agent_config_share_dir(name) / "command-supervisor-enabled").unlink(missing_ok=True)
     state = _read_state(name)
     if state is None:
         return True

@@ -168,8 +168,8 @@ def test_desktop_present_uses_stable_agent_id(command_centre_admin):
 def test_agent_inventory_and_lifecycle_use_stable_agent_ids(command_centre_admin):
     base_url, _ = command_centre_admin
     api = AdminAPI(base_url=base_url, token="test-admin-token")
-    stopped = AgentRuntime(agent_id="ag-probe", name="probe", state="stopped")
-    running = AgentRuntime(agent_id="ag-probe", name="probe", state="running")
+    stopped = AgentRuntime(agent_id="ag-probe", name="probe", sandbox_state="stopped")
+    running = AgentRuntime(agent_id="ag-probe", name="probe", sandbox_state="ready", agent_state="running")
 
     with (
         patch(
@@ -188,19 +188,9 @@ def test_agent_inventory_and_lifecycle_use_stable_agent_ids(command_centre_admin
             autospec=True,
         ) as stop,
     ):
-        assert api.agents() == [
-            {"agent_id": "ag-probe", "name": "probe", "state": "stopped"}
-        ]
-        assert api.start_agent("ag-probe") == {
-            "agent_id": "ag-probe",
-            "name": "probe",
-            "state": "running",
-        }
-        assert api.stop_agent("ag-probe") == {
-            "agent_id": "ag-probe",
-            "name": "probe",
-            "state": "stopped",
-        }
+        assert api.agents() == [stopped.to_dict()]
+        assert api.start_agent("ag-probe") == running.to_dict()
+        assert api.stop_agent("ag-probe") == stopped.to_dict()
 
     start.assert_called_once_with("ag-probe")
     stop.assert_called_once_with("ag-probe")
@@ -208,7 +198,7 @@ def test_agent_inventory_and_lifecycle_use_stable_agent_ids(command_centre_admin
 
 def test_stopping_agent_closes_its_active_desktop(command_centre_admin):
     base_url, _ = command_centre_admin
-    stopped = AgentRuntime(agent_id="ag-probe", name="probe", state="stopped")
+    stopped = AgentRuntime(agent_id="ag-probe", name="probe", sandbox_state="stopped")
     presenter = create_autospec(DesktopPresenter, instance=True, spec_set=True)
     AdminRequestHandler.desktop_presenter = presenter
     api = AdminAPI(base_url=base_url, token="test-admin-token")
@@ -223,15 +213,30 @@ def test_stopping_agent_closes_its_active_desktop(command_centre_admin):
     presenter.close.assert_called_once_with("ag-probe")
 
 
-def test_agent_lifecycle_rejects_command_arguments(command_centre_admin):
+@pytest.mark.parametrize("action", ["start", "start-interactive", "stop"])
+@pytest.mark.parametrize("payload", [{"command": "anything"}, {"launcher": "/tmp/host.sh"}, {"argv": ["--option"]}])
+def test_agent_lifecycle_rejects_command_arguments(command_centre_admin, action, payload):
     base_url, _ = command_centre_admin
-    with patch("safeyolo.agent_lifecycle.start_agent", autospec=True) as start:
+    with (
+        patch("safeyolo.agent_lifecycle.start_agent", autospec=True) as start,
+        patch("safeyolo.agent_lifecycle.stop_agent", autospec=True) as stop,
+    ):
         response = httpx.post(
-            f"{base_url}/admin/agents/ag-probe/start",
+            f"{base_url}/admin/agents/ag-probe/{action}",
             headers={"Authorization": "Bearer test-admin-token"},
-            json={"command": "anything"},
+            json=payload,
         )
 
     assert response.status_code == 400
     assert response.json()["error"] == "Agent lifecycle requests do not accept arguments"
     start.assert_not_called()
+    stop.assert_not_called()
+
+
+def test_interactive_start_is_a_fixed_named_action(command_centre_admin):
+    base_url, _ = command_centre_admin
+    api = AdminAPI(base_url=base_url, token="test-admin-token")
+    runtime = AgentRuntime(agent_id="ag-probe", name="probe", sandbox_state="ready", agent_state="starting")
+    with patch("safeyolo.agent_lifecycle.start_agent", return_value=runtime, autospec=True) as start:
+        assert api.start_agent("ag-probe", interactive=True) == runtime.to_dict()
+    start.assert_called_once_with("ag-probe", interactive=True)

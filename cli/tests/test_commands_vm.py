@@ -1355,17 +1355,14 @@ class TestRunAgent:
 
     def test_linux_host_script_command_receives_effective_agent_args(self, tmp_path):
         """Every host-script command receives its resolved persistent/run args."""
-        from safeyolo.commands.agent import _linux_interactive_command
+        from safeyolo.agent_launchers import configured_guest_command
 
         command_host = tmp_path / ".safeyolo-command"
         command_host.write_text("#!/bin/sh\n")
         command_host.chmod(0o755)
 
-        command = _linux_interactive_command(
-            command_host,
-            ["--add-dir", "/proj/toolage", "--prompt", "hello world"],
-            None,
-        )
+        with patch("safeyolo.vm.get_agent_home_dir", return_value=tmp_path, autospec=True):
+            command = configured_guest_command("probe", ["--add-dir", "/proj/toolage", "--prompt", "hello world"])
 
         assert command == (
             "/home/agent/.safeyolo-command --add-dir /proj/toolage "
@@ -1373,13 +1370,10 @@ class TestRunAgent:
         )
 
     def test_linux_plain_shell_preserves_explicit_command_override(self, tmp_path):
-        from safeyolo.commands.agent import _linux_interactive_command
+        from safeyolo.agent_launchers import configured_guest_command
 
-        command = _linux_interactive_command(
-            tmp_path / "missing-command",
-            ["python3", "script with spaces.py"],
-            ["python3", "script with spaces.py"],
-        )
+        with patch("safeyolo.vm.get_agent_home_dir", return_value=tmp_path, autospec=True):
+            command = configured_guest_command("probe", ["python3", "script with spaces.py"])
 
         assert command == "python3 'script with spaces.py'"
 
@@ -2079,8 +2073,8 @@ class TestRunAgent:
             (42, agent_module.fcntl.LOCK_UN),
         ]
 
-    def test_already_running_exits_one(self, runner, config_dir, tmp_path):
-        """If sandbox is already running, exits 1 with helpful message."""
+    def test_ready_sandbox_can_launch_stopped_agent(self, runner, config_dir, tmp_path):
+        """A ready sandbox needs no second boot to launch its coding agent."""
         agent_dir = config_dir / "agents" / "test-agent"
         agent_dir.mkdir()
         rootfs_path = agent_dir / "rootfs.ext4"
@@ -2091,15 +2085,20 @@ class TestRunAgent:
         # agent_rootfs_path is platform-dispatched -- return the same file we
         # just touched so the existence check passes regardless of host OS.
         mock_platform.agent_rootfs_path.return_value = rootfs_path
+        from safeyolo.agents_store import save_agent
+
+        save_agent("test-agent", {"folder": str(tmp_path), "agent_id": "ag-test"})
+        mock_platform.exec_in_sandbox.return_value = 7
         with (
-            patch("safeyolo.commands.agent._load_agent_metadata", return_value={"folder": "."}, autospec=True,),
             patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
             patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "run", "test-agent"])
 
-        assert result.exit_code == 1
-        assert "already running" in result.output.lower()
+        assert result.exit_code == 7, result.output
+        mock_platform.start_sandbox.assert_not_called()
+        mock_platform.exec_in_sandbox.assert_called_once()
+        mock_platform.stop_sandbox.assert_not_called()
 
     def test_run_forwards_persistent_config_and_transient_mounts_to_boot(
         self, config_dir, tmp_path, capsys,
@@ -2170,14 +2169,14 @@ class TestRunAgent:
             result = _run_agent(
                 "mount-agent",
                 extra_mounts=[f"{transient}:/proj/toolage"],
-                detach=True,
+                launch_mode="sandbox",
                 no_snapshot=True,
             )
 
         assert result == 0
         output = capsys.readouterr().out
         assert "Starting agent... ready" in output
-        assert "Agent running (detached)" in output
+        assert "no coding agent was launched" in output
         assert "10.200.0.2" not in output
         assert prepare.call_args.kwargs["host_mounts"] == expected
         assert platform.start_sandbox.call_args.kwargs["extra_shares"] == expected
@@ -2207,6 +2206,9 @@ class TestRunAgent:
         name = "session-exit-agent"
         project = tmp_path / "project"
         project.mkdir()
+        from safeyolo.agents_store import save_agent
+
+        save_agent(name, {"folder": str(project), "agent_id": "ag-session"})
         agent_dir = config_dir / "agents" / name
         status_dir = agent_dir / "status"
         status_dir.mkdir(parents=True)
@@ -2252,6 +2254,7 @@ class TestRunAgent:
             patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=0, autospec=True,),
             patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
             patch("safeyolo.commands.agent.write_event", autospec=True,) as write_event,
+            patch("safeyolo.events.write_event", autospec=True) as lifecycle_event,
             patch("safeyolo.commands.agent.prepare_config_share", autospec=True,),
             patch("safeyolo.platform.get_platform", return_value=platform, autospec=True,),
             patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock", autospec=True,),
@@ -2259,12 +2262,10 @@ class TestRunAgent:
         ):
             result = _run_agent(name, no_snapshot=True)
 
-        assert result == 0
+        assert result == (130 if expect_detach else 0)
         output = capsys.readouterr().out
         event_names = [call.args[0] for call in write_event.call_args_list]
         if expect_detach:
-            assert "Agent running (detached)" in output
-            assert f"safeyolo agent shell {name}" in output
             platform.stop_sandbox.assert_not_called()
             assert platform.is_sandbox_running(name)
             assert pid_path.read_text() == "1234"
@@ -2272,8 +2273,8 @@ class TestRunAgent:
         else:
             assert "Agent running (detached)" not in output
             platform.stop_sandbox.assert_called_once_with(name)
-            assert not pid_path.exists()
-            assert event_names == ["agent.started", "agent.stopped"]
+            assert event_names == ["agent.started"]
+            assert lifecycle_event.call_args.args[0] == "agent.stopped"
 
 
 # ---------------------------------------------------------------------------

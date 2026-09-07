@@ -86,10 +86,10 @@ are unavailable. The outer SafeYolo sandbox still bounds the complete lab.
 The normal `systemd-run --user --scope` path remains active on hosts with a
 usable user manager.
 
-Detached startup keeps its existing contract. `agent add --no-run` followed
-by `agent run --detach` does not execute `.safeyolo-command`. If the test needs
-the staged coding harness and bundled coord MCP dependencies, invoke a bounded
-command explicitly:
+Use `agent add --no-run` followed by `agent run --sandbox-only` for a boot-only
+sandbox. Ordinary `--detach` now launches the agent persistently; it is not the
+boot-only operation. If the lab needs the staged coding harness and bundled
+Coord dependencies, invoke a bounded command explicitly:
 
 ```bash
 uv run safeyolo agent shell nested-worker \

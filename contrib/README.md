@@ -50,17 +50,19 @@ SAFEYOLO_CODEX_COORDINATORS=relay \
 See [the supervised worker contract](../docs/codex-coord-supervisor.md) before
 you enable this mode.
 
-## Detached command supervision
+## Agent launchers and explicit supervision
 
-`safeyolo agent run <name> --detach` with a configured
-`$SAFEYOLO_AGENT_HOME/.safeyolo-command` publishes the command to a runtime
-supervisor owned by guest PID 1. It restarts every unexpected command exit,
-including a clean exit, with bounded backoff and resets the crash-loop window
-after a stable run. It records exit classification, byte-counted/truncated
-stderr, a digest, and a sanitized tail, and exposes `running`, `restarting`,
-`failed`, and `stopped` through `safeyolo agent diag` and `safeyolo status`. It
-never restarts the sandbox and is independent of the Coord event room. `safeyolo
-agent stop` records durable stop intent before sandbox cleanup, fencing restart.
+Ordinary `safeyolo agent run NAME --detach` starts the interactive coding agent
+in a persistent host tmux session. `--sandbox-only` boots without a harness.
+Factories and `@codex-coord` / `@pi-coord` explicitly select the existing
+guest-PID-1-owned supervisor; an executable guest entrypoint no longer implies
+supervision.
+
+See [agent launchers](../docs/agent-launchers.md) for defaults, per-agent
+overrides and attach. Use [the host launcher template](agent-launcher-template.sh)
+only when the built-in presets do not cover your workflow. The
+[configuration prompt](agent-launcher-prompt.md) helps an operator work with
+a coding agent without writing one script per agent.
 
 ## The Integration Pattern
 

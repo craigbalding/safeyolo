@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from .agents_store import get_agent_by_id, get_or_mint_agent_id, load_all_agents
 
@@ -25,17 +25,30 @@ class AgentRuntime:
 
     agent_id: str
     name: str
-    state: str
+    sandbox_state: str
+    agent_state: str = "stopped"
+    launcher: dict | None = None
+    attachable: bool = False
+    launch_id: str | None = None
+    exit_code: int | None = None
+    error: str | None = None
+    hook_errors: list[dict] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict:
         return asdict(self)
 
 
 def _runtime(name: str, agent_id: str) -> AgentRuntime:
+    from .agent_launchers import observe_launch
     from .platform import get_platform
 
-    state = "running" if get_platform().is_sandbox_running(name) else "stopped"
-    return AgentRuntime(agent_id=agent_id, name=name, state=state)
+    ready = get_platform().is_sandbox_running(name)
+    try:
+        observed = observe_launch(name, sandbox_ready=ready)
+    except (OSError, ValueError, RuntimeError) as exc:
+        # One broken launcher must not hide every other configured agent.
+        observed = {"agent_state": "unknown", "error": str(exc)}
+    return AgentRuntime(agent_id=agent_id, name=name, sandbox_state="ready" if ready else "stopped", **observed)
 
 
 def list_agent_runtimes() -> list[AgentRuntime]:
@@ -56,14 +69,12 @@ def _resolve(agent_id: str) -> tuple[str, str]:
     return name, agent_id
 
 
-def start_agent(agent_id: str) -> AgentRuntime:
+def start_agent(agent_id: str, *, interactive: bool = False) -> AgentRuntime:
     """Start one configured agent using the ordinary fixed lifecycle path."""
     name, stable_id = _resolve(agent_id)
     from .platform import get_platform
 
     platform = get_platform()
-    if platform.is_sandbox_running(name):
-        raise AgentLifecycleError("Agent is already running", status_code=409)
 
     # Import lazily: the CLI module is large and imports this module for stop.
     from .commands.agent import _run_agent
@@ -72,7 +83,8 @@ def start_agent(agent_id: str) -> AgentRuntime:
         exit_code = _run_agent(
             name=name,
             yolo=True,
-            detach=True,
+            launch_mode="background",
+            interactive=interactive,
             no_snapshot=True,
             rename_tmux_window=False,
         )
@@ -105,7 +117,15 @@ def stop_agent_by_name(
     on_phase: Callable[[str], None] | None = None,
 ) -> AgentRuntime:
     """Stop one named agent; the CLI also permits an absent stale name."""
+    from .commands.agent import _agent_host_setup_lock
+
+    with _agent_host_setup_lock(name):
+        return _stop_agent_by_name(name, agent_id=agent_id, on_phase=on_phase)
+
+
+def _stop_agent_by_name(name: str, *, agent_id: str, on_phase: Callable[[str], None] | None) -> AgentRuntime:
     from .agent_command_supervisor import request_command_supervisor_stop
+    from .agent_launchers import stop_launcher
     from .platform import get_platform
 
     if on_phase:
@@ -116,6 +136,9 @@ def stop_agent_by_name(
             "to prevent an automatic restart",
         )
 
+    # An external manager must see stop intent before its sandbox disappears;
+    # otherwise it may treat the shutdown as a crash and relaunch the agent.
+    stop_launcher(name)
     platform = get_platform()
     if not platform.is_sandbox_running(name):
         return _runtime(name, agent_id)

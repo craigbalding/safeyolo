@@ -120,39 +120,26 @@ chmod +x "$SAFEYOLO_AGENT_HOME/.safeyolo-command"
 
 ### Entrypoint contract
 
-`$SAFEYOLO_AGENT_HOME/.safeyolo-command` must be an **interactive foreground
-process**: a coding agent (`exec claude ...`), a shell (`exec bash -l`), or a
-terminal user interface (TUI) that owns stdin/stdout for the session. `safeyolo agent run <name>`
-(without `--detach`) attaches a terminal and expects the command to interact
-with it.
+`$SAFEYOLO_AGENT_HOME/.safeyolo-command` is the guest entrypoint: an interactive
+coding agent, shell, or terminal application. Ordinary `agent run NAME` gives
+it the current terminal. `agent run NAME --detach` starts it persistently in a
+host tmux window unless another launcher or manager is explicitly selected.
+Use `agent attach NAME` to reconnect, or `agent shell NAME` for an independent
+guest shell. For boot-only work use `agent run NAME --sandbox-only`; it invokes
+no coding agent, host launcher, or launch hooks.
 
-Don't write `sleep infinity`, `wait`, `tail -f /dev/null`, or another
-non-interactive daemon as the command. To keep the sandbox alive in the
-background for a later `safeyolo agent shell <name>` connection, use
-`safeyolo agent run <name> --detach` without a `.safeyolo-command`.
+The bundled `@codex-coord` and `@pi-coord` setups explicitly select the
+SafeYolo runtime supervisor. Guest PID 1 owns that supervisor, which runs the
+Coord supervisor and its bounded harness turns. Existing recovery and
+intentional-stop handling remain unchanged. The setups retain a separate
+`.safeyolo-interactive-command` for temporary `run --interactive` debugging;
+it does not replace the configured managed mode or its checkpoints.
 
-When a detached run has a `.safeyolo-command`, SafeYolo publishes that command
-to a runtime supervisor owned by guest PID 1. The owner survives loss of the
-CLI transport and re-owns the supervisor if it is killed; it restarts every
-unexpected exit, including a clean exit, with bounded backoff. A stable run
-resets the crash-loop window. Exit classification, byte-counted/truncated
-stderr, and a sanitized tail are retained without allowing unbounded output.
-It does not restart the sandbox or consume Coord work. Inspect it with
-`safeyolo agent diag <name>` or `safeyolo status`; `safeyolo agent stop <name>`
-records stop intent before stopping the sandbox, so an intentional operator
-stop fences recovery.
-
-If you press Ctrl-C during the attached Linux session, SafeYolo detaches the
-terminal and leaves the sandbox running. Reconnect with `safeyolo agent shell
-<name>` or stop it explicitly with `safeyolo agent stop <name>`.
-
-The bundled `@codex-coord` and `@pi-coord` setups are explicit exceptions to
-the interactive harness shape. Their foreground process is the same guest-side
-supervisor for bounded non-interactive harness turns. SafeYolo still owns the
-sandbox lifetime and terminal attachment. The supervisor does not become a
-host daemon. See the
-[supervisor contract](../docs/codex-coord-supervisor.md) for its recovery and
-authority rules.
+Host setup scripts install the guest environment. Runtime host launchers are
+a separate choice and must live outside guest-writable shares. See
+[agent launchers](../docs/agent-launchers.md) for shared defaults, tmux presets,
+custom hooks, attach, and remote terminal behavior; see the
+[supervisor contract](../docs/codex-coord-supervisor.md) for factory recovery.
 
 For Alpine rootfs images, do not rely on `mise use -g node@...`: mise may
 try to build Node from source against musl. Use Alpine's native packages and

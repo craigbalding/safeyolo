@@ -820,6 +820,10 @@ def test_pi_coord_setup_stages_the_common_factory_supervisor(tmp_path: Path) -> 
     assert result.returncode == 0, result.stderr
     config = json.loads((agent_home / ".safeyolo/codex-coord-supervisor.json").read_text())
     assert config["harness"] == "pi"
+    interactive_command = agent_home / ".safeyolo-interactive-command"
+    assert interactive_command.stat().st_mode & 0o111
+    assert interactive_command.read_bytes() != (agent_home / ".safeyolo-command").read_bytes()
+    assert "codex-coord-supervisor.py" not in interactive_command.read_text()
     assert config["agent_name"] == "test-agent"
     assert config["rooms"] == ["pi-backlog"]
     assert config["factory"]["role"] == "owner"
@@ -1153,6 +1157,7 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
         extra_env=requested,
     )
     first_command = (agent_home / ".safeyolo-command").read_bytes()
+    first_interactive_command = (agent_home / ".safeyolo-interactive-command").read_bytes()
     first_config = (agent_home / ".safeyolo/codex-coord-supervisor.json").read_bytes()
     _run_setup(
         "codex-coord-host-setup.sh",
@@ -1166,6 +1171,9 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     config_path = agent_home / ".safeyolo/codex-coord-supervisor.json"
     config = json.loads(config_path.read_text())
     assert first_command == (agent_home / ".safeyolo-command").read_bytes()
+    assert first_interactive_command == (agent_home / ".safeyolo-interactive-command").read_bytes()
+    assert first_interactive_command != first_command
+    assert b"codex-coord-supervisor.py" not in first_interactive_command
     assert first_config == config_path.read_bytes()
     assert config == {
         "agent_name": "test-agent",

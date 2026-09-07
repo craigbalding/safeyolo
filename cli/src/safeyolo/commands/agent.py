@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import shlex
-import signal
 import stat
 import subprocess
 import sys
@@ -55,7 +54,6 @@ from ..vm import (
     build_custom_rootfs,
     clone_custom_rootfs,
     get_agent_config_share_dir,
-    get_agent_home_dir,
     get_agent_status_dir,
     prepare_config_share,
     stage_guest_desktop_launcher,
@@ -217,7 +215,10 @@ def _resolve_host_script_alias(alias: str) -> Path | None:
     """
     if alias not in _HOST_SCRIPT_ALIASES:
         return None
-    script_name = _HOST_SCRIPT_ALIASES[alias]
+    return _resolve_contrib_file(_HOST_SCRIPT_ALIASES[alias])
+
+
+def _resolve_contrib_file(script_name: str) -> Path | None:
     from .. import __file__ as _safeyolo_pkg_init
 
     pkg_dir = Path(_safeyolo_pkg_init).resolve().parent  # cli/src/safeyolo or site-packages/safeyolo
@@ -529,37 +530,70 @@ def _capture_snapshot_blocking(
     return True
 
 
-def _linux_interactive_command(
-    command_host: Path,
-    effective_agent_args: list[str],
-    explicit_agent_args: list[str] | None,
-) -> str | None:
-    """Build the Linux runsc-exec command without losing agent arguments."""
-    if command_host.exists() and os.access(command_host, os.X_OK):
-        return shlex.join([
-            "/home/agent/.safeyolo-command",
-            *effective_agent_args,
-        ])
-    if explicit_agent_args:
-        # A plain-shell agent has no host-script command to receive appended
-        # arguments, so preserve the existing explicit command override.
-        return shlex.join(explicit_agent_args)
-    return None
+def _run_agent(*args, launch_mode="foreground", interactive=False, **kwargs) -> int:
+    """Ensure sandbox readiness and launch exactly one selected coding agent."""
+    from ..agent_launchers import (
+        configured_guest_command,
+        invoke_launcher,
+        launch_lock,
+        observe_launch,
+        prepare_launch,
+        resolve_launcher,
+    )
+    from ..platform import get_platform
 
-
-def _print_detached_guidance(name: str) -> None:
-    """Print the canonical instructions for a sandbox left running."""
-    console.print("  Agent running (detached)")
-    console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
-    console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
-    console.print(f"  Diagnose: [bold]safeyolo agent diag {name}[/bold]")
-
-
-def _run_agent(*args, **kwargs) -> int:
-    """Run an agent while serializing its setup/start transition."""
     name = kwargs.get("name") if "name" in kwargs else args[0]
-    with _agent_host_setup_lock(name) as start_lock:
-        return _run_agent_impl(*args, _start_lock=start_lock, **kwargs)
+    _validate_instance_name(name)
+    record = None
+    with _agent_host_setup_lock(name):
+        with launch_lock(name):
+            metadata = _load_agent_metadata(name)
+            selection = resolve_launcher(metadata, load_config(), launch_mode, interactive=interactive)
+            ready = get_platform().is_sandbox_running(name)
+            observed = observe_launch(name, sandbox_ready=ready)
+            if observed["agent_state"] in {"starting", "launching", "running", "restarting", "stopping", "finishing", "unknown"}:
+                if interactive:
+                    raise RuntimeError("Stop the managed agent before running it interactively")
+                console.print(f"Agent {name}: {observed['agent_state']} (existing run)")
+                return 0
+            # A stopped manager must not restart during temporary debugging.
+            from ..agent_command_supervisor import request_command_supervisor_stop
+            if not request_command_supervisor_stop(name):
+                raise RuntimeError("Could not stop the previous command supervisor")
+            if not ready:
+                code = _run_agent_impl(*args, **kwargs)
+                if code:
+                    return code
+            if launch_mode == "sandbox":
+                console.print(f"Sandbox {name} is ready; no coding agent was launched.")
+                return 0
+            effective_args = kwargs.get("agent_args")
+            if effective_args is None:
+                effective_args = [] if kwargs.get("skip_default_args") else metadata.get("user_default_args", [])
+            is_debug = interactive and metadata.get("launcher") == "supervisor"
+            command = configured_guest_command(name, effective_args or [], interactive=is_debug)
+            record = prepare_launch(name, selection, launch_mode, command)
+        # Launch scripts return a session, not a terminal stream. Keep launch
+        # and stop ordered; release the record lock so the child can claim it.
+        if selection.kind != "interactive":
+            result = invoke_launcher(record)
+    if selection.kind == "interactive":
+        result = invoke_launcher(record)
+        if result == 0:
+            # Preserve the ordinary foreground lifecycle. Failed/interrupted
+            # commands leave the sandbox available for diagnosis; persistent
+            # launchers own their lifetime independently of an attach client.
+            from ..agent_lifecycle import stop_agent_by_name
+
+            stop_agent_by_name(name)
+    if launch_mode == "foreground" and record["launcher"]["kind"] not in {"interactive", "supervisor"}:
+        from ..agent_launchers import attach_agent
+
+        return attach_agent(name)
+    if launch_mode == "background":
+        followup = f"safeyolo agent diag {name}" if selection.kind == "supervisor" else f"safeyolo agent attach {name}"
+        console.print(f"Agent {name}: launch requested. Use {followup}.")
+    return result
 
 
 def _run_agent_impl(
@@ -571,11 +605,8 @@ def _run_agent_impl(
     skip_default_args: bool = False,
     extra_mounts: list[str] | None = None,
     extra_ports: list[str] | None = None,
-    detach: bool = False,
-    run_command_detached: bool = False,
     no_snapshot: bool = False,
     rename_tmux_window: bool = False,
-    skip_configured_command: bool = False,
     *,
     _start_lock: _SetupLockHandle | None = None,
 ) -> int:
@@ -583,12 +614,7 @@ def _run_agent_impl(
 
     Shared logic used by both `add` (auto-run) and `run` commands.
 
-    detach: Boot VM in background and return after boot confirmation.
-    run_command_detached: start the resolved agent command before returning
-        from a detached run.
-    skip_configured_command: boot the sandbox without starting its configured
-        host command. This is used by a first-party workflow that starts its
-        own guest-side controller through the normal shell boundary.
+    Boot only: the launcher owns the coding-agent terminal or supervisor.
     no_snapshot: skip snapshot capture and restore for this run;
         don't touch an existing snapshot on disk either way.
     rename_tmux_window: rename the invoking tmux window to `name` once
@@ -659,24 +685,10 @@ def _run_agent_impl(
 
     # Extra env for yolo mode
     extra_env = {}
-    detached_command_path = get_agent_home_dir(name) / ".safeyolo-command"
-    detached_command_is_configured = (
-        detach
-        and detached_command_path.is_file()
-        and os.access(detached_command_path, os.X_OK)
-    )
     if yolo:
         extra_env["SAFEYOLO_YOLO_MODE"] = "1"
-    if detach:
-        extra_env["SAFEYOLO_DETACH"] = "1"
-    if detached_command_is_configured and not skip_configured_command:
-        # The guest's PID 1 owns the runtime supervisor.  This marker is
-        # staged before boot so both Linux/gVisor and macOS/VZ use the same
-        # durable ownership boundary.
-        extra_env["SAFEYOLO_COMMAND_SUPERVISED"] = "1"
+    extra_env["SAFEYOLO_DETACH"] = "1"
     import sys as _sys
-    if _sys.platform == "linux" and not detach:
-        extra_env["SAFEYOLO_HOST_TERMINAL"] = "1"
 
     # Set up network isolation (platform-specific: vsock on macOS, netns on Linux)
     from ..platform import get_platform
@@ -833,7 +845,7 @@ def _run_agent_impl(
     if rename_tmux_window:
         rename_window_for_agent(name)
 
-    run_background = detach
+    run_background = True
 
     write_event("agent.started", kind="agent", severity="low", summary=f"Agent {name} started", agent=name)
     exit_code = 0
@@ -1016,87 +1028,9 @@ def _run_agent_impl(
             else:
                 console.print(" [green]ready[/green]")
 
-        # --- Post-boot (shared by restore and cold-boot success paths) ----
-        if plat.is_sandbox_running(name):
-            if detach:
-                command_host = get_agent_home_dir(name) / ".safeyolo-command"
-                full_cmd = _linux_interactive_command(
-                    command_host,
-                    effective_agent_args,
-                    agent_args,
-                )
-                if full_cmd is not None and not skip_configured_command:
-                    # Keep command recovery in the host runtime. A command
-                    # crash must not restart or recreate the sandbox, and a
-                    # retained Coord task must remain in the guest checkpoint.
-                    from ..agent_command_supervisor import start_command_supervisor
-
-                    try:
-                        start_command_supervisor(name, full_cmd)
-                    except Exception:
-                        plat.stop_sandbox(name)
-                        raise RuntimeError("detached agent command supervisor failed to start")
-                elif run_command_detached and not skip_configured_command:
-                    plat.stop_sandbox(name)
-                    raise RuntimeError("detached agent has no command to run")
-                _print_detached_guidance(name)
-                _t("detach return")
-                _timing_emit()
-                return 0
-
-            # `agent run --profile` measures launch-to-ready, not how long the
-            # operator subsequently keeps an interactive agent session open.
-            _t("agent ready; hand off interactive session")
+        if plat.is_sandbox_running(name) and per_run_started.exists():
             _timing_emit()
-            _t("interactive session")
-            if _sys.platform == "linux":
-                # Linux: launch the agent via runsc exec. The guest runs
-                # /home/agent/.safeyolo-command if present (written by
-                # the host script into the persistent home), else drops
-                # to an interactive bash login.
-                command_host = get_agent_home_dir(name) / ".safeyolo-command"
-                full_cmd = _linux_interactive_command(
-                    command_host,
-                    effective_agent_args,
-                    agent_args,
-                )
-                try:
-                    exit_code = plat.exec_in_sandbox(
-                        name,
-                        command=full_cmd,
-                        user="agent",
-                    )
-                except KeyboardInterrupt:
-                    _print_detached_guidance(name)
-                    _t("SIGINT detach return")
-                    _timing_emit()
-                    return 0
-                sigint_exit = exit_code in {
-                    -signal.SIGINT,
-                    128 + signal.SIGINT,
-                }  # DOC: contrib/HOST_SCRIPT_GUIDE.md
-                if sigint_exit:
-                    _print_detached_guidance(name)
-                    _t("SIGINT detach return")
-                    _timing_emit()
-                    return 0
-                plat.stop_sandbox(name)
-            else:
-                # macOS: safeyolo-vm + vsock-term handle the interactive
-                # session. Block on the helper process itself -- one
-                # syscall that returns the instant the child exits and
-                # reaps the zombie in the same step. Previously a 500ms
-                # is_sandbox_running poll + `ps` zombie check loop, which
-                # added up to ~500ms of dead time at every agent exit.
-                try:
-                    os.waitpid(helper_pid, 0)
-                except ChildProcessError:
-                    # Already reaped (e.g., GC'd Popen.__del__) -- the
-                    # VM is gone, proceed to cleanup.
-                    pass
-                except KeyboardInterrupt:
-                    # User interrupted the wait; cleanup below still runs.
-                    pass
+            return 0
 
     except Exception as err:
         console.print(" [red]error[/red]")
@@ -1113,11 +1047,6 @@ def _run_agent_impl(
         agent=name,
         details={"exit_code": exit_code},
     )
-
-    # Clean up PID file (not for detach -- VM is still running).
-    if not detach:
-        pid_path = get_agents_dir() / name / "vm.pid"
-        pid_path.unlink(missing_ok=True)
 
     _timing_emit()
     return exit_code
@@ -1549,6 +1478,8 @@ def add(  # DOC: README.md, docs/AGENTS.md
     metadata: dict = {"folder": folder_str}
     if host_script_path is not None:
         metadata["host_script"] = str(host_script_path)
+        if host_script in {"@codex-coord", "@pi-coord"}:
+            metadata["launcher"] = "supervisor"
     if rootfs_script_path is not None:
         metadata["rootfs_script"] = str(rootfs_script_path)
     if rootfs_from:
@@ -1647,11 +1578,22 @@ def list_agents() -> None:
             table.add_column("Name", style="bold")
             table.add_column("Folder")
             table.add_column("Host script")
+            table.add_column("Sandbox")
+            table.add_column("Agent")
+            table.add_column("Launcher")
+            from ..agent_lifecycle import list_agent_runtimes
+
+            runtimes = {runtime.name: runtime for runtime in list_agent_runtimes()}
             for inst_dir in sorted(instances, key=lambda d: d.name):
                 metadata = all_agents.get(inst_dir.name, {})
                 folder = metadata.get("folder", "?")
                 host_script = metadata.get("host_script", "")
-                table.add_row(inst_dir.name, folder, host_script)
+                runtime = runtimes.get(inst_dir.name)
+                launcher = runtime.launcher if runtime else None
+                label = f"{launcher.get('script') or launcher['kind']} ({launcher['source']})" if launcher else "unknown"
+                table.add_row(inst_dir.name, folder, host_script,
+                              runtime.sandbox_state if runtime else "unknown",
+                              runtime.agent_state if runtime else "unknown", label)
             console.print(table)
         else:
             console.print("[dim]No agents configured.[/dim]")
@@ -1706,6 +1648,9 @@ def remove(
     # platform contract here avoids reintroducing name-order allocation.
     network_slot = _load_agent_metadata(name).get("network_slot")
     agent_index = network_slot if type(network_slot) is int else -1
+    from ..agent_launchers import stop_launcher, wait_for_launcher_exit
+
+    stop_launcher(name)
 
     # stop_sandbox is idempotent on both platforms (Linux probes runsc
     # state first; Darwin's stop_vm returns early if no pid). Calling
@@ -1716,6 +1661,7 @@ def remove(
     if plat.is_sandbox_running(name):
         console.print(f"  Stopping {name}...")
     plat.stop_sandbox(name)
+    wait_for_launcher_exit(name)
 
     # Teardown per-agent networking. Linux's stop_sandbox already did
     # this (idempotent netns delete), but Darwin's didn't -- it only
@@ -1759,8 +1705,10 @@ def run(  # DOC: README.md, docs/AGENTS.md
         False,
         "--detach",
         "-d",
-        help="Boot VM in background; a configured command is runtime-supervised",
+        help="Run the agent in a persistent host session or its configured manager",
     ),
+    sandbox_only: bool = typer.Option(False, "--sandbox-only", help="Boot only the sandbox; do not launch an agent or hooks"),
+    interactive: bool = typer.Option(False, "--interactive", help="Temporarily run a stopped managed agent's interactive harness"),
     mount: list[str] = typer.Option(
         [],
         "--mount",
@@ -1795,7 +1743,7 @@ def run(  # DOC: README.md, docs/AGENTS.md
         help="Don't rename the invoking tmux window to the agent name.",
     ),
 ) -> None:
-    """Run an existing agent container.
+    """Run the coding agent in an existing or newly started sandbox.
 
     Starts SafeYolo if not running, then launches the agent container.
     Yolo mode is on by default (auto-accepts permission prompts).
@@ -1806,11 +1754,14 @@ def run(  # DOC: README.md, docs/AGENTS.md
         safeyolo agent run boris -- --continue
         safeyolo agent run boris -- --resume my-session
 
-    Detach mode boots the VM in the background:
+    Detach mode starts a persistent host session (or the configured manager):
 
         safeyolo agent run myproject --detach
-        safeyolo agent shell myproject  # connect later
+        safeyolo agent attach myproject # reconnect to the same agent
         safeyolo agent stop myproject   # stop when done
+
+    Use --sandbox-only to boot without running an agent. 'agent shell' opens
+    an independent guest shell and never launches the configured harness.
 
     If user_default_args is configured (via 'agent config'), those args
     are used by default. Use --fresh to ignore them.
@@ -1834,6 +1785,8 @@ def run(  # DOC: README.md, docs/AGENTS.md
         safeyolo agent run myproject --fresh
     """
     _t("agent command validation and host setup")
+    if sandbox_only and interactive:
+        raise typer.BadParameter("--sandbox-only does not launch an interactive agent")
     # ctx.args contains everything after '--'
     agent_args = ctx.args if ctx.args else None
 
@@ -1871,6 +1824,8 @@ def run(  # DOC: README.md, docs/AGENTS.md
         # metadata snapshot loaded before the script ran.
         def persist_host_script(current):
             current["host_script"] = str(host_script_path)
+            if host_script in {"@codex-coord", "@pi-coord"}:
+                current["launcher"] = "supervisor"
 
         try:
             mutate_agent(name, persist_host_script)
@@ -1885,6 +1840,9 @@ def run(  # DOC: README.md, docs/AGENTS.md
             raise typer.Exit(1)
 
     associate_agent_pane(name)
+    # A terminal reached over SSH is a viewer, not a durable process owner.
+    # Host tmux already provides ownership when invoked inside that session.
+    remote_viewer = bool(os.environ.get("SSH_CONNECTION") and not os.environ.get("TMUX"))
     exit_code = _run_agent(
         name,
         folder_override=folder,
@@ -1894,10 +1852,17 @@ def run(  # DOC: README.md, docs/AGENTS.md
         skip_default_args=fresh,
         extra_mounts=parsed_mounts if parsed_mounts else None,
         extra_ports=parsed_ports if parsed_ports else None,
-        detach=detach,
+        launch_mode="sandbox" if sandbox_only else "background" if detach or remote_viewer else "foreground",
+        interactive=interactive,
         no_snapshot=not snapshot,
         rename_tmux_window=not detach and not no_rename_window,
     )
+    if remote_viewer and not detach and not sandbox_only and exit_code == 0:
+        from ..agent_launchers import attach_agent, read_launch
+
+        current = read_launch(name)
+        if current and current["launcher"]["kind"] != "supervisor":
+            exit_code = attach_agent(name)
     raise typer.Exit(exit_code)
 
 
@@ -1910,6 +1875,8 @@ def shell(  # DOC: docs/agent-debugging.md
         "--root",
         help="Operator recovery shell as guest root (default: agent user)",
     ),
+    agent_command: bool = typer.Option(False, "--agent-command", help="Run the launcher's configured guest entrypoint in this terminal"),
+    launch_id: str | None = typer.Option(None, "--launch-id", help="Current launch identity supplied by the host launcher"),
 ) -> None:
     """Open a shell in a running agent sandbox.
 
@@ -1927,6 +1894,13 @@ def shell(  # DOC: docs/agent-debugging.md
     """
     _validate_instance_name(name)
 
+    if agent_command:
+        if command or root or not launch_id:
+            raise typer.BadParameter("--agent-command requires --launch-id and cannot be combined with --command or --root")
+        from ..agent_launchers import run_entrypoint
+
+        raise typer.Exit(run_entrypoint(name, launch_id))
+
     from ..platform import get_platform
     plat = get_platform()
 
@@ -1940,6 +1914,19 @@ def shell(  # DOC: docs/agent-debugging.md
         name, command, user=user, interactive=not command,
     )
     raise typer.Exit(exit_code)
+
+
+@agent_app.command()
+def attach(name: str = typer.Argument(..., help="Agent whose existing terminal session to attach")) -> None:
+    """Attach to an existing coding-agent session without starting another one."""
+    from ..agent_launchers import attach_agent
+
+    try:
+        code = attach_agent(name)
+    except RuntimeError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from None
+    raise typer.Exit(code)
 
 
 @agent_app.command()
@@ -2354,7 +2341,10 @@ def rebuild_snapshot(
 
 @agent_app.command()
 def config(
-    name: str = typer.Argument(..., help="Agent instance name"),
+    name: str | None = typer.Argument(None, help="Agent instance name; omit to configure host launch defaults"),
+    launcher: str | None = typer.Option(None, "--launcher", help="interactive, supervisor, tmux-window, tmux-pane, or an absolute script path; empty inherits"),
+    default_launcher: str | None = typer.Option(None, "--default-launcher", help="Host-wide launcher for ordinary agents; empty restores built-in defaults"),
+    tmux_session: str | None = typer.Option(None, "--tmux-session", help="Shared host tmux session for future launches"),
     folder: str = typer.Option(
         None,
         "--folder",
@@ -2429,6 +2419,37 @@ def config(
         safeyolo agent config boris --remove-port 6080
         safeyolo agent config boris --clear-ports
     """
+    from ..agent_launchers import resolve_launcher, validate_script
+
+    if name is None:
+        from ..config import save_config
+
+        if (launcher is not None or folder is not None or memory is not None or user_default_args is not None
+                or add_mount or remove_mount or clear_mounts or add_port or remove_port or clear_ports):
+            raise typer.BadParameter("Supply an agent name for per-agent settings")
+        host_config = load_config()
+        defaults = host_config.setdefault("agent_launcher", {})
+        if default_launcher is not None:
+            selection = resolve_launcher({"launcher": default_launcher}, {}, "background")
+            validate_script(selection)
+            if selection.kind == "supervisor" or selection.kind == "manager":
+                raise typer.BadParameter("Select managers per agent, not as an ordinary-agent default")
+            defaults["default"] = default_launcher
+        if tmux_session is not None:
+            defaults["tmux_session"] = tmux_session
+        if default_launcher is not None or tmux_session is not None:
+            save_config(host_config)
+        table = Table(title="Host agent launch defaults")
+        table.add_column("Setting")
+        table.add_column("Value", overflow="fold")
+        table.add_row("Launcher", defaults.get("default") or "current terminal (foreground), tmux-window (background)")
+        table.add_row("Host tmux session", defaults.get("tmux_session", "safeyolo"))
+        table.add_row("Optional launcher template", str(_resolve_contrib_file("agent-launcher-template.sh")))
+        table.add_row("Configuration prompt", str(_resolve_contrib_file("agent-launcher-prompt.md")))
+        console.print(table)
+        return
+    if default_launcher is not None or tmux_session is not None:
+        raise typer.BadParameter("Omit the agent name when changing host launch defaults")
     _validate_instance_name(name)
 
     metadata = _load_agent_metadata(name)
@@ -2437,7 +2458,8 @@ def config(
         raise typer.Exit(1)
 
     has_updates = (
-        folder is not None
+        launcher is not None
+        or folder is not None
         or memory is not None
         or user_default_args is not None
         or add_mount
@@ -2454,6 +2476,8 @@ def config(
         table.add_column("Setting", style="bold")
         table.add_column("Value")
         table.add_row("Folder", metadata.get("folder", "?"))
+        selected_launcher = resolve_launcher(metadata, load_config(), "background")
+        table.add_row("Launcher", f"{selected_launcher.script or selected_launcher.kind} ({selected_launcher.source})")
         configured_memory = metadata.get("memory_mb")
         table.add_row(
             "Memory",
@@ -2512,6 +2536,8 @@ def config(
     )
     parsed_mounts = [_parse_mount(spec) for spec in add_mount]
     parsed_ports = [_parse_port(spec) for spec in add_port]
+    if launcher is not None:
+        validate_script(resolve_launcher({"launcher": launcher}, {}, "background"))
 
     sandbox_running: bool | None = None
     runtime_change_requested = (
@@ -2532,6 +2558,14 @@ def config(
     def apply_updates(current) -> tuple[list[str], list[tuple[str, str]]]:
         changes: list[str] = []
         messages: list[tuple[str, str]] = []
+
+        if launcher is not None:
+            if launcher:
+                current["launcher"] = launcher
+            else:
+                current.pop("launcher", None)
+            changes.append("launcher")
+            messages.append(("green", f"Launcher updated for future runs of {name}"))
 
         if normalized_folder is not None:
             if current.get("folder") != normalized_folder:

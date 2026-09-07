@@ -11,6 +11,7 @@ from typing import Literal
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -538,6 +539,13 @@ def stop_all() -> None:
                         "leaving its sandbox running.[/yellow]"
                     )
                     continue
+                from ..agent_launchers import stop_launcher
+
+                try:
+                    stop_launcher(name)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    console.print(f"  [red]Could not stop launcher for {escape(name)}: {escape(str(exc))}[/red]")
+                    raise typer.Exit(1) from exc
                 if plat.is_sandbox_running(name):
                     console.print(f"  Stopping {name}...")
                     plat.stop_sandbox(name)
@@ -728,10 +736,12 @@ def status() -> None:
 
         if running:
             conflicts = _attribution_ip_conflicts(running)
-            agent_table = Table(title="Running Agents", show_header=True)
+            agent_table = Table(title="Ready Sandboxes", show_header=True)
             agent_table.add_column("Name", style="bold")
             agent_table.add_column("IP")
             agent_table.add_column("Command")
+            agent_table.add_column("Agent")
+            agent_table.add_column("Launcher")
 
             for name, ip in sorted(running):
                 rendered_ip = (
@@ -752,7 +762,16 @@ def status() -> None:
                     if command_style
                     else command_state
                 )
-                agent_table.add_row(name, rendered_ip, rendered_command)
+                from ..agent_launchers import observe_launch
+
+                try:
+                    observed = observe_launch(name, sandbox_ready=True)
+                    selected = observed["launcher"]
+                    launcher_label = f"{selected.get('script') or selected['kind']} ({selected['source']})"
+                    agent_state = observed["agent_state"]
+                except (OSError, ValueError, RuntimeError) as exc:
+                    agent_state, launcher_label = "unknown", str(exc)
+                agent_table.add_row(name, rendered_ip, rendered_command, escape(agent_state), escape(launcher_label))
 
             console.print()
             console.print(agent_table)

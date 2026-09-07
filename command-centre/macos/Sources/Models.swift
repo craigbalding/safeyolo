@@ -26,18 +26,45 @@ struct AgentInventory: Decodable {
 }
 
 struct AgentInfo: Decodable, Equatable, Hashable, Identifiable {
+    struct Launcher: Decodable, Equatable, Hashable {
+        let kind: String
+        let source: String
+        let script: String?
+    }
+    struct HookFailure: Decodable, Equatable, Hashable {
+        let hook: String
+        let detail: String
+        let exitCode: Int
+
+        enum CodingKeys: String, CodingKey {
+            case hook, detail
+            case exitCode = "exit_code"
+        }
+    }
     let agentID: String
     let name: String
-    let state: String
+    let sandboxState: String
+    let agentState: String
+    let launcher: Launcher?
+    let attachable: Bool
+    let error: String?
+    var hookErrors: [HookFailure]? = nil
+    var exitCode: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
         case name
-        case state
+        case sandboxState = "sandbox_state"
+        case agentState = "agent_state"
+        case launcher, attachable, error
+        case hookErrors = "hook_errors"
+        case exitCode = "exit_code"
     }
 
     var id: String { agentID }
-    var isRunning: Bool { state == "running" }
+    var sandboxReady: Bool { sandboxState == "ready" }
+    var canStart: Bool { ["stopped", "exited", "failed"].contains(agentState) }
+    var managed: Bool { ["supervisor", "manager"].contains(launcher?.kind ?? "") }
 }
 
 enum JSONValue: Decodable, Hashable, CustomStringConvertible {

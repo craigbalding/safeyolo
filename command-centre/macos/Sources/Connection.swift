@@ -1,10 +1,19 @@
 import Foundation
 
+enum RemoteTransport: String, Codable, CaseIterable {
+    case tailnet
+    case sshTunnel = "ssh-tunnel"
+
+    var label: String { self == .tailnet ? "Tailscale" : "SSH tunnel" }
+}
+
 struct RemoteConnectionProfile: Codable, Equatable {
     let friendlyName: String
     let adminURL: String
     let eventsURL: String
     let instanceID: String
+    var terminalTarget: String? = nil
+    var transport: RemoteTransport? = nil
 }
 
 protocol ConnectionProfileStore {
@@ -42,6 +51,8 @@ struct RemoteConnectionInput {
     let adminURL: String
     let eventsURL: String
     let token: String
+    var terminalTarget: String? = nil
+    var transport: RemoteTransport = .tailnet
 }
 
 final class RemoteConnectionVerifier {
@@ -56,8 +67,8 @@ final class RemoteConnectionVerifier {
         completion: @escaping (Result<RemoteConnectionProfile, Error>) -> Void
     ) {
         do {
-            let adminURL = try validatedRemoteURL(input.adminURL, scheme: "https")
-            _ = try validatedRemoteURL(input.eventsURL, scheme: "wss")
+            let adminURL = try validatedRemoteURL(input.adminURL, scheme: "https", transport: input.transport)
+            _ = try validatedRemoteURL(input.eventsURL, scheme: "wss", transport: input.transport)
             guard !input.token.isEmpty else {
                 throw ConnectionError.missingToken
             }
@@ -91,7 +102,9 @@ final class RemoteConnectionVerifier {
                                     in: CharacterSet(charactersIn: "/")
                                 ),
                                 eventsURL: input.eventsURL,
-                                instanceID: identity.safeyoloInstanceID
+                                instanceID: identity.safeyoloInstanceID,
+                                terminalTarget: input.terminalTarget,
+                                transport: input.transport
                             )
                         )
                     } catch {
@@ -110,9 +123,27 @@ final class RemoteConnectionVerifier {
     }
 }
 
-private func validatedRemoteURL(_ value: String, scheme: String) throws -> URL {
+func agentAttachCommand(name: String, remote: Bool, terminalTarget: String?) throws -> String {
+    func quoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+    let attach = "safeyolo agent attach -- " + quoted(name)
+    guard remote else { return attach }
+    guard let target = terminalTarget, !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw ConnectionError.missingTerminalTarget
+    }
+    // This connects a viewer to an existing host session; it never starts an
+    // agent. SSH credentials are separate from the Admin API credential.
+    return "ssh -t -- " + quoted(target) + " " + quoted(attach)
+}
+
+func validatedRemoteURL(_ value: String, scheme: String, transport: RemoteTransport) throws -> URL {
+    let parsed = URL(string: value)
+    let tunnelLoopback = transport == .sshTunnel
+        && ["127.0.0.1", "localhost", "::1", "[::1]"].contains(parsed?.host ?? "")
+    let allowedSchemes = tunnelLoopback ? [scheme, scheme == "https" ? "http" : "ws"] : [scheme]
     guard let url = URL(string: value),
-          url.scheme == scheme,
+          allowedSchemes.contains(url.scheme ?? ""),
           url.host != nil,
           url.user == nil,
           url.password == nil,
@@ -129,6 +160,7 @@ enum ConnectionError: LocalizedError {
     case missingToken
     case missingCredential(String)
     case requestFailed(Int)
+    case missingTerminalTarget
 
     var errorDescription: String? {
         switch self {
@@ -136,6 +168,8 @@ enum ConnectionError: LocalizedError {
             return "Expected a \(scheme) URL without credentials, query, or fragment: \(value)"
         case .missingToken:
             return "Enter the remote Admin API credential"
+        case .missingTerminalTarget:
+            return "Set an SSH host or user@host in Connection Settings to open a remote terminal. Run Agent does not need SSH."
         case .missingCredential(let instanceID):
             return "No Keychain credential is stored for \(instanceID)"
         case .requestFailed(let status):

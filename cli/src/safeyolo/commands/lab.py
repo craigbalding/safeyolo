@@ -334,10 +334,9 @@ def _start_agent(name: str, *, allow_unowned: bool = False) -> None:
         name,
         yolo=True,
         dangerously_allow_unowned=allow_unowned,
-        detach=True,
+        launch_mode="sandbox",
         no_snapshot=True,
         rename_tmux_window=False,
-        skip_configured_command=True,
     )
     if result != 0:
         raise typer.Exit(result)
