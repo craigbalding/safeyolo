@@ -108,6 +108,7 @@ def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin, mon
     assert first["host_user"] == pwd.getpwuid(os.geteuid()).pw_name
     assert first["host_python"] == sys.executable
     assert first["webmitm_url"] is None
+    assert first["command_centre_events"] == {"enabled": False, "port": None}
     assert first["capabilities"] == {
         "agent_inventory": True,
         "agent_lifecycle": True,
@@ -115,6 +116,17 @@ def test_instance_endpoint_is_authenticated_and_stable(command_centre_admin, mon
         "audit_events": True,
         "desktop_present": True,
     }
+
+
+def test_instance_reports_running_event_listener_not_saved_configuration(command_centre_admin, monkeypatch):
+    # The runtime listener state is attached to the server only after bind succeeds.
+    # Editing config for the next restart must not claim that a listener is live.
+    base_url, _ = command_centre_admin
+    api = AdminAPI(base_url=base_url, token="test-admin-token")
+    monkeypatch.setattr(LoopbackHTTPServer, "operator_events_port", 19091)
+    assert api.instance()["command_centre_events"] == {"enabled": True, "port": 19091}
+    monkeypatch.setattr(LoopbackHTTPServer, "operator_events_port", None)
+    assert api.instance()["command_centre_events"] == {"enabled": False, "port": None}
 
 
 def test_instance_reports_live_webmitm_url_without_guessing_port(command_centre_admin, monkeypatch):

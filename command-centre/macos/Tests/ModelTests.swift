@@ -17,7 +17,7 @@ private final class MemoryCredentialStore: CredentialStore {
     }
 }
 
-private final class StubURLProtocol: URLProtocol {
+final class StubURLProtocol: URLProtocol {
     static var responseData = Data()
     static var responseStatus = 200
     static var observedAuthorization: String?
@@ -74,6 +74,7 @@ struct ModelTests {
         try await testRequestErrorsRecoverIndependently()
         try await testRunAndWaitForTerminal()
         try await testWebMITMSignInHandoff()
+        try await testConnectionDiagnostics()
         print("model-tests: PASS")
     }
 
@@ -308,15 +309,16 @@ struct ModelTests {
         var agentErrors: [String?] = []
         let subscription = client.$requestErrors.sink { agentErrors.append($0["Agent status"]) }
         defer { subscription.cancel() }
+        StubURLProtocol.requestCount = 0
         client.start()
         let deadline = Date().addingTimeInterval(4)
-        while agentErrors.compactMap({ $0 }).count < 3, Date() < deadline {
+        while StubURLProtocol.requestCount < 9, Date() < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
         guard let firstFailure = agentErrors.firstIndex(where: { $0 != nil }) else {
             preconditionFailure("Expected agent inventory failure")
         }
-        precondition(agentErrors.compactMap { $0 }.count >= 3)
+        precondition(StubURLProtocol.requestCount >= 9, "Expected three snapshot attempts")
         precondition(agentErrors[firstFailure...].allSatisfy { $0 != nil }, "Successful identity/approval retries cleared the agent error")
         precondition(client.hostUser == "operator")
         precondition(client.hostPython == "/opt/safeyolo/bin/python")

@@ -10,7 +10,9 @@ xcrun swiftc \
   "$ROOT/Sources/Credentials.swift" \
   "$ROOT/Sources/Connection.swift" \
   "$ROOT/Sources/Client.swift" \
+  "$ROOT/Sources/Diagnostics.swift" \
   "$ROOT/Tests/ModelTests.swift" \
+  "$ROOT/Tests/ConnectionTests.swift" \
   -o "$BUILD_ROOT/tests/ModelTests" \
   -framework Security
 "$BUILD_ROOT/tests/ModelTests"

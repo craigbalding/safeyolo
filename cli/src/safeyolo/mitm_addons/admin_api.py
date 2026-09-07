@@ -52,6 +52,7 @@ class LoopbackHTTPServer(ThreadingHTTPServer):
     """HTTP server that binds loopback without performing reverse DNS."""
 
     allow_reuse_address = True
+    operator_events_port: int | None = None
 
     def server_bind(self) -> None:
         # HTTPServer.server_bind() calls socket.getfqdn(host). A fixed
@@ -304,6 +305,10 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 "host_user": host_user,
                 "host_python": sys.executable,
                 "webmitm_url": webmitm_url,
+                "command_centre_events": {
+                    "enabled": self.server.operator_events_port is not None,
+                    "port": self.server.operator_events_port,
+                },
                 "capabilities": {
                     "agent_inventory": True,
                     "agent_lifecycle": True,
@@ -1912,6 +1917,7 @@ class AdminAPI:
             )
             try:
                 self.operator_event_server.start()
+                self.server.operator_events_port = self.operator_event_server.port
             except Exception:
                 self.server.server_close()
                 self.server = None
@@ -1939,6 +1945,8 @@ class AdminAPI:
                     time.sleep(1)
                     try:
                         self.server = LoopbackHTTPServer(("127.0.0.1", port), AdminRequestHandler)
+                        if self.operator_event_server is not None:
+                            self.server.operator_events_port = self.operator_event_server.port
                         print("[admin_api] Restarting after crash", file=sys.stderr, flush=True)
                     except Exception as restart_err:
                         print(

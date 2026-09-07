@@ -44,6 +44,7 @@ xcrun swiftc -parse-as-library \
   "$ROOT/Sources/Credentials.swift" \
   "$ROOT/Sources/Connection.swift" \
   "$ROOT/Sources/Client.swift" \
+  "$ROOT/Sources/Diagnostics.swift" \
   "$ROOT/Sources/UI.swift" \
   "$ROOT/Sources/Controller.swift" \
   "$ROOT/Sources/SecurityNotifications.swift" \

@@ -84,7 +84,8 @@ final class CommandCentreController: ObservableObject {
                 name: "Local SafeYolo",
                 adminURL: "http://127.0.0.1:9090",
                 eventsURL: "ws://127.0.0.1:9091/admin/events",
-                credential: credential
+                credential: credential,
+                isLocalConnection: true
             )
         } catch {
             disconnect()
@@ -183,7 +184,8 @@ final class CommandCentreController: ObservableObject {
         name: String,
         adminURL: String,
         eventsURL: String,
-        credential: LoadedCredential
+        credential: LoadedCredential,
+        isLocalConnection: Bool = false
     ) throws {
         disconnect()
         remoteTerminal = !["127.0.0.1", "localhost", "::1"].contains(URL(string: adminURL)?.host ?? "")
@@ -191,7 +193,8 @@ final class CommandCentreController: ObservableObject {
             adminURL: adminURL,
             eventsURL: eventsURL,
             token: credential.token,
-            expectedInstanceID: credential.instanceID
+            expectedInstanceID: credential.instanceID,
+            isLocalConnection: isLocalConnection
         )
         nextClient.onNewApproval = { [weak presenter = self.presenter, weak nextClient] approval in
             guard let presenter, let nextClient else { return }

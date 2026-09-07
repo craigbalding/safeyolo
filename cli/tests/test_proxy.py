@@ -2000,6 +2000,7 @@ class TestProxyStartupSmoke:
 
             token = (tmp_config_dir / "data" / "admin_token").read_text().strip()
             api = AdminAPI(base_url=f"http://127.0.0.1:{admin_port}", token=token)
+            assert api.instance()["command_centre_events"] == {"enabled": True, "port": events_port}
             scoped = api.set_traffic_scope(agent="cody", test_id="FLOW-05")
             assert scoped["agent"] == "cody"
             assert scoped["test_id"] == "FLOW-05"
