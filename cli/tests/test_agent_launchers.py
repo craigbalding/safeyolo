@@ -126,6 +126,17 @@ def test_context_values_are_data_not_command_source(agent):
     assert json.loads(launchers._path("probe").read_text())["command"] == "exit 0"
 
 
+def test_launcher_retains_server_socket_with_pane(agent):
+    record = launchers.prepare_launch("probe", launchers.resolve_launcher({}, {}, "background"), "background", "guest")
+    handles = {"tmux_socket": "/tmp/operator's tmux.sock", "pane_id": "%1"}
+    completed = subprocess.CompletedProcess([], 0, json.dumps(handles), "")
+    with patch.object(launchers, "_script", return_value=completed, autospec=True):
+        launchers.invoke_launcher(record)
+    current = launchers.read_launch("probe")
+    assert {key: current[key] for key in handles} == handles
+    assert launchers.launch_environment(current)["SAFEYOLO_TMUX_SOCKET"] == handles["tmux_socket"]
+
+
 @pytest.mark.parametrize("failed_hook", ["pre_launch", "post_launch", "on_exit"])
 def test_hook_failure_has_its_own_result(agent, tmp_path, failed_hook):
     script = tmp_path / "launcher.sh"

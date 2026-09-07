@@ -176,6 +176,7 @@ def launch_environment(record: dict) -> dict[str, str]:
         "SAFEYOLO_PYTHON": sys.executable,
         "SAFEYOLO_LAUNCHER_PRESETS": str(Path(__file__).with_name("launchers")),
         "SAFEYOLO_TMUX_SESSION": record["tmux_session"],
+        "SAFEYOLO_TMUX_SOCKET": record.get("tmux_socket", ""),
         "SAFEYOLO_LAUNCH_PANE": record.get("pane_id", ""),
         "SAFEYOLO_AGENT_EXIT_CODE": str(record.get("exit_code", "")),
         "SAFEYOLO_AGENT_EXIT_REASON": record.get("exit_reason", ""),
@@ -313,7 +314,7 @@ def invoke_launcher(record: dict) -> int:
     if not isinstance(result, dict):
         update_launch(name, launch_id, state="unknown", error="Host launch result was not a JSON object")
         raise RuntimeError("Host launch result must be a JSON object or empty")
-    changes = {key: result[key] for key in ("pane_id",) if key in result}
+    changes = {key: result[key] for key in ("pane_id", "tmux_socket") if key in result}
     with launch_lock(name):
         current = read_launch(name)
         if current is None or current["launch_id"] != launch_id:
@@ -357,7 +358,11 @@ def run_entrypoint(name: str, launch_id: str) -> int:
         record.update(state="launching", runner_pid=os.getpid(), runner_token=process_start_token(os.getpid()))
         if record["launcher"].get("script") and os.environ.get("TMUX_PANE"):
             record["pane_id"] = os.environ["TMUX_PANE"]
-            subprocess.run(["tmux", "set-option", "-p", "-t", record["pane_id"],
+            record["tmux_socket"] = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", record["pane_id"], "#{socket_path}"],
+                check=True, capture_output=True, text=True,
+            ).stdout.removesuffix("\n")
+            subprocess.run(["tmux", "-S", record["tmux_socket"], "set-option", "-p", "-t", record["pane_id"],
                             "@safeyolo_launch_id", launch_id], check=True)
         _save(name, record)
     if not get_platform().is_sandbox_running(name):

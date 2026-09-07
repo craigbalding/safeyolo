@@ -14,6 +14,8 @@ session=$SAFEYOLO_TMUX_SESSION
 pane=${SAFEYOLO_LAUNCH_PANE:-}
 case "${1:-}" in
     launch)
+        target=
+        format=$'#{socket_path}\n#{pane_id}'
         # tmux inherits the existing server's environment, which may predate
         # this installation. Pass this launch's fixed context explicitly.
         command=(env "SAFEYOLO_CONFIG_DIR=$SAFEYOLO_CONFIG_DIR"
@@ -22,36 +24,48 @@ case "${1:-}" in
             --agent-command --launch-id "$SAFEYOLO_LAUNCH_ID")
         if ! tmux has-session -t "=$session" 2>/dev/null; then
             # Another agent may create the shared session concurrently.
-            pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$session" \
-                -n "$SAFEYOLO_AGENT_NAME" "${command[@]}") || pane=
+            target=$(tmux new-session -d -P -F "$format" -s "$session" \
+                -n "$SAFEYOLO_AGENT_NAME" "${command[@]}") || target=
         fi
-        if [ -z "$pane" ]; then
+        if [ -z "$target" ]; then
             if [ "${SAFEYOLO_TMUX_LAYOUT:-window}" = pane ]; then
-                pane=$(tmux split-window -d -P -F '#{pane_id}' -t "=$session:" "${command[@]}")
+                target=$(tmux split-window -d -P -F "$format" -t "=$session:" "${command[@]}")
             else
-                pane=$(tmux new-window -d -P -F '#{pane_id}' -t "=$session:" \
+                target=$(tmux new-window -d -P -F "$format" -t "=$session:" \
                     -n "$SAFEYOLO_AGENT_NAME" "${command[@]}")
             fi
         fi
-        # The entrypoint records/tag its own pane before running the agent.
+        # Record both handles from creation, not by querying the pane later.
         # A very short command can already have exited by this point.
-        printf '{"pane_id":"%s"}\n' "$pane"
+        "$SAFEYOLO_PYTHON" -c 'import json, sys
+socket, pane = sys.argv[1].rsplit("\n", 1)
+print(json.dumps({"tmux_socket": socket, "pane_id": pane}))' "$target"
         ;;
     attach|status)
         [ -n "$pane" ] || { echo "No recorded agent pane" >&2; exit 1; }
-        actual=$(tmux show-options -p -v -t "$pane" @safeyolo_launch_id 2>/dev/null) || exit 1
+        socket=${SAFEYOLO_TMUX_SOCKET:-}
+        [ -n "$socket" ] || { echo "No recorded tmux server for this agent launch" >&2; exit 1; }
+        tmux_target=(tmux -S "$socket")
+        actual=$("${tmux_target[@]}" show-options -p -v -t "$pane" @safeyolo_launch_id) || {
+            echo "Cannot reach agent pane $pane on tmux server $socket" >&2; exit 1;
+        }
         [ "$actual" = "$SAFEYOLO_LAUNCH_ID" ] || { echo "The recorded agent pane no longer belongs to this run" >&2; exit 1; }
         case "$1" in
             status)
-                [ "$(tmux display-message -p -t "$pane" '#{pane_dead}')" = 0 ]
+                [ "$("${tmux_target[@]}" display-message -p -t "$pane" '#{pane_dead}')" = 0 ]
                 printf '{"state":"running"}\n'
                 ;;
             attach)
-                tmux select-pane -t "$pane"
-                if [ -n "${TMUX:-}" ]; then
-                    tmux switch-client -t "$pane"
+                "${tmux_target[@]}" select-pane -t "$pane"
+                # TMUX contains socket,pid,session. Pane IDs alone are not
+                # unique across servers. Switch only a client on this server.
+                current_socket=${TMUX:-}
+                current_socket=${current_socket%,*}
+                current_socket=${current_socket%,*}
+                if [ "$current_socket" = "$socket" ]; then
+                    "${tmux_target[@]}" switch-client -t "$pane"
                 else
-                    exec tmux attach-session -t "$pane"
+                    TMUX= exec "${tmux_target[@]}" attach-session -t "$pane"
                 fi
                 ;;
         esac

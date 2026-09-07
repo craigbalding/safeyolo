@@ -66,6 +66,13 @@ absolute host paths outside every agent-writable share. An external manager
 is selected with `manager:/absolute/host/script.sh`; its management behavior
 belongs in that script, not in a new SafeYolo scheduler.
 
+The tmux presets retain the server socket as well as the pane ID. An attachment
+from SSH therefore reaches the same server that created the agent session,
+even if the proxy or operator uses a non-default tmux server. On the same
+server, attach switches the existing client. From another server or a plain
+terminal, attach opens a viewer; disconnecting that viewer leaves the agent
+running.
+
 ## Host script contract
 
 Copy `contrib/agent-launcher-template.sh` outside guest-writable shares and edit
@@ -80,8 +87,9 @@ SafeYolo calls the script with one action: `launch`, `attach`, `status`, `stop`,
 including optional hooks as no-ops. `launch` starts a persistent session and
 returns; it must not wait for a terminal viewer. Use stderr for diagnostics.
 Stdout is either empty or one JSON object. The tmux presets return
-`{"pane_id":"%12"}`; the current launch retains that handle. A script without
-an observable process/session reports `unknown`, not `running`.
+`{"tmux_socket":"/path/to/tmux.sock","pane_id":"%12"}`; the current launch
+retains both handles. A script without an observable process/session reports
+`unknown`, not `running`.
 
 A custom manager's `status` returns a JSON object with `state` equal to
 `starting`, `running`, `exited`, `failed`, `stopped`, or `unknown`. Its `stop`
@@ -101,6 +109,7 @@ Context arrives as environment data, not shell source:
 | `SAFEYOLO_PYTHON` | Interpreter of the running SafeYolo installation. |
 | `SAFEYOLO_LAUNCHER_PRESETS` | Installed directory containing the two tmux presets. |
 | `SAFEYOLO_TMUX_SESSION`, `SAFEYOLO_LAUNCH_PANE` | Selected host session and recorded pane, where applicable. |
+| `SAFEYOLO_TMUX_SOCKET` | Recorded tmux server socket for this launch, where applicable. |
 | `SAFEYOLO_AGENT_EXIT_CODE`, `SAFEYOLO_AGENT_EXIT_REASON` | Actual guest-command result for `on_exit`. |
 
 The host environment, including proxy/CA and terminal-manager settings, is

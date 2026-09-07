@@ -135,6 +135,9 @@ esac
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
             list(workers.map(lambda _: cli("agent", "run", name, "--detach"), range(2)))
         original = until(active, "agent process to start")
+        actual_socket = subprocess.run(["tmux", "display-message", "-p", "-t", original["pane_id"], "#{socket_path}"],
+                                       capture_output=True, text=True, check=True).stdout.removesuffix("\n")
+        assert original["tmux_socket"] == actual_socket
         until(lambda: (workspace / "starts").exists(), "terminal probe startup")
         assert len((workspace / "starts").read_text().splitlines()) == 1
         until(lambda: hooks.exists() and len(hooks.read_text().splitlines()) == 2, "launch hooks")
