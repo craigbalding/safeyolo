@@ -10,6 +10,7 @@ changes only the newly created agent; no proxy restart or install is needed.
 from __future__ import annotations
 
 import concurrent.futures
+import errno
 import json
 import os
 import pty
@@ -27,6 +28,32 @@ from safeyolo.agent_launchers import observe_launch, read_launch
 from safeyolo.agents_store import load_agent
 from safeyolo.platform import get_platform
 from safeyolo.vm import get_agent_home_dir
+
+
+def read_terminal(master: int, screen: bytearray, timeout: float = 0.05) -> bool:
+    """Keep consuming terminal output through command exit, as a viewer does."""
+    if not select.select([master], [], [], timeout)[0]:
+        return False
+    try:
+        chunk = os.read(master, 65536)
+    except OSError as exc:
+        if exc.errno == errno.EIO:  # Linux reports PTY EOF this way.
+            return False
+        raise
+    screen.extend(chunk)
+    return bool(chunk)
+
+
+def wait_terminal_exit(process: subprocess.Popen, master: int, screen: bytearray, timeout: float = 30) -> int:
+    """A wait without reads can block macOS SSH's final TCSADRAIN restore."""
+    deadline = time.monotonic() + timeout
+    while process.poll() is None:
+        read_terminal(master, screen)
+        if time.monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+    while read_terminal(master, screen, timeout=0):
+        pass
+    return process.returncode
 
 
 def main() -> None:
@@ -127,8 +154,7 @@ esac
             screen = bytearray()
 
             def viewer_ready():
-                if select.select([master], [], [], 0.05)[0]:
-                    screen.extend(os.read(master, 65536))
+                read_terminal(master, screen)
                 return b"TTY ready" in screen
 
             until(viewer_ready, "attached viewer screen")
@@ -216,15 +242,20 @@ while true; do sleep 1; done
         screen = bytearray()
         try:
             def foreground_ready():
-                if select.select([master], [], [], 0.05)[0]:
-                    screen.extend(os.read(master, 65536))
+                read_terminal(master, screen)
                 return b"TTY ready" in screen
 
             until(foreground_ready, "local foreground terminal")
             assert read_launch(name)["launcher"]["kind"] == "interactive"
             os.write(master, b"quit0\n")
-            assert foreground.wait(timeout=30) == 0
+            assert wait_terminal_exit(foreground, master, screen) == 0
+        except BaseException:
+            # Preserve the state before cleanup sends SIGHUP; that cleanup exit
+            # code must not overwrite evidence of where the test stalled.
+            (evidence / "foreground-failure-launch.json").write_text(json.dumps(read_launch(name), indent=2) + "\n")
+            raise
         finally:
+            (evidence / "foreground.raw").write_bytes(screen)
             os.close(master)
             if foreground.poll() is None:
                 os.killpg(foreground.pid, signal.SIGHUP)
