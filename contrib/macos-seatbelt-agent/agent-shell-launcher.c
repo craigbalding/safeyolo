@@ -1,4 +1,5 @@
-/* A login shell that attaches Seatbelt before executing user-controlled code.
+/* A launcher that attaches Seatbelt before executing user-controlled code.
+ * Configured as the agent account's login shell; zsh interprets commands.
  * Build and install as a root-owned, hardened-runtime binary; see README.md.
  * No shell interpreter runs this file, and no input selects the policy path.
  */
@@ -23,7 +24,7 @@
 #define ENTRY_ROOT "/Library/PrivilegedHelperTools/seatbelt-agent"
 
 static void fail(const char *message) {
-    fprintf(stderr, "seatbelt-agent: %s\n", message);
+    fprintf(stderr, "agent-shell-launcher: %s\n", message);
     exit(1);
 }
 
@@ -31,14 +32,14 @@ static void trusted_path(const char *path) {
     struct stat st;
     if (lstat(path, &st) != 0 || S_ISLNK(st.st_mode) || st.st_uid != 0 ||
         (st.st_mode & (S_IWGRP | S_IWOTH)) != 0)
-        fail("entry components must be root-owned and not writable by group/others");
+        fail("shell-launcher files must be root-owned and not writable by group/others");
 }
 
 int main(int argc, char **argv) {
     struct passwd *account = getpwnam(AGENT_USER);
     if (!account || getuid() == 0 || getuid() != geteuid() ||
         getuid() != account->pw_uid || strcmp(account->pw_dir, AGENT_HOME) != 0)
-        fail("this entry belongs to the configured dedicated account");
+        fail("this shell launcher belongs to the configured dedicated account");
     /* sshd invokes the login shell with -c and the literal ForceCommand.
      * Direct login-shell invocation still attaches exactly the same profile.
      */
@@ -49,11 +50,11 @@ int main(int argc, char **argv) {
     trusted_path("/Library");
     trusted_path("/Library/PrivilegedHelperTools");
     trusted_path(ENTRY_ROOT);
-    trusted_path(ENTRY_ROOT "/agent-entry");
+    trusted_path(ENTRY_ROOT "/agent-shell-launcher");
     trusted_path(ENTRY_ROOT "/agent-dev.sb");
     trusted_path(ENTRY_ROOT "/agent-session");
 
-    /* Never evaluate this text here. It becomes a shell argument AFTER entry. */
+    /* Never evaluate this text here. It becomes a shell argument AFTER Seatbelt attaches. */
     const char *original = getenv("SSH_ORIGINAL_COMMAND");
     char *command = original && *original ? strdup(original) : NULL;
     if (original && *original && !command)
@@ -91,6 +92,6 @@ int main(int argc, char **argv) {
     for (int fd = 3, maxfd = getdtablesize(); fd < maxfd; ++fd)
         close(fd);
     execve(arguments[0], arguments, environment);
-    fprintf(stderr, "seatbelt-agent: sandbox-exec failed: %s\n", strerror(errno));
+    fprintf(stderr, "agent-shell-launcher: sandbox-exec failed: %s\n", strerror(errno));
     return 1;
 }

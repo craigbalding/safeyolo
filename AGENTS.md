@@ -36,6 +36,70 @@ the exposure promptly and ask for the specific decision needed. Do not silently
 weaken a boundary or declare an unresolved material exposure acceptable under
 the advisory rule.
 
+## Scope and effort
+
+For any change, use the brief and available context to answer:
+
+1. Who needs to accomplish what, starting from what setup?
+2. What is the smallest useful result, and what can wait?
+3. How much effort is this worth before we reassess?
+
+Ask the operator only about missing answers that would materially change the
+scope or effort. Resolve routine implementation details independently. For
+substantive changes, briefly state the scope and show the proposed user workflow
+or resulting behaviour before implementation. Keep this proportional to the
+change; it is not a mandatory questionnaire or approval step. Match implementation
+and verification to the agreed effort, and flag material expansion early.
+
+## Naming
+
+Prefer concrete, domain-specific names over abstract architectural names.
+
+Use the most specific name that remains accurate. Do not introduce abstraction
+merely because something may become more general later.
+
+- Name things by their concrete purpose or behaviour. Use architectural labels
+  only when they communicate a meaningful distinction.
+- Prefer project/user vocabulary over implementation vocabulary.
+- Prefer concrete nouns such as `agent`, `approval`, `policy`, `connection`,
+  `credential`, `command`, `VM`, or `proxy` over generic nouns such as `entity`,
+  `resource`, `component`, `object`, or `unit`.
+- Prefer names that identify the specific action and its subject, such as
+  `start_agent`, `approve_request`, or `execute_command`, over generic names such
+  as `handle` or `process`.
+- Treat names such as `manager`, `controller`, `provider`, `service`, `handler`,
+  `engine`, `registry`, `gateway`, `orchestrator`, `coordinator`, and `factory` as
+  warning signs. Use them only when the abstraction is real and the name explains
+  a meaningful distinction.
+- Do not generalise for hypothetical future implementations. If there is only
+  an issue queue, call it `IssueQueue`, not `WorkItemSource`.
+- Avoid multiple near-synonyms for the same concept. Once the project calls
+  something an `approval`, do not casually introduce `authorization`, `consent`,
+  `decision`, or `grant` for the same thing.
+- Longer names are preferable to shorter ambiguous names.
+- Names should make reasonable sense when seen without their surrounding
+  package or class hierarchy.
+
+For any proposed abstraction, ask:
+
+> What meaningful distinction or contract does this abstraction express today?
+
+If the answer is hypothetical, prefer the concrete name.
+
+Be especially strict at user-facing boundaries: CLI commands, configuration
+keys, API fields, event names, logs, error messages, UI labels, and documentation.
+Internal abstractions must not leak into product vocabulary merely because they
+exist in the implementation.
+
+For user-visible names, ask:
+
+> Would an operator naturally use this word when describing what they are trying to do?
+
+If not, choose a more concrete term.
+
+Apply this guidance when introducing or changing names. Do not expand unrelated
+work into a naming cleanup.
+
 ## Roles
 
 SafeYolo keeps implementation and independent acceptance separate:

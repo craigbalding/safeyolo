@@ -56,6 +56,8 @@ Label optional steps before execution. Keep commands copyable; do not present un
 
 ## Reduce reader decisions
 
+**Never include inline shell control flow in README or quickstart command blocks:** no `if`/`case`, loops, functions, traps, `&&`/`||` chains, or script-style subshells. Show ordinary commands that readers can run individually, without prompt-and-variable scaffolding. State assumptions and replaceable inputs upfront; put expected results and stop conditions in prose. Keep automated recipes in named scripts or reference material, not the main instructions.
+
 Moving a complicated explanation above a command does not make the procedure usable. Prefer supported defaults, examples, or helpers that resolve choices the software can reliably handle. Leave readers the decisions that require their judgment.
 
 If documentation cannot simplify the workflow, identify the tooling improvement needed. Do not invent a helper or implement beyond the authorized scope. Document the actual required choices until that tooling exists.

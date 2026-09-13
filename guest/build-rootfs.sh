@@ -75,7 +75,7 @@ GH_SHA256_AMD64="${GH_SHA256_AMD64:-3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761c
 # canonical digest to pin. Floating tag is no worse than mmdebstrap's
 # "whatever deb.debian.org has today" — reproducibility has always been
 # a future-work item — but pinning by digest is a strict improvement.
-DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker://debian:trixie}"  # DOC: guest/README.md, README.md
+DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker://debian:trixie}"  # DOC: guest/README.md, contrib/ROOTFS_SCRIPT_GUIDE.md
 
 # --- Helper: `command -v` that also probes /usr/sbin / /sbin --------------
 # Debian packages these binaries into system sbin dirs that aren't on

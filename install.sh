@@ -68,7 +68,7 @@ read_python_requirement() {
   printf '%s\n' "$requirement"
 }
 
-select_supported_python() {
+select_supported_python() {  # DOC: README.md, cli/README.md
   local requirement="$1"
   local interpreter
 

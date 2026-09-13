@@ -1,5 +1,9 @@
 # SafeYolo Guest Image Builds
 
+For host installation and individual bootstrap phases, see the
+[installation reference](../cli/README.md#installation). For default guest tools
+and custom distributions, see the [rootfs guide](../contrib/ROOTFS_SCRIPT_GUIDE.md).
+
 Builds the artifacts SafeYolo needs to run agent sandboxes:
 
 - `out/Image` — Linux kernel (macOS Virtualization.framework only)

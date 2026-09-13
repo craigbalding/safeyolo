@@ -44,6 +44,67 @@ SafeYolo is built as a mitmproxy addon stack with a centralized Policy Decision 
                    └───────────────┘
 ```
 
+## Sandbox runtime and networking
+
+Each agent runs in an isolated Linux sandbox with **no external network interface**. The only egress path is a per-agent socket bound to a host-side bridge, which routes through SafeYolo's mitmproxy:
+
+```
+Agent sandbox (loopback-only; no eth0)
+    │
+    │  HTTP_PROXY → in-guest forwarder → Unix domain socket (AF_UNIX)
+    │                                  or virtual socket (AF_VSOCK)
+    ▼
+Per-agent bridge socket (one per agent, host-owned)
+    │
+    │  bridge connects on a per-agent port;
+    │  mitmproxy attributes every request to the right agent
+    ▼
+SafeYolo mitmproxy (host process)
+    │  policy, credential guard, rate limits, audit
+    ▼
+Internet
+```
+
+On macOS, the sandbox is a hardware-backed microVM that uses Apple
+Virtualization.framework and virtual sockets. On Linux, it is a rootless gVisor
+container that runs `runsc` in an unprivileged user namespace with
+`--network=sandbox` and `--host-uds=open`.
+
+Both platforms omit an external network interface. Unsetting the proxy
+variables therefore does not create another egress path. Raw external TCP has
+no interface, and external Domain Name System (DNS) resolution has no reachable
+resolver. **The egress boundary is structural:** it does not depend on host
+firewall rules.
+
+Agent identity uses a per-agent Unix domain socket (UDS) on both platforms.
+Each agent connects to the host-owned `<ip>_<agent>/proxy.sock`. At bind time,
+mitmproxy's `UnixMode` listener parses that path and stamps
+`client.peername = (ip, 0)` on every accepted connection. SafeYolo uses no
+per-agent `lo0` aliases and no host `sudo` at runtime.
+
+See [networking reference](networking-vsock-uds.md) for hop-by-hop detail, attribution mechanics, log correlation, and troubleshooting.
+
+
+Agents have full PTYs with resize: a vsock PTY bridge on macOS and `runsc exec`
+on Linux. Guest init is served from a writable status share and a read-only
+configuration share, so it can change without rebuilding the rootfs.
+
+### Linux runtime and storage
+
+- **Rootless host operation**: runsc runs in an unprivileged user namespace (`unshare -Un` + `newuidmap`/`newgidmap`) and launching agents requires no host sudo. Agents start as uid 1000; in-guest `sudo` may enter sandbox uid 0 for ephemeral package installs. That identity maps to subordinate host uid 100000, while container uid 1000 maps to the operator.
+- **Rootfs**: a single shared directory tree at
+  `~/.safeyolo/share/rootfs-tree/` is the gVisor OCI `root.path`; Linux does
+  not package it as an image. By default, writes
+  go to a per-agent file-backed overlay and persist across stop and run.
+  `--ephemeral` selects a memory-backed overlay whose rootfs writes are
+  discarded on stop. Per-agent package-cache bind mounts keep reinstalls cheap.
+- **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. Auto-detected by `safeyolo setup` and surfaced in `safeyolo doctor`.
+- **One-time setup**: AppArmor profile to allow unprivileged user namespaces on Ubuntu 24.04+, and a udev rule granting the subordinate uid access to `/dev/kvm` — both applied idempotently by `safeyolo setup`.
+
+
+See the [macOS microVM architecture](microvm-architecture.md) and
+[historical Linux port design](linux-port-design.md) for platform design context.
+
 ## Policy Model
 
 ### UnifiedPolicy

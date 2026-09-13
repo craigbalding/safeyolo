@@ -358,7 +358,7 @@ def _install_linux_runtime_packages(
 
 
 @setup_app.callback(invoke_without_command=True)
-def setup() -> None:  # DOC: README.md
+def setup() -> None:  # DOC: cli/README.md
     """Apply system prerequisites for SafeYolo agent sandboxes.
 
     Checks what's needed, announces which sudo-privileged changes are

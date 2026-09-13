@@ -102,7 +102,7 @@ class DarwinPlatform(AgentPlatform):
         # — one consistent identity visible inside and outside the
         # sandbox.
         offset = agent_index + 1  # 0 → 10.200.0.1
-        attribution_ip = f"10.200.{offset // 256}.{offset % 256}"  # DOC: SECURITY.md, README.md, docs/ARCHITECTURE.md
+        attribution_ip = f"10.200.{offset // 256}.{offset % 256}"  # DOC: SECURITY.md, docs/ARCHITECTURE.md
 
         return {
             "attribution_ip": attribution_ip,

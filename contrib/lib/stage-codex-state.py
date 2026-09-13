@@ -241,7 +241,7 @@ def _managed_config(existing: str, launcher: str | None) -> str:
     return managed
 
 
-def _stage(
+def _stage(  # DOC: README.md, contrib/HOST_SCRIPT_GUIDE.md
     home: Path,
     launcher: str | None,
     *,
@@ -293,7 +293,7 @@ def _stage(
         _atomic_write(config_path, managed, mode)
 
 
-def _recover(home: Path, action: str) -> None:
+def _recover(home: Path, action: str) -> None:  # DOC: contrib/HOST_SCRIPT_GUIDE.md
     codex_home = _ensure_codex_home(home)
     auth_path = codex_home / AUTH_FILE
     marker_path = codex_home / MARKER_NAME
