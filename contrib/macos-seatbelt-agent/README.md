@@ -6,6 +6,9 @@ and access to other users' homes. The `sandbox-exec` interface is deprecated; se
 [why we use Seatbelt](REFERENCE.md#why-seatbelt) and its
 [tested limits](VALIDATION.md#measured-limitations).
 
+[Residual process visibility is an accepted risk](REFERENCE.md#process-visibility-and-accepted-risk).
+Use a dedicated account; host commands run as that user may be visible to the agent.
+
 ## 1. Ask your agent for an SSH key
 
 The client needs OpenSSH and `socat`, both included in the standard SafeYolo

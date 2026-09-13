@@ -1,11 +1,11 @@
-# Tart acceptance record — 2026-09-13
+# macOS Seatbelt acceptance records
 
 The entry, profile and probe in this contribution were exercised through a real
-SSH daemon in the operator's disposable Tart guest. Nothing was installed on the
-physical host. The test used a dedicated non-admin `sy-seatbelt-test` account
+SSH daemon in the operator's disposable Tart guest on 2026-09-13. Nothing was
+installed on the physical host during those runs. The test used a dedicated non-admin `sy-seatbelt-test` account
 (UID 59900), with its own home and the compiled native entry as its login shell.
 
-These recorded Mac runs predate the setup simplifications and rename from
+The original Tart runs predate the setup simplifications and rename from
 `agent-entry` to `agent-shell-launcher`; filenames and hashes below retain the
 tested names.
 
@@ -215,3 +215,41 @@ file lacked a final newline. New-file creation and mode 644 were checked under
 a restrictive umask; OpenSSH parsed both authorized keys.
 Shell syntax and documentation checks passed. These checks did not rerun macOS
 account activation or establish a fresh login to the Mac.
+
+## Process visibility acceptance (2026-09-13)
+
+A follow-up run through the configured Mac SSH account exercised the remaining
+process-management criterion in [issue #600](https://github.com/craigbalding/safeyolo/issues/600).
+It used macOS 26.6.2 (25G83), arm64, Python 3.14.7 and tmux 3.7c, as UID 502.
+The installed profile and session script matched repository revision
+`fb042e6fc098ddb9c5cb7fb4ab3a81b9cee9b02b`. No installed policy or account settings
+were changed for this run.
+
+The operator started a disposable unsandboxed `/bin/sleep` under the same UID.
+A native `proc_pidinfo(PROC_PIDTBSDINFO)` check verified the fixture's PID and UID;
+`proc_pidpath` verified its executable. The completed process probe recorded:
+
+| Check | Result |
+| --- | --- |
+| Child spawn, task information, custom signal, stop/continue, termination and reaping | Pass |
+| Process-group signalling and grandchild reaping | Pass |
+| Isolated tmux server, pane and worker-window management | Pass |
+| Signal 0 and SIGCONT to the unsandboxed same-UID fixture | Denied with EPERM |
+| Outside fixture task information | Visible: 96 bytes |
+| Outside fixture BSD process information | Visible: 136 bytes |
+| Outside fixture executable path | Visible: `/bin/sleep` |
+| `proc_listallpids` | Returned 676 PIDs, including the outside fixture and PID 1 |
+| `/bin/ps` targeting a child or the outside fixture | Execution denied with EPERM; the binary was root-owned and setuid |
+| Probe children, process group, tmux server/panes and temporary home directory | Cleaned up |
+
+The visibility-denial assertions failed, reproducing the earlier limitation.
+The operator explicitly accepted this residual risk and approved closing the
+issue with that exception. Process-management functionality passed; complete
+process metadata isolation was not established. The installed policy remains
+unchanged.
+
+A dedicated non-admin account is recommended. Operators should run host
+commands as that user only if they accept visibility of those commands' process
+metadata from sandboxed processes. Personal and sensitive host work belongs
+under a separate account; keep secrets out of process names and command-line
+arguments. See [the risk guidance](REFERENCE.md#process-visibility-and-accepted-risk).
