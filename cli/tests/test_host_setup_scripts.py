@@ -107,6 +107,8 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
 
     if consumer_dir is not None:
         expected_links = {"safeyolo": SKILL_LINK_TARGET}
+        if consumer_dir in {".agents", ".claude"}:
+            expected_links["readme-usability"] = "/safeyolo/skills/readme-usability"
         if consumer_dir == ".agents":
             expected_links["safeyolo-lab-controller"] = LAB_CONTROLLER_LINK_TARGET
             expected_links["safeyolo-factory"] = FACTORY_SKILL_LINK_TARGET
@@ -1893,6 +1895,33 @@ def test_factory_skill_is_codex_scoped_and_self_contained() -> None:
         mmd_path = FACTORY_SKILL_SOURCE / "references/graph" / f"{graph}.mmd"
         assert yaml_path.is_file()
         assert mmd_path.is_file()
+
+
+@pytest.mark.parametrize("consumer", ["codex", "claude"])
+def test_readme_skill_discovery_and_user_collision(tmp_path, consumer):
+    source = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/readme-usability"
+    harness_dir = ".agents" if consumer == "codex" else ".claude"
+    repo_link = REPO_ROOT / harness_dir / "skills/readme-usability"
+    assert repo_link.is_symlink()
+    assert repo_link.resolve() == source
+    metadata = yaml.safe_load((repo_link / "SKILL.md").read_text().split("---", 2)[1])
+    assert metadata["name"] == repo_link.name
+    assert (repo_link / "references/safeyolo.md").is_file()
+    assert yaml.safe_load((source / "agents/openai.yaml").read_text())["policy"]["allow_implicit_invocation"]
+
+    agent_home = tmp_path / "agent"
+    collision = agent_home / harness_dir / "skills/readme-usability"
+    collision.mkdir(parents=True)
+    (collision / "SKILL.md").write_text("operator-owned skill\n")
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; stage_safeyolo_context "$2" "$3"', "stage",
+         str(REPO_ROOT / "contrib/lib/stage-safeyolo-context.sh"), str(agent_home), consumer],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "readme-usability" in result.stderr
+    assert (collision / "SKILL.md").read_text() == "operator-owned skill\n"
+    assert not (collision.parent / "safeyolo").is_symlink()
 
 
 def test_safeyolo_acceptance_graph_tool_hashes_match_sources() -> None:

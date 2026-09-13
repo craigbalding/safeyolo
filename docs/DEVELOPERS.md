@@ -544,6 +544,36 @@ $ curl https://httpbin.org/get
 # Should return 200 (allowed)
 ```
 
+## README skill discovery
+
+The repository ships one [readme-usability skill](../cli/src/safeyolo/agent_context/skills/readme-usability/SKILL.md)
+with a conditional SafeYolo reference. Edit that source. The checked-in
+`.agents/skills/readme-usability` and `.claude/skills/readme-usability` directory
+symlinks expose it to Codex and Claude Code in this checkout. `AGENTS.md`, also
+imported by `CLAUDE.md`, routes README and onboarding work to it.
+
+The bundled Codex and Claude host setup scripts also stage discovery links in
+agent homes. SafeYolo copies the skill into the read-only `/safeyolo/skills/`
+share on each run. New agents receive the links through normal host setup.
+Existing agent homes outside this checkout need the bundled host setup reapplied
+once after upgrade: stop the agent, then use the run command’s `--host-script`
+option with its **existing** alias or path (for example, `@codex`, `@codex-coord`
+or `@claude`). Preserve any coordinated or custom variant. Ordinary restarts refresh
+skill contents but do not rerun host setup to add missing discovery links.
+No skill-specific wiring is required. Unrelated
+user-owned skills at the same discovery path are preserved and reported as a
+setup conflict.
+
+Both harnesses can select the skill from its description. Explicit invocation
+is `$readme-usability` in Codex or `/readme-usability` in Claude Code. If a running
+harness does not show the newly added skill, restart that harness. Discovery
+makes a skill available; it does not prove a particular model used it.
+Custom launchers that do not run the bundled setup still get repository discovery
+when working in this checkout. This does not install a skill into Claude's web
+application. See the supported discovery rules for
+[Codex](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)
+and [Claude Code](https://code.claude.com/docs/en/skills#choose-where-skills-load).
+
 ## Documentation drift protection
 
 All authoritative prose changes must follow the project

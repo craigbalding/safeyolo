@@ -57,6 +57,10 @@ branch and commit, and the PR when one exists, for work implemented or reviewed.
 
 ## Technical writing
 
+For README, quickstart, and onboarding work, use the
+[readme-usability skill](cli/src/safeyolo/agent_context/skills/readme-usability/SKILL.md).
+It includes a reference for SafeYolo owner priorities.
+
 Apply the project [technical-writing rule and lossless review
 checklist](docs/technical-writing.md) to every authoritative prose change. Treat
 factual contradictions, stale behavior, missing information, and changed

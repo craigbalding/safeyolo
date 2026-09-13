@@ -1,0 +1,6 @@
+interface:
+  display_name: "README Usability"
+  short_description: "Clear READMEs and complete first-use workflows"
+  default_prompt: "Use $readme-usability to review this README and improve the path to correct first use."
+policy:
+  allow_implicit_invocation: true

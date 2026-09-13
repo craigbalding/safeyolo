@@ -3,11 +3,34 @@
 Use the [setup guide](README.md) for installation. This reference covers the
 entry design, customization, daily work, and disposable validation fixtures.
 
-Seatbelt is defense in depth, not VM-quality isolation. `sandbox-exec` is
-deprecated, and its profile language is not a stable public Apple API.
-Revalidate on each macOS version you use. Kernel defects, Seatbelt weaknesses,
-and vulnerabilities in explicitly permitted services remain outside this
-protection. The baseline grants no general Mach IPC, AppleEvents,
+## Why Seatbelt
+
+Seatbelt lets this entry attach filesystem, network, and process restrictions
+before starting a native Mac shell. Build tools and their children inherit the
+profile while using the Mac's installed toolchain. This is useful for development
+that needs macOS tools without a separate guest operating system.
+
+The mechanism remains in use:
+
+- **Apple:** WebKit includes sandbox policies for its
+  [web content](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/WebProcess/com.apple.WebProcess.sb.in)
+  and [network](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/NetworkProcess/mac/com.apple.WebKit.NetworkProcess.sb.in)
+  processes.
+- **OpenAI:** [Codex's macOS sandbox uses Seatbelt](https://learn.chatgpt.com/docs/sandboxing#prerequisites).
+- **Anthropic:** [Claude Code's sandboxed Bash tool uses Seatbelt on macOS](https://code.claude.com/docs/en/sandboxing#os-level-enforcement).
+
+`sandbox-exec` is the deprecated command-line interface used by this contribution.
+Apple's [explanation of the deprecation](https://developer.apple.com/forums/thread/661939)
+distinguishes custom sandbox profiles, whose language is not supported for
+third-party development, from the supported, entitlement-based App Sandbox.
+Continued use of Seatbelt does not give this custom profile a stable public API
+or establish that it enforces the same policy as another product.
+
+Treat this entry as defense in depth, not VM-quality isolation. Revalidate on
+each macOS version you use; [VALIDATION.md](VALIDATION.md) records the tested
+versions and boundaries, including incomplete process visibility. Kernel defects,
+Seatbelt weaknesses, and vulnerabilities in explicitly permitted services remain
+outside this protection. The baseline grants no general Mach IPC, AppleEvents,
 LaunchServices, or control of other VM/container runtimes.
 
 ## Files and entry order
@@ -20,7 +43,11 @@ LaunchServices, or control of other VM/container runtimes.
 - [agent-session](agent-session) runs **after** attachment. It creates home-scoped
   state directories and starts the command, interactive shell, or tmux session.
 - [sshd_config.example](sshd_config.example) configures the SSH admission path.
-- [configure-ssh](configure-ssh) installs and checks the SSH configuration.
+- [configure-ssh](configure-ssh) checks the account and entry, then activates
+  or recovers the login shell and SSH configuration together.
+- [check-account.c](check-account.c) supplies the native account/ACL preflight.
+- [configure-client](configure-client) writes the client route and pinned host key;
+  [ssh-via-proxy.py](ssh-via-proxy.py) carries SSH through the configured proxy.
 - [probe.py](probe.py) exercises representative workloads and denied operations
   against operator-created disposable fixtures.
 - [VALIDATION.md](VALIDATION.md) records the tested versions, results, source
@@ -53,8 +80,9 @@ default host location is `~/.safeyolo/data/vm_ssh_key`, with a `.pub` companion;
 public half in `~/.ssh/authorized_keys`. Keep that operator private key on the
 host. The setup guide creates a separate client key for agent-to-Mac access.
 
-To use an existing client identity, supply its public key during installation
-and select its private key when connecting. The installed public key is kept
+For a manually configured SSH client, supply its public key during installation
+and select its private key when connecting. The provided client helper uses the
+standard identity path from the setup guide. The installed public key is kept
 in the root-owned entry directory; the SSH fragment does not use the account's
 home `authorized_keys` file.
 
@@ -67,7 +95,8 @@ The account must be Standard and have no sudo grants.
 Before building on the Mac, set `AGENT_USER`, `AGENT_HOME`, and `TOOLCHAIN_ROOT`
 as compiler definitions for any non-default values. Also replace `sy-agent` in
 the setup guide's account and login commands. Pass the same account name to
-`configure-ssh --user`; the helper generates its matching SSH fragment.
+`configure-ssh --user` and `configure-client --user`; the helpers generate
+matching server and client configurations.
 Never derive these settings or the profile path from SSH client environment
 variables. The home must match the account record. The binary refuses root,
 a different account, unexpected shell arguments, symlinked entry components,
@@ -76,24 +105,156 @@ of macOS system paths, Command Line Tools, and `/opt/homebrew`. Root-directory
 listing and metadata for standard path aliases support the loader; they do not
 grant reads beneath other users' homes.
 
-## Entry ownership
+## Entry ownership and account preflight
 
-**On the target Mac, use the trusted administrator/root terminal, from any
-directory, after installing the entry and before enabling login.** Inspect Unix
-permissions and access control lists (ACLs). The listed paths must be root-owned,
-without group/other write bits or ACL entries allowing the dedicated account to
-modify or replace them. The entry checks Unix ownership/modes, but not ACLs.
+`configure-ssh` checks an existing local account before changing admission. It
+requires a non-root account outside the `admin` group (including nested
+membership), no sudo grants, and a real home directory owned by the account.
+It does not create an account, remove privileges, terminate processes, or audit
+personal credentials and other login paths.
+
+The helper stages preflight files and compiles [check-account.c](check-account.c)
+using Command Line Tools under root's private home, before trusting the selected
+configuration directory. It moves the backup beside that configuration only
+after preflight and candidate validation pass.
+The checker adopts the account's UID and supplementary groups without invoking
+its shell. It checks the entry directory, binary, session script, profile,
+authorized keys, selected SSH configuration, existing managed fragment and
+system `sshrc`, plus their parent directories. Each must be root-owned, without
+symlinks or group/other write bits. The selected SSH directory is canonicalized
+first, so macOS's `/etc` alias resolves to `/private/etc`.
+
+macOS extended `access()` checks evaluate effective permission, including ACL
+ordering and group membership, to write, append, delete, remove children, or
+change attributes, extended attributes, permissions or ownership. A modifying
+grant fails preflight and names its path. Read-only ACLs are permitted. The
+binary also retains its Unix ownership/mode checks on every entry; the ACL audit
+runs during setup. Keep administrator-owned paths protected after installation.
+Other files included by a custom daemon configuration remain the operator's
+responsibility.
+
+The helper verifies the code signature and hardened-runtime flag, then runs the
+entry's `--check` under the account. This validates its compiled account/home and
+runs `/usr/bin/true` under the installed profile, without shell startup files or
+home-cache creation. It proves that the profile loads, not the full confinement
+boundary. Home-installed tools execute only after normal confinement attaches.
+
+## SSH setup mechanics
+
+After installing entry files, the guide runs [configure-ssh](configure-ssh).
+The helper owns the login-shell and SSH-configuration transition together.
+`--check` performs preflight and candidate validation without activating either.
+Entry files and authorized keys are installed separately in README step 2.
+
+| Stage | Behaviour |
+| --- | --- |
+| Existing configuration | Checks syntax with `sshd -t` and evaluates settings with `sshd -T -C user=sy-agent,host=localhost,addr=127.0.0.1`, substituting a custom account when selected. |
+| Startup environment | Checks `PermitUserEnvironment`, relevant `AcceptEnv` patterns, and whether system `sshrc` commands need review; see [custom SSH configurations](#custom-ssh-configurations). |
+| Account and entry | Runs the [preflight](#entry-ownership-and-account-preflight) and records the previous local `UserShell`. |
+| Candidate | Generates an account fragment from `sshd_config.example`, prepends its `Include`, and validates syntax and effective settings before activation. |
+| Activation | Sets the compiled login shell **first**, installs the fragment, replaces the daemon configuration while preserving its mode, and verifies the resulting shell and SSH settings. |
+| Repeat installation | Removes only its own exact `Include` line before adding it at the top again. |
+| Failure during activation | Restores the previous SSH files and checks their syntax **before** restoring the previous login shell. If SSH recovery fails, it retains the compiled entry. |
+
+For the defaults, the managed files are `/etc/ssh/sshd_config` and
+`/etc/ssh/sshd_config.seatbelt-sy-agent.conf`. The first `Include` gives the
+fragment's account settings precedence over later matching settings. It selects
+the root-owned authorized-key file, requires public-key authentication, disables
+password and keyboard-interactive authentication and forwarding, and applies
+`ForceCommand seatbelt-session`. PTYs remain enabled. The compiled login shell
+must precede that forced command; see [entry order](#files-and-entry-order).
+No daemon is restarted and existing sessions are left running.
+
+After activation starts, the helper retains a backup directory beside the
+selected daemon configuration and prints its path. `config.before` holds the
+previous configuration, `shell.before` holds the previous login shell, and
+`fragment.before` exists only for a previously installed fragment. Candidate
+files and effective-setting output remain for diagnosis. A rejection before
+activation leaves both states unchanged and removes temporary files.
+
+The success message verifies the configured account's **loopback** SSH settings.
+Test a fresh connection through the actual client transport. Configuration
+validation does not prove login success or confinement; use the
+[boundary probes](#validation-and-adaptation) for the latter.
+
+## Setup recovery
+
+Keep the trusted Mac administrator terminal open. For preflight rejection or a
+successful automatic restore, correct the named problem and rerun
+`sudo ./configure-ssh` from this contribution directory. Use the same `--user`
+and `--config` options for a customized setup. Test a fresh login after success.
+
+If the helper reports **Automatic restore failed**, keep the compiled login shell
+while repairing SSH from the printed backup. From the trusted Mac administrator
+terminal, restore `config.before` to the selected daemon configuration and
+`fragment.before` to its managed fragment when present; otherwise remove only
+the newly created fragment. Preserve ownership and modes. Check syntax with
+`sudo /usr/sbin/sshd -t -f` and the selected configuration path. Only after SSH
+restoration succeeds may you restore the value in `shell.before` with `dscl`.
+This order also applies when deliberately undoing a successful installation.
+A normal shell behind `ForceCommand` can run user startup code before confinement.
+
+Recovery covers the selected daemon configuration, managed fragment and login
+shell. It does not undo README step 2's entry files or authorized keys, account
+creation, policy grants, or client configuration. Do not delete the installed
+entry while the account still uses it as its login shell. Interrupted power or
+`SIGKILL` cannot run the recovery trap; use the retained backup in the same order.
+
+## Approved SSH route
+
+**On the SafeYolo proxy host, use the operator's normal account with its
+configured SafeYolo CLI, from any directory.** Choose the Mac's reachable host
+and SSH port as seen **by the proxy**. `127.0.0.1` means the proxy host; use it only
+when SSH runs there. Obtain the client agent's SafeYolo name from its operator
+configuration. This grant permits that agent's CONNECT requests to that endpoint
+and uses the global rate budget. It updates an existing matching endpoint entry.
 
 ```sh
 (
-  entry=/Library/PrivilegedHelperTools/seatbelt-agent
-  ls -ldeO /Library /Library/PrivilegedHelperTools "$entry" "$entry"/* \
-    /etc/ssh /etc/ssh/sshd_config
+  set -e
+  printf 'SafeYolo client agent name: '
+  IFS= read -r client_agent
+  printf 'Mac host/IP as seen by the proxy: '
+  IFS= read -r mac_host
+  printf 'Mac SSH port: '
+  IFS= read -r mac_port
+  safeyolo policy host add "$mac_host" --port "$mac_port" --agent "$client_agent"
 )
 ```
 
-Keep SSH configuration and authorized keys under the same ownership rule.
-Home-installed tools are permitted; they execute after confinement attaches.
+The CLI reports its policy update/reload result. Give these same host and port
+values to the client. For custom SSH daemons, obtain the host public key from
+that daemon's configured `HostKey`, rather than the default file in the README.
+The client must receive the key through the trusted operator handoff; do not
+replace this with an unverified `ssh-keyscan` result.
+
+[configure-client](configure-client) reuses and verifies the client key pair at
+`~/.ssh/id_ed25519_sy_agent{,.pub}`. It writes `config`, `known_hosts`, and a copy
+of [ssh-via-proxy.py](ssh-via-proxy.py) under `~/.ssh/seatbelt-agent/`. It validates
+the supplied host key and SSH configuration locally; it does not open a network
+connection. Existing managed files are saved as `.before`; the global SSH
+configuration and identity key remain unchanged. Invoke this dedicated
+configuration with `ssh -F`, as shown in the README. For a different Mac account,
+use `configure-client --user` with the same name used by `configure-ssh`.
+
+The configuration pins the operator-supplied Ed25519 key with strict host-key
+checking and uses `seatbelt-mac` as its host-key alias. The proxy command selects
+`HTTPS_PROXY`, falling back to `HTTP_PROXY`, and supports HTTP or HTTPS proxy
+URLs without embedded credentials. HTTPS proxies require TLS 1.2 or newer and
+use the default certificate/hostname verification and trusted CA environment.
+It opens only that proxy connection, sends
+CONNECT for the configured destination, and relays SSH bytes unchanged after a
+200 response. It has no direct destination fallback. HTTP status, blocker and
+request ID remain visible on rejection; 428 directs the operator to the existing
+approval flow. Retry after approval. A 403 is a denial; inspect the applicable
+policy instead of changing the transport. SSH traffic needs no `ignore_hosts`
+or TCP inspection exemption. CONNECT admission is policy checked; SSH encrypts
+its subsequent session contents, which are not regular HTTP inspection traffic.
+
+The Mac's Seatbelt IP restriction applies to processes started by the entry.
+It does not prevent replies over the SSH session already admitted by `sshd`.
+This route therefore requires no IP allowance in `agent-dev.sb`. Optional outbound
+networking from within the Mac account is a separate facility described below.
 
 ## Custom SSH configurations
 
@@ -138,19 +299,13 @@ Home-scoped sockets are intentionally general; any service you place there
 becomes reachable by the account's processes.
 
 **Inside the client agent, as its normal user, change to the directory containing
-the archive `workspace.tar`.** Have the client key from setup and an SSH
-destination configured through the approved proxy transport. This example
-replaces `workspace.tar` in the Mac account's home. It uses SSH command stdin;
-forwarding is not needed.
+the archive `workspace.tar`.** Use the dedicated client configuration created
+by setup. This example replaces `workspace.tar` in the Mac account's home. It
+uses SSH command stdin; forwarding is not needed.
 
 ```sh
-(
-  set -e
-  printf 'Configured SSH destination or alias: '
-  IFS= read -r destination
-  ssh -i "$HOME/.ssh/id_ed25519_sy_agent" -l sy-agent -- "$destination" \
-    'cat > workspace.tar' < workspace.tar
-)
+ssh -F "$HOME/.ssh/seatbelt-agent/config" seatbelt-mac \
+  'cat > workspace.tar' < workspace.tar
 ```
 
 Extract the archive through another confined command. This entry does not

@@ -60,6 +60,8 @@ user_facing_docs = [
 # Skill reference files shipped into agent sandboxes. Globs expanded at
 # load time; new references/*.md files get automatic coverage.
 skill_files = [
+    "cli/src/safeyolo/agent_context/skills/readme-usability/SKILL.md",
+    "cli/src/safeyolo/agent_context/skills/readme-usability/references/*.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo/SKILL.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo/references/*.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/SKILL.md",
