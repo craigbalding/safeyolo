@@ -6,6 +6,7 @@ Example integrations. Copy and adapt for your own use.
 
 | Entry | Description |
 |-------|-------------|
+| [macOS Seatbelt SSH account](macos-seatbelt-agent/README.md) | Native login entry, developer policy, tmux, and validation for a dedicated non-admin macOS account |
 | `HOST_SCRIPT_GUIDE.md` | How to write host setup scripts for `safeyolo agent add --host-script` |
 | `ROOTFS_SCRIPT_GUIDE.md` | How to write custom rootfs builders for `safeyolo agent add --rootfs-script` (replace the default base with any distro) |
 | `../docs/AGENTS.md` | Compact always-on agent baseline (environment, guest tools, Agent API health check, security boundaries) |

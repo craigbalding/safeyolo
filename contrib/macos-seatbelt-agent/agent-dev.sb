@@ -1,0 +1,48 @@
+(version 1)
+(deny default)
+
+; Parameters are supplied by the root-owned, compiled entry shim.
+(define agent-home (param "AGENT_HOME"))
+(define toolchain-root (param "TOOLCHAIN_ROOT"))
+
+(allow process-exec process-fork pseudo-tty)
+; This scopes supported operations, but does not hide all libproc metadata.
+; See the measured process-information limitation in README.md.
+(allow process-info* signal (target same-sandbox))
+(allow sysctl-read)
+
+; Developer tools need broad read access to the OS, not to other users' data.
+(allow file-read*
+    (subpath "/System")
+    (subpath "/usr")
+    (subpath "/bin")
+    (subpath "/sbin")
+    (subpath "/private/etc")
+    (subpath "/Library/Developer")
+    (subpath "/Library/Apple")
+    (subpath "/Library/PrivilegedHelperTools/seatbelt-agent")
+    (subpath toolchain-root))
+(allow file-read* (literal "/") (literal "/private/var/select/sh")
+    (literal "/var/select/developer_dir") (literal "/private/var/select/developer_dir")
+    (literal "/var/db/xcode_select_link") (literal "/private/var/db/xcode_select_link"))
+(allow file-read-metadata
+    (literal "/Users") (literal "/Library") (literal "/etc") (literal "/var")
+    (literal "/private") (literal "/private/var") (literal "/opt"))
+(allow file-read* file-write* (subpath agent-home))
+
+; Devices for ordinary shell I/O, entropy and PTY-backed tmux panes.
+(allow file-read* (literal "/dev/random") (literal "/dev/urandom")
+    (literal "/dev/zero") (subpath "/dev/fd"))
+(allow file-read* file-write* file-ioctl
+    (literal "/dev/null") (literal "/dev/tty") (literal "/dev/ptmx")
+    (regex #"^/dev/(pty|tty)[a-zA-Z0-9]+$"))
+
+; General home-scoped Unix-domain sockets, including tmux and test services.
+(allow network-bind (local unix-socket (subpath agent-home)))
+(allow network-inbound (local unix-socket (subpath agent-home)))
+(allow network-outbound (remote unix-socket (subpath agent-home)))
+
+; No IP networking or broad Mach/AppleEvents/LaunchServices access by default.
+; An operator can add ONE chosen proxy destination, for example:
+; (allow network-outbound (remote tcp "localhost:18080"))
+; The operator must provision that listener separately; see README.md.
