@@ -463,6 +463,29 @@ client environment; configure these values in the confined account's startup
 files. Other IP destinations remain denied. Do not replace the allowance with
 `localhost:*`, arbitrary network access, or broad host UDS access.
 
+## Process visibility and accepted risk
+
+**Residual process visibility is an accepted risk for this contribution.**
+Same-sandbox child supervision and tmux management work, and signalling an
+unsandboxed same-UID process is denied. Process metadata remains partly visible:
+tests read basic task metrics, BSD process information and the executable path
+of an unsandboxed process with the same UID. Global process-ID enumeration also
+included processes outside the sandbox. See the
+[follow-up acceptance record](VALIDATION.md#process-visibility-acceptance-2026-09-13).
+
+A dedicated non-admin account is recommended to limit the sensitive work exposed
+to the agent. Operators should run host commands as that user only when they
+accept that sandboxed processes may observe those commands' process metadata.
+Run personal or sensitive host work under a separate account, and keep secrets
+out of process names and command-line arguments. A dedicated account does not
+provide a private PID namespace or hide all host process metadata.
+
+The earlier macOS 26.6.2 guest tests found that task metrics and executable paths
+remained readable after removing the profile's `process-info` allowance and
+narrowing `sysctl-read`. The probe records outside task-info visibility separately
+from the boundaries it requires to pass. This risk acceptance leaves the
+measured limitation and existing policy restrictions unchanged.
+
 ## SafeYolo as a worked workload
 
 Clone or transfer SafeYolo beneath this account's home. Its mutable state,
@@ -477,16 +500,6 @@ local profile. The baseline intentionally does not permit arbitrary localhost
 services. Keep the default profile and the workload's extra allowances separate
 in your operator records. Same-sandbox child signalling and process-information
 rules support subprocess supervision without granting general process control.
-
-**Process visibility is incomplete.** On the tested macOS 26.6.2 guest,
-`proc_pidinfo(PROC_PIDTASKINFO)` returned basic task metrics for an unsandboxed
-process with the same UID, and its executable path remained readable through
-`proc_pidpath`. This persisted after removing the profile's `process-info`
-allowance and after narrowing `sysctl-read`. Outside-process signalling was
-denied. The profile does not provide a private PID namespace or complete process
-metadata isolation; keep the account dedicated and put secrets in neither
-process names nor command lines. The probe records outside task-info visibility
-separately from the boundaries it requires to pass.
 
 SwiftPM tries to attach a second sandbox while evaluating its manifest, which
 macOS rejects after this profile is attached. Inside the confined Mac account,
