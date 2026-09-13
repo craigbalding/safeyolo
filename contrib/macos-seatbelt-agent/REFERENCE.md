@@ -109,13 +109,86 @@ of macOS system paths, Command Line Tools, and `/opt/homebrew`. Root-directory
 listing and metadata for standard path aliases support the loader; they do not
 grant reads beneath other users' homes.
 
+## Reuse an existing account
+
+**On the Mac, use your existing administrator account, from any directory.**
+Skip the README's account-creation command if `sy-agent` already exists. For a
+different short name or home, apply the
+[account customization](#account-and-toolchain-customization) before building.
+
+The account must be a Standard account with no sudo grants and a real home
+directory owned by that account. Inspect its identity, home and sudo policy:
+
+```sh
+id sy-agent
+dscl . -read /Users/sy-agent NFSHomeDirectory
+sudo -l -U sy-agent
+```
+
+The home must be `/Users/sy-agent` for the default build. The account must not
+belong to `admin`, including through nested groups. The sudo query must report
+that the user is not allowed to run sudo; its exit status alone is insufficient
+on macOS. Resolve privileges or a home mismatch before installation.
+`configure-ssh` performs the [account preflight](#file-ownership-and-account-preflight)
+before changing admission.
+
+Before converting an existing account, stop its unconfined shells and tmux
+servers. Changing the login shell does not confine already-running processes.
+Keep the account password outside the agent and review any personal credentials
+or other login paths associated with the account. The helper does not perform
+that review or terminate sessions.
+
+## Remote Login troubleshooting
+
+**Run these checks on the Mac, in your existing administrator terminal, from
+any directory.** Remote Login enables the SSH service; membership in its access
+group determines which accounts can use it. `configure-ssh` changes neither
+setting. It configures the selected account's authentication and confined shell
+after these prerequisites are ready.
+
+If `systemsetup -setremotelogin on` reports that Full Disk Access is required,
+grant that permission to the terminal application through macOS privacy settings
+or your organization's management policy, then retry from a new terminal
+session. `sudo` alone does not grant this privacy permission. This is permission
+for the administrator's terminal to change the setting, not a requirement to
+enable full disk access for remote users. See Apple's
+[Full Disk Access settings](https://support.apple.com/guide/mac-help/mchlccb25729/mac).
+
+To verify that the service is enabled:
+
+```sh
+sudo systemsetup -getremotelogin
+```
+
+Expect `Remote Login: On` before continuing. With the standard macOS Remote
+Login settings, an absent `com.apple.access_ssh` group means access is allowed
+for all users. In that case, skip the README's group-edit command and continue
+with installation. Do not create or replace the group merely to clear a
+missing-group error: creating it changes access to selected users, and replacing
+it can remove existing members. For a managed Mac or custom access policy,
+check that policy before treating a missing group as unrestricted access.
+
+If the group exists, the README's `dseditgroup -o edit -a` command adds the
+account while retaining its existing members. Verify the result with:
+
+```sh
+dseditgroup -o checkmember -m sy-agent com.apple.access_ssh
+```
+
+Expect a positive membership result. A negative result or directory-service
+error must be resolved before continuing. Apple's
+[Remote Login guide](https://support.apple.com/guide/mac-help/mchlp1066/mac)
+describes the all-users and selected-users settings; `man dseditgroup` documents
+the CLI operations.
+
 ## File ownership and account preflight
 
 `configure-ssh` checks an existing local account before changing admission. It
 requires a non-root account outside the `admin` group (including nested
 membership), no sudo grants, and a real home directory owned by the account.
-It does not create an account, remove privileges, terminate processes, or audit
-personal credentials and other login paths.
+It does not create an account, remove privileges, enable Remote Login, change
+its allowed-user group, terminate processes, or audit personal credentials and
+other login paths.
 
 The helper stages preflight files and compiles [check-account.c](check-account.c)
 using Command Line Tools under root's private home, before trusting the selected
