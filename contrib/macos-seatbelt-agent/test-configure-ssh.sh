@@ -70,8 +70,8 @@ dscl . -create "/Users/$account" UserShell /bin/zsh
 install -d -o "$account" -g staff -m 700 "/Users/$account"
 install -d -o root -g wheel -m 755 "$entry"
 xcrun clang -Wall -Wextra -Werror -O2 -DAGENT_USER='"sy-seatbelt-test"' \
-    -DAGENT_HOME='"/Users/sy-seatbelt-test"' "$source_dir/agent-entry.c" -o "$entry/agent-entry"
-codesign --force --sign - --options runtime --timestamp=none "$entry/agent-entry"
+    -DAGENT_HOME='"/Users/sy-seatbelt-test"' "$source_dir/agent-shell-launcher.c" -o "$entry/agent-shell-launcher"
+codesign --force --sign - --options runtime --timestamp=none "$entry/agent-shell-launcher"
 install -o root -g wheel -m 755 "$source_dir/agent-session" "$entry/"
 install -o root -g wheel -m 644 "$source_dir/agent-dev.sb" "$entry/"
 ssh-keygen -q -t ed25519 -N '' -f "$lab/client-key"
@@ -126,7 +126,7 @@ run --check
 [ ! -e "$fragment" ]
 [ "$(shell_value)" = 'UserShell: /bin/zsh' ]
 run
-[ "$(shell_value)" = "UserShell: $entry/agent-entry" ]
+[ "$(shell_value)" = "UserShell: $entry/agent-shell-launcher" ]
 [ "$(stat -f %Lp "$config")" = 600 ]
 effective "$account" | awk '$1 == "forcecommand" && $2 == "seatbelt-session" { found=1 } END { exit !found }'
 effective operator > "$lab/operator.after"
@@ -248,6 +248,6 @@ if run > "$lab/output" 2>&1; then
     exit 1
 fi
 awk '/Automatic restore failed/ { found=1 } END { exit !found }' "$lab/output"
-[ "$(shell_value)" = "UserShell: $entry/agent-entry" ]
+[ "$(shell_value)" = "UserShell: $entry/agent-shell-launcher" ]
 echo 'PASS: failed SSH recovery retains the compiled login shell'
 /usr/bin/python3 "$source_dir/test-client-live.py" "$lab" "$account"

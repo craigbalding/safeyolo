@@ -21,6 +21,41 @@ SafeYolo does not interpret a template, domain-specific language (DSL), or
 TOML document. It executes the selected shell script. Read the script before
 you run it.
 
+## Bundled setups
+
+The bundled aliases work without a checkout-relative script path:
+
+| Alias | Setup |
+| --- | --- |
+| `@claude` | Copies Claude Code authentication and selected user extensions into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context, and launches Claude Code. |
+| `@codex` | Stages SafeYolo-owned Codex settings and the coord MCP adapter, without importing host credentials or arbitrary `~/.codex` state. Launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`); SafeYolo remains the outer boundary. |
+| `@codex-coord` | Uses the Codex setup with an explicitly adopted agent-local login and supervises bounded non-interactive turns. See the [supervisor contract](../docs/codex-coord-supervisor.md). |
+| `@mise-shell` | Opens an interactive shell with mise ready for `mise use -g ...`. |
+
+Without `--host-script`, the sandbox starts an interactive bash shell in its
+persistent home. Any executable host script can be selected by its path.
+
+### First Codex login
+
+For a fresh `@codex` agent, authentication happens inside that agent's persistent
+home. After its first run installs Codex, leave it running and open a guest shell
+from a second host terminal. Replace `work` with the agent name:
+
+```sh
+safeyolo agent shell work
+```
+
+Inside the guest, log in and record that this login belongs to this agent:
+
+```sh
+codex login --device-auth
+/home/agent/.safeyolo/codex-auth-recovery.py adopt
+```
+
+Then return to the Codex terminal. Repeat the login and adoption commands after
+an explicit authentication reset. The coordinated setup requires the same agent
+to complete this normal `@codex` login before selecting `@codex-coord`.
+
 ## Why host-side
 
 A host script can read any file that the operator can read. For example, it can
@@ -47,6 +82,15 @@ SafeYolo prints the script's standard error and leaves the partial agent state
 in place. After you correct the script, run `agent add --force` to retry.
 
 ## What to write
+
+SafeYolo separates its compact, always-on [sandbox baseline](../docs/AGENTS.md)
+from detailed operational workflows in the [safeyolo skill](../cli/src/safeyolo/agent_context/skills/safeyolo/SKILL.md).
+The baseline covers environment invariants and security boundaries; the skill
+covers Agent API, flow, gateway, collaboration, and troubleshooting operations.
+Bundled scripts stage the baseline under `~/.safeyolo/`. Claude receives it through
+`--append-system-prompt`; Codex receives it as `developer_instructions`.
+Managed skills are refreshed in the read-only `/safeyolo` share on each run and
+linked into the native skill directories without replacing user instructions.
 
 Typical tasks:
 

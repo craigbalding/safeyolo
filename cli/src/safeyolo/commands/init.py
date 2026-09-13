@@ -55,7 +55,7 @@ def _generate_admin_token(config_dir: Path) -> tuple[str, bool]:
     return token, False
 
 
-def init(  # DOC: README.md
+def init(  # DOC: cli/README.md
     force: bool = typer.Option(
         False,
         "--force",

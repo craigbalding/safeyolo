@@ -47,7 +47,7 @@ stage_dir() {
     fi
 }
 
-stage_file .credentials.json
+stage_file .credentials.json  # DOC: README.md, contrib/HOST_SCRIPT_GUIDE.md
 stage_file settings.json
 
 for d in plugins commands agents; do

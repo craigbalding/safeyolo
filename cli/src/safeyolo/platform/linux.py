@@ -628,7 +628,7 @@ def _start_userns(name: str, *, persist_pid: bool = True) -> int:
 
     # Start the userns holder
     proc = subprocess.Popen(
-        aa_prefix + ["unshare", "-Un", "sleep", "86400"],  # DOC: docs/security-verification.md, README.md, SECURITY.md
+        aa_prefix + ["unshare", "-Un", "sleep", "86400"],  # DOC: docs/security-verification.md, docs/ARCHITECTURE.md, SECURITY.md
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -643,7 +643,7 @@ def _start_userns(name: str, *, persist_pid: bool = True) -> int:
     host_gid = os.getgid()
     try:
         subprocess.run(
-            ["newuidmap", str(upid),  # DOC: docs/security-verification.md, README.md, SECURITY.md
+            ["newuidmap", str(upid),  # DOC: docs/security-verification.md, docs/ARCHITECTURE.md, SECURITY.md
              "0", "100000", "1000",
              "1000", str(host_uid), "1",
              "1001", "101001", "64534"],
@@ -820,7 +820,7 @@ class LinuxPlatform(AgentPlatform):
         The agent IP is configured on the guest's loopback by guest-init.
         """
         offset = agent_index + 1  # 0 → 10.200.0.1
-        attribution_ip = f"10.200.{offset // 256}.{offset % 256}"  # DOC: SECURITY.md, README.md, docs/ARCHITECTURE.md, docs/security-verification.md
+        attribution_ip = f"10.200.{offset // 256}.{offset % 256}"  # DOC: SECURITY.md, docs/ARCHITECTURE.md, docs/security-verification.md
 
         return {
             "host_ip": "127.0.0.1",

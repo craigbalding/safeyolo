@@ -240,7 +240,7 @@ nodes:
       obtain_from: "the trusted-base harness; mitmproxy and Python tools are hash-locked in uv.lock and fetched through the approved SafeYolo proxy"
       sources:
         - path: install.sh
-          sha256: 20e692af184d2b1979e1bb67666cef8da1be0e5d785e772dc786aa199bbb045d
+          sha256: da5a03b0f6eecb3e49b10f495827246894bbc95b430952d5f6b7b3414bb15ecf
         - path: tests/blackbox/run-lane.sh
           sha256: 091934297a817e2f9a82b8e9c2277582d6885869aa2dac8ac6b2479b1efeb820
         - path: tests/blackbox/run-tests.sh
@@ -278,9 +278,9 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: 6fd663f4c52157c97e831c3642a5e6d0f5561f80f331516bcc34723e1a4ccbc7
         - path: cli/src/safeyolo/commands/setup.py
-          sha256: 63c87cd0790a9b29f177487eed9a021cc569605dcda1d2413a98ded581dabad7
+          sha256: 55fa6e69dc813acfb313c82d0556b8a54f3ef3020025c6d5c526ae646e7e2ee6
         - path: cli/src/safeyolo/platform/linux.py
-          sha256: 3ae0127bb14dfcb53275b085149a5424dd1d293ac096a241b6a098dddcfa411e
+          sha256: e37468081ea4c747579cda673a6d0f082084e45ec6a6d18c2222469e4ffe98ff
       setup: "Use an approved Linux host; run the product bootstrap/setup path and preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostic evidence."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh cli/src/safeyolo/commands/setup.py cli/src/safeyolo/platform/linux.py && runsc --version && safeyolo doctor --json"
       run:
@@ -443,9 +443,9 @@ nodes:
       obtain_from: "trusted-base build scripts; skopeo, umoci, and e2fsprogs from operator-approved signed OS repositories or the checksum-pinned umoci fallback in safeyolo bootstrap"
       sources:
         - path: guest/build-all.sh
-          sha256: 18b1bcb2a3c203e2ee993d3ca9d0ebe5ae6d4c81998c358fb8ad26100c3b4c07
+          sha256: 49f6de7f07ca960f79b04758ba88f37e7fc91fd318ae08d4117e8e4b967e6d3f
         - path: guest/build-rootfs.sh
-          sha256: 10d081983d70d5ddf436af03572af030c3f2bcf21080114f1493fc131844edc1
+          sha256: 980493b29cc05dfde8c1e6632c1b8c3c8b274f2bbd9c8e16f736255bcfd830fa
         - path: guest/rootfs-customize-hook.sh
           sha256: 2c48131abab82e6b38f50c404da187be15ec6f4f5cc4d1173ebc98e860ab4dfa
       setup: "Use an approved Linux builder or the repository's narrow Lima builder; set OUTPUT_DIR to a disposable acceptance directory."

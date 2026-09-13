@@ -14,7 +14,7 @@
 
 [[rule]]
 name = "no-docker-era-language"
-docs = ["SECURITY.md", "README.md"]
+docs = ["SECURITY.md", "README.md", "docs/ARCHITECTURE.md", "cli/README.md"]
 reason = "Docker was removed in PR #130 (April 2026). SafeYolo now runs as a host mitmproxy process; sandboxes are Apple Virtualization.framework microVMs (macOS) or gVisor (Linux). There is no SafeYolo container and no Docker socket to gate."
 forbidden = [
     "no Docker socket",
@@ -25,7 +25,7 @@ forbidden = [
 
 [[rule]]
 name = "no-proxy-protocol-v2-identity-claim"
-docs = ["README.md", "SECURITY.md"]
+docs = ["README.md", "SECURITY.md", "docs/ARCHITECTURE.md"]
 reason = "PR #201 (April 2026) replaced PROXY-protocol-v2 identity with per-agent Unix-domain-socket path-derived peername stamping. See cli/src/safeyolo/proxy_modes/unix_listener.py."
 forbidden = [
     "PROXY protocol v2",
@@ -40,7 +40,7 @@ forbidden = [
 # exists (rootfs-base.erofs).
 [[rule]]
 name = "no-erofs-in-security-verification"
-docs = ["docs/security-verification.md"]
+docs = ["docs/security-verification.md", "docs/ARCHITECTURE.md"]
 reason = "PR #195 replaced the Linux EROFS rootfs with a directory tree at ~/.safeyolo/share/rootfs-tree/. Any current-tense EROFS claim in this doc is stale; see guest/build-rootfs.sh header for the removal rationale."
 forbidden = [
     "EROFS image",

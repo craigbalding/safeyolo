@@ -5,6 +5,10 @@ SSH daemon in the operator's disposable Tart guest. Nothing was installed on the
 physical host. The test used a dedicated non-admin `sy-seatbelt-test` account
 (UID 59900), with its own home and the compiled native entry as its login shell.
 
+These recorded Mac runs predate the setup simplifications and rename from
+`agent-entry` to `agent-shell-launcher`; filenames and hashes below retain the
+tested names.
+
 | Component | Tested value |
 | --- | --- |
 | macOS | 26.6.2, build 25G83, arm64 |
@@ -168,8 +172,9 @@ It also verifies the pinned client configuration and preservation of existing
 client keys and global SSH configuration. These tests use only disposable local
 listeners; they do not probe services on the physical host.
 
-The current README install block was also tested in this Mac VM with its
-destination redirected to a disposable fixture. Compilation, signing,
+The [scripted install block](REFERENCE.md#scripted-setup), previously in the
+README, was also tested in this Mac VM with its destination redirected to a
+disposable fixture. Compilation, signing,
 ownership/modes and public-key contents passed. An invalid public key or a
 fingerprint mismatch stopped before installation. The native suite installs the same entry files
 before testing the full SSH workflow above. Broader confinement evidence and
@@ -186,3 +191,27 @@ b55265a8c4c58952c49c8f93226307aaaa3c9c7de5ded7a3685c3a6249d68424  configure-ssh
 4bd9f43e0c0e90fbdb81e5b452c236e6ffd3b9e09de013be69f051285d2d0d6c  test-configure-ssh.sh
 ecd2dbc98dd59e6be9610d668c29ced8bc5c70cb5a606c93aba1d5a65a80d5a7  test-client-live.py
 ```
+
+## Client handoff with socat (2026-09-13)
+
+On Linux, the installed `socat` carried SSH banners and binary data through
+mitmproxy with SafeYolo's real network-policy addon. The check used disposable
+loopback endpoints and port-scoped admission, with no TCP inspection exceptions.
+Denied and approval-required CONNECT requests produced `Forbidden` and
+`Precondition Required` respectively, with zero upstream accepts.
+
+The Mac helper's client-output and public-key selection code was exercised on
+Linux with disposable RSA and Ed25519 host keys. OpenSSH parsed the printed
+configuration with a custom account, port, and IPv6 destination; the dedicated
+known-hosts entry contained the selected Ed25519 key. Missing public keys and
+malformed destination inputs were rejected. Running the printed `mkdir` and
+`printf` commands twice produced valid SSH files without duplicate entries.
+The simplified key handoff returned the public key directly from its private
+key, including when its `.pub` companion was missing or stale, without changing
+the private key. The generated client instructions included the configured UID
+for the agent to check.
+Appending a second client key preserved the first, including when the existing
+file lacked a final newline. New-file creation and mode 644 were checked under
+a restrictive umask; OpenSSH parsed both authorized keys.
+Shell syntax and documentation checks passed. These checks did not rerun macOS
+account activation or establish a fresh login to the Mac.

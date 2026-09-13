@@ -1,18 +1,20 @@
 #!/bin/sh
-# Install SSH admission for the compiled Seatbelt entry using macOS tools only.
+# Install SSH admission for the Seatbelt shell launcher using macOS tools only.
 set -eu
 
 fail() { printf 'configure-ssh: %s\n' "$*" >&2; exit 1; }
 usage() {
     cat <<'USAGE'
-Usage: sudo ./configure-ssh [--user NAME] [--config FILE] [--check] [--reviewed-sshrc]
+Usage: sudo ./configure-ssh [--host HOST] [--port PORT] [--user NAME] [--config FILE] [--check] [--reviewed-sshrc]
 
-Check the installed entry and account, then configure its login shell and SSH.
+Check the installed shell launcher and account, then configure its login shell and SSH.
 Preserve both previous states and restore them on failure (default: sy-agent).
 Existing SSH sessions are left running; no daemon is restarted.
 
-  --user NAME        Account used when compiling agent-entry.
+  --user NAME        Account used when compiling agent-shell-launcher.
   --config FILE      SSH daemon configuration (default: /etc/ssh/sshd_config).
+  --host HOST        Approved Mac destination as seen by the proxy; prints client setup.
+  --port PORT        Approved destination SSH port (default: 22).
   --check            Run preflight and candidate validation without activation.
   --reviewed-sshrc   Confirm the operator has reviewed /etc/ssh/sshrc and it
                      does not execute or source files controlled by the account.
@@ -20,16 +22,58 @@ Existing SSH sessions are left running; no daemon is restarted.
 USAGE
 }
 
+print_client_setup() {
+    proxy_destination=%h
+    case "$client_host" in *:*) proxy_destination='[%h]' ;; esac
+    cat <<EOF
+
+Paste the following instructions into your client agent:
+
+Configure SSH access to my Mac. Run as your normal user, from any directory,
+without sudo. These commands need OpenSSH and socat. The proxy line uses
+http://127.0.0.1:8080; substitute your configured HTTP proxy if it differs.
+
+These commands create or replace the two dedicated SSH files.
+Run each command individually and stop if any fails:
+mkdir -p -m 700 ~/.ssh/seatbelt-agent
+printf '%s\n' 'Host seatbelt-mac
+    HostName $client_host
+    Port $client_port
+    User $account
+    IdentityFile ~/.ssh/id_ed25519_sy_agent
+    IdentitiesOnly yes
+    BatchMode yes
+    StrictHostKeyChecking yes
+    HostKeyAlias seatbelt-mac
+    UserKnownHostsFile ~/.ssh/seatbelt-agent/known_hosts
+    GlobalKnownHostsFile /dev/null
+    ProxyCommand socat STDIO PROXY:127.0.0.1:$proxy_destination:%p,proxyport=8080' > ~/.ssh/seatbelt-agent/config
+printf '%s\n' 'seatbelt-mac $host_public_key' > ~/.ssh/seatbelt-agent/known_hosts
+
+Run this login check and return the full output, or the error if it fails:
+  ssh -F ~/.ssh/seatbelt-agent/config seatbelt-mac id
+Report whether it succeeded with uid=$account_uid. The account name may be absent
+from the output because the profile can prevent macOS from displaying it.
+EOF
+}
+
 account=sy-agent
 config=/etc/ssh/sshd_config
+client_host=
+client_port=22
 reviewed_sshrc=no
 check_only=no
 entry=/Library/PrivilegedHelperTools/seatbelt-agent
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --user|--config)
+        --user|--config|--host|--port)
             [ "$#" -ge 2 ] || fail "$1 needs a value. See --help."
-            case "$1" in --user) account=$2 ;; --config) config=$2 ;; esac
+            case "$1" in
+                --user) account=$2 ;;
+                --config) config=$2 ;;
+                --host) client_host=$2 ;;
+                --port) client_port=$2 ;;
+            esac
             shift 2 ;;
         --check) check_only=yes; shift ;;
         --reviewed-sshrc) reviewed_sshrc=yes; shift ;;
@@ -38,6 +82,9 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 case "$account" in ''|*[!a-zA-Z0-9_.-]*) fail "Invalid account name: $account" ;; esac
+case "$client_host" in -*|*[!a-zA-Z0-9_.:-]*) fail "Invalid destination host: $client_host" ;; esac
+case "$client_port" in ''|*[!0-9]*) fail "Invalid destination port: $client_port" ;; esac
+[ "$client_port" -ge 1 ] && [ "$client_port" -le 65535 ] || fail "Invalid destination port: $client_port"
 [ "$(uname -s)" = Darwin ] || fail 'Run this command on the target Mac.'
 [ "$(id -u)" -eq 0 ] || fail 'Run with sudo: sudo ./configure-ssh'
 [ -f "$config" ] && [ ! -L "$config" ] || fail "Expected a regular configuration file: $config"
@@ -96,7 +143,7 @@ check_environment() {
     if ! awk '$1 == "permituserenvironment" && $2 == "no" { found=1 } END { exit !found }' "$effective"; then
         fail "PermitUserEnvironment is enabled in $config. This installer cannot disable it for only $account. Use a separate SSH daemon configuration with PermitUserEnvironment no, then select it with --config."
     fi
-    # Detect client-variable patterns that can affect execution before entry.
+    # Detect client-variable patterns that can affect execution before Seatbelt.
     # Harmless custom variables do not require a new allowlist or policy change.
     awk '$1 == "acceptenv" { for (i=2; i<=NF; i++) print $i }' "$effective" > "$work/acceptenv"
     while IFS= read -r pattern; do
@@ -120,22 +167,23 @@ fi
 
 # Inspect the local account without running its login shell or startup files.
 /usr/bin/dscl . -read "/Users/$account" UserShell > "$work/account" || fail "Local account $account is missing. Create the Standard account first."
+account_uid=$(id -u "$account")
 sed -n 's/^UserShell: //p' "$work/account" > "$work/shell.before"
 [ "$(wc -l < "$work/shell.before" | tr -d ' ')" = 1 ] || fail 'Expected one existing login shell.'
 case "$(cat "$work/shell.before")" in /*) ;; *) fail 'Expected an absolute login-shell path.' ;; esac
 /usr/bin/xcrun clang -Wall -Wextra -Werror -O2 "$source_dir/check-account.c" -o "$work/check-account"
 set -- /Library /Library/PrivilegedHelperTools "$entry" \
-    "$entry/agent-entry" "$entry/agent-session" "$entry/agent-dev.sb" \
+    "$entry/agent-shell-launcher" "$entry/agent-session" "$entry/agent-dev.sb" \
     "$entry/authorized_keys" "$config_dir" "$config"
 if [ -f "$fragment" ]; then set -- "$@" "$fragment"; fi
 if [ -f /etc/ssh/sshrc ]; then
     sshrc_dir=$(cd "$(dirname /etc/ssh/sshrc)" && pwd -P)
     set -- "$@" "$sshrc_dir/sshrc"
 fi
-"$work/check-account" "$account" "$entry/agent-entry" "$@" || fail 'Account/entry preflight failed. No login shell or SSH files were changed.'
-/usr/bin/codesign --verify --strict "$entry/agent-entry" || fail 'Entry signature is invalid. Rebuild using the setup guide.'
-/usr/bin/codesign --display --verbose=2 "$entry/agent-entry" 2> "$work/signature"
-awk '/^CodeDirectory / && /[(,]runtime[,)]/ { found=1 } END { exit !found }' "$work/signature" || fail 'Entry must be signed with the hardened runtime. Rebuild using the setup guide.'
+"$work/check-account" "$account" "$entry/agent-shell-launcher" "$@" || fail 'Account/shell-launcher preflight failed. No login shell or SSH files were changed.'
+/usr/bin/codesign --verify --strict "$entry/agent-shell-launcher" || fail 'Shell-launcher signature is invalid. Rebuild using the setup guide.'
+/usr/bin/codesign --display --verbose=2 "$entry/agent-shell-launcher" 2> "$work/signature"
+awk '/^CodeDirectory / && /[(,]runtime[,)]/ { found=1 } END { exit !found }' "$work/signature" || fail 'The shell launcher must be signed with the hardened runtime. Rebuild using the setup guide.'
 
 # macOS sudo can return zero even when this root-side query finds no grants.
 # Require its explicit negative result; never infer absence from exit status.
@@ -143,7 +191,7 @@ sudo_status=0
 LC_ALL=C /usr/bin/sudo -n -l -U "$account" > "$work/sudo" 2>&1 || sudo_status=$?
 if [ "$sudo_status" -gt 1 ] || ! awk -v account="$account" \
     'index($0, "User " account " is not allowed to run sudo on ") == 1 { found=1 } END { exit !found }' "$work/sudo"; then
-    fail "Account $account has sudo grants, or its sudo policy could not be checked. Inspect sudo -l -U $account and remove grants before enabling this entry."
+    fail "Account $account has sudo grants, or its sudo policy could not be checked. Inspect sudo -l -U $account and remove grants before enabling this login shell."
 fi
 
 cp -p "$config" "$work/config.before"
@@ -193,8 +241,22 @@ check_candidate() {
 # Validate a staged include before changing either active file.
 make_candidate "$work/fragment"
 check_candidate "$work/candidate" || fail 'Candidate SSH settings did not pass validation. No SSH files were changed.'
+host_public_key=
+if [ -n "$client_host" ]; then
+    host_public_key=$(awk '$1 == "hostkey" { sub(/^hostkey /, ""); print $0 ".pub" }' "$work/after.effective" |
+        while IFS= read -r public_key_file; do
+            if [ -f "$public_key_file" ] && /usr/bin/ssh-keygen -lf "$public_key_file" >/dev/null 2>&1; then
+                key=$(awk 'NR == 1 && $1 == "ssh-ed25519" { print $1, $2 }' "$public_key_file")
+                if [ -n "$key" ]; then
+                    printf '%s\n' "$key"
+                    break
+                fi
+            fi
+        done)
+    [ -n "$host_public_key" ] || fail 'No readable Ed25519 host public key found beside the configured HostKey files. No login shell or SSH files were changed.'
+fi
 if [ "$check_only" = yes ]; then
-    printf 'Account, entry and candidate SSH settings passed preflight; nothing activated.\n'
+    printf 'Account, login shell and candidate SSH settings passed preflight; nothing activated.\n'
     exit 0
 fi
 backup=$(mktemp -d "$config.seatbelt-backup.XXXXXX")
@@ -206,13 +268,17 @@ changed=yes
 # This must precede ForceCommand activation; a normal shell would interpret
 # startup files before the forced command could attach Seatbelt.
 shell_changed=yes
-/usr/bin/dscl . -create "/Users/$account" UserShell "$entry/agent-entry"
+/usr/bin/dscl . -create "/Users/$account" UserShell "$entry/agent-shell-launcher"
 install -o root -g wheel -m 644 "$work/fragment" "$fragment"
 mv -f "$work/candidate" "$config"
 check_candidate "$config" || fail 'Installed SSH settings did not pass validation.'
 /usr/bin/dscl . -read "/Users/$account" UserShell | \
-    awk -v shell="$entry/agent-entry" '$0 == "UserShell: " shell { found=1 } END { exit !found }' || fail 'Installed login shell did not match the entry.'
+    awk -v shell="$entry/agent-shell-launcher" '$0 == "UserShell: " shell { found=1 } END { exit !found }' || fail 'Installed login shell did not match the launcher.'
 complete=yes
-printf 'SSH configuration installed and verified for %s (UID %s; loopback connection).\n' "$account" "$(id -u "$account")"
+printf 'SSH configuration installed and verified for %s (UID %s; loopback connection).\n' "$account" "$account_uid"
 printf 'Backup: %s\n' "$work"
-printf 'Keep your administrator session open and test a fresh agent SSH login.\n'
+if [ -n "$client_host" ]; then
+    print_client_setup
+else
+    printf 'To print client setup, rerun with --host HOST and --port PORT using the approved Mac destination.\n'
+fi

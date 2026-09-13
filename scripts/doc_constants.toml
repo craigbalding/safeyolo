@@ -27,7 +27,7 @@ forbidden = ["20% + 50MB headroom", "20%+50MB headroom"]
 name = "default-agent-memory-mib"
 source = "cli/src/safeyolo/commands/agent.py"
 pattern = 'DEFAULT_AGENT_MEMORY_MB = (?P<memory_mb>\d+)'
-docs = ["README.md"]
+docs = ["docs/CONFIGURATION.md"]
 must_contain = "defaults to {memory_mb} MiB"
 
 [[assertion]]
@@ -183,7 +183,7 @@ must_contain = "HTTP {code}"
 name = "rootfs-tree-install-path"
 source = "cli/src/safeyolo/vm.py"
 pattern = 'return get_share_dir\(\) / "(?P<subdir>rootfs-tree)"'
-docs = ["README.md"]
+docs = ["docs/ARCHITECTURE.md"]
 must_contain = "share/{subdir}"
 
 # Same code truth, different doc, tighter blacklist: security-verification.md
@@ -202,19 +202,26 @@ forbidden = ["rootfs-base.erofs"]
 name = "guest-root-uid-mapping"
 source = "cli/src/safeyolo/platform/linux.py"
 pattern = '"0", "100000", "1000"'
-docs = ["docs/security-verification.md", "README.md"]
+docs = ["docs/security-verification.md", "docs/ARCHITECTURE.md"]
 must_contain = "100000"
 
 [[assertion]]
 name = "seatbelt-agent-account"
-source = "contrib/macos-seatbelt-agent/agent-entry.c"
+source = "contrib/macos-seatbelt-agent/agent-shell-launcher.c"
 pattern = '(?m)^#define AGENT_USER "(?P<account>[^"\n]+)"'
 docs = ["contrib/macos-seatbelt-agent/README.md"]
 must_contain = "`{account}`"
 
 [[assertion]]
 name = "seatbelt-entry-root"
-source = "contrib/macos-seatbelt-agent/agent-entry.c"
+source = "contrib/macos-seatbelt-agent/agent-shell-launcher.c"
 pattern = '(?m)^#define ENTRY_ROOT "(?P<entry_root>[^"\n]+)"'
 docs = ["contrib/macos-seatbelt-agent/README.md"]
 must_contain = "{entry_root}"
+
+[[assertion]]
+name = "installer-python-requirement"
+source = "pyproject.toml"
+pattern = 'requires-python = "(?P<requirement>[^"\n]+)"'
+docs = ["cli/README.md"]
+must_contain = "`{requirement}`"

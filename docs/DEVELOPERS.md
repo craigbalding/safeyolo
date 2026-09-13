@@ -341,6 +341,9 @@ implicit partial hot reload.
 
 ## Development Setup
 
+For host installation and retrying an individual bootstrap phase, use the
+[installation reference](../cli/README.md#installation).
+
 **Running with live source editing:**
 ```bash
 # `--dev` runs the proxy from your local checkout so edits to addons/pdp

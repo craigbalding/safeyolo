@@ -14,6 +14,11 @@ box to reproduce what SafeYolo would run. No DSL, no templates.
 
 ## Why this is safe to skip for most users
 
+The standard Debian-trixie image includes `ripgrep`, `fd-find`, `file`, `unzip`,
+`zip`, `tmux`, `lsof`, `strace`, `jq`, `less`, Python virtual-environment support,
+and BusyBox-backed `nc` and `hexdump` shims. Install project language runtimes
+through mise.
+
 You don't need `--rootfs-script` unless you actually want a different
 distro. The default base (Debian trixie with `mise` plus a compact
 agent-oriented Unix toolkit) covers the

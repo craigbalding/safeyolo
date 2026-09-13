@@ -270,7 +270,7 @@ def _bootstrap_config(config_dir: Path) -> None:
 
 
 @profiled_command("proxy start")
-def start(  # DOC: README.md, docs/DEVELOPERS.md
+def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
     wait: bool = typer.Option(
         True,
         "--wait/--no-wait",
@@ -459,7 +459,7 @@ def start(  # DOC: README.md, docs/DEVELOPERS.md
 
 
 @profiled_command("proxy stop")
-def stop(  # DOC: README.md
+def stop(  # DOC: cli/README.md
     all: bool = typer.Option(False, "--all", help="Also stop all agents and tear down networking"),
     profile: bool = typer.Option(
         False,

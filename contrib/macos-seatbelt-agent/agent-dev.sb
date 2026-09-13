@@ -1,7 +1,7 @@
 (version 1)
 (deny default)
 
-; Parameters are supplied by the root-owned, compiled entry shim.
+; Parameters are supplied by the root-owned, compiled shell launcher.
 (define agent-home (param "AGENT_HOME"))
 (define toolchain-root (param "TOOLCHAIN_ROOT"))
 

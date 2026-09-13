@@ -1,136 +1,81 @@
 # Contained SSH development on macOS
 
-Give a coding agent a macOS shell for builds, tests, PTYs, and tmux. The Seatbelt
-profile permits home-directory writes and home Unix sockets; it denies IP
-networking and access to other users' homes.
+Give your SafeYolo agent a shell on a physical Mac when a VM won't do.
+Seatbelt allows writes in the dedicated account's home and denies IP networking
+and access to other users' homes. The `sandbox-exec` interface is deprecated; see
+[why we use Seatbelt](REFERENCE.md#why-seatbelt) and its
+[tested limits](VALIDATION.md#measured-limitations).
 
-Seatbelt gives native Mac tools and their child processes operating-system
-restrictions. Apple uses Seatbelt policies in WebKit, and OpenAI Codex and
-Anthropic Claude Code use Seatbelt for macOS sandboxing. The `sandbox-exec`
-launcher is deprecated; this custom profile remains defense in depth, with
-incomplete process visibility. See [why we use Seatbelt](REFERENCE.md#why-seatbelt)
-for the rationale and sources, and the [tested limits](VALIDATION.md#measured-limitations).
+## 1. Ask your agent for an SSH key
 
-## Before you start
+The client needs OpenSSH and `socat`, both included in the standard SafeYolo
+image. Paste this into your client agent:
 
-- First try the setup on a disposable Mac VM. SafeYolo setup does not install it.
-- On the target Mac, enable Remote Login and have Command Line Tools and a
-  SafeYolo checkout available.
-- Create or reuse the Standard account `sy-agent`, home `/Users/sy-agent`, with
-  no sudo grants, admin membership, personal credentials, or agent-controlled
-  login path outside this entry. Keep its password with the operator.
-- Save work and end existing coding shells and tmux servers under that account.
-  Keep your separate administrator terminal open throughout installation.
-- These commands use `/opt/homebrew` as the toolchain root. For another account
-  or toolchain, [set the build options first](REFERENCE.md#account-and-toolchain-customization).
-- The SafeYolo operator must [authorize the SSH route](REFERENCE.md#approved-ssh-route)
-  and give the client its destination host and port. The client needs Python 3.9 or newer,
-  OpenSSH, and this checkout. The Mac and proxy can be on different machines.
+```text
+Prepare an SSH key for access to my Mac, as your normal user without sudo.
+Keep existing key files. If neither ~/.ssh/id_ed25519_sy_agent nor its .pub
+file exists, create the key with:
 
-## 1. Create the client key
+mkdir -p -m 700 ~/.ssh
+ssh-keygen -t ed25519 -N '' -C safeyolo-seatbelt-client -f ~/.ssh/id_ed25519_sy_agent
 
-**Run inside the client agent, as its normal user, from any directory. Do not
-use sudo.** This creates an unattended SSH key in its persistent home and reuses
-an existing complete pair. Give only the printed public-key line and fingerprint
-to the Mac operator. The private key stays with the client.
+Return the public-key line from:
+ssh-keygen -y -P '' -f ~/.ssh/id_ed25519_sy_agent
 
-```sh
-(
-  set -eu
-  umask 077
-  mkdir -p "$HOME/.ssh"
-  key="$HOME/.ssh/id_ed25519_sy_agent"
-  if [ ! -e "$key" ] && [ ! -e "$key.pub" ]; then
-    ssh-keygen -q -t ed25519 -N '' -C 'safeyolo-seatbelt-client' -f "$key"
-  fi
-  derived=$(ssh-keygen -y -P '' -f "$key")
-  derived=$(printf '%s\n' "$derived" | awk '{print $1, $2}')
-  recorded=$(awk '{print $1, $2}' "$key.pub")
-  [ "$derived" = "$recorded" ] || {
-    printf 'Existing client key pair does not match; keep it and resolve the mismatch first.\n' >&2
-    exit 1
-  }
-  ssh-keygen -lf "$key.pub"
-  cat "$key.pub"
-)
+Keep the private key inside this agent. If a command fails, report the error.
 ```
 
-## 2. Install the Mac entry
+## 2. Set up the Mac
 
-**Run on the target Mac, in an administrator or root terminal, from the checkout's
-`contrib/macos-seatbelt-agent` directory.** Paste the public-key line from step 1
-and its `SHA256:…` fingerprint when prompted. A mismatch stops installation.
-The block replaces installed entry files and authorized keys;
-it stops on failure. It leaves the account's login shell unchanged at this stage.
+You need Command Line Tools and a SafeYolo checkout on the Mac. These commands
+assume `/Users/sy-agent` and `/opt/homebrew`; [customize these first](REFERENCE.md#account-and-toolchain-customization)
+if your account or toolchain differs.
 
-```sh
-(
-  set -eu
-  entry=/Library/PrivilegedHelperTools/seatbelt-agent
-  staging=$(mktemp -d)
-  trap 'rm -rf "$staging"' EXIT
-  printf 'Paste the client public-key line, then press Return: '
-  IFS= read -r public_key
-  printf '%s\n' "$public_key" > "$staging/authorized_keys"
-  key_info=$(ssh-keygen -lf "$staging/authorized_keys")
-  fingerprint=$(printf '%s\n' "$key_info" | awk '{print $2}')
-  printf 'Client fingerprint from step 1 (SHA256:…): '
-  IFS= read -r expected
-  [ "$fingerprint" = "$expected" ] || {
-    printf 'Client fingerprint does not match; nothing installed.\n' >&2
-    exit 1
-  }
-  xcrun clang -Wall -Wextra -Werror -O2 agent-entry.c -o "$staging/agent-entry"
-  codesign --force --sign - --options runtime --timestamp=none "$staging/agent-entry"
-  codesign --verify --strict "$staging/agent-entry"
-  sudo install -d -o root -g wheel -m 755 "$entry"
-  sudo install -o root -g wheel -m 755 "$staging/agent-entry" agent-session "$entry/"
-  sudo install -o root -g wheel -m 644 agent-dev.sb "$staging/authorized_keys" "$entry/"
-)
-```
+Create or reuse a **Standard account named `sy-agent`** and enable **Remote Login**.
+The account must have no sudo grants. Keep its password outside the agent;
+the agent can read and change everything in its home. If converting an existing
+account, stop its unconfined shells and tmux servers first.
 
-## 3. Enable SSH entry
-
-**Still on the Mac, in the same administrator terminal and contribution directory.**
-The helper checks the account, entry permissions and ACLs, signature, profile,
-and SSH settings. It then changes
-both the login shell and SSH admission: public-key authentication is required and
-forwarding is disabled. It backs up both previous states and restores them on
-failure; see [recovery and its scope](REFERENCE.md#setup-recovery).
-Give the printed UID and **Mac host public key** to the client alongside the
-approved host and port. This key identifies the server; it is different from step 1's key.
+From the checkout root, run these commands individually, stopping on any error.
+Replace `CLIENT_PUBLIC_KEY` with the line your agent returned. The commands
+replace the installed launcher files and append the key, preserving other agents'
+access. `sudo` writes to the
+protected system directory and may prompt for your password.
 
 ```sh
-(
-  set -e
-  sudo ./configure-ssh
-  cat /etc/ssh/ssh_host_ed25519_key.pub
-)
+cd contrib/macos-seatbelt-agent
+xcrun clang -Wall -Wextra -Werror -O2 agent-shell-launcher.c -o agent-shell-launcher
+codesign --force --sign - --options runtime --timestamp=none agent-shell-launcher
+sudo install -d -o root -g wheel -m 755 /Library/PrivilegedHelperTools/seatbelt-agent
+sudo install -o root -g wheel -m 755 agent-shell-launcher agent-session /Library/PrivilegedHelperTools/seatbelt-agent/
+sudo install -o root -g wheel -m 644 agent-dev.sb /Library/PrivilegedHelperTools/seatbelt-agent/
+printf '\n%s\n' 'CLIENT_PUBLIC_KEY' | sudo tee -a /Library/PrivilegedHelperTools/seatbelt-agent/authorized_keys > /dev/null
+sudo chmod 644 /Library/PrivilegedHelperTools/seatbelt-agent/authorized_keys
 ```
 
-## 4. Configure the client and test a fresh login
+[Authorize the SSH route](REFERENCE.md#approved-ssh-route) on the SafeYolo host.
+Replace `mac.example.net` and `22` below with the approved destination as seen
+by the proxy.
 
-**Inside the client agent, as its normal user, in this checkout's
-`contrib/macos-seatbelt-agent` directory.** Run the helper and enter the host,
-port, and Mac host public key supplied by the operator. It writes a dedicated
-configuration under `~/.ssh/seatbelt-agent/`, preserving previous files as
-`.before` backups on repeat runs. Keep the Mac administrator terminal open.
-The test uses the existing SafeYolo proxy and pins the supplied server key.
+The command sets `agent-shell-launcher` as the account's login shell, requires
+public-key authentication, and disables forwarding. It checks the installation
+and backs up the previous SSH configuration and login shell for
+[recovery](REFERENCE.md#setup-recovery). If connected to the Mac over SSH,
+keep that connection open until the agent's login works.
+
+From the same directory on your Mac, run:
 
 ```sh
-(
-  set -e
-  ./configure-client
-  ssh -F "$HOME/.ssh/seatbelt-agent/config" seatbelt-mac id
-)
+sudo ./configure-ssh --host mac.example.net --port 22
 ```
 
-Compare `uid=` with the UID printed in step 3; the profile can prevent macOS
-from displaying its account name. A successful login checks entry plumbing;
-use the [disposable boundary probes](REFERENCE.md#validation-and-adaptation) to
-check confinement. For interactive work, omit `id`. A 428 response requires operator approval in
-`safeyolo watch` or Commander before retrying; a 403 is a policy denial.
+## 3. Give the connection instructions to your agent
 
-See the reference for [tmux and file transfer](REFERENCE.md#daily-work-and-tmux),
-[optional network access](REFERENCE.md#optional-network-access), and
-[custom SSH configurations](REFERENCE.md#custom-ssh-configurations).
+The generated instructions use the default HTTP proxy at `127.0.0.1:8080`;
+see [other proxies](REFERENCE.md#client-proxy-options) if yours differs.
+Paste the client instructions printed by `configure-ssh` into your agent.
+It configures SSH through its proxy, installs your Mac's public host key, and
+reports whether the login succeeded with the expected account UID.
+
+See the reference for [interactive use and file transfer](REFERENCE.md#daily-work-and-tmux)
+and [optional profile testing](REFERENCE.md#validation-and-adaptation).

@@ -310,6 +310,39 @@ Agent-scoped behaviour:
 
 The CLI writes agent metadata (`safeyolo agent authorize` / `safeyolo agent revoke`). Run `safeyolo policy show` to see the merged result.
 
+### Workspace and memory
+
+Run these commands on the host for an existing agent named `work`.
+The folder chosen by `agent add` is mounted read-write at `/workspace`.
+To change it, replace `~/new-work` with an existing directory you own:
+
+```sh
+safeyolo agent config work --folder ~/new-work
+```
+
+Relative paths and `~` are normalized before saving. Use
+`--dangerously-allow-unowned` only when the ownership mismatch is intentional.
+The `--folder` option on `agent run` instead overrides the workspace for that
+run without changing the saved folder.
+
+Memory allocation is persistent per agent and defaults to 4096 MiB.
+To change it, supply the desired size in MiB:
+
+```sh
+safeyolo agent config work --memory 8192
+```
+
+Workspace and memory changes take effect on the next start. If `work` is
+running, stop and run it to apply them:
+
+```sh
+safeyolo agent stop work
+safeyolo agent run work
+```
+
+These changes do not recreate the agent, rerun its host setup, or remove its
+persistent home or overlay.
+
 ## addons.yaml
 
 Addon tuning lives in a separate file, sibling to the policy file:

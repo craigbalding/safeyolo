@@ -1,5 +1,5 @@
 # Include from sshd_config only after completing the README installation.
-# The account's UserShell MUST be the compiled agent-entry binary.
+# The account's UserShell MUST be the compiled agent-shell-launcher binary.
 # AcceptEnv is inherited/additive. Remove broad global AcceptEnv settings;
 # do not accept ENV, BASH_ENV, ZDOTDIR, DYLD_*, PATH or HOME from clients.
 PermitUserEnvironment no

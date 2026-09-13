@@ -14,7 +14,7 @@ from .config import get_config_dir, get_data_dir
 SESSION_NAME = "safeyolo-traffic"
 
 
-def find_private_tmux() -> Path:
+def find_private_tmux() -> Path:  # DOC: README.md, cli/README.md
     """Find SafeYolo's bundled tmux, with a system binary as a dev fallback."""
     explicit = os.environ.get("SAFEYOLO_TMUX_BIN")
     if explicit:

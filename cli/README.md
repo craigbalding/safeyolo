@@ -5,33 +5,76 @@ sandboxes.
 
 ## Installation
 
-```bash
-# From source (PyPI package coming soon)
-git clone https://github.com/craigbalding/safeyolo.git
-cd safeyolo
-./install.sh
+Follow the [main quickstart](../README.md#quick-start) for a first installation.
+The commands in this section run on the host, as your usual user, from the
+SafeYolo checkout root.
+
+`./install.sh` installs the CLI through uv, normally at `~/.local/bin/safeyolo`.
+That directory must be on your shell's `PATH`. The installer reads the project's
+Python requirement, currently `>=3.12,<3.14`, and asks uv to select or acquire a
+matching interpreter. A newer host default does not change that requirement.
+
+For source installs on macOS, you need Command Line Tools, Lima for building
+guest images, and tmux for the host proxy session. Lima can be installed with
+`brew install lima`, `sudo port install lima`, or `mise use -g lima`; install
+tmux through your package manager as well.
+
+### Bootstrap and individual phases
+
+`safeyolo bootstrap` initializes configuration and builds missing guest artifacts.
+On Linux, it also runs host setup when runtime prerequisites are missing.
+The command skips phases whose required state is already present.
+
+When Linux build packages are missing, bootstrap prints the package-manager
+command to install them and exits before building. Run that command, then rerun
+bootstrap. Runtime setup can install gVisor, user-namespace tools, and ACL tools
+using apt, dnf, apk, or pacman as appropriate. It explains its privileged changes
+before invoking `sudo`, which may prompt for your password.
+
+To inspect or retry an individual phase, use these commands:
+
+```sh
+safeyolo init
+safeyolo build
 ```
 
-## Quick Start
+`init` writes configuration under `~/.safeyolo/`, including policy, addon settings,
+and tokens. `build` installs guest artifacts under `~/.safeyolo/share/`: an
+unpacked rootfs tree on Linux, or a kernel, initramfs, and ext4 image on macOS.
+See the [guest build reference](../guest/README.md) for rebuild controls.
 
-```bash
-# Initialize configuration (interactive wizard)
-safeyolo init
+On macOS, build and install the Swift VM helper after the guest build:
 
-# Start the proxy
-safeyolo start
+```sh
+make -C vm install
+```
 
-# Watch for credential approval requests
-safeyolo watch
+Then run host setup. On Linux it applies missing runtime prerequisites,
+AppArmor configuration, and KVM access where applicable. On macOS it checks the
+guest artifacts and Swift helper without privileged changes.
 
-# Check status
-safeyolo status
+```sh
+safeyolo setup
+```
 
-# Diagnose problems
-safeyolo doctor
+### Troubleshooting installation
 
-# Start the operator-guided experimentation Lab
-safeyolo lab
+Run `safeyolo doctor` on the host. It reports runtime prerequisites, guest
+artifacts, isolation platform, and agent state, and exits nonzero if a check fails.
+On Linux it reports gVisor, KVM or systrap, and user namespaces; on macOS it
+checks Apple Silicon and the Swift helper.
+
+| Output | Command |
+| --- | --- |
+| Normal console report | `safeyolo doctor` |
+| Plain text without color or wrapping | `safeyolo doctor --raw` |
+| Machine-readable JSON | `safeyolo doctor --json` |
+
+If `mitmdump` is missing from the installed tool environment, the optional pipx
+fallback installs mitmproxy and injects SafeYolo's addon dependencies:
+
+```sh
+./scripts/install-mitmproxy-pipx.sh
 ```
 
 ## Commands
@@ -52,7 +95,7 @@ safeyolo lab
 
 **Aliases:** `safeyolo up` = `start` (accepts `--wait/--no-wait` and `--profile`), `safeyolo down` = `stop`
 
-**Lab:**
+#### Lab
 
 ```bash
 safeyolo lab                         # Ask for an objective, then propose and confirm a Lab agent
@@ -67,7 +110,26 @@ or overwrite an unrelated agent or guest tmux session. Teardown retains the
 captured evidence and Lab configuration; deleting retained artifacts is a
 separate operator choice.
 
-**Start options:**
+The Lab is an optional experiment workflow, independent of `safeyolo demo`.
+The bundled Codex setup also provides `safeyolo-lab` inside an existing running
+agent. From a host terminal, replace `AGENT` with its name and open a shell:
+
+```sh
+safeyolo agent shell AGENT
+```
+
+Inside that guest shell, run:
+
+```sh
+safeyolo-lab
+```
+
+The guest tmux prefix is `C-a`. Run `safeyolo-lab` again after a disconnect to
+attach to the existing Lab. It does not adopt an unrelated guest session or
+start a second controller. See the [Lab skill](../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/SKILL.md)
+for the experiment workflow.
+
+#### Start options
 
 ```bash
 safeyolo start              # Normal start
@@ -267,6 +329,15 @@ service definition supplies:
 | `safeyolo agent revoke <agent> <service>` | Revoke service access for an agent |
 | `safeyolo services list` | List available service definitions |
 | `safeyolo services show <name>` | Show service details (host, capabilities, risky routes) |
+
+To supply a credential from a host environment variable, first set `GMAIL_TOKEN`
+in your host shell to the token you intend to share. For an existing agent named
+`work`, this command binds that credential to Gmail's `read_agent_folder`
+capability:
+
+```sh
+safeyolo agent authorize work gmail --capability read_agent_folder --token-env GMAIL_TOKEN
+```
 
 **Example flow:**
 

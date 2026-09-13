@@ -9,6 +9,9 @@ services, and it fails closed when a request is ambiguous or outside policy.
 
 ## Security Model
 
+The [runtime and networking reference](docs/ARCHITECTURE.md#sandbox-runtime-and-networking)
+describes platform namespaces, UID mappings, storage, and the proxy route.
+
 ```
 ┌──────────────────────────────────────────────────┐
 │ HOST (trusted)                                   │

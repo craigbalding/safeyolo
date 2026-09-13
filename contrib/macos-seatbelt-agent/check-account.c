@@ -50,7 +50,7 @@ static void protected_tree(const char *path) {
 
 int main(int argc, char **argv) {
     if (argc < 4 || getuid() != 0 || geteuid() != 0)
-        fail("usage as root", "check-account USER ENTRY PATH...");
+        fail("usage as root", "check-account USER SHELL PATH...");
     struct passwd *pw = getpwnam(argv[1]);
     if (!pw || pw->pw_uid == 0)
         fail("expected an existing non-root account", argv[1]);
@@ -73,5 +73,5 @@ int main(int argc, char **argv) {
     char *environment[] = {NULL};
     char *arguments[] = {argv[2], "--check", NULL};
     execve(argv[2], arguments, environment);
-    fail("cannot run the installed entry", strerror(errno));
+    fail("cannot run the installed shell launcher", strerror(errno));
 }
