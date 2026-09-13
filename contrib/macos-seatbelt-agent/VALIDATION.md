@@ -162,14 +162,16 @@ runs the actual SafeYolo network policy addon in mitmproxy inside Linux. It
 verifies SSH banner/binary traffic without `tcp_hosts` or `ignore_hosts`
 exceptions, port-scoped admission, zero upstream accepts on 403/428, approval
 diagnostics, and refusal to fall back when a proxy is missing or unsupported.
+HTTPS-proxy tests verify a trusted TLS connection and rejection of an untrusted
+certificate or a TLS 1.1-only peer before sending CONNECT.
 It also verifies the pinned client configuration and preservation of existing
 client keys and global SSH configuration. These tests use only disposable local
 listeners; they do not probe services on the physical host.
 
-The earlier shortened README install block was also tested in this Mac VM with
-its destination redirected to a disposable fixture. Compilation, signing,
-ownership/modes and public-key contents passed. An invalid public key stopped
-installation. The current native suite builds and installs the same entry files
+The current README install block was also tested in this Mac VM with its
+destination redirected to a disposable fixture. Compilation, signing,
+ownership/modes and public-key contents passed. An invalid public key or a
+fingerprint mismatch stopped before installation. The native suite installs the same entry files
 before testing the full SSH workflow above. Broader confinement evidence and
 platform limits remain in the preceding sections.
 
@@ -180,7 +182,7 @@ d789b0ae177916b64179aa9de355e6f9735211929fa1ea875e326aa17e7c0fe1  agent-entry.c
 71e408c6fdfa74e7b47256adcab02d0b4f3fcf0198e6b5b18bff30502a5e95d5  check-account.c
 b55265a8c4c58952c49c8f93226307aaaa3c9c7de5ded7a3685c3a6249d68424  configure-ssh
 4621765dffa74ecaaa27b58e9e5b155e923e3ff288bfe0fd929bd9b72c7016a9  configure-client
-656fa4222b448edf0077ffc606a931f6c14385d441201637303e3814c009849f  ssh-via-proxy.py
+5e198a93f3703fdf73615118ca2b6d88f7808f1ae0a3cae317ea363508ca3379  ssh-via-proxy.py
 4bd9f43e0c0e90fbdb81e5b452c236e6ffd3b9e09de013be69f051285d2d0d6c  test-configure-ssh.sh
 ecd2dbc98dd59e6be9610d668c29ced8bc5c70cb5a606c93aba1d5a65a80d5a7  test-client-live.py
 ```

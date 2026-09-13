@@ -30,7 +30,9 @@ def connect(host, port):
     stream = socket.create_connection((proxy.hostname, proxy.port or (443 if proxy.scheme == "https" else 80)), timeout=15)
     try:
         if proxy.scheme == "https":
-            stream = ssl.create_default_context().wrap_socket(stream, server_hostname=proxy.hostname)
+            context = ssl.create_default_context()
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            stream = context.wrap_socket(stream, server_hostname=proxy.hostname)
         stream.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode("ascii"))
         # Avoid reading past the headers: an SSH server can send its banner
         # immediately, and every byte must reach the SSH client unchanged.

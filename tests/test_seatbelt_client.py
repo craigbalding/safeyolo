@@ -3,6 +3,7 @@
 import importlib.util
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -106,3 +107,61 @@ def test_client_config_pins_operator_key_and_preserves_global_config(tmp_path):
     assert config.stat().st_mode & 0o777 == 0o600
     assert identity.read_bytes() == original_key
     assert (ssh_dir / "config").read_text() == "Host personal\n    HostName untouched.example\n"
+
+
+@pytest.mark.parametrize("trusted,obsolete", [(True, False), (False, False), (True, True)])
+@pytest.mark.filterwarnings("ignore:ssl.TLSVersion.TLSv1_1 is deprecated:DeprecationWarning")
+def test_https_proxy_verifies_trust_and_rejects_obsolete_tls(tmp_path, monkeypatch, trusted, obsolete):
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+         "-keyout", str(key), "-out", str(cert), "-subj", "/CN=localhost",
+         "-addext", "subjectAltName=DNS:localhost"],
+        check=True, capture_output=True,
+    )
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if obsolete:
+        # Deliberately weak test peer: the client must refuse its handshake.
+        context.minimum_version = context.maximum_version = ssl.TLSVersion.TLSv1_1
+        context.set_ciphers("ALL:@SECLEVEL=0")
+    received = bytearray()
+    errors = []
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        server.settimeout(5)
+
+        def serve():
+            try:
+                with server.accept()[0] as raw:
+                    raw.settimeout(5)
+                    with context.wrap_socket(raw, server_side=True) as stream:
+                        while not received.endswith(b"\r\n\r\n"):
+                            chunk = stream.recv(1)
+                            if not chunk:
+                                raise OSError("Client closed before completing CONNECT")
+                            received.extend(chunk)
+                        stream.sendall(b"HTTP/1.1 200 Connection established\r\n\r\nSSH-2.0-fixture\r\n")
+            except OSError as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        monkeypatch.setenv("HTTPS_PROXY", f"https://localhost:{server.getsockname()[1]}")
+        if trusted:
+            monkeypatch.setenv("SSL_CERT_FILE", str(cert))
+        if trusted and not obsolete:
+            with transport.connect("mac.example", 22) as stream:
+                assert stream.recv(100) == b"SSH-2.0-fixture\r\n"
+        else:
+            with pytest.raises(ssl.SSLError):
+                transport.connect("mac.example", 22)
+        thread.join(timeout=6)
+        assert not thread.is_alive()
+    if trusted and not obsolete:
+        assert received.startswith(b"CONNECT mac.example:22 HTTP/1.1\r\n")
+        assert not errors
+    else:
+        assert not received and errors

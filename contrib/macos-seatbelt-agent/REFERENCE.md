@@ -239,7 +239,9 @@ use `configure-client --user` with the same name used by `configure-ssh`.
 The configuration pins the operator-supplied Ed25519 key with strict host-key
 checking and uses `seatbelt-mac` as its host-key alias. The proxy command selects
 `HTTPS_PROXY`, falling back to `HTTP_PROXY`, and supports HTTP or HTTPS proxy
-URLs without embedded credentials. It opens only that proxy connection, sends
+URLs without embedded credentials. HTTPS proxies require TLS 1.2 or newer and
+use the default certificate/hostname verification and trusted CA environment.
+It opens only that proxy connection, sends
 CONNECT for the configured destination, and relays SSH bytes unchanged after a
 200 response. It has no direct destination fallback. HTTP status, blocker and
 request ID remain visible on rejection; 428 directs the operator to the existing

@@ -59,7 +59,8 @@ to the Mac operator. The private key stays with the client.
 
 **Run on the target Mac, in an administrator or root terminal, from the checkout's
 `contrib/macos-seatbelt-agent` directory.** Paste the public-key line from step 1
-when prompted. The block replaces installed entry files and authorized keys;
+and its `SHA256:…` fingerprint when prompted. A mismatch stops installation.
+The block replaces installed entry files and authorized keys;
 it stops on failure. It leaves the account's login shell unchanged at this stage.
 
 ```sh
@@ -71,7 +72,14 @@ it stops on failure. It leaves the account's login shell unchanged at this stage
   printf 'Paste the client public-key line, then press Return: '
   IFS= read -r public_key
   printf '%s\n' "$public_key" > "$staging/authorized_keys"
-  ssh-keygen -lf "$staging/authorized_keys"
+  key_info=$(ssh-keygen -lf "$staging/authorized_keys")
+  fingerprint=$(printf '%s\n' "$key_info" | awk '{print $2}')
+  printf 'Client fingerprint from step 1 (SHA256:…): '
+  IFS= read -r expected
+  [ "$fingerprint" = "$expected" ] || {
+    printf 'Client fingerprint does not match; nothing installed.\n' >&2
+    exit 1
+  }
   xcrun clang -Wall -Wextra -Werror -O2 agent-entry.c -o "$staging/agent-entry"
   codesign --force --sign - --options runtime --timestamp=none "$staging/agent-entry"
   codesign --verify --strict "$staging/agent-entry"
@@ -84,8 +92,8 @@ it stops on failure. It leaves the account's login shell unchanged at this stage
 ## 3. Enable SSH entry
 
 **Still on the Mac, in the same administrator terminal and contribution directory.**
-Match the client-key fingerprint to step 1. The helper checks the account,
-entry permissions and ACLs, signature, profile, and SSH settings. It then changes
+The helper checks the account, entry permissions and ACLs, signature, profile,
+and SSH settings. It then changes
 both the login shell and SSH admission: public-key authentication is required and
 forwarding is disabled. It backs up both previous states and restores them on
 failure; see [recovery and its scope](REFERENCE.md#setup-recovery).
