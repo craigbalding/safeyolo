@@ -101,6 +101,8 @@ class GCRABudgetTracker:  # DOC: SECURITY.md
     def check_and_consume_many(
         self,
         limits: list[tuple[str, int, int]],
+        *,
+        consume: bool = True,
     ) -> tuple[bool, dict[str, int]]:
         """Atomically check and consume several limits for one operation.
 
@@ -148,7 +150,8 @@ class GCRABudgetTracker:  # DOC: SECURITY.md
                 remaining_by_key[key] = max(0, min(burst_capacity, remaining))
                 planned[key] = state
 
-            self._budgets.update(planned)
+            if consume:
+                self._budgets.update(planned)
             return True, remaining_by_key
 
     def get_remaining(self, key: str, budget_per_minute: int) -> int:

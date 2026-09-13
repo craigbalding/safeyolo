@@ -14,6 +14,8 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+from safeyolo.core.destination import destination_key, network_approval_key
+
 from .audit_schema import InvalidAuditEvent, parse_audit_event
 
 AuditEvent = dict
@@ -203,6 +205,10 @@ def resolved_approval_key(event: AuditEvent) -> str | None:
 
     if event_type in ("admin.host_allowed", "admin.host_denied"):
         host = details.get("host", "")
+        port = details.get("port")
+        if host and port is not None:
+            key = network_approval_key(details.get("agent"), host, port)
+            return f"{key}:{destination_key(host, port)}"
         return f"{host}:{host}" if host else None
 
     if event_type in ("plumb.approved", "plumb.denied"):

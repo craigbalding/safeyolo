@@ -49,6 +49,7 @@ except ImportError:
 
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, Severity
 from safeyolo.core.base import SecurityAddon
+from safeyolo.core.destination import destination_key, network_approval_key
 from safeyolo.core.identity import IdentityStatus
 from safeyolo.core.trace import REASON_ADDON_DISABLED, trace_addon_hook
 from safeyolo.core.utils import get_client_ip, sanitize_for_log
@@ -363,8 +364,9 @@ class NetworkGuard(SecurityAddon):
         approval = ApprovalRequest(
             required=True,
             approval_type="network_egress",
-            key=domain,
-            target=domain,
+            key=network_approval_key(self.resolve_agent_identity(flow).agent, domain, flow.request.port),
+            target=destination_key(domain, flow.request.port),
+            scope_hint={"port": flow.request.port},
         )
 
         if self.should_block():
@@ -376,7 +378,7 @@ class NetworkGuard(SecurityAddon):
             self.log_decision(
                 flow, Decision.REQUIRE_APPROVAL,
                 severity=Severity.MEDIUM,
-                summary=f"Egress to {sanitize_for_log(domain)} requires approval",
+                summary=f"Egress to {sanitize_for_log(destination_key(domain, flow.request.port))} requires approval",
                 host=domain,
                 approval=approval,
                 decision_type="egress_approval_required",
@@ -388,6 +390,7 @@ class NetworkGuard(SecurityAddon):
                     "error": "Network access requires approval",
                     "type": "egress_approval_required",
                     "destination": domain,
+                    "port": flow.request.port,
                     "action": "wait_for_approval",
                     "reflection": f"Access to {sanitize_for_log(domain)} is not in the allowed hosts list. "
                                   "Check if this is an expected destination, then approve or deny via safeyolo watch.",

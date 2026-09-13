@@ -354,7 +354,7 @@ class AdminAPI:
         )
 
     def allow_host(
-        self, host: str, rate: int | None = None, agent: str | None = None,
+        self, host: str, rate: int | None = None, agent: str | None = None, port: int | None = None,
     ) -> dict[str, Any]:
         """Allow a new host in policy.
 
@@ -368,6 +368,8 @@ class AdminAPI:
             payload["rate"] = rate
         if agent is not None:
             payload["agent"] = agent
+        if port is not None:
+            payload["port"] = port
         return self._request(
             "POST",
             "/admin/policy/host/allow",
@@ -375,7 +377,7 @@ class AdminAPI:
         )
 
     def deny_host(
-        self, host: str, expires: str | None = None, agent: str | None = None,
+        self, host: str, expires: str | None = None, agent: str | None = None, port: int | None = None,
     ) -> dict[str, Any]:
         """Deny egress to a host in policy.
 
@@ -389,6 +391,8 @@ class AdminAPI:
             payload["expires"] = expires
         if agent is not None:
             payload["agent"] = agent
+        if port is not None:
+            payload["port"] = port
         return self._request(
             "POST",
             "/admin/policy/host/deny",

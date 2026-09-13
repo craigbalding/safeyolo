@@ -124,7 +124,7 @@ class HttpBlock(BaseModel):
     method: str = Field(..., description="HTTP method (GET, POST, etc.)")
     scheme: str = Field(..., description="URL scheme (http, https)")
     host: str = Field(..., description="Target host")
-    port: int = Field(..., description="Target port")
+    port: int = Field(..., strict=True, ge=1, le=65535, description="Target destination port")
     path: str = Field(..., description="Path WITHOUT query string")
 
     # REQUIRED: What headers are present (values not sent)

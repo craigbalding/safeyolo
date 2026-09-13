@@ -230,9 +230,11 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
     struct Request: Decodable, Hashable {
         struct Scope: Decodable, Hashable {
             let agentID: String?
+            let port: Int?
 
             enum CodingKeys: String, CodingKey {
                 case agentID = "agent_id"
+                case port
             }
         }
 
@@ -311,8 +313,33 @@ struct MutationPlan: Equatable {
     let path: String
     let body: [String: String]
     let expectsDesktop: Bool
+    var port: Int? = nil
+    var rate: Int? = nil
+
+    var payload: [String: Any] {
+        var result = body.mapValues { $0 as Any }
+        if let port { result["port"] = port }
+        if let rate { result["rate"] = rate }
+        return result
+    }
 
     static func forApproval(_ event: ApprovalEvent, allow: Bool) throws -> MutationPlan {
+        if event.approval.approvalType == "network_egress" {
+            guard let host = event.host, !host.isEmpty,
+                  let port = event.approval.scopeHint?.port, (1...65535).contains(port)
+            else {
+                throw ClientError.invalidApproval("Network approval is missing host or destination port")
+            }
+            var body = ["host": host]
+            if let agent = event.agent, !agent.isEmpty { body["agent"] = agent }
+            if !allow {
+                body["expires"] = ISO8601DateFormatter().string(from: Date().addingTimeInterval(86400))
+            }
+            return MutationPlan(
+                path: allow ? "/admin/policy/host/allow" : "/admin/policy/host/deny",
+                body: body, expectsDesktop: false, port: port, rate: allow ? 600 : nil
+            )
+        }
         if event.approval.approvalType == "desktop_present", allow {
             guard let agentID = event.approval.scopeHint?.agentID,
                   let encodedAgentID = encodePathComponent(agentID)

@@ -1002,6 +1002,10 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return
 
         host = data.get("host")
+        port = data.get("port")
+        if port is not None and (type(port) is not int or not 1 <= port <= 65535):
+            self._send_json({"error": "port must be an integer from 1 to 65535"}, 400)
+            return
         rate = data.get("rate")  # optional
         agent = data.get("agent")  # optional — agent-scoped if set
 
@@ -1017,7 +1021,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         client = get_policy_client()
         try:
-            result = client.add_host_allowance(host=host, rate=rate, agent=agent)
+            result = client.add_host_allowance(host=host, rate=rate, agent=agent, **({"port": port} if port is not None else {}))
         except ValueError as e:
             self._send_json({"error": str(e)}, 400)
             return
@@ -1033,7 +1037,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             severity=Severity.MEDIUM,
             summary=f"Host allowed: {_sanitize_log(host)} (rate={rate})",
             addon="admin-api",
-            details={"client_ip": client_ip, "host": host, "rate": rate},
+            details={"client_ip": client_ip, "host": host, "port": port, "agent": agent, "rate": rate},
         )
         log.info("Host allowed")
         self._send_json(result)
@@ -1046,6 +1050,10 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return
 
         host = data.get("host")
+        port = data.get("port")
+        if port is not None and (type(port) is not int or not 1 <= port <= 65535):
+            self._send_json({"error": "port must be an integer from 1 to 65535"}, 400)
+            return
         expires = data.get("expires")  # optional ISO datetime
         agent = data.get("agent")  # optional — agent-scoped if set
 
@@ -1061,7 +1069,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         client = get_policy_client()
         try:
-            result = client.add_host_denial(host=host, expires=expires, agent=agent)
+            result = client.add_host_denial(host=host, expires=expires, agent=agent, **({"port": port} if port is not None else {}))
         except ValueError as e:
             self._send_json({"error": str(e)}, 400)
             return
@@ -1077,7 +1085,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             severity=Severity.MEDIUM,
             summary=f"Host denied: {_sanitize_log(host)} (expires={_sanitize_log(str(expires))})",
             addon="admin-api",
-            details={"client_ip": client_ip, "host": host, "expires": expires},
+            details={"client_ip": client_ip, "host": host, "port": port, "agent": agent, "expires": expires},
         )
         log.info("Host denied")
         self._send_json(result)

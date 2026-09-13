@@ -215,6 +215,43 @@ readable for large lists.
 
 ### Expires
 
+Network entries can constrain the destination port. For example:
+
+```toml
+[hosts]
+"*" = { egress = "deny" }
+"example.com" = { egress = "prompt" }       # every port on this host
+"example.com:443" = { egress = "allow" }    # this port only
+"*.example.net:443" = { egress = "allow" }
+
+[agents.alice.hosts]
+"127.0.0.1:22" = { egress = "allow" }
+"[::1]:22" = { egress = "allow" }
+```
+
+A bare host retains its any-port meaning. Endpoint entries accept `egress`,
+`rate`, and `expires`; put credential, service, and addon settings in a separate
+bare-host entry. Ports are integers from 1 through 65535. Named services and
+port ranges are not supported. IPv6 endpoints require brackets.
+The compiled IAM condition is `port: 22`; raw IAM policies can also use a
+nonempty list such as `port: [22, 443]`. Omit the condition to match any port.
+A port condition never matches a request whose destination port is unknown.
+
+Agent rules take precedence over global rules. Within that scope, an exact
+host takes precedence over a wildcard host. For the same host pattern, a
+matching port condition takes precedence over a rule with no port condition.
+Other conditions must also match; equal-specificity rules keep their existing
+order. A port identifies the destination socket, not its application protocol.
+
+HTTP, HTTPS, WebSocket handshakes and CONNECT use the request's actual port,
+including the protocol default when the URL omits it. New network approvals
+identify the requesting agent, host and port. Watch and Commander preserve that
+scope when approving or denying; repeated requests to other ports or by other
+agents stay separate. Watch's explicit domain and all-agent modifiers retain
+the requested port. Historical approval events without port metadata retain
+their original host scope in watch; the native Commander requires port metadata
+for its new network approval action.
+
 HTTP CONNECT admission uses the same effective network rules and agent identity
 as HTTP requests. A CONNECT request has its actual destination host and port,
 method `CONNECT`, and no HTTP path. A method or path condition must match that
@@ -373,16 +410,19 @@ The `safeyolo policy` command group manages policy.toml from the command line. A
 # Add or update a host entry
 safeyolo policy host add api.stripe.com  # global budget only
 safeyolo policy host add api.stripe.com --rate 600
+safeyolo policy host add 127.0.0.1 --port 22 --agent alice
 safeyolo policy host add api.stripe.com --service stripe
 safeyolo policy host add api.stripe.com --rate 600 --agent boris
 safeyolo policy host add temp-api.com --rate 100 --expires 1d
 
 # Remove a host entry
 safeyolo policy host remove api.stripe.com
+safeyolo policy host remove 127.0.0.1 --port 22 --agent alice
 safeyolo policy host remove api.stripe.com --agent boris
 
 # Deny egress to a host (defaults to 1d expiry)
 safeyolo policy host deny sketchy.io
+safeyolo policy host deny 127.0.0.1 --port 22 --agent alice
 safeyolo policy host deny sketchy.io --expires 7d
 safeyolo policy host deny sketchy.io --expires 7d --agent boris
 
@@ -476,6 +516,12 @@ listing every expanded host permission.
 
 The `/lookup?host=X` Agent API endpoint evaluates one host with the calling
 agent's identity. An agent can use this endpoint before it attempts a request.
+`/lookup` accepts `port`, `scheme`, `method`, and `path` query parameters.
+The default scheme is `https`; HTTP and WS default to port 80, HTTPS and WSS
+to 443. CONNECT defaults to an empty path. For example,
+`/lookup?host=127.0.0.1&port=22&method=CONNECT` checks the calling agent's tunnel
+admission. Lookup checks current quotas without consuming them.
+
 The result covers the network decision for that host; it does not guarantee
 that a later credential-use decision will allow a specific credential.
 

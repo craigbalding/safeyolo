@@ -493,6 +493,29 @@ struct ModelTests {
             )
         )
 
+        let network = try JSONDecoder().decode(
+            ApprovalEvent.self,
+            from: Data("""
+            {"event":"security.network_guard","summary":"SSH needs approval",
+             "agent":"alice","host":"127.0.0.1",
+             "approval":{"required":true,"approval_type":"network_egress",
+               "key":"alice-22","target":"127.0.0.1:22","scope_hint":{"port":22}}}
+            """.utf8)
+        )
+        let networkAllow = try MutationPlan.forApproval(network, allow: true)
+        precondition(networkAllow.path == "/admin/policy/host/allow")
+        precondition(networkAllow.body == ["host": "127.0.0.1", "agent": "alice"])
+        precondition(networkAllow.port == 22 && networkAllow.rate == 600)
+        let wire = try JSONSerialization.jsonObject(
+            with: JSONSerialization.data(withJSONObject: networkAllow.payload)
+        ) as! [String: Any]
+        precondition(wire["port"] as? Int == 22)
+        precondition(wire["port"] as? String == nil)
+        let networkDeny = try MutationPlan.forApproval(network, allow: false)
+        precondition(networkDeny.path == "/admin/policy/host/deny")
+        precondition(networkDeny.port == 22 && networkDeny.body["agent"] == "alice")
+        precondition(networkDeny.body["expires"] != nil)
+
         let desktop = try JSONDecoder().decode(
             ApprovalEvent.self,
             from: Data("""

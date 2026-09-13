@@ -23,6 +23,7 @@ from rich.table import Table
 from .. import operator_approvals
 from .._tactics import TACTIC_LABELS
 from ..config import get_logs_dir
+from ..core.destination import destination_key
 
 console = Console()
 
@@ -611,6 +612,7 @@ def _prompt_egress_approval(item: BatchItem, api: admin_api.AdminAPI) -> bool:
     approval = event.get("approval", {})
     host = event.get("host", approval.get("target", "unknown"))
     agent_name = event.get("agent")
+    port = operator_approvals.network_scope(event).get("port")
 
     # Show detail panel
     console.print()
@@ -662,16 +664,16 @@ def _prompt_egress_approval(item: BatchItem, api: admin_api.AdminAPI) -> bool:
         # Execute
         try:
             if action == "approve":
-                api.allow_host(host=target, rate=600, agent=apply_to_agent)
-                scope_label = f"[bold]{escape(target)}[/bold]"
+                api.allow_host(host=target, rate=600, agent=apply_to_agent, **({"port": port} if port is not None else {}))
+                scope_label = f"[bold]{escape(destination_key(target, port))}[/bold]"
                 if apply_to_agent:
                     scope_label += f" (agent: {escape(apply_to_agent)})"
                 dur_label = f"expires {duration}" if duration else "permanent"
                 console.print(f"[green]Approved[/green] {scope_label} [{dur_label}]")
                 return True
             else:
-                api.deny_host(host=target, expires=expires, agent=apply_to_agent)
-                scope_label = f"[bold]{escape(target)}[/bold]"
+                api.deny_host(host=target, expires=expires, agent=apply_to_agent, **({"port": port} if port is not None else {}))
+                scope_label = f"[bold]{escape(destination_key(target, port))}[/bold]"
                 if apply_to_agent:
                     scope_label += f" (agent: {escape(apply_to_agent)})"
                 dur_label = f"expires {duration}" if duration else "permanent"
@@ -686,6 +688,7 @@ def _network_egress_format_row(event: dict) -> tuple[str, str, str, str]:
     approval = event.get("approval", {})
     agent = event.get("agent", "\u2014")
     host = event.get("host", approval.get("target", "unknown"))
+    host = destination_key(host, operator_approvals.network_scope(event).get("port"))
     action = f"egress \u2192 {host}"
     risk = "network access"
     description = event.get("summary", "")
@@ -704,7 +707,8 @@ def _network_egress_format_detail(event: dict) -> Panel:
 
     host = event.get("host", approval.get("target", "unknown"))
     agent = event.get("agent", "\u2014")
-    table.add_row("Destination", f"[bold]{host}[/bold]")
+    endpoint = destination_key(host, operator_approvals.network_scope(event).get("port"))
+    table.add_row("Destination", f"[bold]{escape(endpoint)}[/bold]")
     table.add_row("Agent", agent)
     table.add_row("Type", "Network egress approval")
     if details.get("decision_type"):

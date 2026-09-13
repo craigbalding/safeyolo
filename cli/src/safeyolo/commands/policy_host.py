@@ -13,6 +13,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from ..config import get_config_dir
+from ..core.destination import destination_key, split_destination
 
 console = Console()
 
@@ -130,6 +131,7 @@ def _scope_label(agent: str | None) -> str:
 @host_app.command("add")
 def host_add(  # DOC: docs/CONFIGURATION.md
     host: str = typer.Argument(..., help="Host pattern (e.g., api.stripe.com)"),
+    port: Annotated[Optional[int], typer.Option("--port", min=1, max=65535, help="Destination port (omitted: any port)")] = None,
     rate: Optional[int] = typer.Option(None, "--rate", "-r", help="Rate limit (requests/min)"),
     service: Annotated[
         Optional[str],
@@ -146,7 +148,17 @@ def host_add(  # DOC: docs/CONFIGURATION.md
         safeyolo policy host add api.stripe.com --rate 600 --agent boris
         safeyolo policy host add temp-api.com --rate 100 --expires 1d
     """
+    try:
+        parsed_host, embedded_port = split_destination(host)
+        if port is not None and embedded_port is not None and port != embedded_port:
+            raise ValueError("host endpoint and --port disagree")
+        host = destination_key(parsed_host, port if port is not None else embedded_port)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
     if service is not None:
+        if split_destination(host)[1] is not None:
+            raise typer.BadParameter("--service requires a host-wide entry; use a separate network endpoint rule")
         service = service.strip()
         if not service:
             console.print("[red]Error:[/red] --service must not be empty")
@@ -214,6 +226,7 @@ def host_add(  # DOC: docs/CONFIGURATION.md
 @host_app.command("remove")
 def host_remove(
     host: str = typer.Argument(..., help="Host pattern to remove"),
+    port: Annotated[Optional[int], typer.Option("--port", min=1, max=65535, help="Destination port (omitted: any port)")] = None,
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name (agent-scoped entry)"),
 ) -> None:
     """Remove a host entry from policy.
@@ -222,6 +235,14 @@ def host_remove(
         safeyolo policy host remove api.stripe.com
         safeyolo policy host remove api.stripe.com --agent boris
     """
+    try:
+        parsed_host, embedded_port = split_destination(host)
+        if port is not None and embedded_port is not None and port != embedded_port:
+            raise ValueError("host endpoint and --port disagree")
+        host = destination_key(parsed_host, port if port is not None else embedded_port)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
     def mutate(doc):
         hosts = _get_hosts_table(doc, agent)
         if host not in hosts:
@@ -238,6 +259,7 @@ def host_remove(
 @host_app.command("deny")
 def host_deny(
     host: str = typer.Argument(..., help="Host pattern to deny"),
+    port: Annotated[Optional[int], typer.Option("--port", min=1, max=65535, help="Destination port (omitted: any port)")] = None,
     expires: Optional[str] = typer.Option("1d", "--expires", "-e", help="Expiry (1h/8h/1d/7d/ISO datetime, default: 1d)"),
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name (agent-scoped entry)"),
 ) -> None:
@@ -251,6 +273,14 @@ def host_deny(
         safeyolo policy host deny sketchy.io --expires 7d
         safeyolo policy host deny sketchy.io --expires 7d --agent boris
     """
+    try:
+        parsed_host, embedded_port = split_destination(host)
+        if port is not None and embedded_port is not None and port != embedded_port:
+            raise ValueError("host endpoint and --port disagree")
+        host = destination_key(parsed_host, port if port is not None else embedded_port)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
     def mutate(doc):
         hosts = _get_hosts_table(doc, agent)
         existing = hosts.get(host)

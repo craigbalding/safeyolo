@@ -326,7 +326,7 @@ class PolicyClient(ABC):
         pass
 
     @abstractmethod
-    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None) -> dict:
+    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None, port: int | None = None) -> dict:
         """Add a host to the allowed list.
 
         Args:
@@ -340,7 +340,7 @@ class PolicyClient(ABC):
         pass
 
     @abstractmethod
-    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None) -> dict:
+    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None, port: int | None = None) -> dict:
         """Deny egress to a host.
 
         Args:
@@ -510,13 +510,13 @@ class LocalPolicyClient(PolicyClient):
         """Update rate limit for a host."""
         return self._pdp.update_host_rate(host, rate)
 
-    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None) -> dict:
+    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None, port: int | None = None) -> dict:
         """Add a host to the allowed list."""
-        return self._pdp.add_host_allowance(host, rate, agent=agent)
+        return self._pdp.add_host_allowance(host, rate, agent=agent, **({"port": port} if port is not None else {}))
 
-    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None) -> dict:
+    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None, port: int | None = None) -> dict:
         """Deny egress to a host."""
-        return self._pdp.add_host_denial(host, expires, agent=agent)
+        return self._pdp.add_host_denial(host, expires, agent=agent, **({"port": port} if port is not None else {}))
 
     def add_host_bypass(self, host: str, addon: str) -> dict:
         """Add an addon bypass for a host."""
@@ -830,11 +830,11 @@ class HttpPolicyClient(PolicyClient):
         """Update host rate limit via HTTP (not implemented for remote PDP)."""
         return {"error": "update_host_rate not supported via HTTP PDP"}
 
-    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None) -> dict:
+    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None, port: int | None = None) -> dict:
         """Add host allowance via HTTP (not implemented for remote PDP)."""
         return {"error": "add_host_allowance not supported via HTTP PDP"}
 
-    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None) -> dict:
+    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None, port: int | None = None) -> dict:
         """Add host denial via HTTP (not implemented for remote PDP)."""
         return {"error": "add_host_denial not supported via HTTP PDP"}
 
