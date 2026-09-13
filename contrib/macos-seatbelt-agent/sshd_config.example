@@ -1,0 +1,22 @@
+# Include from sshd_config only after completing the README installation.
+# The account's UserShell MUST be the compiled agent-entry binary.
+# AcceptEnv is inherited/additive. Remove broad global AcceptEnv settings;
+# do not accept ENV, BASH_ENV, ZDOTDIR, DYLD_*, PATH or HOME from clients.
+PermitUserEnvironment no
+
+Match User sy-agent
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AuthorizedKeysFile /Library/PrivilegedHelperTools/seatbelt-agent/authorized_keys
+    ForceCommand seatbelt-session
+    DisableForwarding yes
+    AllowTcpForwarding no
+    AllowStreamLocalForwarding no
+    AllowAgentForwarding no
+    X11Forwarding no
+    PermitTunnel no
+    PermitTTY yes
+    PermitUserRC no
+Match all

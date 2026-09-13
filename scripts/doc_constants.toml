@@ -197,3 +197,17 @@ source = "cli/src/safeyolo/platform/linux.py"
 pattern = '"0", "100000", "1000"'
 docs = ["docs/security-verification.md", "README.md"]
 must_contain = "100000"
+
+[[assertion]]
+name = "seatbelt-agent-account"
+source = "contrib/macos-seatbelt-agent/agent-entry.c"
+pattern = '(?m)^#define AGENT_USER "(?P<account>[^"\n]+)"'
+docs = ["contrib/macos-seatbelt-agent/README.md"]
+must_contain = "`{account}`"
+
+[[assertion]]
+name = "seatbelt-entry-root"
+source = "contrib/macos-seatbelt-agent/agent-entry.c"
+pattern = '(?m)^#define ENTRY_ROOT "(?P<entry_root>[^"\n]+)"'
+docs = ["contrib/macos-seatbelt-agent/README.md"]
+must_contain = "{entry_root}"

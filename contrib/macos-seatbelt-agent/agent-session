@@ -1,0 +1,19 @@
+#!/bin/sh
+# This root-owned script is executed only AFTER Seatbelt is attached.
+set -eu
+/bin/mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$XDG_STATE_HOME/tmux" "$XDG_CONFIG_HOME"
+cd "$HOME"
+case "$1" in
+    --command)
+        test "$#" -eq 2
+        exec /bin/zsh -c "$2"
+        ;;
+    --interactive)
+        test "$#" -eq 1
+        if command -v tmux >/dev/null 2>&1; then
+            exec tmux -S "$XDG_STATE_HOME/tmux/default" new-session -A -s agent /bin/zsh -l
+        fi
+        exec /bin/zsh -l
+        ;;
+    *) exit 1 ;;
+esac
