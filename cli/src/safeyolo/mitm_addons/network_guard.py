@@ -145,6 +145,15 @@ class NetworkGuard(SecurityAddon):
     @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Enforce network policy: homoglyphs, access control, rate limits."""
+        self._enforce(flow)
+
+    @trace_addon_hook("http_connect")
+    def http_connect(self, flow: http.HTTPFlow):
+        """Authorize the tunnel destination before mitmproxy connects upstream."""
+        self._enforce(flow)
+
+    def _enforce(self, flow: http.HTTPFlow) -> None:
+        """Apply the same effective policy to HTTP requests and CONNECT."""
         if not self.is_enabled():
             self._trace_bypassed(flow, reason=REASON_ADDON_DISABLED)
             return
@@ -224,6 +233,12 @@ class NetworkGuard(SecurityAddon):
         if decision.budget and decision.budget.remaining is not None:
             flow.metadata["ratelimit_remaining"] = decision.budget.remaining
         self._trace_evaluated(flow, outcome=OUTCOME_ALLOWED)
+        if method == "CONNECT":
+            self.log_decision(
+                flow, Decision.ALLOW, severity=Severity.LOW,
+                summary=f"CONNECT to {sanitize_for_log(domain)}:{flow.request.port} allowed",
+                host=domain, method=method, port=flow.request.port,
+            )
 
     def _handle_homoglyph(self, flow, domain, path, method, homoglyph):
         """Handle homoglyph attack detection."""

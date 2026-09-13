@@ -79,6 +79,17 @@ class TransportGuard:
 
     name = "transport-guard"
 
+    def http_connect(self, flow: http.HTTPFlow) -> None:
+        """Virtual HTTP endpoints cannot serve as upstream tunnel targets."""
+        if is_agent_api_host(flow.request.host) or is_probe_host(flow.request.host):
+            if flow.response is None:
+                ensure_request_id(flow)
+                flow.response = http.Response.make(
+                    403, b'{"error":"Reserved virtual host cannot accept CONNECT"}',
+                    {"Content-Type": "application/json", "X-Blocked-By": self.name},
+                )
+                flow.metadata["blocked_by"] = self.name
+
     def _client_ip(self, data: ServerConnectionHookData) -> str | None:
         return data.client.peername[0] if data.client.peername else None
 

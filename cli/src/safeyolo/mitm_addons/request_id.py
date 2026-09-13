@@ -198,6 +198,18 @@ class RequestIdGenerator:
 
     name = "request-id"
 
+    def http_connect(self, flow: http.HTTPFlow):
+        """Correlate CONNECT independently of HTTP requests inside the tunnel."""
+        self.request(flow)
+
+    def http_connected(self, flow: http.HTTPFlow):
+        """Return the CONNECT correlation ID when the tunnel is admitted."""
+        self.response(flow)
+
+    def http_connect_error(self, flow: http.HTTPFlow):
+        """Return the CONNECT correlation ID when admission fails."""
+        self.response(flow)
+
     def request(self, flow: http.HTTPFlow):
         """Assign request_id, consume the trace marker, strip internal + hop-by-hop headers."""
         # 1. Assign unique request ID via ensure_request_id so any earlier

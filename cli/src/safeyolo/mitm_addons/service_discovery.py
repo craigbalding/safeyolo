@@ -120,6 +120,10 @@ class ServiceDiscovery:
 
         return "unknown"
 
+    def http_connect(self, flow: http.HTTPFlow):
+        """Capture the same trusted transport identity for tunnel admission."""
+        self.request(flow)
+
     def request(self, flow: http.HTTPFlow):
         """Resolve and stamp one trusted identity for downstream consumers."""
         attribution = snapshot_flow_attribution(flow, self)

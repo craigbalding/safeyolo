@@ -888,7 +888,6 @@ class TestAgentAPIRequestContainment:
         import json
         import os
         import socket
-        import ssl
         import subprocess
         import sys
         import time
@@ -990,34 +989,15 @@ class TestAgentAPIRequestContainment:
             assert b"query-secret" not in content
             assert b"authorization-secret" not in content
 
-            # Exercise the real CONNECT + TLS/SNI path. Lazy connection mode
-            # lets mitmproxy terminate the tunnel locally, and the same final
-            # request guard returns 503 without opening an upstream socket.
+            # The virtual Agent API supports plain HTTP only. CONNECT must
+            # fail at admission, before TLS or an upstream connection exists.
             tunnel = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            tunnel.set_tunnel(AGENT_API_HOST, 443)
-            tunnel.connect()
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            tunnel.sock = context.wrap_socket(
-                tunnel.sock,
-                server_hostname=AGENT_API_HOST,
-            )
-            tunnel.request(
-                "GET",
-                "/health?token=query-secret",
-                headers={"Authorization": "Bearer authorization-secret"},
-            )
-            tls_response = tunnel.getresponse()
-            tls_content = tls_response.read()
+            tunnel.request("CONNECT", f"{AGENT_API_HOST}:443")
+            denied = tunnel.getresponse()
+            assert denied.status == 403
+            assert denied.getheader("X-Blocked-By")
+            denied.read()
             tunnel.close()
-
-            assert tls_response.status == 503
-            tls_body = json.loads(tls_content)
-            assert tls_body["reason_code"] == "agent_api_unavailable"
-            assert tls_body["path"] == "/health"
-            assert b"query-secret" not in tls_content
-            assert b"authorization-secret" not in tls_content
         finally:
             if process.poll() is None:
                 process.terminate()
