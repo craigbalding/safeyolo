@@ -400,12 +400,16 @@ class PolicyEngine:
         # A budget permission adds a second, per-host ceiling.  Check both as
         # one operation so rejection by one ceiling does not spend the other.
         if permission.effect in {"allow", "budget"}:
+            # CONNECT admission and enclosed HTTP requests have independent
+            # counters under the same configured ceilings. A tunnel cannot
+            # consume the HTTP transaction's quota before it even starts.
+            budget_action = "network:connect" if method.upper() == "CONNECT" else "network:request"
             limits: list[tuple[str, int, int]] = []
             if permission.effect == "budget":
-                limits.append((f"network:request:{host}", permission.budget, 1))
+                limits.append((f"{budget_action}:{host}", permission.budget, 1))
             global_budget = self._get_global_budget("network:request")
             if global_budget is not None:
-                limits.append(("network:request:__global__", global_budget, 1))
+                limits.append((f"{budget_action}:__global__", global_budget, 1))
 
             if limits:
                 allowed, remaining = self._budget_tracker.check_and_consume_many(limits)
@@ -708,10 +712,20 @@ class PolicyEngine:
                 action = f"{parts[0]}:{parts[1]}"
                 resource = parts[2] if len(parts) > 2 else "*"
 
-                # Find matching permission to get budget limit
-                permission = self._find_matching_permission(action, f"{resource}/*", {})
+                # CONNECT has separate counters under the network ceilings.
+                policy_action = "network:request" if action == "network:connect" else action
+                if resource == "__global__":
+                    limit = self._get_global_budget(policy_action)
+                    if limit is not None:
+                        budget_usage[key] = {
+                            "budget_per_minute": limit,
+                            "remaining": self._budget_tracker.get_remaining(key, limit),
+                            "resource": resource,
+                        }
+                    continue
+                permission = self._find_matching_permission(policy_action, f"{resource}/*", {})
                 if permission is None:
-                    permission = self._find_matching_permission(action, "*", {})
+                    permission = self._find_matching_permission(policy_action, "*", {})
 
                 if permission and permission.budget:
                     remaining = self._budget_tracker.get_remaining(key, permission.budget)

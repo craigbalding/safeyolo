@@ -14,6 +14,7 @@ Usage:
 import logging
 
 from mitmproxy import ctx, http
+from mitmproxy.proxy.server_hooks import ServerConnectionHookData
 
 log = logging.getLogger("safeyolo.admin-shield")
 
@@ -58,6 +59,17 @@ class AdminShield:  # DOC: SECURITY.md
     def _is_local(self, host: str) -> bool:
         """Check if host resolves to a local/container-internal address."""
         return host.lower() in self._LOCAL_HOSTS or host.lower().endswith(".localhost")
+
+    def http_connect(self, flow: http.HTTPFlow):
+        """Apply the reserved-port boundary before admitting a tunnel."""
+        self.request(flow)
+
+    def server_connect(self, data: ServerConnectionHookData) -> None:
+        """Keep reserved local ports unreachable at the transport boundary."""
+        if data.server.address:
+            host, port = data.server.address
+            if port in self._get_blocked_ports() and self._is_local(host):
+                data.server.error = "SafeYolo: admin API not accessible through proxy"
 
     def request(self, flow: http.HTTPFlow):
         """Block requests to admin API port on local destinations."""

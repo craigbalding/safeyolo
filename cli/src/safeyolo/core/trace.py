@@ -300,7 +300,12 @@ class TraceStore:
     def serialise(self, record: TraceRecord) -> dict[str, Any]:
         """Build the wire payload for `/trace`, including `not_loaded` diff."""
         observed = {step.addon for step in record.steps}
-        not_loaded = [name for name in expected_addons() if name not in observed]
+        expected = (
+            ["network-guard"]
+            if any(step.hook == "http_connect" for step in record.steps)
+            else expected_addons()
+        )
+        not_loaded = [name for name in expected if name not in observed]
         return {
             "request_id": record.request_id,
             "agent_id": record.agent_id,
@@ -474,7 +479,7 @@ def trace_addon_hook(hook: str) -> Callable:
     (e.g. `if flow.response: return` or `if self.is_bypassed(flow): return`)
     are responsible for emitting their own `bypassed/*` trace evidence.
     """
-    if hook not in ("request", "response"):
+    if hook not in ("request", "response", "http_connect"):
         raise ValueError(f"trace_addon_hook: unsupported hook {hook!r}")
 
     def decorator(fn: Callable) -> Callable:

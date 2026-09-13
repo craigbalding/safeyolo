@@ -212,6 +212,12 @@ class SecurityAddon:
         # and FlowStore.  It must not re-resolve a mutable IP map at decision
         # time and produce a second identity for the same request.
         attribution = flow_attribution(flow, self._resolve_service_discovery())
+        details = {
+            **details,
+            "method": flow.request.method,
+            "port": flow.request.port,
+            "connection_id": flow.client_conn.id,
+        }
         write_event(
             event_type,
             kind=EventKind.SECURITY,
@@ -281,6 +287,8 @@ class SecurityAddon:
         duration_us: int | None = None,
         **details: Any,
     ) -> None:
+        if hook == "request" and flow.request.method == "CONNECT":
+            hook = "http_connect"
         if duration_us is None:
             duration_us = _elapsed_us_from(flow, self.name, hook)
         record_step(
@@ -300,6 +308,8 @@ class SecurityAddon:
         reason: str,
         hook: str = "request",
     ) -> None:
+        if hook == "request" and flow.request.method == "CONNECT":
+            hook = "http_connect"
         # No duration for bypassed steps — either the hook was preempted
         # before entering (prior_response) or the addon short-circuited on
         # a policy/option check, neither of which is meaningful runtime.

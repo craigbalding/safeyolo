@@ -215,6 +215,26 @@ readable for large lists.
 
 ### Expires
 
+HTTP CONNECT admission uses the same effective network rules and agent identity
+as HTTP requests. A CONNECT request has its actual destination host and port,
+method `CONNECT`, and no HTTP path. A method or path condition must match that
+admission request; SafeYolo does not infer the later HTTP method or path.
+After admission, enclosed HTTP requests and WebSocket handshakes still pass
+through the existing inspection hooks. WebSockets need no separate network
+allowance: they follow the configured host, agent, and default egress rules.
+
+A deny returns 403. A prompt returns 428 and enters the existing operator
+approval flow. After approval in `safeyolo watch` or Commander, the client must
+retry the connection. A browser may show a connection error instead of the
+approval response body.
+
+CONNECT admissions use separate `network:connect` budget counters under the
+same configured global and host rate ceilings. Inner HTTP requests consume
+`network:request` counters. This bounds new tunnels without double charging
+HTTP requests. Admission audit events include method, destination port, request
+ID, and connection ID; the connection ID also links inner security decisions.
+These counters do not count bytes or messages inside a raw TCP tunnel.
+
 Host entries support a `expires` field using TOML's native datetime type. Expired entries are cleaned up automatically at policy reload:
 
 ```toml
