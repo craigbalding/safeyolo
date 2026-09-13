@@ -326,15 +326,16 @@ do {
     // This is the primary egress path — each guest-initiated flow
     // lands on the host-side UDS and is forwarded to mitmproxy with
     // the agent-attributed upstream source IP.
+    let relayLedger = RelayLedger()
     var proxyRelay: VSockProxyRelay? = nil
     if !config.proxySocketPath.isEmpty {
-        proxyRelay = VSockProxyRelay(
+        proxyRelay = try VSockProxyRelay(
             vm: vm, queue: vmQueue,
             socketPath: config.proxySocketPath,
+            ledger: relayLedger,
         )
         proxyRelay?.start()
     }
-    _ = proxyRelay  // keep the VZVirtioSocketListener alive for process lifetime
 
     // Start the host-side shell bridge if a socket path was provided.
     // Each accept on the host UDS dials guest:2220 where socat proxies
@@ -342,9 +343,10 @@ do {
     // `ssh -o ProxyCommand='nc -U <path>'`.
     var shellBridge: VSockShellBridge? = nil
     if !config.shellSocketPath.isEmpty {
-        shellBridge = VSockShellBridge(
+        shellBridge = try VSockShellBridge(
             vm: vm, queue: vmQueue,
             socketPath: config.shellSocketPath,
+            ledger: relayLedger,
         )
         do {
             try shellBridge?.start()
@@ -352,7 +354,6 @@ do {
             fputs("[shell-bridge] failed to start: \(error)\n", stderr)
         }
     }
-    _ = shellBridge  // keep reference alive for process lifetime
 
     // In detach mode (--no-terminal), the VM stays alive until SIGTERM and
     // is accessed via SSH (`safeyolo agent shell <name>`); no vsock-term.
@@ -409,7 +410,9 @@ do {
     // so RunLoop.main stays alive for the VM's lifetime.
     let keepalive = Timer(timeInterval: 30.0, repeats: true) { _ in }
     RunLoop.main.add(keepalive, forMode: .default)
-    RunLoop.main.run()
+    withExtendedLifetime((runner, proxyRelay, shellBridge)) {
+        RunLoop.main.run()
+    }
 } catch {
     fputs("Error: \(error.localizedDescription)\n", stderr)
     // Use sysexits.h EX_TEMPFAIL (75) for snapshot-related errors so the CLI

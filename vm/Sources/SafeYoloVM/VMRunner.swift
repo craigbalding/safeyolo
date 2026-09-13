@@ -2,7 +2,7 @@ import Foundation
 import Virtualization
 
 /// Manages the lifecycle of a VZVirtualMachine: start, state observation, signal handling, shutdown.
-class VMRunner: NSObject {
+class VMRunner: NSObject, VZVirtualMachineDelegate {
 
     let vm: VZVirtualMachine
     private let queue: DispatchQueue
@@ -52,6 +52,7 @@ class VMRunner: NSObject {
         self.vm = vm
         self.queue = queue ?? DispatchQueue(label: "com.safeyolo.vm.runner", qos: .userInteractive)
         super.init()
+        self.queue.async { [self] in vm.delegate = self }
         observeState()
     }
 
@@ -93,7 +94,9 @@ class VMRunner: NSObject {
         case .stopped:
             if !isSuppressed { exitClean(code: 0) }
         case .error:
-            if !isSuppressed { exitClean(code: 1) }
+            // The delegate carries the framework error. Exiting from KVO here
+            // discarded that evidence before didStopWithError could run.
+            break
         case .running:
             break
         case .starting:
@@ -105,6 +108,11 @@ class VMRunner: NSObject {
         @unknown default:
             break
         }
+    }
+
+    func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
+        Log.warn("vm", "virtual machine stopped: \(error)")
+        if !isSuppressed { exitClean(code: 1) }
     }
 
     private func stateName(_ state: VZVirtualMachine.State) -> String {

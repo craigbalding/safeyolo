@@ -1,4 +1,4 @@
-.PHONY: build debug install install-helper debug-install verify clean guest-tools
+.PHONY: build debug install install-helper debug-install verify clean guest-tools test-relays
 
 PROFILE ?= production
 BUILD_ROOT = $(if $(filter production,$(PROFILE)),.build,.build/$(PROFILE))
@@ -27,6 +27,12 @@ debug-install:
 
 verify:
 	$(PYTHON) build-info.py verify --profile $(PROFILE) "$(BINARY)"
+
+test-relays:
+	mkdir -p .build
+	swiftc -O -g Sources/SafeYoloVM/SocketRelay.swift Sources/SafeYoloVM/Log.swift \
+		test/SocketRelayTests.swift -o .build/relay-tests
+	$(PYTHON) -c 'import subprocess; subprocess.run([".build/relay-tests"], check=True, timeout=60)'
 
 LIMA_VM = safeyolo-builder
 UNAME := $(shell uname)

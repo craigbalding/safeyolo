@@ -593,6 +593,27 @@ For an exported source tree without Git metadata, the build can take a full
 `SAFEYOLO_BUILD_REVISION` and `SAFEYOLO_BUILD_DIRTY=yes|no|unknown` from the
 exporting build process. Without source evidence, identity reports `unknown`.
 
+The proxy and shell relays each use a dedicated thread with nonblocking socket
+I/O. Each direction buffers at most 64 KiB and stops reading while that buffer
+is full. Relay establishment has a ten-second deadline from acceptance,
+including waiting for a vsock callback. A late callback closes its connection.
+Cancellation shuts down both endpoints and releases their owners on the next
+relay turn; no relay waits for child work on a shared GCD pool.
+
+A half-close propagates only after its buffered bytes drain. The other direction
+can continue sending a response without a lifetime or idle limit. Once both
+readers reach EOF, any remaining buffer must make progress within ten seconds
+or teardown closes the flow. Completion logs use a separate thread so stderr
+backpressure cannot block pumps. Its bounded queue holds 1,024 pending messages;
+overflow is counted and reported when logging resumes.
+
+Run `make -C vm test-relays` on macOS for real Unix-socket regression tests.
+They exercise 300 held proxy flows alongside shell traffic, backpressure and
+byte integrity, half-close responses, establishment/drain timeouts, cancellation,
+late callbacks, blocked logging and return to the original open-FD count. This
+suite tests the native relay implementation; real VZ/guest acceptance is still
+needed for framework integration and guest services.
+
 ## Testing
 
 **Run tests:**
