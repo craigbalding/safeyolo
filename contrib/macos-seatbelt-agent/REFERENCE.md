@@ -236,9 +236,11 @@ SwiftPM's additional sandbox.
 The inherited Seatbelt profile still confines the compiler, manifest and build
 children. This flag is not an instruction to run unconfined builds elsewhere.
 
-For Apple Silicon VM work, build the repository's `vm` Swift package and sign
-`safeyolo-vm` with its supplied entitlements. Start with `safeyolo-vm check`, then
-prove a minimal boot on a physical Apple Silicon host. Inspect denials from a
+For Apple Silicon VM work, use the confined Mac account and change to the
+SafeYolo checkout's `vm` directory. Build the Swift package and sign
+`.build/release/safeyolo-vm` using the supplied `safeyolo-vm.entitlements`.
+From that same directory, run `.build/release/safeyolo-vm check`, then prove a
+minimal boot on a physical Apple Silicon host. Inspect denials from a
 trusted administrator session and add only the framework/Mach services actually
 needed by that helper. The example contains **no speculative Virtualization
 Mach allowances** and gives no control of unrelated container or VM daemons.
