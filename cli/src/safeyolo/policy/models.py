@@ -2,7 +2,7 @@
 
 import fnmatch
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -39,11 +39,15 @@ class PolicyMetadata(BaseModel):
         return validate_task_id(value) if value is not None else None
 
 
+DestinationPort = Annotated[int, Field(strict=True, ge=1, le=65535)]
+
+
 class Condition(BaseModel):
     """Optional conditions for permission matching."""
 
     credential: str | list[str] | None = None
     method: str | list[str] | None = None
+    port: DestinationPort | list[DestinationPort] | None = None
     path_prefix: str | None = None
     content_type: str | None = None
     tactics: list[str] | None = None
@@ -53,6 +57,19 @@ class Condition(BaseModel):
     agent: str | None = None
     service: str | None = None
     capability: str | None = None
+
+    @field_validator("port")
+    @classmethod
+    def _validate_ports(cls, value):
+        if isinstance(value, list) and not value:
+            raise ValueError("port list must not be empty")
+        return value
+
+    def _matches_port(self, context: dict[str, Any]) -> bool:
+        if self.port is None:
+            return True
+        ports = self.port if isinstance(self.port, list) else [self.port]
+        return context.get("port") in ports
 
     def _matches_credential(self, context: dict[str, Any]) -> bool:
         if self.credential is None:
@@ -126,7 +143,8 @@ class Condition(BaseModel):
     def matches(self, context: dict[str, Any]) -> bool:
         """Check if all specified conditions match the context."""
         return (
-            self._matches_credential(context)
+            self._matches_port(context)
+            and self._matches_credential(context)
             and self._matches_method(context)
             and self._matches_path_prefix(context)
             and self._matches_content_type(context)

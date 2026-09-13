@@ -492,7 +492,7 @@ class TestAuditAndStats:
         assert len(calls) == 1
         approval = calls[0].kwargs["approval"]
         assert approval.approval_type == "network_egress"
-        assert approval.key == "unknown-host.com"
+        assert json.loads(approval.key) == ["", "unknown-host.com", 443]
 
     def test_stats_track_deny_allow_and_rate_limit(
         self,

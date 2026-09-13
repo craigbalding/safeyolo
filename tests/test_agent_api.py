@@ -994,7 +994,13 @@ class TestLookup:
             body = json.loads(flow.response.content)
             assert body == {"error": "Policy engine not available"}
 
-    def test_lookup_returns_decision(self, api, agent_token):
+    @pytest.mark.parametrize("query,port,method,path", [
+        ("host=api.openai.com", 443, "GET", "/"),
+        ("host=api.openai.com&scheme=http", 80, "GET", "/"),
+        ("host=api.openai.com&scheme=ws", 80, "GET", "/"),
+        ("host=api.openai.com&port=22&method=CONNECT", 22, "CONNECT", ""),
+    ])
+    def test_lookup_returns_decision(self, api, agent_token, query, port, method, path):
         """Successful lookup returns host, agent, effect, reason."""
         mock_decision = PolicyDecision(effect="allow", reason="explicit permission")
 
@@ -1013,7 +1019,7 @@ class TestLookup:
 
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=mock_client, autospec=True,):
-            flow = _make_api_flow("/lookup", token=agent_token, query="host=api.openai.com")
+            flow = _make_api_flow("/lookup", token=agent_token, query=query)
             _set_uds_agent(flow)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
@@ -1022,6 +1028,11 @@ class TestLookup:
             assert body["effect"] == "allow"
             assert body["reason"] == "explicit permission"
             assert body["agent"] == "agent-1"
+
+        mock_engine.evaluate_request.assert_called_once_with(
+            host="api.openai.com", agent="agent-1", port=port,
+            method=method, path=path, consume_budget=False,
+        )
 
 
 class TestMetadata:

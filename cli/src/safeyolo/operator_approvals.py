@@ -5,12 +5,27 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from safeyolo.core.destination import validate_port
+
 if TYPE_CHECKING:
     from .api import AdminAPI
 
 
 class ApprovalActionError(NotImplementedError):
     """The audit event doesn't contain enough data for the requested action."""
+
+
+def network_scope(event: dict) -> dict:
+    """Return the narrow destination scope recorded by the network sensor."""
+    port = event.get("approval", {}).get("scope_hint", {}).get("port")
+    if port is None:
+        port = event.get("details", {}).get("port")
+    result = {}
+    if port is not None:
+        result["port"] = validate_port(port)
+    if event.get("agent"):
+        result["agent"] = event["agent"]
+    return result
 
 
 def approve(
@@ -42,7 +57,7 @@ def approve(
 
     if approval_type == "network_egress":
         host = event.get("host", approval.get("target", ""))
-        result = api.allow_host(host=host, rate=600)
+        result = api.allow_host(host=host, rate=600, **network_scope(event))
         return result.get("status", "ok")
 
     if approval_type == "service":
@@ -119,7 +134,7 @@ def deny(event: dict, api: AdminAPI) -> None:
     if approval_type == "network_egress":
         host = event.get("host", approval.get("target", ""))
         expires = (datetime.now(UTC) + timedelta(days=1)).isoformat()
-        api.deny_host(host=host, expires=expires)
+        api.deny_host(host=host, expires=expires, **network_scope(event))
         return
 
     if approval_type in {"service", "contract_binding"}:

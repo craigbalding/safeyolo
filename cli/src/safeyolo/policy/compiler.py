@@ -28,6 +28,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+from safeyolo.core.destination import split_destination
 from safeyolo.core.utils import sanitize_for_log
 
 log = logging.getLogger("safeyolo.policy-compiler")
@@ -72,6 +73,9 @@ def compile_policy(raw: dict) -> dict:
                 f"Host '{host_pattern}' config must be a dict, "
                 f"got {type(config).__name__}. Fix the hosts section in policy."
             )
+
+        if _compile_endpoint(host_pattern, config, permissions):
+            continue
 
         # Wildcard host gets special handling
         if host_pattern == "*":
@@ -203,6 +207,30 @@ def compile_policy(raw: dict) -> dict:
 
     log.info(f"Compiled host-centric policy: {len(hosts)} hosts → {len(permissions)} permissions")
     return result
+
+
+def _compile_endpoint(host_pattern: str, config: dict, permissions: list[dict], *, agent: str | None = None) -> bool:
+    """Compile an endpoint entry as a network rule with a port condition."""
+    host, port = split_destination(host_pattern)
+    if port is None:
+        return False
+    unsupported = set(config) - {"egress", "rate_limit", "expires"}
+    if unsupported:
+        raise ValueError(f"Endpoint '{host_pattern}' supports network fields only; unsupported: {sorted(unsupported)}")
+    egress = config.get("egress", "allow" if "rate_limit" in config else None)
+    if egress not in {"allow", "deny", "prompt"}:
+        raise ValueError(f"Endpoint '{host_pattern}' requires egress allow, deny or prompt (or a rate)")
+    condition: dict[str, Any] = {"port": port}
+    if agent:
+        condition["agent"] = agent
+    rule = {
+        "action": "network:request", "resource": "*" if host == "*" else f"{host}/*",
+        "effect": egress, "tier": "explicit", "condition": condition,
+    }
+    if egress == "allow" and "rate_limit" in config:
+        rule.update(effect="budget", budget=config["rate_limit"])
+    permissions.append(rule)
+    return True
 
 
 def _validate_budget_hierarchy(raw: dict[str, Any]) -> None:
@@ -358,6 +386,9 @@ def _compile_agent_hosts(
             if config is None:
                 config = {}
             if not isinstance(config, dict):
+                continue
+
+            if _compile_endpoint(host_pattern, config, permissions, agent=agent_name):
                 continue
 
             resource = f"{host_pattern}/*"

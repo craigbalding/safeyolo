@@ -139,7 +139,7 @@ class TestPDPCoreEvaluate:
         assert decision.budget is not None
         assert decision.budget.remaining == 100
         mock_engine.evaluate_request.assert_called_once_with(
-            host="example.com", path="/api", method="GET", agent=None,
+            host="example.com", port=443, path="/api", method="GET", agent=None,
         )
 
     def test_credential_deny_short_circuits_before_network(self, pdp_core, mock_engine):

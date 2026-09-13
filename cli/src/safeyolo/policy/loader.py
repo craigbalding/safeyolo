@@ -440,7 +440,7 @@ class PolicyLoader:
                 self._last_lists_mtime = self._lists_max_mtime()
 
                 # Sort permissions by specificity (most specific first)
-                self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource, p.condition is not None), reverse=True)
+                self._baseline.permissions.sort(key=lambda p: (_specificity_score(p.resource, p.condition is not None), bool(p.condition and p.condition.port is not None)), reverse=True)
 
                 # Build permission index for O(1) exact-host lookup
                 self._baseline_simple, self._baseline_exact, self._baseline_patterns = (
@@ -504,7 +504,7 @@ class PolicyLoader:
                 self._last_task_mtime = path.stat().st_mtime
 
                 # Sort permissions
-                self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource, p.condition is not None), reverse=True)
+                self._task_policy.permissions.sort(key=lambda p: (_specificity_score(p.resource, p.condition is not None), bool(p.condition and p.condition.port is not None)), reverse=True)
                 self._task_simple, self._task_exact, self._task_patterns = (
                     _build_permission_index(self._task_policy.permissions)
                 )
@@ -663,7 +663,7 @@ class PolicyLoader:
         """
         with self._lock:
             self._baseline = policy
-            self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource, p.condition is not None), reverse=True)
+            self._baseline.permissions.sort(key=lambda p: (_specificity_score(p.resource, p.condition is not None), bool(p.condition and p.condition.port is not None)), reverse=True)
             self._baseline_simple, self._baseline_exact, self._baseline_patterns = (
                 _build_permission_index(self._baseline.permissions)
             )
@@ -680,7 +680,7 @@ class PolicyLoader:
         """Set task policy directly (for updates via API)."""
         with self._lock:
             self._task_policy = policy
-            self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource, p.condition is not None), reverse=True)
+            self._task_policy.permissions.sort(key=lambda p: (_specificity_score(p.resource, p.condition is not None), bool(p.condition and p.condition.port is not None)), reverse=True)
             self._task_simple, self._task_exact, self._task_patterns = (
                 _build_permission_index(self._task_policy.permissions)
             )

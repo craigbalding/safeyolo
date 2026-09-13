@@ -674,3 +674,21 @@ class TestPolicyListShow:
         result = runner.invoke(app, ["policy", "list", "show", "temp"])
         assert result.exit_code == 1
         assert "not found" in result.output
+
+
+def test_port_scoped_cli_round_trip(tmp_config_dir):
+    path = tmp_config_dir / "policy.toml"
+    path.write_text('budget = 12000\n[hosts]\n"*" = { egress = "deny" }\n')
+    from safeyolo.policy.engine import PolicyEngine
+
+    for port in (22, 443):
+        result = runner.invoke(app, ["policy", "host", "add", "127.0.0.1", "--port", str(port), "--agent", "alice"])
+        assert result.exit_code == 0, result.output
+    engine = PolicyEngine(baseline_path=path)
+    assert engine.evaluate_request("127.0.0.1", agent="alice", port=22).effect == "allow"
+    assert engine.evaluate_request("127.0.0.1", agent="alice", port=80).effect == "deny"
+    result = runner.invoke(app, ["policy", "host", "remove", "127.0.0.1", "--port", "22", "--agent", "alice"])
+    assert result.exit_code == 0, result.output
+    hosts = _read_toml(tmp_config_dir)["agents"]["alice"]["hosts"]
+    assert "127.0.0.1:22" not in hosts
+    assert "127.0.0.1:443" in hosts

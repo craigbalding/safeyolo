@@ -791,6 +791,21 @@ class TestPostHostRate:
 class TestPostHostAllow:
     """POST /admin/policy/host/allow - allow a new host."""
 
+    @pytest.mark.parametrize("port", [0, 65536, True, "22"])
+    def test_reject_invalid_port(self, handler_class, port):
+        handler = _make_handler(handler_class, "POST", "/admin/policy/host/allow", body=json.dumps({"host": "example.com", "port": port}))
+        handler.do_POST()
+        assert handler._status == 400
+
+    def test_port_and_agent_reach_policy_client(self, handler_class):
+        client = _policy_client()
+        client.add_host_allowance.return_value = {"status": "added"}
+        handler = _make_handler(handler_class, "POST", "/admin/policy/host/allow", body=json.dumps({"host": "127.0.0.1", "port": 22, "agent": "alice"}))
+        with patch("admin_api.get_policy_client", autospec=True, return_value=client):
+            handler.do_POST()
+        assert handler._status == 200
+        client.add_host_allowance.assert_called_once_with(host="127.0.0.1", rate=None, agent="alice", port=22)
+
     def test_happy_path(self, handler_class):
         mock_client = _policy_client()
         mock_client.add_host_allowance.return_value = {

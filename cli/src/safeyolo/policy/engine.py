@@ -36,6 +36,7 @@ from typing import Any
 import yaml
 
 from safeyolo.core.audit_schema import EventKind, Severity
+from safeyolo.core.destination import destination_key, split_destination, validate_port
 from safeyolo.core.identifiers import validate_task_id
 from safeyolo.core.utils import matches_host_pattern, matches_resource_pattern, sanitize_for_log, write_event
 from safeyolo.policy.budget_tracker import GCRABudgetTracker
@@ -231,6 +232,10 @@ class PolicyEngine:
             if result:
                 return result
 
+        result = self._check_exact_dict(exact_dict, action, resource, context, agent_only=False, port_only=True)
+        if result:
+            return result
+
         # Phase 2: unconditioned permissions (simple sets + exact dict + patterns)
         # Simple sets have no conditions — always unconditioned
         for effect in ("deny", "prompt", "allow"):
@@ -244,12 +249,14 @@ class PolicyEngine:
         return self._check_patterns(pattern_list, action, resource, context, agent_only=False)
 
     @staticmethod
-    def _check_exact_dict(exact_dict, action, resource, context, *, agent_only):
+    def _check_exact_dict(exact_dict, action, resource, context, *, agent_only, port_only=False):
         """Check exact dict tier, optionally filtering by agent condition."""
         candidates = exact_dict.get((action, resource))
         if not candidates:
             return None
         for perm in candidates:
+            if port_only and not (perm.condition and perm.condition.port is not None):
+                continue
             if perm.tier == "inferred":
                 continue
             has_agent_cond = perm.condition and perm.condition.agent is not None
@@ -356,6 +363,9 @@ class PolicyEngine:
         path: str = "/",
         method: str = "GET",
         agent: str | None = None,
+        port: int | None = None,
+        *,
+        consume_budget: bool = True,
     ) -> PolicyDecision:
         """
         Evaluate network request permission.
@@ -372,6 +382,8 @@ class PolicyEngine:
         Returns:
             PolicyDecision with effect and details
         """
+        if port is not None:
+            validate_port(port)
         self._evaluations += 1
 
         resource = f"{host}/*"
@@ -379,6 +391,7 @@ class PolicyEngine:
             "destination": host,
             "path": path,
             "method": method,
+            "port": port,
         }
         if agent:
             context["agent"] = agent
@@ -406,13 +419,14 @@ class PolicyEngine:
             budget_action = "network:connect" if method.upper() == "CONNECT" else "network:request"
             limits: list[tuple[str, int, int]] = []
             if permission.effect == "budget":
-                limits.append((f"{budget_action}:{host}", permission.budget, 1))
+                budget_host = destination_key(host, port) if permission.condition and permission.condition.port is not None else host
+                limits.append((f"{budget_action}:{budget_host}", permission.budget, 1))
             global_budget = self._get_global_budget("network:request")
             if global_budget is not None:
                 limits.append((f"{budget_action}:__global__", global_budget, 1))
 
             if limits:
-                allowed, remaining = self._budget_tracker.check_and_consume_many(limits)
+                allowed, remaining = self._budget_tracker.check_and_consume_many(limits, consume=consume_budget)
                 if not allowed:
                     return PolicyDecision(
                         effect="budget_exceeded",
@@ -723,9 +737,11 @@ class PolicyEngine:
                             "resource": resource,
                         }
                     continue
-                permission = self._find_matching_permission(policy_action, f"{resource}/*", {})
+                budget_host, budget_port = split_destination(resource) if policy_action == "network:request" else (resource, None)
+                budget_context = {"port": budget_port, "method": "CONNECT" if action == "network:connect" else "GET"}
+                permission = self._find_matching_permission(policy_action, f"{budget_host}/*", budget_context)
                 if permission is None:
-                    permission = self._find_matching_permission(policy_action, "*", {})
+                    permission = self._find_matching_permission(policy_action, "*", budget_context)
 
                 if permission and permission.budget:
                     remaining = self._budget_tracker.get_remaining(key, permission.budget)
@@ -932,7 +948,7 @@ class PolicyEngine:
         return {"status": "updated", "host": host, "old_rate": old_rate, "new_rate": rate}
 
     def add_host_allowance(
-        self, host: str, rate: int | None = None, agent: str | None = None,
+        self, host: str, rate: int | None = None, agent: str | None = None, port: int | None = None,
     ) -> dict[str, Any]:
         """Add a host to the allowed list in baseline policy.
 
@@ -947,6 +963,13 @@ class PolicyEngine:
         Returns:
             Dict with status, host, rate, agent
         """
+        host, embedded_port = split_destination(host)
+        if embedded_port is not None:
+            if port is not None and port != embedded_port:
+                raise ValueError("host endpoint and port disagree")
+            port = embedded_port
+        policy_host = destination_key(host, port)
+
         if rate is not None and (type(rate) is not int or rate < 1):
             raise ValueError("rate must be a positive integer")
         global_budget = self._get_global_budget("network:request")
@@ -974,16 +997,16 @@ class PolicyEngine:
                 if rate is not None:
                     config["rate"] = rate
                 if agent:
-                    self._write_agent_host(document, agent, host, config)
+                    self._write_agent_host(document, agent, policy_host, config)
                 else:
-                    upsert_host(document, host, config)
+                    upsert_host(document, policy_host, config)
                 return current_global
 
             global_budget = locked_policy_transaction(
                 baseline_path, mutate, self._loader.reload
             )
         else:
-            condition = Condition(agent=agent) if agent else None
+            condition = Condition(agent=agent, port=port) if agent or port is not None else None
             resource = f"{host}/*"
 
             with self._loader._lock:
@@ -1018,7 +1041,7 @@ class PolicyEngine:
             severity=Severity.MEDIUM,
             summary=f"Host allowed: {sanitize_for_log(host)} (rate={rate})",
             addon="policy-engine",
-            details={"host": host, "rate": rate, "agent": agent},
+            details={"host": host, "rate": rate, "agent": agent, "port": port},
         )
 
         return {
@@ -1026,12 +1049,13 @@ class PolicyEngine:
             "host": host,
             "rate": rate,
             "agent": agent,
+            "port": port,
             "global_budget": global_budget,
             "rate_source": "host" if rate is not None else "global",
         }
 
     def add_host_denial(
-        self, host: str, expires: str | None = None, agent: str | None = None,
+        self, host: str, expires: str | None = None, agent: str | None = None, port: int | None = None,
     ) -> dict[str, Any]:
         """Deny egress to a host in baseline policy.
 
@@ -1049,6 +1073,13 @@ class PolicyEngine:
         Returns:
             Dict with status, host, expires, agent
         """
+        host, embedded_port = split_destination(host)
+        if embedded_port is not None:
+            if port is not None and port != embedded_port:
+                raise ValueError("host endpoint and port disagree")
+            port = embedded_port
+        policy_host = destination_key(host, port)
+
         baseline_path = self._loader.baseline_path
         if baseline_path and baseline_path.suffix == ".toml":
             from safeyolo.policy.toml_roundtrip import (
@@ -1063,13 +1094,13 @@ class PolicyEngine:
 
                     config["expires"] = datetime.fromisoformat(expires)
                 if agent:
-                    self._write_agent_host(document, agent, host, config)
+                    self._write_agent_host(document, agent, policy_host, config)
                 else:
-                    upsert_host(document, host, config)
+                    upsert_host(document, policy_host, config)
 
             locked_policy_transaction(baseline_path, mutate, self._loader.reload)
         else:
-            condition = Condition(agent=agent) if agent else None
+            condition = Condition(agent=agent, port=port) if agent or port is not None else None
             resource = f"{host}/*"
             with self._loader._lock:
                 baseline = self._loader._baseline
@@ -1098,10 +1129,10 @@ class PolicyEngine:
             severity=Severity.MEDIUM,
             summary=f"Host denied: {sanitize_for_log(host)} (expires={sanitize_for_log(str(expires))})",
             addon="policy-engine",
-            details={"host": host, "expires": expires, "agent": agent},
+            details={"host": host, "expires": expires, "agent": agent, "port": port},
         )
 
-        return {"status": "denied", "host": host, "expires": expires, "agent": agent}
+        return {"status": "denied", "host": host, "expires": expires, "agent": agent, "port": port}
 
     @staticmethod
     def _validate_document_rate(

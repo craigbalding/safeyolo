@@ -76,12 +76,17 @@ def origin():
 
 
 @contextmanager
-def proxy(tmp_path, effect, *, raw=False, strategy="lazy", inner_deny=False):
+def proxy(tmp_path, effect, *, raw=False, strategy="lazy", inner_deny=False, allowed_port=None):
     repo = Path(__file__).resolve().parents[1]
     policy = {"permissions": [
         *([{"action": "network:request", "resource": "*", "effect": "deny", "condition": {"method": "POST"}}] if inner_deny else []),
         {"action": "network:request", "resource": "*", "effect": effect or "allow"},
     ]}
+    if allowed_port is not None:
+        policy["permissions"] = [
+            {"action": "network:request", "resource": "127.0.0.1/*", "effect": "allow", "condition": {"port": allowed_port}},
+            {"action": "network:request", "resource": "*", "effect": "deny"},
+        ]
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(json.dumps(policy))
     script = tmp_path / "connect_addons.py"
@@ -147,7 +152,7 @@ def test_denied_connect_never_opens_upstream(tmp_path, origin, effect, status, s
 
 
 def test_allowed_raw_tunnel_exchanges_bytes(tmp_path, origin):
-    with proxy(tmp_path, "allow", raw=True) as port:
+    with proxy(tmp_path, "allow", raw=True, allowed_port=origin.server_address[1]) as port:
         client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         client.set_tunnel("127.0.0.1", origin.server_address[1])
         client.connect()
@@ -166,7 +171,7 @@ def test_allowed_https_and_wss_exchange(tmp_path, origin, websocket):
     server_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_tls.load_cert_chain(tmp_path / "origin-ca/origin-ca.pem")
     origin.socket = server_tls.wrap_socket(origin.socket, server_side=True)
-    with proxy(tmp_path, "allow") as port:
+    with proxy(tmp_path, "allow", allowed_port=origin.server_address[1]) as port:
         client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         client.set_tunnel("127.0.0.1", origin.server_address[1])
         client.connect()
@@ -200,3 +205,19 @@ def test_inner_http_is_still_evaluated(tmp_path, origin):
         response.read()
         client.close()
     assert origin.requests == []
+
+
+@pytest.mark.parametrize("method", ["GET", "CONNECT"])
+def test_endpoint_permission_does_not_open_other_port(tmp_path, origin, method):
+    # Reserve an allowed port that differs from the observed denied origin.
+    with socket.socket() as allowed:
+        allowed.bind(("127.0.0.1", 0))
+        with proxy(tmp_path, "allow", allowed_port=allowed.getsockname()[1]) as port:
+            client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            target = f"127.0.0.1:{origin.server_address[1]}"
+            client.request(method, target if method == "CONNECT" else f"http://{target}/")
+            response = client.getresponse()
+            assert response.status == 403
+            response.read()
+            client.close()
+    assert origin.accepts == 0

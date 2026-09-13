@@ -216,7 +216,7 @@ final class SafeYoloClient: ObservableObject {
         Task {
             do {
                 let plan = try MutationPlan.forApproval(event, allow: allow)
-                let data = try await request(path: plan.path, method: "POST", json: plan.body)
+                let data = try await request(path: plan.path, method: "POST", json: plan.payload)
                 let result: ResolutionResult
                 if plan.expectsDesktop {
                     result = .desktop(try JSONDecoder().decode(DesktopPresentation.self, from: data))
@@ -517,7 +517,7 @@ final class SafeYoloClient: ObservableObject {
     private func request(
         path: String,
         method: String = "GET",
-        json: [String: String]? = nil
+        json: [String: Any]? = nil
     ) async throws -> Data {
         guard let url = URL(string: path, relativeTo: adminURL)?.absoluteURL else {
             throw ClientError.invalidURL(path)

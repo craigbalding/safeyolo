@@ -32,6 +32,7 @@ from mitmproxy import ctx, http
 
 from safeyolo.coord.nats_client import NatsPublishOutcomeUnknown, NatsUnavailable
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
+from safeyolo.core.destination import validate_port
 from safeyolo.core.identity import resolve_agent_identity
 from safeyolo.core.internal_api import (
     AGENT_API_HOST,
@@ -1632,9 +1633,22 @@ class AgentAPI:
             self._respond(flow, 503, {"error": "Policy engine not available"})
             return
 
-        decision = engine.evaluate_request(host=host, agent=agent)
+        scheme = query.get("scheme", "https").lower()
+        method = query.get("method", "GET").upper()
+        path = query.get("path", "" if method == "CONNECT" else "/")
+        try:
+            if scheme not in {"http", "https", "ws", "wss"}:
+                raise ValueError("scheme must be http, https, ws or wss")
+            port = validate_port(int(query.get("port", "80" if scheme in {"http", "ws"} else "443")))
+        except ValueError as exc:
+            self._respond(flow, 400, {"error": str(exc)})
+            return
+        decision = engine.evaluate_request(host=host, agent=agent, port=port, method=method, path=path, consume_budget=False)
         self._respond(flow, 200, {
             "host": host,
+            "port": port,
+            "method": method,
+            "path": path,
             "agent": agent,
             "effect": decision.effect,
             "reason": decision.reason,

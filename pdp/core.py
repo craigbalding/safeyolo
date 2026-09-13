@@ -316,6 +316,7 @@ class PDPCore:
         agent = event.context.agent if event.context else None
         return self._engine.evaluate_request(
             host=event.http.host,
+            port=event.http.port,
             path=event.http.path,
             method=event.http.method,
             agent=agent,
@@ -701,13 +702,13 @@ class PDPCore:
         """Update rate limit for a host. Delegates to PolicyEngine."""
         return self._engine.update_host_rate(host, rate)
 
-    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None) -> dict:
+    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None, port: int | None = None) -> dict:
         """Add a host to the allowed list. Delegates to PolicyEngine."""
-        return self._engine.add_host_allowance(host, rate, agent=agent)
+        return self._engine.add_host_allowance(host, rate, agent=agent, **({"port": port} if port is not None else {}))
 
-    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None) -> dict:
+    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None, port: int | None = None) -> dict:
         """Deny egress to a host. Delegates to PolicyEngine."""
-        return self._engine.add_host_denial(host, expires, agent=agent)
+        return self._engine.add_host_denial(host, expires, agent=agent, **({"port": port} if port is not None else {}))
 
     def add_host_bypass(self, host: str, addon: str) -> dict:
         """Add an addon bypass for a host. Delegates to PolicyEngine."""

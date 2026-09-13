@@ -486,7 +486,7 @@ class TestNetworkEgressApprovalDispatch:
         event = _network_egress_event(host="cdn.example.com")
         result = _network_egress_approve(event, api)
         assert result == "ok"
-        api.allow_host.assert_called_once_with(host="cdn.example.com", rate=600)
+        api.allow_host.assert_called_once_with(host="cdn.example.com", rate=600, agent="boris")
 
     def test_deny_calls_deny_host_with_expires(self):
         api = _api()
