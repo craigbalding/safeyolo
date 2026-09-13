@@ -28,6 +28,7 @@ user_facing_docs = [
     "cli/README.md",
     "contrib/README.md",
     "contrib/macos-seatbelt-agent/README.md",
+    "contrib/macos-seatbelt-agent/REFERENCE.md",
     "contrib/macos-seatbelt-agent/VALIDATION.md",
     "contrib/HOST_SCRIPT_GUIDE.md",
     "contrib/agent-launcher-prompt.md",

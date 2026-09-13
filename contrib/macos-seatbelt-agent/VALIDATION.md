@@ -56,8 +56,8 @@ The shipped probe produced:
 Its full `checks` array lists the exercised workload and enforced boundaries.
 The surrounding SSH acceptance also checked the listeners' accept queues,
 interactive entry, forwarding, the fixed-port adaptation, and malformed-policy
-failure. Follow the fixture procedure in [README.md](README.md) to repeat these
-checks; substitute real fixture ports and PIDs for its illustrative values.
+failure. Follow the [fixture procedure](REFERENCE.md#validation-and-adaptation)
+to repeat these checks using your recorded fixture paths, ports, and PIDs.
 
 ## Measured limitations
 
@@ -114,8 +114,9 @@ directory.
 ## SSH setup acceptance — 2026-09-13
 
 The [configure-ssh](configure-ssh) helper was tested with the native macOS
-26.6.2 `sshd` in the same Tart guest. Run the repeatable checks on a Mac with
-SSH host keys already provisioned:
+26.6.2 `sshd` in the same Tart guest. To repeat the checks, use an administrator
+terminal on a Mac with SSH host keys already provisioned. Change to the checkout's
+`contrib/macos-seatbelt-agent` directory before running this command:
 
 ```sh
 sudo /bin/sh ./test-configure-ssh.sh
@@ -145,6 +146,12 @@ validation and delegates all other calls to the real `sshd`.
 All checks passed, and the temporary configuration files and backups were
 removed. This run checks configuration installation and recovery; the SSH
 login and confinement evidence remains the earlier boundary test record.
+
+The shortened README's install block was also run on this Mac, redirecting only
+its installation directory to a disposable fixture. Compilation, signing,
+installed ownership/modes, and public-key contents passed. An invalid public
+key stopped the block before installation. The fixture and keys were removed;
+the account's login shell and active SSH configuration were not changed.
 
 Tested SHA-256 hashes:
 
