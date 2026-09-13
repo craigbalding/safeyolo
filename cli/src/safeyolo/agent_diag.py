@@ -1,4 +1,4 @@
-"""Per-agent egress chain diagnostic.
+"""Per-agent egress and shell diagnostics.
 
 Walks the host-visible hops from a named agent's UDS to mitmproxy, then checks
 the authenticated Agent API and its source-derived attribution separately.
@@ -9,11 +9,9 @@ differ (netns on Linux, lo0 aliases + VZ helper on macOS). Output is
 line-per-check with a PASS/FAIL/WARN prefix; exit code 0 on all-pass,
 1 on any failure.
 
-Intentionally does NOT require the VM's guest side to be reachable.
-The probes all target the host-visible artifacts + a fast UDS-level
-roundtrip through mitmproxy's per-agent listener. If the agent's VM
-is up we also check the platform sandbox presence; if not, that's
-reported and the rest continues.
+The egress checks target host-visible artifacts and the per-agent proxy UDS.
+On macOS, a separate bounded shell probe traverses the helper, vsock and guest
+bridge to observe sshd's identification. Its failure does not skip egress checks.
 """
 from __future__ import annotations
 
@@ -518,6 +516,28 @@ def _check_vm_helper_identity() -> Check:
     return Check("Installed VM helper", "WARN" if identity.warning else "PASS", detail)
 
 
+def _check_shell_transport(name: str) -> list[Check]:
+    from rich.markup import escape
+
+    from .platform.darwin import _shell_socket_path
+    from .vm_diagnostics import probe_shell_socket
+
+    path = _shell_socket_path(name)
+    probe = probe_shell_socket(path)
+    if not probe.connected:
+        return [Check("Shell UDS", "FAIL", f"{path}: {escape(probe.error or 'connection failed')}")]
+    checks = [Check("Shell UDS", "PASS", f"connected to {path}")]
+    if probe.banner is not None:
+        checks.append(Check("SSH banner", "PASS", f"{escape(probe.banner)} ({probe.elapsed_ms} ms)"))
+    else:
+        checks.append(Check(
+            "SSH banner", "FAIL",
+            f"{escape(probe.error or 'unavailable')} ({probe.elapsed_ms} ms); "
+            "UDS connected, but vsock / guest bridge / sshd progress is unproven",
+        ))
+    return checks
+
+
 def run_agent_diag(name: str) -> int:
     """Run every check in order and print. Returns POSIX exit code."""
     console.print(f"\nSafeYolo diagnostic: [bold]{name}[/bold]\n")
@@ -535,6 +555,9 @@ def run_agent_diag(name: str) -> int:
         identity_check = _check_vm_helper_identity()
         checks.append(identity_check)
         _print(identity_check)
+        for shell_check in _check_shell_transport(name):
+            checks.append(shell_check)
+            _print(shell_check)
 
     command_check = _check_command_supervisor(name)
     checks.append(command_check)

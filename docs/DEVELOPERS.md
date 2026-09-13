@@ -552,6 +552,13 @@ and dirty state, profile, architecture, compiler, optimisation, symbol profile
 and running debug/hardened-runtime flags. Each VM startup also logs its identity.
 An older or unmanaged helper produces an explicit identity warning.
 
+On macOS, `safeyolo agent diag AGENT` also checks the shell UDS and reads an
+SSH identification within one three-second deadline. A successful UDS connect
+alone does not prove shell health. The banner check traverses the helper, vsock
+and guest shell bridge to sshd, then disconnects without authentication. Failure
+leaves those downstream hops unproven and does not skip the separate egress
+checks. Slow or excessive pre-banner data remains bounded within the diagnostic.
+
 Start a disposable agent after installing the development helper. Replace
 `AGENT` below with that agent's name. From the Mac operator account, attach LLDB:
 
