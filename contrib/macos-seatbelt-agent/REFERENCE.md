@@ -80,8 +80,9 @@ default host location is `~/.safeyolo/data/vm_ssh_key`, with a `.pub` companion;
 public half in `~/.ssh/authorized_keys`. Keep that operator private key on the
 host. The setup guide creates a separate client key for agent-to-Mac access.
 
-To use an existing client identity, supply its public key during installation
-and select its private key when connecting. The installed public key is kept
+For a manually configured SSH client, supply its public key during installation
+and select its private key when connecting. The provided client helper uses the
+standard identity path from the setup guide. The installed public key is kept
 in the root-owned entry directory; the SSH fragment does not use the account's
 home `authorized_keys` file.
 
@@ -298,19 +299,13 @@ Home-scoped sockets are intentionally general; any service you place there
 becomes reachable by the account's processes.
 
 **Inside the client agent, as its normal user, change to the directory containing
-the archive `workspace.tar`.** Have the client key from setup and an SSH
-destination configured through the approved proxy transport. This example
-replaces `workspace.tar` in the Mac account's home. It uses SSH command stdin;
-forwarding is not needed.
+the archive `workspace.tar`.** Use the dedicated client configuration created
+by setup. This example replaces `workspace.tar` in the Mac account's home. It
+uses SSH command stdin; forwarding is not needed.
 
 ```sh
-(
-  set -e
-  printf 'Configured SSH destination or alias: '
-  IFS= read -r destination
-  ssh -i "$HOME/.ssh/id_ed25519_sy_agent" -l sy-agent -- "$destination" \
-    'cat > workspace.tar' < workspace.tar
-)
+ssh -F "$HOME/.ssh/seatbelt-agent/config" seatbelt-mac \
+  'cat > workspace.tar' < workspace.tar
 ```
 
 Extract the archive through another confined command. This entry does not
