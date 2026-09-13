@@ -1,17 +1,32 @@
-.PHONY: build install clean guest-tools
+.PHONY: build debug install install-helper debug-install verify clean guest-tools
 
-BUILD_DIR = .build/release
+PROFILE ?= production
+BUILD_ROOT = $(if $(filter production,$(PROFILE)),.build,.build/$(PROFILE))
+BUILD_DIR = $(BUILD_ROOT)/release
 BINARY = $(BUILD_DIR)/safeyolo-vm
+BUILD_INFO = $(abspath $(BUILD_ROOT)/build-info.json)
+ENTITLEMENTS = $(if $(filter production,$(PROFILE)),safeyolo-vm.entitlements,safeyolo-vm.$(PROFILE).entitlements)
+PYTHON ?= python3
+SWIFT_BUILD_FLAGS ?=
 INSTALL_DIR ?= $(HOME)/.safeyolo/bin
 GUEST_DIR = $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../guest
 
 build:
-	swift build -c release
-	codesign --entitlements safeyolo-vm.entitlements --options runtime --force -s - $(BINARY)
+	$(PYTHON) build-info.py generate --profile $(PROFILE) "$(BUILD_INFO)"
+	swift build --build-system native $(SWIFT_BUILD_FLAGS) --scratch-path "$(BUILD_ROOT)" -c release -Xswiftc -g \
+		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __sy_build -Xlinker "$(BUILD_INFO)"
+	dsymutil "$(BINARY)" -o "$(BINARY).dSYM"
+	codesign --entitlements "$(ENTITLEMENTS)" --options runtime --force -s - "$(BINARY)"
+	$(PYTHON) build-info.py verify --profile $(PROFILE) "$(BINARY)"
 
 debug:
-	swift build
-	codesign --entitlements safeyolo-vm.entitlements --options runtime --force -s - .build/debug/safeyolo-vm
+	$(MAKE) PROFILE=development build
+
+debug-install:
+	$(MAKE) PROFILE=development install-helper
+
+verify:
+	$(PYTHON) build-info.py verify --profile $(PROFILE) "$(BINARY)"
 
 LIMA_VM = safeyolo-builder
 UNAME := $(shell uname)
@@ -54,10 +69,15 @@ else
 	$(error Unsupported platform for guest-tools: $(UNAME))
 endif
 
-install: build guest-tools
-	mkdir -p $(INSTALL_DIR)
-	install -m 0755 $(BINARY) $(INSTALL_DIR)/safeyolo-vm
-	install -m 0755 $(BUILD_DIR)/vsock-term $(INSTALL_DIR)/vsock-term
+install-helper: build
+	mkdir -p "$(INSTALL_DIR)"
+	install -m 0755 "$(BINARY)" "$(INSTALL_DIR)/safeyolo-vm"
+	ditto "$(BINARY).dSYM" "$(INSTALL_DIR)/safeyolo-vm.dSYM"
+	install -m 0644 "$(BUILD_INFO)" "$(INSTALL_DIR)/safeyolo-vm.build-info.json"
+	$(PYTHON) build-info.py verify --profile $(PROFILE) "$(INSTALL_DIR)/safeyolo-vm"
+
+install: install-helper guest-tools
+	install -m 0755 "$(BUILD_DIR)/vsock-term" "$(INSTALL_DIR)/vsock-term"
 
 clean:
 	swift package clean

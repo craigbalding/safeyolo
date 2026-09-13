@@ -503,6 +503,21 @@ def _check_agent_api(
     )
 
 
+def _check_vm_helper_identity() -> Check:
+    """Identify the installed helper; runtime-process identity comes from its control channel."""
+    from .vm import VMError
+    from .vm_identity import read_vm_helper_identity
+
+    try:
+        identity = read_vm_helper_identity()
+    except VMError as error:
+        return Check("Installed VM helper", "WARN", str(error))
+    detail = identity.summary
+    if identity.warning:
+        detail += f"; {identity.warning}"
+    return Check("Installed VM helper", "WARN" if identity.warning else "PASS", detail)
+
+
 def run_agent_diag(name: str) -> int:
     """Run every check in order and print. Returns POSIX exit code."""
     console.print(f"\nSafeYolo diagnostic: [bold]{name}[/bold]\n")
@@ -514,6 +529,12 @@ def run_agent_diag(name: str) -> int:
     _print(r1)
     if r1.status == "FAIL":
         return _summarise(checks)
+
+    import platform
+    if platform.system() == "Darwin":
+        identity_check = _check_vm_helper_identity()
+        checks.append(identity_check)
+        _print(identity_check)
 
     command_check = _check_command_supervisor(name)
     checks.append(command_check)

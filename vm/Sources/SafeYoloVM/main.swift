@@ -32,7 +32,8 @@ func printUsage() {
 
     Commands:
       check               Verify that Apple Virtualization.framework is supported.
-      version             Print the helper version without requiring VZ support.
+      version             Print helper build/signing identity; accepts --json.
+      --version           Alias for version; does not require VZ support.
 
     Options:
       --kernel PATH       Path to kernel Image (required)
@@ -170,12 +171,21 @@ func parseArguments() -> RunConfig? {
 
 // MARK: - Main
 
-if CommandLine.arguments.count == 2 {
+if CommandLine.arguments.count >= 2 {
     switch CommandLine.arguments[1] {
-    case "version":
-        print("safeyolo-vm \(helperVersion)")
+    case "version", "--version":
+        guard CommandLine.arguments.count == 2 ||
+              (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--json") else {
+            fputs("Error: version accepts only --json\n", stderr)
+            exit(1)
+        }
+        BuildIdentity.printVersion(json: CommandLine.arguments.contains("--json"))
         exit(0)
     case "check":
+        guard CommandLine.arguments.count == 2 else {
+            fputs("Error: check accepts no arguments\n", stderr)
+            exit(1)
+        }
         guard VZVirtualMachine.isSupported else {
             fputs("Error: Virtualization is not supported on this machine\n", stderr)
             exit(1)
@@ -219,6 +229,7 @@ atexit {
 }
 
 do {
+    Log.info("vm", BuildIdentity.summary)
     // Determine the machine identifier BEFORE building the VM config.
     // It defaults to random-per-process, so without pinning it VZ
     // rejects any cross-process restore with EINVAL. On restore we

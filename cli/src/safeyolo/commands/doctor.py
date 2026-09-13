@@ -1415,6 +1415,22 @@ def _check_flow_store() -> DiagResult:
         )
 
 
+def _check_vm_helper_identity() -> DiagResult:
+    """Report the installed helper's source revision and local-debug authority."""
+    from ..vm import VMError
+    from ..vm_identity import read_vm_helper_identity
+
+    try:
+        identity = read_vm_helper_identity()
+    except VMError as error:
+        return DiagResult(name="VM helper", status="warn", message=str(error))
+    return DiagResult(
+        name="VM helper", status="warn" if identity.warning else "pass",
+        message=identity.summary,
+        detail=identity.warning or f"{identity.swift_compiler}; {identity.optimization}; {identity.symbols}",
+    )
+
+
 def _check_sandbox_runtime() -> DiagResult:
     """Check sandbox runtime availability (runsc on Linux, safeyolo-vm on macOS)."""
     import platform as _plat
@@ -1880,6 +1896,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
         ("Sandbox runtime", _check_sandbox_runtime),
     ]
     if _plat.system() == "Darwin":
+        checks_funcs.append(("VM helper", _check_vm_helper_identity))
         checks_funcs.append(("Interactive terminal", _check_vsock_term))
     checks_funcs.extend(
         [
