@@ -27,14 +27,54 @@ Keep the private key inside this agent. If a command fails, report the error.
 
 ## 2. Set up the Mac
 
-You need Command Line Tools and a SafeYolo checkout on the Mac. These commands
-assume `/Users/sy-agent` and `/opt/homebrew`; [customize these first](REFERENCE.md#account-and-toolchain-customization)
-if your account or toolchain differs.
+On the Mac, use your existing administrator account for this section. You need
+Command Line Tools and a SafeYolo checkout. These commands assume
+`/Users/sy-agent` and `/opt/homebrew`;
+[customize these first](REFERENCE.md#account-and-toolchain-customization) if your
+account or toolchain differs.
 
-Create or reuse a **Standard account named `sy-agent`** and enable **Remote Login**.
-The account must have no sudo grants. Keep its password outside the agent;
-the agent can read and change everything in its home. If converting an existing
-account, stop its unconfined shells and tmux servers first.
+### Create the account
+
+From any directory, create a **Standard account with the short name `sy-agent`**
+and home `/Users/sy-agent`. The command prompts for the new account's password;
+keep that password outside the agent. The agent can read and change everything
+in its home. If the account already exists, skip creation and follow the
+[existing-account checks](REFERENCE.md#reuse-an-existing-account).
+
+```sh
+sudo sysadminctl -addUser sy-agent -fullName "SafeYolo Agent" -password -
+```
+
+Stop if creation reports an error. The account must have no sudo grants;
+`configure-ssh` checks this before changing its login shell.
+
+### Enable Remote Login and allow the account
+
+From the same administrator terminal, enable the Mac's SSH service (Remote
+Login). The terminal needs Full Disk Access to change this
+setting; see [Remote Login troubleshooting](REFERENCE.md#remote-login-troubleshooting)
+if it is not already granted.
+
+```sh
+sudo systemsetup -setremotelogin on
+```
+
+Stop on an error. After enabling the service, inspect its allowed-user group:
+
+```sh
+dseditgroup -o read com.apple.access_ssh
+```
+
+If the group exists, add `sy-agent` with the following command. It preserves
+the group's existing members. If the read reports that the group does not
+exist, follow the [missing-group guidance](REFERENCE.md#remote-login-troubleshooting)
+before continuing. Stop on any other error.
+
+```sh
+sudo dseditgroup -o edit -a sy-agent -t user com.apple.access_ssh
+```
+
+### Install and configure the confined login
 
 From the checkout root, run these commands individually, stopping on any error.
 Replace `CLIENT_PUBLIC_KEY` with the line your agent returned. The commands
@@ -57,8 +97,11 @@ sudo chmod 644 /Library/PrivilegedHelperTools/seatbelt-agent/authorized_keys
 Replace `mac.example.net` and `22` below with the approved destination as seen
 by the proxy.
 
-The command sets `agent-shell-launcher` as the account's login shell, requires
-public-key authentication, and disables forwarding. It checks the installation
+`configure-ssh` requires the existing account and Remote Login access prepared
+above. It does not create the account, enable the SSH service, or change the
+allowed-user group. The command sets `agent-shell-launcher` as the account's
+login shell, requires public-key authentication, and disables forwarding.
+It checks the installation
 and backs up the previous SSH configuration and login shell for
 [recovery](REFERENCE.md#setup-recovery). If connected to the Mac over SSH,
 keep that connection open until the agent's login works.
