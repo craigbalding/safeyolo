@@ -251,7 +251,12 @@ def test_log_decision_emits_schema_values_and_attribution():
         },
         addon="test-addon",
         approval=None,
-        details={"reason": "policy denied"},
+        details={
+            "reason": "policy denied",
+            "method": flow.request.method,
+            "port": flow.request.port,
+            "connection_id": flow.client_conn.id,
+        },
     )
 
 

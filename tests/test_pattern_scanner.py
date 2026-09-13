@@ -1276,6 +1276,9 @@ class TestBoundedUrlInspection:
             assert flow.metadata["pattern_scan_failure"] == URL_INSPECTION_OVERFLOW
             assert audit.call_count == 1
             assert audit.call_args.kwargs["details"] == {
+                "method": flow.request.method,
+                "port": flow.request.port,
+                "connection_id": flow.client_conn.id,
                 "direction": "request",
                 "location": "url",
                 "action": "block",
