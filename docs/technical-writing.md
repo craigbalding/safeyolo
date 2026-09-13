@@ -14,7 +14,10 @@ guidance.
 
 ## Writing rule
 
-1. Put a condition before the action or result that depends on it.
+1. Put a condition before the action or result that depends on it. Before a
+   runnable example, state the machine, account, working directory, prerequisites,
+   required inputs, and effects that matter for running it. Put expected output
+   after the example. Do not explain a placeholder only after the command uses it.
 2. Give each sentence one main instruction or assertion.
 3. Name the actor when the actor matters. Use a concrete verb.
 4. Preserve modality. `must`, `should`, `may`, `does`, and `does not` are not

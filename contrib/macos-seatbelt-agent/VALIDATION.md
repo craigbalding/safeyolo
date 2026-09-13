@@ -56,8 +56,8 @@ The shipped probe produced:
 Its full `checks` array lists the exercised workload and enforced boundaries.
 The surrounding SSH acceptance also checked the listeners' accept queues,
 interactive entry, forwarding, the fixed-port adaptation, and malformed-policy
-failure. Follow the fixture procedure in [README.md](README.md) to repeat these
-checks; substitute real fixture ports and PIDs for its illustrative values.
+failure. Follow the [fixture procedure](REFERENCE.md#validation-and-adaptation)
+to repeat these checks using your recorded fixture paths, ports, and PIDs.
 
 ## Measured limitations
 
@@ -110,3 +110,52 @@ remained. Directory Services confirmed the account record was absent; a cached
 `getpwnam` result immediately after deletion was not used as the authority.
 Only the test source and nonsecret evidence were retained in the VM's admin lab
 directory.
+
+## SSH setup acceptance — 2026-09-13
+
+The [configure-ssh](configure-ssh) helper was tested with the native macOS
+26.6.2 `sshd` in the same Tart guest. To repeat the checks, use an administrator
+terminal on a Mac with SSH host keys already provisioned. Change to the checkout's
+`contrib/macos-seatbelt-agent` directory before running this command:
+
+```sh
+sudo /bin/sh ./test-configure-ssh.sh
+```
+
+The tests use temporary configuration files. They do not change the running
+SSH service. The system startup-file check is redirected to a temporary file;
+the rollback cases substitute a wrapper that deliberately fails the final
+validation and delegates all other calls to the real `sshd`.
+
+| Check | Result |
+| --- | --- |
+| Install and verify account settings | Pass |
+| Preserve the original configuration's mode | Pass |
+| Other account's effective settings unchanged | Pass |
+| Repeat installation without duplicate includes | Pass |
+| Existing account-specific rules and include precedence | Pass |
+| Another account name and a configuration path containing spaces | Pass |
+| Enabled user environment files and unsafe `AcceptEnv` patterns | Rejected before activation |
+| Locale settings and unrelated custom environment variables | Accepted |
+| Invalid existing configuration | Rejected without changing SSH files |
+| Empty/comment-only system startup file | Accepted |
+| System startup commands | Require explicit operator review |
+| Final-validation failure on a new installation | Original configuration restored; new fragment removed |
+| Final-validation failure on an existing installation | Original configuration and fragment restored |
+
+All checks passed, and the temporary configuration files and backups were
+removed. This run checks configuration installation and recovery; the SSH
+login and confinement evidence remains the earlier boundary test record.
+
+The shortened README's install block was also run on this Mac, redirecting only
+its installation directory to a disposable fixture. Compilation, signing,
+installed ownership/modes, and public-key contents passed. An invalid public
+key stopped the block before installation. The fixture and keys were removed;
+the account's login shell and active SSH configuration were not changed.
+
+Tested SHA-256 hashes:
+
+```text
+3fe9f83a6982ae2b090cd156348d0d480e2fe63f01bf92a023e04ec5da9bd002  configure-ssh
+17b344eb894dafcd80555b3803f6c3ab6b8f040900c851e831386331f56e7bb1  test-configure-ssh.sh
+```

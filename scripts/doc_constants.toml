@@ -9,6 +9,13 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "seatbelt-guide-operator-vm-ssh-key"
+source = "cli/src/safeyolo/config.py"
+pattern = 'return get_data_dir\(\) / "(?P<key_name>vm_ssh_key)"'
+docs = ["contrib/macos-seatbelt-agent/REFERENCE.md"]
+must_contain = "~/.safeyolo/data/{key_name}"
+
+[[assertion]]
 name = "rootfs-size-mb"
 source = "guest/build-rootfs.sh"
 pattern = 'ROOTFS_SIZE_MB="\$\{ROOTFS_SIZE_MB:-(?P<size_mb>\d+)\}"'
