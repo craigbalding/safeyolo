@@ -1,0 +1,162 @@
+#!/bin/sh
+# Install SSH admission for the compiled Seatbelt entry using macOS tools only.
+set -eu
+
+fail() { printf 'configure-ssh: %s\n' "$*" >&2; exit 1; }
+usage() {
+    cat <<'USAGE'
+Usage: sudo ./configure-ssh [--user NAME] [--config FILE] [--reviewed-sshrc]
+
+Configure SSH for the Seatbelt account (default: sy-agent).
+Validate before activation, preserve a backup, and restore on failure.
+Existing SSH sessions are left running; no daemon is restarted.
+
+  --user NAME        Account used when compiling agent-entry.
+  --config FILE      SSH daemon configuration (default: /etc/ssh/sshd_config).
+  --reviewed-sshrc   Confirm the operator has reviewed /etc/ssh/sshrc and it
+                     does not execute or source files controlled by the account.
+  --help             Show this help.
+USAGE
+}
+
+account=sy-agent
+config=/etc/ssh/sshd_config
+reviewed_sshrc=no
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --user|--config)
+            [ "$#" -ge 2 ] || fail "$1 needs a value. See --help."
+            case "$1" in --user) account=$2 ;; --config) config=$2 ;; esac
+            shift 2 ;;
+        --reviewed-sshrc) reviewed_sshrc=yes; shift ;;
+        --help) usage; exit 0 ;;
+        *) fail "Unknown argument: $1. See --help." ;;
+    esac
+done
+case "$account" in ''|*[!a-zA-Z0-9_.-]*) fail "Invalid account name: $account" ;; esac
+[ "$(uname -s)" = Darwin ] || fail 'Run this command on the target Mac.'
+[ "$(id -u)" -eq 0 ] || fail 'Run with sudo: sudo ./configure-ssh'
+[ -f "$config" ] && [ ! -L "$config" ] || fail "Expected a regular configuration file: $config"
+config_dir=$(cd "$(dirname "$config")" && pwd -P)
+config="$config_dir/$(basename "$config")"
+case "$config" in *'"'*|*'\'*|*'
+'*) fail 'The configuration path cannot contain quotes, backslashes, or newlines.' ;; esac
+source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+fragment="$config.seatbelt-$account.conf"
+[ ! -d "$fragment" ] && [ ! -L "$fragment" ] || fail "Expected a regular file or unused path: $fragment"
+connection="user=$account,host=localhost,addr=127.0.0.1"
+
+# Check existing policy before adding the fragment's global environment setting.
+/usr/sbin/sshd -t -f "$config" || fail 'Existing SSH configuration is invalid. No SSH files were changed.'
+work=$(mktemp -d "$config.seatbelt-backup.XXXXXX")
+changed=no
+complete=no
+had_fragment=no
+cleanup() {
+    result=$?
+    trap - EXIT
+    if [ "$changed" = yes ] && [ "$complete" = no ]; then
+        restored=yes
+        cp -p "$work/config.before" "$work/restore" && mv -f "$work/restore" "$config" || restored=no
+        if [ "$had_fragment" = yes ]; then
+            cp -p "$work/fragment.before" "$fragment" || restored=no
+        else
+            rm -f "$fragment" || restored=no
+        fi
+        if [ "$restored" = yes ]; then
+            printf 'Previous SSH configuration restored. Backup: %s\n' "$work" >&2
+        else
+            printf 'Automatic restore failed. Restore the files in %s before another SSH login.\n' "$work" >&2
+            result=1
+        fi
+    fi
+    if [ "$changed" = no ]; then rm -rf "$work"; fi
+    exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+check_environment() {
+    effective=$1
+    if ! awk '$1 == "permituserenvironment" && $2 == "no" { found=1 } END { exit !found }' "$effective"; then
+        fail "PermitUserEnvironment is enabled in $config. This installer cannot disable it for only $account. Use a separate SSH daemon configuration with PermitUserEnvironment no, then select it with --config."
+    fi
+    # Detect client-variable patterns that can affect execution before entry.
+    # Harmless custom variables do not require a new allowlist or policy change.
+    awk '$1 == "acceptenv" { for (i=2; i<=NF; i++) print $i }' "$effective" > "$work/acceptenv"
+    while IFS= read -r pattern; do
+        for variable in ENV BASH_ENV ZDOTDIR PATH HOME SHELLOPTS BASHOPTS \
+            LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH \
+            DYLD_FRAMEWORK_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_FALLBACK_FRAMEWORK_PATH \
+            DYLD_ROOT_PATH DYLD_IMAGE_SUFFIX; do
+            case "$variable" in
+                $pattern) fail "AcceptEnv pattern '$pattern' accepts $variable, which can affect execution before Seatbelt. Narrow that rule in your SSH configuration, or use a separate configuration with --config." ;;
+            esac
+        done
+    done < "$work/acceptenv"
+}
+
+/usr/sbin/sshd -T -f "$config" -C "$connection" > "$work/before.effective"
+check_environment "$work/before.effective"
+if [ -f /etc/ssh/sshrc ] && [ "$reviewed_sshrc" = no ] &&
+    awk '/^[[:space:]]*(#|$)/ { next } { found=1 } END { exit !found }' /etc/ssh/sshrc; then
+    fail '/etc/ssh/sshrc contains startup commands that run before Seatbelt. Check that they do not source or execute account-controlled files; then rerun with --reviewed-sshrc. No SSH files were changed.'
+fi
+
+cp -p "$config" "$work/config.before"
+if [ -f "$fragment" ]; then
+    had_fragment=yes
+    cp -p "$fragment" "$work/fragment.before"
+fi
+sed "s/^Match User sy-agent$/Match User $account/" \
+    "$source_dir/sshd_config.example" > "$work/fragment"
+include_line="Include \"$fragment\""
+
+make_candidate() {
+    include_path=$1
+    cp -p "$work/config.before" "$work/candidate"
+    {
+        printf 'Include "%s"\n' "$include_path"
+        # Remove only the exact line this installer manages on repeat runs.
+        while IFS= read -r line || [ -n "$line" ]; do
+            [ "$line" = "$include_line" ] || printf '%s\n' "$line"
+        done < "$work/config.before"
+    } > "$work/candidate"
+}
+
+check_candidate() {
+    checked_config=$1
+    /usr/sbin/sshd -t -f "$checked_config" || return 1
+    /usr/sbin/sshd -T -f "$checked_config" -C "$connection" > "$work/after.effective" || return 1
+    check_environment "$work/after.effective"
+    # Use the shipped fragment as the expected values, avoiding a second policy.
+    awk '
+        NR == FNR {
+            if ($0 ~ /^[[:space:]]*(#|$)/ || tolower($1) == "match") next
+            key=tolower($1); $1=""; sub(/^[[:space:]]+/, ""); expected[key]=$0
+            next
+        }
+        { key=$1; $1=""; sub(/^[[:space:]]+/, ""); actual[key]=$0 }
+        END {
+            for (key in expected) if (actual[key] != expected[key]) {
+                printf "configure-ssh: %s: expected [%s], got [%s]\n", key, expected[key], actual[key] > "/dev/stderr"
+                failed=1
+            }
+            exit failed
+        }
+    ' "$work/fragment" "$work/after.effective"
+}
+
+# Validate a staged include before changing either active file.
+make_candidate "$work/fragment"
+check_candidate "$work/candidate" || fail 'Candidate SSH settings did not pass validation. No SSH files were changed.'
+make_candidate "$fragment"
+changed=yes
+install -o root -g wheel -m 644 "$work/fragment" "$fragment"
+mv -f "$work/candidate" "$config"
+check_candidate "$config" || fail 'Installed SSH settings did not pass validation.'
+complete=yes
+printf 'SSH configuration installed and verified for %s (loopback connection).\n' "$account"
+printf 'Backup: %s\n' "$work"
+printf 'Keep your administrator session open and test a fresh agent SSH login.\n'

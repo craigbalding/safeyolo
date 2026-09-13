@@ -22,6 +22,7 @@ services you explicitly permit remain outside this protection.
 - [agent-session](agent-session) runs **after** attachment. It creates home-scoped
   state directories and starts the command, interactive shell, or tmux session.
 - [sshd_config.example](sshd_config.example) configures the SSH admission path.
+- [configure-ssh](configure-ssh) installs and checks the SSH configuration.
 - [probe.py](probe.py) exercises representative workloads and denied operations
   against operator-created disposable fixtures.
 - [VALIDATION.md](VALIDATION.md) records the tested versions, results, source
@@ -46,6 +47,45 @@ The signed entry uses the hardened runtime without library-injection entitlement
 Keep its parent directories, profile, session script, and authorized keys outside
 the writable home. Do not add user-writable dynamic libraries to the entry binary.
 
+## Prepare the SSH client key
+
+The client is the coding agent that will connect to the Mac. Generate the key
+inside that agent's persistent home. SafeYolo does not create an outbound SSH
+identity for this connection. The path `~/.ssh/id_ed25519_sy_agent` below is this
+guide's convention; select it explicitly with SSH's `-i` option when connecting.
+
+SafeYolo's existing `vm_ssh_key` serves the operator-to-guest connection. Its
+default host location is `~/.safeyolo/data/vm_ssh_key`, with a `.pub` companion;
+`SAFEYOLO_CONFIG_DIR` can change the configuration root. The guest receives its
+public half in `~/.ssh/authorized_keys`. Keep that operator private key on the
+host. For the agent-to-Mac connection, create a separate client key:
+
+```sh
+(
+  set -eu
+  umask 077
+  mkdir -p "$HOME/.ssh"
+  seatbelt_key="$HOME/.ssh/id_ed25519_sy_agent"
+  if [ ! -e "$seatbelt_key" ] && [ ! -e "$seatbelt_key.pub" ]; then
+    ssh-keygen -q -t ed25519 -N '' -C 'safeyolo-seatbelt-client' \
+      -f "$seatbelt_key"
+  fi
+  test -r "$seatbelt_key"
+  ssh-keygen -lf "$seatbelt_key.pub"
+  cat "$seatbelt_key.pub"
+)
+```
+
+Run that block **inside the client agent**, without sudo. It preserves existing
+key files. The empty passphrase supports unattended SSH; the private key stays
+in the agent's persistent home with owner-only permissions. If an existing key
+pair is incomplete, resolve the missing file before continuing.
+
+Copy the final `ssh-ed25519 ...` public-key line to the operator. The Mac
+installation block prompts for that line. Copy only the `.pub` contents; the
+private key remains with the client. To use another existing client identity,
+supply its public key and select the corresponding private key when connecting.
+
 ## Operator installation
 
 Run these steps from a trusted administrator session on the target Mac. First
@@ -62,9 +102,23 @@ part of SafeYolo setup.
    writes beneath the dedicated home and to terminal devices. Root-directory
    listing and metadata for standard path aliases support the macOS loader;
    they do not grant reads beneath other users' homes.
-3. Build and install the entry components. From this directory:
+3. Build and install the entry components. Run the following block from this
+   directory in a trusted administrator or root terminal **on the Mac**. When
+   prompted, paste the client's public-key line from the preceding section and
+   press Return. The block validates the public key before installing files and
+   stops if a command fails. An existing installed `authorized_keys` file is
+   replaced with the supplied key.
 
 ```sh
+(
+set -eu
+seatbelt_key_dir=$(mktemp -d)
+trap 'rm -rf "$seatbelt_key_dir"' EXIT
+printf 'Paste the client public-key line, then press Return: '
+IFS= read -r seatbelt_public_key
+printf '%s\n' "$seatbelt_public_key" > "$seatbelt_key_dir/authorized_keys"
+ssh-keygen -lf "$seatbelt_key_dir/authorized_keys"
+
 xcrun clang -Wall -Wextra -Werror -O2 agent-entry.c -o agent-entry
 codesign --force --sign - --options runtime --timestamp=none agent-entry
 codesign --verify --strict agent-entry
@@ -74,11 +128,16 @@ sudo install -o root -g wheel -m 755 agent-entry agent-session \
   /Library/PrivilegedHelperTools/seatbelt-agent/
 sudo install -o root -g wheel -m 644 agent-dev.sb \
   /Library/PrivilegedHelperTools/seatbelt-agent/
-sudo install -o root -g wheel -m 644 /path/to/agent-public-key.pub \
+sudo install -o root -g wheel -m 644 "$seatbelt_key_dir/authorized_keys" \
   /Library/PrivilegedHelperTools/seatbelt-agent/authorized_keys
 sudo dscl . -create /Users/sy-agent UserShell \
   /Library/PrivilegedHelperTools/seatbelt-agent/agent-entry
+)
 ```
+
+The fingerprint printed on the Mac should match the fingerprint printed by the
+client. The installed public key belongs at the root-owned path in the block;
+the SSH fragment uses that path instead of `/Users/sy-agent/.ssh/authorized_keys`.
 
 For another account, change `AGENT_USER` and `AGENT_HOME` at build time, and change
 `Match User` in the SSH fragment. `TOOLCHAIN_ROOT` is also a compile-time setting.
@@ -94,26 +153,47 @@ modify entry components. Apply the same rule to the authorized-keys file and
 sshd configuration. The account may manage tools beneath its own home; those
 tools run only after confinement has been attached.
 
-4. Review the SSH fragment before including it. `PermitUserEnvironment` is a
-   global directive on the tested macOS sshd; it cannot go inside `Match User`.
-   Its default is `no`. If your existing daemon needs a different setting for
-   other accounts, use a separate SSH daemon configuration for this account.
-   Do not assume an included value overrides an earlier global value. Avoid
-   broad `AcceptEnv` rules. Review any administrator-owned `/etc/ssh/sshrc` too;
-   it must not source or execute files controlled by this account.
-5. Validate the real configuration with `sudo /usr/sbin/sshd -t`, then inspect
-   the effective account settings before reloading your SSH service:
+4. Configure SSH. From this directory on the Mac, run:
 
 ```sh
-sudo /usr/sbin/sshd -T \
-  -C user=sy-agent,host=localhost,addr=127.0.0.1
+sudo ./configure-ssh
 ```
 
-Confirm the forced command, root-owned authorized-keys path, key-only
-`AuthenticationMethods`, disabled forwarding/X11/tunnel/user-rc settings, and
-`PermitUserEnvironment no`. Keep the trusted administrator session open while
-proving a separate login. The literal forced command `seatbelt-session` is a
-marker accepted by the native entry; it is not resolved through `PATH`.
+The command backs up the SSH configuration, installs the account's rules, and
+checks the effective settings for a connection through the loopback proxy. It
+prints a success message and the backup location. On an installation failure,
+it restores the previous configuration. An incompatible existing setting
+produces an error that names the setting and the required action.
+
+5. Keep your administrator terminal open. Test a fresh SSH connection from the
+   client agent using its key and approved proxy transport. Confirm that the
+   confined shell starts and run the boundary probes described below.
+
+The helper uses macOS tools and does not restart SSH or end existing sessions.
+It checks the forced command, authorized-keys path, authentication methods,
+forwarding controls, and environment settings against the shipped fragment.
+The forced command `seatbelt-session` is a marker accepted by the native entry;
+it is not resolved through `PATH`.
+
+### Custom SSH configurations
+
+Use `./configure-ssh --help` for another account name or daemon configuration.
+The account name must match the compiled entry. For a separately managed SSH
+daemon, reload that daemon after installation using its normal service command.
+
+The helper requires the existing `PermitUserEnvironment` setting to be `no`.
+That directive applies globally in the tested macOS sshd. The helper checks the
+effective value before installing the fragment, so it cannot silently disable
+environment files for other accounts. It also rejects `AcceptEnv` patterns that
+match known variables affecting execution before Seatbelt, while permitting
+locale settings and unrelated custom variables.
+
+An existing `/etc/ssh/sshrc` with startup commands needs operator review because
+the commands execute before Seatbelt attachment. The helper reports the file
+and the `--reviewed-sshrc` option. Use that option only after checking that the
+file does not source or execute files controlled by the dedicated account.
+Empty or comment-only files need no review. These checks preserve the entry
+requirements; they do not audit arbitrary startup code.
 
 ## Daily work and tmux
 
@@ -137,8 +217,11 @@ Home-scoped sockets are intentionally general; any service you place there
 becomes reachable by the account's processes.
 
 Transfer archives through SSH command stdin and extract them beneath the home.
-For example, run `ssh sy-agent@mac 'cat > workspace.tar' < workspace.tar`, then
-extract it through another confined command. Do not enable SSH forwarding to
+For example, run
+`ssh -i ~/.ssh/id_ed25519_sy_agent sy-agent@mac 'cat > workspace.tar' < workspace.tar`,
+then extract it through another confined command. The hostname `mac` represents
+your configured SSH destination and transport. A SafeYolo client must use its
+approved proxy route for that transport. Do not enable SSH forwarding to
 transfer files. This entry does not special-case an in-process SFTP subsystem;
 verify your chosen file-transfer client through the same forced entry.
 
