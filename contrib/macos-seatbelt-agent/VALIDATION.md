@@ -85,9 +85,10 @@ lets it build beneath the already-attached profile. **No VM boot was proved.**
 Physical Apple Silicon acceptance is still required before claiming that the
 helper's Virtualization.framework workload works under an adapted profile.
 
-## Tested source hashes
+## Original boundary-run source hashes
 
-SHA-256 hashes of the runtime sources copied into the guest:
+SHA-256 hashes for the original broader boundary/workload run above. The
+workflow run below also tests the current entry with its added `--check` mode:
 
 ```text
 131afa24ad5f4194388191091349e9dc8e9d02c8a1873232dd06c7a4877d0e72  agent-entry.c
@@ -111,51 +112,75 @@ remained. Directory Services confirmed the account record was absent; a cached
 Only the test source and nonsecret evidence were retained in the VM's admin lab
 directory.
 
-## SSH setup acceptance — 2026-09-13
+## Setup and client workflow acceptance (2026-09-13)
 
-The [configure-ssh](configure-ssh) helper was tested with the native macOS
-26.6.2 `sshd` in the same Tart guest. To repeat the checks, use an administrator
-terminal on a Mac with SSH host keys already provisioned. Change to the checkout's
-`contrib/macos-seatbelt-agent` directory before running this command:
+The current helpers were tested on macOS 26.6.2 (25G83), arm64, in the disposable
+Tart VM. The native suite creates `sy-seatbelt-test` (UID 59900), its home and the
+fixed entry directory. It refuses to reuse an existing account, UID, home or
+entry. It installs a compiled/signed entry, changes the test account's login shell,
+and starts an isolated SSH daemon on an ephemeral loopback port. The normal SSH
+service is not changed. Teardown removes the test user launch domain, stops
+remaining fixture processes, and checks that the UID has no processes before
+removing the account and files. A failed cleanup makes the suite fail.
+
+**Use a disposable Mac VM with Command Line Tools and SSH host keys provisioned.
+In an administrator terminal, change to this checkout's
+`contrib/macos-seatbelt-agent` directory before running:**
 
 ```sh
 sudo /bin/sh ./test-configure-ssh.sh
 ```
 
-The tests use temporary configuration files. They do not change the running
-SSH service. The system startup-file check is redirected to a temporary file;
-the rollback cases substitute a wrapper that deliberately fails the final
-validation and delegates all other calls to the real `sshd`.
+The suite redirects the system startup-file check to a fixture. Failure cases
+wrap the real `sshd` to reject final validation after activation.
 
 | Check | Result |
 | --- | --- |
-| Install and verify account settings | Pass |
-| Preserve the original configuration's mode | Pass |
-| Other account's effective settings unchanged | Pass |
-| Repeat installation without duplicate includes | Pass |
-| Existing account-specific rules and include precedence | Pass |
-| Another account name and a configuration path containing spaces | Pass |
-| Enabled user environment files and unsafe `AcceptEnv` patterns | Rejected before activation |
-| Locale settings and unrelated custom environment variables | Accepted |
-| Invalid existing configuration | Rejected without changing SSH files |
-| Empty/comment-only system startup file | Accepted |
+| `--check` | Account, entry and candidate validation pass; shell and SSH files unchanged |
+| Normal activation | Compiled shell installed before SSH fragment; resulting settings verified |
+| File mode, other account settings, repeat installation | Preserved; no duplicate include |
+| Custom account and configuration path containing spaces | Pass |
+| Unsafe environment settings, invalid existing configuration | Rejected before activation |
+| Harmless environment variables, comment-only system startup file | Accepted |
 | System startup commands | Require explicit operator review |
-| Final-validation failure on a new installation | Original configuration restored; new fragment removed |
-| Final-validation failure on an existing installation | Original configuration and fragment restored |
+| Admin membership and sudo grants | Rejected |
+| File write ACL and directory delete-child ACL | Rejected |
+| Read-only ACL | Accepted |
+| Unsafe configuration directory | Rejected before activation |
+| Final-validation failure, first installation | SSH configuration and original `/bin/zsh` restored; new fragment removed |
+| Final-validation failure, existing installation | Previous configuration, fragment and compiled login shell restored |
+| Failed SSH recovery validation | Compiled login shell retained; explicit recovery error |
+| Generated client configuration and operator host-key handoff | Fresh SSH login succeeds with expected UID |
+| Binary SSH stdin/stdout | 256 KiB round trip is unchanged |
+| Read of an outside canary accessible without Seatbelt | Denied after SSH entry |
+| Incorrect pinned server key | SSH rejects before account login |
 
-All checks passed, and the temporary configuration files and backups were
-removed. This run checks configuration installation and recovery; the SSH
-login and confinement evidence remains the earlier boundary test record.
+The native client test uses an isolated CONNECT relay to exercise real OpenSSH,
+the generated configuration and the Mac entry. It does not substitute that relay
+for evidence about SafeYolo policy. Separately, `tests/test_seatbelt_client.py`
+runs the actual SafeYolo network policy addon in mitmproxy inside Linux. It
+verifies SSH banner/binary traffic without `tcp_hosts` or `ignore_hosts`
+exceptions, port-scoped admission, zero upstream accepts on 403/428, approval
+diagnostics, and refusal to fall back when a proxy is missing or unsupported.
+It also verifies the pinned client configuration and preservation of existing
+client keys and global SSH configuration. These tests use only disposable local
+listeners; they do not probe services on the physical host.
 
-The shortened README's install block was also run on this Mac, redirecting only
-its installation directory to a disposable fixture. Compilation, signing,
-installed ownership/modes, and public-key contents passed. An invalid public
-key stopped the block before installation. The fixture and keys were removed;
-the account's login shell and active SSH configuration were not changed.
+The earlier shortened README install block was also tested in this Mac VM with
+its destination redirected to a disposable fixture. Compilation, signing,
+ownership/modes and public-key contents passed. An invalid public key stopped
+installation. The current native suite builds and installs the same entry files
+before testing the full SSH workflow above. Broader confinement evidence and
+platform limits remain in the preceding sections.
 
-Tested SHA-256 hashes:
+Workflow source hashes for the native run and Linux client tests:
 
 ```text
-3fe9f83a6982ae2b090cd156348d0d480e2fe63f01bf92a023e04ec5da9bd002  configure-ssh
-17b344eb894dafcd80555b3803f6c3ab6b8f040900c851e831386331f56e7bb1  test-configure-ssh.sh
+d789b0ae177916b64179aa9de355e6f9735211929fa1ea875e326aa17e7c0fe1  agent-entry.c
+71e408c6fdfa74e7b47256adcab02d0b4f3fcf0198e6b5b18bff30502a5e95d5  check-account.c
+b55265a8c4c58952c49c8f93226307aaaa3c9c7de5ded7a3685c3a6249d68424  configure-ssh
+4621765dffa74ecaaa27b58e9e5b155e923e3ff288bfe0fd929bd9b72c7016a9  configure-client
+656fa4222b448edf0077ffc606a931f6c14385d441201637303e3814c009849f  ssh-via-proxy.py
+4bd9f43e0c0e90fbdb81e5b452c236e6ffd3b9e09de013be69f051285d2d0d6c  test-configure-ssh.sh
+ecd2dbc98dd59e6be9610d668c29ced8bc5c70cb5a606c93aba1d5a65a80d5a7  test-client-live.py
 ```

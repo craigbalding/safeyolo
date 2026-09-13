@@ -6,7 +6,10 @@ __pycache__/
 cli/.venv/
 data/
 logs/
-.claude/
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/readme-usability
 CLAUDE.local.md
 *.egg-info/
 .pytest_cache/

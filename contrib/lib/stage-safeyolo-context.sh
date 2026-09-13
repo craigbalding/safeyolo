@@ -183,11 +183,11 @@ stage_safeyolo_context() {
     case "$consumer" in
         codex)
             link_dir="$agent_home/.agents/skills"
-            skill_names="safeyolo safeyolo-lab-controller safeyolo-factory"
+            skill_names="safeyolo safeyolo-lab-controller safeyolo-factory readme-usability"
             ;;
         claude)
             link_dir="$agent_home/.claude/skills"
-            skill_names="safeyolo"
+            skill_names="safeyolo readme-usability"
             ;;
         pi)
             link_dir="$agent_home/.pi/agent/skills"

@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Configure the client SSH route from an operator-supplied endpoint and host key."""
+
+import argparse
+import importlib.util
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+def ssh_quote(value):
+    value = str(value)
+    if any(c in value for c in '\r\n"\\'):
+        raise ValueError("SSH paths cannot contain quotes, backslashes or newlines")
+    return '"' + value.replace("%", "%%") + '"'
+
+
+def configure(host, port, host_key, account):
+    source = Path(__file__).resolve().parent / "ssh-via-proxy.py"
+    spec = importlib.util.spec_from_file_location("ssh_via_proxy", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.destination(host, port)
+    if not account or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for c in account):
+        raise ValueError("Invalid account name")
+    if not host_key.startswith("ssh-ed25519 ") or "\n" in host_key or "\r" in host_key:
+        raise ValueError("Paste the Mac's single ssh-ed25519 host public-key line")
+    root = Path.home() / ".ssh" / "seatbelt-agent"
+    identity = Path.home() / ".ssh" / "id_ed25519_sy_agent"
+    if not identity.is_file() or not identity.with_suffix(".pub").is_file():
+        raise ValueError("Create the client key first using README step 1")
+    public = subprocess.check_output(["ssh-keygen", "-y", "-P", "", "-f", str(identity)], text=True)
+    if public.split()[:2] != identity.with_suffix(".pub").read_text().split()[:2]:
+        raise ValueError("Client private/public key pair does not match")
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    proxy_command = " ".join(shlex.quote(str(p)).replace("%", "%%") for p in (sys.executable, root / source.name))
+    config = f"""Host seatbelt-mac
+    HostName {host}
+    Port {port}
+    User {account}
+    IdentityFile {ssh_quote(identity)}
+    IdentitiesOnly yes
+    BatchMode yes
+    StrictHostKeyChecking yes
+    HostKeyAlias seatbelt-mac
+    UserKnownHostsFile {ssh_quote(root / 'known_hosts')}
+    GlobalKnownHostsFile /dev/null
+    ProxyCommand {proxy_command} %h %p
+"""
+    with tempfile.TemporaryDirectory(dir=root) as temporary:
+        stage = Path(temporary)
+        (stage / "host-key.pub").write_text(host_key + "\n")
+        subprocess.run(["ssh-keygen", "-lf", str(stage / "host-key.pub")], check=True)
+        (stage / "known_hosts").write_text("seatbelt-mac " + host_key + "\n")
+        (stage / "config").write_text(config)
+        shutil.copyfile(source, stage / source.name)
+        subprocess.run(["ssh", "-G", "-F", str(stage / "config"), "seatbelt-mac"], check=True, stdout=subprocess.DEVNULL)
+        for name in ("known_hosts", source.name, "config"):
+            target = root / name
+            if target.exists():
+                shutil.copyfile(target, stage / (name + ".before"))
+                os.chmod(stage / (name + ".before"), 0o600)
+                os.replace(stage / (name + ".before"), root / (name + ".before"))
+            os.chmod(stage / name, 0o600)
+            os.replace(stage / name, target)
+    print(f"Configured. Test: ssh -F {shlex.quote(str(root / 'config'))} seatbelt-mac id")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--user", default="sy-agent", help="Mac account (default: sy-agent)")
+    args = parser.parse_args()
+    try:
+        host = input("Operator-approved Mac host/IP, as seen by the proxy: ").strip()
+        port = int(input("SSH port [22]: ").strip() or "22")
+        host_key = input("Mac SSH host public-key line: ").strip()
+        configure(host, port, host_key, args.user)
+    except (OSError, ValueError, EOFError, subprocess.CalledProcessError) as exc:
+        print(f"configure-client: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

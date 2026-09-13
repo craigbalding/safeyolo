@@ -5,14 +5,15 @@ set -eu
 fail() { printf 'configure-ssh: %s\n' "$*" >&2; exit 1; }
 usage() {
     cat <<'USAGE'
-Usage: sudo ./configure-ssh [--user NAME] [--config FILE] [--reviewed-sshrc]
+Usage: sudo ./configure-ssh [--user NAME] [--config FILE] [--check] [--reviewed-sshrc]
 
-Configure SSH for the Seatbelt account (default: sy-agent).
-Validate before activation, preserve a backup, and restore on failure.
+Check the installed entry and account, then configure its login shell and SSH.
+Preserve both previous states and restore them on failure (default: sy-agent).
 Existing SSH sessions are left running; no daemon is restarted.
 
   --user NAME        Account used when compiling agent-entry.
   --config FILE      SSH daemon configuration (default: /etc/ssh/sshd_config).
+  --check            Run preflight and candidate validation without activation.
   --reviewed-sshrc   Confirm the operator has reviewed /etc/ssh/sshrc and it
                      does not execute or source files controlled by the account.
   --help             Show this help.
@@ -22,12 +23,15 @@ USAGE
 account=sy-agent
 config=/etc/ssh/sshd_config
 reviewed_sshrc=no
+check_only=no
+entry=/Library/PrivilegedHelperTools/seatbelt-agent
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --user|--config)
             [ "$#" -ge 2 ] || fail "$1 needs a value. See --help."
             case "$1" in --user) account=$2 ;; --config) config=$2 ;; esac
             shift 2 ;;
+        --check) check_only=yes; shift ;;
         --reviewed-sshrc) reviewed_sshrc=yes; shift ;;
         --help) usage; exit 0 ;;
         *) fail "Unknown argument: $1. See --help." ;;
@@ -48,10 +52,14 @@ connection="user=$account,host=localhost,addr=127.0.0.1"
 
 # Check existing policy before adding the fragment's global environment setting.
 /usr/sbin/sshd -t -f "$config" || fail 'Existing SSH configuration is invalid. No SSH files were changed.'
-work=$(mktemp -d "$config.seatbelt-backup.XXXXXX")
+# Build and stage under root's private home until the configured directories
+# have passed the account's permission checks. An unsafe selected directory
+# must not redirect root's compiler output or preflight files.
+work=$(mktemp -d /private/var/root/seatbelt-preflight.XXXXXX)
 changed=no
 complete=no
 had_fragment=no
+shell_changed=no
 cleanup() {
     result=$?
     trap - EXIT
@@ -63,10 +71,16 @@ cleanup() {
         else
             rm -f "$fragment" || restored=no
         fi
+        # Restore admission first. Never put a normal shell behind our active
+        # ForceCommand if SSH restoration or validation fails.
+        /usr/sbin/sshd -t -f "$config" || restored=no
+        if [ "$restored" = yes ] && [ "$shell_changed" = yes ]; then
+            /usr/bin/dscl . -create "/Users/$account" UserShell "$(cat "$work/shell.before")" || restored=no
+        fi
         if [ "$restored" = yes ]; then
-            printf 'Previous SSH configuration restored. Backup: %s\n' "$work" >&2
+            printf 'Previous SSH configuration and login shell restored. Backup: %s\n' "$work" >&2
         else
-            printf 'Automatic restore failed. Restore the files in %s before another SSH login.\n' "$work" >&2
+            printf 'Automatic restore failed. Keep the compiled login shell; repair SSH from %s before restoring shell.before or attempting login.\n' "$work" >&2
             result=1
         fi
     fi
@@ -102,6 +116,34 @@ check_environment "$work/before.effective"
 if [ -f /etc/ssh/sshrc ] && [ "$reviewed_sshrc" = no ] &&
     awk '/^[[:space:]]*(#|$)/ { next } { found=1 } END { exit !found }' /etc/ssh/sshrc; then
     fail '/etc/ssh/sshrc contains startup commands that run before Seatbelt. Check that they do not source or execute account-controlled files; then rerun with --reviewed-sshrc. No SSH files were changed.'
+fi
+
+# Inspect the local account without running its login shell or startup files.
+/usr/bin/dscl . -read "/Users/$account" UserShell > "$work/account" || fail "Local account $account is missing. Create the Standard account first."
+sed -n 's/^UserShell: //p' "$work/account" > "$work/shell.before"
+[ "$(wc -l < "$work/shell.before" | tr -d ' ')" = 1 ] || fail 'Expected one existing login shell.'
+case "$(cat "$work/shell.before")" in /*) ;; *) fail 'Expected an absolute login-shell path.' ;; esac
+/usr/bin/xcrun clang -Wall -Wextra -Werror -O2 "$source_dir/check-account.c" -o "$work/check-account"
+set -- /Library /Library/PrivilegedHelperTools "$entry" \
+    "$entry/agent-entry" "$entry/agent-session" "$entry/agent-dev.sb" \
+    "$entry/authorized_keys" "$config_dir" "$config"
+if [ -f "$fragment" ]; then set -- "$@" "$fragment"; fi
+if [ -f /etc/ssh/sshrc ]; then
+    sshrc_dir=$(cd "$(dirname /etc/ssh/sshrc)" && pwd -P)
+    set -- "$@" "$sshrc_dir/sshrc"
+fi
+"$work/check-account" "$account" "$entry/agent-entry" "$@" || fail 'Account/entry preflight failed. No login shell or SSH files were changed.'
+/usr/bin/codesign --verify --strict "$entry/agent-entry" || fail 'Entry signature is invalid. Rebuild using the setup guide.'
+/usr/bin/codesign --display --verbose=2 "$entry/agent-entry" 2> "$work/signature"
+awk '/^CodeDirectory / && /[(,]runtime[,)]/ { found=1 } END { exit !found }' "$work/signature" || fail 'Entry must be signed with the hardened runtime. Rebuild using the setup guide.'
+
+# macOS sudo can return zero even when this root-side query finds no grants.
+# Require its explicit negative result; never infer absence from exit status.
+sudo_status=0
+LC_ALL=C /usr/bin/sudo -n -l -U "$account" > "$work/sudo" 2>&1 || sudo_status=$?
+if [ "$sudo_status" -gt 1 ] || ! awk -v account="$account" \
+    'index($0, "User " account " is not allowed to run sudo on ") == 1 { found=1 } END { exit !found }' "$work/sudo"; then
+    fail "Account $account has sudo grants, or its sudo policy could not be checked. Inspect sudo -l -U $account and remove grants before enabling this entry."
 fi
 
 cp -p "$config" "$work/config.before"
@@ -151,12 +193,26 @@ check_candidate() {
 # Validate a staged include before changing either active file.
 make_candidate "$work/fragment"
 check_candidate "$work/candidate" || fail 'Candidate SSH settings did not pass validation. No SSH files were changed.'
+if [ "$check_only" = yes ]; then
+    printf 'Account, entry and candidate SSH settings passed preflight; nothing activated.\n'
+    exit 0
+fi
+backup=$(mktemp -d "$config.seatbelt-backup.XXXXXX")
+rmdir "$backup"
+mv "$work" "$backup"
+work=$backup
 make_candidate "$fragment"
 changed=yes
+# This must precede ForceCommand activation; a normal shell would interpret
+# startup files before the forced command could attach Seatbelt.
+shell_changed=yes
+/usr/bin/dscl . -create "/Users/$account" UserShell "$entry/agent-entry"
 install -o root -g wheel -m 644 "$work/fragment" "$fragment"
 mv -f "$work/candidate" "$config"
 check_candidate "$config" || fail 'Installed SSH settings did not pass validation.'
+/usr/bin/dscl . -read "/Users/$account" UserShell | \
+    awk -v shell="$entry/agent-entry" '$0 == "UserShell: " shell { found=1 } END { exit !found }' || fail 'Installed login shell did not match the entry.'
 complete=yes
-printf 'SSH configuration installed and verified for %s (loopback connection).\n' "$account"
+printf 'SSH configuration installed and verified for %s (UID %s; loopback connection).\n' "$account" "$(id -u "$account")"
 printf 'Backup: %s\n' "$work"
 printf 'Keep your administrator session open and test a fresh agent SSH login.\n'

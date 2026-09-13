@@ -42,7 +42,8 @@ int main(int argc, char **argv) {
     /* sshd invokes the login shell with -c and the literal ForceCommand.
      * Direct login-shell invocation still attaches exactly the same profile.
      */
-    if (argc != 1 && !(argc == 3 && strcmp(argv[1], "-c") == 0 &&
+    int check = argc == 2 && strcmp(argv[1], "--check") == 0;
+    if (!check && argc != 1 && !(argc == 3 && strcmp(argv[1], "-c") == 0 &&
                        strcmp(argv[2], "seatbelt-session") == 0))
         fail("unexpected login-shell arguments; check ForceCommand");
     trusted_path("/Library");
@@ -81,8 +82,8 @@ int main(int argc, char **argv) {
         "/usr/bin/sandbox-exec", "-f", ENTRY_ROOT "/agent-dev.sb",
         "-D", "AGENT_HOME=" AGENT_HOME,
         "-D", "TOOLCHAIN_ROOT=" TOOLCHAIN_ROOT,
-        ENTRY_ROOT "/agent-session",
-        command ? "--command" : "--interactive", command, NULL
+        check ? "/usr/bin/true" : ENTRY_ROOT "/agent-session",
+        check ? NULL : (command ? "--command" : "--interactive"), command, NULL
     };
     umask(077);
     if (chdir("/") != 0)
