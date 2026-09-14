@@ -1,8 +1,9 @@
 # Contained SSH development on macOS
 
 Give your SafeYolo agent a shell on a physical Mac when a VM won't do.
-Seatbelt allows writes in the dedicated account's home and denies IP networking
-and access to other users' homes. The `sandbox-exec` interface is deprecated; see
+The default Seatbelt profile allows writes in the dedicated account's home and
+denies IP networking and access to other users' homes. The `sandbox-exec`
+interface is deprecated; see
 [why we use Seatbelt](REFERENCE.md#why-seatbelt) and its
 [tested limits](VALIDATION.md#measured-limitations).
 
@@ -125,3 +126,21 @@ reports whether the login succeeded with the expected account UID.
 
 See the reference for [interactive use and file transfer](REFERENCE.md#daily-work-and-tmux)
 and [optional profile testing](REFERENCE.md#validation-and-adaptation).
+
+## Optional: Virtualization.framework workloads
+
+For virtual machine (VM) work with Virtualization.framework (VZ),
+[agent-dev.sb](agent-dev.sb) includes **commented-out** examples
+for VM service lookup and VirtioFS share delegation. Enable only the forms your
+workload needs and replace the observed lab share paths with your own. These
+capabilities are optional; normal SSH development keeps the baseline policy.
+
+The tested SSH-only account also needed its own unlocked, registered login
+keychain for VZ snapshot save/restore. A graphical login was not needed in that
+test. Follow the [optional VZ setup](REFERENCE.md#optional-vz-workloads) from
+your Mac administrator terminal. It covers policy installation, session restart
+and the CLI keychain commands.
+
+The successful workloads do not establish the full scope of the Fuse grant or
+rule out sandbox escape. [Issue #616](https://github.com/craigbalding/safeyolo/issues/616)
+tracks its effects on the host, other workloads and confinement.

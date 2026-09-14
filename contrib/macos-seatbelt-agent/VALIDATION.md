@@ -86,8 +86,34 @@ The build and signing succeeded. The check exited 1 with
 `Error: Virtualization is not supported on this machine`. A normal SwiftPM build
 first failed while trying to apply its additional sandbox; the documented flag
 lets it build beneath the already-attached profile. **No VM boot was proved.**
-Physical Apple Silicon acceptance is still required before claiming that the
-helper's Virtualization.framework workload works under an adapted profile.
+The Tart result alone does not establish a working VZ VM. The later physical-host
+record below demonstrates specific workloads with optional grants.
+
+## Optional VZ workload acceptance (2026-09-14)
+
+The work merged in [PR #615](https://github.com/craigbalding/safeyolo/pull/615)
+ran on physical Apple Silicon with macOS 26.6.2 (25G83), using the non-admin
+`sy-agent` account through its confined SSH entry. The operator enabled the
+named VM-service lookup, generic Fuse extension and four path-specific share
+delegation grants now recorded as commented examples in
+[agent-dev.sb](agent-dev.sb). The baseline profile does not enable them.
+
+The full guest booted with VirtioFS config, workspace, status and home shares.
+Workspace/home access and shared-home recovery passed. The final bounded-load
+run also passed with four shares on production helper source `a2f45b8d`, whose
+native source matches the published admission candidate `1ed87803`.
+
+Snapshot save and restore passed in a separate disk-only fixture on the earlier
+production helper `62d8be6b`, after the operator created, unlocked and registered
+the account's own login keychain. No graphical login was required for that
+setup. This does not establish snapshot support for a VM with VirtioFS shares
+or for every VM configuration.
+
+These are successful workload observations, not a security assessment of the
+new grants. Their effects on host resources, unrelated workloads and potential
+sandbox escape remain under [issue #616](https://github.com/craigbalding/safeyolo/issues/616).
+The [optional VZ setup](REFERENCE.md#optional-vz-workloads) preserves that
+distinction and keeps the grants disabled by default.
 
 ## Original boundary-run source hashes
 

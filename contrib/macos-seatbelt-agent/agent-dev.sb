@@ -46,3 +46,33 @@
 ; An operator can add ONE chosen proxy destination, for example:
 ; (allow network-outbound (remote tcp "localhost:18080"))
 ; The operator must provision that listener separately; see README.md.
+
+; Optional Virtualization.framework (VZ) work. All rules below are disabled.
+; See REFERENCE.md#optional-vz-workloads before enabling the required forms.
+; Grant scope and security assessment: https://github.com/craigbalding/safeyolo/issues/616
+
+; VZ startup: allow lookup of the observed VM service only.
+; (allow mach-lookup
+;     (xpc-service-name "com.apple.Virtualization.VirtualMachine"))
+
+; VirtioFS: permit the observed Fuse extension class.
+; This generic grant has no path filter; the file rules below must not be
+; assumed to bound its full authority. The assessment remains open in #616.
+; (allow generic-issue-extension
+;     (extension-class "com.apple.virtualization.extension.fuse"))
+
+; VirtioFS share delegation: observed lab paths, not universal defaults.
+; Replace each path with the intended workload's share root before enabling.
+; Keep the config share read-only and list writable shares individually.
+; (allow file-issue-extension
+;     (require-all
+;         (subpath "/Users/sy-agent/full-guest-lab/config/agents/native/config-share")
+;         (extension-class "com.apple.app-sandbox.read")))
+;
+; (allow file-issue-extension
+;     (require-all
+;         (require-any
+;             (subpath "/Users/sy-agent/full-guest-lab/workspace")
+;             (subpath "/Users/sy-agent/full-guest-lab/config/agents/native/status")
+;             (subpath "/Users/sy-agent/full-guest-lab/config/agents/native/home"))
+;         (extension-class "com.apple.app-sandbox.read-write")))
