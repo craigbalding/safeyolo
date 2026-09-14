@@ -12,6 +12,7 @@ import platform
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -1180,32 +1181,56 @@ def prepare_config_share(
     # Retain actual boot inputs, including --folder and one-off --mount values.
     # Host launchers need these after the booting CLI has exited. This share is
     # host-owned and read-only in the guest; agent metadata describes future runs.
-    (share_dir / "host-launch-context.json").write_text(json.dumps({
+    context_path = share_dir / "host-launch-context.json"
+    try:
+        payload_identities = json.loads(context_path.read_text()).get("command_payloads", {})
+    except FileNotFoundError:
+        payload_identities = {}
+    stage_guest_command_observation(get_agent_home_dir(name), payload_identities)
+    context_path.write_text(json.dumps({
         "generation": uuid.uuid4().hex,
+        "command_payloads": payload_identities,
         "workspace": str(Path(workspace_path).expanduser().resolve()),
         "writable_mounts": [str(Path(host).resolve()) for host, _guest, read_only in (host_mounts or [])
                             if not read_only],
     }) + "\n")
 
-    stage_guest_command_observation(get_agent_home_dir(name))
-
     return share_dir
 
 
-def stage_guest_command_observation(home: Path) -> None:
+def _command_payload_identity(payload: Path) -> list[int]:
+    info = payload.lstat()  # Identify the guest-owned path without following symlinks on the host.
+    if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+        raise VMError(f"Cannot stage command: preserving unrecognized payload {payload}")
+    return [info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def stage_guest_command_observation(home: Path, payload_identities: dict[str, list[int]]) -> None:
     """Wrap configured entrypoints at boot, including custom host-script output."""
+    wrapper = (
+        b"#!/bin/sh\n"
+        b"# SafeYolo configured-command observation\n"
+        b'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
+    )
+    pending = []
     for name in (".safeyolo-command", ".safeyolo-interactive-command"):
         entrypoint = home / name
         if not entrypoint.is_file() or not os.access(entrypoint, os.X_OK):
             continue
-        wrapper = (
-            b"#!/bin/sh\n"
-            b"# SafeYolo configured-command observation\n"
-            b'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
-        )
+        payload = home / f"{name}.payload"
         if entrypoint.read_bytes() == wrapper:
+            # Recognize wrappers from before payload ownership was recorded.
+            if name not in payload_identities:
+                payload_identities[name] = _command_payload_identity(payload)
             continue
-        entrypoint.replace(home / f"{name}.payload")
+        if payload.exists() or payload.is_symlink():
+            if payload_identities.get(name) != _command_payload_identity(payload):
+                raise VMError(f"Cannot stage {name}: preserving unrecognized payload {payload}")
+        pending.append((entrypoint, payload))
+    # A collision in either command must leave both entrypoints untouched.
+    for entrypoint, payload in pending:
+        entrypoint.replace(payload)
+        payload_identities[entrypoint.name] = _command_payload_identity(payload)
         entrypoint.write_bytes(wrapper)
         entrypoint.chmod(0o755)
 

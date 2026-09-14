@@ -439,14 +439,105 @@ class TestPrepareConfigShare:
         context = json.loads((share / "host-launch-context.json").read_text())
         generation = context.pop("generation")
         assert generation
-        assert context == {"workspace": str(tmp_path / "override"),
+        assert context == {"command_payloads": {}, "workspace": str(tmp_path / "override"),
                            "writable_mounts": [str(tmp_path / "writable")]}
         prepare_config_share("agent1", str(tmp_path / "next"))
         context = json.loads((share / "host-launch-context.json").read_text())
         assert context.pop("generation") != generation
         assert context == {
-            "workspace": str(tmp_path / "next"), "writable_mounts": [],
+            "command_payloads": {}, "workspace": str(tmp_path / "next"), "writable_mounts": [],
         }
+
+    @pytest.mark.parametrize("collision", ["file", "dangling-symlink", "replaced-managed", "replaced-managed-after-boot"])
+    def test_command_payload_collision_preserves_existing_files(self, tmp_config_dir, collision):
+        home = tmp_config_dir / "agents" / "agent1" / "home"
+        home.mkdir(parents=True)
+        entrypoint = home / ".safeyolo-interactive-command"
+        original = b"#!/bin/sh\nexec custom-agent\n"
+        entrypoint.write_bytes(original)
+        entrypoint.chmod(0o755)
+        first = home / ".safeyolo-command"
+        first.write_bytes(original)
+        first.chmod(0o755)
+        payload = home / ".safeyolo-interactive-command.payload"
+        if collision.startswith("replaced-managed"):
+            prepare_config_share("agent1", "/workspace")
+        if collision != "dangling-symlink":
+            payload.write_bytes(b"operator-owned file\n")
+        else:
+            payload.symlink_to("missing-operator-file")
+        if collision.startswith("replaced-managed"):
+            if collision == "replaced-managed-after-boot":
+                prepare_config_share("agent1", "/workspace")
+            entrypoint.write_bytes(original)
+        replacement = b"#!/bin/sh\nexec replacement\n"
+        first.write_bytes(replacement)
+        with pytest.raises(VMError, match="preserving unrecognized payload"):
+            prepare_config_share("agent1", "/workspace")
+        assert entrypoint.read_bytes() == original
+        assert first.read_bytes() == replacement
+        if collision != "dangling-symlink":
+            assert payload.read_bytes() == b"operator-owned file\n"
+        else:
+            assert payload.is_symlink()
+            assert os.readlink(payload) == "missing-operator-file"
+        payload.unlink()  # Remove the test collision and retry the same setup.
+        prepare_config_share("agent1", "/workspace")
+        assert (home / ".safeyolo-command.payload").read_bytes() == replacement
+        first.write_bytes(original)
+        prepare_config_share("agent1", "/workspace")
+        assert (home / ".safeyolo-command.payload").read_bytes() == original
+
+    def test_payload_ownership_survives_boot_and_legacy_wrapper_upgrade(self, tmp_config_dir):
+        home = tmp_config_dir / "agents" / "agent1" / "home"
+        home.mkdir(parents=True)
+        entrypoint = home / ".safeyolo-command"
+        entrypoint.write_bytes(b"#!/bin/sh\nexec custom-agent\n")
+        entrypoint.chmod(0o755)
+        share = prepare_config_share("agent1", "/workspace")
+        context_path = share / "host-launch-context.json"
+        context = json.loads(context_path.read_text())
+        del context["command_payloads"]  # A wrapper created by #618 had no ownership record.
+        context_path.write_text(json.dumps(context))
+        prepare_config_share("agent1", "/workspace")
+        replacement = b"#!/bin/sh\nexec replacement\n"
+        entrypoint.write_bytes(replacement)
+        prepare_config_share("agent1", "/workspace")
+        assert (home / ".safeyolo-command.payload").read_bytes() == replacement
+
+    @pytest.mark.parametrize("payload_kind", ["symlink", "fifo"])
+    def test_legacy_payload_identity_never_reads_payload_contents(self, tmp_config_dir, tmp_path, monkeypatch, payload_kind):
+        home = tmp_config_dir / "agents" / "agent1" / "home"
+        home.mkdir(parents=True)
+        entrypoint = home / ".safeyolo-command"
+        entrypoint.write_bytes(b"#!/bin/sh\nexit 0\n")
+        entrypoint.chmod(0o755)
+        share = prepare_config_share("agent1", "/workspace")
+        context_path = share / "host-launch-context.json"
+        context = json.loads(context_path.read_text())
+        del context["command_payloads"]
+        context_path.write_text(json.dumps(context))
+        payload = home / ".safeyolo-command.payload"
+        payload.unlink()
+        if payload_kind == "symlink":
+            target = tmp_path / "host-only-file"
+            target.write_text("host-only data")
+            payload.symlink_to(target)
+        else:
+            os.mkfifo(payload)
+        read_bytes = Path.read_bytes
+
+        def reject_payload_read(path):
+            assert path != payload, "Boot staging must not read through the guest payload path"
+            return read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", reject_payload_read)
+        if payload_kind == "fifo":
+            with pytest.raises(VMError, match="preserving unrecognized payload"):
+                prepare_config_share("agent1", "/workspace")
+        else:
+            prepare_config_share("agent1", "/workspace")
+            assert os.readlink(payload) == str(target)
 
     def test_bundled_skills_are_refreshed_exactly_on_each_run(self, tmp_config_dir):
         import safeyolo.vm as vm_mod
