@@ -71,7 +71,11 @@ def guest_owner(staged_guest):
 
 
 def test_recipe_runs_once_through_guest_owner_without_shell(staged_guest, guest_owner):
-    output = recipe.probe("demo")
+    try:
+        output = recipe.probe("demo")
+    except RuntimeError:
+        print("Guest supervisor failure state:", supervisor.read_command_supervisor_state("demo"))
+        raise
     result = json.loads((output / "result.json").read_text())
     invocation = json.loads((output / "invocation.json").read_text())
     state = supervisor.read_command_supervisor_state("demo")
@@ -88,6 +92,39 @@ def test_recipe_runs_once_through_guest_owner_without_shell(staged_guest, guest_
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in output.iterdir())
     time.sleep(0.3)
     assert supervisor.read_command_supervisor_state("demo") == state
+
+
+@pytest.mark.parametrize("stall", [False, True], ids=["complete", "blocked-finalization"])
+def test_payload_fences_without_losing_exit_status_or_deadline(tmp_path, stall):
+    # The stop watcher can observe the marker before Python finishes exiting.
+    # Deliver the real signal at that exact boundary instead of relying on
+    # scheduler timing to reproduce the failed CI probe.
+    stop = tmp_path / "stop"
+    script = """
+import os, runpy, signal, sys, time
+from pathlib import Path
+stall = sys.argv[2] == 'stall'
+write_text = Path.write_text
+def publish_and_signal(path, *args, **kwargs):
+    result = write_text(path, *args, **kwargs)
+    if path == Path(os.environ['SAFEYOLO_COMMAND_SUPERVISOR_STOP']):
+        os.kill(os.getpid(), signal.SIGTERM)
+        if stall:
+            time.sleep(10)
+    return result
+Path.write_text = publish_and_signal
+sys.argv = [sys.argv[1], 'completion-race']
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+    result = subprocess.run(
+        [os.sys.executable, "-c", script, str(ROOT / "contrib/vm-guest-probe-payload.py"),
+         "stall" if stall else "complete"],
+        env={**os.environ, "SAFEYOLO_COMMAND_SUPERVISOR_STOP": str(stop)},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == (-signal.SIGALRM if stall else 0), result.stderr
+    assert json.loads(result.stderr)["probe_id"] == "completion-race"
+    assert json.loads(stop.read_text())["probe_id"] == "completion-race"
 
 
 @pytest.mark.parametrize("fenced", [False, True])
