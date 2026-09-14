@@ -614,6 +614,13 @@ late callbacks, blocked logging and return to the original open-FD count. This
 suite tests the native relay implementation; real VZ/guest acceptance is still
 needed for framework integration and guest services.
 
+Run `make -C vm test-control` for native control-channel tests. They deliberately
+leave relay executors unscheduled, hold a partial control request open, and
+verify status/dump responsiveness, process-instance checks, private auditing,
+cancellation acknowledgement versus observed closure, and listener cleanup.
+The [host VM diagnostics](agent-debugging.md#inspect-a-macos-vm-helper-from-the-host)
+describe the supported operator commands and the evidence each one provides.
+
 ## Testing
 
 **Run tests:**

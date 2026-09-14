@@ -18,6 +18,7 @@ struct RunConfig {
     var serialLogPath: String = ""   // optional per-agent serial console log path
     var proxySocketPath: String = "" // host UDS the vsock proxy relay connects to (per-agent bridge socket)
     var shellSocketPath: String = "" // host UDS the shell bridge listens on; connects to guest vsock:2220
+    var controlSocketPath: String = "" // private host-only diagnostic/control UDS
     var snapshotOnSignal: String = "" // path to write snapshot to on SIGUSR1
     var restoreFrom: String = ""      // path to snapshot file to restore from
 }
@@ -57,6 +58,7 @@ func printUsage() {
                           in the guest). Used by `safeyolo agent shell` when
                           the VM has no network interface.
       --no-terminal       Detach mode: skip vsock terminal, keep VM alive for SSH
+      --control-socket PATH Private host-only JSON diagnostic/control socket.
       --snapshot-on-signal PATH
                           Write a VM snapshot to PATH when SIGUSR1 is received.
                           Sidecar metadata is written to PATH.meta.json.
@@ -135,6 +137,9 @@ func parseArguments() -> RunConfig? {
             config.shellSocketPath = args[i]
         case "--no-terminal":
             config.noTerminal = true
+        case "--control-socket":
+            i += 1; guard i < args.count else { fputs("Error: --control-socket requires a path\n", stderr); return nil }
+            config.controlSocketPath = args[i]
         case "--snapshot-on-signal":
             i += 1; guard i < args.count else { fputs("Error: --snapshot-on-signal requires a path\n", stderr); return nil }
             config.snapshotOnSignal = args[i]
@@ -355,6 +360,15 @@ do {
         }
     }
 
+    let relayLoops = [proxyRelay?.loop, shellBridge?.loop].compactMap { $0 }
+    var control: VMControl?
+    if !config.controlSocketPath.isEmpty {
+        control = try VMControl(path: config.controlSocketPath, ledger: relayLedger,
+            runtime: runner.runtimeStatus, refreshVM: { runner.refreshRuntimeStatus() },
+            wakeRelays: { relayLoops.forEach { $0.wake() } })
+        control?.start()
+    }
+
     // In detach mode (--no-terminal), the VM stays alive until SIGTERM and
     // is accessed via SSH (`safeyolo agent shell <name>`); no vsock-term.
     // Otherwise, attach the vsock terminal once the guest's per-run init
@@ -410,7 +424,7 @@ do {
     // so RunLoop.main stays alive for the VM's lifetime.
     let keepalive = Timer(timeInterval: 30.0, repeats: true) { _ in }
     RunLoop.main.add(keepalive, forMode: .default)
-    withExtendedLifetime((runner, proxyRelay, shellBridge)) {
+    withExtendedLifetime((runner, proxyRelay, shellBridge, control)) {
         RunLoop.main.run()
     }
 } catch {

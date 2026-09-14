@@ -1366,6 +1366,14 @@ def start_vm(
     if shell_socket_path:
         cmd.extend(["--shell-socket", shell_socket_path])
 
+    if host_system == "Darwin":
+        from .vm_control import socket_path as control_socket_for
+
+        control_socket = control_socket_for(name)
+        control_socket.parent.mkdir(parents=True, exist_ok=True)
+        control_socket.parent.chmod(0o700)  # DOC: docs/agent-debugging.md
+        cmd.extend(["--control-socket", str(control_socket)])
+
     # Additional shares. Tags are internal transport identifiers; the matching
     # tag-to-destination manifest is written by prepare_config_share().
     if extra_shares:

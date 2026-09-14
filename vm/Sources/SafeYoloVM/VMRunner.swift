@@ -8,6 +8,12 @@ class VMRunner: NSObject, VZVirtualMachineDelegate {
     private let queue: DispatchQueue
     private var observation: NSKeyValueObservation?
     private var hasExited = false
+    let runtimeStatus = VMRuntimeStatus()
+
+    func refreshRuntimeStatus() {
+        guard runtimeStatus.beginRefresh() else { return }
+        queue.async { [self] in runtimeStatus.refreshed(state: stateName(vm.state)) }
+    }
 
     // When non-zero, the state observer ignores .stopped and .error
     // transitions. Used during restore/save where VZ may transition the
@@ -83,6 +89,7 @@ class VMRunner: NSObject, VZVirtualMachineDelegate {
     }
 
     private func handleStateChange(_ state: VZVirtualMachine.State) {
+        runtimeStatus.observed(state: stateName(state))
         // Diagnostic: log every state transition to stderr so we can see
         // exactly what VZ is doing during cold-boot, save, and restore.
         // Gated behind SAFEYOLO_DEBUG=1 so production runs stay quiet —
@@ -111,6 +118,7 @@ class VMRunner: NSObject, VZVirtualMachineDelegate {
     }
 
     func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
+        runtimeStatus.observed(state: "error", error: String(describing: error))
         Log.warn("vm", "virtual machine stopped: \(error)")
         if !isSuppressed { exitClean(code: 1) }
     }

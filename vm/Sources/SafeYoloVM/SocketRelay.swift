@@ -32,7 +32,18 @@ struct RelayRecord: Codable {
     var bufferedIn = 0
     var bufferedOut = 0
     var lastProgress: Double
+    var closedAt: Double? = nil
+    var incomingFD: Int32 = -1
+    var outgoingFD: Int32? = nil
     var error: String? = nil
+}
+
+struct RelayLoopStatus: Codable {
+    let kind: String
+    var lastTurn: Double
+    var hostListener: String
+    var lastAccept: Double?
+    var state: String
 }
 
 /// Short, data-only critical sections. Diagnostics never synchronously query a
@@ -46,13 +57,29 @@ final class RelayLedger {
     private var completed: UInt64 = 0
     private var failed: UInt64 = 0
     private var highWater = 0
+    private var loops: [String: RelayLoopStatus] = [:]
+    private var lastAccepted: [String: Double] = [:]
 
-    func accept(kind: String) -> RelayRecord {
+    func loopStatus(_ status: RelayLoopStatus) {
+        lock.lock(); defer { lock.unlock() }
+        var current = status
+        current.lastAccept = lastAccepted[status.kind]
+        loops[status.kind] = current
+    }
+
+    func loopStatuses() -> [RelayLoopStatus] {
+        lock.lock(); defer { lock.unlock() }; return Array(loops.values)
+    }
+
+    func accept(kind: String, incomingFD: Int32) -> RelayRecord {
         lock.lock(); defer { lock.unlock() }
         sequence += 1
         let now = ProcessInfo.processInfo.systemUptime
-        let record = RelayRecord(id: sequence, kind: kind, acceptedAt: now, lastProgress: now)
+        var record = RelayRecord(id: sequence, kind: kind, acceptedAt: now, lastProgress: now)
+        record.incomingFD = incomingFD
         active[record.id] = record
+        lastAccepted[kind] = now
+        loops[kind]?.lastAccept = now
         highWater = max(highWater, active.count)
         return record
     }
@@ -163,6 +190,7 @@ final class SocketRelayLoop {
     }
 
     let kind: String
+    let agent: String
     let ledger: RelayLedger
     private let establishmentTimeout: Double
     private let drainTimeout: Double
@@ -176,6 +204,8 @@ final class SocketRelayLoop {
     private var flows: [UInt64: Flow] = [:] // Relay thread only from here down.
     private var listener: RelayEndpoint?
     private var acceptRetryAt = 0.0
+    private var lastAccept: Double?
+    private var listenerPath = "disabled"
     private var onAccept: ((UInt64) -> Void)?
     private var scratch = [UInt8](repeating: 0, count: 65536)
 
@@ -184,9 +214,10 @@ final class SocketRelayLoop {
         if wakeWrite >= 0 { Darwin.close(wakeWrite) }
     }
 
-    init(kind: String, ledger: RelayLedger, establishmentTimeout: Double = 10,
+    init(kind: String, ledger: RelayLedger, agent: String = "unknown", establishmentTimeout: Double = 10,
          drainTimeout: Double = 10) throws {
         self.kind = kind; self.ledger = ledger
+        self.agent = agent
         self.establishmentTimeout = establishmentTimeout; self.drainTimeout = drainTimeout
         var pipeFDs: [Int32] = [-1, -1]
         guard pipe(&pipeFDs) == 0 else { throw RelaySocket.posix("wake pipe") }
@@ -199,6 +230,8 @@ final class SocketRelayLoop {
                 throw error
             }
         }
+        ledger.loopStatus(RelayLoopStatus(kind: kind, lastTurn: ProcessInfo.processInfo.systemUptime,
+            hostListener: "disabled", lastAccept: nil, state: "not_started"))
     }
 
     /// Configure a shell listener before starting its thread.
@@ -216,7 +249,7 @@ final class SocketRelayLoop {
         guard chmod(path, 0o600) == 0, Darwin.listen(endpoint.fd, 128) == 0 else {
             throw RelaySocket.posix("listen")
         }
-        listener = endpoint; self.onAccept = onAccept
+        listener = endpoint; listenerPath = path; self.onAccept = onAccept
     }
 
     func start() {
@@ -227,13 +260,12 @@ final class SocketRelayLoop {
 
     @discardableResult
     func accept(_ incoming: RelayEndpoint, unixPath: String? = nil) -> UInt64 {
-        let record = ledger.accept(kind: kind)
+        let record = ledger.accept(kind: kind, incomingFD: incoming.fd)
         let flow = Flow(record: record, incoming: incoming)
         commandLock.lock()
         if stopping {
             commandLock.unlock()
-            incoming.close(); flow.record.phase = "closed"; flow.record.error = "relay stopped"
-            ledger.finish(flow.record)
+            close(flow, error: "relay stopped")
         } else {
             commands.append(.accept(flow, unixPath)); wakeLocked(); commandLock.unlock()
         }
@@ -279,9 +311,12 @@ final class SocketRelayLoop {
         flow.incoming.close(); flow.outgoing?.close()
         flow.toIncoming.removeAll(); flow.toOutgoing.removeAll()
         flow.record.phase = "closed"; flow.record.error = error
+        flow.record.closedAt = ProcessInfo.processInfo.systemUptime
+        flow.record.incomingFD = -1; flow.record.outgoingFD = nil
         flow.record.bufferedIn = 0; flow.record.bufferedOut = 0
         ledger.finish(flow.record)
-        Log.relay("\(kind)-relay", "done flow=\(flow.record.id) bytes_in=\(flow.record.bytesIn) bytes_out=\(flow.record.bytesOut) error=\(error ?? "none")")
+        let duration = Int((flow.record.closedAt! - flow.record.acceptedAt) * 1000)
+        Log.relay("\(kind)-relay", "event=relay_closed flow=\(flow.record.id) agent=\(agent) type=\(kind) bytes_in=\(flow.record.bytesIn) bytes_out=\(flow.record.bytesOut) duration_ms=\(duration) error=\(error ?? "none")")
     }
 
     private func receiveCommands() -> Bool {
@@ -364,6 +399,7 @@ final class SocketRelayLoop {
                 break
             }
             let id = accept(RelayEndpoint(fd: fd))
+            lastAccept = ProcessInfo.processInfo.systemUptime
             onAccept?(id)
         }
     }
@@ -442,6 +478,7 @@ final class SocketRelayLoop {
         }
         flow.record.bufferedIn = flow.toOutgoing.count
         flow.record.bufferedOut = flow.toIncoming.count
+        flow.record.outgoingFD = flow.outgoing?.fd
         ledger.update(flow.record)
     }
 
@@ -449,6 +486,8 @@ final class SocketRelayLoop {
         while true {
             if receiveCommands() { break }
             let now = ProcessInfo.processInfo.systemUptime
+            ledger.loopStatus(RelayLoopStatus(kind: kind, lastTurn: now,
+                hostListener: listenerPath, lastAccept: lastAccept, state: "running"))
             for flow in flows.values { advance(flow, now: now) }
             flows = flows.filter { !$0.value.finished }
             var descriptors = [pollfd(fd: wakeRead, events: Int16(POLLIN), revents: 0)]
@@ -495,5 +534,7 @@ final class SocketRelayLoop {
             }
         }
         commandLock.lock(); stopped = true; commandLock.unlock()
+        ledger.loopStatus(RelayLoopStatus(kind: kind, lastTurn: ProcessInfo.processInfo.systemUptime,
+            hostListener: listenerPath, lastAccept: lastAccept, state: "stopped"))
     }
 }

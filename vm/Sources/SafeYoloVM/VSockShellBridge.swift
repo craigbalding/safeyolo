@@ -12,7 +12,8 @@ final class VSockShellBridge {
 
     init(vm: VZVirtualMachine, queue: DispatchQueue, socketPath: String, ledger: RelayLedger) throws {
         self.vm = vm; self.queue = queue; self.socketPath = socketPath
-        loop = try SocketRelayLoop(kind: "shell", ledger: ledger)
+        let agent = ((socketPath as NSString).lastPathComponent as NSString).deletingPathExtension
+        loop = try SocketRelayLoop(kind: "shell", ledger: ledger, agent: agent)
     }
 
     func start() throws {
@@ -30,7 +31,7 @@ final class VSockShellBridge {
                         let endpoint = RelayEndpoint(fd: connection.fileDescriptor) { connection.close() }
                         loop.connected(id: id, endpoint: endpoint)
                     case .failure(let error):
-                        loop.connected(id: id, endpoint: nil, error: error.localizedDescription)
+                        loop.connected(id: id, endpoint: nil, error: "vsock connect: \(error)")
                     }
                 }
             }

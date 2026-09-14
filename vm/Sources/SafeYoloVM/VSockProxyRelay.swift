@@ -13,7 +13,9 @@ final class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
 
     init(vm: VZVirtualMachine, queue: DispatchQueue, socketPath: String, ledger: RelayLedger) throws {
         self.vm = vm; self.queue = queue; self.socketPath = socketPath
-        loop = try SocketRelayLoop(kind: "proxy", ledger: ledger)
+        let directory = ((socketPath as NSString).deletingLastPathComponent as NSString).lastPathComponent
+        let agent = directory.firstIndex(of: "_").map { String(directory[directory.index(after: $0)...]) } ?? directory
+        loop = try SocketRelayLoop(kind: "proxy", ledger: ledger, agent: agent)
         super.init()
     }
 

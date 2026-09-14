@@ -68,6 +68,11 @@ def read_vm_helper_identity(
         raw = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise VMError("VM helper does not provide JSON build identity; rebuild with make -C vm build") from error
+    return parse_vm_helper_identity(raw)
+
+
+def parse_vm_helper_identity(raw: object) -> VMHelperIdentity:
+    """Validate the same build identity from an executable or running helper."""
     if not isinstance(raw, dict) or type(raw.get("schema_version")) is not int or raw["schema_version"] != 1:
         raise VMError("VM helper returned an unsupported identity schema")
     strings = (

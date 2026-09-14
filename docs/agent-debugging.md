@@ -174,6 +174,89 @@ strace -f -o /tmp/tr.log ./my_worker
 
 ## Failure triage
 
+### Inspect a macOS VM helper from the host
+
+Run these commands from the host operator account after installing the current
+VM helper and restarting the agent:
+
+```sh
+safeyolo agent diag NAME
+safeyolo agent vm status NAME
+safeyolo agent vm relays NAME --json
+safeyolo agent diag NAME --hang
+```
+
+`agent diag` reports the installed helper and the running helper separately.
+The running identity includes its PID, source revision and dirty state, build
+profile, architecture and debugger authority. `vm status --json` also includes
+start time, uptime, cached Virtualization state, queue heartbeat and relay-loop
+heartbeats. See [VM helper development](DEVELOPERS.md#macos-vm-helper-development)
+for production/development signing and symbol bundles.
+
+The shell check first connects to the shell UDS, then requires an SSH
+identification within one three-second deadline. No SSH authentication is
+attempted. A successful UDS connect alone does not prove that the helper,
+vsock, guest bridge or sshd is making progress. The separate egress checks
+continue if the shell check fails.
+
+The helper control socket is under the configured data directory at
+`vm-control/NAME.sock`. Its directory is mode 0700, its socket is mode 0600,
+and the helper checks the local peer UID. The directory is host-only and is
+not added to the guest's shares. Control uses a dedicated nonblocking thread;
+status and dumps read cached state without waiting on VM or relay executors.
+Responses identify stale heartbeats and accepted shell connections still
+awaiting execution. VM state with an old heartbeat is an observation from
+that time, not evidence of current queue responsiveness.
+
+`vm relays` lists flow IDs, types, phases, transferred bytes and buffered bytes.
+Its JSON records also include acceptance/progress times and endpoint FDs.
+`relay_fd_count` counts tracked data endpoints; control listener/client FDs are
+reported separately. These are relevant owned-descriptor counts, not a scan of
+every FD opened internally by Virtualization. Listings use bounded pages and
+one client deadline. Flow IDs belong to one helper instance; they cannot be
+carried across a restart.
+
+`agent diag NAME --hang` and `agent vm dump NAME` save a mode-0600 JSON dump at
+`vm-control/NAME.hang.json`. `agent vm dump NAME --output PATH` selects another
+artifact path. The dump includes identity, cached VM state, executor health,
+counts, the oldest 256 active flows, and up to 64 recent completed/error records
+and control events. It marks flow-list truncation explicitly. No debugger,
+shell relay or proxy relay is needed to generate it.
+
+To recover a pathological connection, list it first, then cancel its flow ID:
+
+```sh
+safeyolo agent vm relays NAME
+safeyolo agent vm cancel NAME 42 --reason 'stalled download'
+safeyolo agent vm cancel NAME --all --kind proxy --dry-run
+safeyolo agent vm cancel NAME --all --kind proxy --reason 'recover stalled proxy flows'
+```
+
+Cancellation terminates the associated network or shell connection. It does
+not stop the VM. Bulk selection requires both `--all` and `--kind proxy|shell`,
+and captures existing IDs before sending cancellation batches. `--dry-run`
+only lists that selection. The helper rejects a stale instance ID and records
+the operator UID, helper instance, selected IDs, reason and action ID in
+`NAME.sock.audit.jsonl` before queuing cancellation. If it cannot write that
+private audit, it refuses the operation.
+
+The CLI reports closure only after observing that the selected IDs have left
+the active ledger. If the deadline expires, cancellation may already be queued;
+the command reports the unverified outcome and the audit retains the action.
+Inspect the relay list before taking another recovery action.
+
+Use these observations to narrow a shell incident:
+
+| Observation | Evidence and next check |
+|---|---|
+| Shell UDS missing/refused | The host listener is unavailable; inspect helper identity/state and startup logs. |
+| UDS connected, shell accepts pending, stale relay heartbeat | The helper recorded acceptance without executor progress. Save a hang dump. |
+| Recent shell establishment timeout/error | The host-to-guest vsock connection did not establish; inspect guest bridge readiness through the shared-home recovery path. |
+| Shell relay active, no SSH banner | Bytes did not reach an SSH identification. Guest bridge/sshd checks are still needed; the banner probe alone cannot distinguish them. |
+| Banner received, a subsequent shell command fails authentication/session setup | Transport reached sshd; inspect that SSH error and guest service logs. The diagnostic did not authenticate. |
+
+### Guest tooling triage
+
 The agent-facing skill graph `triage-guest-tools-and-sudo` covers the
 `ptrace / py-spy / rbspy denied` failure modes and routes each symptom
 to the correct fix (YAMA scope stale, gVisor syscall unsupported,

@@ -538,7 +538,37 @@ def _check_shell_transport(name: str) -> list[Check]:
     return checks
 
 
-def run_agent_diag(name: str) -> int:
+def _check_vm_runtime(name: str) -> list[Check]:
+    from .vm_control import VMControlError, read_status
+    from .vm_identity import parse_vm_helper_identity
+
+    try:
+        value = read_status(name, timeout=1.0)
+    except VMControlError as error:
+        return [Check("VM control", "WARN", str(error), "rebuild/install the helper and restart the agent to enable runtime diagnostics")]
+    helper = parse_vm_helper_identity(value["helper"])
+    identity = Check(
+        "Running VM helper", "WARN" if helper.warning else "PASS",
+        f"pid={value['pid']} {helper.summary} VM={value['vm']['state']}"
+        + (f"; {helper.warning}" if helper.warning else ""),
+    )
+    health = value["health"]
+    pending = value.get("accepted_shell_pending", 0)
+    detail = (
+        f"{health}; {value['active']} relays, {value['relay_fd_count']} relay FDs, "
+        f"{pending} shell accepts pending; phases={value['counts_by_phase']}"
+    )
+    if health != "responsive":
+        detail += f"; loops without progress: {value.get('unresponsive_loops', [])}"
+    checks = [identity, Check("Helper relay health", "PASS" if health == "responsive" else "WARN", detail)]
+    heartbeat = value["vm"].get("heartbeat_at")
+    now = value.get("monotonic_now")
+    if isinstance(heartbeat, (int, float)) and isinstance(now, (int, float)) and now - heartbeat > 1.5:
+        checks.append(Check("VM queue", "WARN", f"last heartbeat {now - heartbeat:.1f}s ago; VM state is cached"))
+    return checks
+
+
+def run_agent_diag(name: str, *, hang: bool = False) -> int:
     """Run every check in order and print. Returns POSIX exit code."""
     console.print(f"\nSafeYolo diagnostic: [bold]{name}[/bold]\n")
 
@@ -558,6 +588,22 @@ def run_agent_diag(name: str) -> int:
         for shell_check in _check_shell_transport(name):
             checks.append(shell_check)
             _print(shell_check)
+        for runtime_check in _check_vm_runtime(name):
+            checks.append(runtime_check)
+            _print(runtime_check)
+        if hang:
+            from .vm_control import VMControlError, write_dump
+
+            try:
+                dump_check = Check("VM hang dump", "PASS", str(write_dump(name)))
+            except VMControlError as error:
+                dump_check = Check("VM hang dump", "WARN", str(error))
+            checks.append(dump_check)
+            _print(dump_check)
+    elif hang:
+        hang_check = Check("VM hang dump", "WARN", "the VZ helper control channel is macOS-only")
+        checks.append(hang_check)
+        _print(hang_check)
 
     command_check = _check_command_supervisor(name)
     checks.append(command_check)
