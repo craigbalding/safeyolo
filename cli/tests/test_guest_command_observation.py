@@ -14,7 +14,7 @@ from safeyolo import agent_launchers as launchers
 from safeyolo.agents_store import save_agent
 from safeyolo.platform import AgentPlatform
 from safeyolo.runtime_identity import process_start_token
-from safeyolo.vm import get_agent_home_dir, get_agent_status_dir
+from safeyolo.vm import get_agent_home_dir, get_agent_status_dir, stage_guest_command_observation
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Guest process identity requires Linux /proc")
 
@@ -144,11 +144,11 @@ def test_boot_wraps_both_configured_entrypoints_and_reapplied_setup(guest):
         path = home / name
         path.write_text('#!/bin/sh\nexec custom-agent "$@"\n')
         path.chmod(0o755)
-    launchers.stage_guest_command_observation(home)
-    launchers.stage_guest_command_observation(home)
+    stage_guest_command_observation(home)
+    stage_guest_command_observation(home)
     for name in (".safeyolo-command", ".safeyolo-interactive-command"):
         assert (home / f"{name}.payload").read_text() == '#!/bin/sh\nexec custom-agent "$@"\n'
     entry = home / ".safeyolo-command"
     entry.write_text("#!/bin/sh\nexec replacement\n")
-    launchers.stage_guest_command_observation(home)
+    stage_guest_command_observation(home)
     assert (home / ".safeyolo-command.payload").read_text() == "#!/bin/sh\nexec replacement\n"

@@ -494,24 +494,6 @@ def configured_guest_command(name: str, args: list[str], *, interactive: bool = 
     return shlex.join(args) if args else "exec /bin/bash -l"
 
 
-def stage_guest_command_observation(home: Path) -> None:
-    """Wrap configured entrypoints at boot, including custom host-script output."""
-    for name in (".safeyolo-command", ".safeyolo-interactive-command"):
-        entrypoint = home / name
-        if not entrypoint.is_file() or not os.access(entrypoint, os.X_OK):
-            continue
-        wrapper = (
-            b"#!/bin/sh\n"
-            b"# SafeYolo configured-command observation\n"
-            b'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
-        )
-        if entrypoint.read_bytes() == wrapper:
-            continue
-        entrypoint.replace(home / f"{name}.payload")
-        entrypoint.write_bytes(wrapper)
-        entrypoint.chmod(0o755)
-
-
 def wait_for_launcher_exit(name: str) -> None:
     """Do not delete a run's files while its exit callback still uses them.
 

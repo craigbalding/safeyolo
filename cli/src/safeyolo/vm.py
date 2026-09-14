@@ -1187,11 +1187,28 @@ def prepare_config_share(
                             if not read_only],
     }) + "\n")
 
-    from .agent_launchers import stage_guest_command_observation
-
     stage_guest_command_observation(get_agent_home_dir(name))
 
     return share_dir
+
+
+def stage_guest_command_observation(home: Path) -> None:
+    """Wrap configured entrypoints at boot, including custom host-script output."""
+    for name in (".safeyolo-command", ".safeyolo-interactive-command"):
+        entrypoint = home / name
+        if not entrypoint.is_file() or not os.access(entrypoint, os.X_OK):
+            continue
+        wrapper = (
+            b"#!/bin/sh\n"
+            b"# SafeYolo configured-command observation\n"
+            b'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
+        )
+        if entrypoint.read_bytes() == wrapper:
+            continue
+        entrypoint.replace(home / f"{name}.payload")
+        entrypoint.write_bytes(wrapper)
+        entrypoint.chmod(0o755)
+
 
 
 # ---------------------------------------------------------------------------

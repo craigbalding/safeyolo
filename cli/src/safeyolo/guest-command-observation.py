@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 CONTEXT = Path("/safeyolo/host-launch-context.json")
 RECORDS = Path("/safeyolo-status/guest-commands")
@@ -38,16 +39,17 @@ def command_is_live(generation: str) -> bool:
             ):
                 return True
         except (FileNotFoundError, json.JSONDecodeError, UnicodeError):
+            # Missing or malformed records cannot establish liveness.
             pass
         path.unlink(missing_ok=True)
     return False
 
 
-def main() -> int:
+def main() -> NoReturn:
     generation = json.loads(CONTEXT.read_text())["generation"]
     if sys.argv[1:] == ["--check"]:
         print("running" if command_is_live(generation) else "stopped")
-        return 0
+        raise SystemExit(0)
     pid = os.getpid()
     RECORDS.mkdir(exist_ok=True)
     record = {"pid": pid, "token": process_token(pid), "generation": generation}
@@ -65,7 +67,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        main()
     except (OSError, ValueError, KeyError, IndexError) as exc:
         print(f"guest command observation: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
