@@ -241,6 +241,34 @@ docs = ["contrib/macos-seatbelt-agent/README.md"]
 must_contain = "{entry_root}"
 
 [[assertion]]
+name = "seatbelt-optional-vz-service"
+source = "contrib/macos-seatbelt-agent/agent-dev.sb"
+pattern = '(?m)^; +\(xpc-service-name "(?P<service>[^"\n]+)"'
+docs = ["contrib/macos-seatbelt-agent/REFERENCE.md"]
+must_contain = "`{service}`"
+
+[[assertion]]
+name = "seatbelt-optional-vz-fuse-class"
+source = "contrib/macos-seatbelt-agent/agent-dev.sb"
+pattern = '(?m)^; +\(extension-class "(?P<extension>com\.apple\.virtualization\.extension\.fuse)"'
+docs = ["contrib/macos-seatbelt-agent/REFERENCE.md"]
+must_contain = "`{extension}`"
+
+[[assertion]]
+name = "seatbelt-optional-vz-read-class"
+source = "contrib/macos-seatbelt-agent/agent-dev.sb"
+pattern = '(?m)^; +\(extension-class "(?P<extension>com\.apple\.app-sandbox\.read)"'
+docs = ["contrib/macos-seatbelt-agent/REFERENCE.md"]
+must_contain = "`{extension}`"
+
+[[assertion]]
+name = "seatbelt-optional-vz-read-write-class"
+source = "contrib/macos-seatbelt-agent/agent-dev.sb"
+pattern = '(?m)^; +\(extension-class "(?P<extension>com\.apple\.app-sandbox\.read-write)"'
+docs = ["contrib/macos-seatbelt-agent/REFERENCE.md"]
+must_contain = "`{extension}`"
+
+[[assertion]]
 name = "installer-python-requirement"
 source = "pyproject.toml"
 pattern = 'requires-python = "(?P<requirement>[^"\n]+)"'

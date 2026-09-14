@@ -514,14 +514,131 @@ SafeYolo checkout's `vm` directory. Build the Swift package and sign
 From that same directory, run `.build/release/safeyolo-vm check`, then prove a
 minimal boot on a physical Apple Silicon host. Inspect denials from a
 trusted administrator session and add only the framework/Mach services actually
-needed by that helper. The example contains **no speculative Virtualization
-Mach allowances** and gives no control of unrelated container or VM daemons.
+needed by that helper. The [optional VZ forms](#optional-vz-workloads) record the
+service and extension grants used in the later physical-host test. They remain
+commented out in the default profile.
 A successful build or capability check does not prove a VM can boot.
 
 Tart guests do not provide the nested virtualization needed for that boot test.
 The baseline shell/build/IPC checks can run in Tart; Virtualization.framework
 boot acceptance must run on physical hardware before claiming that workload
 works under the adapted profile.
+
+## Optional VZ workloads
+
+These steps apply only when the confined Mac account runs Virtualization.framework
+(VZ) workloads. Use the Mac's administrator terminal to configure the account
+and installed policy. Build and run the VM helper through the confined SSH
+entry. The [physical-host acceptance record](VALIDATION.md#optional-vz-workload-acceptance-2026-09-14)
+identifies the tested configuration and its limits.
+
+### Optional policy grants
+
+[agent-dev.sb](agent-dev.sb) leaves every VZ form commented out. The tested
+workload used these grants:
+
+| Workload | Optional grant |
+| --- | --- |
+| VZ VM startup | `mach-lookup` for the XPC service `com.apple.Virtualization.VirtualMachine` |
+| VirtioFS shared directories | `generic-issue-extension` for `com.apple.virtualization.extension.fuse`, plus the path-specific file-extension grants below |
+| Read-only config share | `file-issue-extension` for `com.apple.app-sandbox.read` |
+| Workspace, status and home shares | `file-issue-extension` for `com.apple.app-sandbox.read-write` |
+
+The Fuse grant allowed startup to proceed after the observed error
+`Failed to issue Fuse sandbox extension`. The rule selects an extension class;
+it has no path filter. Do not infer that the adjacent file-extension rules
+constrain the generic grant's full authority. [Issue #616](https://github.com/craigbalding/safeyolo/issues/616)
+tracks the issuing and consuming processes, delegation scope, host and workload
+effects, and potential sandbox-escape paths. The workload results do not resolve
+that assessment.
+
+The commented file rules use these **lab example paths**:
+
+| Share | Host path | Delegated access |
+| --- | --- | --- |
+| Config | `/Users/sy-agent/full-guest-lab/config/agents/native/config-share` | Read-only |
+| Workspace | `/Users/sy-agent/full-guest-lab/workspace` | Read-write |
+| Status | `/Users/sy-agent/full-guest-lab/config/agents/native/status` | Read-write |
+| Home | `/Users/sy-agent/full-guest-lab/config/agents/native/home` | Read-write |
+
+Replace each example with the actual share root for your workload. Keep the
+config share read-only and enumerate the writable shares individually. Ordinary
+file access and extension issuance are separate permissions. The recorded paths
+all lie beneath the dedicated home; these examples do not establish support or
+confinement for shares outside it.
+None of the VZ examples adds host IP networking.
+
+Before replacing the installed profile, stop the account's existing workloads
+and tmux server as described in [daily work](#daily-work-and-tmux). On the Mac,
+from `contrib/macos-seatbelt-agent` in your checkout, copy `agent-dev.sb` to
+`agent-vz.sb`. Edit that local copy: uncomment the required VZ forms, including
+their continuation lines, and substitute your share paths. Preserve other
+operator-approved local adaptations when replacing an existing profile.
+
+The following command replaces the installed profile with your edited copy;
+it keeps the file root-owned with mode 644. Run it as the Mac operator after
+reviewing that copy:
+
+```sh
+sudo install -o root -g wheel -m 644 agent-vz.sb /Library/PrivilegedHelperTools/seatbelt-agent/agent-dev.sb
+```
+
+Open a fresh confined SSH session to attach the new policy, then verify a VM
+boot and the intended share access. Reconnecting to an old tmux server does not
+replace its policy. To disable the optional grants, comment them out in the
+local copy, reinstall it, and restart those sessions again.
+
+### Account-local keychain for snapshots
+
+The tested `sy-agent` account had never had a graphical login and had no
+registered login keychain. The operator created, unlocked and registered an
+account-local keychain before VZ snapshot save/restore succeeded. This is
+separate from the VirtioFS grants. It is an observed prerequisite for that
+snapshot workload, not a requirement for ordinary SSH use.
+
+Run the following in your Mac administrator terminal, from any directory.
+The function assumes the default account name `sy-agent` and discovers its UID;
+the observed UID 502 is not hard-coded. For a custom account, replace `sy-agent`
+in the function before defining it. `launchctl asuser` selects the account's
+bootstrap context; the inner `sudo -H -u` sets the executing user and home.
+
+```sh
+sy_security() {
+    sudo /bin/launchctl asuser "$(id -u sy-agent)" \
+        /usr/bin/sudo -H -u sy-agent /usr/bin/security "$@"
+}
+```
+
+Use this account's own keychain, not your operator account's keychain. If
+`/Users/sy-agent/Library/Keychains/login.keychain-db` already exists, reuse it
+and skip creation. Otherwise, create it with the command below. Enter the
+keychain password at the terminal prompts; keep it outside the agent and out of
+command arguments or scripts. Stop if a command fails.
+
+```sh
+sy_security create-keychain login.keychain
+```
+
+Unlock the existing or newly created keychain and register it as the account's
+login keychain:
+
+```sh
+sy_security unlock-keychain login.keychain
+sy_security login-keychain -s login.keychain
+```
+
+Verify registration:
+
+```sh
+sy_security login-keychain
+```
+
+For the default account, expect `/Users/sy-agent/Library/Keychains/login.keychain-db`.
+Registration alone does not prove a snapshot works; verify save and restore
+with the intended VM. If the keychain later locks, unlock it again before that
+workload. This CLI setup did not require a graphical login in the tested case.
+Apple's [security command source](https://github.com/apple-oss-distributions/Security/blob/main/SecurityTool/macOS/security.c)
+documents creation, unlocking and login-keychain registration.
 
 ## Validation and adaptation
 
