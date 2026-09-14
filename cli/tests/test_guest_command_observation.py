@@ -137,18 +137,53 @@ def test_custom_script_without_shebang_preserves_arguments_and_exit_code(guest, 
     assert result.stdout == "argument with spaces\n"
 
 
-def test_boot_wraps_both_configured_entrypoints_and_reapplied_setup(guest):
+@pytest.mark.parametrize("failure", ["missing-socket", "missing-executable", "unexpected-error"])
+def test_transport_start_failure_is_unknown_and_prevents_duplicate_launch(guest, failure):
+    from safeyolo.commands.agent import _run_agent
+    from safeyolo.platform.darwin import DarwinPlatform
+
+    (guest[1] / "stale.json").write_text("{}")
+    platform = guest[3]
+    if failure == "unexpected-error":
+        platform.popen_in_sandbox.side_effect = ValueError("invalid transport argument")
+        with pytest.raises(ValueError, match="invalid transport argument"):
+            launchers.observe_launch("probe", sandbox_ready=True)
+        return
+    if failure == "missing-socket":
+        platform.popen_in_sandbox.side_effect = DarwinPlatform().popen_in_sandbox
+        expected_error = "Shell bridge socket"
+    else:
+        platform.popen_in_sandbox.side_effect = FileNotFoundError("transport executable missing")
+        expected_error = "transport executable missing"
+    observed = launchers.observe_launch("probe", sandbox_ready=True)
+    assert observed["agent_state"] == "unknown"
+    assert observed["launcher"] == {"kind": "manual", "source": "guest"}
+    assert observed["attachable"] is False
+    assert expected_error in observed["error"]
+    assert _run_agent("probe", launch_mode="background") == 0
+    platform.exec_in_sandbox.assert_not_called()
+
+
+@pytest.mark.parametrize("entry_kind", ["file", "symlink"])
+def test_boot_wraps_both_configured_entrypoints_and_reapplied_setup(guest, entry_kind):
     home = get_agent_home_dir("probe")
     home.mkdir(parents=True)
     for name in (".safeyolo-command", ".safeyolo-interactive-command"):
         path = home / name
+        if entry_kind == "symlink":
+            target = home / f"{name}.source"
+            path.symlink_to(target.name)
+            path = target
         path.write_text('#!/bin/sh\nexec custom-agent "$@"\n')
         path.chmod(0o755)
-    stage_guest_command_observation(home)
-    stage_guest_command_observation(home)
+    payload_identities = {}
+    stage_guest_command_observation(home, payload_identities)
+    stage_guest_command_observation(home, payload_identities)
     for name in (".safeyolo-command", ".safeyolo-interactive-command"):
         assert (home / f"{name}.payload").read_text() == '#!/bin/sh\nexec custom-agent "$@"\n'
     entry = home / ".safeyolo-command"
     entry.write_text("#!/bin/sh\nexec replacement\n")
-    stage_guest_command_observation(home)
+    stage_guest_command_observation(home, payload_identities)
     assert (home / ".safeyolo-command.payload").read_text() == "#!/bin/sh\nexec replacement\n"
+    if entry_kind == "symlink":
+        assert (home / ".safeyolo-command.source").read_text() == '#!/bin/sh\nexec custom-agent "$@"\n'
