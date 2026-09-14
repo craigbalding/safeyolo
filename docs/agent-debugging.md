@@ -255,6 +255,60 @@ Use these observations to narrow a shell incident:
 | Shell relay active, no SSH banner | Bytes did not reach an SSH identification. Guest bridge/sshd checks are still needed; the banner probe alone cannot distinguish them. |
 | Banner received, a subsequent shell command fails authentication/session setup | Transport reached sshd; inspect that SSH error and guest service logs. The diagnostic did not authenticate. |
 
+### Probe the guest through PID 1 when SSH is unavailable
+
+The host operator can use the existing command supervisor over the shared home
+to run a fixed guest health probe. PID 1 must still be responsive, and the
+guest must still see its home and configuration shares. This path does not
+use the helper control socket, shell relay or proxy relay.
+
+From a checkout of the matching SafeYolo version on the host, run the recipe
+below. Replace `NAME` with an existing, booted agent. The checkout needs its
+usual Python dependencies; `uv run` uses the project environment.
+
+```sh
+uv run python contrib/vm-guest-probe.py NAME
+```
+
+The recipe is intended for a sandbox started with `agent run NAME
+--sandbox-only`, or another running sandbox whose command supervisor is idle.
+It also works alongside a normal interactive/terminal launcher if that launcher
+does not occupy the command supervisor. It refuses an active, starting or
+restarting supervisor, including one that has a stop fence but has not yet
+reported termination. It also refuses an in-progress launcher transition.
+Do not clear another command's state to make the probe run.
+
+The recipe takes the existing host setup and launch locks before checking and
+publishing state. Concurrent normal launch/stop operations use those same locks.
+Guest PID 1 launches the probe through the normal `agent` account. The probe
+records its UID, selected bridge/service process names and PIDs, and a bounded
+SSH banner check against guest loopback port 22. It does not collect process
+arguments or environment variables. A missing process name is only a clue;
+the loopback banner is the direct sshd transport check.
+
+The guest probe has an eight-second execution deadline and a one-second banner
+deadline. The host waits at most fifteen seconds, including lock acquisition.
+Output uses the supervisor's existing 16-KiB stderr limit. The probe writes a
+stop fence before exiting so the supervisor does not restart it. The host
+reports completion only after observing a terminal supervisor state and the
+matching probe result. On timeout it publishes a stop fence for its own command
+and reports that completion is unverified. A stop request alone is not proof
+that the guest has stopped the command.
+
+Each invocation creates a private directory under the configured data directory
+at `vm-recovery/NAME-*`. It contains the invocation ID, operator UID, payload
+hash, deadline, prior terminal state when present, and the observed supervisor
+state and result or error. The recipe prints that evidence path. It removes
+its supervisor-enabled marker after completion or timeout and leaves the stop
+fence in place. The next ordinary agent launch uses the existing startup path
+to replace terminal state and clear the fence. Saved previous state is evidence;
+the recipe does not automatically restart a prior command.
+
+If the guest loopback banner succeeds while the host shell banner fails, inspect
+the recorded guest bridge processes and helper vsock errors to separate those
+remaining hops. If this recovery path also times out, the result cannot
+distinguish a guest/PID-1 failure from a failed shared-filesystem path.
+
 ### Guest tooling triage
 
 The agent-facing skill graph `triage-guest-tools-and-sudo` covers the
