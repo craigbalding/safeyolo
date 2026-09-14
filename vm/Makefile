@@ -1,4 +1,4 @@
-.PHONY: build debug install install-helper debug-install verify clean guest-tools test-relays test-control
+.PHONY: build debug install install-helper debug-install verify clean guest-tools test-relays test-control test-admission
 
 PROFILE ?= production
 BUILD_ROOT = $(if $(filter production,$(PROFILE)),.build,.build/$(PROFILE))
@@ -40,6 +40,12 @@ test-control:
 		Sources/SafeYoloVM/BuildIdentity.swift Sources/SafeYoloVM/VMRuntimeStatus.swift \
 		Sources/SafeYoloVM/VMControl.swift test/VMControlTests.swift -o .build/control-tests
 	$(PYTHON) -c 'import subprocess; subprocess.run([".build/control-tests"], check=True, timeout=30)'
+
+test-admission:
+	mkdir -p .build
+	swiftc -O -g Sources/SafeYoloVM/SocketRelay.swift Sources/SafeYoloVM/Log.swift \
+		Sources/SafeYoloVM/VSockConnectionLimit.swift test/VSockConnectionLimitTests.swift -o .build/admission-tests
+	$(PYTHON) -c 'import subprocess; subprocess.run([".build/admission-tests"], check=True, timeout=15)'
 
 LIMA_VM = safeyolo-builder
 UNAME := $(shell uname)

@@ -610,9 +610,18 @@ overflow is counted and reported when logging resumes.
 Run `make -C vm test-relays` on macOS for real Unix-socket regression tests.
 They exercise 300 held proxy flows alongside shell traffic, backpressure and
 byte integrity, half-close responses, establishment/drain timeouts, cancellation,
-late callbacks, blocked logging and return to the original open-FD count. This
+late callbacks, closed idle shell clients, blocked logging and return to the original open-FD count. This
 suite tests the native relay implementation; real VZ/guest acceptance is still
 needed for framework integration and guest services.
+
+Run `make -C vm test-admission` for connection-limit tests. They check rejection
+before VZ connection creation, concurrent callers, pending attempts, slot reuse,
+and terminal callbacks arriving after a timeout. The guest forwarder tests in
+`cli/tests/test_guest_proxy_admission.py` use real socat with a local Unix-socket
+substitute for VZ. They verify queueing, continued traffic on an existing flow,
+slot reuse, and unchanged Linux UDS admission. They do not establish the native
+framework's resource ceiling. See [connection admission](microvm-architecture.md#connection-admission-on-macos)
+for the shipped limits and their scope.
 
 Run `make -C vm test-control` for native control-channel tests. They deliberately
 leave relay executors unscheduled, hold a partial control request open, and

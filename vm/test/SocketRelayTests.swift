@@ -79,6 +79,18 @@ struct SocketRelayTests {
         }
         print("PASS 300 held proxy flows plus repeated shell progress")
 
+        // An idle SSH client can close its UDS while the guest sends no more
+        // bytes. Release that shell's VZ endpoint without requiring remote EOF.
+        let (departed, departedClient) = pair(); let (idleGuest, idleServer) = pair()
+        let departedID = shell.accept(departed); shell.connected(id: departedID, endpoint: idleGuest)
+        wait("idle shell connected") { ledger.snapshot().active.contains { $0.id == departedID && $0.phase == "active" } }
+        Darwin.close(departedClient)
+        wait("closed shell client releases its endpoint") { !ledger.snapshot().active.contains { $0.id == departedID } }
+        var departedByte: UInt8 = 0
+        precondition(Darwin.read(idleServer, &departedByte, 1) == 0)
+        Darwin.close(idleServer)
+        print("PASS fully closed idle shell client releases the guest endpoint")
+
         let (a, client) = pair(); let (b, server) = pair()
         let id = shell.accept(a); shell.connected(id: id, endpoint: b)
         let payload = Data((0..<(4 * 1024 * 1024)).map { UInt8($0 % 251) })

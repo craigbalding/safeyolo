@@ -455,6 +455,18 @@ final class SocketRelayLoop {
     private func advance(_ flow: Flow, now: Double) {
         guard !flow.finished else { return }
         if ledger.isCancelled(flow.record.id) { close(flow, error: "cancelled"); return }
+        if kind == "shell" && flow.incomingEOF && !flow.incomingWriteClosed {
+            // Darwin reports POLLHUP for both SHUT_WR and a full Unix-socket
+            // close. A zero-byte send preserves a valid half-close but fails
+            // once the shell client cannot receive anything. Do not probe after
+            // our own SHUT_WR, which also makes send fail. Do not retain its
+            // VZ slot indefinitely while an otherwise idle guest sshd waits.
+            if Darwin.send(flow.incoming.fd, nil, 0, MSG_DONTWAIT) < 0 {
+                if errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN {
+                    close(flow); return
+                }
+            }
+        }
         if flow.outgoing == nil || flow.connecting {
             if now - flow.record.acceptedAt >= establishmentTimeout {
                 close(flow, error: "relay establishment timed out")

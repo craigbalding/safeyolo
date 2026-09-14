@@ -9,6 +9,27 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "vm-proxy-admission"
+source = "cli/src/safeyolo/guest-proxy-forwarder.sh"
+pattern = 'max-children=(?P<maximum>\d+),backlog=(?P<backlog>\d+)'
+docs = ["docs/microvm-architecture.md"]
+must_contain = "{maximum} proxy connections"
+
+[[assertion]]
+name = "vm-proxy-admission-backlog"
+source = "cli/src/safeyolo/guest-proxy-forwarder.sh"
+pattern = 'max-children=\d+,backlog=(?P<backlog>\d+)'
+docs = ["docs/microvm-architecture.md"]
+must_contain = "configured to {backlog}"
+
+[[assertion]]
+name = "vm-shell-admission"
+source = "vm/Sources/SafeYoloVM/VSockShellBridge.swift"
+pattern = 'VSockConnectionLimit\(maximum: (?P<maximum>\d+)\)'
+docs = ["docs/microvm-architecture.md"]
+must_contain = "{maximum} shell connections"
+
+[[assertion]]
 name = "seatbelt-guide-operator-vm-ssh-key"
 source = "cli/src/safeyolo/config.py"
 pattern = 'return get_data_dir\(\) / "(?P<key_name>vm_ssh_key)"'

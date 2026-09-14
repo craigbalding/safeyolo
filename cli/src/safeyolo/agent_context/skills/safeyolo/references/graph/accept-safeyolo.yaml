@@ -306,7 +306,7 @@ nodes:
       obtain_from: "safeyolo-vm built from the exact trusted-base Swift sources with the operator-approved Apple toolchain"
       sources:
         - path: vm/Makefile
-          sha256: 3c4f7850939ba72ba3654c51d19d61b7894f8cb21c40af461f507483fc1b070b
+          sha256: f0eeaa0069a4b69c1a60ebcf91a6df17b23b0a23354198766214d54c2f1e2d0a
         - path: vm/Package.swift
           sha256: cacd73db22ee6e881da5cbbcdd9de7f8d56a920951b6feca6ac65d637bcbc47b
         - path: vm/test/snapshot-smoke.sh
