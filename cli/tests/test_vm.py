@@ -437,10 +437,14 @@ class TestPrepareConfigShare:
             (str(tmp_path / "readonly"), "/reference", True),
         ])
         context = json.loads((share / "host-launch-context.json").read_text())
+        generation = context.pop("generation")
+        assert generation
         assert context == {"workspace": str(tmp_path / "override"),
                            "writable_mounts": [str(tmp_path / "writable")]}
         prepare_config_share("agent1", str(tmp_path / "next"))
-        assert json.loads((share / "host-launch-context.json").read_text()) == {
+        context = json.loads((share / "host-launch-context.json").read_text())
+        assert context.pop("generation") != generation
+        assert context == {
             "workspace": str(tmp_path / "next"), "writable_mounts": [],
         }
 

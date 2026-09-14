@@ -35,6 +35,11 @@ The bundled aliases work without a checkout-relative script path:
 Without `--host-script`, the sandbox starts an interactive bash shell in its
 persistent home. Any executable host script can be selected by its path.
 
+Codex setup installs guest-owned shell rules in `.codex/rules/safeyolo-guest.rules`
+so its command heuristics allow ordinary shell cleanup inside SafeYolo. Host rules
+are not imported. Organization-managed restrictions and Codex model modes that
+ignore local allow rules can still reject commands.
+
 ### First Codex login
 
 For a fresh `@codex` agent, authentication happens inside that agent's persistent

@@ -51,6 +51,21 @@ or resulting behaviour before implementation. Keep this proportional to the
 change; it is not a mandatory questionnaire or approval step. Match implementation
 and verification to the agreed effort, and flag material expansion early.
 
+Before committing, apply this necessity checklist to the diff:
+
+- State the concrete outcome separately from the implementation; added scope
+  does not become a requirement merely because it appears in the diff.
+- For each substantial addition, what behavior, user decision, or necessary
+  evidence would be lost if it were removed? Remove blocks with no concrete answer.
+- Can an existing mechanism or one authoritative explanation replace new
+  scaffolding, speculative abstractions, or repeated instructions and inventories?
+- Are new restrictions, guarantees, and tests required by that outcome, existing
+  security requirements, or evidenced constraints? Preserve meaningful failure tests.
+
+A blocking finding must name the changed block and a smaller sufficient alternative
+that preserves correctness, security, compatibility, and essential instructions.
+Keep style preferences and speculative savings advisory; do not demand extra scope.
+
 ## Naming
 
 Prefer concrete, domain-specific names over abstract architectural names.

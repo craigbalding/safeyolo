@@ -102,6 +102,39 @@ def _seed_adopted_codex_auth(agent_home: Path) -> None:
     _load_codex_state_module()._recover(agent_home, "adopt")
 
 
+def test_codex_stages_guest_rules_without_importing_host_rules(tmp_path: Path) -> None:
+    operator_home, agent_home = tmp_path / "operator", tmp_path / "agent"
+    host_rules = operator_home / ".codex/rules/host.rules"
+    host_rules.parent.mkdir(parents=True)
+    host_rules.write_text('prefix_rule(pattern=["rm"], decision="forbidden")\n')
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    guest_rules = agent_home / ".codex/rules/safeyolo-guest.rules"
+    original = guest_rules.read_bytes()
+    _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
+    assert guest_rules.read_bytes() == original
+    assert not (guest_rules.parent / host_rules.name).exists()
+
+    codex = shutil.which("codex")
+    if codex is None:
+        pytest.skip("Codex CLI is required to evaluate the staged exec-policy rules")
+    commands = [
+        ["rm", "-f", "/tmp/safeyolo-canary"],
+        ["/bin/rm", "-rf", "/tmp/safeyolo-canary"],
+        ["sudo", "rm", "-rf", "/tmp/safeyolo-canary"],
+        ["env", "X=y", "rm", "-rf", "/tmp/safeyolo-canary"],
+        ["trap", 'rm -f "$tmp_file"', "EXIT"],
+        ["/bin/bash", "-lc", 'tmp_file="$(mktemp)"; trap \'rm -f "$tmp_file"\' EXIT; printf ok'],
+        ["bash", "-c", "bash -c 'rm -f /tmp/safeyolo-canary'"],
+    ]
+    for command in commands:
+        # Evaluate only: no deletion command is executed by this policy test.
+        result = subprocess.run(
+            [codex, "execpolicy", "check", "--rules", str(guest_rules), "--", *command],
+            capture_output=True, text=True, check=True,
+        )
+        assert json.loads(result.stdout)["decision"] == "allow", (command, result.stdout)
+
+
 def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
     assert (agent_home / ".safeyolo/AGENTS.md").read_bytes() == BASELINE_SOURCE.read_bytes()
 

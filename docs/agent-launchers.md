@@ -59,6 +59,11 @@ for lab panes and other guest-side work. The outer host tmux session protects
 the operator connection. With the default tmux prefix on both servers, press
 `Ctrl-b` twice to send a prefix to the inner server.
 
+After the next sandbox boot, manually running `/home/agent/.safeyolo-command`
+reports the agent as running with a `manual` launcher. A second `agent run`
+leaves it running; return to the original guest terminal to interact with it.
+Exiting the command reports it as stopped while the sandbox stays ready.
+
 When `run` is invoked over SSH outside host tmux, SafeYolo starts a persistent
 host session and then attaches the terminal as a viewer. Inside host tmux, the
 existing host session already owns the terminal. Command Centre always requests
