@@ -22,6 +22,7 @@ LISTEN_PORT="${1:-8080}"
 UDS_PATH="${2:-/safeyolo/proxy/proxy.sock}"
 VSOCK_HOST_CID=2
 VSOCK_HOST_PORT=1080
+listen_options="bind=127.0.0.1,reuseaddr,fork,su=agent"
 
 # retry=20,interval=0.25 absorbs brief mitmproxy restart windows
 # (~5s total): socat retries the upstream connect while mitmproxy is
@@ -31,6 +32,12 @@ if [ -S "$UDS_PATH" ]; then
     upstream="UNIX-CONNECT:$UDS_PATH,retry=20,interval=0.25"
 else
     upstream="VSOCK-CONNECT:$VSOCK_HOST_CID:$VSOCK_HOST_PORT,retry=20,interval=0.25"
+    # Admit before creating vsock connections: host acceptance is too late
+    # to protect VZ's descriptor allocation. socat waits for a child to exit
+    # before accepting another client; excess clients wait in the TCP backlog.
+    # Reserve six shell and two terminal connections in the host helper.
+    # DOC: docs/DEVELOPERS.md
+    listen_options="$listen_options,max-children=232,backlog=128"
 fi
 
 echo "[guest-proxy-forwarder] 127.0.0.1:${LISTEN_PORT} -> ${upstream} (running as agent)" >&2
@@ -41,5 +48,5 @@ echo "[guest-proxy-forwarder] 127.0.0.1:${LISTEN_PORT} -> ${upstream} (running a
 # userns mapping on Linux; AF_VSOCK socket() itself is unprivileged).
 # Narrowing the attack surface: a socat bug can't give root in the VM.
 exec socat \
-    "TCP-LISTEN:${LISTEN_PORT},bind=127.0.0.1,reuseaddr,fork,su=agent" \
+    "TCP-LISTEN:${LISTEN_PORT},${listen_options}" \
     "${upstream}"

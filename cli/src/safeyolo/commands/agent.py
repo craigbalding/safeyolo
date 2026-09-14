@@ -59,6 +59,7 @@ from ..vm import (
     stage_guest_desktop_launcher,
     vm_helper_failure_summary,
 )
+from .agent_vm import vm_app
 from .mount import is_path_protected
 from .tmux import associate_agent_pane, rename_window_for_agent
 
@@ -97,6 +98,7 @@ agent_app = typer.Typer(
     help="Manage AI agent sandboxes.",
     no_args_is_help=True,
 )
+agent_app.add_typer(vm_app, name="vm")
 
 
 def _check_project_ownership(project_path: Path, allow_unowned: bool) -> None:
@@ -2276,9 +2278,9 @@ def desktop(
 @agent_app.command()
 def diag(
     name: str = typer.Argument(..., help="Agent instance name to diagnose"),
+    hang: bool = typer.Option(False, "--hang", help="Save a bounded macOS VM hang dump through its independent control socket"),
 ) -> None:
-    """Probe the full agent egress chain and report where (if anywhere)
-    it's broken.
+    """Probe agent egress and, on macOS, the shell and VM helper control paths.
 
     Runs through the hops from the agent out to mitmproxy and back,
     checking each link:
@@ -2286,13 +2288,18 @@ def diag(
         mitmproxy process → VM process → command supervisor → proxy transport →
         authenticated Agent API + source attribution
 
+    On macOS, also require a bounded SSH banner and inspect the running helper's
+    identity, relay counters and executor health. --hang saves a private JSON
+    dump through the independent helper control socket. SSH authentication is
+    not performed by this diagnostic.
+
     Exits 0 if everything checks out, 1 if any link is broken. Output
     is one line per check, PASS/FAIL/WARN prefix, so piping to grep
     FAIL shows you what's wrong at a glance.
     """
     _validate_instance_name(name)
     from ..agent_diag import run_agent_diag  # noqa: PLC0415
-    exit_code = run_agent_diag(name)
+    exit_code = run_agent_diag(name, hang=hang)
     raise typer.Exit(exit_code)
 
 

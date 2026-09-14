@@ -18,6 +18,7 @@ struct RunConfig {
     var serialLogPath: String = ""   // optional per-agent serial console log path
     var proxySocketPath: String = "" // host UDS the vsock proxy relay connects to (per-agent bridge socket)
     var shellSocketPath: String = "" // host UDS the shell bridge listens on; connects to guest vsock:2220
+    var controlSocketPath: String = "" // private host-only diagnostic/control UDS
     var snapshotOnSignal: String = "" // path to write snapshot to on SIGUSR1
     var restoreFrom: String = ""      // path to snapshot file to restore from
 }
@@ -32,7 +33,8 @@ func printUsage() {
 
     Commands:
       check               Verify that Apple Virtualization.framework is supported.
-      version             Print the helper version without requiring VZ support.
+      version             Print helper build/signing identity; accepts --json.
+      --version           Alias for version; does not require VZ support.
 
     Options:
       --kernel PATH       Path to kernel Image (required)
@@ -56,6 +58,7 @@ func printUsage() {
                           in the guest). Used by `safeyolo agent shell` when
                           the VM has no network interface.
       --no-terminal       Detach mode: skip vsock terminal, keep VM alive for SSH
+      --control-socket PATH Private host-only JSON diagnostic/control socket.
       --snapshot-on-signal PATH
                           Write a VM snapshot to PATH when SIGUSR1 is received.
                           Sidecar metadata is written to PATH.meta.json.
@@ -134,6 +137,9 @@ func parseArguments() -> RunConfig? {
             config.shellSocketPath = args[i]
         case "--no-terminal":
             config.noTerminal = true
+        case "--control-socket":
+            i += 1; guard i < args.count else { fputs("Error: --control-socket requires a path\n", stderr); return nil }
+            config.controlSocketPath = args[i]
         case "--snapshot-on-signal":
             i += 1; guard i < args.count else { fputs("Error: --snapshot-on-signal requires a path\n", stderr); return nil }
             config.snapshotOnSignal = args[i]
@@ -170,12 +176,21 @@ func parseArguments() -> RunConfig? {
 
 // MARK: - Main
 
-if CommandLine.arguments.count == 2 {
+if CommandLine.arguments.count >= 2 {
     switch CommandLine.arguments[1] {
-    case "version":
-        print("safeyolo-vm \(helperVersion)")
+    case "version", "--version":
+        guard CommandLine.arguments.count == 2 ||
+              (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--json") else {
+            fputs("Error: version accepts only --json\n", stderr)
+            exit(1)
+        }
+        BuildIdentity.printVersion(json: CommandLine.arguments.contains("--json"))
         exit(0)
     case "check":
+        guard CommandLine.arguments.count == 2 else {
+            fputs("Error: check accepts no arguments\n", stderr)
+            exit(1)
+        }
         guard VZVirtualMachine.isSupported else {
             fputs("Error: Virtualization is not supported on this machine\n", stderr)
             exit(1)
@@ -219,6 +234,7 @@ atexit {
 }
 
 do {
+    Log.info("vm", BuildIdentity.summary)
     // Determine the machine identifier BEFORE building the VM config.
     // It defaults to random-per-process, so without pinning it VZ
     // rejects any cross-process restore with EINVAL. On restore we
@@ -315,15 +331,16 @@ do {
     // This is the primary egress path — each guest-initiated flow
     // lands on the host-side UDS and is forwarded to mitmproxy with
     // the agent-attributed upstream source IP.
+    let relayLedger = RelayLedger()
     var proxyRelay: VSockProxyRelay? = nil
     if !config.proxySocketPath.isEmpty {
-        proxyRelay = VSockProxyRelay(
+        proxyRelay = try VSockProxyRelay(
             vm: vm, queue: vmQueue,
             socketPath: config.proxySocketPath,
+            ledger: relayLedger,
         )
         proxyRelay?.start()
     }
-    _ = proxyRelay  // keep the VZVirtioSocketListener alive for process lifetime
 
     // Start the host-side shell bridge if a socket path was provided.
     // Each accept on the host UDS dials guest:2220 where socat proxies
@@ -331,9 +348,10 @@ do {
     // `ssh -o ProxyCommand='nc -U <path>'`.
     var shellBridge: VSockShellBridge? = nil
     if !config.shellSocketPath.isEmpty {
-        shellBridge = VSockShellBridge(
+        shellBridge = try VSockShellBridge(
             vm: vm, queue: vmQueue,
             socketPath: config.shellSocketPath,
+            ledger: relayLedger,
         )
         do {
             try shellBridge?.start()
@@ -341,7 +359,15 @@ do {
             fputs("[shell-bridge] failed to start: \(error)\n", stderr)
         }
     }
-    _ = shellBridge  // keep reference alive for process lifetime
+
+    let relayLoops = [proxyRelay?.loop, shellBridge?.loop].compactMap { $0 }
+    var control: VMControl?
+    if !config.controlSocketPath.isEmpty {
+        control = try VMControl(path: config.controlSocketPath, ledger: relayLedger,
+            runtime: runner.runtimeStatus, refreshVM: { runner.refreshRuntimeStatus() },
+            wakeRelays: { relayLoops.forEach { $0.wake() } })
+        control?.start()
+    }
 
     // In detach mode (--no-terminal), the VM stays alive until SIGTERM and
     // is accessed via SSH (`safeyolo agent shell <name>`); no vsock-term.
@@ -398,7 +424,9 @@ do {
     // so RunLoop.main stays alive for the VM's lifetime.
     let keepalive = Timer(timeInterval: 30.0, repeats: true) { _ in }
     RunLoop.main.add(keepalive, forMode: .default)
-    RunLoop.main.run()
+    withExtendedLifetime((runner, proxyRelay, shellBridge, control)) {
+        RunLoop.main.run()
+    }
 } catch {
     fputs("Error: \(error.localizedDescription)\n", stderr)
     // Use sysexits.h EX_TEMPFAIL (75) for snapshot-related errors so the CLI

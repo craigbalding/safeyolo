@@ -9,8 +9,10 @@ class VSockTerminal {
     private let queue: DispatchQueue
     private var dataFD: Int32 = -1
     private var ctrlFD: Int32 = -1
-    private var dataConnection: VZVirtioSocketConnection?
-    private var ctrlConnection: VZVirtioSocketConnection?
+    private var dataConnection: RelayEndpoint?
+    private var ctrlConnection: RelayEndpoint?
+    private let dataLimit = VSockConnectionLimit(maximum: 1)
+    private let ctrlLimit = VSockConnectionLimit(maximum: 1)
     private var originalTermios: termios?
     private var bridgeRunning = false
 
@@ -23,15 +25,16 @@ class VSockTerminal {
     }
 
     func tryConnect() -> Bool {
-        guard let dataConn = connectToPort(VSockTerminal.DATA_PORT) else {
+        if dataConnection != nil { return true }
+        guard let dataConn = connectToPort(VSockTerminal.DATA_PORT, limit: dataLimit) else {
             return false
         }
         dataConnection = dataConn
-        dataFD = dataConn.fileDescriptor
+        dataFD = dataConn.fd
 
-        if let ctrlConn = connectToPort(VSockTerminal.CTRL_PORT) {
+        if let ctrlConn = connectToPort(VSockTerminal.CTRL_PORT, limit: ctrlLimit) {
             ctrlConnection = ctrlConn
-            ctrlFD = ctrlConn.fileDescriptor
+            ctrlFD = ctrlConn.fd
         }
         return true
     }
@@ -39,6 +42,12 @@ class VSockTerminal {
     /// Bridge terminal I/O. Blocks until the session ends.
     func run() {
         guard dataFD >= 0 else { return }
+        defer {
+            restoreTerminal()
+            dataConnection?.close(); ctrlConnection?.close()
+            dataConnection = nil; ctrlConnection = nil
+            dataFD = -1; ctrlFD = -1
+        }
 
         // Clear screen before handing over to the TUI
         let clear = "\u{1B}[2J\u{1B}[H"
@@ -50,31 +59,26 @@ class VSockTerminal {
 
         bridgeRunning = true
         bridge()
-
-        restoreTerminal()
     }
 
     // MARK: - vsock connection
 
-    private func connectToPort(_ port: UInt32) -> VZVirtioSocketConnection? {
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: VZVirtioSocketConnection?
-
-        queue.async { [self] in
-            guard let device = vm.socketDevices.first as? VZVirtioSocketDevice else {
-                semaphore.signal()
-                return
-            }
-            device.connect(toPort: port) { connectResult in
-                if case .success(let connection) = connectResult {
-                    result = connection
+    private func connectToPort(_ port: UInt32, limit: VSockConnectionLimit) -> RelayEndpoint? {
+        let pending = VSockConnectionWait()
+        limit.connect(start: { complete in
+            self.queue.async { [self] in
+                guard let device = self.vm.socketDevices.first as? VZVirtioSocketDevice else {
+                    complete(.failure(NSError(domain: "SafeYoloVM", code: 1)))
+                    return
                 }
-                semaphore.signal()
+                device.connect(toPort: port) { result in
+                    complete(result.map { connection in
+                        RelayEndpoint(fd: connection.fileDescriptor) { connection.close() }
+                    })
+                }
             }
-        }
-
-        _ = semaphore.wait(timeout: .now() + 10)
-        return result
+        }, completion: pending.complete)
+        return pending.wait(timeout: .now() + 10)
     }
 
     // MARK: - Terminal bridge
@@ -212,7 +216,7 @@ class VSockTerminal {
     // MARK: - fd_set helpers
 
     private func fdZero(_ set: inout fd_set) {
-        withUnsafeMutablePointer(to: &set) { ptr in
+        _ = withUnsafeMutablePointer(to: &set) { ptr in
             memset(UnsafeMutableRawPointer(ptr), 0, MemoryLayout<fd_set>.size)
         }
     }

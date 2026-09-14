@@ -174,6 +174,147 @@ strace -f -o /tmp/tr.log ./my_worker
 
 ## Failure triage
 
+### Inspect a macOS VM helper from the host
+
+Run these commands from the host operator account after installing the current
+VM helper and restarting the agent:
+
+```sh
+safeyolo agent diag NAME
+safeyolo agent vm status NAME
+safeyolo agent vm relays NAME --json
+safeyolo agent diag NAME --hang
+```
+
+`agent diag` reports the installed helper and the running helper separately.
+The running identity includes its PID, source revision and dirty state, build
+profile, architecture and debugger authority. `vm status --json` also includes
+start time, uptime, cached Virtualization state, queue heartbeat and relay-loop
+heartbeats. See [VM helper development](DEVELOPERS.md#macos-vm-helper-development)
+for production/development signing and symbol bundles.
+
+The shell check first connects to the shell UDS, then requires an SSH
+identification within one three-second deadline. No SSH authentication is
+attempted. A successful UDS connect alone does not prove that the helper,
+vsock, guest bridge or sshd is making progress. The separate egress checks
+continue if the shell check fails.
+
+The helper control socket is under the configured data directory at
+`vm-control/NAME.sock`. Its directory is mode 0700, its socket is mode 0600,
+and the helper checks the local peer UID. The directory is host-only and is
+not added to the guest's shares. Control uses a dedicated nonblocking thread;
+status and dumps read cached state without waiting on VM or relay executors.
+Responses identify stale heartbeats and accepted shell connections still
+awaiting execution. VM state with an old heartbeat is an observation from
+that time, not evidence of current queue responsiveness.
+
+`vm relays` lists flow IDs, types, phases, transferred bytes and buffered bytes.
+Its JSON records also include acceptance/progress times and endpoint FDs.
+`relay_fd_count` counts tracked data endpoints; control listener/client FDs are
+reported separately. These are relevant owned-descriptor counts, not a scan of
+every FD opened internally by Virtualization. Listings use bounded pages and
+one client deadline. Flow IDs belong to one helper instance; they cannot be
+carried across a restart.
+
+`agent diag NAME --hang` and `agent vm dump NAME` save a mode-0600 JSON dump at
+`vm-control/NAME.hang.json`. `agent vm dump NAME --output PATH` selects another
+artifact path. The dump includes identity, cached VM state, executor health,
+counts, the oldest 256 active flows, and up to 64 recent completed/error records
+and control events. It marks flow-list truncation explicitly. No debugger,
+shell relay or proxy relay is needed to generate it.
+
+To recover a pathological connection, list it first, then cancel its flow ID:
+
+```sh
+safeyolo agent vm relays NAME
+safeyolo agent vm cancel NAME 42 --reason 'stalled download'
+safeyolo agent vm cancel NAME --all --kind proxy --dry-run
+safeyolo agent vm cancel NAME --all --kind proxy --reason 'recover stalled proxy flows'
+```
+
+Cancellation terminates the associated network or shell connection. It does
+not stop the VM. Bulk selection requires both `--all` and `--kind proxy|shell`,
+and captures existing IDs before sending cancellation batches. `--dry-run`
+only lists that selection. The helper rejects a stale instance ID and records
+the operator UID, helper instance, selected IDs, reason and action ID in
+`NAME.sock.audit.jsonl` before queuing cancellation. If it cannot write that
+private audit, it refuses the operation.
+
+The CLI reports closure only after observing that the selected IDs have left
+the active ledger. If the deadline expires, cancellation may already be queued;
+the command reports the unverified outcome and the audit retains the action.
+Inspect the relay list before taking another recovery action.
+
+Use these observations to narrow a shell incident:
+
+| Observation | Evidence and next check |
+|---|---|
+| Shell UDS missing/refused | The host listener is unavailable; inspect helper identity/state and startup logs. |
+| UDS connected, shell accepts pending, stale relay heartbeat | The helper recorded acceptance without executor progress. Save a hang dump. |
+| Recent shell establishment timeout/error | The host-to-guest vsock connection did not establish; inspect guest bridge readiness through the shared-home recovery path. |
+| Shell relay active, no SSH banner | Bytes did not reach an SSH identification. Guest bridge/sshd checks are still needed; the banner probe alone cannot distinguish them. |
+| Banner received, a subsequent shell command fails authentication/session setup | Transport reached sshd; inspect that SSH error and guest service logs. The diagnostic did not authenticate. |
+
+### Probe the guest through PID 1 when SSH is unavailable
+
+The host operator can use the existing command supervisor over the shared home
+to run a fixed guest health probe. PID 1 must still be responsive, and the
+guest must still see its home and configuration shares. This path does not
+use the helper control socket, shell relay or proxy relay.
+
+From a checkout of the matching SafeYolo version on the host, run the recipe
+below. Replace `NAME` with an existing, booted agent. The checkout needs its
+usual Python dependencies; `uv run` uses the project environment.
+
+```sh
+uv run python contrib/vm-guest-probe.py NAME
+```
+
+The recipe is intended for a sandbox started with `agent run NAME
+--sandbox-only`, or another running sandbox whose command supervisor is idle.
+It also works alongside a normal interactive/terminal launcher if that launcher
+does not occupy the command supervisor. It refuses an active, starting or
+restarting supervisor, including one that has a stop fence but has not yet
+reported termination. It also refuses an in-progress launcher transition.
+Do not clear another command's state to make the probe run.
+
+The recipe takes the existing host setup and launch locks before checking and
+publishing state. Concurrent normal launch/stop operations use those same locks.
+Guest PID 1 launches the probe through the normal `agent` account. The probe
+records its UID, selected bridge/service process names and PIDs, and a bounded
+SSH banner check against guest loopback port 22. It does not collect process
+arguments or environment variables. A missing process name is only a clue;
+the loopback banner is the direct sshd transport check.
+
+Guest health collection has an eight-second deadline and a one-second banner
+deadline. Publishing the result and exiting has a separate one-second hard
+deadline. The host waits at most fifteen seconds, including lock acquisition.
+Output uses the supervisor's existing 16-KiB stderr limit. The probe writes a
+stop fence before exiting so the supervisor does not restart it. During that
+final publication, the probe blocks the supervisor's SIGTERM and exits directly
+after flushing its result. This preserves its exit status if the stop watcher
+reacts before the process exits. The hard deadline still applies. The host
+reports completion only after observing a terminal supervisor state and the
+matching probe result. On timeout it publishes a stop fence for its own command
+and reports that completion is unverified. A stop request alone is not proof
+that the guest has stopped the command.
+
+Each invocation creates a private directory under the configured data directory
+at `vm-recovery/NAME-*`. It contains the invocation ID, operator UID, payload
+hash, deadline, prior terminal state when present, and the observed supervisor
+state and result or error. The recipe prints that evidence path. It removes
+its supervisor-enabled marker after completion or timeout and leaves the stop
+fence in place. The next ordinary agent launch uses the existing startup path
+to replace terminal state and clear the fence. Saved previous state is evidence;
+the recipe does not automatically restart a prior command.
+
+If the guest loopback banner succeeds while the host shell banner fails, inspect
+the recorded guest bridge processes and helper vsock errors to separate those
+remaining hops. If this recovery path also times out, the result cannot
+distinguish a guest/PID-1 failure from a failed shared-filesystem path.
+
+### Guest tooling triage
+
 The agent-facing skill graph `triage-guest-tools-and-sudo` covers the
 `ptrace / py-spy / rbspy denied` failure modes and routes each symptom
 to the correct fix (YAMA scope stale, gVisor syscall unsupported,

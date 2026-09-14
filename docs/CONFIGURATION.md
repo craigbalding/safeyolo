@@ -272,6 +272,16 @@ HTTP requests. Admission audit events include method, destination port, request
 ID, and connection ID; the connection ID also links inner security decisions.
 These counters do not count bytes or messages inside a raw TCP tunnel.
 
+Opt-in trace steps carry the parsed destination host and port, method, and
+transport connection ID alongside the hook and outcome. A traced CONNECT and
+a traced enclosed HTTP request have distinct request IDs and the same
+connection ID. Compare that ID with admission/security audit records to relate
+the decisions. The connection ID identifies the client transport, not an
+application protocol or a unique parent request. Trace ownership remains
+scoped to the agent identity derived from that transport. Each request must
+opt into tracing; tracing CONNECT does not enable tracing for every enclosed
+request. These fields do not include request paths, bodies or credentials.
+
 Host entries support a `expires` field using TOML's native datetime type. Expired entries are cleaned up automatically at policy reload:
 
 ```toml

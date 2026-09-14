@@ -1,4 +1,4 @@
-"""Per-agent egress chain diagnostic.
+"""Per-agent egress and shell diagnostics.
 
 Walks the host-visible hops from a named agent's UDS to mitmproxy, then checks
 the authenticated Agent API and its source-derived attribution separately.
@@ -9,11 +9,9 @@ differ (netns on Linux, lo0 aliases + VZ helper on macOS). Output is
 line-per-check with a PASS/FAIL/WARN prefix; exit code 0 on all-pass,
 1 on any failure.
 
-Intentionally does NOT require the VM's guest side to be reachable.
-The probes all target the host-visible artifacts + a fast UDS-level
-roundtrip through mitmproxy's per-agent listener. If the agent's VM
-is up we also check the platform sandbox presence; if not, that's
-reported and the rest continues.
+The egress checks target host-visible artifacts and the per-agent proxy UDS.
+On macOS, a separate bounded shell probe traverses the helper, vsock and guest
+bridge to observe sshd's identification. Its failure does not skip egress checks.
 """
 from __future__ import annotations
 
@@ -503,7 +501,74 @@ def _check_agent_api(
     )
 
 
-def run_agent_diag(name: str) -> int:
+def _check_vm_helper_identity() -> Check:
+    """Identify the installed helper; runtime-process identity comes from its control channel."""
+    from .vm import VMError
+    from .vm_identity import read_vm_helper_identity
+
+    try:
+        identity = read_vm_helper_identity()
+    except VMError as error:
+        return Check("Installed VM helper", "WARN", str(error))
+    detail = identity.summary
+    if identity.warning:
+        detail += f"; {identity.warning}"
+    return Check("Installed VM helper", "WARN" if identity.warning else "PASS", detail)
+
+
+def _check_shell_transport(name: str) -> list[Check]:
+    from rich.markup import escape
+
+    from .platform.darwin import _shell_socket_path
+    from .vm_diagnostics import probe_shell_socket
+
+    path = _shell_socket_path(name)
+    probe = probe_shell_socket(path)
+    if not probe.connected:
+        return [Check("Shell UDS", "FAIL", f"{path}: {escape(probe.error or 'connection failed')}")]
+    checks = [Check("Shell UDS", "PASS", f"connected to {path}")]
+    if probe.banner is not None:
+        checks.append(Check("SSH banner", "PASS", f"{escape(probe.banner)} ({probe.elapsed_ms} ms)"))
+    else:
+        checks.append(Check(
+            "SSH banner", "FAIL",
+            f"{escape(probe.error or 'unavailable')} ({probe.elapsed_ms} ms); "
+            "UDS connected, but vsock / guest bridge / sshd progress is unproven",
+        ))
+    return checks
+
+
+def _check_vm_runtime(name: str) -> list[Check]:
+    from .vm_control import VMControlError, read_status
+    from .vm_identity import parse_vm_helper_identity
+
+    try:
+        value = read_status(name, timeout=1.0)
+    except VMControlError as error:
+        return [Check("VM control", "WARN", str(error), "rebuild/install the helper and restart the agent to enable runtime diagnostics")]
+    helper = parse_vm_helper_identity(value["helper"])
+    identity = Check(
+        "Running VM helper", "WARN" if helper.warning else "PASS",
+        f"pid={value['pid']} {helper.summary} VM={value['vm']['state']}"
+        + (f"; {helper.warning}" if helper.warning else ""),
+    )
+    health = value["health"]
+    pending = value.get("accepted_shell_pending", 0)
+    detail = (
+        f"{health}; {value['active']} relays, {value['relay_fd_count']} relay FDs, "
+        f"{pending} shell accepts pending; phases={value['counts_by_phase']}"
+    )
+    if health != "responsive":
+        detail += f"; loops without progress: {value.get('unresponsive_loops', [])}"
+    checks = [identity, Check("Helper relay health", "PASS" if health == "responsive" else "WARN", detail)]
+    heartbeat = value["vm"].get("heartbeat_at")
+    now = value.get("monotonic_now")
+    if isinstance(heartbeat, (int, float)) and isinstance(now, (int, float)) and now - heartbeat > 1.5:
+        checks.append(Check("VM queue", "WARN", f"last heartbeat {now - heartbeat:.1f}s ago; VM state is cached"))
+    return checks
+
+
+def run_agent_diag(name: str, *, hang: bool = False) -> int:
     """Run every check in order and print. Returns POSIX exit code."""
     console.print(f"\nSafeYolo diagnostic: [bold]{name}[/bold]\n")
 
@@ -514,6 +579,31 @@ def run_agent_diag(name: str) -> int:
     _print(r1)
     if r1.status == "FAIL":
         return _summarise(checks)
+
+    import platform
+    if platform.system() == "Darwin":
+        identity_check = _check_vm_helper_identity()
+        checks.append(identity_check)
+        _print(identity_check)
+        for shell_check in _check_shell_transport(name):
+            checks.append(shell_check)
+            _print(shell_check)
+        for runtime_check in _check_vm_runtime(name):
+            checks.append(runtime_check)
+            _print(runtime_check)
+        if hang:
+            from .vm_control import VMControlError, write_dump
+
+            try:
+                dump_check = Check("VM hang dump", "PASS", str(write_dump(name)))
+            except VMControlError as error:
+                dump_check = Check("VM hang dump", "WARN", str(error))
+            checks.append(dump_check)
+            _print(dump_check)
+    elif hang:
+        hang_check = Check("VM hang dump", "WARN", "the VZ helper control channel is macOS-only")
+        checks.append(hang_check)
+        _print(hang_check)
 
     command_check = _check_command_supervisor(name)
     checks.append(command_check)

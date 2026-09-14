@@ -518,6 +518,118 @@ from .commands.mycommand import mycommand
 app.command()(mycommand)
 ```
 
+## macOS VM helper development
+
+On an Apple Silicon Mac with Command Line Tools and Python 3.11 or later,
+run these commands from the repository root. The production build retains
+hardened runtime and the virtualization entitlement. It does not carry
+`com.apple.security.get-task-allow`.
+
+```sh
+make -C vm build
+vm/.build/release/safeyolo-vm --version --json
+```
+
+To install a development helper, run:
+
+```sh
+make -C vm debug-install
+safeyolo doctor
+```
+
+This replaces the helper at `~/.safeyolo/bin/safeyolo-vm`. It installs a matching
+`safeyolo-vm.dSYM` bundle and `safeyolo-vm.build-info.json` beside the helper.
+It does not rebuild the Linux guest tools. Development uses release optimisation
+with symbols and adds `com.apple.security.get-task-allow`. Authorised local
+debuggers can inspect or modify the helper's memory and execution. Hardened
+runtime remains enabled; no library-injection or executable-memory exceptions
+are added. Use this profile only where that local debugger authority is acceptable.
+
+`doctor` and `agent diag` report the installed helper's build identity and warn
+when debugger access is enabled. The helper's `version` and `--version` commands
+accept `--json`. Output includes the SafeYolo and helper versions, Git revision
+and dirty state, profile, architecture, compiler, optimisation, symbol profile
+and running debug/hardened-runtime flags. Each VM startup also logs its identity.
+An older or unmanaged helper produces an explicit identity warning.
+
+On macOS, `safeyolo agent diag AGENT` also checks the shell UDS and reads an
+SSH identification within one three-second deadline. A successful UDS connect
+alone does not prove shell health. The banner check traverses the helper, vsock
+and guest shell bridge to sshd, then disconnects without authentication. Failure
+leaves those downstream hops unproven and does not skip the separate egress
+checks. Slow or excessive pre-banner data remains bounded within the diagnostic.
+
+Start a disposable agent after installing the development helper. Replace
+`AGENT` below with that agent's name. From the Mac operator account, attach LLDB:
+
+```sh
+lldb -p "$(cat ~/.safeyolo/agents/AGENT/vm.pid)"
+```
+
+The Mac must permit developer-tool attachment. Re-signing an executable does
+not change the debugger authority of an already-running process. Restart the
+disposable agent to test a newly signed helper. Verify a symbol bundle's UUID
+against the executable with `dwarfdump --uuid` before using it for an incident.
+
+For an isolated helper selection, build with `make -C vm debug` and set
+`SAFEYOLO_VM_HELPER` to the absolute path of
+`vm/.build/development/release/safeyolo-vm` for the disposable agent's run.
+To restore the production installation, run `make -C vm install-helper` and
+restart the affected agents.
+
+The build and install targets verify the actual signature and reject an
+unexpected entitlement set, a missing hardened runtime or a profile mismatch.
+Run `make -C vm verify` when packaging an existing production artifact. To test
+both profiles and rejection of a production artifact re-signed with debugger
+access, build both profiles and run `python3 vm/test/build-profiles.py` on the Mac.
+
+Inside the confined SSH account, pass `SWIFT_BUILD_FLAGS=--disable-sandbox`
+to `make`. This suppresses SwiftPM's additional sandbox while the inherited
+Seatbelt profile remains active. The build uses SwiftPM's native backend;
+Swift 6.4's default backend currently tries to use `/tmp` during linking under
+this profile. Stage dependencies through the approved SSH connection.
+
+For an exported source tree without Git metadata, the build can take a full
+`SAFEYOLO_BUILD_REVISION` and `SAFEYOLO_BUILD_DIRTY=yes|no|unknown` from the
+exporting build process. Without source evidence, identity reports `unknown`.
+
+The proxy and shell relays each use a dedicated thread with nonblocking socket
+I/O. Each direction buffers at most 64 KiB and stops reading while that buffer
+is full. Relay establishment has a ten-second deadline from acceptance,
+including waiting for a vsock callback. A late callback closes its connection.
+Cancellation shuts down both endpoints and releases their owners on the next
+relay turn; no relay waits for child work on a shared GCD pool.
+
+A half-close propagates only after its buffered bytes drain. The other direction
+can continue sending a response without a lifetime or idle limit. Once both
+readers reach EOF, any remaining buffer must make progress within ten seconds
+or teardown closes the flow. Completion logs use a separate thread so stderr
+backpressure cannot block pumps. Its bounded queue holds 1,024 pending messages;
+overflow is counted and reported when logging resumes.
+
+Run `make -C vm test-relays` on macOS for real Unix-socket regression tests.
+They exercise 300 held proxy flows alongside shell traffic, backpressure and
+byte integrity, half-close responses, establishment/drain timeouts, cancellation,
+late callbacks, closed idle shell clients, blocked logging and return to the original open-FD count. This
+suite tests the native relay implementation; real VZ/guest acceptance is still
+needed for framework integration and guest services.
+
+Run `make -C vm test-admission` for connection-limit tests. They check rejection
+before VZ connection creation, concurrent callers, pending attempts, slot reuse,
+and terminal callbacks arriving after a timeout. The guest forwarder tests in
+`cli/tests/test_guest_proxy_admission.py` use real socat with a local Unix-socket
+substitute for VZ. They verify queueing, continued traffic on an existing flow,
+slot reuse, and unchanged Linux UDS admission. They do not establish the native
+framework's resource ceiling. See [connection admission](microvm-architecture.md#connection-admission-on-macos)
+for the shipped limits and their scope.
+
+Run `make -C vm test-control` for native control-channel tests. They deliberately
+leave relay executors unscheduled, hold a partial control request open, and
+verify status/dump responsiveness, process-instance checks, private auditing,
+cancellation acknowledgement versus observed closure, and listener cleanup.
+The [host VM diagnostics](agent-debugging.md#inspect-a-macos-vm-helper-from-the-host)
+describe the supported operator commands and the evidence each one provides.
+
 ## Testing
 
 **Run tests:**

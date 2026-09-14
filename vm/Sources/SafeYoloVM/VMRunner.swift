@@ -2,12 +2,18 @@ import Foundation
 import Virtualization
 
 /// Manages the lifecycle of a VZVirtualMachine: start, state observation, signal handling, shutdown.
-class VMRunner: NSObject {
+class VMRunner: NSObject, VZVirtualMachineDelegate {
 
     let vm: VZVirtualMachine
     private let queue: DispatchQueue
     private var observation: NSKeyValueObservation?
     private var hasExited = false
+    let runtimeStatus = VMRuntimeStatus()
+
+    func refreshRuntimeStatus() {
+        guard runtimeStatus.beginRefresh() else { return }
+        queue.async { [self] in runtimeStatus.refreshed(state: stateName(vm.state)) }
+    }
 
     // When non-zero, the state observer ignores .stopped and .error
     // transitions. Used during restore/save where VZ may transition the
@@ -52,6 +58,7 @@ class VMRunner: NSObject {
         self.vm = vm
         self.queue = queue ?? DispatchQueue(label: "com.safeyolo.vm.runner", qos: .userInteractive)
         super.init()
+        self.queue.async { [self] in vm.delegate = self }
         observeState()
     }
 
@@ -82,6 +89,7 @@ class VMRunner: NSObject {
     }
 
     private func handleStateChange(_ state: VZVirtualMachine.State) {
+        runtimeStatus.observed(state: stateName(state))
         // Diagnostic: log every state transition to stderr so we can see
         // exactly what VZ is doing during cold-boot, save, and restore.
         // Gated behind SAFEYOLO_DEBUG=1 so production runs stay quiet —
@@ -93,7 +101,9 @@ class VMRunner: NSObject {
         case .stopped:
             if !isSuppressed { exitClean(code: 0) }
         case .error:
-            if !isSuppressed { exitClean(code: 1) }
+            // The delegate carries the framework error. Exiting from KVO here
+            // discarded that evidence before didStopWithError could run.
+            break
         case .running:
             break
         case .starting:
@@ -105,6 +115,12 @@ class VMRunner: NSObject {
         @unknown default:
             break
         }
+    }
+
+    func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
+        runtimeStatus.observed(state: "error", error: String(describing: error))
+        Log.warn("vm", "virtual machine stopped: \(error)")
+        if !isSuppressed { exitClean(code: 1) }
     }
 
     private func stateName(_ state: VZVirtualMachine.State) -> String {

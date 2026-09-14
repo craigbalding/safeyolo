@@ -62,6 +62,34 @@ An agent that unsets proxy env vars has nowhere to go — there is no other netw
 
 See `docs/networking-vsock-uds.md` for the hop-by-hop detail, attribution mechanics, log correlation, and troubleshooting.
 
+## Connection admission on macOS
+
+The shipped bridges reserve capacity before opening VZ connections:
+
+| Path | Maximum pending or established connections | Excess connections |
+| --- | --- | --- |
+| Proxy | 232 proxy connections | Wait in the guest TCP listen backlog, configured to 128; clients can time out |
+| Shell | 6 shell connections | The helper closes the incoming host socket and records a connection-limit error |
+| Terminal | One data connection and one resize connection | A retry waits until the previous attempt completes or its connection closes |
+
+These discrete limits allow at most 240 connections through these paths.
+They reserve shell and terminal capacity even when the proxy is full. The
+host control Unix socket does not open a VZ connection. Linux UDS forwarding
+does not use the macOS proxy limit.
+
+Proxy admission happens in the guest because VZ allocates a connection before
+the host listener can accept or reject it. Shell and terminal admission happens
+in the helper before it calls VZ. A caller timeout does not release a slot for
+an unresolved VZ callback. A late successful callback closes its connection
+before releasing the slot. A callback that never arrives retains its slot
+until the helper exits.
+
+The limits address ordinary workload overload through the shipped bridges.
+They do not restrict guest programs that create vsock connections directly.
+The connection counts also exclude framework descriptors, so native acceptance
+must include the full guest and its configured shares. A framework resource
+limit or allocation failure can still stop the VM.
+
 ## Terminal
 
 The VM terminal uses vsock (virtio socket) with a proper PTY:
