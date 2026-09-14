@@ -286,10 +286,14 @@ SSH banner check against guest loopback port 22. It does not collect process
 arguments or environment variables. A missing process name is only a clue;
 the loopback banner is the direct sshd transport check.
 
-The guest probe has an eight-second execution deadline and a one-second banner
+Guest health collection has an eight-second deadline and a one-second banner
+deadline. Publishing the result and exiting has a separate one-second hard
 deadline. The host waits at most fifteen seconds, including lock acquisition.
 Output uses the supervisor's existing 16-KiB stderr limit. The probe writes a
-stop fence before exiting so the supervisor does not restart it. The host
+stop fence before exiting so the supervisor does not restart it. During that
+final publication, the probe blocks the supervisor's SIGTERM and exits directly
+after flushing its result. This preserves its exit status if the stop watcher
+reacts before the process exits. The hard deadline still applies. The host
 reports completion only after observing a terminal supervisor state and the
 matching probe result. On timeout it publishes a stop fence for its own command
 and reports that completion is unverified. A stop request alone is not proof

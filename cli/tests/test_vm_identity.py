@@ -71,7 +71,8 @@ def test_malformed_identity_is_not_accepted(tmp_path, changes):
         read_vm_helper_identity(binary)
 
 
-@pytest.mark.parametrize("raw", ["safeyolo-vm 0.3.1", "[]", "x" * 17000])
+@pytest.mark.parametrize("raw", ["safeyolo-vm 0.3.1", "[]", "x" * 17000],
+                         ids=["old-helper", "array", "oversized"])
 def test_old_or_invalid_helper_is_reported_as_unknown(tmp_path, monkeypatch, raw):
     binary = _helper(tmp_path, raw)
     monkeypatch.setenv("SAFEYOLO_VM_HELPER", str(binary))

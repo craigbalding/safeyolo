@@ -119,7 +119,7 @@ def test_stale_executor_and_vm_queue_are_not_green(tmp_path, monkeypatch):
 @pytest.mark.parametrize("response", [
     b"not json\n", b"[]\n", _reply(schema_version=True), _reply(instance="bad\nname"),
     _reply(ok=False, error="stale instance"), b"x" * (2 * 1024 * 1024 + 1) + b"\n",
-])
+], ids=["invalid-json", "array", "boolean-schema", "invalid-instance", "refused", "oversized"])
 def test_malformed_or_refused_control_reply_is_an_error(tmp_path, monkeypatch, response):
     with _server(tmp_path, monkeypatch, lambda request: response):
         with pytest.raises(vm_control.VMControlError):

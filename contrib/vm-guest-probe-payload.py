@@ -69,12 +69,17 @@ def main() -> int:
     except (OSError, TimeoutError) as error:
         result["error"] = str(error)[:256]
     finally:
-        signal.alarm(0)
         # The supervisor retains a bounded stderr tail. Fence before exit so
-        # its normal restart policy does not rerun this one-shot probe.
+        # its normal restart policy does not rerun this one-shot probe. Its
+        # stop watcher may immediately send SIGTERM, so block that signal
+        # only while publishing the result and exiting. A separate hard
+        # alarm keeps this final phase bounded even if publication stalls.
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        signal.alarm(1)
         print(json.dumps(result, sort_keys=True), file=sys.stderr, flush=True)
         stop.write_text(json.dumps({"probe_id": result["probe_id"]}) + "\n")
-    return 1 if "error" in result else 0
+        os._exit(1 if "error" in result else 0)
 
 
 if __name__ == "__main__":
