@@ -17,6 +17,15 @@ repos:
   # Python syntax check (same as CI py_compile step)
   - repo: local
     hooks:
+      - id: scope-review
+        name: Local scope review (opt-in)
+        entry: python3 scripts/check_scope.py --hook
+        language: system
+        stages: [pre-commit]
+        always_run: true
+        pass_filenames: false
+        verbose: true
+
       - id: python-syntax
         name: Python syntax check
         entry: python3 -m py_compile

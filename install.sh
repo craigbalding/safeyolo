@@ -71,11 +71,23 @@ read_python_requirement() {
 select_supported_python() {  # DOC: README.md, cli/README.md
   local requirement="$1"
   local interpreter
+  local diagnostic_file diagnostic
+  diagnostic_file="$(mktemp)" || return 1
 
-  if interpreter="$(uv python find "$requirement" --resolve-links 2>/dev/null)" \
+  if interpreter="$(uv python find "$requirement" 2>"$diagnostic_file")" \
     && [[ -n "$interpreter" ]]; then
+    cat "$diagnostic_file" >&2
+    rm -f "$diagnostic_file"
     printf '%s\n' "$interpreter"
     return 0
+  fi
+  diagnostic="$(cat "$diagnostic_file")"
+  rm -f "$diagnostic_file"
+
+  # uv uses exit 2 for both a missing interpreter and invocation errors.
+  if [[ "$diagnostic" != *"error: No interpreter found"* ]]; then
+    printf 'install.sh: uv python find failed: %s\n' "$diagnostic" >&2
+    return 1
   fi
 
   echo "install.sh: no installed Python satisfies $requirement; asking uv to acquire one" >&2
@@ -85,7 +97,7 @@ select_supported_python() {  # DOC: README.md, cli/README.md
     return 1
   fi
 
-  if ! interpreter="$(uv python find "$requirement" --resolve-links)" \
+  if ! interpreter="$(uv python find "$requirement")" \
     || [[ -z "$interpreter" ]]; then
     echo "install.sh: uv acquired Python, but could not select one satisfying $requirement" >&2
     return 1

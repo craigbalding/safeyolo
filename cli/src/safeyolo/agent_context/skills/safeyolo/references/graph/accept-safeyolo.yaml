@@ -240,7 +240,7 @@ nodes:
       obtain_from: "the trusted-base harness; mitmproxy and Python tools are hash-locked in uv.lock and fetched through the approved SafeYolo proxy"
       sources:
         - path: install.sh
-          sha256: da5a03b0f6eecb3e49b10f495827246894bbc95b430952d5f6b7b3414bb15ecf
+          sha256: 6d335859ba859517d6dc47792c0d07cd1c2708224f0744f92aa02a8142db1263
         - path: tests/blackbox/run-lane.sh
           sha256: 091934297a817e2f9a82b8e9c2277582d6885869aa2dac8ac6b2479b1efeb820
         - path: tests/blackbox/run-tests.sh
@@ -499,7 +499,7 @@ nodes:
         - path: ruff.toml
           sha256: ec622855546870fcea36325759af749cd95480b10df98c95b6a8a95ccca73213
         - path: .pre-commit-config.yaml
-          sha256: 802f279395812ff087e09ad750e4f36226e10e4dfb1de29c0a87bab487eb826c
+          sha256: 2a9be72ad47afcd4b9674af9b3ffd0d2b15a1877c24fe01d566c76565b2d3798
         - path: uv.lock
           sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."

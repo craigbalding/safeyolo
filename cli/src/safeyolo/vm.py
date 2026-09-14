@@ -1027,6 +1027,7 @@ def prepare_config_share(
         ("guest-init-static.sh", "guest-init-static"),
         ("guest-init-per-run.sh", "guest-init-per-run"),
         ("guest-command-supervisor.py", "guest-command-supervisor.py"),
+        ("guest-command-observation.py", "guest-command-observation.py"),
         ("guest-proxy-forwarder.sh", "guest-proxy-forwarder"),
         ("guest-shell-bridge.sh", "guest-shell-bridge"),
         ("guest-diag.py", "guest-diag"),
@@ -1180,10 +1181,15 @@ def prepare_config_share(
     # Host launchers need these after the booting CLI has exited. This share is
     # host-owned and read-only in the guest; agent metadata describes future runs.
     (share_dir / "host-launch-context.json").write_text(json.dumps({
+        "generation": uuid.uuid4().hex,
         "workspace": str(Path(workspace_path).expanduser().resolve()),
         "writable_mounts": [str(Path(host).resolve()) for host, _guest, read_only in (host_mounts or [])
                             if not read_only],
     }) + "\n")
+
+    from .agent_launchers import stage_guest_command_observation
+
+    stage_guest_command_observation(get_agent_home_dir(name))
 
     return share_dir
 

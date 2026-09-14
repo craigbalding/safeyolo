@@ -292,6 +292,24 @@ def _stage(  # DOC: README.md, contrib/HOST_SCRIPT_GUIDE.md
             mode = stat.S_IMODE(config_path.stat().st_mode)
         _atomic_write(config_path, managed, mode)
 
+    # These rules apply inside the SafeYolo guest. Never import host rules.
+    rules_dir = codex_home / "rules"
+    rules_dir.mkdir(mode=0o700, exist_ok=True)
+    _validate_owner_mode(rules_dir, "Codex rules directory", directory=True)
+    rules_path = rules_dir / "safeyolo-guest.rules"
+    _validate_optional_file(rules_path, "SafeYolo guest rules")
+    commands = [
+        prefix + command
+        for command in ("bash", "sh", "dash", "zsh", "rm", "sudo", "env")
+        for prefix in ("", "/bin/", "/usr/bin/")
+    ] + ["/usr/local/bin/sudo", "trap"]
+    rules = "# SafeYolo owns guest isolation; writable mounts still contain real data.\n"
+    rules += "".join(
+        f'prefix_rule(pattern=[{json.dumps(command)}], decision="allow")\n'
+        for command in commands
+    )
+    _atomic_write(rules_path, rules, 0o600)
+
 
 def _recover(home: Path, action: str) -> None:  # DOC: contrib/HOST_SCRIPT_GUIDE.md
     codex_home = _ensure_codex_home(home)

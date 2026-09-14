@@ -206,6 +206,33 @@ def _live_process(pid: int | None, token: str | None) -> bool:
 
 
 def observe_launch(name: str, *, sandbox_ready: bool) -> dict:
+    result = _observe_host_launch(name, sandbox_ready=sandbox_ready)
+    if sandbox_ready and result["agent_state"] in {"stopped", "exited", "failed"}:
+        from .vm import get_agent_status_dir
+
+        records = get_agent_status_dir(name) / "guest-commands"
+        if records.is_dir() and any(records.glob("*.json")):
+            from .platform import get_platform
+
+            command = "python3 /safeyolo/guest-command-observation.py --check"
+            with get_platform().popen_in_sandbox(name, command) as process:
+                try:
+                    stdout, stderr = process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                    return {"agent_state": "unknown", "launcher": {"kind": "manual", "source": "guest"},
+                            "attachable": False, "error": "Guest command liveness check timed out"}
+            state = stdout.strip() if process.returncode == 0 else "unknown"
+            if state != "stopped":
+                return {"agent_state": "running" if state == "running" else "unknown",
+                        "launcher": {"kind": "manual", "source": "guest"}, "attachable": False,
+                        **({"error": stderr.strip() or "Guest command liveness check failed"}
+                           if state != "running" else {})}
+    return result
+
+
+def _observe_host_launch(name: str, *, sandbox_ready: bool) -> dict:
     record = read_launch(name)
     selected = resolve_launcher(load_agent(name), load_config(), "background")
     result = {"agent_state": "stopped", "launcher": asdict(selected), "attachable": False}
@@ -424,6 +451,8 @@ def attach_agent(name: str) -> int:
 
     observed = observe_launch(name, sandbox_ready=get_platform().is_sandbox_running(name))
     record = read_launch(name)
+    if observed["launcher"]["kind"] == "manual":
+        raise RuntimeError("This agent was launched inside the guest; return to its original terminal")
     if record and record["launcher"]["kind"] == "supervisor":
         raise RuntimeError("Supervised agents have no interactive terminal. Use agent diag or Coord output; use run --interactive for a stopped agent.")
     if not record or observed["agent_state"] not in {"starting", "launching", "running", "unknown"}:
@@ -463,6 +492,24 @@ def configured_guest_command(name: str, args: list[str], *, interactive: bool = 
     if interactive:
         raise RuntimeError("The managed agent has no separate interactive entrypoint; reapply its host setup once")
     return shlex.join(args) if args else "exec /bin/bash -l"
+
+
+def stage_guest_command_observation(home: Path) -> None:
+    """Wrap configured entrypoints at boot, including custom host-script output."""
+    for name in (".safeyolo-command", ".safeyolo-interactive-command"):
+        entrypoint = home / name
+        if not entrypoint.is_file() or not os.access(entrypoint, os.X_OK):
+            continue
+        wrapper = (
+            b"#!/bin/sh\n"
+            b"# SafeYolo configured-command observation\n"
+            b'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
+        )
+        if entrypoint.read_bytes() == wrapper:
+            continue
+        entrypoint.replace(home / f"{name}.payload")
+        entrypoint.write_bytes(wrapper)
+        entrypoint.chmod(0o755)
 
 
 def wait_for_launcher_exit(name: str) -> None:

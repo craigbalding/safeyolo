@@ -28,14 +28,19 @@ def make_fake_uv(tmp_path: Path) -> tuple[Path, Path, Path]:
             printf '\n' >> "$FAKE_UV_LOG"
 
             if [[ "${1:-}" == python && "${2:-}" == find ]]; then
+                if [[ " $* " == *" --resolve-links "* ]] ||
+                   [[ "${FAKE_UV_FIND_MODE:-ok}" == invocation-error ]]; then
+                    echo "error: unexpected argument '--resolve-links' found" >&2
+                    exit 2
+                fi
                 if [[ "${FAKE_HOST_DEFAULT:-}" == 3.14 && "${3:-}" == 3.14 ]]; then
                     echo "fake uv rejected unsupported host default" >&2
                     exit 18
                 fi
                 if [[ "${FAKE_UV_FIND_MODE:-ok}" == always-missing ]] ||
                    [[ "${FAKE_UV_FIND_MODE:-ok}" == missing && ! -e "$FAKE_UV_STATE" ]]; then
-                    echo "fake uv interpreter lookup failed" >&2
-                    exit 17
+                    echo "error: No interpreter found for Python ${3:-}" >&2
+                    exit 2
                 fi
                 printf '%s\n' "${FAKE_UV_INTERPRETER:-/fake/python-3.13}"
                 exit 0
@@ -147,7 +152,7 @@ def test_install_and_reinstall_select_supported_python_for_tool_environment(
     assert reinstall.returncode == 0, reinstall.stderr
     lines = log.read_text().splitlines()
     assert any(
-        "[python] [find] [>=3.12,<3.14] [--resolve-links]" in line
+        "[python] [find] [>=3.12,<3.14]" in line
         for line in lines
     )
     tool_lines = [line for line in lines if "[tool] [install]" in line]
@@ -157,6 +162,19 @@ def test_install_and_reinstall_select_supported_python_for_tool_environment(
     assert "[--reinstall]" not in tool_lines[0]
     assert "[--reinstall]" in tool_lines[1]
     assert lines.count("override: h2==4.4.1") == 2
+
+
+def test_install_preserves_lookup_invocation_error_without_acquiring_python(tmp_path: Path) -> None:
+    fake_bin, log, state = make_fake_uv(tmp_path)
+    result = run_installer(
+        REPO_ROOT, fake_bin, log, state, FAKE_UV_FIND_MODE="invocation-error",
+    )
+
+    assert result.returncode != 0
+    assert "uv python find failed: error: unexpected argument" in result.stderr
+    assert "no installed Python" not in result.stderr
+    assert "[python] [install]" not in log.read_text()
+    assert "[tool] [install]" not in log.read_text()
 
 
 def test_install_acquires_supported_python_when_system_lookup_fails(
