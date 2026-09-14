@@ -10,6 +10,7 @@ import socket
 import sys
 import time
 from pathlib import Path
+from typing import NoReturn
 
 
 def deadline_expired(*_args: object) -> None:
@@ -57,7 +58,7 @@ def processes() -> dict:
     return {"matches": found, "truncated": False}
 
 
-def main() -> int:
+def main() -> NoReturn:
     result = {"probe_id": sys.argv[1], "uid": os.getuid(), "pid": os.getpid()}
     stop = Path(os.environ.get("SAFEYOLO_COMMAND_SUPERVISOR_STOP",
                                "/home/agent/.safeyolo-command-supervisor.stop"))
@@ -83,4 +84,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
