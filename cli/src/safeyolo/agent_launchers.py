@@ -215,15 +215,21 @@ def observe_launch(name: str, *, sandbox_ready: bool) -> dict:
             from .platform import get_platform
 
             command = "python3 /safeyolo/guest-command-observation.py --check"
-            with get_platform().popen_in_sandbox(name, command) as process:
-                try:
-                    stdout, stderr = process.communicate(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.communicate()
-                    return {"agent_state": "unknown", "launcher": {"kind": "manual", "source": "guest"},
-                            "attachable": False, "error": "Guest command liveness check timed out"}
-            state = stdout.strip() if process.returncode == 0 else "unknown"
+            platform = get_platform()
+            try:
+                process = platform.popen_in_sandbox(name, command)
+            except (OSError, RuntimeError) as exc:
+                state, stderr = "unknown", str(exc)
+            else:
+                with process:
+                    try:
+                        stdout, stderr = process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate()
+                        return {"agent_state": "unknown", "launcher": {"kind": "manual", "source": "guest"},
+                                "attachable": False, "error": "Guest command liveness check timed out"}
+                state = stdout.strip() if process.returncode == 0 else "unknown"
             if state != "stopped":
                 return {"agent_state": "running" if state == "running" else "unknown",
                         "launcher": {"kind": "manual", "source": "guest"}, "attachable": False,
