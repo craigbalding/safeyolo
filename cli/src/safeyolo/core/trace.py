@@ -140,13 +140,17 @@ class Step:
     strings) and is size-capped at serialise time.
     """
     addon: str
-    hook: str  # "request" | "response"
+    hook: str  # "request" | "response" | "http_connect"
     state: str  # STATE_EVALUATED | STATE_BYPASSED | STATE_ERROR
     outcome: str | None = None
     reason: str | None = None
     duration_us: int | None = None
     details: dict[str, Any] | None = None
     ts: float = field(default_factory=time.time)
+    connection_id: str | None = None
+    method: str | None = None
+    host: str | None = None
+    port: int | None = None
 
 
 @dataclass
@@ -415,6 +419,13 @@ def record_step(
             reason=reason,
             duration_us=duration_us,
             details=details,
+            # Use the same parsed destination and transport connection ID as
+            # enforcement/audit. CONNECT and enclosed requests keep distinct
+            # request IDs; their shared connection ID relates the traces.
+            connection_id=flow.client_conn.id,
+            method=flow.request.method,
+            host=flow.request.host,
+            port=flow.request.port,
         )
         get_store().append_step(request_id, agent_id, step)
     except Exception as exc:  # noqa: BLE001 — enforcement must never regress

@@ -102,6 +102,11 @@ class TestRecordStep:
         assert step.outcome == "no_detection"
         assert step.duration_us == 42
         assert step.details == {"rules_evaluated": 3}
+        payload = fresh_store.serialise(rec)["steps"][0]
+        assert payload["connection_id"] == traced_flow.client_conn.id
+        assert payload["method"] == traced_flow.request.method
+        assert payload["host"] == traced_flow.request.host
+        assert payload["port"] == traced_flow.request.port
 
 
 # =============================================================================
