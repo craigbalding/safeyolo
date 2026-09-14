@@ -3375,6 +3375,7 @@ def test_agent_room_receives_each_codex_stdout_event_and_coalesces_stderr_chunk(
     fake_codex.write_text(
         "#!/usr/bin/env python3\n"
         "import json\n"
+        "__import__('sys').stdin.read()\n"
         "print(json.dumps({'type':'thread.started','thread_id':'thread-one'}), flush=True)\n"
         "print(json.dumps({'type':'turn.started'}), flush=True)\n"
         "__import__('sys').stderr.write('provider diagnostic one\\nprovider diagnostic two\\n')\n"
