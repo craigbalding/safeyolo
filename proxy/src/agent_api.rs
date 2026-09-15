@@ -17,7 +17,9 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 mod declarations;
+mod flows;
 pub use declarations::{Controls, DeclarationContext, RequestBody, respond_with_body};
+pub use flows::FlowFailure;
 
 use crate::{
     network_guard::{Identity, sanitize},
@@ -111,6 +113,7 @@ pub enum Failure {
     QueryCompatibility,
     Declaration(crate::test_context::ContextErrorKind),
     ContentDecoding(crate::http_content::ContentError),
+    FlowReporting(FlowFailure),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

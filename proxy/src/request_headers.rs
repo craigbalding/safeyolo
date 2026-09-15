@@ -26,6 +26,7 @@ const INTERNAL_AND_HOP: &[&[u8]] = &[
 // Deliberately no Debug, Serialize, Clone, or implicit textual value access.
 pub(crate) struct RequestHeaders {
     fields: Vec<Field>,
+    original: Vec<Field>,
 }
 
 struct Field {
@@ -79,6 +80,20 @@ impl RequestHeaders {
     }
 
     fn from_fields<'a>(fields: impl Iterator<Item = (&'a [u8], &'a [u8])>) -> Result<Self, Error> {
+        let fields: Vec<_> = fields.collect();
+        let original = fields
+            .iter()
+            .map(|(name, value)| {
+                let name = std::str::from_utf8(name).map_err(|_| Error::InvalidOriginalName)?;
+                if !name.is_ascii() {
+                    return Err(Error::InvalidOriginalName);
+                }
+                Ok(Field {
+                    name: name.to_owned(),
+                    value: Zeroizing::new(value.to_vec()),
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         // Group borrowed parser values first. Allocate each owned value at its
         // final size, so growing a Vec never leaves an unwiped old allocation.
         let mut grouped: Vec<(&str, Vec<&[u8]>)> = Vec::new();
@@ -114,13 +129,22 @@ impl RequestHeaders {
                 }
             })
             .collect();
-        Ok(Self { fields })
+        Ok(Self { fields, original })
     }
 
     /// First name spelling/arrival position, with duplicate values joined by
     /// exactly comma-space. Callers must not log or serialize these raw values.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
         self.fields
+            .iter()
+            .map(|field| (field.name.as_bytes(), field.value.as_slice()))
+    }
+
+    /// Authorized retained evidence uses each original pair in arrival order,
+    /// after actual request-hook hygiene. This differs from inspection's joined
+    /// values. The caller supplies later removals at its application boundary.
+    pub(crate) fn recording_pairs(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.original
             .iter()
             .map(|field| (field.name.as_bytes(), field.value.as_slice()))
     }
@@ -164,6 +188,11 @@ impl RequestHeaders {
             } else {
                 true
             }
+        });
+        self.original.retain(|field| {
+            self.fields
+                .iter()
+                .any(|kept| kept.name.eq_ignore_ascii_case(&field.name))
         });
         facts
     }
@@ -255,12 +284,41 @@ mod tests {
                 fields.iter().map(|(n, v)| (n.as_slice(), v.as_slice())),
             )
             .unwrap();
+            assert_eq!(
+                owner
+                    .recording_pairs()
+                    .map(|(name, value)| json!([hex(name), hex(value)]))
+                    .collect::<Vec<_>>(),
+                row["fields"].as_array().unwrap().clone(),
+                "{} original recording pairs",
+                row["id"],
+            );
             assert_eq!(view(&owner), row["grouped"], "{} grouping", row["id"]);
             let facts = owner.apply_hygiene(&mut headers);
             assert_eq!(view(&owner), row["after_hygiene"], "{} hygiene", row["id"]);
             assert_eq!(facts.trace_requested, row["trace"], "{} trace", row["id"]);
             assert_eq!(facts.websocket, row["websocket"], "{} websocket", row["id"]);
             assert_eq!(headers.keys().count(), owner.fields.len());
+            let expected_pairs: Vec<_> = fields
+                .iter()
+                .filter(|(name, _)| {
+                    row["after_hygiene"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|pair| unhex(pair[0].as_str().unwrap()).eq_ignore_ascii_case(name))
+                })
+                .map(|(name, value)| json!([hex(name), hex(value)]))
+                .collect();
+            assert_eq!(
+                owner
+                    .recording_pairs()
+                    .map(|(name, value)| json!([hex(name), hex(value)]))
+                    .collect::<Vec<_>>(),
+                expected_pairs,
+                "{} hook-visible recording pairs",
+                row["id"]
+            );
             for (name, value) in &fields {
                 let retained = owner.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
                 let name = HeaderName::from_bytes(name).unwrap();

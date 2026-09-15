@@ -3,6 +3,54 @@
 use super::{BaselineSerializationError, Map, Policy, Value};
 
 impl Policy {
+    /// FlowRecorder reads these direct baseline fields once at startup. Keep
+    /// parser-owned temporal types and lazy body settings intact; task policy,
+    /// nested settings, and the addon's enabled field do not override them.
+    pub(crate) fn flow_store_settings(
+        &self,
+    ) -> (
+        crate::flow_store::Settings,
+        Option<crate::circuits::CircuitValue>,
+    ) {
+        let mut settings = crate::flow_store::Settings::default();
+        let Some(baseline) = self.baseline.as_deref() else {
+            return (settings, None);
+        };
+        let Some(section) = baseline.value["addons"]
+            .get("flow_store")
+            .and_then(Value::as_object)
+        else {
+            return (settings, None);
+        };
+        let field = |name: &str| {
+            section.get(name).map(|value| {
+                crate::circuits::CircuitValue::from_annotated(
+                    value.clone(),
+                    baseline
+                        .timestamps
+                        .projected(&["addons", "flow_store", name]),
+                )
+            })
+        };
+        for (name, target) in [
+            (
+                "max_request_body_bytes",
+                &mut settings.max_request_body_bytes,
+            ),
+            (
+                "max_response_body_bytes",
+                &mut settings.max_response_body_bytes,
+            ),
+            ("preview_text_chars", &mut settings.preview_text_chars),
+            ("compress_bodies", &mut settings.compress_bodies),
+        ] {
+            if let Some(value) = field(name) {
+                *target = value;
+            }
+        }
+        (settings, field("db_path"))
+    }
+
     /// Apply the baseline's current declaration defaults without serializing
     /// unrelated Any fields or refreshing target hosts/hash/existing expiry.
     /// Task addon settings are not part of the source sensor settings.

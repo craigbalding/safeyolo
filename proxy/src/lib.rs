@@ -14,6 +14,11 @@ pub mod contracts;
 pub mod credential_guard;
 pub mod credential_injection;
 pub mod credentials;
+mod flow_recorder;
+#[cfg(test)]
+mod flow_runtime_tests;
+pub mod flow_store;
+mod flow_writer;
 pub mod grants;
 pub mod host_names;
 mod http;
@@ -84,6 +89,7 @@ pub(crate) struct Runtime {
     network_guard: network_guard::NetworkGuard,
     circuits: circuits::CircuitBreaker,
     test_context: test_context::TestContext,
+    flow_recorder: Arc<flow_recorder::FlowRecorder>,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -125,6 +131,14 @@ impl Runtime {
         let test_context = previous
             .map(|runtime| runtime.test_context.clone())
             .unwrap_or_default();
+        let flow_recorder = match previous {
+            Some(runtime) => runtime.flow_recorder.clone(),
+            None => Arc::new(flow_recorder::FlowRecorder::start(
+                config.flow_store_enabled,
+                &config.flow_store_db_path,
+                policy.as_ref(),
+            )),
+        };
         let scanner = inspection::Scanner::default();
         if let Some(inspection) = &config.inspection {
             let source = std::fs::read_to_string(&inspection.policy_file)?;
@@ -181,6 +195,7 @@ impl Runtime {
             network_guard,
             circuits,
             test_context,
+            flow_recorder,
             via_token: config
                 .via_token
                 .clone()
@@ -452,13 +467,23 @@ impl Proxy {
             .map(admin_listener::Prepared::address);
         let default_via = uuid::Uuid::new_v4().simple().to_string();
         let temporary_policy_lock = Arc::new(tokio::sync::Mutex::new(()));
-        let runtime = Arc::new(Runtime::new(
-            config.clone(),
-            &default_via,
-            temporary_policy_lock.clone(),
-            None,
-            admin_address,
-        )?);
+        let runtime = {
+            let config = config.clone();
+            let default_via = default_via.clone();
+            let temporary_policy_lock = temporary_policy_lock.clone();
+            Arc::new(
+                tokio::task::spawn_blocking(move || {
+                    Runtime::new(
+                        config,
+                        &default_via,
+                        temporary_policy_lock,
+                        None,
+                        admin_address,
+                    )
+                })
+                .await??,
+            )
+        };
         let mut proxy = Self {
             runtime: Arc::new(RwLock::new(runtime)),
             listeners: HashMap::new(),
@@ -597,6 +622,7 @@ impl Proxy {
             // POST whose body spans this reload uses these latest settings;
             // existing declarations retain their original expiry and context.
             runtime.configure_declarations()?;
+            runtime.flow_recorder.set_enabled(config.flow_store_enabled);
             *current = runtime;
         }
         if self.readiness_file != config.readiness_file {
@@ -618,6 +644,18 @@ impl Proxy {
             if let Err(error) = task.await {
                 eprintln!("listener shutdown failed: {error}");
             }
+        }
+        let recorder = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .flow_recorder
+            .clone();
+        if !tokio::task::spawn_blocking(move || recorder.shutdown())
+            .await
+            .unwrap_or(false)
+        {
+            eprintln!("Flow writer shutdown did not complete");
         }
         if let Some(snapshots) = self.circuit_snapshots.take()
             && tokio::task::spawn_blocking(move || snapshots.stop())

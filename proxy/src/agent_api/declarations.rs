@@ -9,6 +9,7 @@ use crate::{circuits::CircuitValue, http_content, test_context};
 
 /// Native control owners share process state across request/reload snapshots.
 pub struct Controls<'a> {
+    pub flows: Option<&'a std::sync::Arc<crate::flow_store::FlowStore>>,
     pub circuits: Option<CircuitContext<'a>>,
     pub declarations: Option<DeclarationContext<'a>>,
 }
@@ -19,7 +20,7 @@ pub struct DeclarationContext<'a> {
     pub now: fn() -> f64,
 }
 
-/// Encoded request content. Only an authorized declaration POST polls this body.
+/// Encoded request content. Only authorized routes that consume JSON poll it.
 pub struct RequestBody<'a, B> {
     pub body: &'a mut B,
     pub content_encoding: &'a [u8],
@@ -40,6 +41,9 @@ where
 {
     if let Err(outcome) = authorize(request, token_path).await {
         return Ok(outcome);
+    }
+    if let Some(route) = flows::recognize(request) {
+        return flows::respond(route, request, controls.flows, body).await;
     }
     if route(request) != "/api/test-context/current" {
         return Ok(authenticated_read(
@@ -100,7 +104,7 @@ where
     )
 }
 
-async fn read_content<B>(
+pub(super) async fn read_content<B>(
     body: RequestBody<'_, B>,
 ) -> Result<Result<Zeroizing<Vec<u8>>, http_content::ContentError>, B::Error>
 where
@@ -114,14 +118,14 @@ where
         }
     }
     // Consume through EOM even after source raw content becomes absent, so a
-    // later transport failure still prevents declaration mutation or decoding.
+    // later transport failure still prevents a local operation or decoding.
     Ok(match content.into_content() {
         Some(encoded) => http_content::decode(&encoded, body.content_encoding),
         None => Ok(Zeroizing::new(Vec::new())),
     })
 }
 
-fn content_error(error: http_content::ContentError) -> Outcome<'static> {
+pub(super) fn content_error(error: http_content::ContentError) -> Outcome<'static> {
     let class = match error {
         http_content::ContentError::Value => "ValueError",
         http_content::ContentError::Type => "TypeError",

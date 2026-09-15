@@ -25,6 +25,7 @@ use crate::tunnels::{self, BoxStream, Protocol};
 use crate::{ConnectionIdentity, Error, Runtime, RuntimeState, UpgradeTasks, is_reserved};
 
 mod circuit_completion;
+mod flow_recording;
 mod request_body;
 mod request_context;
 mod test_context;
@@ -800,6 +801,7 @@ async fn local_agent_api(
             &runtime.tasks,
             crate::policy::current_time_ms(),
             agent_api::Controls {
+                flows: runtime.flow_recorder.store(),
                 circuits: runtime.policy.as_ref().map(|_| agent_api::CircuitContext {
                     breaker: &runtime.circuits,
                     enabled: runtime.config.circuit_breaker_enabled,
@@ -992,6 +994,7 @@ async fn forward(
     identity: &ConnectionIdentity,
     request_id: &str,
     mut request: Request<Incoming>,
+    recording: Arc<flow_recording::Recording>,
     destination: &Destination,
     tunnel: Option<&Tunnel>,
 ) -> Result<(Response<Body>, String), Error> {
@@ -1092,9 +1095,6 @@ async fn forward(
         },
     )
     .await?;
-    // HTTP credential inspection is not active yet. Do not retain its prepared
-    // raw-byte view across origin I/O while the text adapter remains unfinished.
-    drop(ordered_headers);
     if decision.allow != (decision.decision == "allow") {
         return Err("inconsistent policy decision".into());
     }
@@ -1218,6 +1218,20 @@ async fn forward(
         }
         request_context::Admission::Pending(context) => Some(context),
     };
+    if let Some(context) = context.as_ref()
+        && let Some(provenance) = context.response_provenance()
+    {
+        recording.request(
+            &request,
+            destination,
+            ordered_headers.recording_pairs(),
+            hygiene.websocket,
+        );
+        provenance.attach_recording(recording.clone());
+    }
+    // Retain only the recording projection after source hygiene/context removal.
+    // Credential inspection is still inactive.
+    drop(ordered_headers);
     // The parser's initial size hint supplies source buffering classification,
     // including framing fields removed by header hygiene. It never proves EOM.
     let content_length = request.body().size_hint().exact();
@@ -1297,6 +1311,7 @@ async fn forward(
     } else {
         destination.path.parse::<Uri>()?
     };
+    request.extensions_mut().insert(recording.clone());
     let completion = circuit_completion::Completion::register(
         &mut request,
         outbound.http2,
@@ -1332,8 +1347,10 @@ async fn forward(
         (sender.send_request(request).await?, connection)
     } else {
         *request.version_mut() = hyper::Version::HTTP_11;
-        let (mut sender, connection) =
-            hyper::client::conn::http1::handshake(TokioIo::new(outbound.stream)).await?;
+        let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
+            .preserve_header_case(true)
+            .handshake(TokioIo::new(outbound.stream))
+            .await?;
         let driver = completion.clone().drive(connection.with_upgrades());
         let connection = HttpTask {
             task: tokio::spawn(async move {
@@ -1479,6 +1496,13 @@ pub(crate) fn serve_request(
         let runtime = state.read().expect("runtime read lock").clone();
         let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
         let connect = request.method() == Method::CONNECT;
+        let recording = flow_recording::Recording::new(
+            runtime.flow_recorder.clone(),
+            identity.clone(),
+            request_id.clone(),
+            !connect,
+        );
+        let _pending_recording = recording.pending();
         let destination =
             Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination));
         let result = match &destination {
@@ -1490,6 +1514,7 @@ pub(crate) fn serve_request(
                     &identity,
                     &request_id,
                     request,
+                    recording.clone(),
                     destination,
                     tunnel.as_deref(),
                 )
@@ -1500,6 +1525,13 @@ pub(crate) fn serve_request(
                 "invalid".into(),
             )),
         };
+        match &result {
+            Ok(_) => recording.local_terminal(false),
+            Err(error) => {
+                recording.producer_error(error);
+                recording.finish(false, None, false);
+            }
+        }
         let (mut reply, decision) = result.unwrap_or_else(|error| {
             if error.is::<AdminPortAccess>() {
                 return (admin_rejection(), "admin_port_access".into());

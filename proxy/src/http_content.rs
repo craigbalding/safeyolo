@@ -94,7 +94,7 @@ impl std::error::Error for ContentError {}
 
 /// Decode the complete buffered body, retaining every decoded byte.
 pub fn decode(content: &[u8], content_encoding: &[u8]) -> Result<Zeroizing<Vec<u8>>, ContentError> {
-    decode_into(content, content_encoding, None)
+    decode_into(content, content_encoding, None).map(|decoded| decoded.content)
 }
 
 /// Decode the complete buffered body, retaining at most `prefix_len` bytes.
@@ -106,12 +106,31 @@ pub fn decode_prefix(
     content_encoding: &[u8],
     prefix_len: usize,
 ) -> Result<Zeroizing<Vec<u8>>, ContentError> {
+    decode_prefix_with_size(content, content_encoding, prefix_len).map(|decoded| decoded.content)
+}
+
+/// Retained decoded bytes and the complete successful decoded size. No encoded
+/// transfer bytes or abandoned decoder attempts contribute to `total_bytes`.
+pub struct DecodedContent {
+    pub content: Zeroizing<Vec<u8>>,
+    pub total_bytes: usize,
+}
+
+/// Decode to completion while retaining only a prefix and counting all output.
+/// Evidence storage uses the count to distinguish original size from retained
+/// size. A later decoding failure returns no successful size or partial result.
+pub fn decode_prefix_with_size(
+    content: &[u8],
+    content_encoding: &[u8],
+    prefix_len: usize,
+) -> Result<DecodedContent, ContentError> {
     decode_into(content, content_encoding, Some(prefix_len))
 }
 
 struct Output {
     bytes: Zeroizing<Vec<u8>>,
     prefix_len: Option<usize>,
+    total_bytes: usize,
 }
 
 impl Output {
@@ -119,10 +138,15 @@ impl Output {
         Self {
             bytes: Zeroizing::new(Vec::new()),
             prefix_len,
+            total_bytes: 0,
         }
     }
 
     fn append(&mut self, decoded: &[u8]) -> Result<(), ContentError> {
+        self.total_bytes = self
+            .total_bytes
+            .checked_add(decoded.len())
+            .ok_or(ContentError::Allocation)?;
         let retained = self.prefix_len.map_or(decoded.len(), |limit| {
             decoded.len().min(limit.saturating_sub(self.bytes.len()))
         });
@@ -135,6 +159,7 @@ impl Output {
 
     fn clear(&mut self) {
         self.bytes.zeroize();
+        self.total_bytes = 0;
     }
 }
 
@@ -142,7 +167,7 @@ fn decode_into(
     content: &[u8],
     content_encoding: &[u8],
     prefix_len: Option<usize>,
-) -> Result<Zeroizing<Vec<u8>>, ContentError> {
+) -> Result<DecodedContent, ContentError> {
     let mut output = Output::new(prefix_len);
     let name = content_encoding.to_ascii_lowercase();
     match name.as_slice() {
@@ -172,7 +197,10 @@ fn decode_into(
         b"zstd" => zstandard(content, &mut output)?,
         _ => byte_codec(content, &name, &mut output)?,
     }
-    Ok(output.bytes)
+    Ok(DecodedContent {
+        content: output.bytes,
+        total_bytes: output.total_bytes,
+    })
 }
 
 fn inflate(
@@ -349,6 +377,7 @@ fn bzip(content: &[u8], output: &mut Output) -> Result<(), ContentError> {
     while offset < content.len() {
         let mut decoder = bzip2::Decompress::new(false);
         let retained_before_frame = output.bytes.len();
+        let total_before_frame = output.total_bytes;
         loop {
             let before_in = decoder.total_in();
             let before_out = decoder.total_out();
@@ -362,6 +391,7 @@ fn bzip(content: &[u8], output: &mut Output) -> Result<(), ContentError> {
                     // including output produced before that member's error.
                     output.bytes[retained_before_frame..].zeroize();
                     output.bytes.truncate(retained_before_frame);
+                    output.total_bytes = total_before_frame;
                     return Ok(());
                 }
                 Err(_) => return Err(ContentError::Value),

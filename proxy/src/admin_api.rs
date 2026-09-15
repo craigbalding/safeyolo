@@ -474,6 +474,22 @@ pub async fn respond_with_circuits<B>(
 where
     B: Body<Data = Bytes>,
 {
+    respond_with_stats(request, expected_token, registry, policy, circuits, None).await
+}
+
+/// The runtime reports its installed addon counters only after authentication.
+/// Existing standalone callers need not install a statistics provider.
+pub(crate) async fn respond_with_stats<B>(
+    request: Request<B>,
+    expected_token: &str,
+    registry: &Registry,
+    policy: Option<&Policy>,
+    circuits: Option<&crate::circuits::CircuitBreaker>,
+    stats: Option<&(dyn Fn() -> Value + Sync)>,
+) -> Result<Outcome, Error>
+where
+    B: Body<Data = Bytes>,
+{
     let method = request.method();
     if !matches!(
         *method,
@@ -495,6 +511,12 @@ where
         );
         outcome.audit = Some(Audit::AuthenticationFailed);
         return Ok(outcome);
+    }
+    if method == Method::GET
+        && path == "/stats"
+        && let Some(stats) = stats
+    {
+        return Ok(response(StatusCode::OK, stats()));
     }
     if method == Method::POST && path == "/admin/circuit-breaker/reset" {
         return reset_circuit(request, circuits).await;

@@ -24,6 +24,7 @@ fn runtime(directory: &std::path::Path) -> Runtime {
         "listeners": [{"agent_id": "alice", "socket_path": directory.join("alice.sock")}],
         "policy_file": policy,
         "readiness_file": directory.join("ready.json"),
+        "flow_store_enabled": false,
         "event_log": directory.join("events.jsonl"),
         "admin_port": 0,
         "circuit_state_file": ""

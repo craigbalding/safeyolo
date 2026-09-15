@@ -1,4 +1,4 @@
-use safeyolo_proxy::http_content::{ContentError, decode, decode_prefix};
+use safeyolo_proxy::http_content::{ContentError, decode, decode_prefix, decode_prefix_with_size};
 use serde_json::Value;
 
 fn unhex(value: &str) -> Vec<u8> {
@@ -29,6 +29,16 @@ fn actual_source_encoding_controls() {
             let expected = unhex(expected);
             assert_eq!(result.unwrap().as_slice(), expected, "{name}");
             for limit in [0, 1, 17, 4096, usize::MAX] {
+                let captured = decode_prefix_with_size(&encoded, &encoding, limit).unwrap();
+                assert_eq!(
+                    captured.total_bytes,
+                    expected.len(),
+                    "{name}, size at {limit}"
+                );
+                assert_eq!(
+                    captured.content.as_slice(),
+                    &expected[..expected.len().min(limit)]
+                );
                 assert_eq!(
                     decode_prefix(&encoded, &encoding, limit)
                         .unwrap()
@@ -45,6 +55,13 @@ fn actual_source_encoding_controls() {
                 other => panic!("unaccounted source error: {other}"),
             };
             assert_eq!(result.unwrap_err(), expected, "{name}");
+            assert_eq!(
+                decode_prefix_with_size(&encoded, &encoding, 0)
+                    .err()
+                    .unwrap(),
+                expected,
+                "{name}, failed capture has no successful size"
+            );
             assert_eq!(
                 decode_prefix(&encoded, &encoding, 0).unwrap_err(),
                 expected,
@@ -95,6 +112,9 @@ fn full_decode_has_no_streaming_threshold_and_prefix_is_only_retention() {
         decode_prefix(&encoded, b"gzip", 4096).unwrap().as_slice(),
         &source[..4096]
     );
+    let captured = decode_prefix_with_size(&encoded, b"gzip", 4096).unwrap();
+    assert_eq!(captured.content.as_slice(), &source[..4096]);
+    assert_eq!(captured.total_bytes, source.len());
     // This API does not guess whether the source transport streamed the body.
     assert_eq!(decode(&source, b"identity").unwrap().len(), source.len());
 }

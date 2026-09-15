@@ -161,7 +161,7 @@ impl CircuitValue {
         }
     }
 
-    pub(super) fn json(&self) -> Result<Value> {
+    pub(crate) fn json(&self) -> Result<Value> {
         Ok(match self {
             Self::Bool(value) => Value::Bool(*value),
             Self::Integer(value) => Value::Number(value.to_string().parse().expect("integer JSON")),
@@ -178,7 +178,7 @@ impl CircuitValue {
         })
     }
 
-    pub(super) fn integer(&self) -> Option<BigInt> {
+    pub(crate) fn integer(&self) -> Option<BigInt> {
         match self {
             Self::Bool(value) => Some(BigInt::from(u8::from(*value))),
             Self::Integer(value) => Some(value.clone()),
@@ -206,7 +206,7 @@ impl CircuitValue {
         }
     }
 
-    pub(super) fn truthy(&self) -> bool {
+    pub(crate) fn truthy(&self) -> bool {
         match self {
             Self::Bool(value) => *value,
             Self::Integer(value) => value != &BigInt::from(0),
@@ -225,7 +225,7 @@ impl CircuitValue {
             .is_ok_and(|value| value == Some(Ordering::Equal))
     }
 
-    pub(super) fn compare(&self, other: &Self) -> Result<Option<Ordering>> {
+    pub(crate) fn compare(&self, other: &Self) -> Result<Option<Ordering>> {
         Ok(match (self.integer(), other.integer()) {
             (Some(left), Some(right)) => Some(left.cmp(&right)),
             (Some(left), None) => match other {

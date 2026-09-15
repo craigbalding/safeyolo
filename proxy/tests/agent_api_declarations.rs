@@ -153,6 +153,7 @@ async fn method_auth_identity_owner_and_read_routes_never_poll_declaration_body(
             &Registry::default(),
             0.,
             Controls {
+                flows: None,
                 circuits: None,
                 declarations: available.then_some(DeclarationContext {
                     owner: &owner,
@@ -207,6 +208,7 @@ async fn truncated_post_preserves_declaration_and_returns_original_transport_fai
             &Registry::default(),
             0.,
             Controls {
+                flows: None,
                 circuits: None,
                 declarations: Some(DeclarationContext {
                     owner: &owner,
@@ -266,6 +268,7 @@ async fn buffered_json_is_parsed_after_eom_and_missing_streamed_content_is_empty
             &Registry::default(),
             0.,
             Controls {
+                flows: None,
                 circuits: None,
                 declarations: Some(DeclarationContext {
                     owner: &owner,

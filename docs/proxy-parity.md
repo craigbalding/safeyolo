@@ -356,6 +356,8 @@ silently reduce accepted message sizes to a library default.
 | D54 | An upstream HTTP/2 response with status 500, partial DATA and RST_STREAM(NO_ERROR) reaches the native downstream as status 500, the partial body and StreamEnded. Python sends a 502 error response. A retained binary from `d089f995` reproduces the native result before circuit completion metadata was added. | Downstream reset-response parity remains unresolved. Circuit counting uses the upstream parser's aborted result and ignores either downstream terminal form. The paired TLS/HTTP2 control retains exact response bytes and separately verifies unchanged circuit failure state. |
 | D55 | With a request above 10 MiB, the source forwards the reserved test-context header before its late request hook removes it. A missing-context request sends all 10,485,761 bytes to the origin; the origin 200 then replaces the hook's attempted 428, despite a deny event. | Native test-context admission now rejects missing required context and strips the reserved field before origin contact. Completed streamed bodies retain the source's empty evidence snippet. The native HTTP regression separately checks blocking, stripping and complete payload forwarding. |
 | D56 | The inherited native HTTP/2 parser accepted pseudo-header trailers and dropped those fields before publishing successful completion. It also ignored the decoder's existing oversized-header marker for trailers, which can hide discarded pseudo fields. | Shared request/response trailer admission now rejects retained pseudo fields with connection PROTOCOL_ERROR and the existing oversized marker with ENHANCE_YOUR_CALM. Valid ordinary trailers still complete. Actual Python execution confirms ordinary versus pseudo-header behavior; the oversized source error path has static evidence only. Existing configured size limits are reused; exact-limit differential parity is unverified. |
+| D57 | A source flow-record tag failure can leave the inserted flow pending on its SQLite connection. A later successful operation commits that failed record. | Native recording rolls the row and provenance tags back together, while retaining separate best-effort body search indexing. The [storage comparison](../proxy/tests/flow_store.rs) preserves the source witness and checks that the failed record stays absent after another commit and reopen. |
+| D58 | Direct source flow reads fall back to legacy agent_id when a schema-v2 row has no authoritative evidence_owner. An explicitly quarantined owner-null row is therefore readable by that legacy agent although scoped search excludes it. | Native direct reads require exact evidence_owner, matching collection scope. Foreign, unresolved, quarantined and missing records share the existing 404. [API tests](../proxy/tests/agent_api_flows.rs) prove denial before loading or decompressing a body. Existing version-1 migration still assigns owners; reads do not reattribute quarantined version-2 evidence. |
 
 ## Deletion map and evidence still required
 
@@ -1073,10 +1075,70 @@ content yields an empty snippet. Content decoding does not change forwarded byte
 [Native HTTP tests](../tests/proxy_migration/test_http_test_context.py) exercise
 the complete forwarding path. Parser and application tests cover resets,
 unread responses, body replay, counter ordering and evidence failures separately.
-These are implementation evidence. FlowStore and production audit persistence
-remain unconnected. Non-string YAML target keys and lone JSON surrogates remain
+These are implementation evidence. Production audit persistence remains
+unconnected. Non-string YAML target keys and lone JSON surrogates remain
 frontend gaps. Late evidence failures cannot change headers already delivered.
 Independent acceptance and production cutover remain outstanding.
+
+Native [flow storage](../proxy/src/flow_store.rs) retains the version-2 SQLite
+schema, version-1 migration, body compression, previews, truncation metadata,
+provenance tags and separate request/response full-text indexes. Existing files
+remain readable across Python and Rust. Storage gzip decoding follows Python's
+strict member and trailer checks; HTTP content decoding retains its different
+source behavior. Direct baseline flow-store settings are read once at startup.
+Reload preserves the same store and writer and changes recording admission.
+Enabling recording after a disabled startup does not create a new store.
+
+The [HTTP recorder](../proxy/src/http/flow_recording.rs) now records eligible
+contextual requests after validated request completion and makes one terminal
+recording attempt. It retains original header order, accepted response status
+and reason, decoded body sizes and configured body prefixes. Streamed bodies
+remain absent. A transport error uses the actual upstream head when one exists;
+a generated proxy 502 does not become an origin response. A pending application
+guard records cancellation before the connection driver takes ownership.
+Parser aborts that erase their diagnostic cause can still produce a null reason.
+Inactive service-gateway, probe and replay producers remain outside this slice.
+
+[HTTP recording tests](../proxy/src/http/flow_recording/tests.rs) compare source
+metadata and stored rows, then exercise real UDS forwarding, compressed content,
+streaming, decode failure, refused connections and cancellation during an owned
+TLS parent handshake. H2 tests cover an unread response and an early response
+before request completion. The cancellation regression fails without the pending
+guard and records one error after the repair. These tests use synthetic evidence
+and owned peers; they do not establish full production-chain acceptance.
+
+The [flow writer](../proxy/src/flow_writer.rs) queues owned records and performs
+compression and SQLite writes on its worker. The queue grows with pending
+records, preserves the configured bound, and counts full-queue drops separately
+from write errors. Nonpositive queue settings remain unbounded. Recorder counts
+measure enqueue attempts, including drops, rather than committed rows. Shutdown
+stops admission and waits up to five seconds for draining; a timeout reports
+failure and keeps the live store owned by the worker. Startup failures retain
+the source's assigned or partly initialized store without installing a writer.
+
+Authenticated [flow routes](../proxy/src/agent_api/flows.rs) share that
+process-owned store. Search, endpoints, facets, both body searches, metadata and
+request/response body reads, tags and diffs use the trusted ingress owner. SQLite queries and
+storage decompression run outside async workers. Body reads check ownership
+before decompression. The [runtime tests](../proxy/src/flow_runtime_tests.rs)
+exercise contextual HTTP forwarding through real Alice/Bob Unix sockets, stored
+body reads, cross-agent denial, a forged owner filter, authenticated operator
+`/stats`, reload, partial startup, shutdown and reopening. The current
+operator statistics expose recorder counters; the full source addon statistics
+aggregation remains unfinished.
+
+The [tag and diff store methods](../proxy/src/flow_store/details.rs) preserve
+typed immediate tag values, SQLite readback, retained body sizes and Python's
+default unified diff behavior. Their source comparisons cover clipping,
+matching repeated lines, Unicode line boundaries and storage failures.
+The [API comparisons](../proxy/tests/agent_api_flow_details.rs) check both
+owners before diff decompression, source ID conversion order, typed tag replies,
+persisted tag values and body failures before mutation. A canceled request
+does not roll back a mutation already running on the database worker.
+These are implementation results. Unpaired JSON surrogates and some direct
+Python-only SQLite values remain representation gaps; a categorical local
+compatibility error does not establish parity for those inputs. Complete
+operator inspection, audit persistence and independent acceptance remain open.
 
 The [network guard](../proxy/src/network_guard.rs) returns existing
 warn/block responses and approval/audit intents around the same native policy
@@ -1134,8 +1196,9 @@ unimplemented. The local Agent API releases captured bearer fields before
 its response handling.
 
 Header values remain raw bytes in a private wiping owner. The HTTP path releases
-that owner before origin I/O while credential inspection is inactive. Wiping
-these copies does not wipe the transport library's original buffers. Hyper
+that header view before origin I/O while credential inspection is inactive.
+Eligible flow recording keeps its own evidence copy until terminal submission.
+Wiping these copies does not wipe the transport library's original buffers. Hyper
 retains framing/body ownership, and the existing WebSocket validator still
 checks actual handshakes. The adapter does not add header admission rules or a
 second HTTP parser. The source parser differences in the library patch notes

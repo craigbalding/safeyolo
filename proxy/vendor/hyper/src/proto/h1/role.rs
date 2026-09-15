@@ -1069,10 +1069,16 @@ impl Http1Transaction for Client {
                         let status = StatusCode::from_u16(res.code.expect("httparse completed"))?;
 
                         let reason = {
-                            let reason = res.reason.expect("httparse completed");
-                            // Only save the reason phrase if it isn't the canonical reason
-                            if Some(reason) != status.canonical_reason() {
-                                Some(Bytes::copy_from_slice(reason.as_bytes()))
+                            // httparse validates obs-text but exposes an empty &str for it.
+                            // Recover bytes only after that complete validation succeeds.
+                            let reason = Client::validated_reason(
+                                &bytes[..len],
+                                ctx.h1_parser_config
+                                    .multiple_spaces_in_response_status_delimiters_are_allowed(),
+                            );
+                            // Only save the reason phrase if it isn't the canonical reason.
+                            if Some(reason) != status.canonical_reason().map(str::as_bytes) {
+                                Some(Bytes::copy_from_slice(reason))
                             } else {
                                 None
                             }
@@ -1116,6 +1122,10 @@ impl Http1Transaction for Client {
 
             let mut keep_alive = version == Version::HTTP_11;
 
+            let mut original_fields = ctx
+                .preserve_header_case
+                .then(crate::ext::OriginalHeaderFields::default);
+
             let mut header_case_map = if ctx.preserve_header_case {
                 Some(HeaderCaseMap::default())
             } else {
@@ -1135,6 +1145,13 @@ impl Http1Transaction for Client {
                 let header = unsafe { header.assume_init_ref() };
                 let name = header_name!(&slice[header.name.0..header.name.1]);
                 let value = header_value!(slice.slice(header.value.0..header.value.1));
+
+                if let Some(fields) = &mut original_fields {
+                    fields.0.push((
+                        slice.slice(header.name.0..header.name.1),
+                        slice.slice(header.value.0..header.value.1),
+                    ));
+                }
 
                 if let header::CONNECTION = name {
                     // keep_alive was previously set to default for Version
@@ -1160,6 +1177,10 @@ impl Http1Transaction for Client {
             }
 
             let mut extensions = http::Extensions::default();
+
+            if let Some(fields) = original_fields {
+                extensions.insert(fields);
+            }
 
             if let Some(header_case_map) = header_case_map {
                 extensions.insert(header_case_map);
@@ -1274,6 +1295,31 @@ impl Http1Transaction for Client {
 
 #[cfg(feature = "client")]
 impl Client {
+    /// Recover only the reason span from a head already accepted by httparse.
+    /// This neither validates nor accepts input; HTTP/0.9 never calls it.
+    fn validated_reason(head: &[u8], multiple_spaces: bool) -> &[u8] {
+        // The validator accepts leading empty lines and either CRLF or LF.
+        let line = head
+            .split(|byte| *byte == b'\n')
+            .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+            .find(|line| !line.is_empty())
+            .expect("httparse completed status line");
+        // Both accepted versions are exactly eight bytes, followed by SP.
+        let mut tail = &line[9..];
+        if multiple_spaces {
+            tail = &tail[tail.iter().take_while(|byte| **byte == b' ').count()..];
+        }
+        // The validator accepted exactly three status-code digits.
+        tail = &tail[3..];
+        let reason = tail.strip_prefix(b" ").unwrap_or_default();
+        if multiple_spaces {
+            // The parser's optional delimiter mode skips SP, never HTAB.
+            &reason[reason.iter().take_while(|byte| **byte == b' ').count()..]
+        } else {
+            reason
+        }
+    }
+
     /// Returns `Some(length, wants_upgrade)` if successful.
     ///
     /// Returns `None` if this message head should be skipped (like a 100 status).

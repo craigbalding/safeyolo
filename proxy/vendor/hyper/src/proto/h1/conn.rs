@@ -307,7 +307,25 @@ where
             if let (Some(producer), Some(status)) =
                 (&self.state.on_response_complete, self.state.response_status)
             {
-                producer.head(status, &msg.head.headers, msg.decode == DecodedLength::ZERO);
+                // Client::parse stores a custom phrase unless the observed
+                // bytes exactly equal the canonical phrase. HTTP/0.9 has no
+                // status line and therefore no observed phrase.
+                let reason = if msg.head.version == Version::HTTP_09 {
+                    None
+                } else {
+                    msg.head
+                        .extensions
+                        .get::<crate::ext::ReasonPhrase>()
+                        .map(|reason| reason.as_bytes())
+                        .or_else(|| status.canonical_reason().map(str::as_bytes))
+                };
+                producer.head(
+                    status,
+                    &msg.head.headers,
+                    msg.decode == DecodedLength::ZERO,
+                    msg.head.extensions.get::<crate::ext::OriginalHeaderFields>(),
+                    reason,
+                );
             }
         }
 

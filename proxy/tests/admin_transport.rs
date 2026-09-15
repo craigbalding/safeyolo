@@ -44,6 +44,7 @@ fn config(directory: &Path, token: &str) -> Config {
         "admin_port":0,
         "admin_api_token_file":directory.join("operator-token"),
         "readiness_file":directory.join("ready.json"),
+        "flow_store_enabled": false,
         "event_log":directory.join("events.jsonl")
     }))
     .unwrap()

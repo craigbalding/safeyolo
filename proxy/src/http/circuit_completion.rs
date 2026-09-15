@@ -50,6 +50,7 @@ pub(super) struct Completion {
     request_id: String,
     host: String,
     capture: Option<Arc<ResponseCapture>>,
+    recording: Option<Arc<super::flow_recording::Recording>>,
 }
 
 impl Completion {
@@ -62,6 +63,9 @@ impl Completion {
         host: String,
         context: Option<RequestContext>,
     ) -> Arc<Self> {
+        let recording = request
+            .extensions_mut()
+            .remove::<Arc<super::flow_recording::Recording>>();
         let request_failed = context
             .as_ref()
             .is_some_and(RequestContext::evidence_failed);
@@ -92,6 +96,7 @@ impl Completion {
             request_id,
             host,
             capture,
+            recording,
         })
     }
 
@@ -124,6 +129,8 @@ impl Completion {
         };
         if let Some(capture) = &self.capture {
             failed |= capture.finish(result.is_ok());
+        } else if let Some(recording) = &self.recording {
+            recording.finish(result.is_ok(), None, false);
         }
         observation.applied = Some(failed);
         failed
@@ -199,10 +206,16 @@ impl Completion {
     where
         F: Future<Output = hyper::Result<()>> + Send + 'static,
     {
-        Driving {
+        let driving = Driving {
             completion: self,
             connection: Some(Box::pin(connection)),
+        };
+        // Registration alone leaves client/parent handshakes unowned. Handoff
+        // occurs only once this synchronous teardown guard actually exists.
+        if let Some(recording) = &driving.completion.recording {
+            recording.defer();
         }
+        driving
     }
 }
 
@@ -236,6 +249,11 @@ where
             .expect("connection driver polled after completion")
             .as_mut()
             .poll(cx);
+        if let Poll::Ready(Err(error)) = &result
+            && let Some(recording) = &this.completion.recording
+        {
+            recording.producer_error(error);
+        }
         let _ = this.completion.poll(cx);
         if result.is_ready() {
             this.finish();
@@ -285,6 +303,7 @@ mod tests {
             let config = serde_json::from_value(json!({
                 "listeners":[],"policy_file":policy,
                 "readiness_file":directory.path().join("ready"),
+                "flow_store_enabled": false,
                 "event_log":if full_sink {std::path::PathBuf::from("/dev/full")} else {directory.path().join("events.jsonl")},
                 "circuit_breaker_enabled":true,
             }))

@@ -314,12 +314,12 @@ impl OriginalHeaderOrder {
     }
 }
 
-/// Ordered fields captured by the request parser before HeaderMap normalization.
+/// Ordered fields captured by HTTP/1 parsers before HeaderMap normalization.
 /// Values are available through explicit borrowing and excluded from diagnostics.
-#[cfg(all(feature = "server", feature = "http1"))]
+#[cfg(all(any(feature = "client", feature = "server"), feature = "http1"))]
 #[derive(Clone, Default)]
 pub struct OriginalHeaderFields(pub(crate) Vec<(Bytes, Bytes)>);
-#[cfg(all(feature = "server", feature = "http1"))]
+#[cfg(all(any(feature = "client", feature = "server"), feature = "http1"))]
 impl OriginalHeaderFields {
     /// Borrow the parsed name/value bytes in arrival order.
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
@@ -329,7 +329,7 @@ impl OriginalHeaderFields {
     }
 }
 
-#[cfg(all(feature = "server", feature = "http1"))]
+#[cfg(all(any(feature = "client", feature = "server"), feature = "http1"))]
 impl std::fmt::Debug for OriginalHeaderFields {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OriginalHeaderFields")

@@ -28,6 +28,7 @@ fn config(directory: &Path, state_file: Option<PathBuf>) -> Config {
         "agent_api_enabled":false,
         "circuit_state_file":state_file,
         "readiness_file":directory.join("ready.json"),
+        "flow_store_enabled": false,
         "event_log":directory.join("events.jsonl")
     }))
     .unwrap()

@@ -35,6 +35,7 @@ impl Fixture {
         let config = serde_json::from_value(json!({
             "listeners":[], "policy_file":policy,
             "readiness_file":directory.path().join("ready"),
+            "flow_store_enabled": false,
             "event_log": if full_sink { std::path::PathBuf::from("/dev/full") }
                 else {directory.path().join("events.jsonl")},
             "test_context_block":block,

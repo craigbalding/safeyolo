@@ -13,7 +13,15 @@ impl CircuitValue {
     /// Parse the JSON dialect used by Python's circuit cache (allow_nan=True).
     /// Constants are recognized only as complete, unquoted scalar tokens.
     pub fn parse_json(source: &str) -> Result<Self> {
-        parse(source)
+        parse(source, None)
+    }
+
+    /// Parse an Agent API JSON body with CPython's shipped integer conversion
+    /// limit. The check occurs on each integer token before object insertion,
+    /// including a value later replaced by a duplicate key. Circuit persistence
+    /// continues to use the unlimited parser above.
+    pub(crate) fn parse_api_json(source: &str) -> Result<Self> {
+        parse(source, Some(4300))
     }
 
     /// Render a typed circuit document using Python's JSON presentation.
@@ -207,7 +215,7 @@ fn accept(value: CircuitValue, frames: &mut [Frame], root: &mut Option<CircuitVa
         *root = Some(value);
     }
 }
-fn parse(source: &str) -> Result<CircuitValue> {
+fn parse(source: &str, integer_digits: Option<usize>) -> Result<CircuitValue> {
     let bytes = source.as_bytes();
     let mut position = 0;
     let mut frames: Vec<Frame> = Vec::new();
@@ -269,6 +277,12 @@ fn parse(source: &str) -> Result<CircuitValue> {
                     let start = position;
                     if byte == b'"' {
                         position = string_end(bytes, position)?;
+                    } else if integer_digits.is_some()
+                        && let Some(end) = number_end(bytes, position)
+                    {
+                        // Python converts the numeric prefix before reporting
+                        // subsequent invalid syntax (e.g. 4301 digits + `x`).
+                        position = end;
                     } else {
                         while bytes.get(position).is_some_and(|byte| {
                             !matches!(
@@ -283,17 +297,29 @@ fn parse(source: &str) -> Result<CircuitValue> {
                         "NaN" => CircuitValue::Float(f64::NAN),
                         "Infinity" => CircuitValue::Float(f64::INFINITY),
                         "-Infinity" => CircuitValue::Float(f64::NEG_INFINITY),
-                        scalar => serde_json::from_str::<Value>(scalar)
-                            .map(CircuitValue::from)
-                            .map_err(|_| invalid_json())?,
+                        scalar => {
+                            let value = serde_json::from_str::<Value>(scalar)
+                                .map_err(|_| scalar_error(scalar, integer_digits.is_some()))?;
+                            if let Some(limit) = integer_digits
+                                && value.is_number()
+                                && !scalar.contains(['.', 'e', 'E'])
+                                && scalar.trim_start_matches('-').len() > limit
+                            {
+                                return Err(super::failure_kind(
+                                    super::ErrorKind::Value,
+                                    "JSON integer conversion exceeds Python's digit limit",
+                                ));
+                            }
+                            CircuitValue::from(value)
+                        }
                     };
                     accept(value, &mut frames, &mut root);
                 }
             },
             Expect::Key(_) if byte == b'"' => {
                 let end = string_end(bytes, position)?;
-                let key =
-                    serde_json::from_str(&source[position..end]).map_err(|_| invalid_json())?;
+                let key = serde_json::from_str(&source[position..end])
+                    .map_err(|_| scalar_error(&source[position..end], integer_digits.is_some()))?;
                 let frame = frames.last_mut().unwrap();
                 frame.key = Some(key);
                 frame.expect = Expect::Colon;
@@ -315,6 +341,55 @@ fn parse(source: &str) -> Result<CircuitValue> {
             _ => return Err(invalid_json()),
         }
     }
+}
+// The existing parser's opt-in API mode must expose the same integer token to
+// conversion as CPython, even when invalid trailing syntax follows it.
+fn number_end(bytes: &[u8], mut position: usize) -> Option<usize> {
+    if bytes.get(position) == Some(&b'-') {
+        position += 1;
+    }
+    match bytes.get(position)? {
+        b'0' => position += 1,
+        b'1'..=b'9' => {
+            position += 1;
+            while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+                position += 1;
+            }
+        }
+        _ => return None,
+    }
+    if bytes.get(position) == Some(&b'.') && bytes.get(position + 1).is_some_and(u8::is_ascii_digit)
+    {
+        position += 2;
+        while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+            position += 1;
+        }
+    }
+    if matches!(bytes.get(position), Some(b'e' | b'E')) {
+        let mut end = position + 1;
+        if matches!(bytes.get(end), Some(b'+' | b'-')) {
+            end += 1;
+        }
+        if bytes.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+            while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+                end += 1;
+            }
+            position = end;
+        }
+    }
+    Some(position)
+}
+fn scalar_error(scalar: &str, api_mode: bool) -> super::Error {
+    if api_mode && serde_json::from_str::<Box<serde_json::value::RawValue>>(scalar).is_ok() {
+        // RawValue validates spelling without requiring a Rust scalar string.
+        // This does not invent a surrogate value or change circuit admission.
+        return super::failure_kind(
+            super::ErrorKind::Compatibility,
+            "JSON scalar cannot be represented",
+        );
+    }
+    invalid_json()
 }
 fn invalid_json() -> super::Error {
     invalid("invalid circuit JSON document")
@@ -545,4 +620,68 @@ pub(super) fn to_value(source: &CircuitValue) -> Result<Value> {
         }
     }
     Ok(target)
+}
+
+#[cfg(test)]
+mod api_integer_tests {
+    use super::*;
+
+    #[test]
+    fn api_surrogate_gap_is_distinct_from_invalid_json() {
+        for source in [r#""\ud800""#, r#"{"\udfff":0}"#, r#"{"host":"\ud800"}"#] {
+            assert_eq!(
+                CircuitValue::parse_api_json(source).unwrap_err().kind(),
+                super::super::ErrorKind::Compatibility
+            );
+            assert_eq!(
+                CircuitValue::parse_json(source).unwrap_err().kind(),
+                super::super::ErrorKind::Invalid
+            );
+        }
+        assert!(CircuitValue::parse_api_json(r#""\ud800\udc00""#).is_ok());
+        assert_eq!(
+            CircuitValue::parse_api_json(r#""\uBADX""#)
+                .unwrap_err()
+                .kind(),
+            super::super::ErrorKind::Invalid
+        );
+    }
+
+    #[test]
+    fn api_checks_integer_conversion_before_duplicate_replacement() {
+        let max = "1".repeat(4300);
+        let too_many = "1".repeat(4301);
+        for source in [max.clone(), format!("-{max}"), format!("{{\"a\":{max}}}")] {
+            assert!(CircuitValue::parse_api_json(&source).is_ok());
+        }
+        for source in [
+            too_many.clone(),
+            format!("-{too_many}"),
+            format!("{{\"a\":{too_many},\"a\":0}}"),
+            format!("[{too_many}"),
+            format!("{too_many}x"),
+        ] {
+            assert_eq!(
+                CircuitValue::parse_api_json(&source).unwrap_err().kind(),
+                super::super::ErrorKind::Value
+            );
+        }
+        // Floats/quoted digits and ordinary circuit persistence keep their
+        // existing behavior; this is not a new body or numeric storage bound.
+        for source in [
+            format!("{too_many}.0"),
+            format!("{too_many}e0"),
+            format!("\"{too_many}\""),
+            "[NaN,Infinity,-Infinity]".into(),
+        ] {
+            assert!(CircuitValue::parse_api_json(&source).is_ok());
+        }
+        assert!(CircuitValue::parse_json(&too_many).is_ok());
+        for source in [format!("0{too_many}"), format!("+{too_many}")] {
+            assert_eq!(
+                CircuitValue::parse_api_json(&source).unwrap_err().kind(),
+                super::super::ErrorKind::Invalid
+            );
+        }
+    }
 }

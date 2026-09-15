@@ -109,5 +109,55 @@
         "candidate_sha256": "83cbc4c5ba611a56e780cd95846df9d97b9eec5ee1b278b36f7edd1b586f509d"
       }
     ]
+  },
+  "response_head_capture_patch": {
+    "base_commit": "99bb0df9a481f550b0623722a999c6e8775e6a02",
+    "scope": "Default extended final-head callback on the existing response capture owner. Borrow parser-owned ordered regular fields and reason bytes before completion; preserve old head/data implementations, validation, framing, DATA, cancellation and terminal ownership. No HeaderMap reconstruction.",
+    "api": "ResponseBodyCapture::head_with_fields(status, headers, end_stream_at_head, Option<&OriginalHeaderFields>, Option<&[u8]>)",
+    "requirements": "HTTP/1 client builder preserve_header_case(true) enables ordered fields. Canonical reason fallback is used only where parser equality already proved it; HTTP/0.9 has no reason.",
+    "files": [
+      {
+        "path": "src/ext/mod.rs",
+        "base_sha256": "3beafc3ffdea0ecfcb74a802bebc1a81167a426cf76ffdc89554c350ebce8d26",
+        "candidate_sha256": "82dd98df814015166666694650196502b0896ea5aa1f64960d9eb9992e6c7622"
+      },
+      {
+        "path": "src/ext/response_completion.rs",
+        "base_sha256": "258d5605ece2e5b17964e4a6706f04f59f7ae9090c08dfb6aed8bf612c683e06",
+        "candidate_sha256": "515a864cf86e48a991f8df2cc0e43524db2839edcc77a22d2564f1979ffc58b9"
+      },
+      {
+        "path": "src/proto/h1/role.rs",
+        "base_sha256": "f2b61741b2ad5f4c31f1fcebd7bc3d0578b018da180f370bfeb65c09aac0dd14",
+        "candidate_sha256": "a4b8eb0096782fa8a1b66f0c4f49346fb0b54cde3d48aa9ed72be9607d52fba0"
+      },
+      {
+        "path": "src/proto/h1/conn.rs",
+        "base_sha256": "83cbc4c5ba611a56e780cd95846df9d97b9eec5ee1b278b36f7edd1b586f509d",
+        "candidate_sha256": "c3ef26fa745a0628ca593b14ecf5c0882ad7543f6f4c0ebabf1b9e6571131d1e"
+      }
+    ],
+    "validation": [
+      "proxy/tests/response_head_capture.rs"
+    ],
+    "license": "MIT (existing LICENSE unchanged)"
+  },
+  "response_raw_reason_patch": {
+    "base_commit": "99bb0df9a481f550b0623722a999c6e8775e6a02",
+    "seed": "frozen response_head_capture_patch",
+    "scope": "After httparse Status::Complete only, recover the already validated status-line reason byte span. Preserve obs-text in the existing ReasonPhrase extension and response-head callback. No grammar, header, body, status, HTTP/0.9 fallback, or H2 changes; existing delimiter configuration remains authoritative.",
+    "source_detail": "httparse 1.10.1 parse_reason validates obs-text but returns an empty str; byte recovery is bounded to the accepted head and never runs on partial/error/HTTP0.9 paths.",
+    "application_boundary": "ReasonPhrase and callback retain raw bytes including existing leading/trailing whitespace behavior. Source metadata delimiter normalization and ISO-8859-1 presentation belong to the application.",
+    "files": [
+      {
+        "path": "src/proto/h1/role.rs",
+        "base_sha256": "a4b8eb0096782fa8a1b66f0c4f49346fb0b54cde3d48aa9ed72be9607d52fba0",
+        "candidate_sha256": "d25f99d02a19861952c192a16819554f5fa87ab1568dce10d9485b9f22ff8224"
+      }
+    ],
+    "validation": [
+      "proxy/tests/response_head_capture.rs"
+    ],
+    "license": "MIT (existing LICENSE unchanged)"
   }
 }

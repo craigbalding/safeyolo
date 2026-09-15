@@ -108,6 +108,8 @@ fn config(directory: &TempDir) -> Config {
         test_context_declared_ttl: json!(900),
         sse_streaming_enabled: true,
         sse_stream_json: false,
+        flow_store_enabled: false,
+        flow_store_db_path: directory.path().join("flows.sqlite3"),
         admin_port: None,
         admin_api_token_file: None,
         admin_shield_extra_ports: String::new(),

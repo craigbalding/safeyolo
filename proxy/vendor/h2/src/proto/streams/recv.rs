@@ -263,16 +263,25 @@ impl Recv {
             let mut message = counts
                 .peer()
                 .convert_poll_message(pseudo, fields, stream_id)?;
-            if let crate::proto::peer::PollMessage::Server(request) = &mut message {
-                request.extensions_mut().insert(original_fields);
-                stream.request_completion = Some(crate::ext::register_request_completion(
-                    request.extensions_mut(),
-                ));
-            }
-            if let crate::proto::peer::PollMessage::Client(response) = &message {
-                stream.response_status = Some(response.status());
-                if let Some(producer) = &stream.response_completion {
-                    producer.head(response.status(), response.headers(), end_stream);
+            match &mut message {
+                crate::proto::peer::PollMessage::Server(request) => {
+                    request.extensions_mut().insert(original_fields);
+                    stream.request_completion = Some(crate::ext::register_request_completion(
+                        request.extensions_mut(),
+                    ));
+                }
+                crate::proto::peer::PollMessage::Client(response) => {
+                    stream.response_status = Some(response.status());
+                    if let Some(producer) = &stream.response_completion {
+                        producer.head(
+                            response.status(),
+                            response.headers(),
+                            end_stream,
+                            Some(&original_fields),
+                            Some(b""),
+                        );
+                    }
+                    response.extensions_mut().insert(original_fields);
                 }
             }
 

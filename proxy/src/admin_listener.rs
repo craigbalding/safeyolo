@@ -175,12 +175,15 @@ async fn serve_connection(
                         .to_owned()
                 })
                 .unwrap_or_else(|| peer.ip().to_string());
-            let outcome = admin_api::respond_with_circuits(
+            let stats =
+                || json!({"proxy":"safeyolo", "flow-recorder":runtime.flow_recorder.stats()});
+            let outcome = admin_api::respond_with_stats(
                 request,
                 token.trim_matches(python_whitespace),
                 &runtime.tasks,
                 runtime.policy.as_ref(),
                 runtime.policy.as_ref().map(|_| &runtime.circuits),
+                Some(&stats),
             )
             .await?;
             let audits = outcome.audit().map(|intent| match intent {

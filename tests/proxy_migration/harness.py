@@ -93,6 +93,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             "listeners": [{"agent_id": name, "socket_path": path} for name, path in paths.items()],
             "readiness_file": str(directory / "ready"),
             "event_log": str(directory / "events.jsonl"),
+            "flow_store_enabled": False,
+            "flow_store_db_path": str(directory / "flows.sqlite3"),
         }
         if inspection is not None:
             config["inspection"] = {"policy_file": str(policy), **inspection}

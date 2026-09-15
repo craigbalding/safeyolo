@@ -40,6 +40,25 @@ pub trait ResponseBodyCapture: Send + Sync {
     /// `end_stream_at_head` distinguishes a response with no following body.
     fn head(&self, status: StatusCode, headers: &http::HeaderMap, end_stream_at_head: bool);
 
+    /// Observe the final head with parser-owned field order and reason bytes.
+    ///
+    /// `original_fields` is absent when original field capture was not enabled;
+    /// it must not be reconstructed from the grouped HeaderMap. HTTP/1 clients
+    /// enable it with `preserve_header_case(true)`. HTTP/2 supplies decoded
+    /// regular fields and an empty reason. A response without a status line can
+    /// have no observed reason. All borrows end when this callback returns.
+    /// The default preserves existing `head` implementations and call order.
+    fn head_with_fields(
+        &self,
+        status: StatusCode,
+        headers: &http::HeaderMap,
+        end_stream_at_head: bool,
+        _original_fields: Option<&crate::ext::OriginalHeaderFields>,
+        _reason: Option<&[u8]>,
+    ) {
+        self.head(status, headers, end_stream_at_head);
+    }
+
     /// Observe accepted body bytes, excluding transfer framing and padding.
     /// The final payload is observed before successful completion is published.
     fn data(&self, payload: &[u8]);
@@ -170,7 +189,14 @@ impl Drop for Producer {
 pub(crate) struct ResponseCompletionProducer(Arc<Producer>);
 
 impl ResponseCompletionProducer {
-    pub(crate) fn head(&self, status: StatusCode, headers: &http::HeaderMap, end_stream: bool) {
+    pub(crate) fn head(
+        &self,
+        status: StatusCode,
+        headers: &http::HeaderMap,
+        end_stream: bool,
+        original_fields: Option<&crate::ext::OriginalHeaderFields>,
+        reason: Option<&[u8]>,
+    ) {
         let capture = self
             .0
             .shared
@@ -178,7 +204,7 @@ impl ResponseCompletionProducer {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if let Some(capture) = capture.as_ref() {
-            capture.head(status, headers, end_stream);
+            capture.head_with_fields(status, headers, end_stream, original_fields, reason);
         }
     }
 

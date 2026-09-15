@@ -21,7 +21,8 @@ struct Applied {
 
 /// Metadata becomes visible only when the request parser has completed. It is
 /// installed before decoding so a request content error does not suppress a
-/// later valid response event. This owner never stores a request body.
+/// later valid response event. Optional recording retains source-buffered
+/// request bytes separately from the short provenance snippet.
 pub(super) struct Provenance {
     runtime: Arc<Runtime>,
     identity: ConnectionIdentity,
@@ -30,6 +31,7 @@ pub(super) struct Provenance {
     host: String,
     path: String,
     applied: Mutex<Option<Applied>>,
+    recording: Mutex<Option<Arc<super::flow_recording::Recording>>>,
 }
 
 impl Provenance {
@@ -49,7 +51,19 @@ impl Provenance {
             host,
             path,
             applied: Mutex::new(None),
+            recording: Mutex::new(None),
         }
+    }
+
+    pub(super) fn attach_recording(&self, recording: Arc<super::flow_recording::Recording>) {
+        *self.recording.lock().unwrap_or_else(|e| e.into_inner()) = Some(recording);
+    }
+
+    fn recording(&self) -> Option<Arc<super::flow_recording::Recording>> {
+        self.recording
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The caller consumes its single-use request application before this call.
@@ -66,6 +80,9 @@ impl Provenance {
             context: context.clone(),
             started,
         });
+        if let Some(recording) = self.recording() {
+            recording.applied(&context, content, encoding, started);
+        }
         let snippet = body_snippet(content, encoding?)?;
         let event = json!({
             "event": "security.test_context", "kind": "security", "severity": "low",
@@ -343,20 +360,31 @@ impl ResponseCapture {
             return false;
         };
         if !success {
+            if let Some(recording) = self.provenance.recording() {
+                recording.finish(false, None, false);
+            }
             return false;
         }
         if capture.failed {
+            if let Some(recording) = self.provenance.recording() {
+                recording.finish(true, None, true);
+            }
             return true;
         }
         let Some(head) = capture.head else {
             return true;
         };
         let content = capture.body.into_content();
-        self.provenance.response(
-            &head,
-            content.as_deref().map(Vec::as_slice),
-            crate::circuit_runtime::now(),
-        )
+        let content = content.as_deref().map(Vec::as_slice);
+        let failed = self
+            .provenance
+            .response(&head, content, crate::circuit_runtime::now());
+        // The source recorder follows provenance even when snippet decoding
+        // fails; its own full decode determines recorder errors independently.
+        if let Some(recording) = self.provenance.recording() {
+            recording.finish(true, content, false);
+        }
+        failed
     }
 }
 
@@ -372,6 +400,20 @@ fn source_streamed(runtime: &Runtime, host: &str, content_type: &[u8]) -> bool {
 }
 
 impl hyper::ext::ResponseBodyCapture for ResponseCapture {
+    fn head_with_fields(
+        &self,
+        status: StatusCode,
+        headers: &HeaderMap,
+        end_stream_at_head: bool,
+        fields: Option<&hyper::ext::OriginalHeaderFields>,
+        reason: Option<&[u8]>,
+    ) {
+        Self::head(self, status, headers, end_stream_at_head);
+        if let Some(recording) = self.provenance.recording() {
+            recording.head(status, fields.map(|fields| fields.iter()), reason);
+        }
+    }
+
     fn head(&self, status: StatusCode, headers: &HeaderMap, end_stream_at_head: bool) {
         Self::head(self, status, headers, end_stream_at_head);
     }
@@ -382,6 +424,20 @@ impl hyper::ext::ResponseBodyCapture for ResponseCapture {
 }
 
 impl h2::ext::ResponseBodyCapture for ResponseCapture {
+    fn head_with_fields(
+        &self,
+        status: StatusCode,
+        headers: &HeaderMap,
+        end_stream_at_head: bool,
+        fields: Option<&h2::ext::OriginalHeaderFields>,
+        reason: Option<&[u8]>,
+    ) {
+        Self::head(self, status, headers, end_stream_at_head);
+        if let Some(recording) = self.provenance.recording() {
+            recording.head(status, fields.map(|fields| fields.iter()), reason);
+        }
+    }
+
     fn head(&self, status: StatusCode, headers: &HeaderMap, end_stream_at_head: bool) {
         Self::head(self, status, headers, end_stream_at_head);
     }
@@ -412,6 +468,7 @@ mod tests {
             let config = serde_json::from_value(json!({
                 "listeners": [], "policy_file": policy,
                 "readiness_file": directory.path().join("ready"),
+                "flow_store_enabled": false,
                 "event_log": if full_sink { std::path::PathBuf::from("/dev/full") }
                     else { directory.path().join("events.jsonl") },
             }))

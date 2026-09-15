@@ -83,6 +83,10 @@ pub struct Config {
     pub sse_streaming_enabled: bool,
     #[serde(default)]
     pub sse_stream_json: bool,
+    #[serde(default = "enabled")]
+    pub flow_store_enabled: bool,
+    #[serde(default = "flow_store_path")]
+    pub flow_store_db_path: PathBuf,
     /// Development opt-in for the existing separate IPv4-loopback operator API.
     /// Listener and token settings are read at process startup.
     pub admin_port: Option<u16>,
@@ -107,6 +111,10 @@ fn enabled() -> bool {
 
 fn declared_ttl() -> serde_json::Value {
     serde_json::json!(900)
+}
+
+fn flow_store_path() -> PathBuf {
+    "/app/logs/flows.sqlite3".into()
 }
 
 #[derive(Clone)]

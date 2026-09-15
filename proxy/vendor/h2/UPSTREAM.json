@@ -210,5 +210,27 @@
       "proxy/tests/response_completion_h2.rs"
     ],
     "source_correlation": "Configured Python source rejects pseudo :path trailers with PROTOCOL_ERROR before request EOM and origin contact. Its existing HPACK decoder rejects oversized blocks before trailer validation with ENHANCE_YOUR_CALM. Native protocol tests establish completion abort, body error, accepted prefix preservation and connection error scope; application effects are a separate integration gate."
+  },
+  "response_head_capture_patch": {
+    "base_commit": "99bb0df9a481f550b0623722a999c6e8775e6a02",
+    "scope": "Default extended final-head callback on the existing response capture owner. Borrow parser-owned ordered regular fields and reason bytes before completion; preserve old head/data implementations, validation, framing, DATA, cancellation and terminal ownership. No HeaderMap reconstruction.",
+    "api": "ResponseBodyCapture::head_with_fields(status, headers, end_stream_at_head, Option<&OriginalHeaderFields>, Option<&[u8]>)",
+    "requirements": "HPACK regular field order already exists; pass it to the response capture and retain it in response extensions. HTTP/2 observed reason is empty.",
+    "files": [
+      {
+        "path": "src/ext/completion.rs",
+        "base_sha256": "f92613afc9adb271b341402ea82c247718dee0c848f439591f9838c07866c09f",
+        "candidate_sha256": "97e80744bcc52bbdf18d4530300224d08cdec4d31461527f449855abf8a68aad"
+      },
+      {
+        "path": "src/proto/streams/recv.rs",
+        "base_sha256": "9d666cca08f5cc6345df02fb1722023888f084e2a63ec5b773282516b74dc374",
+        "candidate_sha256": "2644e6913656c3dee52e2415eca79d2038c7b131e3767b24297175f6b8419cef"
+      }
+    ],
+    "validation": [
+      "proxy/tests/response_head_capture.rs"
+    ],
+    "license": "MIT (existing LICENSE unchanged)"
   }
 }
