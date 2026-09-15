@@ -36,6 +36,7 @@ impl Fixture {
             "listeners":[], "policy_file":policy,
             "readiness_file":directory.path().join("ready"),
             "flow_store_enabled": false,
+            "audit_log_path": directory.path().join("audit.jsonl"),
             "event_log": if full_sink { std::path::PathBuf::from("/dev/full") }
                 else {directory.path().join("events.jsonl")},
             "test_context_block":block,
@@ -383,7 +384,9 @@ async fn decode_failure_keeps_metadata_for_response_but_not_allowed_counter() {
     assert!(fixture.events().is_empty());
     let capture = super::super::test_context::ResponseCapture::new(
         Arc::new(RwLock::new(fixture.runtime.clone())),
-        context.response_provenance().unwrap(),
+        context.response_provenance(),
+        None,
+        None,
     );
     hyper::ext::ResponseBodyCapture::head(&capture, StatusCode::OK, &hyper::HeaderMap::new(), true);
     assert!(!capture.finish(true));
@@ -445,7 +448,7 @@ fn reached_target_error_is_forwarding_compatible_but_still_strips_reserved_heade
         .unwrap();
     assert!(matches!(
         fixture.prepare(&mut request).unwrap(),
-        Admission::Inactive
+        Admission::HookError
     ));
     assert!(!request.headers().contains_key(test_context::HEADER));
     assert_eq!(request.headers()["x-unrelated"], "retained");

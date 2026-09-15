@@ -27,6 +27,15 @@ pub(crate) struct TemporalValue {
 }
 
 impl TemporalValue {
+    /// Source exception text names the consumed type, not its storage shape.
+    pub(crate) fn python_type_name(&self) -> &'static str {
+        match self.kind {
+            TemporalKind::Date => "date",
+            TemporalKind::Time => "time",
+            TemporalKind::NaiveDateTime | TemporalKind::AwareDateTime => "datetime",
+        }
+    }
+
     pub(super) fn from_toml(value: &toml_edit::Datetime) -> Result<Self> {
         let text = value.to_string();
         let (kind, parse_text) = if value.date.is_some() && value.time.is_none() {
@@ -103,7 +112,7 @@ impl TemporalValue {
     /// Pydantic model JSON differs from Python str(datetime): the separator is
     /// T and a zero UTC offset is Z. Emit only this scalar into the caller's
     /// sink; do not create another canonical value or alter ordinary API JSON.
-    pub(super) fn write_model_json(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
+    pub(crate) fn write_model_json(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
         let value = self.value;
         writer.write_all(b"\"")?;
         if self.kind != TemporalKind::Time {

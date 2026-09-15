@@ -25,6 +25,7 @@ fn runtime(directory: &std::path::Path) -> Runtime {
         "policy_file": policy,
         "readiness_file": directory.join("ready.json"),
         "flow_store_enabled": false,
+        "audit_log_path": directory.join("audit.jsonl"),
         "event_log": directory.join("events.jsonl"),
         "admin_port": 0,
         "circuit_state_file": ""

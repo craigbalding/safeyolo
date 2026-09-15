@@ -29,6 +29,8 @@ mod flow_recording;
 mod request_body;
 mod request_context;
 mod test_context;
+mod traffic;
+mod traffic_url;
 
 pub(crate) type Body = BoxBody<Bytes, Error>;
 
@@ -160,6 +162,10 @@ struct PolicyDecision {
     #[serde(default)]
     headers: Vec<(String, String)>,
     body: Option<String>,
+    #[serde(skip)]
+    blocked_by: Option<serde_json::Value>,
+    #[serde(skip)]
+    block_reason: Option<serde_json::Value>,
 }
 
 /// Routing authority is separate from the request's original path and bytes.
@@ -616,6 +622,8 @@ async fn decide(runtime: &Runtime, request: &PolicyRequest<'_>) -> Result<Policy
             status,
             headers,
             body,
+            blocked_by: outcome.metadata.get("blocked_by").cloned(),
+            block_reason: outcome.metadata.get("block_reason").cloned(),
         });
     }
     // The temporary adapter has one policy/state owner. Queue here instead of
@@ -733,6 +741,7 @@ fn record_agent_api(
 
 async fn local_agent_api(
     runtime: &Runtime,
+    state: RuntimeState,
     identity: &ConnectionIdentity,
     request_id: &str,
     request: &mut Request<Incoming>,
@@ -740,6 +749,9 @@ async fn local_agent_api(
 ) -> Result<Response<Body>, Error> {
     use crate::agent_api::{self, Failure, PolicyState};
 
+    let mut ordered_headers = crate::request_headers::RequestHeaders::take(request)?;
+    let observer = request_context::Observer::take(request)?;
+    let mut local_observation = agent_api::BodyObservation::default();
     // mitmproxy combines repeated Authorization fields with a comma and space.
     // Hold that value only for authentication, outside diagnostic formatting.
     let mut authorization = zeroize::Zeroizing::new(Vec::new());
@@ -819,14 +831,54 @@ async fn local_agent_api(
                 body: request.body_mut(),
                 content_encoding: &content_encoding,
                 content_length,
+                observation: Some(&mut local_observation),
             },
         )
         .await?
     } else {
         agent_api::unavailable(api_request, Failure::HandlerUnavailable)
     };
-    let evidence_failed = record_agent_api(runtime, identity, request_id, &outcome).is_err()
+    let mut evidence_failed = record_agent_api(runtime, identity, request_id, &outcome).is_err()
         | crate::circuit_runtime::record_transitions(runtime, &outcome.circuit_events, None);
+    // The existing API reader supplies only a scalar observation. Its Body
+    // terminal is insufficient on H2 NO_ERROR reset: require parser success.
+    // Early routes never wait for an unread body merely to generate traffic.
+    let terminal_body = request.body().is_end_stream();
+    let eligible =
+        (local_observation.decoded_size.is_some() || terminal_body) && observer.await.is_ok();
+    let traffic = if eligible {
+        ordered_headers.apply_hygiene(request.headers_mut());
+        let traffic = traffic::Traffic::new(state, identity, request_id, request, destination);
+        traffic.begin_request();
+        let encoding = test_context::combined(request.headers(), header::CONTENT_ENCODING);
+        evidence_failed |= traffic.request(|| {
+            if !request.headers().contains_key(header::CONTENT_ENCODING)
+                && let Some(size) = local_observation.encoded_size
+            {
+                return Ok(size);
+            }
+            local_observation.decoded_size.map_or_else(
+                || {
+                    traffic::decoded_size(
+                        Some(&[]),
+                        encoding
+                            .as_deref()
+                            .map(Vec::as_slice)
+                            .map_err(|error| *error),
+                    )
+                },
+                |result| {
+                    result.map_err(|_| {
+                        crate::request_logger::Error(crate::request_logger::ErrorKind::Decode)
+                    })
+                },
+            )
+        });
+        Some(traffic)
+    } else {
+        None
+    };
+    drop(ordered_headers);
     if evidence_failed {
         // Source audit file failures are caught by its writer and preserve the
         // response. They differ from a callback exception escaping API auth.
@@ -834,9 +886,19 @@ async fn local_agent_api(
     }
     // This is terminal local dispatch: no remaining observer receives request
     // headers, query, or body, including when the handler is unavailable.
+    let bytes = outcome.response.body_bytes();
+    let size = bytes.len() as u64;
     let mut reply = Response::builder()
         .status(outcome.response.status)
-        .body(full(outcome.response.body_bytes()))?;
+        .body(full(bytes))?;
+    if let Some(traffic) = traffic {
+        reply.extensions_mut().insert(traffic::LocalResponse {
+            traffic,
+            size,
+            blocked_by: Some(json!(outcome.blocked_by).into()),
+            block_reason: None,
+        });
+    }
     for (name, value) in outcome.response.headers {
         reply
             .headers_mut()
@@ -867,14 +929,14 @@ fn circuit_admission(
     request_id: &str,
     method: &str,
     destination: &Destination,
-) -> (Option<Response<Body>>, bool) {
+) -> (Option<Response<Body>>, bool, bool) {
     use crate::circuits::{CircuitValue, RequestDecision, RequestGate};
     let Ok(runtime) = state.read() else {
         eprintln!("Circuit request runtime unavailable");
-        return (None, true);
+        return (None, true, true);
     };
     let Some(policy) = runtime.policy.as_ref() else {
-        return (None, false);
+        return (None, false, false);
     };
     let host = &destination.policy_host;
     let result = runtime.circuits.request_current(
@@ -897,7 +959,7 @@ fn circuit_admission(
         Err(error) => {
             eprintln!("Circuit request operation failed: {:?}", error.kind());
             let failed = crate::circuit_runtime::record_transitions(&runtime, error.events(), None);
-            return (None, failed);
+            return (None, failed, true);
         }
     };
     let mut failed = crate::circuit_runtime::record_transitions(&runtime, &outcome.events, None);
@@ -906,7 +968,7 @@ fn circuit_admission(
         retry_after_seconds,
     } = outcome.value
     else {
-        return (None, failed);
+        return (None, failed, false);
     };
     let reply = (|| -> Result<Response<Body>, Error> {
         let state = serde_json::to_value(status.state)?
@@ -976,10 +1038,10 @@ fn circuit_admission(
         Ok(reply)
     })();
     match reply {
-        Ok(reply) => (Some(reply), failed),
+        Ok(reply) => (Some(reply), failed, false),
         Err(_) => {
             eprintln!("Circuit request response construction failed");
-            (None, failed)
+            (None, failed, true)
         }
     }
 }
@@ -998,11 +1060,23 @@ async fn forward(
     destination: &Destination,
     tunnel: Option<&Tunnel>,
 ) -> Result<(Response<Body>, String), Error> {
+    let traffic = (request.method() != Method::CONNECT)
+        .then(|| traffic::Traffic::new(state.clone(), identity, request_id, &request, destination));
     if runtime
         .admin_shield
         .blocks_host(&destination.host, destination.port)
     {
-        return Ok((prior_block(admin_rejection()), "admin_port_access".into()));
+        let mut reply = prior_block(admin_rejection());
+        traffic::local_reply(
+            traffic.as_ref(),
+            &mut request,
+            &mut reply,
+            Some(json!("admin-shield")),
+            Some(json!("admin_port_access")),
+            destination,
+            false,
+        )?;
+        return Ok((reply, "admin_port_access".into()));
     }
     if is_reserved(&destination.host) {
         if request.method() == Method::CONNECT {
@@ -1020,8 +1094,15 @@ async fn forward(
             .trim_end_matches('.')
             .eq_ignore_ascii_case("_safeyolo.proxy.internal")
         {
-            let reply =
-                local_agent_api(&runtime, identity, request_id, &mut request, destination).await?;
+            let reply = local_agent_api(
+                &runtime,
+                state.clone(),
+                identity,
+                request_id,
+                &mut request,
+                destination,
+            )
+            .await?;
             return Ok((prior_block(reply), "local".into()));
         }
         return Ok((
@@ -1052,6 +1133,15 @@ async fn forward(
         response
             .headers_mut()
             .insert("x-blocked-by", "loop-guard".parse()?);
+        traffic::local_reply(
+            traffic.as_ref(),
+            &mut request,
+            &mut response,
+            Some(json!("loop-guard")),
+            Some(json!("proxy_loop")),
+            destination,
+            false,
+        )?;
         return Ok((prior_block(response), "deny".into()));
     }
     // Source request-ID hygiene precedes security addons. Keep inspection order
@@ -1112,6 +1202,15 @@ async fn forward(
                 .append(header::HeaderName::try_from(name)?, value.parse()?);
         }
         strip_hop_headers(denied.headers_mut());
+        traffic::local_reply(
+            traffic.as_ref(),
+            &mut request,
+            &mut denied,
+            decision.blocked_by,
+            decision.block_reason,
+            destination,
+            true,
+        )?;
         return Ok((prior_block(denied), decision.decision));
     }
     if request.method() == Method::CONNECT {
@@ -1195,32 +1294,64 @@ async fn forward(
         });
         return Ok((Response::new(full(Bytes::new())), decision.decision));
     }
-    let (circuit_block, circuit_evidence_failed) = circuit_admission(
+    let (circuit_block, circuit_evidence_failed, circuit_hook_failed) = circuit_admission(
         &state,
         identity,
         request_id,
         request.method().as_str(),
         destination,
     );
-    if let Some(reply) = circuit_block {
+    if let Some(mut reply) = circuit_block {
+        traffic::local_reply(
+            traffic.as_ref(),
+            &mut request,
+            &mut reply,
+            Some(json!("circuit-breaker")),
+            None,
+            destination,
+            true,
+        )?;
         return Ok((prior_block(reply), "deny".into()));
     }
-    let context = match request_context::prepare(
-        runtime.clone(),
-        identity,
-        request_id,
-        &mut request,
-        destination,
-    )? {
-        request_context::Admission::Inactive => None,
-        request_context::Admission::Block(reply) => {
-            return Ok((prior_block(reply), "deny".into()));
-        }
-        request_context::Admission::Pending(context) => Some(context),
+    let admission = if circuit_hook_failed {
+        // A prior request hook exception stops later source children. Reserved
+        // context containment still applies before native forwarding (D55).
+        request.headers_mut().remove(crate::test_context::HEADER);
+        request_context::Admission::HookError
+    } else {
+        request_context::prepare(
+            runtime.clone(),
+            identity,
+            request_id,
+            &mut request,
+            destination,
+        )?
     };
-    if let Some(context) = context.as_ref()
-        && let Some(provenance) = context.response_provenance()
-    {
+    let mut context = match admission {
+        request_context::Admission::Inactive => {
+            request_context::RequestContext::traffic_only(&mut request, false)?
+        }
+        request_context::Admission::HookError => {
+            request_context::RequestContext::traffic_only(&mut request, true)?
+        }
+        request_context::Admission::Block(mut response) => {
+            traffic::local_reply(
+                traffic.as_ref(),
+                &mut request,
+                &mut response,
+                Some(json!("test-context")),
+                None,
+                destination,
+                true,
+            )?;
+            return Ok((prior_block(response), "deny".into()));
+        }
+        request_context::Admission::Pending(context) => context,
+    };
+    let traffic = traffic.expect("CONNECT returned before ordinary HTTP hooks");
+    traffic.request_headers(&request, destination);
+    context.attach_traffic(traffic);
+    if let Some(provenance) = context.response_provenance() {
         recording.request(
             &request,
             destination,
@@ -1276,18 +1407,9 @@ async fn forward(
         .headers_mut()
         .append(header::VIA, format!("1.1 {}", runtime.via_token).parse()?);
     let (parts, body) = request.into_parts();
-    let (body, context) = match context {
-        Some(context) => {
-            // Complete source-small requests before origin contact. A streamed
-            // request keeps its independent parser observer in the HTTP driver.
-            let (body, context) = context.buffer(body, content_length).await?;
-            (body, Some(context))
-        }
-        None => (
-            body.map_err(|error| -> Error { Box::new(error) }).boxed(),
-            None,
-        ),
-    };
+    // Every ordinary HTTP exchange shares source buffering and the independent
+    // request parser barrier; quiet rules decide whether decoding is needed.
+    let (body, context) = context.buffer(body, content_length).await?;
     let mut request = Request::from_parts(parts, body);
     let outbound = open_outbound(
         &runtime,
@@ -1319,7 +1441,7 @@ async fn forward(
         identity.clone(),
         request_id.to_owned(),
         destination.policy_host.clone(),
-        context,
+        Some(context),
     );
     let mut request = request.map(|body| ForwardedRequestBody {
         body,
@@ -1525,12 +1647,9 @@ pub(crate) fn serve_request(
                 "invalid".into(),
             )),
         };
-        match &result {
-            Ok(_) => recording.local_terminal(false),
-            Err(error) => {
-                recording.producer_error(error);
-                recording.finish(false, None, false);
-            }
+        if let Err(error) = &result {
+            recording.producer_error(error);
+            recording.finish(false, None, false);
         }
         let (mut reply, decision) = result.unwrap_or_else(|error| {
             if error.is::<AdminPortAccess>() {
@@ -1543,14 +1662,38 @@ pub(crate) fn serve_request(
                 "error".into(),
             )
         });
-        if !connect
+        let circuit = if !connect
             && reply
                 .extensions_mut()
                 .remove::<CircuitPriorBlock>()
                 .is_some()
             && let Ok(destination) = &destination
-            && crate::circuit_runtime::local_blocked_response(&state, &destination.policy_host)
         {
+            crate::circuit_runtime::local_blocked_response(&state, &destination.policy_host)
+        } else {
+            crate::circuit_runtime::ResponseOutcome::Complete {
+                evidence_failed: false,
+            }
+        };
+        let mut local_evidence_failed = circuit.evidence_failed();
+        if matches!(
+            circuit,
+            crate::circuit_runtime::ResponseOutcome::Exception { .. }
+        ) {
+            recording.skip_response();
+        } else {
+            // Upstream/deferred recording stays with Completion. Local response
+            // recording follows the same earlier circuit exception boundary.
+            recording.local_terminal(false);
+        }
+        if matches!(
+            circuit,
+            crate::circuit_runtime::ResponseOutcome::Complete { .. }
+        ) && let Some(local) = reply.extensions_mut().remove::<traffic::LocalResponse>()
+        {
+            local_evidence_failed |= local.finish(reply.status().as_u16());
+        }
+        if local_evidence_failed {
             reply
                 .headers_mut()
                 .insert("x-safeyolo-evidence-error", "true".parse().unwrap());

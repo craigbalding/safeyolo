@@ -69,10 +69,18 @@ impl Completion {
         let request_failed = context
             .as_ref()
             .is_some_and(RequestContext::evidence_failed);
-        let capture = context
-            .as_ref()
-            .and_then(RequestContext::response_provenance)
-            .map(|provenance| Arc::new(ResponseCapture::new(state.clone(), provenance)));
+        let capture = context.as_ref().and_then(|context| {
+            let provenance = context.response_provenance();
+            let traffic = context.traffic();
+            (provenance.is_some() || traffic.is_some()).then(|| {
+                Arc::new(ResponseCapture::new(
+                    state.clone(),
+                    provenance,
+                    traffic,
+                    recording.clone(),
+                ))
+            })
+        });
         let protocol = match (http2, &capture) {
             (true, Some(capture)) => Protocol::Http2(h2::ext::on_response_complete_with_capture(
                 request,
@@ -117,7 +125,7 @@ impl Completion {
         {
             capture.apply_head();
         }
-        let mut failed = match result {
+        let circuit = match result {
             Ok(status) => crate::circuit_runtime::completed_response(
                 &self.state,
                 &self.identity,
@@ -125,8 +133,24 @@ impl Completion {
                 &self.host,
                 status.as_u16(),
             ),
-            Err(()) => false,
+            Err(()) => crate::circuit_runtime::ResponseOutcome::Complete {
+                evidence_failed: false,
+            },
         };
+        let mut failed = circuit.evidence_failed();
+        if matches!(
+            circuit,
+            crate::circuit_runtime::ResponseOutcome::Exception { .. }
+        ) {
+            if let Some(capture) = &self.capture {
+                capture.skip_response();
+            }
+            if let Some(recording) = &self.recording {
+                recording.skip_response();
+            }
+            observation.applied = Some(failed);
+            return failed;
+        }
         if let Some(capture) = &self.capture {
             failed |= capture.finish(result.is_ok());
         } else if let Some(recording) = &self.recording {
@@ -304,6 +328,7 @@ mod tests {
                 "listeners":[],"policy_file":policy,
                 "readiness_file":directory.path().join("ready"),
                 "flow_store_enabled": false,
+                "audit_log_path": directory.path().join("audit.jsonl"),
                 "event_log":if full_sink {std::path::PathBuf::from("/dev/full")} else {directory.path().join("events.jsonl")},
                 "circuit_breaker_enabled":true,
             }))

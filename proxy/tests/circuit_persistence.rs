@@ -29,6 +29,7 @@ fn config(directory: &Path, state_file: Option<PathBuf>) -> Config {
         "circuit_state_file":state_file,
         "readiness_file":directory.join("ready.json"),
         "flow_store_enabled": false,
+        "audit_log_path": directory.join("audit.jsonl"),
         "event_log":directory.join("events.jsonl")
     }))
     .unwrap()

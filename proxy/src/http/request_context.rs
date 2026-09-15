@@ -24,17 +24,18 @@ use super::test_context::{Provenance, combined};
 
 pub(super) enum Admission {
     Inactive,
+    HookError,
     Block(Response<super::Body>),
     Pending(RequestContext),
 }
 
-enum Observer {
+pub(super) enum Observer {
     Http1(hyper::ext::RequestCompletion),
     Http2(h2::ext::RequestCompletion),
 }
 
 impl Observer {
-    fn take<B>(request: &mut Request<B>) -> Result<Self, Error> {
+    pub(super) fn take<B>(request: &mut Request<B>) -> Result<Self, Error> {
         if let Some(observer) = hyper::ext::take_request_completion(request) {
             Ok(Self::Http1(observer))
         } else if let Some(observer) = h2::ext::take_request_completion(request) {
@@ -44,7 +45,7 @@ impl Observer {
         }
     }
 
-    fn try_result(&mut self) -> Option<Result<(), ()>> {
+    pub(super) fn try_result(&mut self) -> Option<Result<(), ()>> {
         match self {
             Self::Http1(observer) => observer.try_result().map(|result| result.map_err(|_| ())),
             Self::Http2(observer) => observer.try_result().map(|result| result.map_err(|_| ())),
@@ -65,14 +66,16 @@ impl Future for Observer {
 
 struct Pending {
     observer: Observer,
-    prepared: PreparedRequest,
+    prepared: Option<PreparedRequest>,
     encoding: Result<Zeroizing<Vec<u8>>, ContentError>,
 }
 
 pub(super) struct RequestContext {
     pending: Option<Pending>,
     terminal: Option<bool>,
-    provenance: Arc<Provenance>,
+    provenance: Option<Arc<Provenance>>,
+    traffic: Option<Arc<super::traffic::Traffic>>,
+    skip_logger: bool,
     port: u16,
     valid_context: bool,
 }
@@ -116,7 +119,7 @@ pub(super) fn prepare<B>(
         Ok(prepared) => prepared,
         Err(error) => {
             report_core_error(error.kind());
-            return Ok(Admission::Inactive);
+            return Ok(Admission::HookError);
         }
     };
     if matches!(
@@ -145,7 +148,15 @@ pub(super) fn prepare<B>(
             .header(header::CONTENT_TYPE, "application/json")
             .header("x-blocked-by", "test-context")
             .body(super::full(bytes))?;
-        let failed = apply(&provenance, destination.port, prepared, None, Ok(&[]));
+        let failed = apply(
+            &provenance,
+            destination.port,
+            prepared,
+            None,
+            Ok(&[]),
+            crate::circuit_runtime::now(),
+        )
+        .unwrap_or_else(|failed| failed);
         if failed {
             response
                 .headers_mut()
@@ -159,17 +170,47 @@ pub(super) fn prepare<B>(
     Ok(Admission::Pending(RequestContext {
         pending: Some(Pending {
             observer,
-            prepared,
+            prepared: Some(prepared),
             encoding,
         }),
         terminal: None,
-        provenance,
+        provenance: Some(provenance),
+        traffic: None,
+        skip_logger: false,
         port: destination.port,
         valid_context,
     }))
 }
 
 impl RequestContext {
+    /// Ordinary HTTP shares the same buffering and independent EOM owner.
+    pub(super) fn traffic_only<B>(
+        request: &mut Request<B>,
+        skip_logger: bool,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            pending: Some(Pending {
+                observer: Observer::take(request)?,
+                prepared: None,
+                encoding: combined(request.headers(), header::CONTENT_ENCODING),
+            }),
+            terminal: None,
+            provenance: None,
+            traffic: None,
+            skip_logger,
+            port: 0,
+            valid_context: false,
+        })
+    }
+
+    pub(super) fn attach_traffic(&mut self, traffic: Arc<super::traffic::Traffic>) {
+        self.traffic = Some(traffic);
+    }
+
+    pub(super) fn traffic(&self) -> Option<Arc<super::traffic::Traffic>> {
+        self.traffic.clone()
+    }
+
     /// Small buffered requests must cross the independent parser barrier before
     /// the caller may dial. Streamed bodies retain their still-pending permit.
     pub(super) async fn buffer(
@@ -237,24 +278,36 @@ impl RequestContext {
     }
 
     fn apply(&mut self, pending: Pending, content: Option<&[u8]>) {
-        // Reserve terminal application before metadata/audit work: unwinding
-        // cannot replay the single-use counter permit.
         self.terminal = Some(false);
-        self.terminal = Some(apply(
-            &self.provenance,
-            self.port,
-            pending.prepared,
-            content,
-            pending
-                .encoding
-                .as_ref()
-                .map(|bytes| bytes.as_slice())
-                .map_err(|error| *error),
-        ));
+        let started = self
+            .traffic
+            .as_ref()
+            .map_or_else(crate::circuit_runtime::now, |traffic| {
+                traffic.begin_request()
+            });
+        let encoding = pending
+            .encoding
+            .as_ref()
+            .map(|bytes| bytes.as_slice())
+            .map_err(|error| *error);
+        let outcome = match (pending.prepared, self.provenance.as_deref()) {
+            (Some(prepared), Some(provenance)) => {
+                apply(provenance, self.port, prepared, content, encoding, started)
+            }
+            _ => Ok(false),
+        };
+        let mut failed = outcome.unwrap_or_else(|failed| failed);
+        if outcome.is_ok()
+            && !self.skip_logger
+            && let Some(traffic) = &self.traffic
+        {
+            failed |= traffic.request(|| super::traffic::decoded_size(content, encoding));
+        }
+        self.terminal = Some(failed);
     }
 
     pub(super) fn response_provenance(&self) -> Option<Arc<Provenance>> {
-        self.valid_context.then(|| self.provenance.clone())
+        self.provenance.clone().filter(|_| self.valid_context)
     }
 
     pub(super) fn evidence_failed(&self) -> bool {
@@ -272,28 +325,24 @@ fn apply(
     prepared: PreparedRequest,
     content: Option<&[u8]>,
     encoding: Result<&[u8], ContentError>,
-) -> bool {
+    started: f64,
+) -> Result<bool, bool> {
     let application = match prepared.begin() {
         Ok(application) => application,
         Err(error) => {
             report_core_error(error.kind());
-            return error.kind() == ContextErrorKind::Poisoned;
+            return Err(error.kind() == ContextErrorKind::Poisoned);
         }
     };
     let failed = match application.result() {
         Ok(RequestOutcome::Applied { applied }) => {
             // Source request_id.request stamps start_time after request EOM,
             // so upload duration is not part of response elapsed time.
-            match provenance.apply_request(
-                applied.clone(),
-                content,
-                encoding,
-                crate::circuit_runtime::now(),
-            ) {
+            match provenance.apply_request(applied.clone(), content, encoding, started) {
                 Ok(failed) => failed,
                 Err(error) => {
                     eprintln!("Test context request content failed: {error}");
-                    return error == ContentError::Allocation;
+                    return Err(error == ContentError::Allocation);
                 }
             }
         }
@@ -302,16 +351,16 @@ fn apply(
         Ok(RequestOutcome::PriorResponse | RequestOutcome::NotTargetHost) => false,
         Err(error) => {
             report_core_error(error.kind());
-            return error.kind() == ContextErrorKind::Poisoned;
+            return Err(error.kind() == ContextErrorKind::Poisoned);
         }
     };
     // A normal sink write error is swallowed by production submission. Retain
     // the marker separately and commit its source terminal counters.
     match application.finish() {
-        Ok(_) => failed,
+        Ok(_) => Ok(failed),
         Err(error) => {
             report_core_error(error.kind());
-            failed || error.kind() == ContextErrorKind::Poisoned
+            Err(failed || error.kind() == ContextErrorKind::Poisoned)
         }
     }
 }

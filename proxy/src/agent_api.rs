@@ -18,7 +18,9 @@ use zeroize::Zeroizing;
 
 mod declarations;
 mod flows;
-pub use declarations::{Controls, DeclarationContext, RequestBody, respond_with_body};
+pub use declarations::{
+    BodyObservation, Controls, DeclarationContext, RequestBody, respond_with_body,
+};
 pub use flows::FlowFailure;
 
 use crate::{

@@ -215,7 +215,7 @@ fn record_builder_matches_fourteen_actual_source_projections() {
 fn config(directory: &Path) -> Config {
     let policy = directory.join("policy.json");
     std::fs::write(&policy,json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow"}],"addons":{"test_context":{"target_hosts":["127.0.0.2"]},"flow_store":{"max_request_body_bytes":5,"max_response_body_bytes":6,"compress_bodies":false}}}).to_string()).unwrap();
-    serde_json::from_value(json!({"listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.20"},{"agent_id":"bob","socket_path":directory.join("bob.sock"),"source_id":"192.0.2.21"}],"policy_file":policy,"readiness_file":directory.join("ready"),"event_log":directory.join("events"),"flow_store_enabled":true,"flow_store_db_path":directory.join("flows.sqlite3"),"test_context_block":true,"circuit_breaker_enabled":false})).unwrap()
+    serde_json::from_value(json!({"listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.20"},{"agent_id":"bob","socket_path":directory.join("bob.sock"),"source_id":"192.0.2.21"}],"policy_file":policy,"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events"),"flow_store_enabled":true,"flow_store_db_path":directory.join("flows.sqlite3"),"test_context_block":true,"circuit_breaker_enabled":false})).unwrap()
 }
 async fn send(
     path: &Path,
@@ -517,7 +517,12 @@ async fn h2_unread_response_terminal_records_all_data_and_early_metadata_stays_i
                 .unwrap();
         }
         let state = Arc::new(std::sync::RwLock::new(runtime));
-        let capture = Arc::new(ResponseCapture::new(state, provenance.clone()));
+        let capture = Arc::new(ResponseCapture::new(
+            state,
+            Some(provenance.clone()),
+            None,
+            None,
+        ));
         let (client, server) = tokio::io::duplex(65536);
         let peer = tokio::spawn(async move {
             let mut connection = h2::server::handshake(server).await.unwrap();
@@ -803,4 +808,141 @@ fn production_container_source_dispatch_stays_reproducible() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[tokio::test]
+async fn circuit_response_exception_stops_later_hooks_but_keeps_wire_and_committed_state() {
+    for (name, settings, skips_hooks, committed, fail_audit) in [
+        ("normal", json!({"failure_threshold":1}), false, true, false),
+        (
+            "comparison_error",
+            json!({"failure_threshold":"invalid"}),
+            true,
+            false,
+            false,
+        ),
+        (
+            "after_commit_error",
+            json!({"failure_threshold":1,"timeout_seconds":"invalid"}),
+            true,
+            true,
+            false,
+        ),
+        (
+            "audit_failure",
+            json!({"failure_threshold":1}),
+            false,
+            true,
+            true,
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut configuration = config(directory.path());
+        configuration.circuit_breaker_enabled = true;
+        let policy_path = configuration.policy_file.as_ref().unwrap();
+        let mut policy: Value =
+            serde_json::from_slice(&std::fs::read(policy_path).unwrap()).unwrap();
+        policy["addons"]["circuit_breaker"] = settings;
+        std::fs::write(policy_path, policy.to_string()).unwrap();
+        let proxy = Proxy::start(configuration).await.unwrap();
+        let runtime = proxy.runtime.read().unwrap().clone();
+        let peer_runtime = runtime.clone();
+        let listener = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
+            let request = origin_request(&mut stream).await;
+            if fail_audit {
+                // Fail only response-phase writes to the owned diagnostic file.
+                // The failure cannot prevent admission or origin delivery.
+                *peer_runtime.events.lock().unwrap() =
+                    std::fs::File::open(&peer_runtime.config.event_log).unwrap();
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 500 Owned\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbody",
+                )
+                .await
+                .unwrap();
+            stream.shutdown().await.unwrap();
+            request
+        });
+        let reply = send(
+            &directory.path().join("alice.sock"),
+            port,
+            "/circuit-error",
+            true,
+            b"request",
+            "identity",
+        )
+        .await;
+        let observed = timeout(LIMIT, peer).await.unwrap().unwrap();
+        proxy.shutdown().await;
+        assert!(reply.starts_with(b"HTTP/1.1 500"), "{name}");
+        assert!(reply.ends_with(b"body"), "{name}");
+        assert!(observed.ends_with(b"request"), "{name}");
+        assert!(!directory.path().join("alice.sock").exists());
+        assert!(!directory.path().join("ready").exists());
+        let expected_recorded = usize::from(!skips_hooks);
+        assert_eq!(
+            runtime.flow_recorder.stats(),
+            json!({"recorded":expected_recorded,"errors":0,"skipped":0,"queue_dropped":0,"write_errors":0}),
+            "{name}"
+        );
+        let store = runtime.flow_recorder.store().unwrap();
+        assert_eq!(store.get_flow(1).unwrap().is_some(), !skips_hooks, "{name}");
+        assert!(store.get_flow(2).unwrap().is_none(), "{name}");
+        assert_eq!(
+            runtime
+                .test_context
+                .stats(super::super::declaration_time())
+                .unwrap()
+                .allowed_total,
+            1,
+            "{name}"
+        );
+        let snapshot = runtime
+            .circuits
+            .snapshot(crate::circuit_runtime::now())
+            .unwrap();
+        if committed {
+            assert_eq!(snapshot["states"]["127.0.0.2"]["state"], "open", "{name}");
+            assert_eq!(
+                snapshot["states"]["127.0.0.2"]["failure_count"], 1,
+                "{name}"
+            );
+        } else {
+            assert!(snapshot["states"].as_object().unwrap().is_empty(), "{name}");
+        }
+        let events: Vec<Value> = std::fs::read_to_string(directory.path().join("events"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let response_provenance = events
+            .iter()
+            .filter(|event| {
+                event["event"] == "security.test_context" && event["details"]["phase"] == "response"
+            })
+            .count();
+        assert_eq!(
+            response_provenance,
+            usize::from(!skips_hooks && !fail_audit),
+            "{name}"
+        );
+        let circuit_events = events
+            .iter()
+            .filter(|event| {
+                event["event"] == "proxy.circuit"
+                    && event["audit_intent"] == "ops.circuit_breaker.open"
+            })
+            .count();
+        assert_eq!(
+            circuit_events,
+            usize::from(committed && !fail_audit),
+            "{name}"
+        );
+    }
 }

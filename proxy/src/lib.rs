@@ -7,6 +7,7 @@ mod admin_listener;
 pub mod admin_shield;
 pub mod agent_api;
 pub mod approvals;
+pub mod audit;
 mod circuit_runtime;
 pub mod circuits;
 mod config;
@@ -30,6 +31,7 @@ pub mod policy;
 mod python_json;
 mod python_text;
 mod request_headers;
+mod request_logger;
 pub mod services;
 pub mod tasks;
 pub mod test_context;
@@ -90,6 +92,8 @@ pub(crate) struct Runtime {
     circuits: circuits::CircuitBreaker,
     test_context: test_context::TestContext,
     flow_recorder: Arc<flow_recorder::FlowRecorder>,
+    audit: Arc<audit::Writer>,
+    request_logger: Arc<request_logger::RequestLogger>,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -130,6 +134,20 @@ impl Runtime {
             .unwrap_or_default();
         let test_context = previous
             .map(|runtime| runtime.test_context.clone())
+            .unwrap_or_default();
+        let audit = match previous {
+            Some(runtime) => runtime.audit.clone(),
+            None => Arc::new(audit::Writer::new(
+                config.audit_log_path.clone().unwrap_or_else(|| {
+                    std::env::var_os("SAFEYOLO_LOG_PATH")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("/app/logs/safeyolo.jsonl"))
+                }),
+                audit::Settings::from_env()?,
+            )),
+        };
+        let request_logger = previous
+            .map(|runtime| runtime.request_logger.clone())
             .unwrap_or_default();
         let flow_recorder = match previous {
             Some(runtime) => runtime.flow_recorder.clone(),
@@ -196,6 +214,8 @@ impl Runtime {
             circuits,
             test_context,
             flow_recorder,
+            audit,
+            request_logger,
             via_token: config
                 .via_token
                 .clone()
@@ -664,6 +684,18 @@ impl Proxy {
         {
             eprintln!("Circuit snapshot shutdown failed");
         }
+        let audit = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .audit
+            .clone();
+        if !matches!(
+            tokio::task::spawn_blocking(move || audit.shutdown(Duration::from_secs(5))).await,
+            Ok(Ok(true))
+        ) {
+            eprintln!("Audit writer shutdown did not complete");
+        }
     }
 }
 
@@ -675,3 +707,6 @@ impl Drop for Proxy {
         }
     }
 }
+
+#[cfg(test)]
+mod audit_runtime_tests;

@@ -1,0 +1,459 @@
+{
+  "source_results_sha256": "ba0b63227b213794635c088117846d19254414bf60c433884fb512fd56dfae8d",
+  "rows": [
+    {
+      "case": "initial_empty_hash_skips_config",
+      "error": null,
+      "hash": "",
+      "stats": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "events": [
+        {
+          "schema_version": 1,
+          "ts": "2026-01-02T03:04:05.123456Z",
+          "event": "traffic.request",
+          "kind": "traffic",
+          "severity": "low",
+          "summary": "POST audit.fixture.invalid/a",
+          "request_id": "req-00000000000000000000000000000001",
+          "agent": "alice",
+          "addon": "request-logger",
+          "host": "audit.fixture.invalid",
+          "details": {
+            "method": "POST",
+            "path": "/a",
+            "size": 7,
+            "client": "192.0.2.10",
+            "attribution": {
+              "evidence_owner": "alice",
+              "trusted_transport_identity": "alice",
+              "initiator": "unknown",
+              "attribution_status": "resolved",
+              "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "quieted": false
+    },
+    {
+      "case": "changed_hash_loads_and_quiets",
+      "error": null,
+      "hash": "one",
+      "stats": {
+        "requests_total": 2,
+        "requests_quieted": 1,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "events": [],
+      "quieted": true
+    },
+    {
+      "case": "quiet_response_no_counter",
+      "error": null,
+      "hash": "one",
+      "stats": {
+        "requests_total": 2,
+        "requests_quieted": 1,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "events": [],
+      "quieted": true
+    },
+    {
+      "case": "blocked_overrides_quiet",
+      "error": null,
+      "hash": "one",
+      "stats": {
+        "requests_total": 2,
+        "requests_quieted": 1,
+        "responses_total": 0,
+        "blocks_total": 1
+      },
+      "events": [
+        {
+          "schema_version": 1,
+          "ts": "2026-01-02T03:04:05.123456Z",
+          "event": "traffic.response",
+          "kind": "traffic",
+          "severity": "high",
+          "summary": "201 audit.fixture.invalid/a [blocked by network-guard]",
+          "request_id": "req-00000000000000000000000000000001",
+          "agent": "alice",
+          "addon": "request-logger",
+          "host": "audit.fixture.invalid",
+          "details": {
+            "path": "/a",
+            "status": 201,
+            "size": 8,
+            "ms": 123.5,
+            "blocked_by": "network-guard",
+            "block_reason": "synthetic denial",
+            "credential_fingerprint": "fixture-fingerprint",
+            "attribution": {
+              "evidence_owner": "alice",
+              "trusted_transport_identity": "alice",
+              "initiator": "unknown",
+              "attribution_status": "resolved",
+              "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "quieted": true
+    },
+    {
+      "case": "structural_error_latches_hash_retains_rules",
+      "error": null,
+      "hash": "two",
+      "stats": {
+        "requests_total": 3,
+        "requests_quieted": 2,
+        "responses_total": 0,
+        "blocks_total": 1
+      },
+      "events": [
+        {
+          "schema_version": 1,
+          "ts": "2026-01-02T03:04:05.123456Z",
+          "event": "ops.config_error",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "request-logger quiet_hosts config malformed",
+          "addon": "request-logger",
+          "details": {
+            "error": "quiet_hosts.hosts must be a list, got str. Fix addons.request_logger.quiet_hosts.hosts in policy."
+          }
+        }
+      ]
+    },
+    {
+      "case": "same_malformed_hash_no_retry",
+      "error": null,
+      "hash": "two",
+      "stats": {
+        "requests_total": 4,
+        "requests_quieted": 3,
+        "responses_total": 0,
+        "blocks_total": 1
+      },
+      "events": []
+    },
+    {
+      "case": "host_type_error_after_count_and_hash",
+      "error": "TypeError",
+      "hash": "three",
+      "stats": {
+        "requests_total": 5,
+        "requests_quieted": 3,
+        "responses_total": 0,
+        "blocks_total": 1
+      },
+      "events": []
+    },
+    {
+      "case": "host_type_error_hash_not_retried",
+      "error": null,
+      "hash": "three",
+      "stats": {
+        "requests_total": 6,
+        "requests_quieted": 4,
+        "responses_total": 0,
+        "blocks_total": 1
+      },
+      "events": []
+    },
+    {
+      "case": "path_item_error_is_lazy",
+      "error": "TypeError",
+      "hash": "four",
+      "stats": {
+        "requests_total": 7,
+        "requests_quieted": 4,
+        "responses_total": 0,
+        "blocks_total": 1
+      },
+      "events": []
+    },
+    {
+      "case": "enabled_false_is_ignored",
+      "error": null,
+      "hash": "five",
+      "stats": {
+        "requests_total": 8,
+        "requests_quieted": 4,
+        "responses_total": 0,
+        "blocks_total": 1
+      },
+      "events": [
+        {
+          "schema_version": 1,
+          "ts": "2026-01-02T03:04:05.123456Z",
+          "event": "traffic.request",
+          "kind": "traffic",
+          "severity": "low",
+          "summary": "POST audit.fixture.invalid/a",
+          "request_id": "req-00000000000000000000000000000001",
+          "agent": "alice",
+          "addon": "request-logger",
+          "host": "audit.fixture.invalid",
+          "details": {
+            "method": "POST",
+            "path": "/a",
+            "size": 7,
+            "client": "192.0.2.10",
+            "attribution": {
+              "evidence_owner": "alice",
+              "trusted_transport_identity": "alice",
+              "initiator": "unknown",
+              "attribution_status": "resolved",
+              "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "alice"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case": "ordinary_response_shape",
+      "error": null,
+      "hash": "five",
+      "stats": {
+        "requests_total": 8,
+        "requests_quieted": 4,
+        "responses_total": 1,
+        "blocks_total": 1
+      },
+      "events": [
+        {
+          "schema_version": 1,
+          "ts": "2026-01-02T03:04:05.123456Z",
+          "event": "traffic.response",
+          "kind": "traffic",
+          "severity": "low",
+          "summary": "201 audit.fixture.invalid/a",
+          "request_id": "req-00000000000000000000000000000001",
+          "agent": "alice",
+          "addon": "request-logger",
+          "host": "audit.fixture.invalid",
+          "details": {
+            "path": "/a",
+            "status": 201,
+            "size": 8,
+            "ms": 123.5,
+            "attribution": {
+              "evidence_owner": "alice",
+              "trusted_transport_identity": "alice",
+              "initiator": "unknown",
+              "attribution_status": "resolved",
+              "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "alice"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case": "response_none_is_ops_only",
+      "error": null,
+      "hash": "five",
+      "stats": {
+        "requests_total": 8,
+        "requests_quieted": 4,
+        "responses_total": 1,
+        "blocks_total": 1
+      },
+      "events": [
+        {
+          "schema_version": 1,
+          "ts": "2026-01-02T03:04:05.123456Z",
+          "event": "ops.response_missing",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "no response for POST audit.fixture.invalid/a",
+          "request_id": "req-00000000000000000000000000000001",
+          "agent": "alice",
+          "addon": "request-logger",
+          "host": "audit.fixture.invalid",
+          "details": {
+            "method": "POST",
+            "path": "/a",
+            "attribution": {
+              "evidence_owner": "alice",
+              "trusted_transport_identity": "alice",
+              "initiator": "unknown",
+              "attribution_status": "resolved",
+              "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "alice"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case": "decoded_request_size",
+      "error": null,
+      "hash": "five",
+      "stats": {
+        "requests_total": 9,
+        "requests_quieted": 4,
+        "responses_total": 1,
+        "blocks_total": 1
+      },
+      "events": [
+        {
+          "schema_version": 1,
+          "ts": "2026-01-02T03:04:05.123456Z",
+          "event": "traffic.request",
+          "kind": "traffic",
+          "severity": "low",
+          "summary": "POST audit.fixture.invalid/a",
+          "request_id": "req-00000000000000000000000000000001",
+          "agent": "alice",
+          "addon": "request-logger",
+          "host": "audit.fixture.invalid",
+          "details": {
+            "method": "POST",
+            "path": "/a",
+            "size": 15,
+            "client": "192.0.2.10",
+            "attribution": {
+              "evidence_owner": "alice",
+              "trusted_transport_identity": "alice",
+              "initiator": "unknown",
+              "attribution_status": "resolved",
+              "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "alice"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case": "request_decode_error_count_retained",
+      "error": "ValueError",
+      "hash": "five",
+      "stats": {
+        "requests_total": 10,
+        "requests_quieted": 4,
+        "responses_total": 1,
+        "blocks_total": 1
+      },
+      "events": []
+    },
+    {
+      "case": "response_decode_error_count_retained",
+      "error": "ValueError",
+      "hash": "five",
+      "stats": {
+        "requests_total": 10,
+        "requests_quieted": 4,
+        "responses_total": 2,
+        "blocks_total": 1
+      },
+      "events": []
+    },
+    {
+      "case": "streamed_request_size_zero",
+      "error": null,
+      "hash": "five",
+      "stats": {
+        "requests_total": 11,
+        "requests_quieted": 4,
+        "responses_total": 2,
+        "blocks_total": 1
+      },
+      "events": [
+        {
+          "schema_version": 1,
+          "ts": "2026-01-02T03:04:05.123456Z",
+          "event": "traffic.request",
+          "kind": "traffic",
+          "severity": "low",
+          "summary": "POST audit.fixture.invalid/a",
+          "request_id": "req-00000000000000000000000000000001",
+          "agent": "alice",
+          "addon": "request-logger",
+          "host": "audit.fixture.invalid",
+          "details": {
+            "method": "POST",
+            "path": "/a",
+            "size": 0,
+            "client": "192.0.2.10",
+            "attribution": {
+              "evidence_owner": "alice",
+              "trusted_transport_identity": "alice",
+              "initiator": "unknown",
+              "attribution_status": "resolved",
+              "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "alice"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "case": "streamed_response_size_zero",
+      "error": null,
+      "hash": "five",
+      "stats": {
+        "requests_total": 11,
+        "requests_quieted": 4,
+        "responses_total": 3,
+        "blocks_total": 1
+      },
+      "events": [
+        {
+          "schema_version": 1,
+          "ts": "2026-01-02T03:04:05.123456Z",
+          "event": "traffic.response",
+          "kind": "traffic",
+          "severity": "low",
+          "summary": "201 audit.fixture.invalid/a",
+          "request_id": "req-00000000000000000000000000000001",
+          "agent": "alice",
+          "addon": "request-logger",
+          "host": "audit.fixture.invalid",
+          "details": {
+            "path": "/a",
+            "status": 201,
+            "size": 0,
+            "ms": 123.5,
+            "attribution": {
+              "evidence_owner": "alice",
+              "trusted_transport_identity": "alice",
+              "initiator": "unknown",
+              "attribution_status": "resolved",
+              "attribution_provenance": {
+                "transport_source": "uds",
+                "uds_agent": "alice"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

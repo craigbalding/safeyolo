@@ -92,6 +92,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         config = {
             "listeners": [{"agent_id": name, "socket_path": path} for name, path in paths.items()],
             "readiness_file": str(directory / "ready"),
+            "audit_log_path": str(directory / "audit.jsonl"),
             "event_log": str(directory / "events.jsonl"),
             "flow_store_enabled": False,
             "flow_store_db_path": str(directory / "flows.sqlite3"),

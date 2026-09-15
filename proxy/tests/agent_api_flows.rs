@@ -85,6 +85,7 @@ impl Fixture {
                 body,
                 content_encoding: encoding,
                 content_length: length,
+                observation: None,
             },
         )
         .await

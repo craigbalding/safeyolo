@@ -94,6 +94,10 @@ pub struct Config {
     #[serde(default)]
     pub admin_shield_extra_ports: String,
     pub readiness_file: PathBuf,
+    /// Development override for the process audit path. Without it, startup
+    /// uses SAFEYOLO_LOG_PATH and the production default.
+    pub audit_log_path: Option<PathBuf>,
+    /// Migration diagnostics, separate from the canonical audit stream.
     pub event_log: PathBuf,
     pub parent_proxy: Option<String>,
     pub upstream_ca_file: Option<PathBuf>,

@@ -114,6 +114,7 @@ fn config(directory: &TempDir) -> Config {
         admin_api_token_file: None,
         admin_shield_extra_ports: String::new(),
         readiness_file: directory.path().join("ready.json"),
+        audit_log_path: Some(directory.path().join("audit.jsonl")),
         event_log: directory.path().join("events.jsonl"),
         parent_proxy: None,
         upstream_ca_file: None,

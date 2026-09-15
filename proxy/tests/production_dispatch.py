@@ -34,6 +34,7 @@ def metadata(source: Path, addonmanager, http) -> dict:
         "cli/src/safeyolo/traffic_master.py",
         "cli/src/safeyolo/mitm_addons/__init__.py",
         "cli/src/safeyolo/mitm_addons/request_id.py",
+        "cli/src/safeyolo/mitm_addons/circuit_breaker.py",
         "cli/src/safeyolo/mitm_addons/test_context.py",
         "cli/src/safeyolo/mitm_addons/flow_recorder.py",
         "cli/src/safeyolo/mitm_addons/request_logger.py",
@@ -74,6 +75,7 @@ async def run(source: Path) -> dict:
 
         from safeyolo.core import config_cache, flow_writer
         from safeyolo.mitm_addons import ProductionAddons
+        from safeyolo.mitm_addons import circuit_breaker as circuits
         from safeyolo.mitm_addons import flow_recorder as recording
         from safeyolo.mitm_addons import request_logger as logging_addon
         from safeyolo.mitm_addons import test_context as context
@@ -121,13 +123,19 @@ async def run(source: Path) -> dict:
                     create=True,
                 ),
             ):
-                for mode in ("production_container", "separate_addons_control"):
-                    for case in (
+                for mode in ("production_container", "separate_addons_control", "request_circuit_controls"):
+                    cases = (
                         "valid",
                         "request_content_error",
                         "response_content_error",
                         "both_content_errors",
-                    ):
+                    )
+                    if mode == "production_container":
+                        cases += ("circuit_normal500", "circuit_comparison_error", "circuit_after_commit_error")
+                    elif mode == "request_circuit_controls":
+                        mode = "production_container"
+                        cases = ("circuit_request_valid", "circuit_request_error", "circuit_request_error_missing_context")
+                    for case in cases:
                         events = []
                         before_errors = len(errors)
                         addon = context.TestContext()
@@ -138,6 +146,26 @@ async def run(source: Path) -> dict:
                         recorder.store = store
                         writer = flow_writer.install(store)
                         children = [RequestIdGenerator(), addon, recorder, logger]
+                        circuit = None
+                        if case.startswith("circuit_"):
+                            settings = {"failure_threshold": 1}
+                            if case == "circuit_comparison_error":
+                                settings["failure_threshold"] = "invalid"
+                            if case == "circuit_after_commit_error":
+                                settings["timeout_seconds"] = "invalid"
+                            if case.startswith("circuit_request_"):
+                                settings["half_open_max_requests"] = 3 if case == "circuit_request_valid" else "invalid"
+                            sensor["addons"]["circuit_breaker"] = settings
+                            circuit = circuits.CircuitBreaker()
+                            if case.startswith("circuit_request_"):
+                                circuit._state.set("owned.invalid", {
+                                    "state": "half_open", "failure_count": 0,
+                                    "success_count": 0, "failure_streak": 0,
+                                    "half_open_requests": 0,
+                                })
+                            children.insert(1, circuit)
+                        else:
+                            sensor["addons"].pop("circuit_breaker", None)
                         # Preserve the exact production container type/dispatch
                         # boundary, avoiding unrelated addon startup/imports.
                         production = ProductionAddons.__new__(ProductionAddons)
@@ -152,6 +180,8 @@ async def run(source: Path) -> dict:
                         flow.request.headers["X-SafeYolo-Test-Context"] = "run=owned;agent=declared;test=t1"
                         flow.client_conn.peername = ("192.0.2.10", 10000)
                         flow.client_conn.proxy_mode = UnixMode.parse("unix:/tmp/192.0.2.10_alice/proxy.sock")
+                        if case == "circuit_request_error_missing_context":
+                            del flow.request.headers["X-SafeYolo-Test-Context"]
                         if case in ("request_content_error", "both_content_errors"):
                             flow.request.headers["Content-Encoding"] = "gzip"
                             flow.request.raw_content = b"invalid owned gzip"
@@ -167,6 +197,11 @@ async def run(source: Path) -> dict:
                                 "write_event",
                                 side_effect=lambda event, _events=events, **_kw: _events.append(event),
                             ),
+                            patch.object(
+                                circuits,
+                                "write_event",
+                                side_effect=lambda event, _events=events, **_kw: _events.append(event),
+                            ),
                         ):
                             await manager.trigger_event(HttpRequestHook(flow))
                             request_snapshot = {
@@ -176,7 +211,15 @@ async def run(source: Path) -> dict:
                                 "events": list(events),
                                 "errors": errors[before_errors:],
                             }
-                            flow.response = http.Response.make(200, b"response")
+                            if case.startswith("circuit_request_"):
+                                request_snapshot.update({
+                                    "context_checks": addon.stats.checks,
+                                    "request_id_present": bool(flow.metadata.get("request_id")),
+                                    "start_time_present": "start_time" in flow.metadata,
+                                    "context_header_present": "X-SafeYolo-Test-Context" in flow.request.headers,
+                                    "local_response": flow.response is not None,
+                                })
+                            flow.response = http.Response.make(500 if circuit is not None else 200, b"response")
                             if case in (
                                 "response_content_error",
                                 "both_content_errors",
@@ -199,6 +242,16 @@ async def run(source: Path) -> dict:
                                 "persisted_rows": count,
                             }
                         )
+                        if circuit is not None:
+                            state = circuit._state.get("owned.invalid")
+                            rows[-1]["circuit"] = {
+                                "checks": circuit.checks_total,
+                                "opens": circuit.opens_total,
+                                "state": state.get("state"),
+                                "failure_count": state.get("failure_count"),
+                                "response_status": flow.response.status_code,
+                                "response_body": flow.response.raw_content.decode(),
+                            }
                         store.close()
                         flow_writer._writer = None
         finally:
@@ -218,11 +271,48 @@ async def run(source: Path) -> dict:
             assert pairs["production_container", case]["logger"]["responses_total"] == 0
             assert pairs["separate_addons_control", case]["recorder"]["errors"] == 1
             assert pairs["separate_addons_control", case]["logger"]["responses_total"] == 1
+        for case in ("circuit_normal500", "circuit_comparison_error", "circuit_after_commit_error"):
+            row = pairs["production_container", case]
+            success = case == "circuit_normal500"
+            committed = case != "circuit_comparison_error"
+            assert row["request"]["context_allowed"] == 1
+            assert row["logger"]["requests_total"] == 1
+            assert row["logger"]["responses_total"] == int(success)
+            assert row["recorder"]["recorded"] == int(success)
+            assert row["recorder"]["errors"] == 0
+            assert row["persisted_rows"] == int(success)
+            assert row["errors"] == ([] if success else ["TypeError"])
+            assert row["circuit"] == {
+                "checks": 1,
+                "opens": int(committed),
+                "state": "open" if committed else None,
+                "failure_count": 1 if committed else None,
+                "response_status": 500,
+                "response_body": "response",
+            }
+            assert row["events"].count("ops.circuit_breaker.open") == int(committed)
+        for case in ("circuit_request_valid", "circuit_request_error", "circuit_request_error_missing_context"):
+            row = pairs["production_container", case]
+            valid = case == "circuit_request_valid"
+            request = row["request"]
+            assert request["context_checks"] == int(valid)
+            assert request["context_allowed"] == int(valid)
+            assert request["context_applied"] == valid
+            assert request["request_id_present"] and request["start_time_present"]
+            assert not request["local_response"]
+            assert request["logger"]["requests_total"] == int(valid)
+            assert request["errors"] == ([] if valid else ["TypeError"])
+            assert row["logger"]["responses_total"] == 1
+            assert row["events"].count("traffic.request") == int(valid)
+            assert row["events"].count("traffic.response") == 1
+            assert row["persisted_rows"] == int(valid)
+            assert row["circuit"]["checks"] == 1
+            assert request["context_header_present"] == (case == "circuit_request_error")
         result = {
             "rows": rows,
             "network_attempts": 0,
             "writer_threads_joined": True,
-            "boundary": "real AddonManager trigger_event with ProductionAddons.__new__ container and four real children; synthetic completed flows, captured audit enqueue only; no full startup or transport proof",
+            "boundary": "real AddonManager trigger_event with ProductionAddons.__new__ container and four real children, plus actual CircuitBreaker in six controls; synthetic completed flows, captured audit enqueue only; no full startup or transport proof",
             "metadata": metadata(source, addonmanager, http),
         }
     result["temporary_stores_removed"] = not Path(temporary).exists()
@@ -239,7 +329,7 @@ def main() -> None:
     result = asyncio.run(run(source_root(args.source)))
     if args.check is not None:
         assert result == json.loads(args.check.read_text()), "source dispatch fixture changed"
-        print("8 actual source dispatch controls checked", file=sys.stderr)
+        print("14 actual source dispatch controls checked", file=sys.stderr)
     encoded = json.dumps(result, indent=2) + "\n"
     if args.output is not None:
         args.output.write_text(encoded)

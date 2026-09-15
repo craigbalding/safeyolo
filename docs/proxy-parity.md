@@ -362,6 +362,7 @@ silently reduce accepted message sizes to a library default.
 | D56 | The inherited native HTTP/2 parser accepted pseudo-header trailers and dropped those fields before publishing successful completion. It also ignored the decoder's existing oversized-header marker for trailers, which can hide discarded pseudo fields. | Shared request/response trailer admission now rejects retained pseudo fields with connection PROTOCOL_ERROR and the existing oversized marker with ENHANCE_YOUR_CALM. Valid ordinary trailers still complete. Actual Python execution confirms ordinary versus pseudo-header behavior; the oversized source error path has static evidence only. Existing configured size limits are reused; exact-limit differential parity is unverified. |
 | D57 | A source flow-record tag failure can leave the inserted flow pending on its SQLite connection. A later successful operation commits that failed record. | Native recording rolls the row and provenance tags back together, while retaining separate best-effort body search indexing. The [storage comparison](../proxy/tests/flow_store.rs) preserves the source witness and checks that the failed record stays absent after another commit and reopen. |
 | D58 | Direct source flow reads fall back to legacy agent_id when a schema-v2 row has no authoritative evidence_owner. An explicitly quarantined owner-null row is therefore readable by that legacy agent although scoped search excludes it. | Native direct reads require exact evidence_owner, matching collection scope. Foreign, unresolved, quarantined and missing records share the existing 404. [API tests](../proxy/tests/agent_api_flows.rs) prove denial before loading or decompressing a body. Existing version-1 migration still assigns owners; reads do not reattribute quarantined version-2 evidence. |
+| D59 | If shutdown finds the source audit queue full, it removes and echoes queued events without releasing their pending reservations. After the active flush finishes, pending can remain permanently nonzero. | Native shutdown releases exactly the reservations for entries removed by this fallback. Pending then reaches zero after active work finishes. Echoed events are not claimed to have reached the file. The [writer tests](../proxy/src/audit/writer/tests.rs) preserve the held-flush/full-queue case and distinguish draining from persistence. |
 
 ## Deletion map and evidence still required
 
@@ -1079,8 +1080,8 @@ content yields an empty snippet. Content decoding does not change forwarded byte
 [Native HTTP tests](../tests/proxy_migration/test_http_test_context.py) exercise
 the complete forwarding path. Parser and application tests cover resets,
 unread responses, body replay, counter ordering and evidence failures separately.
-These are implementation evidence. Production audit persistence remains
-unconnected. Non-string YAML target keys and lone JSON surrogates remain
+These are implementation evidence. TestContext security events still use the
+development diagnostic sink. Non-string YAML target keys and lone JSON surrogates remain
 frontend gaps. Late evidence failures cannot change headers already delivered.
 Independent acceptance and production cutover remain outstanding.
 
@@ -1134,8 +1135,8 @@ before decompression. The [runtime tests](../proxy/src/flow_runtime_tests.rs)
 exercise contextual HTTP forwarding through real Alice/Bob Unix sockets, stored
 body reads, cross-agent denial, a forged owner filter, authenticated operator
 `/stats`, reload, partial startup, shutdown and reopening. The current
-operator statistics expose recorder counters; the full source addon statistics
-aggregation remains unfinished.
+operator statistics expose recorder and request logger counters; the full source
+addon statistics aggregation remains unfinished.
 
 The [tag and diff store methods](../proxy/src/flow_store/details.rs) preserve
 typed immediate tag values, SQLite readback, retained body sizes and Python's
@@ -1148,7 +1149,77 @@ does not roll back a mutation already running on the database worker.
 These are implementation results. Unpaired JSON surrogates and some direct
 Python-only SQLite values remain representation gaps; a categorical local
 compatibility error does not establish parity for those inputs. Complete
-operator inspection, audit persistence and independent acceptance remain open.
+operator inspection, remaining audit producers and independent acceptance remain open.
+
+### Canonical traffic audit and runtime ownership
+
+The [audit writer](../proxy/src/audit.rs) emits schema-version-1 JSON Lines for
+reached request logger hooks. Its typed envelope retains source field order,
+optional fields, nested attribution, temporal values, nonfinite-number behavior
+and minimal serialization fallback. The existing Python audit consumer reads
+native output. These comparisons cover the represented native value domain;
+arbitrary Python objects and lone-surrogate strings remain outside it.
+
+One lazy writer belongs to the process and survives configuration reloads.
+`audit_log_path` is a development startup override; otherwise the process uses
+`SAFEYOLO_LOG_PATH` or `/app/logs/safeyolo.jsonl`. Existing audit queue, size and
+backup environment settings are read at native startup. Source queue capacity
+is read when its lazy writer first starts; in-process environment mutation
+between startup and first emit is not compared. Reload keeps the startup sink,
+queue and logger counters. A failed reload preserves them too.
+
+The writer preserves nonblocking admission, overflow counts, queued-plus-flushing
+pending counts, batch append, rotation names and stderr fallback. Queue admission
+is not file persistence. A completed drain includes attempted writes and
+fallback, without an fsync guarantee. Shutdown stops transport producers first,
+then waits up to five seconds for sentinel capacity and a separate five seconds
+for worker exit, matching the source's two waits. D59 records the pending-count
+repair. [Lifecycle tests](../proxy/src/audit_runtime_tests.rs) hold the writer on
+an owned FIFO across successful and failed reloads and through shutdown.
+
+The [request logger](../proxy/src/request_logger.rs) reads quiet rules at the
+reached request hook. It retains source hash-before-validation behavior, the
+last good rules after malformed configuration, counter ordering and lazy body
+decoding. The response hook uses the established quiet decision. Stable UDS
+attribution belongs under `details.attribution`, with the compatible top-level
+agent field. URL projection follows the source's presentation host and parsed
+path, including final-segment parameter removal. Its finite source controls do
+not prove exhaustive Unicode-version or glob equivalence. A known newer cased
+Unicode scalar produces a categorical compatibility error; this does not
+establish parity for that input. Invalid UTF-8 presentation fields remain a gap.
+
+Ordinary HTTP shares the existing request buffer, independent parser completion
+and response capture. Gzip sizes count decoded content; source-streamed bodies
+report size zero. An early completed response can precede the request hook and
+therefore omit its request ID and start time. Transport errors and cancellation
+do not invent a response event. A circuit request exception skips later request
+children; an independent valid response can still log. A circuit response
+exception skips later response children while preserving the HTTP response and
+already-committed state. TestContext response decoding errors have the same
+continuation boundary. Ordinary audit sink failures do not become those hook
+exceptions. The [source dispatcher oracle](../proxy/tests/production_dispatch.py)
+retains both container and separately registered addon controls.
+
+Local API requests use the existing reader's scalar encoded/decoded sizes.
+RequestId header cleanup occurs after the API handler; if it removes
+Content-Encoding, the logger uses the retained encoded size. Independent parser
+success gates traffic hooks. A bodyless local denial logs only if parser
+completion is already available. If an early denial wins with an unread body,
+D55's immediate enforcement remains and no empty request or traffic response is
+invented. Trusted local outcomes supply blocked attribution; an upstream
+X-Blocked-By header cannot supply it. Parser validation before API mutations
+under HTTP/2 resets remains unverified; the logging check alone does not prove it.
+
+[HTTP traffic tests](../proxy/src/http/traffic/tests.rs) cover actual owned
+HTTP/1 and HTTP/2 exchanges, compressed and quiet content, streaming, early
+responses and cancellation. [Local tests](../proxy/src/http/traffic/local_tests.rs)
+cover API body sizes and header cleanup, completed empty local denials, unsent
+body omission and request-circuit exceptions. [Upgrade and operator tests](../proxy/src/http/traffic/upgrade_stats_tests.rs)
+check one traffic response for a WebSocket 101 handshake, unchanged counts after
+frames, and authenticated request logger statistics. These are implementation-team
+evidence. Other security, circuit, admin and service producers still write
+development diagnostics or remain inactive. Canonical traffic logging does not
+complete those producers, operator inspection, independent acceptance or cutover.
 
 The [network guard](../proxy/src/network_guard.rs) returns existing
 warn/block responses and approval/audit intents around the same native policy

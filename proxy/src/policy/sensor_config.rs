@@ -2,7 +2,47 @@
 
 use super::{BaselineSerializationError, Map, Policy, Value};
 
+/// Borrowed direct quiet settings; unrelated addon values are never serialized.
+/// The owned hash is the existing computed baseline/task identity.
+pub(crate) struct RequestLoggerSettings<'a> {
+    hash: String,
+    value: Option<&'a Value>,
+    timestamps: Option<&'a super::TimestampPaths>,
+}
+impl RequestLoggerSettings<'_> {
+    pub(crate) fn hash(&self) -> &str {
+        &self.hash
+    }
+    pub(crate) fn value(&self) -> Option<&Value> {
+        self.value
+    }
+    pub(crate) fn temporal_value(&self, path: &[&str]) -> Option<&super::TemporalValue> {
+        let absolute: Vec<_> = ["addons", "request_logger", "quiet_hosts"]
+            .into_iter()
+            .chain(path.iter().copied())
+            .collect();
+        self.timestamps?.value_at(&absolute)
+    }
+    pub(crate) fn temporal_key(&self, path: &[&str]) -> Option<&super::TemporalValue> {
+        let absolute: Vec<_> = ["addons", "request_logger", "quiet_hosts"]
+            .into_iter()
+            .chain(path.iter().copied())
+            .collect();
+        self.timestamps?.key_at(&absolute)
+    }
+}
+
 impl Policy {
+    pub(crate) fn request_logger_settings(&self) -> RequestLoggerSettings<'_> {
+        let baseline = self.baseline.as_deref();
+        RequestLoggerSettings {
+            hash: self.policy_hash(),
+            value: baseline
+                .and_then(|owner| owner.value.pointer("/addons/request_logger/quiet_hosts")),
+            timestamps: baseline.map(|owner| &owner.timestamps),
+        }
+    }
+
     /// FlowRecorder reads these direct baseline fields once at startup. Keep
     /// parser-owned temporal types and lazy body settings intact; task policy,
     /// nested settings, and the addon's enabled field do not override them.

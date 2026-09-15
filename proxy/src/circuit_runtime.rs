@@ -88,6 +88,23 @@ pub(crate) fn record_transitions(
     failed
 }
 
+/// A source hook exception stops later production children. Audit submission
+/// failures remain separate and do not change that hook's continuation.
+pub(crate) enum ResponseOutcome {
+    Complete { evidence_failed: bool },
+    Exception { evidence_failed: bool },
+}
+
+impl ResponseOutcome {
+    pub(crate) fn evidence_failed(&self) -> bool {
+        match self {
+            Self::Complete { evidence_failed } | Self::Exception { evidence_failed } => {
+                *evidence_failed
+            }
+        }
+    }
+}
+
 /// The parser has completed the upstream message. Resolve current configuration
 /// here, independently of the runtime that originally admitted the request.
 pub(crate) fn completed_response(
@@ -96,7 +113,7 @@ pub(crate) fn completed_response(
     request_id: &str,
     host: &str,
     status: u16,
-) -> bool {
+) -> ResponseOutcome {
     response_operation(
         state,
         Some((identity, request_id)),
@@ -106,7 +123,7 @@ pub(crate) fn completed_response(
     )
 }
 
-pub(crate) fn local_blocked_response(state: &RuntimeState, host: &str) -> bool {
+pub(crate) fn local_blocked_response(state: &RuntimeState, host: &str) -> ResponseOutcome {
     response_operation(state, None, host, None, true)
 }
 
@@ -116,13 +133,17 @@ fn response_operation(
     host: &str,
     status: Option<u16>,
     prior_block: bool,
-) -> bool {
+) -> ResponseOutcome {
     let Ok(runtime) = state.read() else {
         eprintln!("Circuit response runtime unavailable");
-        return true;
+        return ResponseOutcome::Exception {
+            evidence_failed: true,
+        };
     };
     let Some(policy) = runtime.policy.as_ref() else {
-        return false;
+        return ResponseOutcome::Complete {
+            evidence_failed: false,
+        };
     };
     let result = runtime.circuits.response_current(
         policy,
@@ -135,20 +156,25 @@ fn response_operation(
         now(),
         &mut rand::random::<f64>,
     );
-    let failed = match result {
-        Ok(outcome) => record_transitions(&runtime, &outcome.events, scope),
+    let outcome = match result {
+        Ok(outcome) => ResponseOutcome::Complete {
+            evidence_failed: record_transitions(&runtime, &outcome.events, scope),
+        },
         Err(error) => {
-            // Shipped hook exceptions preserve the response and prior mutation.
+            // Preserve emitted transitions and committed state, but the shared
+            // ProductionAddons exception boundary skips later response hooks.
             eprintln!("Circuit response operation failed: {:?}", error.kind());
-            record_transitions(&runtime, error.events(), scope)
+            ResponseOutcome::Exception {
+                evidence_failed: record_transitions(&runtime, error.events(), scope),
+            }
         }
     };
-    if failed {
+    if outcome.evidence_failed() {
         // This can occur after response headers. Do not corrupt a valid body or
         // claim that the committed circuit mutation was rolled back.
         eprintln!("Circuit response evidence write failed");
     }
-    failed
+    outcome
 }
 
 /// One process-owned worker. Runtime publication and snapshot path selection

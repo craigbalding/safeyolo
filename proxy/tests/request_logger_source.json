@@ -1,0 +1,584 @@
+{
+  "quiet": [
+    {
+      "case": "omitted",
+      "format": "json",
+      "source": "{}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:917ea0d8c9828d33",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": false,
+      "state_unchanged": true
+    },
+    {
+      "case": "exact_lower",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": [\"API.FIXTURE.INVALID\"]}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:a85fa4175d459692",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "host_question_literal",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": [\"api.?ixture.invalid\"]}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:02dc8178ebaaafa6",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": false,
+      "state_unchanged": true
+    },
+    {
+      "case": "host_bracket_literal",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": [\"api.[f]ixture.invalid\"]}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:4b4912edb2a4caa5",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": false,
+      "state_unchanged": true
+    },
+    {
+      "case": "wildcard_host",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": [\"*.fixture.invalid\"]}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:4efc1191c6d14212",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "wildcard_crosses_labels",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": [\"*.fixture.invalid\"]}}}}",
+      "host": "x.y.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:4efc1191c6d14212",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "unicode_lower",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": [\"\\u0130\\u03a3.FIXTURE.INVALID\"]}}}}",
+      "host": "i\u0307\u03c2.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:2c7cede06e712721",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": false,
+      "state_unchanged": true
+    },
+    {
+      "case": "path_star_slash",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": [\"/a*\"]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a/b",
+      "hash": "sha256:4afb5d99a5b3d412",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "path_case",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": [\"/A*\"]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:a904a2ad81279d04",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": false,
+      "state_unchanged": true
+    },
+    {
+      "case": "path_question",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": [\"/?\"]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/\u00e9",
+      "hash": "sha256:4c18fdb54e40f305",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "path_class",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": [\"/[a-c]\"]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/b",
+      "hash": "sha256:6c4d19835cdc6c7e",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "path_negated",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": [\"/[!a-c]\"]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/z",
+      "hash": "sha256:9c944004d558af87",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "path_literal_close",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": [\"/[]]\"]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/]",
+      "hash": "sha256:bc0e44670f49a5af",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "path_unclosed_class",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": [\"/[abc\"]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/[abc",
+      "hash": "sha256:8b7fcc6b6be3d341",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "path_newline",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": [\"/*\"]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a\nb",
+      "hash": "sha256:289310fe28b3995b",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "hosts_not_list",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": \"wrong\"}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:0e699280e944e691",
+      "load_error": "ValueError",
+      "message": "quiet_hosts.hosts must be a list, got str. Fix addons.request_logger.quiet_hosts.hosts in policy.",
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "paths_not_dict",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": []}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:cbc7090702777d7a",
+      "load_error": "ValueError",
+      "message": "quiet_hosts.paths must be a dict of host -> [path, ...], got list. Fix addons.request_logger.quiet_hosts.paths in policy.",
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "path_list_not_list",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": 2}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:295347f51b43aaae",
+      "load_error": "ValueError",
+      "message": "quiet_hosts.paths['api.fixture.invalid'] must be a list of path patterns, got int. Fix policy.",
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "host_integer",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": [7]}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:de2375619e25a8b8",
+      "load_error": "TypeError",
+      "message": null,
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "host_container",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": [[\"*\"]]}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:f181d100df03f85e",
+      "load_error": "AttributeError",
+      "message": null,
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "host_mapping",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": [{\"*\": true}]}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:0d818e382932ec91",
+      "load_error": "AttributeError",
+      "message": null,
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "quiet_scalar",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": null}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:7bb3269bfdba74d2",
+      "load_error": "AttributeError",
+      "message": null,
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "lazy_bad_pattern_unreached",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"other.invalid\": [3]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:8e239c675f0ad2ca",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": false,
+      "state_unchanged": true
+    },
+    {
+      "case": "lazy_bad_pattern_reached",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": [3]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:39c91ace353afa3a",
+      "load_error": null,
+      "message": null,
+      "match_error": "TypeError",
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "lazy_bad_pattern_after_match",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"paths\": {\"api.fixture.invalid\": [\"/*\", 3]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:ffdbf15e628a38ec",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "host_match_before_bad_pattern",
+      "format": "json",
+      "source": "{\"addons\": {\"request_logger\": {\"quiet_hosts\": {\"hosts\": [\"api.fixture.invalid\"], \"paths\": {\"api.fixture.invalid\": [3]}}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:9b236755c44f8932",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "unrelated_timestamp",
+      "format": "yaml",
+      "source": "addons: {request_logger: {quiet_hosts: {hosts: [api.fixture.invalid]}}, other: {observed: 2001-02-03}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:17dee1fb0264d7e5",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "hosts_date",
+      "format": "yaml",
+      "source": "addons: {request_logger: {quiet_hosts: {hosts: 2001-02-03}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:3cca77cea90bbbba",
+      "load_error": "ValueError",
+      "message": "quiet_hosts.hosts must be a list, got date. Fix addons.request_logger.quiet_hosts.hosts in policy.",
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "paths_datetime",
+      "format": "yaml",
+      "source": "addons: {request_logger: {quiet_hosts: {paths: 2001-02-03T04:05:06Z}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:762e0812e93ff324",
+      "load_error": "ValueError",
+      "message": "quiet_hosts.paths must be a dict of host -> [path, ...], got datetime. Fix addons.request_logger.quiet_hosts.paths in policy.",
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "host_date",
+      "format": "yaml",
+      "source": "addons: {request_logger: {quiet_hosts: {hosts: [2001-02-03]}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:5ac5c947daebcb52",
+      "load_error": "TypeError",
+      "message": null,
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "path_date_reached",
+      "format": "yaml",
+      "source": "addons: {request_logger: {quiet_hosts: {paths: {api.fixture.invalid: [2001-02-03]}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:fb62de78c98b7e6f",
+      "load_error": null,
+      "message": null,
+      "match_error": "TypeError",
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "temporal_key",
+      "format": "yaml",
+      "source": "addons: {request_logger: {quiet_hosts: {paths: {2001-02-03: ['/*']}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:b6d27ab73d6b0ee7",
+      "load_error": "AttributeError",
+      "message": null,
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "temporal_key_invalid_list",
+      "format": "yaml",
+      "source": "addons: {request_logger: {quiet_hosts: {paths: {2001-02-03: 2}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:c52906ee0041c44e",
+      "load_error": "ValueError",
+      "message": "quiet_hosts.paths['2001-02-03'] must be a list of path patterns, got int. Fix policy.",
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "authored_date_object",
+      "format": "yaml",
+      "source": "addons: {request_logger: {quiet_hosts: {hosts: {yaml_date: '2001-02-03'}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:238bdc488d118311",
+      "load_error": "ValueError",
+      "message": "quiet_hosts.hosts must be a list, got dict. Fix addons.request_logger.quiet_hosts.hosts in policy.",
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    },
+    {
+      "case": "nested_settings_ignored",
+      "format": "yaml",
+      "source": "addons: {request_logger: {settings: {quiet_hosts: {hosts: [api.fixture.invalid]}}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:afb7e4d3aa1f588b",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": false,
+      "state_unchanged": true
+    },
+    {
+      "case": "disabled_ignored",
+      "format": "yaml",
+      "source": "addons: {request_logger: {enabled: false, quiet_hosts: {hosts: [api.fixture.invalid]}}}",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:fdbfbbc8dc83a189",
+      "load_error": null,
+      "message": null,
+      "match_error": null,
+      "quiet": true,
+      "state_unchanged": true
+    },
+    {
+      "case": "hosts_time",
+      "format": "toml",
+      "source": "[addons.request_logger.quiet_hosts]\nhosts=04:05:06\n",
+      "host": "api.fixture.invalid",
+      "path": "/a",
+      "hash": "sha256:2830dcb3904a24da",
+      "load_error": "ValueError",
+      "message": "quiet_hosts.hosts must be a list, got time. Fix addons.request_logger.quiet_hosts.hosts in policy.",
+      "match_error": null,
+      "quiet": null,
+      "state_unchanged": true
+    }
+  ],
+  "durations": [
+    {
+      "start": null,
+      "now": 100.0,
+      "value": null,
+      "hex": null
+    },
+    {
+      "start": 0.0,
+      "now": 100.0,
+      "value": null,
+      "hex": null
+    },
+    {
+      "start": 99.87655,
+      "now": 100.0,
+      "value": 123.5,
+      "hex": "0x1.ee00000000000p+6"
+    },
+    {
+      "start": 100.12345,
+      "now": 100.0,
+      "value": -123.5,
+      "hex": "-0x1.ee00000000000p+6"
+    },
+    {
+      "start": 0.001,
+      "now": 0.00105,
+      "value": 0.0,
+      "hex": "0x0.0p+0"
+    },
+    {
+      "start": 0.001,
+      "now": 0.00115,
+      "value": 0.1,
+      "hex": "0x1.999999999999ap-4"
+    },
+    {
+      "start": 0.001,
+      "now": 0.00125,
+      "value": 0.2,
+      "hex": "0x1.999999999999ap-3"
+    },
+    {
+      "start": 0.001,
+      "now": 0.000999,
+      "value": -0.0,
+      "hex": "-0x0.0p+0"
+    },
+    {
+      "start": 0.1,
+      "now": 0.3,
+      "value": 200.0,
+      "hex": "0x1.9000000000000p+7"
+    },
+    {
+      "start": 1e+20,
+      "now": 1.0,
+      "value": -1e+23,
+      "hex": "-0x1.52d02c7e14af6p+76"
+    },
+    {
+      "start": 1.0,
+      "now": 1e+20,
+      "value": 1e+23,
+      "hex": "0x1.52d02c7e14af6p+76"
+    }
+  ],
+  "sanitize": [
+    {
+      "input": "ordinary",
+      "output": "ordinary"
+    },
+    {
+      "input": "a\nb\t\u0000c",
+      "output": "a?b?c"
+    },
+    {
+      "input": "\u001b[31mred\u001b[0m",
+      "output": "?red?"
+    },
+    {
+      "input": "\u00e9\u0301\u754c",
+      "output": "\u00e9?\u754c"
+    },
+    {
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+    },
+    {
+      "input": "a\u202eb\u200dc",
+      "output": "a?b?c"
+    },
+    {
+      "input": "x\u0001\u0002?y",
+      "output": "x?y"
+    }
+  ],
+  "network_calls": 0
+}

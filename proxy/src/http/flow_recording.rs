@@ -506,46 +506,67 @@ fn headers_json(pairs: &Pairs, request_id: Option<&str>) -> String {
 /// Reuse the validated hostname primitive; a malformed authority returns its
 /// original spelling. This never participates in routing or admission.
 fn pretty_host(raw: &str) -> &str {
-    let (host, port) = if raw.starts_with('[') {
+    pretty_authority(raw).0
+}
+
+/// Share the source authority projection with traffic logging. Invalid input
+/// returns its complete original spelling and no port; this is presentation.
+pub(super) fn pretty_authority(raw: &str) -> (&str, Option<u16>) {
+    // Python's regex `$` also accepts a single terminal LF. The non-colon
+    // branch greedily includes it in a host, but the decimal port branch does not.
+    let (host, port) = if !raw.contains(':') {
+        (raw, None)
+    } else if raw.starts_with('[') {
         let Some(end) = raw.rfind(']') else {
-            return raw;
+            return (raw, None);
         };
         let suffix = &raw[end + 1..];
-        let port = if suffix.is_empty() {
+        let port = if suffix.is_empty() || suffix == "\n" {
             None
         } else if let Some(port) = suffix.strip_prefix(':') {
-            Some(port)
+            Some(port.strip_suffix('\n').unwrap_or(port))
         } else {
-            return raw;
+            return (raw, None);
         };
-        (&raw[1..end], port)
+        let host = &raw[..=end];
+        // The regex's bracket alternative uses '.', which excludes LF.
+        if host.contains('\n') {
+            return (raw, None);
+        }
+        (host, port)
     } else {
-        raw.split_once(':')
-            .map_or((raw, None), |(host, port)| (host, Some(port)))
+        let (host, port) = raw.split_once(':').expect("colon present");
+        (host, Some(port.strip_suffix('\n').unwrap_or(port)))
     };
-    if let Some(port) = port {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .unwrap_or(host);
+    if super::validate_hostname(host).is_err() {
+        return (raw, None);
+    }
+    let port = if let Some(port) = port {
         if port.is_empty() {
-            return raw;
+            return (raw, None);
         }
         let mut value = 0u16;
         for character in port.chars() {
             let Some(digit) = crate::python_text::decimal(character) else {
-                return raw;
+                return (raw, None);
             };
             let Some(next) = value
                 .checked_mul(10)
-                .and_then(|value| value.checked_add(digit as u16))
+                .and_then(|v| v.checked_add(digit as u16))
             else {
-                return raw;
+                return (raw, None);
             };
             value = next;
         }
-    }
-    if super::validate_hostname(host).is_ok() {
-        host
+        Some(value)
     } else {
-        raw
-    }
+        None
+    };
+    (host, port)
 }
 
 /// Query values are stored as serialized JSON text, not general Rust strings.

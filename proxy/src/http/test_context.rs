@@ -232,11 +232,33 @@ struct Capture {
 pub(super) struct ResponseCapture {
     capture: Mutex<Option<Capture>>,
     state: RuntimeState,
-    provenance: Arc<Provenance>,
+    provenance: Option<Arc<Provenance>>,
+    traffic: Option<Arc<super::traffic::Traffic>>,
+    recording: Option<Arc<super::flow_recording::Recording>>,
+    method: String,
+    host: String,
 }
 
 impl ResponseCapture {
-    pub(super) fn new(state: RuntimeState, provenance: Arc<Provenance>) -> Self {
+    pub(super) fn new(
+        state: RuntimeState,
+        provenance: Option<Arc<Provenance>>,
+        traffic: Option<Arc<super::traffic::Traffic>>,
+        recording: Option<Arc<super::flow_recording::Recording>>,
+    ) -> Self {
+        let (method, host) = if let Some(traffic) = &traffic {
+            (traffic.method.clone(), traffic.host.clone())
+        } else {
+            let provenance = provenance
+                .as_ref()
+                .expect("response capture has a consumer");
+            (provenance.method.clone(), provenance.host.clone())
+        };
+        let recording = recording.or_else(|| {
+            provenance
+                .as_ref()
+                .and_then(|provenance| provenance.recording())
+        });
         Self {
             capture: Mutex::new(Some(Capture {
                 head: None,
@@ -246,7 +268,15 @@ impl ResponseCapture {
             })),
             state,
             provenance,
+            traffic,
+            recording,
+            method,
+            host,
         }
+    }
+
+    fn recording(&self) -> Option<Arc<super::flow_recording::Recording>> {
+        self.recording.clone()
     }
 
     fn head(&self, status: StatusCode, headers: &HeaderMap, end_stream_at_head: bool) {
@@ -273,11 +303,10 @@ impl ResponseCapture {
                 // differ for H2 HEAD/204/304 followed by empty DATA or trailers.
                 // Only the latter suppresses source SSE streaming selection.
                 let zero_length = end_stream_at_head
-                    || self.provenance.method.eq_ignore_ascii_case("HEAD")
+                    || self.method.eq_ignore_ascii_case("HEAD")
                     || status.is_informational()
                     || matches!(status.as_u16(), 204 | 304)
-                    || (self.provenance.method.eq_ignore_ascii_case("CONNECT")
-                        && status.is_success());
+                    || (self.method.eq_ignore_ascii_case("CONNECT") && status.is_success());
                 let length = (!zero_length)
                     .then(|| {
                         headers
@@ -325,7 +354,7 @@ impl ResponseCapture {
         } else {
             let runtime = self.state.read().map(|runtime| runtime.clone());
             match runtime {
-                Ok(runtime) => source_streamed(&runtime, &self.provenance.host, &facts.1),
+                Ok(runtime) => source_streamed(&runtime, &self.host, &facts.1),
                 Err(_) => {
                     let mut guard = self.capture.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(capture) = guard.as_mut() {
@@ -344,6 +373,20 @@ impl ResponseCapture {
         }
     }
 
+    /// An earlier production response hook raised. Release captured bytes and
+    /// pending recording without applying provenance or recorder counters.
+    pub(super) fn skip_response(&self) {
+        let capture = self
+            .capture
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        drop(capture);
+        if let Some(recording) = self.recording() {
+            recording.skip_response();
+        }
+    }
+
     /// The sole terminal authority is the existing protocol completion result.
     /// Take and release the buffer mutex before decoding or evidence writes.
     pub(super) fn finish(&self, success: bool) -> bool {
@@ -359,13 +402,13 @@ impl ResponseCapture {
             return false;
         };
         if !success {
-            if let Some(recording) = self.provenance.recording() {
+            if let Some(recording) = self.recording() {
                 recording.finish(false, None, false);
             }
             return false;
         }
         if capture.failed {
-            if let Some(recording) = self.provenance.recording() {
+            if let Some(recording) = self.recording() {
                 recording.finish(true, None, true);
             }
             return true;
@@ -375,13 +418,18 @@ impl ResponseCapture {
         };
         let content = capture.body.into_content();
         let content = content.as_deref().map(Vec::as_slice);
-        match self
-            .provenance
-            .response(&head, content, crate::circuit_runtime::now())
-        {
-            Ok(failed) => {
-                if let Some(recording) = self.provenance.recording() {
+        let provenance = self.provenance.as_ref().map_or(Ok(false), |provenance| {
+            provenance.response(&head, content, crate::circuit_runtime::now())
+        });
+        match provenance {
+            Ok(mut failed) => {
+                if let Some(recording) = self.recording() {
                     recording.finish(true, content, false);
+                }
+                if let Some(traffic) = &self.traffic {
+                    failed |= traffic.response(head.status.as_u16(), None, None, || {
+                        super::traffic::decoded_size(content, Ok(&head.encoding))
+                    });
                 }
                 failed
             }
@@ -389,7 +437,7 @@ impl ResponseCapture {
                 // ProductionAddons shares one dispatcher exception boundary.
                 // A failed TestContext response hook skips the later recorder;
                 // no recorder counter or retry belongs to this response.
-                if let Some(recording) = self.provenance.recording() {
+                if let Some(recording) = self.recording() {
                     recording.skip_response();
                 }
                 eprintln!("Test context response content failed: {error}");
@@ -420,7 +468,7 @@ impl hyper::ext::ResponseBodyCapture for ResponseCapture {
         reason: Option<&[u8]>,
     ) {
         Self::head(self, status, headers, end_stream_at_head);
-        if let Some(recording) = self.provenance.recording() {
+        if let Some(recording) = self.recording() {
             recording.head(status, fields.map(|fields| fields.iter()), reason);
         }
     }
@@ -444,7 +492,7 @@ impl h2::ext::ResponseBodyCapture for ResponseCapture {
         reason: Option<&[u8]>,
     ) {
         Self::head(self, status, headers, end_stream_at_head);
-        if let Some(recording) = self.provenance.recording() {
+        if let Some(recording) = self.recording() {
             recording.head(status, fields.map(|fields| fields.iter()), reason);
         }
     }
@@ -480,6 +528,7 @@ mod tests {
                 "listeners": [], "policy_file": policy,
                 "readiness_file": directory.path().join("ready"),
                 "flow_store_enabled": false,
+                "audit_log_path": directory.path().join("audit.jsonl"),
                 "event_log": if full_sink { std::path::PathBuf::from("/dev/full") }
                     else { directory.path().join("events.jsonl") },
             }))
@@ -523,7 +572,7 @@ mod tests {
             headers: &[(&str, &str)],
             bodyless: bool,
         ) -> ResponseCapture {
-            let capture = ResponseCapture::new(self.state.clone(), provenance);
+            let capture = ResponseCapture::new(self.state.clone(), Some(provenance), None, None);
             let mut fields = HeaderMap::new();
             for (name, value) in headers {
                 fields.append(
@@ -779,7 +828,12 @@ mod tests {
         provenance
             .apply_request(context(), Some(b"request"), Ok(b""), 100.)
             .unwrap();
-        let capture = Arc::new(ResponseCapture::new(fixture.state.clone(), provenance));
+        let capture = Arc::new(ResponseCapture::new(
+            fixture.state.clone(),
+            Some(provenance),
+            None,
+            None,
+        ));
         let (client, server) = tokio::io::duplex(65536);
         let peer = tokio::spawn(async move {
             let mut connection = h2::server::handshake(server).await.unwrap();

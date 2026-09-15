@@ -13,6 +13,7 @@ fn config(directory: &Path, enabled: bool) -> Config {
     serde_json::from_value(json!({
         "listeners":[], "policy_file":policy, "flow_store_enabled":enabled,
         "flow_store_db_path":directory.join("flows.sqlite3"),
+        "audit_log_path":directory.join("audit.jsonl"),
         "event_log":directory.join("events.jsonl"),
         "readiness_file":directory.join("ready.json"),
     }))

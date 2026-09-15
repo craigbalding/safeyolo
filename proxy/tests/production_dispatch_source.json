@@ -157,6 +157,152 @@
       "persisted_rows": 0
     },
     {
+      "mode": "production_container",
+      "case": "circuit_normal500",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 1,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request",
+        "ops.circuit_breaker.open",
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [],
+      "persisted_rows": 1,
+      "circuit": {
+        "checks": 1,
+        "opens": 1,
+        "state": "open",
+        "failure_count": 1,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_comparison_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request"
+      ],
+      "errors": [
+        "TypeError"
+      ],
+      "persisted_rows": 0,
+      "circuit": {
+        "checks": 1,
+        "opens": 0,
+        "state": null,
+        "failure_count": null,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_after_commit_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request",
+        "ops.circuit_breaker.open"
+      ],
+      "errors": [
+        "TypeError"
+      ],
+      "persisted_rows": 0,
+      "circuit": {
+        "checks": 1,
+        "opens": 1,
+        "state": "open",
+        "failure_count": 1,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    },
+    {
       "mode": "separate_addons_control",
       "case": "valid",
       "request": {
@@ -317,11 +463,169 @@
         "ValueError"
       ],
       "persisted_rows": 0
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_request_valid",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": [],
+        "context_checks": 1,
+        "request_id_present": true,
+        "start_time_present": true,
+        "context_header_present": false,
+        "local_response": false
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 1,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request",
+        "ops.circuit_breaker.reopen",
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [],
+      "persisted_rows": 1,
+      "circuit": {
+        "checks": 1,
+        "opens": 1,
+        "state": "open",
+        "failure_count": 1,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_request_error",
+      "request": {
+        "context_applied": false,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 0,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "TypeError"
+        ],
+        "context_checks": 0,
+        "request_id_present": true,
+        "start_time_present": true,
+        "context_header_present": true,
+        "local_response": false
+      },
+      "logger": {
+        "requests_total": 0,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 1,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "ops.circuit_breaker.reopen",
+        "traffic.response"
+      ],
+      "errors": [
+        "TypeError"
+      ],
+      "persisted_rows": 0,
+      "circuit": {
+        "checks": 1,
+        "opens": 1,
+        "state": "open",
+        "failure_count": 1,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_request_error_missing_context",
+      "request": {
+        "context_applied": false,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 0,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "TypeError"
+        ],
+        "context_checks": 0,
+        "request_id_present": true,
+        "start_time_present": true,
+        "context_header_present": false,
+        "local_response": false
+      },
+      "logger": {
+        "requests_total": 0,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 1,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "ops.circuit_breaker.reopen",
+        "traffic.response"
+      ],
+      "errors": [
+        "TypeError"
+      ],
+      "persisted_rows": 0,
+      "circuit": {
+        "checks": 1,
+        "opens": 1,
+        "state": "open",
+        "failure_count": 1,
+        "response_status": 500,
+        "response_body": "response"
+      }
     }
   ],
   "network_attempts": 0,
   "writer_threads_joined": true,
-  "boundary": "real AddonManager trigger_event with ProductionAddons.__new__ container and four real children; synthetic completed flows, captured audit enqueue only; no full startup or transport proof",
+  "boundary": "real AddonManager trigger_event with ProductionAddons.__new__ container and four real children, plus actual CircuitBreaker in six controls; synthetic completed flows, captured audit enqueue only; no full startup or transport proof",
   "metadata": {
     "python": "3.12.14",
     "mitmproxy": "12.2.3",
@@ -329,6 +633,7 @@
       "cli/src/safeyolo/traffic_master.py": "b46e717c41d96de4893415721ee121023e1519e65ddd64facb4565e5497db344",
       "cli/src/safeyolo/mitm_addons/__init__.py": "d241944dd66ae8dfe6df2b460a11230afc04b1a0174ec0e024cea95f67403a00",
       "cli/src/safeyolo/mitm_addons/request_id.py": "b79675c29c966d3d653aa6a37cce712a5f0bd7cff95186c59f58b526ed0a395e",
+      "cli/src/safeyolo/mitm_addons/circuit_breaker.py": "8c77aec89932ac75edec0fac17c5ea211869f1ff2b59645c73d8a60d2fa1fe12",
       "cli/src/safeyolo/mitm_addons/test_context.py": "0c34f07a1bedf17645c1e7fe6cf1582852c545ca376c73e10d935a821cefbd33",
       "cli/src/safeyolo/mitm_addons/flow_recorder.py": "3425d0b9c38453c93f723aa2b2bdc36e311b59246170dc36f435c999986d1419",
       "cli/src/safeyolo/mitm_addons/request_logger.py": "71b31e77a81fb679e189426221645c413cbdc0208275d3671530ee72a1ec4d6b",

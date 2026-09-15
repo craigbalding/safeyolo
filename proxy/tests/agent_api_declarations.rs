@@ -9,7 +9,9 @@ use std::{
 use bytes::Bytes;
 use hyper::body::{Body, Frame};
 use safeyolo_proxy::{
-    agent_api::{self, Controls, DeclarationContext, PolicyState, Request, RequestBody},
+    agent_api::{
+        self, BodyObservation, Controls, DeclarationContext, PolicyState, Request, RequestBody,
+    },
     network_guard::Identity,
     tasks::Registry,
     test_context::{self, TestContext, TrustedIdentity},
@@ -146,6 +148,7 @@ async fn method_auth_identity_owner_and_read_routes_never_poll_declaration_body(
             polls: 0,
             forbid_poll: true,
         };
+        let mut observation = BodyObservation::default();
         let outcome = agent_api::respond_with_body(
             request,
             &token,
@@ -164,12 +167,14 @@ async fn method_auth_identity_owner_and_read_routes_never_poll_declaration_body(
                 body: &mut body,
                 content_encoding: b"broken-encoding",
                 content_length: Some(1),
+                observation: Some(&mut observation),
             },
         )
         .await
         .unwrap();
         assert_eq!(outcome.response.status, status);
         assert_eq!(body.polls, 0);
+        assert_eq!(observation.decoded_size, None);
         assert_eq!(outcome.policy_evaluations, 0);
     }
 }
@@ -201,6 +206,11 @@ async fn truncated_post_preserves_declaration_and_returns_original_transport_fai
             polls: 0,
             forbid_poll: false,
         };
+        // Reuse must not retain a successful observation when this read fails.
+        let mut observation = BodyObservation {
+            decoded_size: Some(Ok(1)),
+            encoded_size: Some(1),
+        };
         let result = agent_api::respond_with_body(
             request(),
             &token,
@@ -219,10 +229,12 @@ async fn truncated_post_preserves_declaration_and_returns_original_transport_fai
                 body: &mut body,
                 content_encoding: b"identity",
                 content_length: length,
+                observation: Some(&mut observation),
             },
         )
         .await;
         assert!(matches!(result, Err("fixture truncated body")));
+        assert_eq!(observation.decoded_size, None);
         assert_eq!(body.polls, if cross_threshold { 3 } else { 2 });
         assert_eq!(
             owner
@@ -261,6 +273,7 @@ async fn buffered_json_is_parsed_after_eom_and_missing_streamed_content_is_empty
             polls: 0,
             forbid_poll: false,
         };
+        let mut observation = BodyObservation::default();
         let outcome = agent_api::respond_with_body(
             request(),
             &token,
@@ -279,11 +292,20 @@ async fn buffered_json_is_parsed_after_eom_and_missing_streamed_content_is_empty
                 body: &mut body,
                 content_encoding: b"identity",
                 content_length: length,
+                observation: Some(&mut observation),
             },
         )
         .await
         .unwrap();
         assert_eq!(body.polls, 5);
+        assert_eq!(
+            observation.decoded_size,
+            Some(Ok(if size > 10 * 1024 * 1024 {
+                0
+            } else {
+                size as u64
+            }))
+        );
         assert_eq!(outcome.response.status, status);
         let response: Value = serde_json::from_slice(&outcome.response.body_bytes()).unwrap();
         if status == 200 {
@@ -295,6 +317,71 @@ async fn buffered_json_is_parsed_after_eom_and_missing_streamed_content_is_empty
             assert_eq!(audit.details["test_agent_match"], false);
         } else {
             assert_eq!(response["error"], "context must be a string");
+            assert!(outcome.audit.is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn body_observation_uses_the_completed_existing_decode_result() {
+    use flate2::{Compression, write::GzEncoder};
+    use safeyolo_proxy::http_content::ContentError;
+    use std::io::Write;
+
+    let (_directory, token) = fixture();
+    let owner = TestContext::default();
+    let document = br#"{"context":"run=fixture;agent=alice;test=observation"}"#;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(document).unwrap();
+    let compressed = encoder.finish().unwrap();
+    for (encoded, expected, status) in [
+        (compressed, Ok(document.len() as u64), 200),
+        (b"not a gzip stream".to_vec(), Err(ContentError::Value), 500),
+    ] {
+        let length = encoded.len() as u64;
+        let mut body = Frames {
+            frames: VecDeque::from([
+                Ok(Frame::data(Bytes::from(encoded))),
+                Ok(Frame::trailers(hyper::HeaderMap::new())),
+            ]),
+            polls: 0,
+            forbid_poll: false,
+        };
+        let mut observation = BodyObservation::default();
+        let outcome = agent_api::respond_with_body(
+            request(),
+            &token,
+            PolicyState::Unavailable,
+            &Registry::default(),
+            0.,
+            Controls {
+                flows: None,
+                circuits: None,
+                declarations: Some(DeclarationContext {
+                    owner: &owner,
+                    now: || 10.,
+                }),
+            },
+            RequestBody {
+                body: &mut body,
+                content_encoding: b"gzip",
+                content_length: Some(length),
+                observation: Some(&mut observation),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            body.polls, 3,
+            "reader must poll beyond the final frame to terminal"
+        );
+        assert_eq!(observation.decoded_size, Some(expected));
+        assert_eq!(outcome.response.status, status);
+        if let Err(error) = expected {
+            assert_eq!(
+                outcome.failure,
+                Some(agent_api::Failure::ContentDecoding(error))
+            );
             assert!(outcome.audit.is_none());
         }
     }

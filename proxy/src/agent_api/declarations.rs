@@ -20,11 +20,23 @@ pub struct DeclarationContext<'a> {
     pub now: fn() -> f64,
 }
 
+/// Scalar result of this reader reaching its body terminal and then applying
+/// the existing decode. It is not independent proof of a parser-validated EOM.
+/// Give each API call a fresh default value; routes that never read leave it
+/// absent. Streamed/absent raw content has the source's decoded size zero.
+#[derive(Default)]
+pub struct BodyObservation {
+    pub decoded_size: Option<Result<u64, http_content::ContentError>>,
+    /// Source raw_content length before later RequestId header hygiene.
+    pub encoded_size: Option<u64>,
+}
+
 /// Encoded request content. Only authorized routes that consume JSON poll it.
 pub struct RequestBody<'a, B> {
     pub body: &'a mut B,
     pub content_encoding: &'a [u8],
     pub content_length: Option<u64>,
+    pub observation: Option<&'a mut BodyObservation>,
 }
 
 pub async fn respond_with_body<'p, B>(
@@ -105,11 +117,15 @@ where
 }
 
 pub(super) async fn read_content<B>(
-    body: RequestBody<'_, B>,
+    mut body: RequestBody<'_, B>,
 ) -> Result<Result<Zeroizing<Vec<u8>>, http_content::ContentError>, B::Error>
 where
     B: Body<Data = Bytes> + Unpin,
 {
+    if let Some(observation) = body.observation.as_deref_mut() {
+        observation.decoded_size = None;
+        observation.encoded_size = None;
+    }
     let mut content = http_content::BufferedContent::new(body.content_length, false);
     while let Some(frame) = body.body.frame().await {
         let frame = frame?;
@@ -117,12 +133,24 @@ where
             content.push(&data);
         }
     }
-    // Consume through EOM even after source raw content becomes absent, so a
+    // Consume through the Body terminal even after raw content becomes absent; a
     // later transport failure still prevents a local operation or decoding.
-    Ok(match content.into_content() {
+    let encoded = content.into_content();
+    let encoded_size = encoded.as_ref().map_or(0, |bytes| bytes.len() as u64);
+    let decoded = match encoded {
         Some(encoded) => http_content::decode(&encoded, body.content_encoding),
         None => Ok(Zeroizing::new(Vec::new())),
-    })
+    };
+    if let Some(observation) = body.observation {
+        observation.encoded_size = Some(encoded_size);
+        observation.decoded_size = Some(
+            decoded
+                .as_ref()
+                .map(|bytes| bytes.len() as u64)
+                .map_err(|error| *error),
+        );
+    }
+    Ok(decoded)
 }
 
 pub(super) fn content_error(error: http_content::ContentError) -> Outcome<'static> {
