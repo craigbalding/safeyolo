@@ -27,6 +27,7 @@ pub mod http_content;
 pub mod inspection;
 pub mod network_guard;
 pub mod oauth;
+mod operator_stats;
 pub mod policy;
 mod python_json;
 mod python_text;

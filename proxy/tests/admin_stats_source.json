@@ -1,0 +1,747 @@
+{
+  "now": 1000.0,
+  "selected_chain_files": [
+    "policy_engine.py",
+    "network_guard.py",
+    "circuit_breaker.py",
+    "test_context.py",
+    "flow_recorder.py",
+    "request_logger.py"
+  ],
+  "rows": [
+    {
+      "name": "discovery_order",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "839"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {},\n  \"network-guard\": {\n    \"enabled\": true,\n    \"checks\": 42,\n    \"allowed\": 0,\n    \"blocked\": 0,\n    \"warned\": 0,\n    \"rate_limited\": 0\n  },\n  \"circuit-breaker\": {\n    \"enabled\": true,\n    \"failure_threshold\": 5,\n    \"timeout_seconds\": 60,\n    \"checks_total\": 0,\n    \"opens_total\": 0,\n    \"half_opens_total\": 0,\n    \"recoveries_total\": 0,\n    \"domains\": {}\n  },\n  \"test-context\": {\n    \"active\": false,\n    \"target_hosts\": 0,\n    \"checks_total\": 0,\n    \"allowed_total\": 0,\n    \"blocked_total\": 0,\n    \"warned_total\": 0,\n    \"declared_injections_total\": 0,\n    \"declared_active\": 0\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 0,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "done:circuit-breaker",
+        "get:test-context",
+        "done:test-context",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [],
+      "submitted": [],
+      "config_reads": 0,
+      "context_cached_hash": "",
+      "declarations_before": [],
+      "declarations_after": [],
+      "circuit_states_json": "{}",
+      "circuit_half_opens": 0
+    },
+    {
+      "name": "network_disabled",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "840"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {},\n  \"network-guard\": {\n    \"enabled\": false,\n    \"checks\": 7,\n    \"allowed\": 3,\n    \"blocked\": 2,\n    \"warned\": 2,\n    \"rate_limited\": 1\n  },\n  \"circuit-breaker\": {\n    \"enabled\": false,\n    \"failure_threshold\": 5,\n    \"timeout_seconds\": 60,\n    \"checks_total\": 0,\n    \"opens_total\": 0,\n    \"half_opens_total\": 0,\n    \"recoveries_total\": 0,\n    \"domains\": {}\n  },\n  \"test-context\": {\n    \"active\": false,\n    \"target_hosts\": 0,\n    \"checks_total\": 0,\n    \"allowed_total\": 0,\n    \"blocked_total\": 0,\n    \"warned_total\": 0,\n    \"declared_injections_total\": 0,\n    \"declared_active\": 0\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 0,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "done:circuit-breaker",
+        "get:test-context",
+        "done:test-context",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [],
+      "submitted": [],
+      "config_reads": 0,
+      "context_cached_hash": "",
+      "declarations_before": [],
+      "declarations_after": [],
+      "circuit_states_json": "{}",
+      "circuit_half_opens": 0
+    },
+    {
+      "name": "lazy_context_unloaded",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "838"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {},\n  \"network-guard\": {\n    \"enabled\": true,\n    \"checks\": 7,\n    \"allowed\": 3,\n    \"blocked\": 2,\n    \"warned\": 2,\n    \"rate_limited\": 1\n  },\n  \"circuit-breaker\": {\n    \"enabled\": true,\n    \"failure_threshold\": 5,\n    \"timeout_seconds\": 60,\n    \"checks_total\": 0,\n    \"opens_total\": 0,\n    \"half_opens_total\": 0,\n    \"recoveries_total\": 0,\n    \"domains\": {}\n  },\n  \"test-context\": {\n    \"active\": false,\n    \"target_hosts\": 0,\n    \"checks_total\": 0,\n    \"allowed_total\": 0,\n    \"blocked_total\": 0,\n    \"warned_total\": 0,\n    \"declared_injections_total\": 0,\n    \"declared_active\": 0\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 0,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "done:circuit-breaker",
+        "get:test-context",
+        "done:test-context",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [],
+      "submitted": [],
+      "config_reads": 0,
+      "context_cached_hash": "",
+      "declarations_before": [],
+      "declarations_after": [],
+      "circuit_states_json": "{}",
+      "circuit_half_opens": 0
+    },
+    {
+      "name": "lazy_context_cached",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "837"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {},\n  \"network-guard\": {\n    \"enabled\": true,\n    \"checks\": 7,\n    \"allowed\": 3,\n    \"blocked\": 2,\n    \"warned\": 2,\n    \"rate_limited\": 1\n  },\n  \"circuit-breaker\": {\n    \"enabled\": true,\n    \"failure_threshold\": 5,\n    \"timeout_seconds\": 60,\n    \"checks_total\": 0,\n    \"opens_total\": 0,\n    \"half_opens_total\": 0,\n    \"recoveries_total\": 0,\n    \"domains\": {}\n  },\n  \"test-context\": {\n    \"active\": true,\n    \"target_hosts\": 2,\n    \"checks_total\": 0,\n    \"allowed_total\": 0,\n    \"blocked_total\": 0,\n    \"warned_total\": 0,\n    \"declared_injections_total\": 0,\n    \"declared_active\": 0\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 0,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "done:circuit-breaker",
+        "get:test-context",
+        "done:test-context",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [],
+      "submitted": [],
+      "config_reads": 0,
+      "context_cached_hash": "owned-old-policy",
+      "declarations_before": [],
+      "declarations_after": [],
+      "circuit_states_json": "{}",
+      "circuit_half_opens": 0
+    },
+    {
+      "name": "declaration_expiry",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "837"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {},\n  \"network-guard\": {\n    \"enabled\": true,\n    \"checks\": 7,\n    \"allowed\": 3,\n    \"blocked\": 2,\n    \"warned\": 2,\n    \"rate_limited\": 1\n  },\n  \"circuit-breaker\": {\n    \"enabled\": true,\n    \"failure_threshold\": 5,\n    \"timeout_seconds\": 60,\n    \"checks_total\": 0,\n    \"opens_total\": 0,\n    \"half_opens_total\": 0,\n    \"recoveries_total\": 0,\n    \"domains\": {}\n  },\n  \"test-context\": {\n    \"active\": true,\n    \"target_hosts\": 2,\n    \"checks_total\": 0,\n    \"allowed_total\": 0,\n    \"blocked_total\": 0,\n    \"warned_total\": 0,\n    \"declared_injections_total\": 0,\n    \"declared_active\": 1\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 0,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "done:circuit-breaker",
+        "get:test-context",
+        "done:test-context",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [],
+      "submitted": [],
+      "config_reads": 0,
+      "context_cached_hash": "owned-old-policy",
+      "declarations_before": [
+        "expired",
+        "at_boundary",
+        "live"
+      ],
+      "declarations_after": [
+        "live"
+      ],
+      "circuit_states_json": "{}",
+      "circuit_half_opens": 0
+    },
+    {
+      "name": "addon_exception_continues",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "699"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {},\n  \"network-guard\": {\n    \"enabled\": true,\n    \"checks\": 7,\n    \"allowed\": 3,\n    \"blocked\": 2,\n    \"warned\": 2,\n    \"rate_limited\": 1\n  },\n  \"circuit-breaker\": {\n    \"enabled\": true,\n    \"failure_threshold\": 5,\n    \"timeout_seconds\": 60,\n    \"checks_total\": 0,\n    \"opens_total\": 0,\n    \"half_opens_total\": 0,\n    \"recoveries_total\": 0,\n    \"domains\": {}\n  },\n  \"test-context\": {\n    \"error\": \"TypeError: object of type 'int' has no len()\"\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 0,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "done:circuit-breaker",
+        "get:test-context",
+        "error:test-context:TypeError",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [],
+      "submitted": [],
+      "config_reads": 0,
+      "context_cached_hash": "",
+      "declarations_before": [],
+      "declarations_after": [],
+      "circuit_states_json": "{}",
+      "circuit_half_opens": 0
+    },
+    {
+      "name": "circuit_half_open",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "1312"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {},\n  \"network-guard\": {\n    \"enabled\": true,\n    \"checks\": 7,\n    \"allowed\": 3,\n    \"blocked\": 2,\n    \"warned\": 2,\n    \"rate_limited\": 1\n  },\n  \"circuit-breaker\": {\n    \"enabled\": true,\n    \"failure_threshold\": 5,\n    \"timeout_seconds\": 60,\n    \"checks_total\": 0,\n    \"opens_total\": 0,\n    \"half_opens_total\": 2,\n    \"recoveries_total\": 0,\n    \"domains\": {\n      \"first.invalid\": {\n        \"state\": \"half_open\",\n        \"failure_count\": 3,\n        \"failure_streak\": 0,\n        \"time_until_half_open\": null\n      },\n      \"second.invalid\": {\n        \"state\": \"open\",\n        \"failure_count\": 4,\n        \"failure_streak\": 0,\n        \"time_until_half_open\": 40.0\n      },\n      \"third.invalid\": {\n        \"state\": \"half_open\",\n        \"failure_count\": 5,\n        \"failure_streak\": 0,\n        \"time_until_half_open\": null\n      }\n    }\n  },\n  \"test-context\": {\n    \"active\": false,\n    \"target_hosts\": 0,\n    \"checks_total\": 0,\n    \"allowed_total\": 0,\n    \"blocked_total\": 0,\n    \"warned_total\": 0,\n    \"declared_injections_total\": 0,\n    \"declared_active\": 0\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 0,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "audit:ops.circuit_breaker.half_open:first.invalid",
+        "audit:ops.circuit_breaker.half_open:third.invalid",
+        "done:circuit-breaker",
+        "get:test-context",
+        "done:test-context",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for first.invalid",
+          "addon": "circuit-breaker",
+          "host": "first.invalid",
+          "details": {}
+        },
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for third.invalid",
+          "addon": "circuit-breaker",
+          "host": "third.invalid",
+          "details": {}
+        }
+      ],
+      "submitted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for first.invalid",
+          "addon": "circuit-breaker",
+          "host": "first.invalid",
+          "details": {}
+        },
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for third.invalid",
+          "addon": "circuit-breaker",
+          "host": "third.invalid",
+          "details": {}
+        }
+      ],
+      "config_reads": 0,
+      "context_cached_hash": "",
+      "declarations_before": [],
+      "declarations_after": [],
+      "circuit_states_json": "{\"first.invalid\": {\"state\": \"half_open\", \"failure_count\": 3, \"opened_at\": 0, \"success_count\": 0, \"half_open_requests\": 0}, \"second.invalid\": {\"state\": \"open\", \"failure_count\": 4, \"opened_at\": 980}, \"third.invalid\": {\"state\": \"half_open\", \"failure_count\": 5, \"opened_at\": 0, \"success_count\": 0, \"half_open_requests\": 0}}",
+      "circuit_half_opens": 2
+    },
+    {
+      "name": "circuit_submission_error",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "709"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {},\n  \"network-guard\": {\n    \"enabled\": true,\n    \"checks\": 7,\n    \"allowed\": 3,\n    \"blocked\": 2,\n    \"warned\": 2,\n    \"rate_limited\": 1\n  },\n  \"circuit-breaker\": {\n    \"error\": \"RuntimeError: synthetic audit submission failure\"\n  },\n  \"test-context\": {\n    \"active\": false,\n    \"target_hosts\": 0,\n    \"checks_total\": 0,\n    \"allowed_total\": 0,\n    \"blocked_total\": 0,\n    \"warned_total\": 0,\n    \"declared_injections_total\": 0,\n    \"declared_active\": 0\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 0,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "audit:ops.circuit_breaker.half_open:first.invalid",
+        "error:circuit-breaker:RuntimeError",
+        "get:test-context",
+        "done:test-context",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for first.invalid",
+          "addon": "circuit-breaker",
+          "host": "first.invalid",
+          "details": {}
+        }
+      ],
+      "submitted": [],
+      "config_reads": 0,
+      "context_cached_hash": "",
+      "declarations_before": [],
+      "declarations_after": [],
+      "circuit_states_json": "{\"first.invalid\": {\"state\": \"half_open\", \"failure_count\": 3, \"opened_at\": 0, \"success_count\": 0, \"half_open_requests\": 0}, \"second.invalid\": {\"state\": \"open\", \"failure_count\": 4, \"opened_at\": 0}, \"third.invalid\": {\"state\": \"open\", \"failure_count\": 5, \"opened_at\": 0}}",
+      "circuit_half_opens": 1
+    },
+    {
+      "name": "circuit_later_domain_error",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "710"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {},\n  \"network-guard\": {\n    \"enabled\": true,\n    \"checks\": 7,\n    \"allowed\": 3,\n    \"blocked\": 2,\n    \"warned\": 2,\n    \"rate_limited\": 1\n  },\n  \"circuit-breaker\": {\n    \"error\": \"ValueError: 'invalid' is not a valid CircuitState\"\n  },\n  \"test-context\": {\n    \"active\": false,\n    \"target_hosts\": 0,\n    \"checks_total\": 0,\n    \"allowed_total\": 0,\n    \"blocked_total\": 0,\n    \"warned_total\": 0,\n    \"declared_injections_total\": 0,\n    \"declared_active\": 0\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 0,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "audit:ops.circuit_breaker.half_open:first.invalid",
+        "error:circuit-breaker:ValueError",
+        "get:test-context",
+        "done:test-context",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for first.invalid",
+          "addon": "circuit-breaker",
+          "host": "first.invalid",
+          "details": {}
+        }
+      ],
+      "submitted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for first.invalid",
+          "addon": "circuit-breaker",
+          "host": "first.invalid",
+          "details": {}
+        }
+      ],
+      "config_reads": 0,
+      "context_cached_hash": "",
+      "declarations_before": [],
+      "declarations_after": [],
+      "circuit_states_json": "{\"first.invalid\": {\"state\": \"half_open\", \"failure_count\": 3, \"opened_at\": 0, \"success_count\": 0, \"half_open_requests\": 0}, \"second.invalid\": {\"state\": \"invalid\", \"failure_count\": 4, \"opened_at\": 0}, \"third.invalid\": {\"state\": \"open\", \"failure_count\": 5, \"opened_at\": 0}}",
+      "circuit_half_opens": 1
+    },
+    {
+      "name": "policy_wrapper_error",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "838"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {},\n  \"network-guard\": {\n    \"enabled\": true,\n    \"checks\": 7,\n    \"allowed\": 3,\n    \"blocked\": 2,\n    \"warned\": 2,\n    \"rate_limited\": 1\n  },\n  \"circuit-breaker\": {\n    \"enabled\": true,\n    \"failure_threshold\": 5,\n    \"timeout_seconds\": 60,\n    \"checks_total\": 0,\n    \"opens_total\": 0,\n    \"half_opens_total\": 0,\n    \"recoveries_total\": 0,\n    \"domains\": {}\n  },\n  \"test-context\": {\n    \"active\": false,\n    \"target_hosts\": 0,\n    \"checks_total\": 0,\n    \"allowed_total\": 0,\n    \"blocked_total\": 0,\n    \"warned_total\": 0,\n    \"declared_injections_total\": 0,\n    \"declared_active\": 0\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 0,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "done:circuit-breaker",
+        "get:test-context",
+        "done:test-context",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [],
+      "submitted": [],
+      "config_reads": 0,
+      "context_cached_hash": "",
+      "declarations_before": [],
+      "declarations_after": [],
+      "circuit_states_json": "{}",
+      "circuit_half_opens": 0
+    },
+    {
+      "name": "typed_nan_real_policy",
+      "discovered": [
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "field_order": [
+        "proxy",
+        "policy-engine",
+        "network-guard",
+        "circuit-breaker",
+        "test-context",
+        "flow-recorder",
+        "request-logger"
+      ],
+      "status": [
+        200
+      ],
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "Content-Length",
+          "1558"
+        ]
+      ],
+      "body_text": "{\n  \"proxy\": \"safeyolo\",\n  \"policy-engine\": {\n    \"engine_version\": \"pdp-0.1.0\",\n    \"policy_hash\": \"sha256:86c8cbe8bbdd8fd0\",\n    \"task_policies\": 1,\n    \"engine_stats\": {\n      \"baseline_path\": \"/owned/policy.yaml\",\n      \"task_policy_path\": null,\n      \"baseline_permissions\": 1,\n      \"task_permissions\": 0,\n      \"required_addons\": [\n        \"network_guard\"\n      ],\n      \"evaluations\": 17,\n      \"budget_stats\": {\n        \"tracked_keys\": 2,\n        \"keys\": [\n          \"network:request:first.invalid\",\n          \"network:connect:second.invalid\"\n        ]\n      }\n    }\n  },\n  \"network-guard\": {\n    \"enabled\": true,\n    \"checks\": 7,\n    \"allowed\": 3,\n    \"blocked\": 2,\n    \"warned\": 2,\n    \"rate_limited\": 1\n  },\n  \"circuit-breaker\": {\n    \"enabled\": true,\n    \"failure_threshold\": NaN,\n    \"timeout_seconds\": 60,\n    \"checks_total\": 0,\n    \"opens_total\": 0,\n    \"half_opens_total\": 0,\n    \"recoveries_total\": 0,\n    \"domains\": {\n      \"typed.invalid\": {\n        \"state\": \"closed\",\n        \"failure_count\": NaN,\n        \"failure_streak\": 0,\n        \"time_until_half_open\": null\n      }\n    }\n  },\n  \"test-context\": {\n    \"active\": false,\n    \"target_hosts\": 0,\n    \"checks_total\": 0,\n    \"allowed_total\": 0,\n    \"blocked_total\": 0,\n    \"warned_total\": 0,\n    \"declared_injections_total\": 0,\n    \"declared_active\": 0\n  },\n  \"flow-recorder\": {\n    \"recorded\": 0,\n    \"errors\": 0,\n    \"skipped\": 0\n  },\n  \"request-logger\": {\n    \"requests_total\": 1208925819614629174706176,\n    \"requests_quieted\": 0,\n    \"responses_total\": 0,\n    \"blocks_total\": 0\n  }\n}",
+      "timeline": [
+        "get:policy-engine",
+        "done:policy-engine",
+        "get:network-guard",
+        "done:network-guard",
+        "get:circuit-breaker",
+        "done:circuit-breaker",
+        "get:test-context",
+        "done:test-context",
+        "get:flow-recorder",
+        "done:flow-recorder",
+        "get:request-logger",
+        "done:request-logger",
+        "response_headers"
+      ],
+      "attempted": [],
+      "submitted": [],
+      "config_reads": 0,
+      "context_cached_hash": "",
+      "declarations_before": [],
+      "declarations_after": [],
+      "circuit_states_json": "{\"typed.invalid\": {\"state\": \"closed\", \"failure_count\": NaN}}",
+      "circuit_half_opens": 0,
+      "typed_fields": {
+        "threshold_type": "float",
+        "request_count_type": "int"
+      }
+    }
+  ],
+  "source_sha256": {
+    "cli/src/safeyolo/mitm_addons/__init__.py": "d241944dd66ae8dfe6df2b460a11230afc04b1a0174ec0e024cea95f67403a00",
+    "cli/src/safeyolo/mitm_addons/admin_api.py": "1b617e66e53aefd38412e60b9ffcf24a7075c5f468b61e3e3fa93b71e038a0ac",
+    "cli/src/safeyolo/mitm_addons/network_guard.py": "449485737c3ae3ee1a048639daee715f7b55f3f2ed3f2097aef1c71a4eec8e24",
+    "cli/src/safeyolo/mitm_addons/circuit_breaker.py": "8c77aec89932ac75edec0fac17c5ea211869f1ff2b59645c73d8a60d2fa1fe12",
+    "cli/src/safeyolo/mitm_addons/test_context.py": "0c34f07a1bedf17645c1e7fe6cf1582852c545ca376c73e10d935a821cefbd33",
+    "cli/src/safeyolo/mitm_addons/policy_engine.py": "d8172f26729bb661eb003bae2f6a9e50fb6dc96e0abd6e26a581bf6191ed1999",
+    "cli/src/safeyolo/mitm_addons/flow_recorder.py": "3425d0b9c38453c93f723aa2b2bdc36e311b59246170dc36f435c999986d1419",
+    "cli/src/safeyolo/mitm_addons/request_logger.py": "71b31e77a81fb679e189426221645c413cbdc0208275d3671530ee72a1ec4d6b",
+    "cli/src/safeyolo/policy/engine.py": "a69b61583a87b19ea0f26b2ee56220d8ed2de8b76c6f46dd657329e38c9f8479",
+    "cli/src/safeyolo/policy/budget_tracker.py": "0547aa7e063228330bd115bef1ba1a53b1f80cda712c7887cb18ccf36ba7f53a",
+    "cli/src/safeyolo/policy/models.py": "fc8dbf7131996337cdea7af3ce5d37f95a91f8de14900da93015e4bc645ff97f",
+    "cli/src/safeyolo/core/base.py": "cd0dbae78069684fc8c5a034f1675095c422327b38a6f0fba30ddc21ad97c6aa",
+    "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
+    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "pdp/client.py": "92e969c07581bdb164633a5b7411ab459fbcf1976f7fa72274c230688441f82f",
+    "pdp/core.py": "26b5833958ac09f34b530c3413dfbee1836261b99b32e81d75f880b743780ed0"
+  }
+}

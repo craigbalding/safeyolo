@@ -493,7 +493,7 @@ pub(crate) async fn respond_with_stats<B>(
     registry: &Registry,
     policy: Option<&Policy>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
-    stats: Option<&(dyn Fn() -> Value + Sync)>,
+    stats: Option<&(dyn Fn() -> crate::circuits::CircuitValue + Sync)>,
 ) -> Result<Outcome, Error>
 where
     B: Body<Data = Bytes>,
@@ -524,7 +524,10 @@ where
         && path == "/stats"
         && let Some(stats) = stats
     {
-        return Ok(response(StatusCode::OK, stats()));
+        let body = stats()
+            .render_json(true)
+            .map_err(|error| Error::CircuitOperation(error.kind()))?;
+        return Ok(encoded(StatusCode::OK, "application/json", body, false));
     }
     if method == Method::POST && path == "/admin/circuit-breaker/reset" {
         return reset_circuit(request, circuits).await;
@@ -685,6 +688,82 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(bytes.len(), length);
         bytes
+    }
+
+    #[tokio::test]
+    async fn stats_typed_provider_preserves_actual_source_json_bytes() {
+        // This tests the facade boundary against real source response bytes.
+        // Shared owner reads and state effects have separate runtime controls.
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/admin_stats_source.json")).unwrap();
+        let registry = Registry::default();
+        for row in fixture["rows"].as_array().unwrap() {
+            let expected = row["body_text"].as_str().unwrap();
+            let document = crate::circuits::CircuitValue::parse_json(expected).unwrap();
+            let sampled = std::sync::atomic::AtomicUsize::new(0);
+            let stats = || {
+                sampled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                document.clone()
+            };
+            let outcome = respond_with_stats(
+                request("GET", "/stats", b""),
+                TOKEN,
+                &registry,
+                None,
+                None,
+                Some(&stats),
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome.response.status(), StatusCode::OK);
+            assert_eq!(
+                outcome.response.headers()[header::CONTENT_TYPE],
+                "application/json"
+            );
+            assert_eq!(body(outcome).await, expected, "{}", row["name"]);
+            assert_eq!(sampled.load(std::sync::atomic::Ordering::Relaxed), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn stats_serialization_error_is_terminal_after_the_provider_runs() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("policy.yaml");
+        std::fs::write(
+            &path,
+            "addons:\n  circuit_breaker:\n    failure_threshold: 2001-02-03\n",
+        )
+        .unwrap();
+        let policy = Policy::from_path(&path).unwrap();
+        let view = policy.circuit_settings();
+        let mut timestamps = crate::policy::TimestampPaths::default();
+        timestamps.insert_value(
+            &["failure_threshold"],
+            view.temporal_value(&["failure_threshold"]).unwrap().clone(),
+        );
+        let document = crate::circuits::CircuitValue::from_annotated(
+            json!({"failure_threshold":"2001-02-03"}),
+            timestamps,
+        );
+        let sampled = std::sync::atomic::AtomicUsize::new(0);
+        let stats = || {
+            sampled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            document.clone()
+        };
+        let result = respond_with_stats(
+            request("GET", "/stats", b""),
+            TOKEN,
+            &Registry::default(),
+            None,
+            None,
+            Some(&stats),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(Error::CircuitOperation(crate::circuits::ErrorKind::Type))
+        ));
+        assert_eq!(sampled.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

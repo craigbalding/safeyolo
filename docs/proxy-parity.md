@@ -1151,8 +1151,38 @@ before decompression. The [runtime tests](../proxy/src/flow_runtime_tests.rs)
 exercise contextual HTTP forwarding through real Alice/Bob Unix sockets, stored
 body reads, cross-agent denial, a forged owner filter, authenticated operator
 `/stats`, reload, partial startup, shutdown and reopening. The current
-operator statistics expose recorder and request logger counters; the full source
-addon statistics aggregation remains unfinished.
+operator statistics expose the installed policy engine, network guard, circuit
+breaker, TestContext, recorder and request logger owners. Other source addon
+reports remain unfinished.
+
+Authenticated `/stats` reads each installed owner in source order. It preserves
+an individual reporting error in that component's result and continues to later
+components. A policy-engine reporting error retains that source wrapper's empty
+object. Reads do not evaluate permissions or refresh request-stage configuration.
+Network and circuit `enabled` fields report the runtime option, independently of
+per-request policy bypasses.
+
+Statistics are not free of side effects: circuit reads can advance stale states
+to half-open and submit unscoped canonical events; TestContext reads prune expired
+declarations. Authentication precedes those reads. Synchronous circuit submission
+failure preserves reached state and lets later component reports continue.
+The typed operator response retains circuit scalar values, including nonfinite
+numbers, through the existing Python-compatible JSON formatter. Shared owners
+retain counters across reloads. These reports do not establish statistics for
+inactive components or complete operator inspection.
+With the temporary Python policy adapter, the report keeps an empty
+`policy-engine` result and the recorder/logger results. It omits the inactive
+native network guard, circuit breaker and TestContext owners.
+
+[Source controls](../proxy/tests/admin_stats_source.py) establish exact aggregate
+rendering and error continuation. [Owned runtime tests](../proxy/src/admin_listener/stats_tests.rs)
+cover authentication before reads, counters, declaration expiry, circuit audit
+failure and reload. The facade's frozen-body replay checks rendering only.
+Some existing core errors still use categorical native messages: a scalar
+TestContext target collection reports `target_hosts has no length`, and an
+invalid circuit state reports `invalid persisted circuit state`. Their error
+classes and continuation match the selected source cases; their message text
+does not. Numeric core error messages also remain outside complete parity.
 
 The [tag and diff store methods](../proxy/src/flow_store/details.rs) preserve
 typed immediate tag values, SQLite readback, retained body sizes and Python's

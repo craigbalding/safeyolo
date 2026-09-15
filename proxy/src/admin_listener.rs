@@ -1,5 +1,8 @@
 //! Startup-owned operator listener, separate from trusted per-agent ingress.
 
+#[cfg(test)]
+mod stats_tests;
+
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::Path,
@@ -188,18 +191,7 @@ async fn serve_connection(
                         .to_owned()
                 })
                 .unwrap_or_else(|| peer.ip().to_string());
-            let stats = || {
-                let logger = runtime
-                    .request_logger
-                    .stats()
-                    .ok()
-                    .and_then(|stats| stats.document().json().ok())
-                    .unwrap_or_else(
-                        || json!({"error":"RuntimeError: request logger stats unavailable"}),
-                    );
-                json!({"proxy":"safeyolo", "flow-recorder":runtime.flow_recorder.stats(),
-                    "request-logger":logger})
-            };
+            let stats = || crate::operator_stats::document(&runtime);
             let outcome = admin_api::respond_with_stats(
                 request,
                 token.trim_matches(python_whitespace),

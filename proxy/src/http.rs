@@ -948,7 +948,7 @@ async fn local_agent_api(
     Ok(reply)
 }
 
-fn declaration_time() -> f64 {
+pub(crate) fn declaration_time() -> f64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START
         .get_or_init(std::time::Instant::now)

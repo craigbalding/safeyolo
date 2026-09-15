@@ -128,7 +128,7 @@ async fn operator_statistics_are_read_only_and_authenticate_before_sampling() {
     let sampled = AtomicUsize::new(0);
     let stats = || {
         sampled.fetch_add(1, Ordering::Relaxed);
-        json!({"proxy":"safeyolo","flow-recorder":{"recorded":2,"errors":1,"skipped":3,"queue_dropped":4,"write_errors":5}})
+        json!({"proxy":"safeyolo","flow-recorder":{"recorded":2,"errors":1,"skipped":3,"queue_dropped":4,"write_errors":5}}).into()
     };
     let registry = tasks::Registry::default();
     for (method, auth, expected) in [
