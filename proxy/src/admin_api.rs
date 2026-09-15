@@ -29,6 +29,7 @@ pub enum Error {
     BodyRead,
     RegistryUnavailable,
     BudgetReporting(BudgetStatsError),
+    CircuitOperation(crate::circuits::ErrorKind),
 }
 
 impl fmt::Display for Error {
@@ -40,6 +41,7 @@ impl fmt::Display for Error {
             Self::BodyRead => "Operator request body read failed",
             Self::RegistryUnavailable => "Task registry unavailable",
             Self::BudgetReporting(_) => "Operator budget report unavailable",
+            Self::CircuitOperation(_) => "Operator circuit operation failed",
         })
     }
 }
@@ -51,6 +53,7 @@ impl std::error::Error for Error {}
 pub enum Audit {
     AuthenticationFailed,
     BudgetsReset(BudgetResetAudit),
+    CircuitReset(CircuitResetAudit),
     TaskUpdated {
         task_id: String,
         permission_count: usize,
@@ -91,6 +94,65 @@ impl BudgetResetAudit {
 impl Drop for BudgetResetAudit {
     fn drop(&mut self) {
         crate::credentials::wipe_json(&mut self.resource);
+    }
+}
+
+/// A committed exact-key reset. The original scalar is needed for the source
+/// response and audit; it is wiped when ownership ends and cannot be logged via
+/// Debug or Serialize. Non-string hashable keys never match string state keys.
+pub struct CircuitResetAudit {
+    host: Value,
+}
+
+impl CircuitResetAudit {
+    pub fn host(&self) -> &Value {
+        &self.host
+    }
+
+    pub fn events(&self, client_ip: &str) -> [Value; 2] {
+        let text = Zeroizing::new(match &self.host {
+            Value::String(value) => value.clone(),
+            Value::Bool(true) => "True".into(),
+            Value::Number(_) => crate::python_json::encode(&self.host)
+                .replace("Infinity", "inf")
+                .replace("NaN", "nan"),
+            _ => unreachable!("only truthy hashable host keys commit"),
+        });
+        let safe_host = crate::network_guard::sanitize(&text);
+        // AuditEvent.host rejects non-string scalars. Source write_event then
+        // preserves only its minimal fallback envelope for the reset event.
+        let mut reset = json!({
+            "event":"proxy.circuit", "audit_intent":"ops.circuit_breaker.reset",
+            "kind":"ops", "severity":"medium", "summary":format!("Circuit reset for {safe_host}"),
+        });
+        if self.host.is_string() {
+            reset["addon"] = json!("circuit-breaker");
+            reset["host"] = self.host.clone();
+            reset["details"] = json!({});
+        }
+        // The separate admin event accepts an Any host; Pydantic's JSON output
+        // converts nonfinite numbers to null in this audit field only.
+        let encoded = Zeroizing::new(crate::python_json::encode(&self.host));
+        let audit_host = if matches!(encoded.as_str(), "NaN" | "Infinity" | "-Infinity") {
+            Value::Null
+        } else {
+            self.host.clone()
+        };
+        [
+            reset,
+            json!({
+                "event":"proxy.admin_api", "audit_intent":"admin.circuit_breaker_reset",
+                "kind":"admin", "severity":"medium", "addon":"admin-api",
+                "summary":format!("Circuit breaker reset: {safe_host}"),
+                "details":{"client_ip":client_ip,"host":audit_host},
+            }),
+        ]
+    }
+}
+
+impl Drop for CircuitResetAudit {
+    fn drop(&mut self) {
+        crate::credentials::wipe_json(&mut self.host);
     }
 }
 
@@ -340,6 +402,52 @@ async fn reset_budgets<B: Body<Data = Bytes>>(
     Ok(outcome)
 }
 
+async fn reset_circuit<B: Body<Data = Bytes>>(
+    request: Request<B>,
+    circuits: Option<&crate::circuits::CircuitBreaker>,
+) -> Result<Outcome, Error> {
+    let mut data = match read_json(request).await? {
+        ParsedBody::Terminal(outcome) => return Ok(outcome),
+        ParsedBody::Absent => Json(Value::Null),
+        ParsedBody::Value(data) => data,
+    };
+    if !truthy(&data.0) {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"missing request body"}),
+        ));
+    }
+    let host = data
+        .0
+        .as_object_mut()
+        .ok_or(Error::NonObjectBody)?
+        .get_mut("host")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
+    let audit = CircuitResetAudit { host };
+    if !truthy(audit.host()) {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"missing 'host' field"}),
+        ));
+    }
+    let Some(circuits) = circuits else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"circuit breaker not available"}),
+        ));
+    };
+    circuits
+        .reset_json_key(audit.host())
+        .map_err(|error| Error::CircuitOperation(error.kind()))?;
+    let mut outcome = response(
+        StatusCode::OK,
+        json!({"status":"reset", "host":audit.host()}),
+    );
+    outcome.audit = Some(Audit::CircuitReset(audit));
+    Ok(outcome)
+}
+
 /// HTTP framing is supplied by the listener. Unknown/negative/overflow lengths
 /// rejected by Hyper are a separate transport compatibility difference.
 /// Body parsing occurs only after method, authentication, route and empty-ID
@@ -349,6 +457,19 @@ pub async fn respond<B>(
     expected_token: &str,
     registry: &Registry,
     policy: Option<&Policy>,
+) -> Result<Outcome, Error>
+where
+    B: Body<Data = Bytes>,
+{
+    respond_with_circuits(request, expected_token, registry, policy, None).await
+}
+
+pub async fn respond_with_circuits<B>(
+    request: Request<B>,
+    expected_token: &str,
+    registry: &Registry,
+    policy: Option<&Policy>,
+    circuits: Option<&crate::circuits::CircuitBreaker>,
 ) -> Result<Outcome, Error>
 where
     B: Body<Data = Bytes>,
@@ -374,6 +495,9 @@ where
         );
         outcome.audit = Some(Audit::AuthenticationFailed);
         return Ok(outcome);
+    }
+    if method == Method::POST && path == "/admin/circuit-breaker/reset" {
+        return reset_circuit(request, circuits).await;
     }
     if (method == Method::GET && path == "/admin/budgets")
         || (method == Method::POST && path == "/admin/budgets/reset")

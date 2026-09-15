@@ -113,6 +113,15 @@ async def run(config):
     master.options.update(**{name: config[name] for name in (
         "network_guard_enabled", "network_guard_block", "network_guard_homoglyph",
     ) if name in config})
+    if "circuit_breaker_enabled" in config:
+        from safeyolo.mitm_addons.circuit_breaker import CircuitBreaker
+
+        # The real base addon reads this derived option with a true fallback;
+        # CircuitBreaker.load itself registers only its persistence path.
+        master.options.add_option("circuit_breaker_enabled", bool, True, "Enable the fixture circuit addon")
+        master.addons.add(CircuitBreaker())
+        master.options.update(circuit_breaker_enabled=config["circuit_breaker_enabled"],
+                              circuit_state_file=config["circuit_state_file"])
     if inspection := config.get("inspection"):
         # The scanner obtains the real LocalPolicyClient sensor projection;
         # its policy source is the same one used by NetworkGuard in this seam.

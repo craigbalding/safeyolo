@@ -6,12 +6,26 @@
   "patch_source_sha256": "83f2cd2fa687935e0823cbe3dfdaff8f3cd6a6495a7466c24f84bd4281ab0887",
   "files": [
     {
+      "path": "h2-0.4.19/src/client.rs",
+      "original_sha256": "f64c9089838886bb38aa6b2eaf7e10f84a98fbcdf06d6c4df6fae317de03377e",
+      "candidate_sha256": "aab4d19049becd241f47dcc1a775c10ce7902d9eb8f25ddc2b7538e81d71411d",
+      "added": 27,
+      "removed": 1
+    },
+    {
       "path": "h2-0.4.19/src/ext.rs",
       "original_sha256": "2fb968f754829fc50392b6ccb4b90cc4c8b88657a5e3a7259f53916e13dc1c91",
-      "candidate_sha256": "461705404ec9b80cbf2fffdb9e2b05d4141bdb3376e3db49382deaa48639f838",
-      "added": 15,
+      "candidate_sha256": "7d0e17ac538a9d1cbd9e45a2aefa67a9f4ace6f9ec6b420711e532cffefb426c",
+      "added": 24,
       "removed": 0,
       "proof_candidate_sha256": "461705404ec9b80cbf2fffdb9e2b05d4141bdb3376e3db49382deaa48639f838"
+    },
+    {
+      "path": "h2-0.4.19/src/ext/completion.rs",
+      "original_sha256": null,
+      "candidate_sha256": "7eadeb393d8c7f9d25165cdcdfb709daa6cc21e6137369a1e8b2acd764ea52d8",
+      "added": 138,
+      "removed": 0
     },
     {
       "path": "h2-0.4.19/src/frame/headers.rs",
@@ -24,10 +38,31 @@
     {
       "path": "h2-0.4.19/src/proto/streams/recv.rs",
       "original_sha256": "49888eca03594469393d8b3bf328036007aff0e87df704f61a4556e4272386f8",
-      "candidate_sha256": "f7c4011287611d219a8183c6063d7e78ede0fc421a5d83a55e0f82c72c9f1682",
-      "added": 6,
+      "candidate_sha256": "1a736e95dad16c431c3480c5a6ea8168d4c3da460e160ccbe417f9bf632d2473",
+      "added": 20,
       "removed": 1,
       "proof_candidate_sha256": "f7c4011287611d219a8183c6063d7e78ede0fc421a5d83a55e0f82c72c9f1682"
+    },
+    {
+      "path": "h2-0.4.19/src/proto/streams/send.rs",
+      "original_sha256": "ee355358b86ea048fd0e64642595e7be6e7f03a39d96745e74503cba2f1b08ef",
+      "candidate_sha256": "2bf4a8e31d8848e6d815054d035c46d5f75d4347c154495ce2d354510da81d60",
+      "added": 1,
+      "removed": 0
+    },
+    {
+      "path": "h2-0.4.19/src/proto/streams/stream.rs",
+      "original_sha256": "e31a59444ba7b885040556b89c19b308321e2adeab1cdb2cce720285701d56a0",
+      "candidate_sha256": "16a6415126ab3284d8edf130993330c511b456f514171ec8591342348544154c",
+      "added": 20,
+      "removed": 0
+    },
+    {
+      "path": "h2-0.4.19/src/proto/streams/streams.rs",
+      "original_sha256": "d2f866b385ea8107ecb4a56e0089523abeabb6a5dc8e107c0a6c3eeb26955290",
+      "candidate_sha256": "6ac798abc93e6098beea955f89ac603b73ab65ea80cfba0743996da477af4f77",
+      "added": 6,
+      "removed": 0
     }
   ],
   "metadata_normalization": {
@@ -35,5 +70,68 @@
     "original_sha256": "30727e36628a75a96b9a00affc394649318d9b8d31a80b9df54756d2a73cab3b",
     "candidate_sha256": "1077fccdc6e7af20c4497d6ecdb0455ebf5f398aae7927a9516f95a3f02dbf52",
     "change": "Add the terminal newline required by repository hooks."
+  },
+  "response_completion": {
+    "base_commit": "d089f99506d9342cfd853709de87d2a465312d4e",
+    "existing_header_metadata_patch_sha256": "83f2cd2fa687935e0823cbe3dfdaff8f3cd6a6495a7466c24f84bd4281ab0887",
+    "api": [
+      "ext::on_response_complete(&mut http::Request<B>) -> ResponseCompletion",
+      "Future<Output = Result<http::StatusCode, Aborted>>",
+      "ResponseCompletion::try_result(&mut self) -> Option<Result<http::StatusCode, Aborted>>"
+    ],
+    "files": [
+      {
+        "path": "src/client.rs",
+        "before_sha256": "f64c9089838886bb38aa6b2eaf7e10f84a98fbcdf06d6c4df6fae317de03377e",
+        "after_sha256": "aab4d19049becd241f47dcc1a775c10ce7902d9eb8f25ddc2b7538e81d71411d"
+      },
+      {
+        "path": "src/ext.rs",
+        "before_sha256": "461705404ec9b80cbf2fffdb9e2b05d4141bdb3376e3db49382deaa48639f838",
+        "after_sha256": "7d0e17ac538a9d1cbd9e45a2aefa67a9f4ace6f9ec6b420711e532cffefb426c"
+      },
+      {
+        "path": "src/ext/completion.rs",
+        "before_sha256": null,
+        "after_sha256": "7eadeb393d8c7f9d25165cdcdfb709daa6cc21e6137369a1e8b2acd764ea52d8"
+      },
+      {
+        "path": "src/proto/streams/recv.rs",
+        "before_sha256": "f7c4011287611d219a8183c6063d7e78ede0fc421a5d83a55e0f82c72c9f1682",
+        "after_sha256": "1a736e95dad16c431c3480c5a6ea8168d4c3da460e160ccbe417f9bf632d2473"
+      },
+      {
+        "path": "src/proto/streams/send.rs",
+        "before_sha256": "ee355358b86ea048fd0e64642595e7be6e7f03a39d96745e74503cba2f1b08ef",
+        "after_sha256": "2bf4a8e31d8848e6d815054d035c46d5f75d4347c154495ce2d354510da81d60"
+      },
+      {
+        "path": "src/proto/streams/stream.rs",
+        "before_sha256": "e31a59444ba7b885040556b89c19b308321e2adeab1cdb2cce720285701d56a0",
+        "after_sha256": "16a6415126ab3284d8edf130993330c511b456f514171ec8591342348544154c"
+      },
+      {
+        "path": "src/proto/streams/streams.rs",
+        "before_sha256": "d2f866b385ea8107ecb4a56e0089523abeabb6a5dc8e107c0a6c3eeb26955290",
+        "after_sha256": "6ac798abc93e6098beea955f89ac603b73ab65ea80cfba0743996da477af4f77"
+      }
+    ],
+    "validation": {
+      "proof": "circuit-completion-h2/proof/tests/completion.rs",
+      "proof_sha256": "c83f8763dd21a0cfc2807e6ef8fe1c05ea3862ef19e04f22ed436a06bf559fbe",
+      "tests": 11,
+      "features": [
+        "h2 default (independent check)",
+        "h2 stream",
+        "h2 unstable",
+        "Hyper client + http2 (without http1)"
+      ],
+      "toolchain": "rustc 1.94.0",
+      "scope": "Optional receiver metadata only; no circuit activation or new parser admission rules."
+    },
+    "inherited_parser_limits": [
+      "Missing response :status defaults to 200.",
+      "A pseudo :status in trailers is discarded and the original response completes."
+    ]
   }
 }

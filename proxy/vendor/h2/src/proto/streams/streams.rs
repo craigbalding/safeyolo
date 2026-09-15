@@ -269,6 +269,9 @@ where
         use http::Method;
 
         let protocol = request.extensions_mut().remove::<Protocol>();
+        let response_completion = request
+            .extensions_mut()
+            .remove::<crate::ext::ResponseCompletionProducer>();
 
         // Clear before taking lock, incase extensions contain a StreamRef.
         request.extensions_mut().clear();
@@ -311,6 +314,8 @@ where
             me.actions.send.init_window_sz(),
             me.actions.recv.init_window_sz(),
         );
+
+        stream.response_completion = response_completion;
 
         if *request.method() == Method::HEAD {
             stream.content_length = ContentLength::Head;
@@ -1572,6 +1577,7 @@ impl OpaqueStreamRef {
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.key);
+        stream.abort_response();
         stream.is_recv = false;
         me.actions
             .recv

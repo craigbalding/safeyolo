@@ -1,0 +1,13 @@
+{
+  "failure_nan": true,
+  "streak_nan": true,
+  "state": "open",
+  "opens": 1,
+  "reopen_event_nan": true,
+  "saved_json_has_nan": true,
+  "saved_json_has_infinity": true,
+  "reload_preserves_nan": true,
+  "reload_preserves_infinity": true,
+  "stats_visits_later_domain": true,
+  "stats_json_has_nan": true
+}

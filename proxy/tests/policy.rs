@@ -1724,9 +1724,97 @@ fn concrete_addon_controls_share_precedence_without_changing_network_wrapper() {
     );
 }
 
+const ADDON_ENABLE_NOW: f64 = 1_000_000.;
+
+fn circuit_enable_schema_cases() -> Vec<Value> {
+    let mut cases = Vec::new();
+    for (value, admitted) in [
+        (json!(true), true),
+        (json!(false), true),
+        (json!(0), true),
+        (json!(1), true),
+        (json!(0.0), true),
+        (json!(1.0), true),
+        (json!("OFF"), true),
+        (json!("YeS"), true),
+        (Value::Null, false),
+        (json!(2), false),
+        (json!(" false"), false),
+        (json!("not-a-boolean"), false),
+        (json!([]), false),
+        (json!({}), false),
+    ] {
+        for scope in ["baseline", "domain", "client", "task"] {
+            let config = json!({"circuit_breaker":{"enabled":value}});
+            let mut document = json!({});
+            let mut task = Value::Null;
+            match scope {
+                "baseline" => document["addons"] = config,
+                "domain" => document["domains"] = json!({"api.example":{"addons":config}}),
+                "client" => document["clients"] = json!({"alice":{"addons":config}}),
+                "task" => task = json!({"addons":config}),
+                _ => unreachable!(),
+            }
+            cases.push(json!({"document":document,"task":task,"admitted":admitted}));
+        }
+    }
+    cases
+}
+
+#[test]
+fn circuit_enable_schema_and_read_only_scope_preserve_existing_state() {
+    use safeyolo_proxy::policy::Addon;
+    for case in circuit_enable_schema_cases() {
+        let parsed = Policy::parse(&case["document"].to_string(), Format::Json).and_then(|p| {
+            if case["task"].is_null() {
+                Ok(p)
+            } else {
+                p.with_task_source(&case["task"].to_string(), Format::Json)
+            }
+        });
+        assert_eq!(parsed.is_ok(), case["admitted"]);
+    }
+    let p=Policy::parse(r#"{"permissions":[{"action":"network:request","resource":"*","effect":"budget","budget":1}],"required":["circuit_breaker"],"addons":{"circuit_breaker":{"enabled":false,"settings":{"failure_threshold":"retained-unvalidated"}}},"domains":{"*.example":{"bypass":["circuit_breaker"]}},"clients":{"alice":{"addons":{"circuit_breaker":{"enabled":false}}}}}"#,Format::Json).unwrap();
+    p.evaluate(
+        request("api.example", Some("alice"), 80),
+        ADDON_ENABLE_NOW,
+        true,
+    )
+    .unwrap();
+    let task = p
+        .with_task_source(
+            r#"{"addons":{"circuit_breaker":{"enabled":false}}}"#,
+            Format::Json,
+        )
+        .unwrap();
+    for (current, required_task_enabled) in [(&p, false), (&task, true)] {
+        let before = current.engine_stats().unwrap();
+        let budgets = current.budget_stats(ADDON_ENABLE_NOW).unwrap();
+        let hash = current.policy_hash();
+        assert!(current.is_addon_enabled(Addon::CircuitBreaker, Some("api.example"), None));
+        assert!(current.is_addon_enabled(
+            Addon::CircuitBreaker,
+            Some("other.invalid"),
+            Some("alice")
+        ));
+        assert_eq!(
+            current.is_addon_enabled(Addon::CircuitBreaker, Some("other.invalid"), None),
+            required_task_enabled
+        );
+        for addon in [Addon::NetworkGuard, Addon::CredentialGuard] {
+            assert!(current.is_addon_enabled(addon, Some("api.example"), Some("alice")));
+        }
+        assert_eq!(current.engine_stats().unwrap(), before);
+        assert_eq!(current.budget_stats(ADDON_ENABLE_NOW).unwrap(), budgets);
+        assert_eq!(current.policy_hash(), hash);
+    }
+    assert_eq!(p.engine_stats().unwrap()["evaluations"], 1);
+    assert_eq!(p.engine_stats().unwrap()["budget_stats"]["tracked_keys"], 1);
+}
+
 #[test]
 #[ignore = "historical Python oracle; set SAFEYOLO_POLICY_PYTHON"]
-fn both_guard_enablement_controls_match_shipped_policy_engine() {
+fn three_addon_enablement_controls_match_shipped_policy_engine() {
     use safeyolo_proxy::policy::Addon;
     use std::{
         io::Write,
@@ -1738,23 +1826,31 @@ fn both_guard_enablement_controls_match_shipped_policy_engine() {
             for bypass in ["none", "domain", "client"] {
                 for task in [
                     Value::Null,
-                    json!({"addons":{"network_guard":{"enabled":false},"credential_guard":{"enabled":false}}}),
-                    json!({"domains":{"*.example":{"bypass":["network_guard","credential_guard"]}}}),
+                    json!({"addons":{"network_guard":{"enabled":false},"credential_guard":{"enabled":false},"circuit_breaker":{"enabled":false}}}),
+                    json!({"domains":{"*.example":{"bypass":["network_guard","credential_guard","circuit_breaker"]}}}),
                 ] {
-                    let mut document = json!({"permissions":[],"addons":{"network_guard":{"enabled":enabled},"credential_guard":{"enabled":!enabled}},"required":if required{json!(["network_guard","credential_guard"])}else{json!([])},"domains":{"api.example":{"addons":{"network_guard":{"enabled":!enabled},"credential_guard":{"enabled":enabled}}}},"clients":{"bob":{"addons":{"credential_guard":{"enabled":false}}}}});
+                    let mut document = json!({"permissions":[],"addons":{"network_guard":{"enabled":enabled},"credential_guard":{"enabled":!enabled},"circuit_breaker":{"enabled":enabled}},"required":if required{json!(["network_guard","credential_guard","circuit_breaker"])}else{json!([])},"domains":{"api.example":{"addons":{"network_guard":{"enabled":!enabled},"credential_guard":{"enabled":enabled},"circuit_breaker":{"enabled":!enabled}}}},"clients":{"bob":{"addons":{"credential_guard":{"enabled":false},"circuit_breaker":{"enabled":false}}}}});
                     if bypass == "domain" {
-                        document["domains"]["*.example"] =
-                            json!({"bypass":["network_guard","credential_guard"]});
+                        document["domains"]["*.example"] = json!({"bypass":["network_guard","credential_guard","circuit_breaker"]});
                     }
                     if bypass == "client" {
-                        document["clients"]["alice"] =
-                            json!({"bypass":["network_guard","credential_guard"]});
+                        document["clients"]["alice"] = json!({"bypass":["network_guard","credential_guard","circuit_breaker"]});
                     }
                     cases.push(json!({"document":document,"task":task}));
                 }
             }
         }
     }
+    cases.extend(circuit_enable_schema_cases());
+    cases.extend([
+        json!({"document":{"hosts":{"*.example":{"egress":"allow","bypass":["circuit_breaker"]},"api.example":{"addons":{"circuit_breaker":{"enabled":false}}}}},"task":null}),
+        json!({"document":{"addons":{"circuit_breaker":{"enabled":false}},"domains":{"*.example":{"addons":{"circuit_breaker":{"enabled":true}}},"api.example":{"addons":{"circuit_breaker":{"enabled":false}}}}},"task":null}),
+        json!({"document":{"addons":{"circuit_breaker":{"enabled":false}},"domains":{"api.example":{"addons":{"circuit_breaker":{"enabled":false}}},"*.example":{"addons":{"circuit_breaker":{"enabled":true}}}}},"task":null}),
+        // Task clients, domain addon configs and task.required do not enable or
+        // bypass the baseline's control; only the source-selected paths do.
+        json!({"document":{"addons":{"circuit_breaker":{"enabled":false}}},"task":{"required":["circuit_breaker"],"clients":{"alice":{"bypass":["circuit_breaker"]}},"domains":{"api.example":{"addons":{"circuit_breaker":{"enabled":true}}}}}}),
+        json!({"document":{"required":["circuit_breaker"],"addons":{"circuit_breaker":{"enabled":false}}},"task":{"addons":{"circuit_breaker":{}}}}),
+    ]);
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap();
@@ -1763,15 +1859,23 @@ import json,sys,pathlib,tempfile,logging
 from unittest.mock import patch
 from safeyolo.policy.engine import PolicyEngine
 from safeyolo.policy.models import UnifiedPolicy
+from safeyolo.policy.compiler import compile_policy
+from pydantic import ValidationError
 logging.disable(logging.CRITICAL)
 patch('safeyolo.policy.loader.write_event').start()
 rows=[]
 for case in json.load(sys.stdin):
+ try:
+  raw=compile_policy(case['document']) if 'hosts' in case['document'] else case['document']
+  UnifiedPolicy.model_validate(raw)
+  if case['task'] is not None: UnifiedPolicy.model_validate(case['task'])
+ except ValidationError:
+  rows.append({'admitted':False});continue
  with tempfile.TemporaryDirectory() as directory:
   path=pathlib.Path(directory)/'policy.json';path.write_text(json.dumps(case['document']))
   engine=PolicyEngine(baseline_path=path);engine._loader.stop_watcher()
   if case['task'] is not None:engine._loader._task_policy=UnifiedPolicy.model_validate(case['task'])
-  rows.append([engine.is_addon_enabled(addon,domain,client) for addon in ['network_guard','credential_guard'] for domain in [None,'','api.example','other.example','else.invalid'] for client in [None,'','alice','bob','ALICE']]);engine.done()
+  rows.append({'admitted':True,'queries':[engine.is_addon_enabled(addon,domain,client) for addon in ['network_guard','credential_guard','circuit_breaker'] for domain in [None,'','api.example','other.example','else.invalid'] for client in [None,'','alice','bob','ALICE']]});engine.done()
 json.dump(rows,sys.stdout)
 "#;
     let mut child = Command::new(
@@ -1802,15 +1906,31 @@ json.dump(rows,sys.stdout)
     );
     let expected: Value = serde_json::from_slice(&output.stdout).unwrap();
     let mut count = 0;
+    let mut admitted = 0;
     for (index, case) in cases.iter().enumerate() {
-        let mut p = Policy::parse(&case["document"].to_string(), Format::Json).unwrap();
-        if !case["task"].is_null() {
-            p = p
-                .with_task_source(&case["task"].to_string(), Format::Json)
-                .unwrap();
-        }
+        let parsed = Policy::parse(&case["document"].to_string(), Format::Json).and_then(|p| {
+            if case["task"].is_null() {
+                Ok(p)
+            } else {
+                p.with_task_source(&case["task"].to_string(), Format::Json)
+            }
+        });
+        assert_eq!(
+            parsed.is_ok(),
+            expected[index]["admitted"],
+            "admission case {index}"
+        );
+        let Ok(p) = parsed else { continue };
+        admitted += 1;
+        let hash = p.policy_hash();
+        let stats = p.engine_stats().unwrap();
+        let budgets = p.budget_stats(ADDON_ENABLE_NOW).unwrap();
         let mut row = vec![];
-        for addon in [Addon::NetworkGuard, Addon::CredentialGuard] {
+        for addon in [
+            Addon::NetworkGuard,
+            Addon::CredentialGuard,
+            Addon::CircuitBreaker,
+        ] {
             for domain in [
                 None,
                 Some(""),
@@ -1824,7 +1944,17 @@ json.dump(rows,sys.stdout)
                 }
             }
         }
-        assert_eq!(json!(row), expected[index], "enablement case {index}");
+        assert_eq!(
+            json!(row),
+            expected[index]["queries"],
+            "enablement case {index}"
+        );
+        assert_eq!(p.policy_hash(), hash);
+        assert_eq!(p.engine_stats().unwrap(), stats);
+        assert_eq!(p.budget_stats(ADDON_ENABLE_NOW).unwrap(), budgets);
     }
-    eprintln!("{count} actual Python addon-enable queries");
+    eprintln!(
+        "{count} actual Python addon-enable queries; {admitted}/{} source-admitted documents/tasks",
+        cases.len()
+    );
 }

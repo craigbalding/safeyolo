@@ -288,6 +288,7 @@ impl Send {
             return;
         }
 
+        stream.abort_response();
         stream.state.set_scheduled_reset(reason);
 
         self.prioritize.reclaim_reserved_capacity(stream, counts);

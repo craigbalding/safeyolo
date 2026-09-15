@@ -603,7 +603,7 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
         .collect();
     assert_eq!(controls.len(), 2);
     for row in controls {
-        assert_eq!(row["coverage"], "native_network_guard_only");
+        assert_eq!(row["coverage"], "native_network_guard_and_circuits");
         assert_eq!(row["decision"], "allow");
         assert!(row.get("blocked_by").is_none());
         assert!(row.get("block_reason").is_none());

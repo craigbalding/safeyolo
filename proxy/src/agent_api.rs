@@ -100,6 +100,7 @@ pub enum Failure {
     PolicySerialization,
     /// The source budget report failed during numeric conversion or key parsing.
     BudgetReporting,
+    CircuitReporting(crate::circuits::ErrorKind),
     /// Native statistics failures retain their exact, content-free category.
     EngineReporting(EngineStatsError),
     TaskRegistry(crate::tasks::Error),
@@ -146,6 +147,7 @@ pub struct Response<'a> {
 enum ResponseBody<'a> {
     Json(Value),
     Policy(Option<&'a Value>),
+    Circuit(Zeroizing<String>),
 }
 
 impl Drop for ResponseBody<'_> {
@@ -161,9 +163,13 @@ impl Response<'_> {
     /// this allocation when its last body/frame reference is dropped. Hyper
     /// and the operating system may make their own transport copies.
     pub fn body_bytes(&self) -> bytes::Bytes {
+        if let ResponseBody::Circuit(text) = &self.body {
+            return bytes::Bytes::from_owner(Zeroizing::new(text.as_bytes().to_vec()));
+        }
         let (value, wrapped) = match &self.body {
             ResponseBody::Json(value) => (value, false),
             ResponseBody::Policy(value) => (value.unwrap_or(&Value::Null), true),
+            ResponseBody::Circuit(_) => unreachable!("typed circuit response handled above"),
         };
         let overhead = if wrapped { "{\"policy\": }".len() } else { 0 };
         let capacity = crate::python_json::encoded_len(value)
@@ -192,6 +198,9 @@ pub struct Outcome<'a> {
     pub failure: Option<Failure>,
     /// Source PolicyEngine increments its evaluation counter even for previews.
     pub policy_evaluations: u64,
+    /// Status reads can transition stale circuits. The caller persists these
+    /// intents without flow attribution, even if a later report operation fails.
+    pub circuit_events: Vec<crate::circuits::Transition>,
 }
 impl Outcome<'_> {
     /// An escaped producer callback error reaches the adjacent source guard.
@@ -236,6 +245,7 @@ fn response(status: u16, body: Value) -> Outcome<'static> {
         scrub_request: false,
         failure: None,
         policy_evaluations: 0,
+        circuit_events: Vec::new(),
     }
 }
 
@@ -331,6 +341,25 @@ pub async fn respond_read<'p>(
     tasks: &crate::tasks::Registry,
     now_ms: f64,
 ) -> Outcome<'p> {
+    respond_read_with_circuits(request, token_path, policy, tasks, now_ms, None).await
+}
+
+/// A current borrowed circuit owner, with caller-owned time/randomness. Reading
+/// its stats never refreshes settings from policy or increments request checks.
+pub struct CircuitContext<'a> {
+    pub breaker: &'a crate::circuits::CircuitBreaker,
+    pub enabled: bool,
+    pub random: &'a mut (dyn FnMut() -> f64 + Send),
+}
+
+pub async fn respond_read_with_circuits<'p>(
+    request: Request<'_>,
+    token_path: &Path,
+    policy: PolicyState<'p>,
+    tasks: &crate::tasks::Registry,
+    now_ms: f64,
+    circuits: Option<CircuitContext<'_>>,
+) -> Outcome<'p> {
     let path = route(request);
     if !matches!(request.method, "GET" | "POST" | "DELETE") {
         return response(
@@ -398,6 +427,9 @@ pub async fn respond_read<'p>(
     }
     if path == "/lookup" {
         return lookup(request, policy, now_ms);
+    }
+    if path == "/circuits" {
+        return circuit_response(request, circuits, now_ms / 1000.0);
     }
     if path == "/status" {
         match policy {
@@ -505,6 +537,53 @@ pub async fn respond_read<'p>(
         return outcome;
     }
     response(404, json!({"error":"Not Found", "endpoints":ENDPOINTS}))
+}
+
+fn circuit_response(
+    request: Request<'_>,
+    context: Option<CircuitContext<'_>>,
+    now: f64,
+) -> Outcome<'static> {
+    let Some(context) = context else {
+        return response(503, json!({"error":"circuit-breaker addon not loaded"}));
+    };
+    let (rendered, events) = match context
+        .breaker
+        .stats_document(context.enabled, now, &mut || (context.random)())
+    {
+        Ok(stats) => (stats.value.render_json(false), stats.events),
+        Err(error) => {
+            let events = error.events().to_vec();
+            (Err(error), events)
+        }
+    };
+    let mut outcome = match rendered {
+        Ok(text) => {
+            let mut outcome = response(200, Value::Null);
+            outcome.response.body = ResponseBody::Circuit(Zeroizing::new(text));
+            outcome
+        }
+        Err(error) => {
+            use crate::circuits::ErrorKind;
+            let name = match error.kind() {
+                ErrorKind::Type => Some("TypeError"),
+                ErrorKind::Value => Some("ValueError"),
+                ErrorKind::Overflow => Some("OverflowError"),
+                ErrorKind::ZeroDivision => Some("ZeroDivisionError"),
+                ErrorKind::Invalid | ErrorKind::Compatibility => None,
+            };
+            let failure = Failure::CircuitReporting(error.kind());
+            if let Some(name) = name {
+                let mut outcome = response(500, json!({"error":format!("Internal error: {name}")}));
+                outcome.failure = Some(failure);
+                outcome
+            } else {
+                unavailable(request, failure)
+            }
+        }
+    };
+    outcome.circuit_events = events;
+    outcome
 }
 
 fn status_response(
@@ -689,7 +768,8 @@ fn lookup(request: Request<'_>, policy: PolicyState<'_>, now_ms: f64) -> Outcome
     outcome
 }
 
-fn repr(value: &str) -> String {
+// Shared Python string representation for API errors and circuit denial summaries.
+pub(crate) fn repr(value: &str) -> String {
     let quote = if value.contains('\'') && !value.contains('"') {
         '"'
     } else {

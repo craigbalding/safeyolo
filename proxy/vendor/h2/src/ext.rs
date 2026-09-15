@@ -1,5 +1,10 @@
 //! Extensions specific to the HTTP/2 protocol.
 
+mod completion;
+
+pub(crate) use completion::ResponseCompletionProducer;
+pub use completion::{on_response_complete, Aborted, ResponseCompletion};
+
 use crate::hpack::BytesStr;
 
 use bytes::Bytes;
@@ -60,11 +65,15 @@ pub struct OriginalHeaderFields(pub(crate) Vec<(http::HeaderName, http::HeaderVa
 impl OriginalHeaderFields {
     /// Borrow the decoded field name/value bytes in arrival order.
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
-        self.0.iter().map(|(name, value)| (name.as_str().as_bytes(), value.as_bytes()))
+        self.0
+            .iter()
+            .map(|(name, value)| (name.as_str().as_bytes(), value.as_bytes()))
     }
 }
 impl fmt::Debug for OriginalHeaderFields {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OriginalHeaderFields").field("count", &self.0.len()).finish_non_exhaustive()
+        f.debug_struct("OriginalHeaderFields")
+            .field("count", &self.0.len())
+            .finish_non_exhaustive()
     }
 }

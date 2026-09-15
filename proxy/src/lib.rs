@@ -7,6 +7,7 @@ mod admin_listener;
 pub mod admin_shield;
 pub mod agent_api;
 pub mod approvals;
+mod circuit_runtime;
 pub mod circuits;
 mod config;
 pub mod contracts;
@@ -79,6 +80,7 @@ pub(crate) struct Runtime {
     admin_address: Option<std::net::SocketAddr>,
     admin_shield: admin_shield::AdminShield,
     network_guard: network_guard::NetworkGuard,
+    circuits: circuits::CircuitBreaker,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -114,6 +116,9 @@ impl Runtime {
         let network_guard = previous
             .map(|runtime| runtime.network_guard.clone())
             .unwrap_or_default();
+        let circuits = previous
+            .map(|runtime| runtime.circuits.clone())
+            .unwrap_or_default();
         let scanner = inspection::Scanner::default();
         if let Some(inspection) = &config.inspection {
             let source = std::fs::read_to_string(&inspection.policy_file)?;
@@ -147,7 +152,16 @@ impl Runtime {
         } else {
             None
         };
-        Ok(Self {
+        let mut startup_transitions = Vec::new();
+        if previous.is_none()
+            && let Some(path) = circuit_runtime::state_path(&config)
+        {
+            match circuits.load_file(path, circuit_runtime::now(), &mut rand::random::<f64>) {
+                Ok(outcome) => startup_transitions = outcome.events,
+                Err(_) => eprintln!("Circuit state load failed"),
+            }
+        }
+        let runtime = Self {
             temporary_policy_lock,
             parent,
             tls,
@@ -159,6 +173,7 @@ impl Runtime {
             admin_address,
             admin_shield,
             network_guard,
+            circuits,
             via_token: config
                 .via_token
                 .clone()
@@ -171,11 +186,18 @@ impl Runtime {
             ),
             config,
             instance_id: default_via.to_owned(),
-        })
+        };
+        if circuit_runtime::record_transitions(&runtime, &startup_transitions, None) {
+            eprintln!("Circuit startup evidence write failed");
+        }
+        Ok(runtime)
     }
 
     fn record(&self, event: Value) -> Result<(), Error> {
-        let mut bytes = serde_json::to_vec(&event)?;
+        self.record_bytes(serde_json::to_vec(&event)?)
+    }
+
+    fn record_bytes(&self, mut bytes: Vec<u8>) -> Result<(), Error> {
         bytes.push(b'\n');
         let mut events = self.events.lock().map_err(|_| "event log lock poisoned")?;
         events.write_all(&bytes)?;
@@ -379,6 +401,7 @@ pub struct Proxy {
     default_via: String,
     readiness_file: PathBuf,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
+    circuit_snapshots: Option<circuit_runtime::Snapshots>,
 }
 
 impl Proxy {
@@ -405,12 +428,17 @@ impl Proxy {
             default_via,
             readiness_file: config.readiness_file.clone(),
             temporary_policy_lock,
+            circuit_snapshots: None,
         };
         // A readiness marker is useful only after all configured sockets have bound.
         // Keep the prepared operator socket locally owned until agent binds succeed.
         proxy.install_listeners(&config).await?;
         proxy.admin = prepared_admin.map(|listener| listener.start(proxy.runtime.clone()));
         proxy.write_readiness()?;
+        if circuit_runtime::state_path(&config).is_some() {
+            proxy.circuit_snapshots =
+                Some(circuit_runtime::Snapshots::start(proxy.runtime.clone())?);
+        }
         Ok(proxy)
     }
 
@@ -497,10 +525,35 @@ impl Proxy {
         // Once topology changes begin, readiness is re-published only after commit.
         clear_readiness(&self.readiness_file, &self.default_via);
         self.install_listeners(&config).await?;
-        *self
-            .runtime
-            .write()
-            .map_err(|_| "runtime write lock poisoned")? = runtime;
+        if self.circuit_snapshots.is_none() && circuit_runtime::state_path(&config).is_some() {
+            self.circuit_snapshots = Some(circuit_runtime::Snapshots::start(self.runtime.clone())?);
+        }
+        {
+            // Completion, admission and snapshots all retain this same lock
+            // through their state operation. Publish the selected file's state
+            // and configuration together, preserving counters and settings.
+            let mut current = self
+                .runtime
+                .write()
+                .map_err(|_| "runtime write lock poisoned")?;
+            let old_path = circuit_runtime::state_path(&current.config);
+            let new_path = circuit_runtime::state_path(&runtime.config);
+            if old_path != new_path {
+                let changed = runtime.circuits.replace_state_file(
+                    old_path,
+                    new_path,
+                    circuit_runtime::now(),
+                    &mut rand::random::<f64>,
+                )?;
+                if changed.previous_save_failed {
+                    eprintln!("Circuit previous state snapshot failed");
+                }
+                if changed.load_failed {
+                    eprintln!("Circuit state load failed");
+                }
+            }
+            *current = runtime;
+        }
         if self.readiness_file != config.readiness_file {
             clear_readiness(&self.readiness_file, &self.default_via);
             self.readiness_file = config.readiness_file;
@@ -520,6 +573,13 @@ impl Proxy {
             if let Err(error) = task.await {
                 eprintln!("listener shutdown failed: {error}");
             }
+        }
+        if let Some(snapshots) = self.circuit_snapshots.take()
+            && tokio::task::spawn_blocking(move || snapshots.stop())
+                .await
+                .is_err()
+        {
+            eprintln!("Circuit snapshot shutdown failed");
         }
     }
 }

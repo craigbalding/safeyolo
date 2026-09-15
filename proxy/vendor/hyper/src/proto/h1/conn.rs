@@ -75,6 +75,10 @@ where
                 h09_responses: false,
                 #[cfg(feature = "client")]
                 on_informational: None,
+                #[cfg(feature = "client")]
+                on_response_complete: None,
+                #[cfg(feature = "client")]
+                response_status: None,
                 notify_read: false,
                 reading: Reading::Init,
                 writing: Writing::Init,
@@ -288,6 +292,7 @@ where
         #[cfg(feature = "client")]
         {
             self.state.on_informational = None;
+            self.state.response_status = T::incoming_status(&msg.head);
         }
 
         self.state.busy();
@@ -305,6 +310,8 @@ where
                 debug!("ignoring expect-continue since body is empty");
             }
             self.state.reading = Reading::KeepAlive;
+            #[cfg(feature = "client")]
+            self.state.complete_response();
             if !T::should_read_first() {
                 self.try_keep_alive(cx);
             }
@@ -417,6 +424,12 @@ where
             _ => unreachable!("poll_read_body invalid state: {:?}", self.state.reading),
         };
 
+        #[cfg(feature = "client")]
+        match reading {
+            Reading::KeepAlive => self.state.complete_response(),
+            Reading::Closed => self.state.abort_response(),
+            _ => (),
+        }
         self.state.reading = reading;
         self.try_keep_alive(cx);
         ret
@@ -650,6 +663,10 @@ where
                 {
                     self.state.on_informational =
                         head.extensions.remove::<crate::ext::OnInformational>();
+                    if T::is_client() {
+                        self.state.on_response_complete =
+                            head.extensions.remove::<crate::ext::OnResponseComplete>();
+                    }
                 }
 
                 Some(encoder)
@@ -857,6 +874,10 @@ where
 
     /// If the read side can be cheaply drained, do so. Otherwise, close.
     pub(super) fn poll_drain_or_close_read(&mut self, cx: &mut Context<'_>) {
+        // Body cancellation won before the parser reached the message end.
+        // Cheap connection reuse below must not turn that into completion.
+        #[cfg(feature = "client")]
+        self.state.abort_response();
         if let Reading::Continue(decoder) = &mut self.state.reading {
             // skip sending the 100-continue
             // just move forward to a read, in case a tiny body was included
@@ -955,6 +976,10 @@ struct State {
     /// received.
     #[cfg(feature = "client")]
     on_informational: Option<crate::ext::OnInformational>,
+    #[cfg(feature = "client")]
+    on_response_complete: Option<crate::ext::OnResponseComplete>,
+    #[cfg(feature = "client")]
+    response_status: Option<http::StatusCode>,
     /// Set to true when the Dispatcher should poll read operations
     /// again. See the `maybe_notify` method for more.
     notify_read: bool,
@@ -1056,7 +1081,28 @@ impl KA {
 }
 
 impl State {
+    #[cfg(feature = "client")]
+    fn complete_response(&mut self) {
+        if let Some(completion) = self.on_response_complete.take() {
+            if let Some(status) = self.response_status.take() {
+                completion.complete(status);
+            } else {
+                completion.abort();
+            }
+        }
+    }
+
+    #[cfg(feature = "client")]
+    fn abort_response(&mut self) {
+        self.response_status = None;
+        if let Some(completion) = self.on_response_complete.take() {
+            completion.abort();
+        }
+    }
+
     fn close(&mut self) {
+        #[cfg(feature = "client")]
+        self.abort_response();
         trace!("State::close()");
         self.reading = Reading::Closed;
         self.writing = Writing::Closed;
@@ -1064,6 +1110,8 @@ impl State {
     }
 
     fn close_read(&mut self) {
+        #[cfg(feature = "client")]
+        self.abort_response();
         trace!("State::close_read()");
         self.reading = Reading::Closed;
         self.keep_alive.disable();

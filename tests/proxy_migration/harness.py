@@ -78,7 +78,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  ignore_hosts=(), eager_connect=False, inspection=None, native_policy=False,
                  network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None,
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
-                 admin_port=None, admin_api_token_file=None):
+                 admin_port=None, admin_api_token_file=None,
+                 circuit_breaker_enabled=None, circuit_state_file=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -106,6 +107,9 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             config["admin_port"] = admin_port
         if admin_api_token_file is not None:
             config["admin_api_token_file"] = str(admin_api_token_file)
+        if circuit_breaker_enabled is not None or circuit_state_file is not None:
+            config["circuit_breaker_enabled"] = True if circuit_breaker_enabled is None else circuit_breaker_enabled
+            config["circuit_state_file"] = str(directory / "circuit-state.json") if circuit_state_file is None else str(circuit_state_file)
         env = {**os.environ,
                "PYTHONPATH": os.pathsep.join([str(REPO / "cli/src"), str(REPO)]),
                "SAFEYOLO_LOG_PATH": str(directory / "audit.jsonl")}

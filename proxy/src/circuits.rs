@@ -1,8 +1,12 @@
-//! Native circuit-breaker state, pending runtime integration.
+//! Shared circuit-breaker state for native HTTP and operator controls.
 //!
 //! All transitions share one locked state. Clock and jitter inputs are explicit;
 //! the caller owns addon enable/bypass decisions, event emission and scheduling
 //! snapshots on a blocking worker. Transport errors have no shipped error hook.
+//! Numeric operations preserve Python scalar kinds and committed transitions on
+//! failure. Typed documents preserve Python nonfinite JSON through persistence
+//! and caller-owned output; the legacy serde_json views remain fallible.
+//! Malformed structural cache and sequence arithmetic compatibility remain open.
 
 use std::{
     collections::BTreeSet,
@@ -13,26 +17,67 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use indexmap::IndexMap;
+use num_bigint::BigInt;
 use serde::Serialize;
-use serde_json::{Map, Value, json};
+
+mod config;
+#[cfg(test)]
+mod file_switch_tests;
+mod json;
+mod numeric;
+pub use numeric::{CircuitValue, TemporalOperand};
+
+type Record = IndexMap<String, CircuitValue>;
+use serde_json::{Value, json};
 
 type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorKind {
+    Invalid,
+    Type,
+    Value,
+    Overflow,
+    ZeroDivision,
+    Compatibility,
+}
+
 #[derive(Debug)]
-pub struct Error(String);
+pub struct Error {
+    kind: ErrorKind,
+    message: String,
+    events: Vec<Transition>,
+}
+impl Error {
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+    /// Transitions already emitted by the source operation before it failed.
+    pub fn events(&self) -> &[Transition] {
+        &self.events
+    }
+}
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
+        self.message.fmt(formatter)
     }
 }
 impl std::error::Error for Error {}
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
-        Self(error.to_string())
+        failure_kind(ErrorKind::Invalid, &error.to_string())
+    }
+}
+fn failure_kind(kind: ErrorKind, message: &str) -> Error {
+    Error {
+        kind,
+        message: message.into(),
+        events: Vec::new(),
     }
 }
 fn invalid(message: &str) -> Error {
-    Error(message.into())
+    failure_kind(ErrorKind::Invalid, message)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -46,20 +91,60 @@ pub enum State {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Status {
     pub state: State,
-    pub failure_count: f64,
-    pub success_count: i64,
-    pub last_failure_time: Option<f64>,
-    pub last_success_time: Option<f64>,
-    pub opened_at: Option<f64>,
-    pub failure_streak: i64,
-    pub current_timeout: f64,
+    pub failure_count: CircuitValue,
+    pub success_count: CircuitValue,
+    pub last_failure_time: Option<CircuitValue>,
+    pub last_success_time: Option<CircuitValue>,
+    pub opened_at: Option<CircuitValue>,
+    pub failure_streak: CircuitValue,
+    pub current_timeout: CircuitValue,
 }
 impl Status {
-    pub fn time_until_half_open(&self, now: f64) -> Option<f64> {
-        (self.state == State::Open)
-            .then_some(self.opened_at)
-            .flatten()
-            .map(|opened| (self.current_timeout - (now - opened)).max(0.))
+    /// A typed caller view that also preserves nonfinite status fields.
+    pub fn document(&self) -> CircuitValue {
+        CircuitValue::Object(
+            [
+                (
+                    "state".into(),
+                    serde_json::to_value(self.state).unwrap().into(),
+                ),
+                ("failure_count".into(), self.failure_count.clone()),
+                ("success_count".into(), self.success_count.clone()),
+                (
+                    "last_failure_time".into(),
+                    self.last_failure_time
+                        .clone()
+                        .unwrap_or_else(|| Value::Null.into()),
+                ),
+                (
+                    "last_success_time".into(),
+                    self.last_success_time
+                        .clone()
+                        .unwrap_or_else(|| Value::Null.into()),
+                ),
+                (
+                    "opened_at".into(),
+                    self.opened_at.clone().unwrap_or_else(|| Value::Null.into()),
+                ),
+                ("failure_streak".into(), self.failure_streak.clone()),
+                ("current_timeout".into(), self.current_timeout.clone()),
+            ]
+            .into(),
+        )
+    }
+    pub fn time_until_half_open(&self, now: f64) -> Result<Option<CircuitValue>> {
+        if self.state != State::Open {
+            return Ok(None);
+        }
+        self.opened_at
+            .as_ref()
+            .map(|opened| {
+                CircuitValue::from(0).max_first(
+                    self.current_timeout
+                        .subtract(&CircuitValue::Float(now).subtract(opened)?)?,
+                )
+            })
+            .transpose()
     }
 }
 
@@ -95,8 +180,43 @@ impl TransitionKind {
 pub struct Transition {
     pub event: TransitionKind,
     pub domain: String,
-    pub details: Value,
+    #[serde(serialize_with = "serialize_details")]
+    pub details: Option<IndexMap<String, CircuitValue>>,
 }
+impl Transition {
+    /// Caller-owned event serialization, without a serde_json nonfinite boundary.
+    pub fn document(&self) -> CircuitValue {
+        CircuitValue::Object(
+            [
+                ("event".into(), json!(self.event.as_str()).into()),
+                ("domain".into(), Value::String(self.domain.clone()).into()),
+                (
+                    "details".into(),
+                    self.details
+                        .as_ref()
+                        .map(|values| CircuitValue::Object(values.clone()))
+                        .unwrap_or_else(|| Value::Null.into()),
+                ),
+            ]
+            .into(),
+        )
+    }
+}
+fn serialize_details<S: serde::Serializer>(
+    details: &Option<IndexMap<String, CircuitValue>>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+    let Some(details) = details else {
+        return serializer.serialize_none();
+    };
+    let mut map = serializer.serialize_map(Some(details.len()))?;
+    for (key, value) in details {
+        map.serialize_entry(key, value)?;
+    }
+    map.end()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Outcome<T> {
     pub value: T,
@@ -105,7 +225,12 @@ pub struct Outcome<T> {
 fn outcome<T>(value: T, events: Vec<Transition>) -> Outcome<T> {
     Outcome { value, events }
 }
-fn event(events: &mut Vec<Transition>, name: TransitionKind, domain: &str, details: Value) {
+fn event(
+    events: &mut Vec<Transition>,
+    name: TransitionKind,
+    domain: &str,
+    details: Option<IndexMap<String, CircuitValue>>,
+) {
     events.push(Transition {
         event: name,
         domain: domain.into(),
@@ -115,33 +240,29 @@ fn event(events: &mut Vec<Transition>, name: TransitionKind, domain: &str, detai
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    pub failure_threshold: f64,
-    // force_open persists the configured value itself, including integer vs
-    // float spelling; retain that provenance when using the numeric API.
-    failure_threshold_source: Value,
-    pub success_threshold: f64,
-    pub timeout_seconds: f64,
-    pub half_open_max_requests: f64,
+    pub failure_threshold: CircuitValue,
+    pub success_threshold: CircuitValue,
+    pub timeout_seconds: CircuitValue,
+    pub half_open_max_requests: CircuitValue,
     pub use_exponential_backoff: bool,
-    pub max_timeout_seconds: f64,
-    pub backoff_multiplier: f64,
-    pub jitter_factor: f64,
-    pub streak_decay_seconds: f64,
+    pub max_timeout_seconds: CircuitValue,
+    pub backoff_multiplier: CircuitValue,
+    pub jitter_factor: CircuitValue,
+    pub streak_decay_seconds: CircuitValue,
     pub excluded_domains: BTreeSet<String>,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            failure_threshold: 5.,
-            failure_threshold_source: json!(5),
-            success_threshold: 2.,
-            timeout_seconds: 60.,
-            half_open_max_requests: 3.,
+            failure_threshold: 5.into(),
+            success_threshold: 2.into(),
+            timeout_seconds: 60.into(),
+            half_open_max_requests: 3.into(),
             use_exponential_backoff: true,
-            max_timeout_seconds: 3600.,
-            backoff_multiplier: 2.,
-            jitter_factor: 0.3,
-            streak_decay_seconds: 3600.,
+            max_timeout_seconds: 3600.into(),
+            backoff_multiplier: 2.0.into(),
+            jitter_factor: 0.3.into(),
+            streak_decay_seconds: 3600.into(),
             excluded_domains: ["localhost", "127.0.0.1", "_safeyolo.probe.internal"]
                 .map(str::to_owned)
                 .into(),
@@ -149,88 +270,37 @@ impl Default for Settings {
     }
 }
 impl Settings {
-    fn apply(&mut self, values: &Map<String, Value>) -> Result<()> {
-        for (name, field) in [
-            ("failure_threshold", &mut self.failure_threshold),
-            ("success_threshold", &mut self.success_threshold),
-            ("timeout_seconds", &mut self.timeout_seconds),
-            ("half_open_max_requests", &mut self.half_open_max_requests),
-            ("max_timeout_seconds", &mut self.max_timeout_seconds),
-            ("backoff_multiplier", &mut self.backoff_multiplier),
-            ("jitter_factor", &mut self.jitter_factor),
-            ("streak_decay_seconds", &mut self.streak_decay_seconds),
-        ] {
-            if let Some(value) = values.get(name) {
-                *field = finite_number(value)?;
-            }
-        }
-        if let Some(value) = values.get("failure_threshold") {
-            self.failure_threshold_source = value.clone();
-        }
-        if let Some(value) = values.get("use_exponential_backoff") {
-            self.use_exponential_backoff = truthy(value);
-        }
-        if let Some(value) = values.get("excluded_domains").filter(|value| truthy(value)) {
-            match value {
-                Value::String(value) => self
-                    .excluded_domains
-                    .extend(value.chars().map(|character| character.to_string())),
-                Value::Object(value) => self.excluded_domains.extend(value.keys().cloned()),
-                Value::Array(values) => {
-                    for value in values {
-                        match value {
-                            Value::String(value) => {
-                                self.excluded_domains.insert(value.clone());
-                            }
-                            Value::Array(_) | Value::Object(_) => {
-                                return Err(invalid("excluded domain entries must be hashable"));
-                            }
-                            // Hashable non-strings can enter the Python set but can
-                            // never match the string domain supplied by HTTP.
-                            _ => {}
-                        }
-                    }
-                }
-                _ => return Err(invalid("excluded domains must be iterable")),
-            }
-        }
-        Ok(())
-    }
     pub fn calculate_timeout(
         &self,
-        mut streak: i64,
+        streak: impl Into<CircuitValue>,
         random: &mut impl FnMut() -> f64,
-    ) -> Result<f64> {
-        if !self.use_exponential_backoff || streak == 0 {
-            return Ok(self.timeout_seconds);
+    ) -> Result<CircuitValue> {
+        let mut streak = streak.into();
+        if !self.use_exponential_backoff || streak.equal(&0.into()) {
+            return Ok(self.timeout_seconds.clone());
         }
-        if self.backoff_multiplier > 1. {
-            let ratio = self.max_timeout_seconds / self.timeout_seconds;
-            if self.timeout_seconds == 0. || ratio <= 0. || !ratio.is_finite() {
-                return Err(invalid("invalid circuit backoff logarithm"));
-            }
-            let maximum = ratio.log(self.backoff_multiplier).ceil();
-            if !maximum.is_finite() || maximum < i64::MIN as f64 || maximum >= i64::MAX as f64 {
-                return Err(invalid("circuit backoff exponent is out of range"));
-            }
-            streak = streak.min(maximum as i64);
+        if self.backoff_multiplier.greater(&1.into())? {
+            let ratio = self.max_timeout_seconds.divide(&self.timeout_seconds)?;
+            let maximum = CircuitValue::Float(ratio.logarithm()?)
+                .divide(&CircuitValue::Float(self.backoff_multiplier.logarithm()?))?;
+            streak = streak.min_first(maximum.ceil()?)?;
         }
-        let base = self.timeout_seconds * self.backoff_multiplier.powf(streak as f64);
-        if !base.is_finite() {
-            return Err(invalid("circuit backoff overflow"));
-        }
-        let timeout = base.min(self.max_timeout_seconds);
-        let range = timeout * self.jitter_factor;
+        let timeout = self
+            .timeout_seconds
+            .multiply(&self.backoff_multiplier.power(&streak)?)?
+            .min_first(self.max_timeout_seconds.clone())?;
+        let range = timeout.multiply(&self.jitter_factor)?;
+        let negative_range = range.negative()?;
         let unit = random();
         if !unit.is_finite() || !(0. ..=1.).contains(&unit) {
             return Err(invalid("circuit jitter input must be from zero to one"));
         }
-        // random.uniform(a,b) uses a + (b-a)*random(), including rounding order.
-        let jittered = timeout + (-range + (range - -range) * unit);
-        if !jittered.is_finite() {
-            return Err(invalid("circuit jitter overflow"));
-        }
-        Ok(jittered.max(self.timeout_seconds))
+        // random.uniform(a,b) evaluates its arithmetic after the random draw.
+        let jitter =
+            negative_range.add(&range.subtract(&negative_range)?.multiply(&unit.into())?)?;
+        self.timeout_seconds
+            .clone()
+            .max_first(timeout.add(&jitter)?)
     }
 }
 
@@ -292,17 +362,17 @@ pub enum LoadDisposition {
 
 #[derive(Default)]
 struct Counters {
-    checks: u64,
-    opens: u64,
-    half_opens: u64,
-    recoveries: u64,
+    checks: BigInt,
+    opens: BigInt,
+    half_opens: BigInt,
+    recoveries: BigInt,
 }
 #[derive(Default)]
 struct Inner {
     settings: Settings,
     // Retain field presence and unrelated persisted metadata, matching the
     // existing {states:{domain:record},saved_at:seconds} document.
-    states: Map<String, Value>,
+    states: IndexMap<String, Record>,
     counters: Counters,
     policy_hash: String,
 }
@@ -310,7 +380,8 @@ struct Inner {
 pub struct CircuitBreaker {
     inner: Arc<Mutex<Inner>>,
     // Serialize explicit file operations so an older save cannot overwrite a
-    // newer clone's snapshot. Filesystem I/O never holds the request-state lock.
+    // newer clone's snapshot. File replacement also holds the state lock so
+    // reset/stats cannot mutate the discarded state between save and load.
     persistence: Arc<Mutex<()>>,
 }
 impl CircuitBreaker {
@@ -326,50 +397,11 @@ impl CircuitBreaker {
         Ok(self.lock()?.settings.clone())
     }
 
-    /// Apply the already resolved sensor config only when its policy hash
-    /// changes. Omitted fields retain their last values; exclusions accumulate.
-    /// Malformed candidates return an error and preserve the previous settings.
+    /// Refresh on a changed policy hash. Assignments and exclusion additions
+    /// retain source order; an error preserves earlier effects and leaves the
+    /// previous hash so a later refresh retries the configuration.
     pub fn apply_sensor_config(&self, sensor: &Value) -> Result<bool> {
-        let sensor = sensor
-            .as_object()
-            .ok_or_else(|| invalid("sensor config must be an object"))?;
-        let hash = sensor
-            .get("policy_hash")
-            .map(|value| {
-                value
-                    .as_str()
-                    .ok_or_else(|| invalid("policy hash must be a string"))
-            })
-            .transpose()?
-            .unwrap_or("");
-        let mut inner = self.lock()?;
-        if hash == inner.policy_hash {
-            return Ok(false);
-        }
-        let empty = Map::new();
-        let addons = sensor
-            .get("addons")
-            .map(|value| {
-                value
-                    .as_object()
-                    .ok_or_else(|| invalid("addons must be an object"))
-            })
-            .transpose()?
-            .unwrap_or(&empty);
-        let values = addons
-            .get("circuit_breaker")
-            .map(|value| {
-                value
-                    .as_object()
-                    .ok_or_else(|| invalid("circuit settings must be an object"))
-            })
-            .transpose()?
-            .unwrap_or(&empty);
-        let mut settings = inner.settings.clone();
-        settings.apply(values)?;
-        inner.settings = settings;
-        inner.policy_hash = hash.into();
-        Ok(true)
+        config::apply_sensor_config(self, sensor)
     }
     pub fn status(
         &self,
@@ -379,8 +411,8 @@ impl CircuitBreaker {
     ) -> Result<Outcome<Status>> {
         finite_time(now)?;
         let mut events = Vec::new();
-        let status = status(&mut *self.lock()?, domain, now, random, &mut events)?;
-        Ok(outcome(status, events))
+        let result = status(&mut *self.lock()?, domain, now, random, &mut events);
+        completed(result, events)
     }
     pub fn admit(
         &self,
@@ -390,8 +422,8 @@ impl CircuitBreaker {
     ) -> Result<Outcome<(bool, Status)>> {
         finite_time(now)?;
         let mut events = Vec::new();
-        let value = admit(&mut *self.lock()?, domain, now, random, &mut events)?;
-        Ok(outcome(value, events))
+        let result = admit(&mut *self.lock()?, domain, now, random, &mut events);
+        completed(result, events)
     }
     pub fn record_failure(
         &self,
@@ -402,8 +434,8 @@ impl CircuitBreaker {
     ) -> Result<Outcome<Status>> {
         finite_time(now)?;
         let mut events = Vec::new();
-        let value = failure(&mut *self.lock()?, domain, error, now, random, &mut events)?;
-        Ok(outcome(value, events))
+        let result = failure(&mut *self.lock()?, domain, error, now, random, &mut events);
+        completed(result, events)
     }
     pub fn record_success(
         &self,
@@ -413,24 +445,52 @@ impl CircuitBreaker {
     ) -> Result<Outcome<Status>> {
         finite_time(now)?;
         let mut events = Vec::new();
-        let value = success(&mut *self.lock()?, domain, now, random, &mut events)?;
-        Ok(outcome(value, events))
+        let result = success(&mut *self.lock()?, domain, now, random, &mut events);
+        completed(result, events)
     }
     pub fn reset(&self, domain: &str) -> Result<Outcome<()>> {
         self.lock()?.states.shift_remove(domain);
         let mut events = Vec::new();
-        event(&mut events, TransitionKind::Reset, domain, Value::Null);
+        event(&mut events, TransitionKind::Reset, domain, None);
         Ok(outcome((), events))
+    }
+
+    /// Operator JSON keys retain Python's hashability rules. Only strings can
+    /// match the host keys in this state owner. The caller owns the reset audit,
+    /// including the source event writer's treatment of a non-string host.
+    pub fn reset_json_key(&self, domain: &Value) -> Result<()> {
+        if domain.is_array() || domain.is_object() {
+            return Err(failure_kind(
+                ErrorKind::Type,
+                "unhashable circuit reset key",
+            ));
+        }
+        let mut inner = self.lock()?;
+        if let Some(domain) = domain.as_str() {
+            inner.states.shift_remove(domain);
+        }
+        Ok(())
     }
     pub fn force_open(&self, domain: &str, now: f64) -> Result<Outcome<()>> {
         finite_time(now)?;
         let mut inner = self.lock()?;
-        let threshold = inner.settings.failure_threshold_source.clone();
+        let threshold = inner.settings.failure_threshold.clone();
         // Python writes the configured threshold itself, including fractional
         // values. Preserve it; count arithmetic accepts the same numeric type.
-        inner.states.insert(domain.into(), json!({"state":"open", "opened_at":now, "failure_count":threshold, "success_count":0, "failure_streak":0, "manual_open":true}));
+        inner.states.insert(
+            domain.into(),
+            [
+                ("state".into(), json!("open").into()),
+                ("opened_at".into(), now.into()),
+                ("failure_count".into(), threshold),
+                ("success_count".into(), 0.into()),
+                ("failure_streak".into(), 0.into()),
+                ("manual_open".into(), json!(true).into()),
+            ]
+            .into(),
+        );
         let mut events = Vec::new();
-        event(&mut events, TransitionKind::ForceOpen, domain, Value::Null);
+        event(&mut events, TransitionKind::ForceOpen, domain, None);
         Ok(outcome((), events))
     }
     pub fn request(
@@ -439,6 +499,30 @@ impl CircuitBreaker {
         gate: RequestGate,
         now: f64,
         random: &mut impl FnMut() -> f64,
+    ) -> Result<Outcome<RequestDecision>> {
+        self.request_with_config(domain, gate, now, random, None)
+    }
+
+    /// Refresh and admission share one state lock. The caller retains its
+    /// current runtime read lock until this operation finishes.
+    pub(crate) fn request_current(
+        &self,
+        policy: &crate::policy::Policy,
+        domain: &str,
+        gate: RequestGate,
+        now: f64,
+        random: &mut impl FnMut() -> f64,
+    ) -> Result<Outcome<RequestDecision>> {
+        self.request_with_config(domain, gate, now, random, Some(policy))
+    }
+
+    fn request_with_config(
+        &self,
+        domain: &str,
+        gate: RequestGate,
+        now: f64,
+        random: &mut impl FnMut() -> f64,
+        policy: Option<&crate::policy::Policy>,
     ) -> Result<Outcome<RequestDecision>> {
         if !gate.enabled {
             return Ok(outcome(RequestDecision::AddonDisabled, vec![]));
@@ -451,31 +535,35 @@ impl CircuitBreaker {
         }
         finite_time(now)?;
         let mut inner = self.lock()?;
+        if let Some(policy) = policy {
+            config::apply(&mut inner, &policy.circuit_settings())?;
+        }
         if inner.settings.excluded_domains.contains(domain) {
             return Ok(outcome(RequestDecision::ExcludedDomain, vec![]));
         }
         let mut events = Vec::new();
-        let (allowed, status) = admit(&mut inner, domain, now, random, &mut events)?;
-        let decision = if allowed {
-            RequestDecision::Allowed { status }
-        } else {
-            let remaining = status
-                .time_until_half_open(now)
-                .filter(|value| *value != 0.)
-                .unwrap_or(inner.settings.timeout_seconds);
-            RequestDecision::Blocked {
-                status,
-                retry_after_seconds: if remaining == 0. {
-                    0.into()
-                } else {
-                    format!("{:.0}", remaining.trunc())
+        let result = (|| {
+            let (allowed, status) = admit(&mut inner, domain, now, random, &mut events)?;
+            Ok(if allowed {
+                RequestDecision::Allowed { status }
+            } else {
+                let remaining = status
+                    .time_until_half_open(now)?
+                    .filter(CircuitValue::truthy)
+                    .unwrap_or_else(|| inner.settings.timeout_seconds.clone());
+                RequestDecision::Blocked {
+                    status,
+                    retry_after_seconds: remaining
+                        .truncate()?
+                        .to_string()
                         .parse()
-                        .map_err(|_| invalid("invalid circuit retry interval"))?
-                },
-            }
-        };
-        Ok(outcome(decision, events))
+                        .expect("integer retry interval"),
+                }
+            })
+        })();
+        completed(result, events)
     }
+
     /// Response processing intentionally has no domain/client policy bypass
     /// parameter: the shipped response hook checks only its global enable flag.
     /// No response (including a transport error without a response) is a no-op.
@@ -486,8 +574,41 @@ impl CircuitBreaker {
         now: f64,
         random: &mut impl FnMut() -> f64,
     ) -> Result<Outcome<ResponseDecision>> {
+        self.response_with_config(domain, input, now, random, None)
+    }
+
+    /// Source response refresh runs before a prior local block is skipped.
+    pub(crate) fn response_current(
+        &self,
+        policy: &crate::policy::Policy,
+        domain: &str,
+        input: ResponseInput,
+        now: f64,
+        random: &mut impl FnMut() -> f64,
+    ) -> Result<Outcome<ResponseDecision>> {
+        self.response_with_config(domain, input, now, random, Some(policy))
+    }
+
+    fn response_with_config(
+        &self,
+        domain: &str,
+        input: ResponseInput,
+        now: f64,
+        random: &mut impl FnMut() -> f64,
+        policy: Option<&crate::policy::Policy>,
+    ) -> Result<Outcome<ResponseDecision>> {
         if !input.enabled {
             return Ok(outcome(ResponseDecision::AddonDisabled, vec![]));
+        }
+        if policy.is_none() && input.prior_block {
+            return Ok(outcome(ResponseDecision::PriorBlock, vec![]));
+        }
+        if policy.is_none() && input.status.is_none() {
+            return Ok(outcome(ResponseDecision::NoResponse, vec![]));
+        }
+        let mut inner = self.lock()?;
+        if let Some(policy) = policy {
+            config::apply(&mut inner, &policy.circuit_settings())?;
         }
         if input.prior_block {
             return Ok(outcome(ResponseDecision::PriorBlock, vec![]));
@@ -495,56 +616,121 @@ impl CircuitBreaker {
         let Some(code) = input.status else {
             return Ok(outcome(ResponseDecision::NoResponse, vec![]));
         };
-        let mut inner = self.lock()?;
         if inner.settings.excluded_domains.contains(domain) {
             return Ok(outcome(ResponseDecision::ExcludedDomain, vec![]));
         }
         let mut events = Vec::new();
-        let value = if code >= 500 || code == 429 {
-            finite_time(now)?;
-            failure(
-                &mut inner,
-                domain,
-                Some(&format!("HTTP {code}")),
-                now,
-                random,
-                &mut events,
-            )?;
-            ResponseDecision::FailureRecorded
-        } else if code < 400 {
-            finite_time(now)?;
-            success(&mut inner, domain, now, random, &mut events)?;
-            ResponseDecision::SuccessRecorded
-        } else {
-            ResponseDecision::StatusNoAction
-        };
-        Ok(outcome(value, events))
+        let result = (|| {
+            Ok(if code >= 500 || code == 429 {
+                finite_time(now)?;
+                failure(
+                    &mut inner,
+                    domain,
+                    Some(&format!("HTTP {code}")),
+                    now,
+                    random,
+                    &mut events,
+                )?;
+                ResponseDecision::FailureRecorded
+            } else if code < 400 {
+                finite_time(now)?;
+                success(&mut inner, domain, now, random, &mut events)?;
+                ResponseDecision::SuccessRecorded
+            } else {
+                ResponseDecision::StatusNoAction
+            })
+        })();
+        completed(result, events)
     }
+
     /// Admin stats can decay streaks and transition stale circuits, as Python's
     /// get_stats calls get_status for every domain in insertion order.
+    pub fn stats_document(
+        &self,
+        enabled: bool,
+        now: f64,
+        random: &mut impl FnMut() -> f64,
+    ) -> Result<Outcome<CircuitValue>> {
+        finite_time(now)?;
+        let mut inner = self.lock()?;
+        let domains: Vec<_> = inner.states.keys().cloned().collect();
+        let mut values: IndexMap<String, Record> = IndexMap::new();
+        let mut events = Vec::new();
+        let result = (|| {
+            for domain in domains {
+                let status = status(&mut inner, &domain, now, random, &mut events)?;
+                let remaining = status
+                    .time_until_half_open(now)?
+                    .unwrap_or_else(|| Value::Null.into());
+                values.insert(
+                    domain,
+                    [
+                        (
+                            "state".into(),
+                            serde_json::to_value(status.state).unwrap().into(),
+                        ),
+                        ("failure_count".into(), status.failure_count),
+                        ("failure_streak".into(), status.failure_streak),
+                        ("time_until_half_open".into(), remaining),
+                    ]
+                    .into(),
+                );
+            }
+            Ok(CircuitValue::Object(
+                [
+                    ("enabled".into(), CircuitValue::Bool(enabled)),
+                    (
+                        "failure_threshold".into(),
+                        inner.settings.failure_threshold.clone(),
+                    ),
+                    (
+                        "timeout_seconds".into(),
+                        inner.settings.timeout_seconds.clone(),
+                    ),
+                    (
+                        "checks_total".into(),
+                        CircuitValue::Integer(inner.counters.checks.clone()),
+                    ),
+                    (
+                        "opens_total".into(),
+                        CircuitValue::Integer(inner.counters.opens.clone()),
+                    ),
+                    (
+                        "half_opens_total".into(),
+                        CircuitValue::Integer(inner.counters.half_opens.clone()),
+                    ),
+                    (
+                        "recoveries_total".into(),
+                        CircuitValue::Integer(inner.counters.recoveries.clone()),
+                    ),
+                    ("domains".into(), states_document(values)),
+                ]
+                .into(),
+            ))
+        })();
+        completed(result, events)
+    }
+
+    /// Legacy JSON view. All source state observations complete before the
+    /// conversion; callers needing NaN use stats_document and write_json.
     pub fn stats(
         &self,
         enabled: bool,
         now: f64,
         random: &mut impl FnMut() -> f64,
     ) -> Result<Outcome<Value>> {
-        finite_time(now)?;
-        let mut inner = self.lock()?;
-        let domains: Vec<_> = inner.states.keys().cloned().collect();
-        let mut values = Map::new();
-        let mut events = Vec::new();
-        for domain in domains {
-            let status = status(&mut inner, &domain, now, random, &mut events)?;
-            values.insert(domain, json!({"state":status.state,"failure_count":status.failure_count,"failure_streak":status.failure_streak,"time_until_half_open":status.time_until_half_open(now)}));
-        }
-        Ok(outcome(
-            json!({"enabled":enabled,"failure_threshold":inner.settings.failure_threshold_source,"timeout_seconds":inner.settings.timeout_seconds,"checks_total":inner.counters.checks,"opens_total":inner.counters.opens,"half_opens_total":inner.counters.half_opens,"recoveries_total":inner.counters.recoveries,"domains":values}),
-            events,
-        ))
+        let result = self.stats_document(enabled, now, random)?;
+        completed(result.value.json(), result.events)
     }
-    pub fn snapshot(&self, now: f64) -> Result<Value> {
+
+    pub fn snapshot_document(&self, now: f64) -> Result<CircuitValue> {
         finite_time(now)?;
-        Ok(json!({"states":self.lock()?.states.clone(),"saved_at":now}))
+        let inner = self.lock()?;
+        Ok(snapshot_inner(&inner, now))
+    }
+
+    pub fn snapshot(&self, now: f64) -> Result<Value> {
+        self.snapshot_document(now)?.json()
     }
     /// Explicit synchronous persistence. Run this method on the caller's
     /// blocking worker; it neither creates timers nor starts background tasks.
@@ -553,30 +739,7 @@ impl CircuitBreaker {
             .persistence
             .lock()
             .map_err(|_| invalid("circuit persistence lock poisoned"))?;
-        let bytes = serde_json::to_vec_pretty(&self.snapshot(now)?)
-            .map_err(|_| invalid("cannot serialize circuit state"))?;
-        let parent = path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)?;
-        let temporary = parent.join(format!(".circuit-{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| -> Result<()> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&temporary, path)?;
-            fs::File::open(parent)?.sync_all()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temporary);
-        }
-        result
+        write_snapshot(path, &self.snapshot_document(now)?)
     }
     /// Missing/unreadable/invalid-JSON caches start empty, matching the Python
     /// loader. Valid JSON with malformed state records returns an explicit error
@@ -591,17 +754,8 @@ impl CircuitBreaker {
             .persistence
             .lock()
             .map_err(|_| invalid("circuit persistence lock poisoned"))?;
-        let (value, disposition) = match fs::read_to_string(path) {
-            Ok(source) => match crate::policy::parse_json(&source, false) {
-                Ok(value) if value.is_object() => (value, LoadDisposition::Loaded),
-                _ => (json!({}), LoadDisposition::DiscardedInvalidJson),
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                (json!({}), LoadDisposition::Missing)
-            }
-            Err(_) => (json!({}), LoadDisposition::DiscardedUnreadable),
-        };
-        let events = self.restore(&value, now, random)?.events;
+        let (value, disposition) = read_snapshot(path);
+        let events = self.restore_document(&value, now, random)?.events;
         Ok(outcome(disposition, events))
     }
     pub fn restore(
@@ -610,86 +764,207 @@ impl CircuitBreaker {
         now: f64,
         random: &mut impl FnMut() -> f64,
     ) -> Result<Outcome<()>> {
-        finite_time(now)?;
-        let root = snapshot
-            .as_object()
-            .ok_or_else(|| invalid("circuit snapshot must be an object"))?;
-        let states = root
-            .get("states")
-            .map(|value| {
-                value
-                    .as_object()
-                    .ok_or_else(|| invalid("circuit states must be an object"))
-            })
-            .transpose()?
-            .cloned()
-            .unwrap_or_default();
-        for value in states.values() {
-            validate_record(value)?;
-        }
+        self.restore_document(&CircuitValue::from_json_value(snapshot), now, random)
+    }
+
+    pub fn restore_document(
+        &self,
+        snapshot: &CircuitValue,
+        now: f64,
+        random: &mut impl FnMut() -> f64,
+    ) -> Result<Outcome<()>> {
         let mut inner = self.lock()?;
-        let mut reconciled = 0;
-        let mut states = states;
-        // Reconciliation does not call get_status: it caps streaks first and
-        // does not decay them from last_failure_time until a later status query.
-        for value in states.values_mut() {
-            let record = value.as_object_mut().expect("validated record");
-            if record.is_empty() {
-                continue;
-            }
-            let streak = count(record, "failure_streak")?;
-            if streak > 1 {
-                record.insert("failure_streak".into(), json!(1));
-            }
-            if state(record)? == State::Open {
-                let timeout = inner
-                    .settings
-                    .calculate_timeout(count(record, "failure_streak")?, random)?;
-                let opened = number_or(record, "opened_at", 0.)?;
-                if now - opened >= timeout {
-                    record.insert("state".into(), json!("half_open"));
-                    record.insert("success_count".into(), json!(0));
-                    record.insert("half_open_requests".into(), json!(0));
-                    reconciled += 1;
-                }
-            }
-        }
-        inner.counters.half_opens += reconciled;
-        inner.states = states;
-        // Reconciliation logs informational messages but no ops events in the
-        // shipped implementation; keep that distinction at the caller seam.
-        Ok(outcome((), Vec::new()))
+        restore_inner(&mut inner, snapshot, now, random)
+    }
+
+    /// Select the next file atomically with resets and stats, including callers
+    /// retaining an older Runtime. Reuse the existing persistence→state order.
+    pub(crate) fn replace_state_file(
+        &self,
+        previous: Option<&Path>,
+        next: Option<&Path>,
+        now: f64,
+        random: &mut impl FnMut() -> f64,
+    ) -> Result<FileChange> {
+        finite_time(now)?;
+        let _writer = self
+            .persistence
+            .lock()
+            .map_err(|_| invalid("circuit persistence lock poisoned"))?;
+        let mut inner = self.lock()?;
+        let previous_save_failed = previous
+            .is_some_and(|path| write_snapshot(path, &snapshot_inner(&inner, now)).is_err());
+        // A new missing or malformed cache never inherits the old file's keys.
+        // Clearing persistence selects the source's fresh empty domain state.
+        inner.states.clear();
+        let load_failed = next.is_some_and(|path| {
+            let (snapshot, _) = read_snapshot(path);
+            restore_inner(&mut inner, &snapshot, now, random).is_err()
+        });
+        Ok(FileChange {
+            previous_save_failed,
+            load_failed,
+        })
     }
 }
 
-fn state(record: &Map<String, Value>) -> Result<State> {
+pub(crate) struct FileChange {
+    pub(crate) previous_save_failed: bool,
+    pub(crate) load_failed: bool,
+}
+
+fn snapshot_inner(inner: &Inner, now: f64) -> CircuitValue {
+    CircuitValue::Object(
+        [
+            ("states".into(), states_document(inner.states.clone())),
+            ("saved_at".into(), CircuitValue::Float(now)),
+        ]
+        .into(),
+    )
+}
+
+fn write_snapshot(path: &Path, snapshot: &CircuitValue) -> Result<()> {
+    let bytes = snapshot.render_json(true)?.into_bytes();
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!(".circuit-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let written = file.write_all(&bytes).and_then(|()| file.sync_all());
+        // The source closes before rename, including after a write error.
+        // A close failure takes precedence and must prevent publication.
+        close_snapshot(file)?;
+        written?;
+        fs::rename(&temporary, path)?;
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+fn read_snapshot(path: &Path) -> (CircuitValue, LoadDisposition) {
+    match fs::read_to_string(path) {
+        Ok(source) => match CircuitValue::parse_json(&source) {
+            Ok(value) if value.as_object().is_some() => (value, LoadDisposition::Loaded),
+            _ => (json!({}).into(), LoadDisposition::DiscardedInvalidJson),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (json!({}).into(), LoadDisposition::Missing)
+        }
+        Err(_) => (json!({}).into(), LoadDisposition::DiscardedUnreadable),
+    }
+}
+
+fn restore_inner(
+    inner: &mut Inner,
+    snapshot: &CircuitValue,
+    now: f64,
+    random: &mut impl FnMut() -> f64,
+) -> Result<Outcome<()>> {
+    finite_time(now)?;
+    let root = snapshot
+        .as_object()
+        .ok_or_else(|| invalid("circuit snapshot must be an object"))?;
+    let states = root
+        .get("states")
+        .map(|value| {
+            value
+                .as_object()
+                .ok_or_else(|| invalid("circuit states must be an object"))
+        })
+        .transpose()?
+        .cloned()
+        .unwrap_or_default();
+    let mut states: IndexMap<String, Record> = states
+        .iter()
+        .map(|(domain, value)| {
+            let fields = value
+                .as_object()
+                .ok_or_else(|| invalid("circuit record must be an object"))?;
+            let record = fields.clone();
+            state(&record)?;
+            Ok((domain.clone(), record))
+        })
+        .collect::<Result<_>>()?;
+    let mut reconciled = BigInt::from(0);
+    // Structural cache publication remains transactional; numeric fields are
+    // consumed only where source reconciliation actually reads them.
+    for record in states.values_mut() {
+        if record.is_empty() {
+            continue;
+        }
+        if field(record, "failure_streak").greater(&1.into())? {
+            record.insert("failure_streak".into(), 1.into());
+        }
+        if state(record)? == State::Open {
+            let timeout = inner
+                .settings
+                .calculate_timeout(field(record, "failure_streak"), random)?;
+            if CircuitValue::Float(now)
+                .subtract(&field(record, "opened_at"))?
+                .at_least(&timeout)?
+            {
+                record.insert("state".into(), json!("half_open").into());
+                record.insert("success_count".into(), 0.into());
+                record.insert("half_open_requests".into(), 0.into());
+                reconciled += 1;
+            }
+        }
+    }
+    inner.counters.half_opens += reconciled;
+    inner.states = states;
+    // Reconciliation logs informational messages but no ops events in the
+    // shipped implementation; keep that distinction at the caller seam.
+    Ok(outcome((), Vec::new()))
+}
+
+fn close_snapshot(file: fs::File) -> std::io::Result<()> {
+    use std::os::fd::IntoRawFd;
+    let descriptor = file.into_raw_fd();
+    // SAFETY: File transferred its sole descriptor owner. Close exactly once;
+    // never retry EINTR, because the descriptor may already have been released.
+    if unsafe { libc::close(descriptor) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn state(record: &Record) -> Result<State> {
     match record
         .get("state")
-        .map(Value::as_str)
+        .map(|value| match value {
+            CircuitValue::Other(Value::String(value)) => Some(value.as_str()),
+            _ => None,
+        })
         .unwrap_or(Some("closed"))
     {
         Some("closed") => Ok(State::Closed),
         Some("open") => Ok(State::Open),
         Some("half_open") => Ok(State::HalfOpen),
-        _ => Err(invalid("invalid persisted circuit state")),
+        _ => Err(failure_kind(
+            ErrorKind::Value,
+            "invalid persisted circuit state",
+        )),
     }
 }
-fn count(record: &Map<String, Value>, key: &str) -> Result<i64> {
-    match record.get(key) {
-        None => Ok(0),
-        Some(Value::Bool(value)) => Ok(i64::from(*value)),
-        Some(value) => value
-            .as_i64()
-            .or_else(|| {
-                value
-                    .as_f64()
-                    .filter(|value| {
-                        value.fract() == 0. && *value >= i64::MIN as f64 && *value < i64::MAX as f64
-                    })
-                    .map(|value| value as i64)
-            })
-            .ok_or_else(|| invalid("circuit count must be an integer")),
-    }
+fn field(record: &Record, key: &str) -> CircuitValue {
+    record.get(key).cloned().unwrap_or_else(|| 0.into())
+}
+fn optional_time(record: &Record, key: &str) -> Option<CircuitValue> {
+    record
+        .get(key)
+        .filter(|value| !matches!(value, CircuitValue::Other(Value::Null)))
+        .cloned()
 }
 fn finite_time(now: f64) -> Result<()> {
     if now.is_finite() {
@@ -698,82 +973,27 @@ fn finite_time(now: f64) -> Result<()> {
         Err(invalid("circuit clock must be finite"))
     }
 }
-fn finite_number(value: &Value) -> Result<f64> {
-    let converted = match value {
-        Value::Bool(value) => f64::from(*value),
-        value => value
-            .as_f64()
-            .ok_or_else(|| invalid("circuit setting must be numeric"))?,
-    };
-    finite_time(converted)?;
-    if let Value::Number(number) = value
-        && integer_spelling(number)
-    {
-        let authored: num_bigint::BigInt = number
-            .to_string()
-            .parse()
-            .map_err(|_| invalid("invalid circuit integer"))?;
-        let represented: num_bigint::BigInt = format!("{converted:.0}")
-            .parse()
-            .map_err(|_| invalid("invalid circuit number"))?;
-        if authored != represented {
-            return Err(invalid(
-                "circuit integer cannot be represented exactly by the native numeric API",
-            ));
+fn record(inner: &Inner, domain: &str) -> Record {
+    inner.states.get(domain).cloned().unwrap_or_default()
+}
+fn states_document(states: IndexMap<String, Record>) -> CircuitValue {
+    CircuitValue::Object(
+        states
+            .into_iter()
+            .map(|(domain, fields)| (domain, CircuitValue::Object(fields)))
+            .collect(),
+    )
+}
+fn completed<T>(result: Result<T>, events: Vec<Transition>) -> Result<Outcome<T>> {
+    match result {
+        Ok(value) => Ok(outcome(value, events)),
+        Err(mut error) => {
+            error.events = events;
+            Err(error)
         }
     }
-    Ok(converted)
-}
-fn integer_spelling(number: &serde_json::Number) -> bool {
-    !number.to_string().contains(['.', 'e', 'E'])
-}
-// Preserve integer counters on disk. Refuse an increment/decrement that the
-// current f64 status API cannot represent, instead of silently losing a failure.
-fn change_failure_count(record: &Map<String, Value>, delta: i32) -> Result<Value> {
-    let previous = record.get("failure_count");
-    let integer = match previous {
-        None => Some(num_bigint::BigInt::from(0)),
-        Some(Value::Bool(value)) => Some(num_bigint::BigInt::from(i32::from(*value))),
-        Some(Value::Number(number)) if integer_spelling(number) => Some(
-            number
-                .to_string()
-                .parse::<num_bigint::BigInt>()
-                .map_err(|_| invalid("invalid circuit integer"))?,
-        ),
-        _ => None,
-    };
-    let value = if let Some(integer) = integer {
-        Value::Number(
-            (integer + delta)
-                .to_string()
-                .parse()
-                .map_err(|_| invalid("invalid circuit counter"))?,
-        )
-    } else {
-        let number = number_or(record, "failure_count", 0.)? + f64::from(delta);
-        Value::Number(
-            serde_json::Number::from_f64(number)
-                .ok_or_else(|| invalid("circuit counter overflow"))?,
-        )
-    };
-    finite_number(&value)?;
-    Ok(value)
 }
 
-fn number_or(record: &Map<String, Value>, key: &str, default: f64) -> Result<f64> {
-    record
-        .get(key)
-        .map(finite_number)
-        .transpose()
-        .map(|value| value.unwrap_or(default))
-}
-fn optional_time(record: &Map<String, Value>, key: &str) -> Result<Option<f64>> {
-    record
-        .get(key)
-        .filter(|value| !value.is_null())
-        .map(finite_number)
-        .transpose()
-}
 fn truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -783,28 +1003,6 @@ fn truthy(value: &Value) -> bool {
         Value::Array(value) => !value.is_empty(),
         Value::Object(value) => !value.is_empty(),
     }
-}
-fn validate_record(value: &Value) -> Result<()> {
-    let record = value
-        .as_object()
-        .ok_or_else(|| invalid("circuit record must be an object"))?;
-    state(record)?;
-    number_or(record, "failure_count", 0.)?;
-    for key in ["success_count", "half_open_requests", "failure_streak"] {
-        count(record, key)?;
-    }
-    for key in ["last_failure_time", "last_success_time", "opened_at"] {
-        optional_time(record, key)?;
-    }
-    Ok(())
-}
-fn record(inner: &Inner, domain: &str) -> Map<String, Value> {
-    inner
-        .states
-        .get(domain)
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default()
 }
 fn status(
     inner: &mut Inner,
@@ -817,58 +1015,54 @@ fn status(
     if data.is_empty() {
         return Ok(Status {
             state: State::Closed,
-            failure_count: 0.,
-            success_count: 0,
+            failure_count: 0.into(),
+            success_count: 0.into(),
             last_failure_time: None,
             last_success_time: None,
             opened_at: None,
-            failure_streak: 0,
-            current_timeout: inner.settings.timeout_seconds,
+            failure_streak: 0.into(),
+            current_timeout: inner.settings.timeout_seconds.clone(),
         });
     }
     let mut state = state(&data)?;
-    let mut streak = count(&data, "failure_streak")?;
-    let failure_time = optional_time(&data, "last_failure_time")?;
-    if streak > 0
-        && failure_time
-            .is_some_and(|time| time != 0. && now - time > inner.settings.streak_decay_seconds)
+    let mut streak = field(&data, "failure_streak");
+    let failure_time = optional_time(&data, "last_failure_time");
+    if streak.greater(&0.into())?
+        && let Some(time) = failure_time.as_ref().filter(|time| time.truthy())
+        && CircuitValue::Float(now)
+            .subtract(time)?
+            .greater(&inner.settings.streak_decay_seconds)?
     {
-        streak = 0;
-        data.insert("failure_streak".into(), json!(0));
+        streak = 0.into();
+        data.insert("failure_streak".into(), streak.clone());
+        // Source publishes decay before later timeout arithmetic can fail.
+        inner.states.insert(domain.into(), data.clone());
     }
-    let timeout = inner.settings.calculate_timeout(streak, random)?;
-    if state == State::Open && now - number_or(&data, "opened_at", 0.)? >= timeout {
+    let timeout = inner.settings.calculate_timeout(streak.clone(), random)?;
+    if state == State::Open
+        && CircuitValue::Float(now)
+            .subtract(&field(&data, "opened_at"))?
+            .at_least(&timeout)?
+    {
         state = State::HalfOpen;
-        data.insert("state".into(), json!("half_open"));
-        data.insert("success_count".into(), json!(0));
-        data.insert("half_open_requests".into(), json!(0));
+        data.insert("state".into(), json!("half_open").into());
+        data.insert("success_count".into(), 0.into());
+        data.insert("half_open_requests".into(), 0.into());
+        inner.states.insert(domain.into(), data.clone());
         inner.counters.half_opens += 1;
-        event(events, TransitionKind::HalfOpen, domain, Value::Null);
+        event(events, TransitionKind::HalfOpen, domain, None);
     }
-    let status = Status {
+    Ok(Status {
         state,
-        failure_count: number_or(&data, "failure_count", 0.)?,
-        success_count: count(&data, "success_count")?,
+        failure_count: field(&data, "failure_count"),
+        success_count: field(&data, "success_count"),
         last_failure_time: failure_time,
-        last_success_time: optional_time(&data, "last_success_time")?,
-        opened_at: optional_time(&data, "opened_at")?,
+        last_success_time: optional_time(&data, "last_success_time"),
+        opened_at: optional_time(&data, "opened_at"),
         failure_streak: streak,
         current_timeout: timeout,
-    };
-    inner.states.insert(domain.into(), Value::Object(data));
-    Ok(status)
+    })
 }
-// Compare without rounding a large integer counter to floating point.
-fn reaches_threshold(count: i64, threshold: f64) -> bool {
-    if threshold <= i64::MIN as f64 {
-        return true;
-    }
-    if threshold >= -(i64::MIN as f64) {
-        return false;
-    }
-    count >= threshold.ceil() as i64
-}
-
 fn admit(
     inner: &mut Inner,
     domain: &str,
@@ -883,18 +1077,12 @@ fn admit(
         State::Open => false,
         State::HalfOpen => {
             let mut data = record(inner, domain);
-            let used = count(&data, "half_open_requests")?;
-            if reaches_threshold(used, inner.settings.half_open_max_requests) {
+            let used = field(&data, "half_open_requests");
+            if used.at_least(&inner.settings.half_open_max_requests)? {
                 false
             } else {
-                data.insert(
-                    "half_open_requests".into(),
-                    json!(
-                        used.checked_add(1)
-                            .ok_or_else(|| invalid("circuit counter overflow"))?
-                    ),
-                );
-                inner.states.insert(domain.into(), Value::Object(data));
+                data.insert("half_open_requests".into(), used.add(&1.into())?);
+                inner.states.insert(domain.into(), data);
                 true
             }
         }
@@ -911,48 +1099,57 @@ fn failure(
 ) -> Result<Status> {
     let mut data = record(inner, domain);
     let current = state(&data)?;
-    let counter = change_failure_count(&data, 1)?;
-    let failures = finite_number(&counter)?;
-    let streak = count(&data, "failure_streak")?;
-    data.insert("failure_count".into(), counter);
-    data.insert("last_failure_time".into(), json!(now));
-    data.insert("last_error".into(), json!(error.unwrap_or("")));
+    let failures = field(&data, "failure_count").add(&1.into())?;
+    let streak = field(&data, "failure_streak");
+    data.insert("failure_count".into(), failures.clone());
+    data.insert("last_failure_time".into(), now.into());
+    data.insert("last_error".into(), json!(error.unwrap_or("")).into());
     match current {
         State::Closed => {
-            if failures >= inner.settings.failure_threshold {
-                data.insert("state".into(), json!("open"));
-                data.insert("opened_at".into(), json!(now));
-                data.insert("success_count".into(), json!(0));
+            if failures.at_least(&inner.settings.failure_threshold)? {
+                data.insert("state".into(), json!("open").into());
+                data.insert("opened_at".into(), now.into());
+                data.insert("success_count".into(), 0.into());
                 inner.counters.opens += 1;
                 event(
                     events,
                     TransitionKind::Open,
                     domain,
-                    json!({"failure_count":failures,"error":error}),
+                    Some(
+                        [
+                            ("failure_count".into(), failures),
+                            ("error".into(), json!(error).into()),
+                        ]
+                        .into(),
+                    ),
                 );
             } else {
-                data.insert("state".into(), json!("closed"));
+                data.insert("state".into(), json!("closed").into());
             }
         }
         State::HalfOpen => {
-            let streak = streak
-                .checked_add(1)
-                .ok_or_else(|| invalid("circuit streak overflow"))?;
-            data.insert("state".into(), json!("open"));
-            data.insert("opened_at".into(), json!(now));
-            data.insert("failure_streak".into(), json!(streak));
-            data.insert("success_count".into(), json!(0));
+            let streak = streak.add(&1.into())?;
+            data.insert("state".into(), json!("open").into());
+            data.insert("opened_at".into(), now.into());
+            data.insert("failure_streak".into(), streak.clone());
+            data.insert("success_count".into(), 0.into());
             inner.counters.opens += 1;
             event(
                 events,
                 TransitionKind::Reopen,
                 domain,
-                json!({"streak":streak,"error":error}),
+                Some(
+                    [
+                        ("streak".into(), streak),
+                        ("error".into(), json!(error).into()),
+                    ]
+                    .into(),
+                ),
             );
         }
         State::Open => {}
     }
-    inner.states.insert(domain.into(), Value::Object(data));
+    inner.states.insert(domain.into(), data);
     status(inner, domain, now, random, events)
 }
 fn success(
@@ -967,36 +1164,105 @@ fn success(
     if data.is_empty() {
         return Ok(current);
     }
-    let successes = count(&data, "success_count")?
-        .checked_add(1)
-        .ok_or_else(|| invalid("circuit counter overflow"))?;
-    data.insert("success_count".into(), json!(successes));
-    data.insert("last_success_time".into(), json!(now));
+    let successes = field(&data, "success_count").add(&1.into())?;
+    data.insert("success_count".into(), successes.clone());
+    data.insert("last_success_time".into(), now.into());
     match current.state {
         State::HalfOpen => {
-            if reaches_threshold(successes, inner.settings.success_threshold) {
-                data.insert("state".into(), json!("closed"));
-                data.insert("failure_count".into(), json!(0));
-                data.insert("failure_streak".into(), json!(0));
+            if successes.at_least(&inner.settings.success_threshold)? {
+                data.insert("state".into(), json!("closed").into());
+                data.insert("failure_count".into(), 0.into());
+                data.insert("failure_streak".into(), 0.into());
                 inner.counters.recoveries += 1;
                 event(
                     events,
                     TransitionKind::Close,
                     domain,
-                    json!({"success_count":successes}),
+                    Some([("success_count".into(), successes)].into()),
                 );
             } else {
-                data.insert("state".into(), json!("half_open"));
+                data.insert("state".into(), json!("half_open").into());
             }
         }
         State::Closed => {
-            let failures = number_or(&data, "failure_count", 0.)?;
-            if failures > 0. {
-                data.insert("failure_count".into(), change_failure_count(&data, -1)?);
+            let failures = field(&data, "failure_count");
+            if failures.greater(&0.into())? {
+                data.insert("failure_count".into(), failures.subtract(&1.into())?);
             }
         }
         State::Open => {}
     }
-    inner.states.insert(domain.into(), Value::Object(data));
+    inner.states.insert(domain.into(), data);
     status(inner, domain, now, random, events)
+}
+
+#[cfg(test)]
+mod numeric_state_tests {
+    use super::*;
+
+    #[test]
+    fn nonfinite_state_and_transition_survive_until_json_conversion() {
+        let cb = CircuitBreaker::new();
+        let mut record: Record = [
+            ("state".into(), json!("half_open").into()),
+            ("failure_count".into(), CircuitValue::Float(f64::NAN)),
+            ("failure_streak".into(), CircuitValue::Float(f64::NAN)),
+        ]
+        .into();
+        record.insert("success_count".into(), CircuitValue::Float(f64::INFINITY));
+        cb.lock().unwrap().states.insert("api".into(), record);
+        let result = cb.record_failure("api", None, 100., &mut || 0.5).unwrap();
+        assert_eq!(result.value.state, State::Open);
+        assert!(matches!(result.value.failure_count, CircuitValue::Float(value) if value.is_nan()));
+        assert!(
+            matches!(result.value.failure_streak, CircuitValue::Float(value) if value.is_nan())
+        );
+        assert!(
+            matches!(result.events[0].details.as_ref().unwrap()["streak"], CircuitValue::Float(value) if value.is_nan())
+        );
+        assert_eq!(
+            cb.snapshot(100.).unwrap_err().kind(),
+            ErrorKind::Compatibility
+        );
+        assert_eq!(cb.lock().unwrap().counters.opens, BigInt::from(1));
+        assert!(
+            matches!(cb.lock().unwrap().states["api"]["failure_count"], CircuitValue::Float(value) if value.is_nan())
+        );
+    }
+
+    #[test]
+    fn json_view_failure_follows_all_source_status_observations() {
+        let source: Value =
+            serde_json::from_str(include_str!("../tests/circuit_nonfinite_source.json")).unwrap();
+        assert_eq!(source["stats_visits_later_domain"], true);
+        let cb = CircuitBreaker::new();
+        cb.lock().unwrap().states.insert(
+            "nan".into(),
+            [
+                ("state".into(), json!("closed").into()),
+                ("failure_count".into(), CircuitValue::Float(f64::NAN)),
+            ]
+            .into(),
+        );
+        cb.force_open("later", 0.).unwrap();
+        let error = cb.stats(true, 100., &mut || 0.5).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Compatibility);
+        assert_eq!(error.events()[0].event, TransitionKind::HalfOpen);
+        assert_eq!(
+            state(&cb.lock().unwrap().states["later"]).unwrap(),
+            State::HalfOpen
+        );
+        assert_eq!(cb.lock().unwrap().counters.half_opens, BigInt::from(1));
+    }
+
+    #[test]
+    fn lifetime_count_has_no_machine_integer_ceiling() {
+        let cb = CircuitBreaker::new();
+        cb.lock().unwrap().counters.checks = BigInt::from(u64::MAX);
+        cb.admit("api", 100., &mut || 0.5).unwrap();
+        assert_eq!(
+            cb.stats(true, 100., &mut || 0.5).unwrap().value["checks_total"].to_string(),
+            "18446744073709551616"
+        );
+    }
 }

@@ -1,0 +1,406 @@
+{
+  "admin": [
+    {
+      "name": "absent",
+      "input_hex": "",
+      "replies": [
+        {
+          "status": 400,
+          "text": "{\n  \"error\": \"missing request body\"\n}"
+        }
+      ],
+      "exception": null,
+      "events": [],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "empty_object",
+      "input_hex": "7b7d",
+      "replies": [
+        {
+          "status": 400,
+          "text": "{\n  \"error\": \"missing request body\"\n}"
+        }
+      ],
+      "exception": null,
+      "events": [],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "false_host",
+      "input_hex": "7b22686f7374223a66616c73657d",
+      "replies": [
+        {
+          "status": 400,
+          "text": "{\n  \"error\": \"missing 'host' field\"\n}"
+        }
+      ],
+      "exception": null,
+      "events": [],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "exact",
+      "input_hex": "7b22686f7374223a226f776e65642e696e76616c6964227d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"reset\",\n  \"host\": \"owned.invalid\"\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.reset",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reset for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        },
+        {
+          "schema_version": 1,
+          "event": "admin.circuit_breaker_reset",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Circuit breaker reset: owned.invalid",
+          "addon": "admin-api",
+          "details": {
+            "client_ip": "127.0.0.1",
+            "host": "owned.invalid"
+          }
+        }
+      ],
+      "retained": []
+    },
+    {
+      "name": "literal_wildcard",
+      "input_hex": "7b22686f7374223a222a227d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"reset\",\n  \"host\": \"*\"\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.reset",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reset for *",
+          "addon": "circuit-breaker",
+          "host": "*",
+          "details": {}
+        },
+        {
+          "schema_version": 1,
+          "event": "admin.circuit_breaker_reset",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Circuit breaker reset: *",
+          "addon": "admin-api",
+          "details": {
+            "client_ip": "127.0.0.1",
+            "host": "*"
+          }
+        }
+      ],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "true_host",
+      "input_hex": "7b22686f7374223a747275657d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"reset\",\n  \"host\": true\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "event": "ops.circuit_breaker.reset",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reset for True"
+        },
+        {
+          "schema_version": 1,
+          "event": "admin.circuit_breaker_reset",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Circuit breaker reset: True",
+          "addon": "admin-api",
+          "details": {
+            "client_ip": "127.0.0.1",
+            "host": true
+          }
+        }
+      ],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "integer_host",
+      "input_hex": "7b22686f7374223a31377d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"reset\",\n  \"host\": 17\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "event": "ops.circuit_breaker.reset",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reset for 17"
+        },
+        {
+          "schema_version": 1,
+          "event": "admin.circuit_breaker_reset",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Circuit breaker reset: 17",
+          "addon": "admin-api",
+          "details": {
+            "client_ip": "127.0.0.1",
+            "host": 17
+          }
+        }
+      ],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "float_host",
+      "input_hex": "7b22686f7374223a316532307d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"reset\",\n  \"host\": 1e+20\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "event": "ops.circuit_breaker.reset",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reset for 1e+20"
+        },
+        {
+          "schema_version": 1,
+          "event": "admin.circuit_breaker_reset",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Circuit breaker reset: 1e+20",
+          "addon": "admin-api",
+          "details": {
+            "client_ip": "127.0.0.1",
+            "host": 1e+20
+          }
+        }
+      ],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "infinity_host",
+      "input_hex": "7b22686f7374223a31653430307d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"reset\",\n  \"host\": Infinity\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "event": "ops.circuit_breaker.reset",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reset for inf"
+        },
+        {
+          "schema_version": 1,
+          "event": "admin.circuit_breaker_reset",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Circuit breaker reset: inf",
+          "addon": "admin-api",
+          "details": {
+            "client_ip": "127.0.0.1",
+            "host": null
+          }
+        }
+      ],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "array_host",
+      "input_hex": "7b22686f7374223a5b226f776e65642e696e76616c6964225d7d",
+      "replies": [],
+      "exception": "TypeError",
+      "events": [],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "object_host",
+      "input_hex": "7b22686f7374223a7b2278223a317d7d",
+      "replies": [],
+      "exception": "TypeError",
+      "events": [],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "truthy_nonobject",
+      "input_hex": "5b315d",
+      "replies": [],
+      "exception": "AttributeError",
+      "events": [],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "malformed",
+      "input_hex": "7b",
+      "replies": [
+        {
+          "status": 400,
+          "text": "{\n  \"error\": \"Malformed JSON in request body\",\n  \"detail\": \"Expecting property name enclosed in double quotes: line 1 column 2 (char 1)\"\n}"
+        },
+        {
+          "status": 400,
+          "text": "{\n  \"error\": \"missing request body\"\n}"
+        }
+      ],
+      "exception": null,
+      "events": [],
+      "retained": [
+        "owned.invalid"
+      ]
+    },
+    {
+      "name": "invalid_utf8",
+      "input_hex": "ff",
+      "replies": [
+        {
+          "status": 400,
+          "text": "{\n  \"error\": \"Malformed JSON in request body\",\n  \"detail\": \"'utf-8' codec can't decode byte 0xff in position 0: invalid start byte\"\n}"
+        },
+        {
+          "status": 400,
+          "text": "{\n  \"error\": \"missing request body\"\n}"
+        }
+      ],
+      "exception": null,
+      "events": [],
+      "retained": [
+        "owned.invalid"
+      ]
+    }
+  ],
+  "agent": [
+    {
+      "name": "absent",
+      "status": 503,
+      "text": "{\"error\": \"circuit-breaker addon not loaded\"}",
+      "events": []
+    },
+    {
+      "name": "defaults",
+      "status": 200,
+      "text": "{\"enabled\": true, \"failure_threshold\": 5, \"timeout_seconds\": 60, \"checks_total\": 0, \"opens_total\": 0, \"half_opens_total\": 0, \"recoveries_total\": 0, \"domains\": {}}",
+      "events": []
+    },
+    {
+      "name": "disabled",
+      "status": 200,
+      "text": "{\"enabled\": false, \"failure_threshold\": 5, \"timeout_seconds\": 60, \"checks_total\": 0, \"opens_total\": 0, \"half_opens_total\": 0, \"recoveries_total\": 0, \"domains\": {}}",
+      "events": []
+    },
+    {
+      "name": "nan",
+      "status": 200,
+      "text": "{\"enabled\": true, \"failure_threshold\": 5, \"timeout_seconds\": 60, \"checks_total\": 0, \"opens_total\": 0, \"half_opens_total\": 0, \"recoveries_total\": 0, \"domains\": {\"owned.invalid\": {\"state\": \"closed\", \"failure_count\": NaN, \"failure_streak\": 0, \"time_until_half_open\": null}}}",
+      "events": []
+    },
+    {
+      "name": "infinity",
+      "status": 200,
+      "text": "{\"enabled\": true, \"failure_threshold\": 5, \"timeout_seconds\": 60, \"checks_total\": 0, \"opens_total\": 0, \"half_opens_total\": 0, \"recoveries_total\": 0, \"domains\": {\"owned.invalid\": {\"state\": \"closed\", \"failure_count\": Infinity, \"failure_streak\": 0, \"time_until_half_open\": null}}}",
+      "events": []
+    },
+    {
+      "name": "date",
+      "status": 500,
+      "text": "{\"error\": \"Internal error: TypeError\"}",
+      "events": []
+    },
+    {
+      "name": "half_open",
+      "status": 200,
+      "text": "{\"enabled\": true, \"failure_threshold\": 5, \"timeout_seconds\": 60, \"checks_total\": 0, \"opens_total\": 0, \"half_opens_total\": 1, \"recoveries_total\": 0, \"domains\": {\"owned.invalid\": {\"state\": \"half_open\", \"failure_count\": 5, \"failure_streak\": 0, \"time_until_half_open\": null}}}",
+      "events": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        }
+      ]
+    },
+    {
+      "name": "partial_error",
+      "status": 500,
+      "text": "{\"error\": \"Internal error: TypeError\"}",
+      "events": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        }
+      ]
+    }
+  ],
+  "source_sha256": {
+    "cli/src/safeyolo/mitm_addons/circuit_breaker.py": "8c77aec89932ac75edec0fac17c5ea211869f1ff2b59645c73d8a60d2fa1fe12",
+    "cli/src/safeyolo/mitm_addons/agent_api.py": "ab52434f28e82c9cc5f7ce32bf0b69ff6dcd3158e5e5fd5a446e4a747942e378",
+    "cli/src/safeyolo/mitm_addons/admin_api.py": "1b617e66e53aefd38412e60b9ffcf24a7075c5f468b61e3e3fa93b71e038a0ac",
+    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072"
+  }
+}

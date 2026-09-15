@@ -175,11 +175,12 @@ async fn serve_connection(
                         .to_owned()
                 })
                 .unwrap_or_else(|| peer.ip().to_string());
-            let outcome = admin_api::respond(
+            let outcome = admin_api::respond_with_circuits(
                 request,
                 token.trim_matches(python_whitespace),
                 &runtime.tasks,
                 runtime.policy.as_ref(),
+                runtime.policy.as_ref().map(|_| &runtime.circuits),
             )
             .await?;
             let audits = outcome.audit().map(|intent| match intent {
@@ -196,6 +197,7 @@ async fn serve_connection(
                     "client_ip":client_ip, "task_id":task_id,
                     "permission_count":permission_count,
                 })],
+                admin_api::Audit::CircuitReset(reset) => reset.events(&client_ip).into(),
                 admin_api::Audit::BudgetsReset(reset) => {
                     let safe_resource = reset.safe_resource();
                     let engine_resource = if reset.resets_all() {

@@ -8,18 +8,22 @@
     {
       "path": "hyper-1.11.1/src/ext/mod.rs",
       "original_sha256": "45e4e184394742eaf2c53b9d856639c72fefbb8d89ef790215581903760db03c",
-      "candidate_sha256": "223c81ffc4d6f65fe63d12410ec5c6eed4e60683e14b068097412a18ff21efa7",
+      "candidate_sha256": "62e156c5752032eb399d508a5762eee749791b58c81d88eb8aa1e5a9583d561e",
       "added": 20,
       "removed": 0,
-      "proof_candidate_sha256": "1a19794127a1f65e2a88454f2cfd207ce2f3eeac16226cea94069be69eb1f7e6"
+      "proof_candidate_sha256": "1a19794127a1f65e2a88454f2cfd207ce2f3eeac16226cea94069be69eb1f7e6",
+      "header_metadata_sha256": "223c81ffc4d6f65fe63d12410ec5c6eed4e60683e14b068097412a18ff21efa7",
+      "counts_scope": "original header metadata patch"
     },
     {
       "path": "hyper-1.11.1/src/proto/h1/role.rs",
       "original_sha256": "4741a413b947a72da0f58a2ef73bc9b209e1dfebe1a110e6ed5752745db93b07",
-      "candidate_sha256": "30eb7937f0d27f5c3a351d99c3cdc561e01a1c3f4f2364456505bd8debacca0c",
+      "candidate_sha256": "f2b61741b2ad5f4c31f1fcebd7bc3d0578b018da180f370bfeb65c09aac0dd14",
       "added": 11,
       "removed": 0,
-      "proof_candidate_sha256": "30eb7937f0d27f5c3a351d99c3cdc561e01a1c3f4f2364456505bd8debacca0c"
+      "proof_candidate_sha256": "30eb7937f0d27f5c3a351d99c3cdc561e01a1c3f4f2364456505bd8debacca0c",
+      "header_metadata_sha256": "30eb7937f0d27f5c3a351d99c3cdc561e01a1c3f4f2364456505bd8debacca0c",
+      "counts_scope": "original header metadata patch"
     }
   ],
   "local_adjustments": [
@@ -30,5 +34,36 @@
     "original_sha256": "8e08544c1e6778d3606bb6a827f7ea6496033bc9b3356289710d1954fb71a5cc",
     "candidate_sha256": "3993dc5af39e5c0684c8dd1e5c549b6616ffa9901a910c93a5e198e4a33bfa38",
     "change": "Add the terminal newline required by repository hooks."
+  },
+  "response_completion_patch": {
+    "base_commit": "d089f99506d9342cfd853709de87d2a465312d4e",
+    "scope": "Optional HTTP/1 client completion at existing parser boundaries; no buffering, draining, admission or wire changes.",
+    "files": [
+      {
+        "path": "proxy/vendor/hyper/src/ext/mod.rs",
+        "base_sha256": "223c81ffc4d6f65fe63d12410ec5c6eed4e60683e14b068097412a18ff21efa7",
+        "candidate_sha256": "62e156c5752032eb399d508a5762eee749791b58c81d88eb8aa1e5a9583d561e"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/ext/response_completion.rs",
+        "base_sha256": null,
+        "candidate_sha256": "d01022009e3984c449fc4fb8f7afb5097f71e814332a4fcbf423f84c7647e2b0"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/proto/h1/mod.rs",
+        "base_sha256": "bdb49167f68428e34b9b60a46c535fa44d9a3a6a849b1f232a466f8379efd792",
+        "candidate_sha256": "87cc8fa4ba5f4340a567c74dc7d41cf94b496ddd09d75c89641e27add53239b7"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/proto/h1/role.rs",
+        "base_sha256": "30eb7937f0d27f5c3a351d99c3cdc561e01a1c3f4f2364456505bd8debacca0c",
+        "candidate_sha256": "f2b61741b2ad5f4c31f1fcebd7bc3d0578b018da180f370bfeb65c09aac0dd14"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/proto/h1/conn.rs",
+        "base_sha256": "e0e2294b3c3d0fcbf2a7bfe69fc494ec145a227f5f2db81501691fed9fe81857",
+        "candidate_sha256": "9dd42f390a8dec4eb93913d3dc2ee63fab87121955b862f58509e22f553c57a9"
+      }
+    ]
   }
 }

@@ -63,6 +63,13 @@ pub(crate) use informational::OnInformational;
 #[cfg(all(feature = "http1", feature = "client", feature = "ffi"))]
 pub(crate) use informational::{on_informational_raw, OnInformationalCallback};
 
+#[cfg(all(feature = "http1", feature = "client"))]
+mod response_completion;
+#[cfg(all(feature = "http1", feature = "client"))]
+pub(crate) use response_completion::OnResponseComplete;
+#[cfg(all(feature = "http1", feature = "client"))]
+pub use response_completion::{on_response_complete, Aborted, ResponseCompletion};
+
 #[cfg(feature = "http2")]
 /// Extension type representing the `:protocol` pseudo-header in HTTP/2.
 ///
@@ -306,13 +313,17 @@ pub struct OriginalHeaderFields(pub(crate) Vec<(Bytes, Bytes)>);
 impl OriginalHeaderFields {
     /// Borrow the parsed name/value bytes in arrival order.
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
-        self.0.iter().map(|(name, value)| (name.as_ref(), value.as_ref()))
+        self.0
+            .iter()
+            .map(|(name, value)| (name.as_ref(), value.as_ref()))
     }
 }
 
 #[cfg(all(feature = "server", feature = "http1"))]
 impl std::fmt::Debug for OriginalHeaderFields {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OriginalHeaderFields").field("count", &self.0.len()).finish_non_exhaustive()
+        f.debug_struct("OriginalHeaderFields")
+            .field("count", &self.0.len())
+            .finish_non_exhaustive()
     }
 }

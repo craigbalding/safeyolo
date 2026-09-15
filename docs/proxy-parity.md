@@ -348,6 +348,13 @@ silently reduce accepted message sizes to a library default.
 | D48 | The earlier native request cleanup skips an entire Connection value when HeaderValue::to_str rejects non-ASCII bytes. A valid UTF-8 whitespace token therefore leaves its nominated header on the upstream request, while Python removes it. HeaderMap deletion also changes the first-match order needed by credential inspection. | The [ordered header owner](../proxy/src/request_headers.rs) uses fields captured by the existing H1/H2 parsers, preserves first spelling and duplicate order, and applies source header hygiene before network evaluation. The [wire regression](../tests/proxy_migration/test_request_headers.py) matches Python; a retained run against the earlier immutable binary proves it forwards the synthetic nominated field. Invalid bytes remain available and do not become absent headers. This metadata repair does not activate credential regex inspection. |
 | D49 | A malformed JSON or UTF-8 budget-reset body makes the source parser send 400 and return None. The reset handler treats that result as an absent body, clears every budget, emits two success audit events and sends a second 200 response. | The native operator handler sends one terminal 400 and preserves the counters. Intentionally absent bodies and valid falsy JSON still reset all counters. The source handler/state probe and [operator workflow](../tests/proxy_migration/test_operator_budgets.py) retain this concrete defect separately from compatible reset behavior. |
 
+
+| D50 | The source HTTP/1 parser raises NotImplementedError on nonempty response trailers and never runs the circuit response hook. Its HTTP/2 parser accepts valid trailers. | Native Hyper already supports both trailer forms; completion metadata retains that admission behavior. A valid native HTTP/1 trailer response therefore completes and counts. Source and native parser/transport controls retain this difference rather than adding a second parser or a new rejection. |
+| D51 | Source cache loading accepts malformed state records and can fail later while reconciling or reading stats, after prior mutations. | The existing native cache restore validates structural records before publication. Typed numeric/JSON operations now preserve source kinds and reached errors, but structural malformed-cache publication and some Python sequence arithmetic remain unresolved. Valid Python/Rust cache interchange and restart behavior are tested separately. |
+| D52 | Source circuit configure replaces its InMemoryCircuitState without stopping the former snapshot worker. Shutdown stops only the currently selected state worker. | Native uses one process-owned worker. Runtime publication and snapshot path selection share a lock; file changes attempt to save the former state before selecting new domains. A failed save is reported without preventing selection. Actual Proxy tests cover file switching, clearing persistence and final writer join. Abrupt process termination and blocked filesystem I/O remain outside graceful-shutdown evidence. |
+| D53 | A malformed JSON or UTF-8 circuit-reset body makes the source operator parser and handler send two final 400 responses. No circuit mutation or reset audit follows. | Native sends one terminal 400 and retains state, following the same framing correction as task PUT in D47. Valid reset keys and source exception/audit behavior have separate actual-source comparisons. |
+| D54 | An upstream HTTP/2 response with status 500, partial DATA and RST_STREAM(NO_ERROR) reaches the native downstream as status 500, the partial body and StreamEnded. Python sends a 502 error response. A retained binary from `d089f995` reproduces the native result before circuit completion metadata was added. | Downstream reset-response parity remains unresolved. Circuit counting uses the upstream parser's aborted result and ignores either downstream terminal form. The paired TLS/HTTP2 control retains exact response bytes and separately verifies unchanged circuit failure state. |
+
 ## Deletion map and evidence still required
 
 Deletion is conditional on replacement, not movement behind an adapter.
@@ -498,7 +505,8 @@ These are owner results, without independent acceptance or macOS/guest evidence.
 
 The native [operator API](../proxy/src/admin_api.rs) implements GET `/health`,
 authenticated GET/PUT `/admin/policy/task/{id}`, GET `/admin/budgets` and
-POST `/admin/budgets/reset` on a separate IPv4-loopback listener.
+POST `/admin/budgets/reset` and POST `/admin/circuit-breaker/reset` on a
+separate IPv4-loopback listener.
 Development configuration opts in with `admin_port`; port zero binds
 an ephemeral port reported as `admin_port` in readiness. The optional
 `admin_api_token_file` contains the startup token. The listener reads and strips
@@ -574,7 +582,8 @@ These results are implementation evidence, without independent acceptance,
 macOS or real-guest validation.
 
 The native [Agent API](../proxy/src/agent_api.rs) serves authenticated `/health`,
-`/lookup`, `/policy`, `/budgets`, `/config` and `/status` on the reserved hostname.
+`/lookup`, `/policy`, `/budgets`, `/config`, `/status` and `/circuits` on the
+reserved hostname.
 `agent_api_enabled` defaults to true.
 Authentication reads `SAFEYOLO_DATA_DIR/agent_token` for every request, defaulting
 to `/safeyolo/data/agent_token`. Method checks precede authentication; lookup uses
@@ -926,13 +935,89 @@ with service selection and credential detection. Six cases isolate the stage
 after earlier selection/risk checks. Request header casing/order still needs the
 transport adapter; grants, cancellation and audit publication need runtime wiring.
 
-Native [circuit state](../proxy/src/circuits.rs) and
-[test context](../proxy/src/test_context.rs) return explicit outcomes for later
-transport/API integration. Their deterministic clocks and shared state support
-comparisons of transitions, source/agent scope, declaration expiry, header
-priority and warn/block outcomes. They remain inactive in transport. Circuit
-numeric values that cannot be represented exactly by its current arithmetic
-still need resolution before activation.
+Native [circuit state](../proxy/src/circuits.rs) runs on the native-policy HTTP
+path after network admission and before origin connections. Circuit state is
+shared across trusted agents by the source hostname spelling. The global
+`circuit_breaker_enabled` option defaults to true. The temporary network-policy
+adapter does not activate circuits. After normal method, authentication and
+body checks, its circuit read/reset endpoints report that the addon is unavailable. Existing policy addon bypasses
+apply to requests; the source response hook checks only the global option.
+Outer CONNECT has no circuit request or response hook. Inner HTTP and the HTTP
+101 WebSocket handshake participate; subsequent WebSocket messages do not.
+
+The existing HTTP parsers publish optional completion metadata. A response counts
+only after the upstream message completes: final no-body headers, validated
+body framing or valid close-delimited EOF. Partial bodies, early cancellation,
+truncation and HTTP/2 resets do not count. A completion already observed survives
+later cancellation. The connection driver applies the result once, without
+reading another copy of the body. Upstream `X-Blocked-By` fields cannot impersonate
+local enforcement or suppress counting. Native HTTP/1 trailer support remains
+a source parser difference under D50.
+
+The authenticated `/circuits` response reads that same owner. Existing operator
+POST `/admin/circuit-breaker/reset` deletes an exact host key without clearing
+lifetime counters or settings. Missing or falsy host fields return 400. Reads can
+advance stale circuits and emit unscoped transitions. Development `proxy.circuit`
+records carry the source ops/security audit intent, request attribution where
+the source supplies it, and the committed outcome. Reset also emits the separate
+admin audit. Evidence write failure preserves committed state and valid response
+bytes. A failure known before headers adds `X-SafeYolo-Evidence-Error`; a later
+failure produces a content-free diagnostic.
+
+Settings come from top-level `addons.circuit_breaker` fields. Refresh remains
+lazy: an unchanged hash skips, omitted fields retain their values, and exclusions
+accumulate. `/circuits` itself does not refresh settings. When globally enabled, an ordinary
+local blocked response refreshes before the prior-block check. Current runtime ownership
+serializes refresh with admission or response completion, so a delayed response
+cannot reinstall the policy that originally admitted it.
+
+Optional `circuit_state_file` selects persistence; absent or empty disables file
+writes in the development configuration. A single process-owned worker attempts
+a save every ten seconds and after graceful request shutdown. Changing the file
+attempts to save the former file's domains, then loads/reconciles the new file
+while retaining counters and settings. A failed former-file save is reported
+and does not prevent selecting the new file. File replacement retains the state
+lock through save/load, so a reset cannot interleave between saving the old state
+and publishing the loaded state. Clearing the path selects fresh empty domain state.
+Normal policy reload retains the existing domains. A fresh process reloads saved
+domains and applies source stale-open/streak reconciliation with fresh counters.
+Source worker replacement differs under D52.
+
+Circuit arithmetic preserves bool, arbitrary-size integer and binary64 kinds,
+including reached Python errors and pre-error mutations. Typed API/cache JSON
+retains nonfinite constants; audit JSON converts nonfinite details to null as
+the source writer does. Configuration preserves consumed temporal provenance.
+These repairs remove the former exact-integer activation blocker. Generic
+frontend temporal/nonfinite admission, lone-surrogate JSON strings, malformed
+structural cache timing and unsupported Python sequence arithmetic remain
+explicit compatibility gaps. They are not a complete production-parity claim.
+
+The [operator workflow](../tests/proxy_migration/test_operator_circuits.py) covers
+shared failures, pre-egress block, authenticated read/reset and recovery, with
+global-disabled and prior-network-block controls. The
+[completion workflow](../tests/proxy_migration/test_circuit_completion.py) checks
+held fixed/chunked bodies, truncation, cancellation and forged block headers
+against both backends. [Persistence tests](../proxy/tests/circuit_persistence.rs)
+exercise actual Proxy startup, reload, the ten-second worker and shutdown.
+The [reload workflow](../tests/proxy_migration/test_circuit_reload.py) verifies
+current settings on delayed responses and recovery after a fresh process.
+[Bypass controls](../tests/proxy_migration/test_circuit_bypass.py) retain source
+request/response asymmetry and required-addon precedence.
+
+The joined circuit candidate passed 207 tests across 15 selected Rust targets,
+15 documentation tests, strict application Clippy, formatting and applicable
+repository hooks. Its frozen executable passed 33 selected native-policy wire
+tests across 34 configurations, plus three TLS/HTTP2 completion controls paired
+with three actual Python runs. Seventeen existing HTTP/HTTPS/HTTP2 tests passed
+through the temporary policy adapter as separate transport regression evidence.
+The TLS/HTTP2 reset-response difference remains explicit under D54.
+These are implementation results; independent acceptance, supported-host pilots,
+production evidence storage and cutover remain outstanding.
+
+Native [test context](../proxy/src/test_context.rs) still returns outcomes for
+later transport/API integration. Its deterministic clock and shared state
+support comparisons of source/agent scope, declaration expiry, header priority
+and warn/block outcomes. Test-context transport integration remains inactive.
 
 The [network guard](../proxy/src/network_guard.rs) returns existing
 warn/block responses and approval/audit intents around the same native policy
@@ -967,7 +1052,8 @@ decisions and warn/block responses. Private secret values become keyed
 fingerprints in its output. The source evaluates network policy again, without
 agent context, after each allowed credential decision; native comparisons retain
 that ordering and its repeated budget charges. The shared addon-enable query
-covers both existing guards without a second policy representation.
+covers the network guard, credential guard and circuit breaker without a second
+policy representation.
 
 Owner checks compare 903 detector cases, the 17-rule generated catalogue,
 112 actual Python addon/PDP operations, eight cached reload steps and 1,800

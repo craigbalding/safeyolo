@@ -66,7 +66,10 @@ def launch_proxy(backend, directory, policy, **options):
         if backend == "rust":
             requests = proxy.events("proxy.request")
             assert requests, "Fixture completed without request evidence"
-            assert all(row.get("coverage") == "native_network_guard_only" for row in requests)
+            # Outer CONNECT uses the network guard; inner HTTP also runs circuits.
+            assert all(row.get("coverage") in {
+                "native_network_guard_only", "native_network_guard_and_circuits",
+            } for row in requests)
             native_ids = {row["request_id"] for row in proxy.events("proxy.network_guard")}
             for row in requests:
                 if row["status"] in {101, 403}:

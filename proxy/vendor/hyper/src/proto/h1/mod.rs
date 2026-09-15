@@ -37,6 +37,11 @@ pub(crate) trait Http1Transaction {
 
     fn on_error(err: &crate::Error) -> Option<MessageHead<Self::Outgoing>>;
 
+    #[cfg(feature = "client")]
+    fn incoming_status(_head: &MessageHead<Self::Incoming>) -> Option<http::StatusCode> {
+        None
+    }
+
     fn is_client() -> bool {
         !Self::is_server()
     }

@@ -1,0 +1,558 @@
+{
+  "rows": [
+    {
+      "case": "unconfigured",
+      "format": "json",
+      "source": null,
+      "hash": "sha256:e3b0c44298fc1c14",
+      "values": null,
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "configured_empty",
+      "format": "json",
+      "source": "{}",
+      "hash": "sha256:917ea0d8c9828d33",
+      "values": null,
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "explicit_empty_addon",
+      "format": "toml",
+      "source": "[addons.circuit_breaker]\n",
+      "hash": "sha256:aefd67b401b4433a",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          }
+        ]
+      },
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "nested_settings_only",
+      "format": "toml",
+      "source": "[addons.circuit_breaker.settings]\nfailure_threshold=31\n",
+      "hash": "sha256:e593804ea91817e9",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": [
+                {
+                  "key": "failure_threshold",
+                  "value": 31
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "top_level_threshold",
+      "format": "toml",
+      "source": "[addons.circuit_breaker]\nfailure_threshold=7\n",
+      "hash": "sha256:ff5deed18ad5228b",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "failure_threshold",
+            "value": 7
+          }
+        ]
+      },
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "top_level_wins_and_disabled_is_retained",
+      "format": "toml",
+      "source": "[addons.circuit_breaker]\nenabled=false\nfailure_threshold=7\n[addons.circuit_breaker.settings]\nfailure_threshold=31\n",
+      "hash": "sha256:5e688c95467b89da",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": false
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": [
+                {
+                  "key": "failure_threshold",
+                  "value": 31
+                }
+              ]
+            }
+          },
+          {
+            "key": "failure_threshold",
+            "value": 7
+          }
+        ]
+      },
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "unvalidated_direct_values",
+      "format": "json",
+      "source": "{\"addons\": {\"circuit_breaker\": {\"failure_threshold\": \"not-numeric\", \"success_threshold\": null, \"timeout_seconds\": [], \"half_open_max_requests\": {}, \"max_timeout_seconds\": true, \"use_exponential_backoff\": false, \"backoff_multiplier\": 9007199254740993, \"jitter_factor\": 1.5, \"streak_decay_seconds\": -2}}}",
+      "hash": "sha256:48fc0459d66bc448",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "failure_threshold",
+            "value": "not-numeric"
+          },
+          {
+            "key": "success_threshold",
+            "value": null
+          },
+          {
+            "key": "timeout_seconds",
+            "value": []
+          },
+          {
+            "key": "half_open_max_requests",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "max_timeout_seconds",
+            "value": true
+          },
+          {
+            "key": "use_exponential_backoff",
+            "value": false
+          },
+          {
+            "key": "backoff_multiplier",
+            "value": 9007199254740993
+          },
+          {
+            "key": "jitter_factor",
+            "value": 1.5
+          },
+          {
+            "key": "streak_decay_seconds",
+            "value": -2
+          }
+        ]
+      },
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "unrelated_addon_timestamp",
+      "format": "yaml",
+      "source": "addons:\n  circuit_breaker: {failure_threshold: 7}\n  unused: {settings: {observed: 2001-02-03}}\n",
+      "hash": "sha256:1b9ac3863d773ca9",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "failure_threshold",
+            "value": 7
+          }
+        ]
+      },
+      "http_sensor_json_ok": false,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "consumed_date",
+      "format": "yaml",
+      "source": "addons: {circuit_breaker: {failure_threshold: 2001-02-03}}\n",
+      "hash": "sha256:698c2bbf55b2599c",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "failure_threshold",
+            "value": {
+              "temporal": "2001-02-03"
+            }
+          }
+        ]
+      },
+      "http_sensor_json_ok": false,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "consumed_datetime",
+      "format": "yaml",
+      "source": "addons: {circuit_breaker: {timeout_seconds: 2001-02-03T04:05:06Z}}\n",
+      "hash": "sha256:f7736434afd2558b",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "timeout_seconds",
+            "value": {
+              "temporal": "2001-02-03 04:05:06+00:00"
+            }
+          }
+        ]
+      },
+      "http_sensor_json_ok": false,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "consumed_time",
+      "format": "toml",
+      "source": "[addons.circuit_breaker]\ntimeout_seconds=04:05:06.123456789\n",
+      "hash": "sha256:89e274acbc4e8580",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "timeout_seconds",
+            "value": {
+              "temporal": "04:05:06.123456"
+            }
+          }
+        ]
+      },
+      "http_sensor_json_ok": false,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "temporal_excluded_list",
+      "format": "yaml",
+      "source": "addons: {circuit_breaker: {excluded_domains: [2001-02-03, '2001-02-03', {nested: 2001-02-04}]}}\n",
+      "hash": "sha256:2334b69f316a6ef4",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "excluded_domains",
+            "value": [
+              {
+                "temporal": "2001-02-03"
+              },
+              "2001-02-03",
+              {
+                "mapping": [
+                  {
+                    "key": "nested",
+                    "value": {
+                      "temporal": "2001-02-04"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "http_sensor_json_ok": false,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "temporal_excluded_mapping_key",
+      "format": "yaml",
+      "source": "addons:\n  circuit_breaker:\n    excluded_domains:\n      2001-02-03: true\n      '2001-02-03': false\n",
+      "hash": "sha256:76572089a0eb8c03",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "excluded_domains",
+            "value": {
+              "mapping": [
+                {
+                  "key": {
+                    "temporal": "2001-02-03"
+                  },
+                  "value": true
+                },
+                {
+                  "key": "2001-02-03",
+                  "value": false
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "http_sensor_json_ok": false,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "authored_lookalikes",
+      "format": "yaml",
+      "source": "addons: {circuit_breaker: {failure_threshold: '2001-02-03', timeout_seconds: {yaml_date: '2001-02-03'}}}\n",
+      "hash": "sha256:48176d96f572e73c",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "failure_threshold",
+            "value": "2001-02-03"
+          },
+          {
+            "key": "timeout_seconds",
+            "value": {
+              "mapping": [
+                {
+                  "key": "yaml_date",
+                  "value": "2001-02-03"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 0,
+      "tracked_keys": 0
+    },
+    {
+      "case": "charged_baseline",
+      "format": "json",
+      "source": "{\"permissions\":[{\"action\":\"network:request\",\"resource\":\"fixture.invalid/*\",\"effect\":\"budget\",\"budget\":1}],\"addons\":{\"circuit_breaker\":{\"failure_threshold\":7}}}",
+      "hash": "sha256:34640ef16efef3cc",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "failure_threshold",
+            "value": 7
+          }
+        ]
+      },
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 1,
+      "tracked_keys": 1
+    },
+    {
+      "case": "task_changes_hash_not_baseline_addon",
+      "format": "json",
+      "source": "{\"permissions\":[{\"action\":\"network:request\",\"resource\":\"fixture.invalid/*\",\"effect\":\"budget\",\"budget\":1}],\"addons\":{\"circuit_breaker\":{\"failure_threshold\":7}}}",
+      "hash": "sha256:ce13f46f9a98f325",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "failure_threshold",
+            "value": 7
+          }
+        ]
+      },
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 1,
+      "tracked_keys": 1,
+      "task_source": "{\"addons\":{\"circuit_breaker\":{\"failure_threshold\":99}}}"
+    },
+    {
+      "case": "valid_reload_retains_budget_and_raw_value",
+      "format": "json",
+      "source": "{\"permissions\":[{\"action\":\"network:request\",\"resource\":\"fixture.invalid/*\",\"effect\":\"budget\",\"budget\":1}],\"addons\":{\"circuit_breaker\":{\"failure_threshold\":\"later-error\"}}}",
+      "hash": "sha256:74f018851309f89a",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "failure_threshold",
+            "value": "later-error"
+          }
+        ]
+      },
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 1,
+      "tracked_keys": 1
+    },
+    {
+      "case": "invalid_reload_retains_last_projection",
+      "format": "json",
+      "source": "{\"permissions\":[{\"action\":\"network:request\",\"resource\":\"fixture.invalid/*\",\"effect\":\"budget\",\"budget\":1}],\"addons\":{\"circuit_breaker\":{\"failure_threshold\":\"later-error\"}}}",
+      "hash": "sha256:74f018851309f89a",
+      "values": {
+        "mapping": [
+          {
+            "key": "enabled",
+            "value": true
+          },
+          {
+            "key": "settings",
+            "value": {
+              "mapping": []
+            }
+          },
+          {
+            "key": "failure_threshold",
+            "value": "later-error"
+          }
+        ]
+      },
+      "http_sensor_json_ok": true,
+      "read_preserves_evaluations_budgets_hash": true,
+      "evaluations": 1,
+      "tracked_keys": 1
+    }
+  ],
+  "network_attempts": 0,
+  "source_scope": "actual LocalPolicyClient/PolicyLoader/PDPCore; no circuit adapter or numeric operation"
+}

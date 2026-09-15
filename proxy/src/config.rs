@@ -36,6 +36,10 @@ pub struct Config {
     #[serde(default = "enabled")]
     pub network_guard_homoglyph: bool,
     #[serde(default = "enabled")]
+    pub circuit_breaker_enabled: bool,
+    /// An absent or empty path disables circuit snapshots.
+    pub circuit_state_file: Option<PathBuf>,
+    #[serde(default = "enabled")]
     pub agent_api_enabled: bool,
     /// Development opt-in for the existing separate IPv4-loopback operator API.
     /// Listener and token settings are read at process startup.

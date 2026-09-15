@@ -1,0 +1,2292 @@
+[
+  {
+    "name": "threshold_9007199254740991",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 9007199254740991
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "closed",
+              "failure_count": 9007199254740990
+            }
+          }
+        }
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "slots_9007199254740991",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 9007199254740991,
+          "success_threshold": 9007199254740991
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 9007199254740990,
+              "success_count": 9007199254740989
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "threshold_9007199254740992",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 9007199254740992
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "closed",
+              "failure_count": 9007199254740991
+            }
+          }
+        }
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "slots_9007199254740992",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 9007199254740992,
+          "success_threshold": 9007199254740992
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 9007199254740991,
+              "success_count": 9007199254740990
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "threshold_9007199254740993",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 9007199254740993
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "closed",
+              "failure_count": 9007199254740992
+            }
+          }
+        }
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "slots_9007199254740993",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 9007199254740993,
+          "success_threshold": 9007199254740993
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 9007199254740992,
+              "success_count": 9007199254740991
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "threshold_9223372036854775807",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 9223372036854775807
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "closed",
+              "failure_count": 9223372036854775806
+            }
+          }
+        }
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "slots_9223372036854775807",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 9223372036854775807,
+          "success_threshold": 9223372036854775807
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 9223372036854775806,
+              "success_count": 9223372036854775805
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "threshold_9223372036854775808",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 9223372036854775808
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "closed",
+              "failure_count": 9223372036854775807
+            }
+          }
+        }
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "slots_9223372036854775808",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 9223372036854775808,
+          "success_threshold": 9223372036854775808
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 9223372036854775807,
+              "success_count": 9223372036854775806
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "threshold_18446744073709551615",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 18446744073709551615
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "closed",
+              "failure_count": 18446744073709551614
+            }
+          }
+        }
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "slots_18446744073709551615",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 18446744073709551615,
+          "success_threshold": 18446744073709551615
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 18446744073709551614,
+              "success_count": 18446744073709551613
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "threshold_18446744073709551616",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 18446744073709551616
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "closed",
+              "failure_count": 18446744073709551615
+            }
+          }
+        }
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "slots_18446744073709551616",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 18446744073709551616,
+          "success_threshold": 18446744073709551616
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 18446744073709551615,
+              "success_count": 18446744073709551614
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "threshold_100000000000000000000000",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "closed",
+              "failure_count": 9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999
+            }
+          }
+        }
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "slots_100000000000000000000000",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "success_threshold": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999,
+              "success_count": 9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999998
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "persisted_True",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 3,
+          "success_threshold": 3,
+          "half_open_max_requests": 3,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "failure_count": true,
+              "success_count": true,
+              "half_open_requests": true
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "persisted_False",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 3,
+          "success_threshold": 3,
+          "half_open_max_requests": 3,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "failure_count": false,
+              "success_count": false,
+              "half_open_requests": false
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "persisted_-2",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 3,
+          "success_threshold": 3,
+          "half_open_max_requests": 3,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "failure_count": -2,
+              "success_count": -2,
+              "half_open_requests": -2
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "persisted_-0.0",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 3,
+          "success_threshold": 3,
+          "half_open_max_requests": 3,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "failure_count": -0.0,
+              "success_count": -0.0,
+              "half_open_requests": -0.0
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "persisted_0.25",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 3,
+          "success_threshold": 3,
+          "half_open_max_requests": 3,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "failure_count": 0.25,
+              "success_count": 0.25,
+              "half_open_requests": 0.25
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "persisted_1.5",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 3,
+          "success_threshold": 3,
+          "half_open_max_requests": 3,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "failure_count": 1.5,
+              "success_count": 1.5,
+              "half_open_requests": 1.5
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      },
+      {
+        "op": "success"
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "mixed_22",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 9007199254740992.0
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 9007199254740993
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      }
+    ]
+  },
+  {
+    "name": "mixed_23",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 9007199254740992.0
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 9007199254740991
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      }
+    ]
+  },
+  {
+    "name": "mixed_24",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": -1.5
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": -2
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      }
+    ]
+  },
+  {
+    "name": "mixed_25",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": -1.5
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": -1
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      }
+    ]
+  },
+  {
+    "name": "mixed_26",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 1.5
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 1
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      }
+    ]
+  },
+  {
+    "name": "mixed_27",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 1.5
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 2
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      }
+    ]
+  },
+  {
+    "name": "mixed_28",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 1e+308
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      }
+    ]
+  },
+  {
+    "name": "mixed_29",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": -1e+308
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "half_open_requests": -10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            }
+          }
+        }
+      },
+      {
+        "op": "admit"
+      }
+    ]
+  },
+  {
+    "name": "power_30",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": -2
+      }
+    ]
+  },
+  {
+    "name": "power_31",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 0.5
+      }
+    ]
+  },
+  {
+    "name": "power_32",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 2
+      }
+    ]
+  },
+  {
+    "name": "power_33",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": false,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": -2
+      }
+    ]
+  },
+  {
+    "name": "power_34",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": false,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 0.5
+      }
+    ]
+  },
+  {
+    "name": "power_35",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": false,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 2
+      }
+    ]
+  },
+  {
+    "name": "power_36",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": -2,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": -2
+      }
+    ]
+  },
+  {
+    "name": "power_37",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": -2,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 0.5
+      }
+    ]
+  },
+  {
+    "name": "power_38",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": -2,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 2
+      }
+    ]
+  },
+  {
+    "name": "power_39",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": -2.0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": -2
+      }
+    ]
+  },
+  {
+    "name": "power_40",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": -2.0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 0.5
+      }
+    ]
+  },
+  {
+    "name": "power_41",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": -2.0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 2
+      }
+    ]
+  },
+  {
+    "name": "power_42",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 0.5,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": -2
+      }
+    ]
+  },
+  {
+    "name": "power_43",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 0.5,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 0.5
+      }
+    ]
+  },
+  {
+    "name": "power_44",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 0.5,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 2
+      }
+    ]
+  },
+  {
+    "name": "power_45",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 1,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": -2
+      }
+    ]
+  },
+  {
+    "name": "power_46",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 1,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 0.5
+      }
+    ]
+  },
+  {
+    "name": "power_47",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 1,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 2
+      }
+    ]
+  },
+  {
+    "name": "power_48",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 1.0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": -2
+      }
+    ]
+  },
+  {
+    "name": "power_49",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 1.0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 0.5
+      }
+    ]
+  },
+  {
+    "name": "power_50",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 1.0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 2
+      }
+    ]
+  },
+  {
+    "name": "power_51",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 2,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": -2
+      }
+    ]
+  },
+  {
+    "name": "power_52",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 2,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 0.5
+      }
+    ]
+  },
+  {
+    "name": "power_53",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 2,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 2
+      }
+    ]
+  },
+  {
+    "name": "power_54",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 2.0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": -2
+      }
+    ]
+  },
+  {
+    "name": "power_55",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 2.0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 0.5
+      }
+    ]
+  },
+  {
+    "name": "power_56",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 2.0,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 2
+      }
+    ]
+  },
+  {
+    "name": "power_57",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": -2
+      }
+    ]
+  },
+  {
+    "name": "power_58",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 0.5
+      }
+    ]
+  },
+  {
+    "name": "power_59",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 16,
+          "backoff_multiplier": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 2
+      }
+    ]
+  },
+  {
+    "name": "timeout_60",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_61",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "max_timeout_seconds": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_62",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "max_timeout_seconds": -1
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_63",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": -1
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_64",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "max_timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "backoff_multiplier": 2,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_65",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "max_timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "backoff_multiplier": 1,
+          "jitter_factor": 0
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_66",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1e+308,
+          "max_timeout_seconds": 1e+308,
+          "backoff_multiplier": 1,
+          "jitter_factor": 1e+308
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_67",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "max_timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "backoff_multiplier": 1,
+          "jitter_factor": 1
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_68",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "backoff_multiplier": 2
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_69",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1,
+          "max_timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "backoff_multiplier": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_70",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "max_timeout_seconds": 1,
+          "backoff_multiplier": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_71",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1e-300,
+          "max_timeout_seconds": 1e+300,
+          "backoff_multiplier": 2
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "timeout_72",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "max_timeout_seconds": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+          "backoff_multiplier": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+        }
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      }
+    ]
+  },
+  {
+    "name": "invalid_failure_threshold",
+    "operations": [
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "closed"
+            }
+          }
+        }
+      },
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": null
+        }
+      },
+      {
+        "op": "failure",
+        "now": 101
+      },
+      {
+        "op": "config",
+        "value": {
+          "failure_threshold": 5
+        }
+      },
+      {
+        "op": "stats",
+        "now": 101
+      }
+    ]
+  },
+  {
+    "name": "invalid_success_threshold",
+    "operations": [
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "failure_streak": 1,
+              "last_failure_time": 100
+            }
+          }
+        }
+      },
+      {
+        "op": "config",
+        "value": {
+          "success_threshold": null
+        }
+      },
+      {
+        "op": "success",
+        "now": 101
+      },
+      {
+        "op": "config",
+        "value": {
+          "success_threshold": 5
+        }
+      },
+      {
+        "op": "stats",
+        "now": 101
+      }
+    ]
+  },
+  {
+    "name": "invalid_half_open_max_requests",
+    "operations": [
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "failure_streak": 1,
+              "last_failure_time": 100
+            }
+          }
+        }
+      },
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": null
+        }
+      },
+      {
+        "op": "admit",
+        "now": 101
+      },
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 5
+        }
+      },
+      {
+        "op": "stats",
+        "now": 101
+      }
+    ]
+  },
+  {
+    "name": "invalid_streak_decay_seconds",
+    "operations": [
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open",
+              "failure_streak": 1,
+              "last_failure_time": 100
+            }
+          }
+        }
+      },
+      {
+        "op": "config",
+        "value": {
+          "streak_decay_seconds": null
+        }
+      },
+      {
+        "op": "status",
+        "now": 101
+      },
+      {
+        "op": "config",
+        "value": {
+          "streak_decay_seconds": 5
+        }
+      },
+      {
+        "op": "stats",
+        "now": 101
+      }
+    ]
+  },
+  {
+    "name": "published_failure_then_timeout_error",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 0
+        }
+      },
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "half_open"
+            }
+          }
+        }
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 60
+        }
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "halfopen_transition_then_type_error",
+    "operations": [
+      {
+        "op": "config",
+        "value": {
+          "timeout_seconds": 1
+        }
+      },
+      {
+        "op": "force"
+      },
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": null
+        }
+      },
+      {
+        "op": "admit",
+        "now": 102
+      },
+      {
+        "op": "config",
+        "value": {
+          "half_open_max_requests": 3
+        }
+      },
+      {
+        "op": "stats",
+        "now": 102
+      }
+    ]
+  },
+  {
+    "name": "decay_published_before_error",
+    "operations": [
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "open",
+              "opened_at": 100,
+              "failure_streak": 1,
+              "last_failure_time": 1
+            }
+          }
+        }
+      },
+      {
+        "op": "config",
+        "value": {
+          "streak_decay_seconds": 1,
+          "timeout_seconds": null
+        }
+      },
+      {
+        "op": "status",
+        "now": 100
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "raw_failure_count_not_consumed_by_status",
+    "operations": [
+      {
+        "op": "restore",
+        "value": {
+          "states": {
+            "api": {
+              "state": "closed",
+              "failure_count": "invalid"
+            }
+          }
+        }
+      },
+      {
+        "op": "status"
+      },
+      {
+        "op": "failure"
+      }
+    ]
+  },
+  {
+    "name": "float_infinity_threshold",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"failure_threshold\":1e999}"
+      },
+      {
+        "op": "failure"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "float_infinity_timeout",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1e999,\"backoff_multiplier\":1}"
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      },
+      {
+        "op": "force"
+      },
+      {
+        "op": "status"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "negative_infinity_timeout",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":-1e999,\"backoff_multiplier\":1}"
+      },
+      {
+        "op": "timeout",
+        "streak": 1
+      },
+      {
+        "op": "force"
+      },
+      {
+        "op": "status"
+      },
+      {
+        "op": "stats"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_84",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":-1e999,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "0.5"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_85",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":-1e999,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_86",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":-1e999,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "-1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_87",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":1e999,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "0.5"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_88",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":1e999,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_89",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":1e999,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "-1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_90",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":0.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "0.5"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_91",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":0.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_92",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":0.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "-1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_93",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":-0.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "0.5"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_94",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":-0.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_95",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":-0.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "-1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_96",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":1.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "0.5"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_97",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":1.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_98",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":1.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "-1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_99",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":-1.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "0.5"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_100",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":-1.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "1e999"
+      }
+    ]
+  },
+  {
+    "name": "nonfinite_power_101",
+    "operations": [
+      {
+        "op": "config",
+        "json": "{\"timeout_seconds\":1,\"max_timeout_seconds\":16,\"backoff_multiplier\":-1.0,\"jitter_factor\":0}"
+      },
+      {
+        "op": "timeout",
+        "streak_json": "-1e999"
+      }
+    ]
+  }
+]

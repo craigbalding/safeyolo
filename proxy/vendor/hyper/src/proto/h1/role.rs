@@ -242,7 +242,9 @@ impl Http1Transaction for Server {
         let mut is_te_chunked = false;
         let mut wants_upgrade = subject.0 == Method::CONNECT;
 
-        let mut original_fields = ctx.preserve_header_case.then(crate::ext::OriginalHeaderFields::default);
+        let mut original_fields = ctx
+            .preserve_header_case
+            .then(crate::ext::OriginalHeaderFields::default);
 
         let mut header_case_map = if ctx.preserve_header_case {
             Some(HeaderCaseMap::default())
@@ -268,8 +270,10 @@ impl Http1Transaction for Server {
             let value = header_value!(slice.slice(header.value.0..header.value.1));
 
             if let Some(fields) = &mut original_fields {
-                fields.0.push((slice.slice(header.name.0..header.name.1),
-                    slice.slice(header.value.0..header.value.1)));
+                fields.0.push((
+                    slice.slice(header.name.0..header.name.1),
+                    slice.slice(header.value.0..header.value.1),
+                ));
             }
 
             match name {
@@ -363,7 +367,6 @@ impl Http1Transaction for Server {
         if let Some(fields) = original_fields {
             extensions.insert(fields);
         }
-
 
         if let Some(header_case_map) = header_case_map {
             extensions.insert(header_case_map);
@@ -1262,6 +1265,10 @@ impl Http1Transaction for Client {
 
     fn is_client() -> bool {
         true
+    }
+
+    fn incoming_status(head: &MessageHead<Self::Incoming>) -> Option<StatusCode> {
+        Some(head.subject)
     }
 }
 

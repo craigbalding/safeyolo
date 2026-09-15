@@ -292,7 +292,7 @@ fn hook_classification_preserves_exclusions_prior_blocks_and_missing_error_hook(
 }
 
 #[test]
-fn configuration_reload_retains_omissions_exclusions_and_last_good_candidate() {
+fn configuration_reload_retains_omissions_exclusions_and_consumes_numbers_lazily() {
     let cb = CircuitBreaker::new();
     assert!(
         !cb.apply_sensor_config(&json!({"addons":{"circuit_breaker":{"failure_threshold":99}}}))
@@ -322,16 +322,18 @@ fn configuration_reload_retains_omissions_exclusions_and_last_good_candidate() {
             .failure_count,
         3.5
     );
-    assert!(
-        cb.apply_sensor_config(
-            &json!({"policy_hash":"three","addons":{"circuit_breaker":{"failure_threshold":null}}})
-        )
-        .is_err()
+    config(&cb, "three", json!({"failure_threshold":null}));
+    let before = cb.snapshot(100.).unwrap();
+    assert_eq!(
+        cb.record_failure("invalid", None, 100., &mut middle)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Type
     );
-    assert_eq!(cb.settings().unwrap().failure_threshold, 2.5);
+    assert_eq!(cb.snapshot(100.).unwrap(), before);
     config(
         &cb,
-        "three",
+        "four",
         json!({"use_exponential_backoff":false,"timeout_seconds":0,"half_open_max_requests":0,"failure_threshold":-1}),
     );
     cb.record_failure("zero", None, 100., &mut middle).unwrap();
@@ -750,31 +752,28 @@ json.dump(output,sys.stdout)
 #[test]
 fn integers_are_not_silently_rounded_before_decisions_or_persistence() {
     let cb = CircuitBreaker::new();
-    let bad = json!({"policy_hash":"bad","addons":{"circuit_breaker":{"failure_threshold":9007199254740993u64}}});
-    assert!(cb.apply_sensor_config(&bad).is_err());
-    assert_eq!(cb.settings().unwrap().failure_threshold, 5.);
     config(
         &cb,
         "exact",
-        json!({"failure_threshold":9007199254740992u64}),
+        json!({"failure_threshold":9007199254740993u64}),
     );
     cb.force_open("large", 100.).unwrap();
-    let before = cb.snapshot(100.).unwrap();
     assert_eq!(
-        before["states"]["large"]["failure_count"].as_u64(),
-        Some(9007199254740992)
+        cb.snapshot(100.).unwrap()["states"]["large"]["failure_count"],
+        json!(9007199254740993u64)
     );
-    assert!(cb.record_failure("large", None, 100., &mut middle).is_err());
-    assert_eq!(cb.snapshot(100.).unwrap(), before);
-    assert!(
-        cb.restore(
-            &json!({"states":{"bad":{"failure_count":9007199254740993u64}}}),
-            100.,
-            &mut middle
-        )
-        .is_err()
+    let after = cb.record_failure("large", None, 100., &mut middle).unwrap();
+    assert_eq!(after.value.failure_count, 9007199254740994u64);
+    cb.restore(
+        &json!({"states":{"large":{"failure_count":9007199254740993u64}}}),
+        100.,
+        &mut middle,
+    )
+    .unwrap();
+    assert_eq!(
+        cb.snapshot(100.).unwrap()["states"]["large"]["failure_count"],
+        json!(9007199254740993u64)
     );
-    assert_eq!(cb.snapshot(100.).unwrap(), before);
 }
 
 #[test]

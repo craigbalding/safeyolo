@@ -240,6 +240,7 @@ impl Recv {
             };
         }
 
+        let end_stream = frame.is_end_stream();
         let mut frame = frame;
         let original_fields = frame.take_original_fields();
         let stream_id = frame.stream_id();
@@ -265,11 +266,17 @@ impl Recv {
             if let crate::proto::peer::PollMessage::Server(request) = &mut message {
                 request.extensions_mut().insert(original_fields);
             }
+            if let crate::proto::peer::PollMessage::Client(response) = &message {
+                stream.response_status = Some(response.status());
+            }
 
             // Push the frame onto the stream's recv buffer
             stream
                 .pending_recv
                 .push_back(&mut self.buffer, Event::Headers(message));
+            if end_stream {
+                stream.complete_response();
+            }
             stream.notify_recv();
 
             // Only servers can receive a headers frame that initiates the stream.
@@ -440,6 +447,7 @@ impl Recv {
         stream
             .pending_recv
             .push_back(&mut self.buffer, Event::Trailers(trailers));
+        stream.complete_response();
         stream.notify_recv();
 
         Ok(())
@@ -782,6 +790,9 @@ impl Recv {
 
         // Push the frame onto the recv buffer
         stream.pending_recv.push_back(&mut self.buffer, event);
+        if !is_budgeted {
+            stream.complete_response();
+        }
         stream.notify_recv();
 
         Ok(())
@@ -929,6 +940,7 @@ impl Recv {
         }
 
         // Notify the stream
+        stream.abort_response();
         stream.state.recv_reset(frame, stream.is_pending_send);
 
         stream.notify_send();
@@ -941,6 +953,7 @@ impl Recv {
     /// Handle a connection-level error
     pub fn handle_error(&mut self, err: &proto::Error, stream: &mut Stream) {
         // Receive an error
+        stream.abort_response();
         stream.state.handle_error(err);
 
         // If a receiver is waiting, notify it
@@ -955,6 +968,7 @@ impl Recv {
     }
 
     pub fn recv_eof(&mut self, stream: &mut Stream) {
+        stream.abort_response();
         stream.state.recv_eof();
         stream.notify_send();
         stream.notify_recv();

@@ -27,6 +27,7 @@ use serde_json::{Map, Value};
 
 mod baseline;
 mod budgets;
+pub(crate) mod circuit_settings;
 mod model_json;
 mod sensor_config;
 mod source;
@@ -296,28 +297,31 @@ fn specificity_score(resource: &str, condition_present: bool, port_present: bool
     (score + if condition_present { 5 } else { 0 }, port_present)
 }
 
-/// Concrete controls implemented by the native request guards. Other addon
+/// Concrete controls represented by the native policy query. Other addon
 /// configuration remains outside this query's validation and representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Addon {
     NetworkGuard,
     CredentialGuard,
+    CircuitBreaker,
 }
 impl Addon {
     fn index(self) -> usize {
         match self {
             Self::NetworkGuard => 0,
             Self::CredentialGuard => 1,
+            Self::CircuitBreaker => 2,
         }
     }
 }
-const ADDON_NAMES: [&str; 2] = ["network_guard", "credential_guard"];
+const ADDON_COUNT: usize = 3;
+const ADDON_NAMES: [&str; ADDON_COUNT] = ["network_guard", "credential_guard", "circuit_breaker"];
 
 #[derive(Clone, Default, Debug)]
 struct Override {
     pattern: String,
-    bypass: [bool; 2],
-    enabled: [Option<bool>; 2],
+    bypass: [bool; ADDON_COUNT],
+    enabled: [Option<bool>; ADDON_COUNT],
 }
 
 /// One proxy permission representation and one atomic GCRA state map.
@@ -330,8 +334,8 @@ pub struct Policy {
     global_budget: Option<u64>,
     budgets: Arc<Mutex<IndexMap<String, f64>>>,
     evaluations: Arc<AtomicU64>,
-    required: [bool; 2],
-    enabled: [bool; 2],
+    required: [bool; ADDON_COUNT],
+    enabled: [bool; ADDON_COUNT],
     domains: Vec<Override>,
     clients: Vec<Override>,
     task: Option<TaskPolicy>,
@@ -354,7 +358,7 @@ struct TaskPolicy {
     rules: Vec<Rule>,
     global_budget: Option<u64>,
     domains: Vec<Override>,
-    enabled: [Option<bool>; 2],
+    enabled: [Option<bool>; ADDON_COUNT],
     path: Option<PathBuf>,
 }
 
@@ -603,8 +607,8 @@ impl Policy {
             global_budget,
             budgets: Arc::new(Mutex::new(IndexMap::new())),
             evaluations: Arc::new(AtomicU64::new(0)),
-            required: [false; 2],
-            enabled: [true; 2],
+            required: [false; ADDON_COUNT],
+            enabled: [true; ADDON_COUNT],
             domains: Vec::new(),
             clients: Vec::new(),
             task: None,
@@ -2941,12 +2945,12 @@ fn boolean(value: &Value, field: &str) -> Result<bool> {
     Err(invalid(format!("{field} must be boolean")))
 }
 
-fn addon_enabled_values(addons: Option<&Value>) -> Result<[Option<bool>; 2]> {
+fn addon_enabled_values(addons: Option<&Value>) -> Result<[Option<bool>; ADDON_COUNT]> {
     let Some(addons) = addons else {
-        return Ok([None; 2]);
+        return Ok([None; ADDON_COUNT]);
     };
     let addons = object(addons, "addons")?;
-    let mut values = [None; 2];
+    let mut values = [None; ADDON_COUNT];
     for (index, name) in ADDON_NAMES.iter().enumerate() {
         if let Some(config) = addons.get(*name) {
             let value = object(config, name)?.get("enabled");
@@ -2971,7 +2975,7 @@ fn parse_override(pattern: &str, fields: &Map<String, Value>) -> Result<Override
                     .map(|values| ADDON_NAMES.map(|name| values.iter().any(|value| value == name)))
             })
             .transpose()?
-            .unwrap_or([false; 2]),
+            .unwrap_or([false; ADDON_COUNT]),
         enabled: addon_enabled_values(fields.get("addons"))?,
     })
 }

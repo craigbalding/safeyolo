@@ -24,15 +24,42 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use crate::tunnels::{self, BoxStream, Protocol};
 use crate::{ConnectionIdentity, Error, Runtime, RuntimeState, UpgradeTasks, is_reserved};
 
+mod circuit_completion;
+
 pub(crate) type Body = BoxBody<Bytes, Error>;
 
 /// The HTTP driver exists exactly as long as its request or response body owner.
-struct HttpTask(tokio::task::JoinHandle<()>);
+struct HttpTask {
+    task: tokio::task::JoinHandle<()>,
+    completion: Option<Arc<circuit_completion::Completion>>,
+}
+
+impl HttpTask {
+    fn unobserved(task: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            task,
+            completion: None,
+        }
+    }
+}
 
 impl Drop for HttpTask {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(completion) = &self.completion {
+            let _ = completion.try_finish();
+        }
+        self.task.abort();
     }
+}
+
+/// Set only for a response produced by local enforcement. Wire headers cannot
+/// claim this classification or suppress an upstream failure observation.
+#[derive(Clone)]
+struct CircuitPriorBlock;
+
+fn prior_block(mut response: Response<Body>) -> Response<Body> {
+    response.extensions_mut().insert(CircuitPriorBlock);
+    response
 }
 
 struct UpstreamBody {
@@ -436,7 +463,7 @@ async fn open_egress(
     if tunnel && runtime.parent.is_some() {
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
-        let task = HttpTask(tokio::spawn(async move {
+        let task = HttpTask::unobserved(tokio::spawn(async move {
             let _ = connection.with_upgrades().await;
         }));
         let target = if destination.host.contains(':') {
@@ -570,7 +597,7 @@ async fn decide(runtime: &Runtime, request: &PolicyRequest<'_>) -> Result<Policy
     .await?;
     let (mut sender, connection) =
         hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;
-    let _task = HttpTask(tokio::spawn(async move {
+    let _task = HttpTask::unobserved(tokio::spawn(async move {
         let _ = connection.await;
     }));
     let request = Request::builder()
@@ -708,18 +735,25 @@ async fn local_agent_api(
             .policy
             .as_ref()
             .map_or(PolicyState::Unavailable, PolicyState::Ready);
-        agent_api::respond_read(
+        let mut random = rand::random::<f64>;
+        agent_api::respond_read_with_circuits(
             api_request,
             &token_path,
             policy,
             &runtime.tasks,
             crate::policy::current_time_ms(),
+            runtime.policy.as_ref().map(|_| agent_api::CircuitContext {
+                breaker: &runtime.circuits,
+                enabled: runtime.config.circuit_breaker_enabled,
+                random: &mut random,
+            }),
         )
         .await
     } else {
         agent_api::unavailable(api_request, Failure::HandlerUnavailable)
     };
-    let evidence_failed = record_agent_api(runtime, identity, request_id, &outcome).is_err();
+    let evidence_failed = record_agent_api(runtime, identity, request_id, &outcome).is_err()
+        | crate::circuit_runtime::record_transitions(runtime, &outcome.circuit_events, None);
     if evidence_failed {
         // Source audit file failures are caught by its writer and preserve the
         // response. They differ from a callback exception escaping API auth.
@@ -743,6 +777,132 @@ async fn local_agent_api(
     Ok(reply)
 }
 
+/// Resolve policy and refresh circuit settings under current runtime ownership.
+/// As in the source hook, an operation exception preserves prior mutations and
+/// lets later request processing continue.
+fn circuit_admission(
+    state: &RuntimeState,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    method: &str,
+    destination: &Destination,
+) -> (Option<Response<Body>>, bool) {
+    use crate::circuits::{CircuitValue, RequestDecision, RequestGate};
+    let Ok(runtime) = state.read() else {
+        eprintln!("Circuit request runtime unavailable");
+        return (None, true);
+    };
+    let Some(policy) = runtime.policy.as_ref() else {
+        return (None, false);
+    };
+    let host = &destination.policy_host;
+    let result = runtime.circuits.request_current(
+        policy,
+        host,
+        RequestGate {
+            enabled: runtime.config.circuit_breaker_enabled,
+            prior_response: false,
+            policy_bypassed: !policy.is_addon_enabled(
+                crate::policy::Addon::CircuitBreaker,
+                Some(host),
+                Some(&identity.agent_id),
+            ),
+        },
+        crate::circuit_runtime::now(),
+        &mut rand::random::<f64>,
+    );
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            eprintln!("Circuit request operation failed: {:?}", error.kind());
+            let failed = crate::circuit_runtime::record_transitions(&runtime, error.events(), None);
+            return (None, failed);
+        }
+    };
+    let mut failed = crate::circuit_runtime::record_transitions(&runtime, &outcome.events, None);
+    let RequestDecision::Blocked {
+        status,
+        retry_after_seconds,
+    } = outcome.value
+    else {
+        return (None, failed);
+    };
+    let reply = (|| -> Result<Response<Body>, Error> {
+        let state = serde_json::to_value(status.state)?
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let count = crate::circuit_runtime::count_text(&status.failure_count)?;
+        let mut details = indexmap::IndexMap::from([
+            ("circuit_state".into(), json!(state).into()),
+            ("failure_count".into(), status.failure_count.clone()),
+            ("retry_after".into(), json!(retry_after_seconds).into()),
+            ("path".into(), json!(destination.path).into()),
+            ("method".into(), json!(method).into()),
+            ("port".into(), json!(destination.port).into()),
+            ("connection_id".into(), json!(identity.connection_id).into()),
+        ]);
+        let audit = CircuitValue::Object(indexmap::IndexMap::from([
+            ("event".into(), json!("proxy.circuit").into()),
+            (
+                "audit_intent".into(),
+                json!("security.circuit_breaker").into(),
+            ),
+            ("kind".into(), json!("security").into()),
+            ("severity".into(), json!("high").into()),
+            ("addon".into(), json!("circuit-breaker").into()),
+            ("decision".into(), json!("deny").into()),
+            ("host".into(), json!(host).into()),
+            ("agent".into(), json!(identity.agent_id).into()),
+            ("request_id".into(), json!(request_id).into()),
+            (
+                "summary".into(),
+                json!(format!(
+                    "Circuit breaker open for {} ({count} failures)",
+                    crate::network_guard::sanitize(host),
+                ))
+                .into(),
+            ),
+            (
+                "details".into(),
+                CircuitValue::Object(std::mem::take(&mut details)),
+            ),
+        ]));
+        failed |= runtime
+            .record_bytes(audit.render_audit_json()?.into_bytes())
+            .is_err();
+        let body = crate::python_json::encode(&json!({
+            "error": format!("Service temporarily unavailable: {host}"),
+            "domain": host,
+            "circuit_state": state,
+            "retry_after_seconds": retry_after_seconds,
+            "message": format!("Circuit breaker open for {host}. Service has failed {count} times. Will retry in {retry_after_seconds} seconds."),
+        }));
+        let mut reply = Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_LENGTH, body.len())
+            .header("x-blocked-by", "circuit-breaker")
+            .header("x-safeyolo-request-id", request_id)
+            .header("x-circuit-state", state)
+            .header(header::RETRY_AFTER, retry_after_seconds.to_string())
+            .body(full(body))?;
+        if failed {
+            reply
+                .headers_mut()
+                .insert("x-safeyolo-evidence-error", "true".parse()?);
+        }
+        Ok(reply)
+    })();
+    match reply {
+        Ok(reply) => (Some(reply), failed),
+        Err(_) => {
+            eprintln!("Circuit request response construction failed");
+            (None, failed)
+        }
+    }
+}
+
 // Keep the immutable request snapshot separate from the reloadable state used
 // by later requests inside CONNECT, and keep routing separate from identity.
 #[allow(clippy::too_many_arguments)]
@@ -760,7 +920,7 @@ async fn forward(
         .admin_shield
         .blocks_host(&destination.host, destination.port)
     {
-        return Ok((admin_rejection(), "admin_port_access".into()));
+        return Ok((prior_block(admin_rejection()), "admin_port_access".into()));
     }
     if is_reserved(&destination.host) {
         if request.method() == Method::CONNECT {
@@ -771,7 +931,7 @@ async fn forward(
             reply
                 .headers_mut()
                 .insert("x-blocked-by", "transport-guard".parse()?);
-            return Ok((reply, "local".into()));
+            return Ok((prior_block(reply), "local".into()));
         }
         if destination
             .host
@@ -780,7 +940,7 @@ async fn forward(
         {
             let reply =
                 local_agent_api(&runtime, identity, request_id, &mut request, destination).await?;
-            return Ok((reply, "local".into()));
+            return Ok((prior_block(reply), "local".into()));
         }
         return Ok((
             response(
@@ -810,7 +970,7 @@ async fn forward(
         response
             .headers_mut()
             .insert("x-blocked-by", "loop-guard".parse()?);
-        return Ok((response, "deny".into()));
+        return Ok((prior_block(response), "deny".into()));
     }
     // Source request-ID hygiene precedes security addons. Keep inspection order
     // from the parser while applying the same removals to transport headers.
@@ -873,7 +1033,7 @@ async fn forward(
                 .append(header::HeaderName::try_from(name)?, value.parse()?);
         }
         strip_hop_headers(denied.headers_mut());
-        return Ok((denied, decision.decision));
+        return Ok((prior_block(denied), decision.decision));
     }
     if request.method() == Method::CONNECT {
         // Admission precedes DNS/dial. Eager connection supports protocols whose
@@ -956,6 +1116,16 @@ async fn forward(
         });
         return Ok((Response::new(full(Bytes::new())), decision.decision));
     }
+    let (circuit_block, circuit_evidence_failed) = circuit_admission(
+        &state,
+        identity,
+        request_id,
+        request.method().as_str(),
+        destination,
+    );
+    if let Some(reply) = circuit_block {
+        return Ok((prior_block(reply), "deny".into()));
+    }
     let websocket = if hygiene.websocket {
         if upgrades.is_none() {
             return Ok((
@@ -1018,6 +1188,14 @@ async fn forward(
     } else {
         destination.path.parse::<Uri>()?
     };
+    let completion = circuit_completion::Completion::register(
+        &mut request,
+        outbound.http2,
+        state.clone(),
+        identity.clone(),
+        request_id.to_owned(),
+        destination.policy_host.clone(),
+    );
     let (mut upstream, connection) = if outbound.http2 {
         // :authority carries the admitted destination. Avoid retaining a second
         // authority representation while translating a proxied request.
@@ -1028,23 +1206,36 @@ async fn forward(
             TokioIo::new(outbound.stream),
         )
         .await?;
-        let connection = HttpTask(tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                eprintln!("upstream HTTP/2 connection: {error}");
-            }
-        }));
+        let driver = completion.clone().drive(connection);
+        let connection = HttpTask {
+            task: tokio::spawn(async move {
+                if let Err(error) = driver.await {
+                    eprintln!("upstream HTTP/2 connection: {error}");
+                }
+            }),
+            completion: Some(completion.clone()),
+        };
         (sender.send_request(request).await?, connection)
     } else {
         *request.version_mut() = hyper::Version::HTTP_11;
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake(TokioIo::new(outbound.stream)).await?;
-        let connection = HttpTask(tokio::spawn(async move {
-            if let Err(error) = connection.with_upgrades().await {
-                eprintln!("upstream HTTP connection: {error}");
-            }
-        }));
+        let driver = completion.clone().drive(connection.with_upgrades());
+        let connection = HttpTask {
+            task: tokio::spawn(async move {
+                if let Err(error) = driver.await {
+                    eprintln!("upstream HTTP connection: {error}");
+                }
+            }),
+            completion: Some(completion.clone()),
+        };
         (sender.send_request(request).await?, connection)
     };
+    if completion.try_finish() == Some(true) || circuit_evidence_failed {
+        upstream
+            .headers_mut()
+            .insert("x-safeyolo-evidence-error", "true".parse()?);
+    }
     if upstream.status() == StatusCode::SWITCHING_PROTOCOLS {
         let Some((handshake, client_upgrade)) = websocket else {
             return Err("unexpected upstream protocol switch".into());
@@ -1171,13 +1362,14 @@ pub(crate) fn serve_request(
     Box::pin(async move {
         let runtime = state.read().expect("runtime read lock").clone();
         let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
+        let connect = request.method() == Method::CONNECT;
         let destination =
             Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination));
         let result = match &destination {
             Ok(destination) => {
                 forward(
                     runtime.clone(),
-                    state,
+                    state.clone(),
                     upgrades,
                     &identity,
                     &request_id,
@@ -1203,6 +1395,18 @@ pub(crate) fn serve_request(
                 "error".into(),
             )
         });
+        if !connect
+            && reply
+                .extensions_mut()
+                .remove::<CircuitPriorBlock>()
+                .is_some()
+            && let Ok(destination) = &destination
+            && crate::circuit_runtime::local_blocked_response(&state, &destination.policy_host)
+        {
+            reply
+                .headers_mut()
+                .insert("x-safeyolo-evidence-error", "true".parse().unwrap());
+        }
         // Upstream response headers cannot classify a local enforcement action.
         let admin_blocked = decision == "admin_port_access";
         let mut record = json!({
@@ -1216,6 +1420,8 @@ pub(crate) fn serve_request(
                 "admin_shield_only"
             } else if destination.as_ref().is_ok_and(|d| is_reserved(&d.host)) {
                 "local_endpoint"
+            } else if runtime.policy.is_some() && !connect {
+                "native_network_guard_and_circuits"
             } else if runtime.policy.is_some() {
                 "native_network_guard_only"
             } else {

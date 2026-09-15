@@ -112,6 +112,10 @@ pub(super) struct Stream {
     /// The stream's pending push promises
     pub pending_push_promises: store::Queue<NextAccept>,
 
+    /// Optional validated response completion, independent of receive buffering.
+    pub response_completion: Option<crate::ext::ResponseCompletionProducer>,
+    pub response_status: Option<http::StatusCode>,
+
     /// Validate content-length headers
     pub content_length: ContentLength,
 }
@@ -194,6 +198,21 @@ impl Stream {
             push_task: None,
             pending_push_promises: store::Queue::new(),
             content_length: ContentLength::Omitted,
+            response_completion: None,
+            response_status: None,
+        }
+    }
+
+    pub(super) fn complete_response(&mut self) {
+        if let (Some(producer), Some(status)) = (&self.response_completion, self.response_status) {
+            producer.complete(status);
+            self.response_completion = None;
+        }
+    }
+
+    pub(super) fn abort_response(&mut self) {
+        if let Some(producer) = self.response_completion.take() {
+            producer.abort();
         }
     }
 
@@ -385,6 +404,7 @@ impl Stream {
     /// Set the stream's state to `Closed` with the given reason and initiator.
     /// Notify the send, receive, and push tasks, if they exist.
     pub(super) fn set_reset(&mut self, reason: Reason, initiator: Initiator) {
+        self.abort_response();
         self.state.set_reset(self.id, reason, initiator);
         self.notify_send();
         self.notify_push();

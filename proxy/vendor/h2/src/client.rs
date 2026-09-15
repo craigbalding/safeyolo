@@ -237,6 +237,7 @@ pub struct Connection<T, B: Buf = Bytes> {
 #[must_use = "futures do nothing unless polled"]
 pub struct ResponseFuture {
     inner: proto::OpaqueStreamRef,
+    completion: Option<crate::ext::ResponseCompletionProducer>,
     push_promise_consumed: bool,
 }
 
@@ -519,6 +520,10 @@ where
         request: Request<()>,
         end_of_stream: bool,
     ) -> Result<(ResponseFuture, SendStream<B>), crate::Error> {
+        let completion = request
+            .extensions()
+            .get::<crate::ext::ResponseCompletionProducer>()
+            .cloned();
         self.inner
             .send_request(request, end_of_stream, self.pending.as_ref())
             .map_err(Into::into)
@@ -531,6 +536,7 @@ where
 
                 let response = ResponseFuture {
                     inner: stream.clone_to_opaque(),
+                    completion,
                     push_promise_consumed: false,
                 };
 
@@ -1501,10 +1507,29 @@ impl Future for ResponseFuture {
     type Output = Result<Response<RecvStream>, crate::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (parts, _) = ready!(self.inner.poll_response(cx))?.into_parts();
+        let response = match ready!(self.inner.poll_response(cx)) {
+            Ok(response) => response,
+            Err(error) => {
+                if let Some(completion) = self.completion.take() {
+                    completion.abort();
+                }
+                return Poll::Ready(Err(error.into()));
+            }
+        };
+        let (parts, _) = response.into_parts();
+        // The stream now owns cancellation until the receive body is dropped.
+        self.completion = None;
         let body = RecvStream::new(FlowControl::new(self.inner.clone()));
 
         Poll::Ready(Ok(Response::from_parts(parts, body)))
+    }
+}
+
+impl Drop for ResponseFuture {
+    fn drop(&mut self) {
+        if let Some(completion) = self.completion.take() {
+            completion.abort();
+        }
     }
 }
 
@@ -1568,6 +1593,7 @@ impl PushPromises {
                 let response = PushedResponseFuture {
                     inner: ResponseFuture {
                         inner: response,
+                        completion: None,
                         push_promise_consumed: false,
                     },
                 };

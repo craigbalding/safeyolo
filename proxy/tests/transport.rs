@@ -99,6 +99,8 @@ fn config(directory: &TempDir) -> Config {
         network_guard_enabled: true,
         network_guard_block: true,
         network_guard_homoglyph: true,
+        circuit_breaker_enabled: true,
+        circuit_state_file: None,
         agent_api_enabled: false,
         admin_port: None,
         admin_api_token_file: None,
