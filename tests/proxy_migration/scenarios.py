@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -24,10 +25,11 @@ FORGED_REQUEST_ID = "req-" + "f" * 32
 class Origin(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port=0):
+    def __init__(self, port=0, *, stream_seconds=2.0):
         self.accepts = 0
         self.requests = []
         self.stream_finished = threading.Event()
+        self.stream_chunks = max(1, math.ceil(stream_seconds / 0.02))
         super().__init__(("127.0.0.1", port), OriginHandler)
 
     def get_request(self):
@@ -50,7 +52,7 @@ class OriginHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             chunk = b"data: " + b"x" * (16384 - 8) + b"\n\n"
-            for _ in range(100):
+            for _ in range(self.server.stream_chunks):
                 self.wfile.write(chunk)
                 self.wfile.flush()
                 time.sleep(0.02)
@@ -88,8 +90,8 @@ class OriginHandler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def origin_server(port=0):
-    server = Origin(port)
+def origin_server(port=0, *, stream_seconds=2.0):
+    server = Origin(port, stream_seconds=stream_seconds)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

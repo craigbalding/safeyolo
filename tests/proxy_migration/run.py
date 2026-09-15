@@ -69,9 +69,9 @@ def short_connections(backend, directory, count):
                 "runtime_memory_after": final_memory}
 
 
-def stream_workload(backend, directory):
-    """A paced 1.56 MiB SSE response proves early delivery and samples RSS."""
-    with origin_server() as origin, launch_proxy(backend, directory, POLICY) as proxy:
+def stream_workload(backend, directory, seconds=2.0):
+    """Observe early SSE delivery and process memory throughout a paced stream."""
+    with origin_server(stream_seconds=seconds) as origin, launch_proxy(backend, directory, POLICY) as proxy:
         client = connection(proxy.paths["alice"])
         try:
             started = time.perf_counter()
@@ -81,21 +81,28 @@ def stream_workload(backend, directory):
             first = response.read(16384)
             first_seconds = time.perf_counter() - started
             early = not origin.stream_finished.is_set()
-            steady = runtime_memory(proxy)
-            total = len(first) + len(response.read())
+            samples = [{"elapsed_seconds": first_seconds, **runtime_memory(proxy)}]
+            total = len(first)
+            sampled_at = time.monotonic()
+            while chunk := response.read(16384):
+                total += len(chunk)
+                if time.monotonic() - sampled_at >= 1:
+                    samples.append({"elapsed_seconds": time.perf_counter() - started, **runtime_memory(proxy)})
+                    sampled_at = time.monotonic()
             elapsed = time.perf_counter() - started
-            assert total == 1638400
+            assert total == origin.stream_chunks * 16384
             assert early, "SSE was buffered until origin completion"
             return {"workload": "paced_sse", "bytes": total, "elapsed_seconds": elapsed,
                     "first_chunk_seconds": first_seconds, "first_chunk_before_completion": early,
-                    "bytes_per_second": total / elapsed, "runtime_memory_during": steady,
+                    "bytes_per_second": total / elapsed, "runtime_memory_samples": samples,
                     "runtime_memory_after": runtime_memory(proxy),
-                    "limitation": "two-second smoke workload, not long-duration bounded-memory proof"}
+                    "requested_stream_seconds": seconds,
+                    "limitation": "one paced stream; no concurrent load, content inspection, or slow-reader proof"}
         finally:
             client.close()
 
 
-def websocket_workload(backend, directory, count):
+def websocket_workload(backend, directory, count, seconds=0.0, interval=0.0):
     """Round-trip complete small WS messages over one connection."""
     with origin_server() as origin, launch_proxy(backend, directory, POLICY) as proxy:
         client = connection(proxy.paths["alice"])
@@ -107,12 +114,23 @@ def websocket_workload(backend, directory, count):
             response = client.getresponse()
             assert response.status == 101
             started = time.perf_counter()
-            for _ in range(count):
+            samples = [{"elapsed_seconds": 0, **runtime_memory(proxy)}]
+            sampled_at = time.monotonic()
+            sent = 0
+            while sent < count or time.perf_counter() - started < seconds:
                 client.sock.sendall(b"\x81\x85\x00\x00\x00\x00hello")
                 assert response.fp.read(7) == b"\x81\x05hello"
+                sent += 1
+                if time.monotonic() - sampled_at >= 1:
+                    samples.append({"elapsed_seconds": time.perf_counter() - started, **runtime_memory(proxy)})
+                    sampled_at = time.monotonic()
+                if interval:
+                    time.sleep(interval)
             elapsed = time.perf_counter() - started
-            return {"workload": "small_websocket_echo", "messages": count, "payload_bytes": count * 5,
-                    "elapsed_seconds": elapsed, "messages_per_second": count / elapsed,
+            return {"workload": "small_websocket_echo", "messages": sent, "payload_bytes": sent * 5,
+                    "elapsed_seconds": elapsed, "messages_per_second": sent / elapsed,
+                    "requested_session_seconds": seconds, "message_interval_seconds": interval,
+                    "runtime_memory_samples": samples,
                     "runtime_memory_after": runtime_memory(proxy),
                     "limitation": "five-byte messages only; no compression/fragmentation/inspection workload"}
         finally:
@@ -142,13 +160,18 @@ def capture(args):
         port = previous["contracts"][name]["fixture_origin_port"] if previous else 0
         results[name] = network_scenario(args.backend, args.evidence / name, parent=parent, origin_port=port)
     results["local_containment"] = reserved_scenario(args.backend, args.evidence / "local")
-    workloads = [short_connections(args.backend, args.evidence / "workload", args.requests)]
-    if args.extended_workloads:
-        workloads.extend([
-            stream_workload(args.backend, args.evidence / "stream-workload"),
-            websocket_workload(args.backend, args.evidence / "ws-workload", args.requests),
-            local_api_workload(args.backend, args.evidence / "api-workload", args.requests),
-        ])
+    selected = args.workload or (["short", "sse", "websocket", "local-api"] if args.extended_workloads else ["short"])
+    workloads = []
+    for workload in selected:
+        if workload == "short":
+            workloads.append(short_connections(args.backend, args.evidence / "workload", args.requests))
+        elif workload == "sse":
+            workloads.append(stream_workload(args.backend, args.evidence / "stream-workload", args.stream_seconds))
+        elif workload == "websocket":
+            workloads.append(websocket_workload(args.backend, args.evidence / "ws-workload", args.requests,
+                                                args.websocket_seconds, args.websocket_interval))
+        else:
+            workloads.append(local_api_workload(args.backend, args.evidence / "api-workload", args.requests))
     result = {
         "schema": 1, "backend": args.backend, "captured_at": datetime.now(UTC).isoformat(),
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
@@ -186,6 +209,11 @@ def main():
     run.add_argument("--fixture-from", type=Path)
     run.add_argument("--requests", type=int, default=100)
     run.add_argument("--extended-workloads", action="store_true", help="Run SSE, WS, and unavailable local API workloads")
+    run.add_argument("--workload", action="append", choices=("short", "sse", "websocket", "local-api"),
+                     help="Select individual workloads; overrides --extended-workloads")
+    run.add_argument("--stream-seconds", type=float, default=2.0)
+    run.add_argument("--websocket-seconds", type=float, default=0.0)
+    run.add_argument("--websocket-interval", type=float, default=0.0)
     diff = commands.add_parser("compare")
     diff.add_argument("baseline", type=Path)
     diff.add_argument("candidate", type=Path)
@@ -195,6 +223,8 @@ def main():
         return compare(args)
     if args.requests < 1:
         parser.error("--requests must be positive")
+    if args.stream_seconds <= 0 or args.websocket_seconds < 0 or args.websocket_interval < 0:
+        parser.error("stream duration must be positive; WebSocket duration and interval must be nonnegative")
     capture(args)
     return 0
 

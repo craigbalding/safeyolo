@@ -342,5 +342,591 @@
       }
     ],
     "interpretation": "The initial short-request regression is explained by evidence-file write overhead. This 100-request debug sample does not establish sustained production performance."
+  },
+  "capture_history_scope": "All pre-existing top-level fields, including not_full_production_launch and failures_and_gaps, retain the initial capture history. followup_captures and current_m1_status describe later measurements without overwriting original results.",
+  "followup_captures": {
+    "full_production_python": {
+      "schema": 1,
+      "captured_at": "2026-09-15T02:24:39.505194+00:00",
+      "source_commit": "4586a127b9b051a48757e96288b3087c5aec3d98",
+      "production_source_dirty": false,
+      "platform": "Linux-6.12.17-aarch64-with-glibc2.41",
+      "machine": "aarch64",
+      "python": "3.12.14 (main, Sep  1 2026, 14:15:30) [Clang 22.1.3 ]",
+      "versions": {
+        "mitmproxy": "12.2.3",
+        "httpx": "0.28.1",
+        "pytest": "9.0.3"
+      },
+      "fixture_sha256": {
+        "tests/proxy_migration/full_production.py": "7a8cada1bedcfbd1bd74d7baa6f282eff00a4781fac48b6d9ce0c4351c32ce3c",
+        "tests/proxy_migration/harness.py": "855abd2dbd4eb1f65d970e2e935fdc251d927026ebb66fc478e8de4f37192dd2",
+        "tests/proxy_migration/run.py": "4a05908b2284cbb0bb3e2ff0d7610c87e598c556b062cb29c1cea871db7de497",
+        "tests/proxy_migration/scenarios.py": "83bcc0dd33572654b69db759af429dea5f7ea1f41e867233e645599ef6b166c3"
+      },
+      "command": [
+        "/home/agent/safeyolo-rust-620/tests/proxy_migration/full_production.py",
+        "--output",
+        "/home/agent/safeyolo-rust-620-evidence/full-production/run-03",
+        "--api-requests",
+        "400",
+        "--approvals",
+        "30"
+      ],
+      "checks": [
+        "real production entrypoint ready marker matches PID; both trusted UDS listeners exist",
+        "authenticated Agent API and PDP healthy; absent agent/admin credentials return 401; admin health remains public",
+        "428 creates durable approval; admin endpoint grants Alice exact host+port; allowed delivery reaches owned origin; Bob and another port remain prompt; spoofed agent header ignored",
+        "all concurrent authenticated API calls and network approval transactions completed with expected agent-scoped results",
+        "SIGTERM exits0 and removes readiness; no UDS listener accepts after exit",
+        "no reserved-route egress, flow-record error, or startup-failure audit events"
+      ],
+      "workloads": [
+        {
+          "name": "concurrent_authenticated_api_and_network_approvals",
+          "api_workers": 4,
+          "api_requests": 1600,
+          "approval_transactions": 30,
+          "elapsed_seconds": 8.095669919995998,
+          "api_requests_per_second": 197.6365162873131,
+          "approval_transactions_per_second": 3.705684680387121,
+          "api_latency": {
+            "count": 1600,
+            "median_ms": 17.510375000711065,
+            "p95_ms": 31.556250003632158,
+            "max_ms": 76.62783299747389
+          },
+          "approval_transaction_latency": {
+            "count": 30,
+            "median_ms": 96.34052050387254,
+            "p95_ms": 121.51075099973241,
+            "max_ms": 124.50158400315559
+          },
+          "approval_transaction": "CONNECT prompt + admin host/port/agent allow + Alice allow lookup + Bob prompt lookup",
+          "state_growth": "one new agent-scoped exact endpoint approval per transaction",
+          "scope": "all requests use fresh connections; rate is over combined workload wall time"
+        }
+      ],
+      "status": "completed_with_gaps",
+      "scope": "real safeyolo.traffic_master and full production addon chain; private PTY console and loopback web/admin listeners",
+      "isolation": {
+        "config": "/home/agent/safeyolo-rust-620-evidence/full-production/run-03/config",
+        "data": "/home/agent/safeyolo-rust-620-evidence/full-production/run-03/config/data",
+        "logs": "/home/agent/safeyolo-rust-620-evidence/full-production/run-03/logs",
+        "coord": "/home/agent/safeyolo-rust-620-evidence/full-production/run-03/coord",
+        "origin": "owned ephemeral loopback HTTP server",
+        "admin_port": 36247,
+        "web_port": 42257,
+        "credentials": "fresh synthetic fixture tokens, removed after shutdown",
+        "network_environment": "standard proxy and CA environment preserved; no live sandbox API queried"
+      },
+      "known_failures": [
+        {
+          "check": "shutdown_removes_socket_files",
+          "observed": [
+            "alice",
+            "bob"
+          ],
+          "expected": [],
+          "reference": "cli/src/safeyolo/proxy.py::stop_proxy docstring says stopping removes socket files",
+          "impact": "dead socket pathnames remain; no live listener remains; fixture directory teardown removes them"
+        }
+      ],
+      "not_proven": [
+        "approval expiry or one-shot service grant consumption",
+        "interactive console/web operations",
+        "service credential injection",
+        "long-duration bounded memory",
+        "macOS host ingress",
+        "Rust API/approval parity"
+      ],
+      "production_chain": [
+        "pid_writer.py",
+        "file_logging.py",
+        "memory_monitor.py",
+        "admin_shield.py",
+        "agent_api.py",
+        "agent_api_guard.py",
+        "loop_guard.py",
+        "request_id.py",
+        "operator_provenance.py",
+        "service_discovery.py",
+        "sse_streaming.py",
+        "policy_engine.py",
+        "service_gateway.py",
+        "network_guard.py",
+        "circuit_breaker.py",
+        "credential_guard.py",
+        "pattern_scanner.py",
+        "test_context.py",
+        "flow_recorder.py",
+        "request_logger.py",
+        "ignored_host_logger.py",
+        "metrics.py",
+        "traffic_scope.py",
+        "flow_pruner.py",
+        "admin_api.py",
+        "probe_sink.py",
+        "transport_guard.py"
+      ],
+      "proxy_pid": 15992,
+      "startup_seconds": 1.0486952930004918,
+      "memory_ready_kib": {
+        "VmHWM": 152812,
+        "VmRSS": 108352
+      },
+      "memory_after_kib": {
+        "VmHWM": 152812,
+        "VmRSS": 133996
+      },
+      "memory_measurement": {
+        "samples": 165,
+        "interval_seconds": 0.05,
+        "peak_observed_rss_kib": 133996,
+        "steady_second_half_median_rss_kib": 129644,
+        "lifetime_high_water_kib": 152812,
+        "scope": "single complete production traffic process including console/web/admin; RSS is Linux /proc measurement",
+        "limitation": "short workload with intentionally growing approval/view state; not proof of a long-duration plateau"
+      },
+      "origin_accepts": 1,
+      "shutdown": {
+        "exit_code": 0,
+        "readiness_removed": true,
+        "stale_socket_files": [
+          "alice",
+          "bob"
+        ],
+        "socket_accept_checks": {
+          "alice": {
+            "accepting": false,
+            "errno": 111
+          },
+          "bob": {
+            "accepting": false,
+            "errno": 111
+          }
+        }
+      },
+      "audit_event_counts": {
+        "agent.discovered": 2,
+        "ops.policy_reload": 32,
+        "ops.proxy_start": 1,
+        "ops.startup": 1,
+        "traffic.request": 1672,
+        "traffic.response": 1672,
+        "ops.memory.conn_closed": 1672,
+        "admin.auth_failure": 1,
+        "security.network_guard": 32,
+        "admin.host_allowed": 62,
+        "ops.proxy_stop": 1
+      },
+      "completed_at": "2026-09-15T02:24:50.146403+00:00",
+      "artifact": {
+        "path": "/home/agent/safeyolo-rust-620-evidence/full-production/run-03/result.json",
+        "sha256": "d102bd38344960f896f945bf6eeccc5b3c8d3de593ebd89e9fb47b27d6ada81f"
+      },
+      "production_baseline_commit": "4116c7ee3d44c623e9d89ae60c14ce671d0f295d",
+      "source_qualification": "Executed at checkout 4586a127; cli/src/safeyolo and pdp unchanged from baseline 4116c7ee. Fixture hashes identify then-uncommitted harness files.",
+      "history": [
+        {
+          "artifact": {
+            "path": "/home/agent/safeyolo-rust-620-evidence/full-production/run-01/result.json",
+            "sha256": "7023f63a17ee9078e8a121b3191381994ad61be9db858157a75de17741bb267d"
+          },
+          "outcome": "Initial full production workload completed, then final assertion failed because both UDS pathnames remained."
+        },
+        {
+          "artifact": {
+            "path": "/home/agent/safeyolo-rust-620-evidence/full-production/run-02/result.json",
+            "sha256": "327ae478599219cdfdecf3bba0232f450ee7fdac4c84fee01f9ef654b2cbf6e6"
+          },
+          "outcome": "External prototype completed larger workload with gaps; dead UDS pathnames confirmed by refused connects."
+        }
+      ],
+      "executed_smoke_suite": {
+        "artifact": {
+          "path": "/home/agent/safeyolo-rust-620-evidence/full-production/pytest-full-production-final.xml",
+          "sha256": "abd84988c2a2d1f8561f73776be34f8afcbacc95b290756cc207b6ed0c321766"
+        },
+        "result": {
+          "name": "pytest",
+          "errors": "0",
+          "failures": "0",
+          "skipped": "1",
+          "tests": "2",
+          "time": "2.727",
+          "timestamp": "2026-09-15T02:25:12.811834+00:00",
+          "hostname": "sylab"
+        },
+        "passed": 1,
+        "strict_expected_failures": 1,
+        "tests": [
+          "test_full_production_authenticated_api_and_network_approvals",
+          "test_full_production_shutdown_removes_socket_files"
+        ],
+        "actual_command_recorded": false,
+        "reproduction_command": "uv run --frozen pytest -q tests/proxy_migration/test_full_production.py",
+        "qualification": "JUnit skipped element is pytest.xfail; source marks the cleanup case strict. Do not count this as passing cleanup."
+      }
+    },
+    "sustained_python": {
+      "backend": "python",
+      "captured_at": "2026-09-15T02:24:59.967005+00:00",
+      "source_commit": "4586a127b9b051a48757e96288b3087c5aec3d98",
+      "source_dirty": true,
+      "platform": "Linux-6.12.17-aarch64-with-glibc2.41",
+      "machine": "aarch64",
+      "python": "3.12.14 (main, Sep  1 2026, 14:15:30) [Clang 22.1.3 ]",
+      "tools": {
+        "pytest": "9.0.3",
+        "mitmproxy": "12.2.3",
+        "httpx": "0.28.1"
+      },
+      "command": [
+        "/home/agent/safeyolo-rust-620/tests/proxy_migration/run.py",
+        "capture",
+        "--backend",
+        "python",
+        "--workload",
+        "short",
+        "--workload",
+        "sse",
+        "--workload",
+        "websocket",
+        "--requests",
+        "1000",
+        "--stream-seconds",
+        "60",
+        "--websocket-seconds",
+        "60",
+        "--websocket-interval",
+        "0.005",
+        "--evidence",
+        "/home/agent/safeyolo-rust-620-evidence/sustained-python",
+        "--output",
+        "/home/agent/safeyolo-rust-620-evidence/sustained-python.json"
+      ],
+      "scope": "focused real UDS/network-policy chain; full production chain not launched",
+      "unmeasured": [
+        "bounded memory during long-duration streams",
+        "WebSocket inspection workload",
+        "concurrent approval/API responsiveness",
+        "supported macOS host ingress"
+      ],
+      "evidence_gaps": [
+        "proxy.request is a fixture observation in Python; complete audit/trace parity is not claimed",
+        "Rust temporary PDP adapter does not reproduce approval audit/store side effects"
+      ],
+      "artifact": {
+        "path": "/home/agent/safeyolo-rust-620-evidence/sustained-python.json",
+        "sha256": "b21749bbe5b2f63ecb8cf3697e02832cdfaa0e39d157472db023683b2b089ed6"
+      },
+      "production_baseline_commit": "4116c7ee3d44c623e9d89ae60c14ce671d0f295d",
+      "source_qualification": "Production cli/src/safeyolo and pdp sources unchanged from 4116c7ee; checkout 4586a127 and modified fixture sources recorded.",
+      "workloads": [
+        {
+          "workload": "sequential_short_http_connections",
+          "requests": 1000,
+          "elapsed_seconds": 1.7321250419990974,
+          "requests_per_second": 577.3255254400514,
+          "latency_median_ms": 1.6913125000428408,
+          "latency_p95_ms": 1.909875005367212,
+          "runtime_memory_ready": {
+            "processes_kib": {
+              "proxy": {
+                "VmHWM": 89112,
+                "VmRSS": 89112
+              }
+            },
+            "sum_rss_kib": 89112,
+            "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+          },
+          "runtime_memory_after": {
+            "processes_kib": {
+              "proxy": {
+                "VmHWM": 92480,
+                "VmRSS": 92288
+              }
+            },
+            "sum_rss_kib": 92288,
+            "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+          }
+        },
+        {
+          "workload": "paced_sse",
+          "bytes": 49152000,
+          "elapsed_seconds": 67.35995411600015,
+          "first_chunk_seconds": 0.011501667002448812,
+          "first_chunk_before_completion": true,
+          "bytes_per_second": 729691.7084497364,
+          "runtime_memory_after": {
+            "processes_kib": {
+              "proxy": {
+                "VmHWM": 89920,
+                "VmRSS": 69564
+              }
+            },
+            "sum_rss_kib": 69564,
+            "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+          },
+          "requested_stream_seconds": 60.0,
+          "limitation": "one paced stream; no concurrent load, content inspection, or slow-reader proof",
+          "sampled_memory_summary": {
+            "sample_count": 67,
+            "peak_observed_sum_rss_kib": 89920,
+            "second_half_median_sum_rss_kib": 69644.0,
+            "calculation": "Peak of recorded sum_rss_kib; median over samples from floor(count/2) through the final sample.",
+            "limitation": "Finite workload; second-half median is descriptive, not a proven steady-state plateau. Summed RSS double-counts shared pages."
+          }
+        },
+        {
+          "workload": "small_websocket_echo",
+          "messages": 8192,
+          "payload_bytes": 40960,
+          "elapsed_seconds": 60.00148494599853,
+          "messages_per_second": 136.52995433984373,
+          "requested_session_seconds": 60.0,
+          "message_interval_seconds": 0.005,
+          "runtime_memory_after": {
+            "processes_kib": {
+              "proxy": {
+                "VmHWM": 91712,
+                "VmRSS": 73088
+              }
+            },
+            "sum_rss_kib": 73088,
+            "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+          },
+          "limitation": "five-byte messages only; no compression/fragmentation/inspection workload",
+          "sampled_memory_summary": {
+            "sample_count": 60,
+            "peak_observed_sum_rss_kib": 91712,
+            "second_half_median_sum_rss_kib": 72576.0,
+            "calculation": "Peak of recorded sum_rss_kib; median over samples from floor(count/2) through the final sample.",
+            "limitation": "Finite workload; second-half median is descriptive, not a proven steady-state plateau. Summed RSS double-counts shared pages."
+          }
+        }
+      ],
+      "contract_summary": {
+        "direct_and_parent": "Expected Alice 200 and Bob 403; exact delivered hello and repeated/encoded query target retained; denied requests have zero origin contacts.",
+        "reserved": "Zero egress attempts and zero origin contacts. Python probe 200 versus Rust 503 remains an explicit difference.",
+        "evidence_scope": "Only focused fixture contract fields; no full production audit equivalence."
+      }
+    },
+    "sustained_rust_before_adapter_concurrency_repair": {
+      "backend": "rust",
+      "captured_at": "2026-09-15T02:29:58.408867+00:00",
+      "source_commit": "5b661dc9ce83514a0f1eabc90944b85efc09b49b",
+      "source_dirty": true,
+      "platform": "Linux-6.12.17-aarch64-with-glibc2.41",
+      "machine": "aarch64",
+      "python": "3.12.14 (main, Sep  1 2026, 14:15:30) [Clang 22.1.3 ]",
+      "tools": {
+        "pytest": "9.0.3",
+        "mitmproxy": "12.2.3",
+        "httpx": "0.28.1"
+      },
+      "command": [
+        "/home/agent/safeyolo-rust-620/tests/proxy_migration/run.py",
+        "capture",
+        "--backend",
+        "rust",
+        "--workload",
+        "short",
+        "--workload",
+        "sse",
+        "--requests",
+        "1000",
+        "--stream-seconds",
+        "60",
+        "--fixture-from",
+        "/home/agent/safeyolo-rust-620-evidence/sustained-python.json",
+        "--evidence",
+        "/home/agent/safeyolo-rust-620-evidence/sustained-rust",
+        "--output",
+        "/home/agent/safeyolo-rust-620-evidence/sustained-rust.json"
+      ],
+      "scope": "focused real UDS/network-policy chain; full production chain not launched",
+      "unmeasured": [
+        "bounded memory during long-duration streams",
+        "WebSocket inspection workload",
+        "concurrent approval/API responsiveness",
+        "supported macOS host ingress"
+      ],
+      "evidence_gaps": [
+        "proxy.request is a fixture observation in Python; complete audit/trace parity is not claimed",
+        "Rust temporary PDP adapter does not reproduce approval audit/store side effects"
+      ],
+      "artifact": {
+        "path": "/home/agent/safeyolo-rust-620-evidence/sustained-rust.json",
+        "sha256": "8eb9f0607a4896f23b7aeb9c9429b84c2356e6e5b7dfb39dd0df633ae4e323b4"
+      },
+      "production_baseline_commit": null,
+      "source_qualification": "Integration owner identifies the measured debug binary as 5b661dc9 transport repair before ffb189ca adapter concurrency repair. Manifest records a dirty worktree; it does not record a binary digest. This is not a measurement of a later binary.",
+      "workloads": [
+        {
+          "workload": "sequential_short_http_connections",
+          "requests": 1000,
+          "elapsed_seconds": 0.6768290420004632,
+          "requests_per_second": 1477.477971459912,
+          "latency_median_ms": 0.6412919974536635,
+          "latency_p95_ms": 0.8452080001006834,
+          "runtime_memory_ready": {
+            "processes_kib": {
+              "proxy": {
+                "VmHWM": 5148,
+                "VmRSS": 5148
+              },
+              "temporary_policy_adapter": {
+                "VmHWM": 38288,
+                "VmRSS": 38288
+              }
+            },
+            "sum_rss_kib": 43436,
+            "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+          },
+          "runtime_memory_after": {
+            "processes_kib": {
+              "proxy": {
+                "VmHWM": 6116,
+                "VmRSS": 6116
+              },
+              "temporary_policy_adapter": {
+                "VmHWM": 39832,
+                "VmRSS": 39832
+              }
+            },
+            "sum_rss_kib": 45948,
+            "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+          }
+        },
+        {
+          "workload": "paced_sse",
+          "bytes": 49152000,
+          "elapsed_seconds": 67.9247578239956,
+          "first_chunk_seconds": 0.012709832997643389,
+          "first_chunk_before_completion": true,
+          "bytes_per_second": 723624.2214857952,
+          "runtime_memory_after": {
+            "processes_kib": {
+              "proxy": {
+                "VmHWM": 5872,
+                "VmRSS": 5872
+              },
+              "temporary_policy_adapter": {
+                "VmHWM": 39708,
+                "VmRSS": 30436
+              }
+            },
+            "sum_rss_kib": 36308,
+            "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+          },
+          "requested_stream_seconds": 60.0,
+          "limitation": "one paced stream; no concurrent load, content inspection, or slow-reader proof",
+          "sampled_memory_summary": {
+            "sample_count": 68,
+            "peak_observed_sum_rss_kib": 45580,
+            "second_half_median_sum_rss_kib": 36308.0,
+            "calculation": "Peak of recorded sum_rss_kib; median over samples from floor(count/2) through the final sample.",
+            "limitation": "Finite workload; second-half median is descriptive, not a proven steady-state plateau. Summed RSS double-counts shared pages."
+          }
+        }
+      ],
+      "contract_summary": {
+        "direct_and_parent": "Expected Alice 200 and Bob 403; exact delivered hello and repeated/encoded query target retained; denied requests have zero origin contacts.",
+        "reserved": "Zero egress attempts and zero origin contacts. Python probe 200 versus Rust 503 remains an explicit difference.",
+        "evidence_scope": "Only focused fixture contract fields; no full production audit equivalence."
+      }
+    }
+  },
+  "adapter_concurrency_followup": {
+    "discrepancy": "D11",
+    "observed_commit": "5b661dc9ce83514a0f1eabc90944b85efc09b49b",
+    "artifacts": [
+      {
+        "path": "/home/agent/safeyolo-rust-620-review/adapter-concurrency-5b661dc9.json",
+        "sha256": "73da52d3e567bcb1523ce6caa248e46f6e5419b84a3cad5e42c501eece58322d"
+      },
+      {
+        "path": "/home/agent/safeyolo-rust-620-review/review-5b661dc9.md",
+        "sha256": "4a4975f5d3b5ce3d8fc72122f534c86d02e884906781cb6017d442fc2730ea57"
+      }
+    ],
+    "observations": [
+      {
+        "workers": 8,
+        "requests": 160,
+        "counts": {
+          "alice:200": 71,
+          "bob:403": 71,
+          "bob:502": 9,
+          "alice:502": 9
+        },
+        "origin_contacts": 71
+      },
+      {
+        "workers": 16,
+        "requests": 160,
+        "counts": {
+          "alice:200": 75,
+          "bob:403": 75,
+          "alice:502": 5,
+          "bob:502": 5
+        },
+        "origin_contacts": 75
+      },
+      {
+        "workers": 32,
+        "requests": 160,
+        "counts": {
+          "alice:200": 48,
+          "bob:403": 50,
+          "bob:502": 30,
+          "alice:502": 32
+        },
+        "origin_contacts": 48
+      }
+    ],
+    "failure": "Temporary serial adapter socket backlog filled; unexpected HTTP 502 with OS error 11. No fail-open or cross-agent leak observed. Diagnostic collector exit zero does not mean passing acceptance.",
+    "repair_commit": "ffb189ca015a5e0074eb483675e818a18e49029e",
+    "repair": "One async mutex serializes decision roundtrips and is shared across runtime reload snapshots; release before origin transport; no decision retries.",
+    "owner_reported_checks": {
+      "scope": "Reported by integration owner; independent repair recheck pending.",
+      "concurrent_contract": "160 requests at eight workers per backend; all expected Alice 200 and Bob 403, with 80 Alice origin connections.",
+      "shared_and_readiness_passed": 9,
+      "native_passed": 11
+    },
+    "independent_repair_status": "pending",
+    "measured_sustained_binary_predates_repair": true
+  },
+  "current_m1_status": {
+    "status": "awaiting_independent_review",
+    "acceptance_claimed": false,
+    "established_evidence": [
+      "Production capability inventory and deletion map exist.",
+      "Original 45-test live suite and six shared scenarios recorded with exact initial results.",
+      "Full production entrypoint and 27-addon startup exercised with isolated state.",
+      "Authenticated API, durable network approval creation, exact-agent/host/port grant and actual owned-origin delivery measured.",
+      "Four concurrent API workers completed 1600 requests alongside 30 network approval transactions.",
+      "Focused baseline includes 1000 fresh HTTP connections, a 49152000-byte SSE stream and a 60-second small-message WS session, with throughput and memory samples.",
+      "Failures retained explicitly: old dead UDS pathnames, denial-body/probe differential differences, D10 parser normalization and D11 pre-repair adapter backlog failures."
+    ],
+    "remaining_for_m1": [
+      "Independent review of the final integrated inventory, executable fixtures and baseline manifest.",
+      "Integration handoff with final source commit; retain exact historical revisions and dirty-fixture provenance instead of attributing measurements to the final binary."
+    ],
+    "m2_followup": [
+      "Independent recheck of ffb189ca adapter concurrency repair."
+    ],
+    "later_replacement_requirements": [
+      "Rust production API and approval parity, expiry and one-shot consumption.",
+      "Credential/service operations and full authorized evidence behavior.",
+      "Interactive traffic workflows and persistence roundtrips.",
+      "TLS continuity, upstream validation and authority-boundary coverage.",
+      "WS inspection, fragmentation/compression, cancellation and bounded memory under concurrent streams.",
+      "Supported Linux/macOS host ingress and rollback."
+    ],
+    "interpretation": "Representative baseline measurements cover the requested workload categories. They do not prove complete parity, long-duration memory bounds or current repaired-binary performance.",
+    "production_deletion": "None."
   }
 }

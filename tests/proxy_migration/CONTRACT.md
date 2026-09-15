@@ -1,24 +1,27 @@
 # Proxy migration contracts
 
-These fixtures exercise the first HTTP slice of issue #620. Each run starts
-one selected proxy process, two per-agent Unix domain sockets (UDS), and local
-synthetic upstreams. Requests never target an external origin or the running
-SafeYolo instance.
+These fixtures exercise the first HTTP slice of issue #620 and capture the
+existing full production application programming interface (API) and approval
+baseline. Each run starts its own proxy process, two per-agent Unix domain
+sockets (UDS), and synthetic endpoints. Requests never target an external
+origin or the running SafeYolo instance.
 
 ## Run the contracts
 
 From the repository root on Linux or macOS, install the locked Python test
 dependencies with `uv sync --frozen --group dev`. Build the Rust binary with
-`cargo build --manifest-path proxy/Cargo.toml`. The following command starts
-and stops isolated Python and Rust fixtures:
+`cargo build --locked --manifest-path proxy/Cargo.toml`. The following command
+starts and stops isolated Python and Rust fixtures:
 
 ```sh
 uv run --frozen pytest -q tests/proxy_migration \
   --proxy-backend python --proxy-backend rust
 ```
 
-The Python backend is the default. Set `SAFEYOLO_RUST_PROXY` to select a built
-binary at another path. A missing requested binary is an error. The fixture
+The Python backend is the default for shared tests. The full-production tests
+always use Python and currently skip platforms other than Linux. Set
+`SAFEYOLO_RUST_PROXY` to select a built binary at another path. A missing
+requested binary is an error. The fixture
 does not select a different backend after a failure.
 
 The shared assertions cover:
@@ -76,24 +79,117 @@ that a socket connection succeeded.
 
 ## Workload scope and limits
 
-Every capture measures 100 sequential HTTP requests with fresh connections.
-`--requests` changes that count. `--extended-workloads` also measures a paced
-1.56 MiB event stream, small WebSocket echo messages, and unavailable-local-API
-responses. Run extended workloads against Python until the Rust slice supports
-WebSockets. Failure in a workload remains a command failure.
+By default, each capture measures 100 sequential HTTP requests with fresh
+connections. `--requests` changes that count. `--extended-workloads` also
+measures a paced 1.56 MiB Server-Sent Events (SSE) stream, small WebSocket (WS)
+echo messages, and unavailable-local-API responses. Repeated `--workload` flags
+select individual workloads instead. Run WS against Python until the Rust
+slice supports that protocol. Failure in a workload remains a command failure.
 
-On Linux, reports read resident memory (RSS) and process high-water memory from
+On the same development machine, from the repository root with the dependencies
+and binary prepared as described earlier, use fresh evidence directories to
+capture 1,000 short connections and minute-long sessions:
+
+```sh
+uv run --frozen python -m tests.proxy_migration.run capture \
+  --backend python --workload short --workload sse --workload websocket \
+  --requests 1000 --stream-seconds 60 \
+  --websocket-seconds 60 --websocket-interval 0.005 \
+  --evidence /tmp/safeyolo-migration/sustained-python \
+  --output /tmp/safeyolo-migration/sustained-python.json
+uv run --frozen python -m tests.proxy_migration.run capture \
+  --backend rust --workload short --workload sse \
+  --requests 1000 --stream-seconds 60 \
+  --fixture-from /tmp/safeyolo-migration/sustained-python.json \
+  --evidence /tmp/safeyolo-migration/sustained-rust \
+  --output /tmp/safeyolo-migration/sustained-rust.json
+```
+
+The SSE fixture sends 49,152,000 bytes for the requested 60-second pacing
+schedule; scheduling overhead can extend wall time. It records first-chunk
+arrival and samples memory about once per second. The WS fixture sends
+five-byte echoes for the requested duration. These sessions do not inspect
+fragmentation, compression, large messages, cancellation or slow readers.
+
+On Linux, reports read resident set size (RSS) and process high-water memory from
 `/proc`. Measurements include the temporary policy adapter as a separate role
 when present. The summed RSS counts shared pages more than once; it is not a
 unique physical-memory measurement. Other platforms report unavailable memory
 values. Latency/throughput values are observations, without a performance target.
 
-The two-second stream and five-byte WebSocket workload are smoke measurements.
-They do not prove bounded memory over long durations or inspect fragmentation,
-compression, large messages, or cancellation. Normal authenticated APIs,
-approval creation/consumption, concurrent API responsiveness, and real macOS
-guest ingress remain unmeasured here. The Rust policy adapter still requires
-Python and does not reproduce all NetworkGuard approval/audit side effects.
+Neither the original two-second smoke stream nor the later single-stream
+minute-long session proves bounded memory under concurrent production load.
+The Rust policy adapter still requires Python and does not reproduce all
+NetworkGuard approval/audit side effects.
+
+## Full production API and approval baseline
+
+On Linux, from the repository root with the locked Python test dependencies
+installed, run the following capture. The output directory must not exist.
+The fixture creates isolated config, data, logs, coordination storage and
+synthetic tokens. It uses private temporary UDS paths and owned ephemeral
+loopback origin, web and admin ports. It preserves the standard proxy and
+certificate-authority environment and removes its private token/key files at
+shutdown.
+
+```sh
+uv run --frozen python -m tests.proxy_migration.full_production \
+  --output /tmp/safeyolo-migration/full-production \
+  --api-requests 400 --api-workers 4 --approvals 30
+```
+
+The fixture starts `safeyolo.traffic_master` through the production command
+constructor and loads all 27 configured addons. It starts a private console
+and web/admin listeners. A missing fixture vault disables the service gateway
+as in the corresponding production configuration. Interactive console/web
+workflows and credential injection are not exercised.
+
+The workload checks healthy authenticated APIs, missing-token 401 responses,
+a durable prompt approval, an exact Alice host/port grant and subsequent
+delivery to the owned origin. Bob and another destination port remain prompt.
+Four API workers then execute 400 requests each while 30 network approvals
+complete. An approval transaction includes a CONNECT prompt, a grant through
+the isolated admin API, Alice's allowed lookup and Bob's prompt lookup.
+Synthetic `.invalid` endpoints are never dialed after grant. This measures
+representative grant creation and use; expiry and one-shot service grants
+remain unproven.
+
+`result.json` records actual checks, source and fixture hashes, measurements,
+shutdown and known failures. `completed_with_gaps` means the workload completed
+and an explicit baseline failure remains. The current old process exits zero
+after SIGTERM and removes readiness, but leaves dead UDS pathnames. Connection
+checks return `ECONNREFUSED`; no listener remains. The smoke suite records
+`test_full_production_shutdown_removes_socket_files` as a strict expected
+failure. Fixture-directory teardown removes the dead files without converting
+that production cleanup assertion into a pass.
+
+## Recorded evidence and remaining requirements
 
 The checked-in [baseline manifest](baseline.json) records the old commit,
 environment, executed tests, measured workloads, and observed migration gaps.
+The original fields retain the initial 45-test live suite, six shared scenarios
+and smoke captures. `followup_captures` adds full production and sustained
+measurements with artifact hashes. Historical gaps in the original fields
+describe that initial run; they do not erase the follow-up results.
+
+All recorded runs used Linux aarch64. Full production and sustained Python
+ran at checkout `4586a127`, with production source unchanged from `4116c7ee`.
+The sustained Rust binary was the transport repair at `5b661dc9`, before the
+temporary adapter concurrency repair. Dirty fixture worktrees are recorded;
+the captures are not measurements of a later integrated binary.
+
+The [inventory discrepancies](../../docs/proxy-parity.md#discrepancies-and-unproven-claims)
+retain D10's framing normalization difference and D11's concurrent adapter
+failure. Independent review observed 18 unexpected 502 responses in 160
+requests at eight workers before D11's repair. Repair `ffb189ca` serializes
+decision roundtrips across reload snapshots without retrying decisions. The
+owner reports a passing paired regression; independent repair recheck remains
+pending. The older sequential measurements do not establish concurrent health.
+
+The recorded workload categories now include full-production authenticated
+API/approval activity and sustained focused SSE/WS sessions. M1 still needs
+independent review of the integrated inventory, fixture and manifest, with a
+final source commit in the handoff. Baseline capture does not establish Rust
+API/approval parity, full evidence parity, bounded production stream memory,
+approval expiry/one-shot semantics or supported macOS guest ingress. These
+remain replacement acceptance requirements in later milestones.

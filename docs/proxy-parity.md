@@ -5,8 +5,8 @@ The source baseline is `4116c7ee3d44c623e9d89ae60c14ce671d0f295d` on
 `master`, inspected on 15 September 2026. Implementation starts on
 `feat/rust-proxy-620`. The baseline lockfile selects mitmproxy 12.2.3.
 
-**Status: source inventory, awaiting independent review.** A named test below
-means an existing executable check was located. It does not mean the test ran,
+**Status: inventory and baseline captures, awaiting independent review.**
+A named test below means an existing executable check was located. It does not mean the test ran,
 passed, covered the production chain, or passed against Rust. Run manifests
 must identify the source commit, backend, platform, dependency versions, exact
 test selection and results. Future checks are marked **required**. No production
@@ -255,6 +255,8 @@ silently reduce accepted message sizes to a library default.
 | D8 | The default production command only explicitly selects lazy connections when sinkhole routing is enabled. The live denial fixtures vary eager/lazy for CONNECT, not every plain-HTTP security decision. | Side-effect coverage gap. Observe DNS and socket attempts independently for denied plain HTTP, CONNECT and malformed local requests. Do not equate an HTTP block response with zero egress. |
 | D9 | Independent wire review found that the baseline's exact reserved-host matchers permit the DNS root-dot spelling, such as `_safeyolo.proxy.internal.`, to reach a configured parent with a bearer header. | Concrete containment defect. Rust now removes one DNS root dot only for reserved-name classification, before policy and at the shared egress boundary. It also refuses these names as configured parents. Original request bytes for other destinations are unchanged. The historical Python baseline retains the defect; its repair is tracked separately. |
 | D10 | Hyper normalizes identical duplicate Content-Length fields and removes Content-Length when Transfer-Encoding controls framing. The old parser rejects those requests. Hyper rejects unequal duplicate lengths. The initial Rust slice also accepted duplicate Host fields. | Protocol difference requiring explicit wire tests. Rust rejects duplicate Host fields before policy or upstream contact. Do not equate normalization to a demonstrated smuggling flaw, or add a second HTTP parser solely to reproduce every rejection. Verify one unambiguous outbound framing and exact delivered bytes. |
+| D11 | Independent review of `5b661dc9` sent 160 requests through the temporary serial Python adapter. At 8, 16 and 32 workers, 18, 10 and 62 requests returned unexpected 502 responses. The adapter socket backlog filled; no fail-open or cross-agent leak was observed. | Concrete availability defect. Repair `ffb189ca015a5e0074eb483675e818a18e49029e` serializes decision roundtrips with one async mutex shared across reload snapshots, without retrying policy decisions. The owner reports a passing 160-request, eight-worker regression for each backend. Independent repair recheck remains pending. The sustained Rust capture predates this repair. |
+| D12 | Full production SIGTERM at checkout `4586a127` exits with status zero and removes readiness, but leaves both agent UDS pathnames. Subsequent connects return `ECONNREFUSED`. `proxy.py::stop_proxy` describes socket-file removal. | Concrete cleanup discrepancy. `test_full_production_shutdown_removes_socket_files` records a strict expected failure. No live listener remains. Fixture-directory teardown removes the dead files; that teardown does not repair production shutdown. |
 
 ## Deletion map and evidence still required
 
@@ -270,16 +272,72 @@ Deletion is conditional on replacement, not movement behind an adapter.
 | M7 | Obsolete launch plumbing after the corresponding lifecycle contract is replaced. | Keep explicit backend selection and the old release for the pilot and rollback; exercise both supported host platforms. |
 | M8 | Old proxy entry point, mitmproxy runtime dependency, temporary adapters and backend selector after independent cutover acceptance. | Audit Python CLI imports before removing shared code. Report actual removals separately from acceptance-test additions. |
 
-The [initial baseline manifest](../tests/proxy_migration/baseline.json) records
-45 existing live tests, six shared backend scenarios and measured smoke
-workloads. The [harness contract](../tests/proxy_migration/CONTRACT.md) gives
-replay commands and the exact limits of those measurements. It records
-denial-response and probe differences instead of masking them. Full M1
-acceptance still requires the missing production, API and sustained workloads.
-Existing unit tests, live tests
-with a partial addon chain, the production-chain launcher and full host/guest
-black-box tests establish different claims. Preserve that distinction in run
-manifests and differential results.
+## Recorded baseline and M1 status
+
+The [baseline manifest](../tests/proxy_migration/baseline.json) preserves the
+initial capture unchanged: 45 existing live tests and six shared backend
+scenarios passed, and smoke workloads were measured. Its original full-chain,
+API and sustained-workload gaps describe that capture. Appended follow-up
+records supply the measurements below. The
+[harness contract](../tests/proxy_migration/CONTRACT.md) gives reproduction
+commands. Denial-response and probe differences remain visible.
+
+All these captures ran on Linux aarch64 with Python 3.12.14 and mitmproxy
+12.2.3. The old production source remains the `4116c7ee` baseline. The later
+Python runs executed checkout `4586a127b9b051a48757e96288b3087c5aec3d98`,
+whose `cli/src/safeyolo` and `pdp` sources were unchanged from that baseline.
+The sustained Rust run identifies checkout
+`5b661dc9ce83514a0f1eabc90944b85efc09b49b` and a dirty worktree. The integration
+owner identifies its binary as the transport repair at that revision, before
+D11's adapter concurrency repair. These measurements are not results for a
+later binary. Exact commands, artifact hashes and source qualifications are
+in the appended manifest records.
+
+RSS means resident set size. Combined process RSS double-counts shared pages.
+
+| Capture and scope | Measured result | Memory and limits |
+|---|---|---|
+| Focused Python chain, 1,000 fresh HTTP connections | 577.3 requests/s; median 1.69 ms; 95th percentile 1.91 ms | RSS after workload 92,288 KiB; lifetime high-water 92,480 KiB. |
+| Focused Rust transport plus temporary adapter, 1,000 fresh HTTP connections | 1,477.5 requests/s; median 0.64 ms; 95th percentile 0.85 ms | Combined RSS after workload 45,948 KiB, including 39,832 KiB for Python. Sequential load does not exercise D11's failure. |
+| Focused Python SSE, 60-second requested stream | 49,152,000 bytes in 67.36 s; first chunk at 11.50 ms | Sampled peak RSS 89,920 KiB; second-half median 69,644 KiB. One paced stream, without inspection or a slow reader. |
+| Focused Rust SSE, same stream size | 49,152,000 bytes in 67.92 s; first chunk at 12.71 ms | Combined sampled peak RSS 45,580 KiB; second-half median 36,308 KiB. Rust process RSS stayed 5,872 KiB in the samples. |
+| Focused Python WS, 60-second session | 8,192 five-byte echoes; 136.5 messages/s | Sampled peak RSS 91,712 KiB; second-half median 72,576 KiB. No fragmentation, compression or inspection. Rust WS remains unsupported and was not measured. |
+| Full production Python, four API workers and 30 network approvals | 1,600 authenticated API requests in 8.10 s; 197.6 requests/s; API median 17.51 ms and 95th percentile 31.56 ms; approval transaction median 96.34 ms | Sampled peak RSS 133,996 KiB; second-half median 129,644 KiB; lifetime high-water 152,812 KiB. Short run with growing approval and retained-traffic state. |
+
+Second-half medians describe the recorded samples; they do not establish a
+long-duration memory plateau. The focused chain omits most production addons,
+so its rates cannot establish complete-production Rust performance.
+
+The [full production fixture](../tests/proxy_migration/full_production.py)
+starts the real traffic entry point and all 27 configured addons, with private
+console, web and admin listeners. The service gateway remains disabled without
+a synthetic vault. Configuration, state, logs, coordination storage and tokens
+are isolated. The fixture checks healthy authenticated APIs, missing-token
+401 responses, a durable 428 approval, exact agent/host/port grant scope and
+one real delivery to its owned origin after approval. Concurrent transactions
+create a pending network request, grant Alice's endpoint and check Alice allow
+versus Bob prompt. Synthetic `.invalid` endpoints are not dialed after grants.
+These checks do not establish expiry or one-shot service-grant consumption.
+
+The final full-production workload has status `completed_with_gaps` because of
+D12. Its separate smoke suite records one pass and one strict expected failure;
+the expected failure must not be counted as a passing cleanup assertion.
+
+M1 now has runnable current-production startup, baseline suite results,
+representative measurements for every requested workload category, explicit
+failures and a deletion map. **M1 acceptance remains pending independent review
+of the integrated inventory, fixture and manifest.** The integration handoff
+must identify the final commit and preserve the captured source revisions;
+the earlier review of the Rust transport did not review these M1 additions.
+D11's independent repair recheck also remains open for the M2 handoff.
+
+Later milestones still require approval expiry and one-shot consumption,
+credential/service behavior, interactive traffic workflows, complete evidence
+parity, TLS and authority boundaries, WS inspection, cancellation and bounded
+memory under concurrent streams, and supported Linux/macOS host ingress.
+Finite baseline workloads supply comparison data; they do not satisfy those
+replacement acceptance requirements. No production code or dependency is
+removed by these captures.
 
 The differential harness must run each backend independently with the same
 scenario inputs. Compare expected decisions as well as backend agreement.
