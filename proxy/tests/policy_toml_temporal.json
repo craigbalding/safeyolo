@@ -1,0 +1,980 @@
+{
+  "provenance": {
+    "kind": "actual Python LocalPolicyClient loader and AgentAPI.request; synthetic isolated inputs",
+    "source_git_head": "0a72492d994add960c59415abc121c63d123671f",
+    "versions": {
+      "python": "3.12.14",
+      "mitmproxy": "12.2.3",
+      "tomlkit": "0.14.0",
+      "pydantic": "2.11.10"
+    },
+    "source_sha256": {
+      "cli/src/safeyolo/policy/toml_roundtrip.py": "4f0c5df6189751e0f486283043c0da91d8fe99dda2b84a2354aba6b9bc0c563e",
+      "cli/src/safeyolo/policy/toml_normalize.py": "24511e6669a6a96414ca40236c225b6038f21da6538becc0280b9c922567968d",
+      "cli/src/safeyolo/policy/compiler.py": "56ce5b6a203fed9b43152c94695184f85ca334aab4507f22d84df1c8f9f3d77e",
+      "cli/src/safeyolo/policy/loader.py": "74f7da6c9c80c0b6e0cd1780a4d40e8c8e2e3ed81d4371da6cd8e9570c59ace4",
+      "cli/src/safeyolo/policy/models.py": "fc8dbf7131996337cdea7af3ce5d37f95a91f8de14900da93015e4bc645ff97f",
+      "cli/src/safeyolo/mitm_addons/agent_api.py": "ab52434f28e82c9cc5f7ce32bf0b69ff6dcd3158e5e5fd5a446e4a747942e378",
+      "pdp/client.py": "92e969c07581bdb164633a5b7411ab459fbcf1976f7fa72274c230688441f82f",
+      "pdp/core.py": "26b5833958ac09f34b530c3413dfbee1836261b99b32e81d75f880b743780ed0",
+      "tests/proxy_migration/test_agent_api_policy.py": "06510b50b53cf5e9414b50965249ec355fc7e9305f73b80613eea8bdfbebe0b4",
+      "tests/proxy_migration/test_agent_api_policy_yaml.py": "52a68ef59766b6c2a301a2961ad014d8924319d1d4d01b33b084a1a8577e32fc"
+    },
+    "probe_sha256": "30216caf2b652e1c65a538f053146ffe3e4ee3dfc1fcbe64d9ed9895943c58c4",
+    "full_results_sha256": "5afba4b1ec577d447fa6cf51edc5728a79db18e9449041e5c6ff1b4aadad7ed9"
+  },
+  "rows": [
+    {
+      "case": "addon_date",
+      "input_toml": "[addons.synthetic.settings]\nobserved = 2001-02-03\n",
+      "loaded": true,
+      "retained_temporal": [
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed"
+          ],
+          "kind": "datetime.date",
+          "display": "2001-02-03",
+          "isoformat": "2001-02-03",
+          "microsecond": null
+        }
+      ],
+      "simple_permissions": {},
+      "status": 500,
+      "body": {
+        "error": "Internal error: TypeError"
+      }
+    },
+    {
+      "case": "addon_time",
+      "input_toml": "[addons.synthetic.settings]\nobserved = 04:05:06\n",
+      "loaded": true,
+      "retained_temporal": [
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed"
+          ],
+          "kind": "datetime.time",
+          "display": "04:05:06",
+          "isoformat": "04:05:06",
+          "microsecond": 0
+        }
+      ],
+      "simple_permissions": {},
+      "status": 500,
+      "body": {
+        "error": "Internal error: TypeError"
+      }
+    },
+    {
+      "case": "addon_time_long_fraction",
+      "input_toml": "[addons.synthetic.settings]\nobserved = 04:05:06.123456789\n",
+      "loaded": true,
+      "retained_temporal": [
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed"
+          ],
+          "kind": "datetime.time",
+          "display": "04:05:06.123456",
+          "isoformat": "04:05:06.123456",
+          "microsecond": 123456
+        }
+      ],
+      "simple_permissions": {},
+      "status": 500,
+      "body": {
+        "error": "Internal error: TypeError"
+      }
+    },
+    {
+      "case": "addon_naive_datetime",
+      "input_toml": "[addons.synthetic.settings]\nobserved = 2001-02-03T04:05:06\n",
+      "loaded": true,
+      "retained_temporal": [
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed"
+          ],
+          "kind": "datetime.datetime",
+          "display": "2001-02-03 04:05:06",
+          "isoformat": "2001-02-03T04:05:06",
+          "microsecond": 0
+        }
+      ],
+      "simple_permissions": {},
+      "status": 500,
+      "body": {
+        "error": "Internal error: TypeError"
+      }
+    },
+    {
+      "case": "addon_utc_datetime",
+      "input_toml": "[addons.synthetic.settings]\nobserved = 2001-02-03T04:05:06Z\n",
+      "loaded": true,
+      "retained_temporal": [
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed"
+          ],
+          "kind": "datetime.datetime",
+          "display": "2001-02-03 04:05:06+00:00",
+          "isoformat": "2001-02-03T04:05:06+00:00",
+          "microsecond": 0
+        }
+      ],
+      "simple_permissions": {},
+      "status": 500,
+      "body": {
+        "error": "Internal error: TypeError"
+      }
+    },
+    {
+      "case": "addon_offset_datetime",
+      "input_toml": "[addons.synthetic.settings]\nobserved = 2001-02-03T04:05:06+05:30\n",
+      "loaded": true,
+      "retained_temporal": [
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed"
+          ],
+          "kind": "datetime.datetime",
+          "display": "2001-02-03 04:05:06+05:30",
+          "isoformat": "2001-02-03T04:05:06+05:30",
+          "microsecond": 0
+        }
+      ],
+      "simple_permissions": {},
+      "status": 500,
+      "body": {
+        "error": "Internal error: TypeError"
+      }
+    },
+    {
+      "case": "addon_datetime_long_fraction",
+      "input_toml": "[addons.synthetic.settings]\nobserved = 2001-02-03T04:05:06.123456789Z\n",
+      "loaded": true,
+      "retained_temporal": [
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed"
+          ],
+          "kind": "datetime.datetime",
+          "display": "2001-02-03 04:05:06.123456+00:00",
+          "isoformat": "2001-02-03T04:05:06.123456+00:00",
+          "microsecond": 123456
+        }
+      ],
+      "simple_permissions": {},
+      "status": 500,
+      "body": {
+        "error": "Internal error: TypeError"
+      }
+    },
+    {
+      "case": "addon_quoted_controls",
+      "input_toml": "[addons.synthetic.settings]\nobserved = [\"2001-02-03\", \"04:05:06\", \"2001-02-03T04:05:06.123456789Z\"]\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {
+            "synthetic": {
+              "enabled": true,
+              "settings": {
+                "observed": [
+                  "2001-02-03",
+                  "04:05:06",
+                  "2001-02-03T04:05:06.123456789Z"
+                ]
+              }
+            }
+          },
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "metadata_created_date",
+      "input_toml": "[metadata]\ncreated = 2001-02-03\n",
+      "loaded": false,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "metadata_created_time",
+      "input_toml": "[metadata]\ncreated = 04:05:06\n",
+      "loaded": false,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "metadata_created_naive_datetime",
+      "input_toml": "[metadata]\ncreated = 2001-02-03T04:05:06\n",
+      "loaded": false,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "metadata_created_aware_datetime",
+      "input_toml": "[metadata]\ncreated = 2001-02-03T04:05:06Z\n",
+      "loaded": false,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "metadata_created_quoted",
+      "input_toml": "[metadata]\ncreated = \"2001-02-03T04:05:06Z\"\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": "2001-02-03T04:05:06Z",
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "host_rate_time",
+      "input_toml": "[hosts.\"example.invalid\"]\nrate = 04:05:06\n",
+      "loaded": false,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "host_credential_date",
+      "input_toml": "[hosts.\"example.invalid\"]\nallow = [2001-02-03]\n",
+      "loaded": false,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "host_egress_datetime_ignored",
+      "input_toml": "[hosts.\"example.invalid\"]\negress = 2001-02-03T04:05:06Z\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "host_expiry_date_not_expiring",
+      "input_toml": "[hosts.\"example.invalid\"]\negress = \"allow\"\nexpires = 2099-02-03\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {
+        "network:request:allow": 1
+      },
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {
+            "network:request:allow": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "extracted_action_date",
+      "input_toml": "[[hosts.\"example.invalid\".rules]]\naction = 2001-02-03\nresource = \"example.invalid/*\"\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {
+        "2001-02-03:allow": 1
+      },
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {
+            "2001-02-03:allow": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "extracted_action_time",
+      "input_toml": "[[hosts.\"example.invalid\".rules]]\naction = 04:05:06\nresource = \"example.invalid/*\"\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {
+        "04:05:06:allow": 1
+      },
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {
+            "04:05:06:allow": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "extracted_action_fractional_datetime",
+      "input_toml": "[[hosts.\"example.invalid\".rules]]\naction = 2001-02-03T04:05:06.123456789Z\nresource = \"example.invalid/*\"\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {
+        "2001-02-03 04:05:06.123456+00:00:allow": 1
+      },
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {
+            "2001-02-03 04:05:06.123456+00:00:allow": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "extracted_effect_datetime",
+      "input_toml": "[[hosts.\"example.invalid\".rules]]\naction = \"network:request\"\neffect = 2001-02-03T04:05:06+05:30\nresource = \"example.invalid/*\"\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {
+        "network:request:2001-02-03 04:05:06+05:30": 1
+      },
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {
+            "network:request:2001-02-03 04:05:06+05:30": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "rule_resource_date",
+      "input_toml": "[[hosts.\"example.invalid\".rules]]\naction = \"network:request\"\nresource = 2001-02-03\n",
+      "loaded": false,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "conditional_action_date",
+      "input_toml": "[[hosts.\"example.invalid\".rules]]\naction = 2001-02-03\nresource = \"example.invalid/*\"\ncondition = {agent = \"alice\"}\n",
+      "loaded": false,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "dropped_unknown_date",
+      "input_toml": "unknown_dropped = 2001-02-03\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "authored_date_like_object",
+      "input_toml": "[addons.synthetic.settings]\nobserved = {yaml_date = \"2001-02-03\"}\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {
+            "synthetic": {
+              "enabled": true,
+              "settings": {
+                "observed": {
+                  "yaml_date": "2001-02-03"
+                }
+              }
+            }
+          },
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "top_description_normalized_time",
+      "input_toml": "description = 04:05:06\n",
+      "loaded": false,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      }
+    },
+    {
+      "case": "addon_nested_temporal_array",
+      "input_toml": "[addons.synthetic.settings]\nobserved = [{nested = [2001-02-03, 04:05:06, 2001-02-03T04:05:06+05:30]}]\n",
+      "loaded": true,
+      "retained_temporal": [
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed",
+            0,
+            "nested",
+            0
+          ],
+          "kind": "datetime.date",
+          "display": "2001-02-03",
+          "isoformat": "2001-02-03",
+          "microsecond": null
+        },
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed",
+            0,
+            "nested",
+            1
+          ],
+          "kind": "datetime.time",
+          "display": "04:05:06",
+          "isoformat": "04:05:06",
+          "microsecond": 0
+        },
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed",
+            0,
+            "nested",
+            2
+          ],
+          "kind": "datetime.datetime",
+          "display": "2001-02-03 04:05:06+05:30",
+          "isoformat": "2001-02-03T04:05:06+05:30",
+          "microsecond": 0
+        }
+      ],
+      "simple_permissions": {},
+      "status": 500,
+      "body": {
+        "error": "Internal error: TypeError"
+      }
+    },
+    {
+      "case": "lifecycle_initial",
+      "input_toml": "[[permissions]]\naction = \"network:request\"\nresource = \"lifecycle.invalid/*\"\neffect = \"allow\"\n[addons.synthetic.settings]\nobserved = \"2001-02-03\"\n",
+      "loaded": true,
+      "retained_temporal": [],
+      "simple_permissions": {},
+      "status": 200,
+      "body": {
+        "policy": {
+          "metadata": {
+            "version": "1.0",
+            "task_id": null,
+            "description": null,
+            "created": null,
+            "approved": null,
+            "brief_hash": null,
+            "policy_hash": null
+          },
+          "permissions": [
+            {
+              "action": "network:request",
+              "resource": "lifecycle.invalid/*",
+              "effect": "allow",
+              "budget": null,
+              "tier": "explicit",
+              "condition": null
+            }
+          ],
+          "budgets": {},
+          "required": [],
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {
+            "synthetic": {
+              "enabled": true,
+              "settings": {
+                "observed": "2001-02-03"
+              }
+            }
+          },
+          "domains": {},
+          "clients": {},
+          "gateway": {},
+          "simple_permissions": {}
+        }
+      },
+      "enforcement_effect": "allow"
+    },
+    {
+      "case": "lifecycle_retained_temporal",
+      "input_toml": "[[permissions]]\naction = \"network:request\"\nresource = \"lifecycle.invalid/*\"\neffect = \"deny\"\n[addons.synthetic.settings]\nobserved = 2001-02-03\n",
+      "loaded": true,
+      "retained_temporal": [
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed"
+          ],
+          "kind": "datetime.date",
+          "display": "2001-02-03",
+          "isoformat": "2001-02-03",
+          "microsecond": null
+        }
+      ],
+      "simple_permissions": {},
+      "status": 500,
+      "body": {
+        "error": "Internal error: TypeError"
+      },
+      "enforcement_effect": "deny"
+    },
+    {
+      "case": "lifecycle_invalid_declared_reload",
+      "input_toml": "[[permissions]]\naction = \"network:request\"\nresource = \"lifecycle.invalid/*\"\neffect = \"allow\"\n[addons.synthetic.settings]\nobserved = \"2001-02-03\"\n[metadata]\ncreated = 2001-02-03T04:05:06Z\n",
+      "loaded": false,
+      "retained_temporal": [
+        {
+          "path": [
+            "addons",
+            "synthetic",
+            "settings",
+            "observed"
+          ],
+          "kind": "datetime.date",
+          "display": "2001-02-03",
+          "isoformat": "2001-02-03",
+          "microsecond": null
+        }
+      ],
+      "simple_permissions": {},
+      "status": 500,
+      "body": {
+        "error": "Internal error: TypeError"
+      },
+      "enforcement_effect": "deny"
+    }
+  ]
+}

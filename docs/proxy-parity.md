@@ -340,6 +340,7 @@ silently reduce accepted message sizes to a library default.
 | D40 | The Python hostname sensor decodes lowercase ACE in absolute-form requests but preserves uppercase ACE and origin-form ACE. The same mixed-script DNS name therefore blocks in one spelling and reaches an owned parent in the other two. Uppercase ACE can also pass source validation when its decoded text fails IDNA2003 roundtrip checks. | Native network inspection decodes ACE consistently after configured bypass and identity checks. Policy matching and audit keep the source hostname. Raw-decodable mixed-script labels receive the existing homoglyph response; decoding failure receives the existing deny/warn response with a content-free inspection error. Explicit disable and configured bypass keep their order. The source's strict codec remains a separate tested primitive; this repair does not replace it with UTS46. |
 | D41 | Python 3.12's search prefilter uses Unicode negative categories for some scoped-ASCII patterns. For example, search for `(?a:\W)` misses `é`, while fullmatch and anchored search match it. The actual matching instruction uses the correct ASCII category. | Native inspection follows the configured ASCII rule. A regression blocks these matching messages, and the source prefilter defect remains a separate classification in the differential matrix. This correction changes inspection results without adding a policy rule. |
 | D42 | Native policy method conditions used Rust's newer Unicode uppercasing. An allow condition for U+1C89 therefore matched a lookup for U+1C8A, although the pinned Python engine denies it. The API's returned method was unchanged, hiding the comparison mismatch. | Policy conditions and API method normalization now share pinned Python 3.12 / Unicode 15 uppercase data. The regression compares the actual source denial with native evaluation. Host case conversion is separate and remains outside this repair. |
+| D43 | After the last gateway grant is removed, the source gateway callback returns before clearing its previous token bindings. With a retained host binding and an authored gateway allow rule, an old token can still pass identity, service, capability, host and policy checks and reach vault selection. The compiled baseline already reports an empty token map. | The native gateway snapshot replaces the complete binding collection, including an empty collection. Its canonical view and selector revoke the old token together. Failed candidate construction retains the previous snapshot. This is proven at the shared policy/service boundary; the native HTTP credential pipeline remains unactivated. |
 
 ## Deletion map and evidence still required
 
@@ -489,8 +490,8 @@ The native request constructor also matches those 155 rows. All 22 existing
 Rust transport tests, strict all-target Clippy and selected hooks pass.
 These are owner results, without independent acceptance or macOS/guest evidence.
 
-The native [Agent API](../proxy/src/agent_api.rs) serves authenticated `/health`
-and `/lookup` on the reserved hostname. `agent_api_enabled` defaults to true.
+The native [Agent API](../proxy/src/agent_api.rs) serves authenticated `/health`,
+`/lookup` and `/policy` on the reserved hostname. `agent_api_enabled` defaults to true.
 Authentication reads `SAFEYOLO_DATA_DIR/agent_token` for every request, defaulting
 to `/safeyolo/data/agent_token`. Method checks precede authentication; lookup uses
 the trusted listener identity and current policy snapshot without spending
@@ -506,23 +507,69 @@ preserve responses when their sink fails. An exception escaping the source audit
 callback is a separate fault, covered by the facade's local 503 transition.
 
 Policy method comparison and API query formatting use [pinned Python scalar
-data](../proxy/data/agent_api/README.md), including the D42 correction. `/policy`
-and other operational routes remain unavailable in this development slice.
+data](../proxy/data/agent_api/README.md), including the D42 correction. Other
+operational routes remain unavailable in this development slice.
 Python surrogate-escaped query values that cannot enter the native scalar-string
 matcher produce a typed compatibility failure and local 503. The integer parser
 matches Python's default 4,300-digit conversion limit; nondefault Python limits
 remain outside the demonstrated contract. These gaps, production audit storage
 and global API counters still require integration before complete API acceptance.
 
-Owner validation of the API integration on Linux aarch64 passed all 176 wire
-cases against one immutable binary: 36 API, 36 network-policy and 104 WebSocket
-cases. The API source baseline passed 35 cases with one strict historical D9
-failure. Staged-source checks passed seven API, 24 policy and 22 transport tests,
-including the actual Python handler and method-condition oracles, plus strict
-all-target Clippy and selected hooks. Separate scalar checks cover all 1,112,064
-Unicode scalars; Request compile-fail tests prevent routine Debug/Serialize use.
-These results do not establish independent acceptance, macOS, real-guest or CI
-validation, or the remaining production API workflows.
+The authenticated `/policy` response contains the complete compiled baseline,
+shared across callers. It borrows the same immutable snapshot as the matcher:
+source defaults, permission order, simple-rule counts, addon configuration and
+gateway values are retained during loading. Reads do not reopen files, compile
+rules, mint gateway tokens or consume budgets. Failed reloads retain the prior
+snapshot. A successful reload replaces gateway bindings together with their
+routes and canonical values; source-admitted grants mint tokens even when no
+service registry is initialized. Runtime gateway selection and credential
+injection still require HTTP integration.
+
+Gateway primitives still have explicit compatibility gaps for partially loaded
+source token maps, unhashable binding lookup keys, non-string vault/account
+values, and structured temporal path values. A non-mapping contract value fails
+only when a constraint attempts its lookup. Earlier denials keep their source
+order. The source callback retains old contract approvals across reloads.
+The native snapshot replaces them; contract revocation and HTTP integration
+require separate regression evidence. These gaps block production gateway
+activation.
+
+Native API responses omit Debug and general serialization implementations.
+The explicit response encoder writes borrowed strings and keys into one sized
+allocation, retained by a zeroizing Bytes owner until the last body reference
+drops. Hyper and the operating system can make separate transport copies.
+The shared [JSON formatter](../proxy/src/python_json.rs) preserves Python's
+ASCII escaping, spacing, field order and floating-point presentation; exact
+integer values retain their precision.
+
+YAML and TOML temporal provenance follows the existing parsers and policy
+compiler. Declared string fields reject typed values; dropped fields do not
+affect the view. Retained dates, times and datetimes in arbitrary addon or gateway data
+cause the source handler-owned 500 `Internal error: TypeError` on `/policy`.
+The loaded policy continues enforcing requests. Quoted values and authored objects that
+look like date representations remain ordinary data. Typed gateway values do
+not become string matches. An initialized unconfigured Policy has a null view;
+Runtime startup still requires its existing configured policy or temporary
+adapter. An invalid configured policy stops native startup; the source's
+initialized empty fallback remains unimplemented. A configured remote client's
+baseline is also outside this local runtime slice.
+
+Owner validation of the `/policy` expansion on Linux aarch64 passed all 193
+wire cases against one immutable binary: 53 API, 36 network-policy and 104
+WebSocket cases. The 89 API/network cases use native policy without an adapter;
+the WebSocket cases retain their existing temporary Python policy bridge.
+The unchanged health/lookup source baseline passed 35 cases with one strict
+historical D9 failure. All 17 new policy/YAML cases also passed against Python.
+
+Staged-source checks passed 188 selected Rust tests, including live Python
+oracles, and 12 compile-fail documentation tests. Strict all-target Clippy,
+formatting and selected hooks passed. Projection evidence covers 18 baseline
+configurations, 87 YAML temporal cases and 30 actual-loader TOML cases.
+Separate formatter checks cover 61,360 finite floating-point values and all
+1,112,064 Unicode scalars. Request and Response compile-fail tests prevent
+routine Debug/Serialize use. These results do not establish independent
+acceptance, macOS, real-guest or CI validation, or the remaining production
+API workflows.
 
 The [host codec](../proxy/data/host_names/README.md) pins the source's IDNA2003
 and Unicode data. Request-form validation preserves the source policy hostname;
@@ -535,7 +582,7 @@ The fixture checks decisions, delivered bytes, destination ports, generated
 IDs and trusted attribution. Its `proxy.request` and `proxy.egress` events are
 migration evidence, not replacements for production JSONL or traffic APIs.
 Both reserved local destinations remain local. The Agent API implements the
-bounded reads below; its other workflows and the diagnostic probe still need
+bounded reads above; its other workflows and the diagnostic probe still need
 integration. An allowed CONNECT now opens its authorized destination before
 protocol selection, matching production
 and allowing a server greeting. Denied CONNECT still opens no destination.

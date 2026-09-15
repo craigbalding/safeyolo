@@ -77,10 +77,12 @@ def wait_ready(process, paths, log, *, readiness_file=None):
 def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=False, upstream_ca=None,
                  ignore_hosts=(), eager_connect=False, inspection=None, native_policy=False,
                  network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None,
-                 agent_api=False, agent_api_token=b"fixture-agent-api-token-one"):
+                 agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml"):
     """Start one explicitly selected implementation in isolated fixture state."""
+    if policy_format not in {"toml", "yaml", "json"}:
+        raise ValueError(f"Unknown fixture policy format: {policy_format}")
     directory.mkdir(parents=True, exist_ok=True)
-    policy = directory / "policy.toml"
+    policy = directory / f"policy.{policy_format}"
     policy.write_text(policy_text)
     with tempfile.TemporaryDirectory(prefix="sy-migration-") as sockets, ExitStack() as stack:
         paths = {name: str(Path(sockets) / f"10.0.0.{index}_{name}" / "proxy.sock")

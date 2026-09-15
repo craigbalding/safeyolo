@@ -6,6 +6,10 @@ use safeyolo_proxy::{
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 
+fn body(response: &Response<'_>) -> Value {
+    serde_json::from_slice(&response.body_bytes()).unwrap()
+}
+
 const TOKEN: &str = "synthetic-agent-api-fixture";
 const AUTH: &[u8] = b"Bearer synthetic-agent-api-fixture";
 const RID: &str = "req-00000000000000000000000000000001";
@@ -33,6 +37,162 @@ fn token() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 #[tokio::test]
+async fn policy_reads_borrow_the_loaded_baseline_without_identity_filter_or_budget_charge() {
+    let (_dir, token_path) = token();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("policy.json");
+    let document = json!({
+        "permissions":[{"action":"network:request","resource":"*","effect":"budget","budget":1}],
+        "addons":{"fixture":{"settings":{"float":1e16,"unicode":"é😀"}}},
+        "gateway":{"token_map":{"synthetic-display-only":{"agent":"alice"}}},
+    });
+    std::fs::write(&path, document.to_string()).unwrap();
+    let policy = Policy::from_path(&path).unwrap();
+    // Reads use the loaded view even after its source has become unavailable.
+    std::fs::remove_file(&path).unwrap();
+    for identity in [
+        Identity::Resolved("alice"),
+        Identity::Resolved("bob"),
+        Identity::Unavailable,
+        Identity::Conflict,
+    ] {
+        let outcome = respond_read(
+            Request {
+                identity,
+                ..request("/policy?agent=forged")
+            },
+            &token_path,
+            PolicyState::Ready(&policy),
+            1000.,
+        )
+        .await;
+        assert_eq!(outcome.response.status, 200);
+        assert_eq!(outcome.policy_evaluations, 0);
+        assert!(outcome.audit.is_none() && outcome.failure.is_none());
+        let actual = body(&outcome.response);
+        assert!(
+            actual["policy"]["gateway"] == document["gateway"],
+            "response must preserve the authorized gateway view"
+        );
+        assert_eq!(actual["policy"]["permissions"][0]["budget"], 1);
+        assert_eq!(
+            actual["policy"]["addons"]["fixture"]["settings"],
+            document["addons"]["fixture"]["settings"]
+        );
+        let bytes = outcome.response.body_bytes();
+        assert!(bytes.windows(b"1e+16".len()).any(|bytes| bytes == b"1e+16"));
+        assert!(
+            bytes
+                .windows(b"synthetic-display-only".len())
+                .any(|bytes| bytes == b"synthetic-display-only")
+        );
+    }
+    let lookup = respond_read(
+        request("/lookup?host=api.invalid"),
+        &token_path,
+        PolicyState::Ready(&policy),
+        1000.,
+    )
+    .await;
+    assert_eq!(body(&lookup.response)["effect"], "allow");
+    let unconfigured = Policy::unconfigured();
+    let null_baseline = respond_read(
+        request("/policy"),
+        &token_path,
+        PolicyState::Ready(&unconfigured),
+        1000.,
+    )
+    .await;
+    assert_eq!(null_baseline.response.status, 200);
+    assert_eq!(body(&null_baseline.response), json!({"policy":null}));
+    let missing = respond_read(
+        request("/policy"),
+        &token_path,
+        PolicyState::Unavailable,
+        1000.,
+    )
+    .await;
+    assert_eq!(missing.response.status, 503);
+    assert_eq!(
+        body(&missing.response),
+        json!({"error":"PDP not available"})
+    );
+    let no_auth = respond_read(
+        Request {
+            authorization: None,
+            ..request("/policy")
+        },
+        &token_path,
+        PolicyState::Ready(&policy),
+        1000.,
+    )
+    .await;
+    assert_eq!(no_auth.response.status, 401);
+    assert!(
+        !no_auth
+            .response
+            .body_bytes()
+            .windows(b"synthetic-display-only".len())
+            .any(|bytes| bytes == b"synthetic-display-only")
+    );
+}
+
+#[tokio::test]
+async fn policy_yaml_timestamps_preserve_source_load_and_response_failures() {
+    let (_dir, path) = token();
+    for (source, expected) in [
+        (
+            "addons:\n  fixture:\n    settings:\n      observed: 2001-02-03\n",
+            500,
+        ),
+        (
+            "addons:\n  fixture:\n    settings:\n      observed: 2001-02-03T04:05:06Z\n",
+            500,
+        ),
+        (
+            "addons:\n  fixture:\n    settings:\n      observed: {2001-02-03: public}\n",
+            500,
+        ),
+        (
+            "addons:\n  fixture:\n    settings:\n      observed: '2001-02-03'\n",
+            200,
+        ),
+        (
+            "addons:\n  fixture:\n    settings:\n      observed: {yaml_date: '2001-02-03'}\n",
+            200,
+        ),
+        ("ignored: 2001-02-03\n", 200),
+    ] {
+        let policy = Policy::parse(source, Format::Yaml).unwrap();
+        let outcome = respond_read(
+            request("/policy"),
+            &path,
+            PolicyState::Ready(&policy),
+            1000.,
+        )
+        .await;
+        assert_eq!(outcome.response.status, expected);
+        assert!(outcome.handler_owned && outcome.audit.is_none());
+        assert_eq!(outcome.policy_evaluations, 0);
+        if expected == 500 {
+            assert_eq!(
+                outcome.response.body_bytes(),
+                b"{\"error\": \"Internal error: TypeError\"}".as_slice()
+            );
+            assert_eq!(outcome.failure, Some(Failure::PolicySerialization));
+        } else {
+            assert!(outcome.failure.is_none());
+        }
+    }
+    for source in [
+        "metadata: {created: 2001-02-03}\n",
+        "metadata: {created: 2001-02-03T04:05:06Z}\n",
+    ] {
+        assert!(Policy::parse(source, Format::Yaml).is_err());
+    }
+}
+
+#[tokio::test]
 async fn token_reads_rotate_preserve_source_whitespace_and_auth_failure_containment() {
     let (_dir, path) = token();
     let policy = allow();
@@ -53,7 +213,7 @@ async fn token_reads_rotate_preserve_source_whitespace_and_auth_failure_containm
         )
         .await;
         assert_eq!(outcome.response.status, status);
-        assert_eq!(outcome.response.body["allowed"], allowed);
+        assert_eq!(body(&outcome.response)["allowed"], allowed);
     }
     let outcome = respond_read(
         Request {
@@ -120,7 +280,7 @@ async fn token_reads_rotate_preserve_source_whitespace_and_auth_failure_containm
             assert_eq!(outcome.failure, Some(Failure::AuditWrite));
             assert!(outcome.scrub_request);
             assert!(!outcome.handler_owned);
-            assert_eq!(outcome.response.body["path"], "/health");
+            assert_eq!(body(&outcome.response)["path"], "/health");
             assert!(
                 !outcome
                     .response
@@ -154,8 +314,8 @@ async fn token_reads_rotate_preserve_source_whitespace_and_auth_failure_containm
         )
         .await
         .response
-        .body,
-        json!({"error":"Agent token not configured"})
+        .body_bytes(),
+        br#"{"error": "Agent token not configured"}"#.as_slice()
     );
 }
 
@@ -182,7 +342,7 @@ async fn trusted_identity_and_route_query_contracts_use_the_shared_policy() {
         )
         .await;
         if let Some(expected) = expected {
-            assert_eq!(outcome.response.body["effect"], expected);
+            assert_eq!(body(&outcome.response)["effect"], expected);
             assert_eq!(outcome.policy_evaluations, 1);
         } else {
             assert_eq!(outcome.response.status, 403);
@@ -200,7 +360,7 @@ async fn trusted_identity_and_route_query_contracts_use_the_shared_policy() {
         .await;
         assert_eq!(
             outcome.response.body_bytes(),
-            br#"{"agent_api": "ok", "pdp": "ok"}"#
+            br#"{"agent_api": "ok", "pdp": "ok"}"#.as_slice()
         );
     }
     for (query, port, method, expected_path) in [
@@ -228,9 +388,9 @@ async fn trusted_identity_and_route_query_contracts_use_the_shared_policy() {
         let raw = format!("/lookup?{query}");
         let outcome = respond_read(request(&raw), &path, PolicyState::Ready(&policy), 1000.).await;
         assert_eq!(outcome.response.status, 200);
-        assert_eq!(outcome.response.body["port"], port);
-        assert_eq!(outcome.response.body["method"], method);
-        assert_eq!(outcome.response.body["path"], expected_path);
+        assert_eq!(body(&outcome.response)["port"], port);
+        assert_eq!(body(&outcome.response)["method"], method);
+        assert_eq!(body(&outcome.response)["path"], expected_path);
     }
     let outcome = respond_read(
         request("/lookup?host=&host=api.invalid"),
@@ -241,7 +401,7 @@ async fn trusted_identity_and_route_query_contracts_use_the_shared_policy() {
     .await;
     assert_eq!(outcome.response.status, 400);
     let outcome = respond_read(
-        request("/policy"),
+        request("/status"),
         &path,
         PolicyState::Ready(&policy),
         1000.,
@@ -283,7 +443,7 @@ async fn source_surrogate_queries_are_explicit_and_unused_fields_do_not_poison_l
         let raw = format!("/lookup?{query}");
         let outcome = respond_read(request(&raw), &path, PolicyState::Ready(&policy), 1000.).await;
         assert_eq!(outcome.response.status, 200);
-        assert_eq!(outcome.response.body["host"], "api.invalid");
+        assert_eq!(body(&outcome.response)["host"], "api.invalid");
     }
     let outcome = respond_read(
         Request {
@@ -315,8 +475,8 @@ async fn policy_method_conditions_share_pinned_uppercase() {
     ] {
         let raw = format!("/lookup?host=api.invalid&method={method}");
         let outcome = respond_read(request(&raw), &path, PolicyState::Ready(&policy), 1000.).await;
-        assert_eq!(outcome.response.body["method"], expected_method);
-        assert_eq!(outcome.response.body["effect"], effect);
+        assert_eq!(body(&outcome.response)["method"], expected_method);
+        assert_eq!(body(&outcome.response)["effect"], effect);
     }
 }
 
@@ -337,7 +497,7 @@ async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
                 1000.,
             )
             .await;
-            assert_eq!(outcome.response.body["effect"], "allow");
+            assert_eq!(body(&outcome.response)["effect"], "allow");
         });
     }
     while let Some(result) = tasks.join_next().await {
@@ -372,9 +532,9 @@ async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
         1000.,
     )
     .await;
-    assert_eq!(outcome.response.body["effect"], "budget_exceeded");
+    assert_eq!(body(&outcome.response)["effect"], "budget_exceeded");
     assert_eq!(
-        outcome.response.body["reason"],
+        body(&outcome.response)["reason"],
         "Request budget exceeded for limited.invalid"
     );
     let outcome = respond_read(
@@ -384,7 +544,7 @@ async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
         1000.,
     )
     .await;
-    assert_eq!(outcome.response.body["effect"], "allow");
+    assert_eq!(body(&outcome.response)["effect"], "allow");
     let reloaded = reloaded
         .reload_from_source_at(r#"{"permissions":[]}"#, Format::Json, 1000.)
         .unwrap();
@@ -395,9 +555,9 @@ async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
         1000.,
     )
     .await;
-    assert_eq!(outcome.response.body["effect"], "deny");
+    assert_eq!(body(&outcome.response)["effect"], "deny");
     assert_eq!(
-        outcome.response.body["reason"],
+        body(&outcome.response)["reason"],
         "No matching permission (default deny)"
     );
 }
@@ -693,9 +853,10 @@ with tempfile.TemporaryDirectory() as temp,patch.object(PolicyLoader,'start_watc
         1000.,
     )
     .await;
-    assert_eq!(outcome.response.body["method"], source["method"]);
+    assert_eq!(body(&outcome.response)["method"], source["method"]);
     assert_eq!(
-        outcome.response.body["effect"], source["effect"],
+        body(&outcome.response)["effect"],
+        source["effect"],
         "the shared matcher must preserve pinned Python case semantics"
     );
     eprintln!(

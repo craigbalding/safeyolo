@@ -118,7 +118,8 @@ def policy_proxy(backend, directory, policy, **options):
 def assert_no_adapter(proxy, directory, before):
     config = json.loads((directory / "proxy.json").read_text())
     policy_socket = Path(proxy.paths["alice"]).parents[1] / "policy.sock"
-    assert config["policy_file"] == str(directory / "policy.toml")
+    policy_file = Path(config["policy_file"])
+    assert policy_file.parent == directory and policy_file.name in {"policy.toml", "policy.yaml", "policy.json"}
     assert "temporary_policy_socket" not in config
     assert proxy.policy_process is None
     assert not (directory / "policy-bridge").exists()
@@ -143,9 +144,10 @@ def replace_policy(proxy, backend, directory, source, *, valid=True):
     prior_events = sum(row["event"] == event for row in read_events(directory / "audit.jsonl"))
     before_ready = proxy.readiness_file.stat()
     before_errors = (directory / "process.log").read_text().count("configuration reload failed:")
-    replacement = directory / "policy.next.toml"
+    policy_file = Path(json.loads((directory / "proxy.json").read_text())["policy_file"])
+    replacement = policy_file.with_name(f"{policy_file.stem}.next{policy_file.suffix}")
     replacement.write_text(source)
-    replacement.replace(directory / "policy.toml")
+    replacement.replace(policy_file)
     if backend == "rust":
         proxy.process.send_signal(signal.SIGHUP)
     deadline = time.monotonic() + 6

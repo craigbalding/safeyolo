@@ -358,6 +358,9 @@ pub enum ContractCode {
     TransportCrossLocation,
     TransportBodyDenied,
     TransportHeaderDenied,
+    /// Only the typed policy caller can encounter this constraint-local gap.
+    /// It must be mapped to Compatibility, never an ordinary wire denial.
+    ValueCompatibility,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ContractDenial {
@@ -437,6 +440,29 @@ pub fn enforce_request(
     auth_header: &str,
     request: ContractRequest<'_>,
 ) -> Result<CanonicalRequest, ContractDenial> {
+    enforce_request_with_timestamps(
+        contract,
+        binding,
+        auth_header,
+        request,
+        BoundValueTypes {
+            timestamps: &crate::policy::TimestampPaths::default(),
+            mapping_available: true,
+        },
+    )
+}
+pub(crate) struct BoundValueTypes<'a> {
+    pub timestamps: &'a crate::policy::TimestampPaths,
+    pub mapping_available: bool,
+}
+pub(crate) fn enforce_request_with_timestamps(
+    contract: &ContractTemplate,
+    binding: Option<&ContractBinding>,
+    auth_header: &str,
+    request: ContractRequest<'_>,
+    types: BoundValueTypes<'_>,
+) -> Result<CanonicalRequest, ContractDenial> {
+    let timestamps = types.timestamps;
     use ContractCode::*;
     if reject_path_tricks(request.target) {
         return Err(deny(TransportPathTrick, None));
@@ -565,8 +591,17 @@ pub fn enforce_request(
             continue;
         };
         if !constraint.equals_var.is_empty() {
+            if !types.mapping_available {
+                return Err(deny(ValueCompatibility, Some(name)));
+            }
             let empty = Value::String(String::new());
-            if value != bound_values.get(&constraint.equals_var).unwrap_or(&empty) {
+            if timestamps.has_under(&[&constraint.equals_var])
+                || value
+                    != bound_values
+                        .get(&constraint.equals_var)
+                        .filter(|_| timestamps.key_at(&[&constraint.equals_var]).is_none())
+                        .unwrap_or(&empty)
+            {
                 return Err(deny(ContractViolation, Some(name)));
             }
         } else if !constraint.integer_range.is_empty() {
@@ -591,11 +626,18 @@ pub fn enforce_request(
                 continue;
             };
             let empty = Value::String(String::new());
+            if !constraint.equals_var.is_empty() && !types.mapping_available {
+                return Err(deny(ValueCompatibility, Some(name)));
+            }
             if !constraint.equals_var.is_empty()
-                && !python_equal(
-                    value,
-                    bound_values.get(&constraint.equals_var).unwrap_or(&empty),
-                )
+                && (timestamps.has_under(&[&constraint.equals_var])
+                    || !python_equal(
+                        value,
+                        bound_values
+                            .get(&constraint.equals_var)
+                            .filter(|_| timestamps.key_at(&[&constraint.equals_var]).is_none())
+                            .unwrap_or(&empty),
+                    ))
             {
                 return Err(deny(ContractViolation, Some(name)));
             }
@@ -614,12 +656,26 @@ pub fn enforce_request(
             {
                 if let Some(constraint) = operation.request.path_params.get(name)
                     && !constraint.equals_var.is_empty()
-                    && let Some(expected) = bound_values
-                        .get(&constraint.equals_var)
-                        .filter(|value| !value.is_null())
-                    && *actual != python_string(expected)
                 {
-                    return Err(deny(ContractViolation, Some(name)));
+                    if !types.mapping_available {
+                        return Err(deny(ValueCompatibility, Some(name)));
+                    }
+                    let Some(expected) = bound_values.get(&constraint.equals_var).filter(|value| {
+                        !value.is_null() && timestamps.key_at(&[&constraint.equals_var]).is_none()
+                    }) else {
+                        continue;
+                    };
+                    let value =
+                        if let Some(temporal) = timestamps.value_at(&[&constraint.equals_var]) {
+                            temporal.python_display()
+                        } else if timestamps.has_under(&[&constraint.equals_var]) {
+                            return Err(deny(ValueCompatibility, Some(name)));
+                        } else {
+                            python_string(expected)
+                        };
+                    if *actual != value {
+                        return Err(deny(ContractViolation, Some(name)));
+                    }
                 }
             } else if actual != &template {
                 return Err(deny(ContractViolation, None));

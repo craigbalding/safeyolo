@@ -281,11 +281,18 @@ fn unsupported_network_features_and_invalid_policies_cannot_be_misread_as_allow(
             ErrorKind::Unsupported
         );
     }
-    let unsupported = json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow","condition":{"future_context":"api:*"}}]}).to_string();
+    // The complete source schema drops extra condition fields. Their values do
+    // not introduce another native condition or an unsupported-context rule.
+    let ignored_condition = json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow","condition":{"future_context":"api:*"}}]}).to_string();
     assert_eq!(
-        Policy::parse(&unsupported, Format::Json).unwrap_err().kind,
-        ErrorKind::Unsupported
+        Policy::parse(&ignored_condition, Format::Json)
+            .unwrap()
+            .evaluate(request("x", None, 80), 0., false)
+            .unwrap()
+            .effect,
+        Effect::Allow
     );
+    assert!(Policy::parse(r#"{"addons":{"ignored_addon":7}}"#, Format::Json).is_err());
     for source in [
         "[hosts",
         "hosts=3",
@@ -1618,11 +1625,11 @@ json.dump(outputs,sys.stdout)
             let routes = compile_routes(
                 &service,
                 &TokenBinding {
-                    token: "synthetic".into(),
+                    token: safeyolo_proxy::credentials::Secret::new("synthetic"),
                     agent: "alice".into(),
                     service: "forge".into(),
                     capability: "reader".into(),
-                    vault_token: String::new(),
+                    vault_token: String::new().into(),
                     account: "agent".into(),
                 },
                 &[],
@@ -1697,7 +1704,7 @@ fn host_list_python_whitespace_cannot_drop_a_denial() {
 #[test]
 fn concrete_addon_controls_share_precedence_without_changing_network_wrapper() {
     use safeyolo_proxy::policy::Addon;
-    let p=Policy::parse(r#"{"permissions":[],"required":["credential_guard"],"addons":{"credential_guard":{"enabled":false},"network_guard":{"enabled":true},"ignored_addon":7},"domains":{"*.example":{"bypass":["credential_guard"]}},"clients":{"alice":{"bypass":["network_guard"]}}}"#,Format::Json).unwrap();
+    let p=Policy::parse(r#"{"permissions":[],"required":["credential_guard"],"addons":{"credential_guard":{"enabled":false},"network_guard":{"enabled":true},"ignored_addon":{"custom":7}},"domains":{"*.example":{"bypass":["credential_guard"]}},"clients":{"alice":{"bypass":["network_guard"]}}}"#,Format::Json).unwrap();
     assert!(p.is_addon_enabled(Addon::CredentialGuard, Some("api.example"), Some("alice")));
     assert!(!p.is_addon_enabled(Addon::CredentialGuard, Some("other.invalid"), Some("bob")));
     assert!(!p.is_addon_enabled(Addon::NetworkGuard, Some("api.example"), Some("alice")));

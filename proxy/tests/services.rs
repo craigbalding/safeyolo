@@ -1,5 +1,7 @@
 use safeyolo_proxy::{
     contracts::{ContractBinding, ContractRequest},
+    credentials::Secret,
+    policy::{Format, Policy},
     services::*,
 };
 use serde_json::{Value, json};
@@ -24,7 +26,7 @@ fn registry() -> Registry {
 }
 fn token(service: &str, capability: &str) -> TokenBinding {
     TokenBinding {
-        token: "sgw_synthetic".into(),
+        token: Secret::new("sgw_synthetic"),
         agent: "alice".into(),
         service: service.into(),
         capability: capability.into(),
@@ -66,10 +68,17 @@ fn decision(
     bindings: &[ContractBinding],
 ) -> GatewayDecision {
     let hosts = [
-        ("api.example".into(), token.service.clone()),
+        ("api.example".into(), token.service.as_str().unwrap().into()),
         ("slack.com".into(), "slack".into()),
     ]
     .into();
+    let routes = registry
+        .services
+        .get(token.service.as_str().unwrap())
+        .map_or_else(Vec::new, |service| compile_routes(service, token, bindings));
+    let policy = Policy::parse("{\"permissions\":[]}", Format::Json)
+        .unwrap()
+        .with_gateway_routes(&routes);
     select_route(
         registry,
         &hosts,
@@ -78,7 +87,7 @@ fn decision(
         GatewayRequest {
             identity,
             host,
-            route_mode: RouteMode::CompiledPolicy,
+            route_mode: RouteMode::CompiledPolicy(&policy),
             request: ContractRequest {
                 method,
                 target,
@@ -93,6 +102,7 @@ fn code(decision: GatewayDecision) -> String {
         GatewayDecision::PassThrough => "pass".into(),
         GatewayDecision::Selected { .. } => "selected".into(),
         GatewayDecision::Deny { code, .. } => code,
+        GatewayDecision::Compatibility { field } => format!("compatibility:{field:?}"),
     }
 }
 
@@ -600,6 +610,9 @@ json.dump({'scenarios':output,'normalization':[normalize_path(p) for p in x['nor
         let states: Vec<ContractBinding> =
             serde_json::from_value(scenario["bindings"].clone()).unwrap();
         let routes = compile_routes(service, &token, &states);
+        let route_policy = Policy::parse("{\"permissions\":[]}", Format::Json)
+            .unwrap()
+            .with_gateway_routes(&routes);
         let actual: Vec<_> = routes
             .iter()
             .map(|route| json!({"methods":route.methods,"path":route.path}))
@@ -613,13 +626,16 @@ json.dump({'scenarios':output,'normalization':[normalize_path(p) for p in x['nor
         {
             let path = request["path"].as_str().unwrap();
             let method = request["method"].as_str().unwrap();
-            let compiled = routes.iter().any(|route| {
-                method_matches(method, &route.methods)
-                    && resource_matches(
-                        &format!("{name}:{path}"),
-                        &format!("{name}:{}", route.path),
-                    )
-            });
+            let compiled = route_policy
+                .evaluate_gateway_request(safeyolo_proxy::policy::GatewayRequest {
+                    service: name,
+                    capability: cap,
+                    agent: "alice",
+                    method,
+                    path,
+                })
+                .effect
+                == safeyolo_proxy::policy::Effect::Allow;
             let fallback = service.capabilities[cap].routes.iter().any(|route| {
                 method_matches(method, &route.methods) && resource_matches(path, &route.path)
             });

@@ -699,7 +699,7 @@ fn existing_service_selection_and_credential_guard_see_the_injected_secret() {
         Registry::from_sources(&[("demo.yaml".into(), document.to_string())], &[]).unwrap();
     let hosts = [("api.example".into(), "demo".into())].into();
     let token = TokenBinding {
-        token: "sgw_synthetic".into(),
+        token: Secret::new("sgw_synthetic"),
         agent: "alice".into(),
         service: "demo".into(),
         capability: "reader".into(),
@@ -707,6 +707,13 @@ fn existing_service_selection_and_credential_guard_see_the_injected_secret() {
         account: "operator".into(),
     };
     let input_headers = vec![("Authorization".into(), "Bearer sgw_synthetic".into())];
+    let route_policy = Policy::parse("{\"permissions\":[]}", Format::Json)
+        .unwrap()
+        .with_gateway_routes(&safeyolo_proxy::services::compile_routes(
+            &registry.services["demo"],
+            &token,
+            &[],
+        ));
     let GatewayDecision::Selected {
         credential: selected,
     } = select_route(
@@ -717,7 +724,7 @@ fn existing_service_selection_and_credential_guard_see_the_injected_secret() {
         GatewayRequest {
             identity: TrustedIdentity::Agent("alice"),
             host: "api.example",
-            route_mode: RouteMode::CompiledPolicy,
+            route_mode: RouteMode::CompiledPolicy(&route_policy),
             request: ContractRequest {
                 method: "GET",
                 target: "/resource",

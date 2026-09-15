@@ -551,7 +551,7 @@ fn record_agent_api(
     runtime: &Runtime,
     identity: &ConnectionIdentity,
     request_id: &str,
-    outcome: &crate::agent_api::Outcome,
+    outcome: &crate::agent_api::Outcome<'_>,
 ) -> Result<(), Error> {
     let audit = outcome.audit.as_ref().map(|audit| {
         json!({

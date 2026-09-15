@@ -5,8 +5,8 @@
 //! off the async worker. It returns local response and audit intent; the caller
 //! owns actual audit persistence, response IDs and request scrubbing.
 //!
-//! `/policy` requires the source compiled baseline projection and remains
-//! explicitly unavailable. Python surrogateescape query values cannot enter the
+//! `/policy` borrows the baseline published with the policy matcher and gateway
+//! snapshot. Python surrogateescape query values cannot enter the
 //! current scalar-string Policy API: these produce a typed compatibility failure,
 //! never lossy replacement. This is an incomplete development API slice.
 
@@ -17,7 +17,7 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 use crate::{
-    network_guard::{Identity, Response, sanitize},
+    network_guard::{Identity, sanitize},
     policy::{Effect, NetworkRequest, Policy, python_whitespace},
     python_text::{decimal, printable, uppercase},
 };
@@ -92,6 +92,8 @@ pub enum Failure {
     AuditWrite,
     PolicyEvaluation,
     DevelopmentEndpoint,
+    /// Source json.dumps cannot serialize a timestamp retained by the model.
+    PolicySerialization,
     /// A Python lone-surrogate query value cannot enter the current Policy API.
     QueryCompatibility,
 }
@@ -115,9 +117,64 @@ pub struct AuditIntent {
     pub details: Value,
 }
 
+/// Local API responses can contain authorized gateway tokens. Rendering is an
+/// explicit operation; diagnostics and general serialization cannot expose them.
+///
+/// ```compile_fail
+/// use safeyolo_proxy::agent_api::Response;
+/// fn cannot_log(response: Response<'_>) { println!("{response:?}"); }
+/// ```
+/// ```compile_fail
+/// use safeyolo_proxy::agent_api::Response;
+/// fn cannot_serialize(response: Response<'_>) { let _ = serde_json::to_string(&response); }
+/// ```
+pub struct Response<'a> {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    body: ResponseBody<'a>,
+}
+
+enum ResponseBody<'a> {
+    Json(Value),
+    Policy(Option<&'a Value>),
+}
+
+impl Drop for ResponseBody<'_> {
+    fn drop(&mut self) {
+        if let Self::Json(value) = self {
+            crate::credentials::wipe_json(value);
+        }
+    }
+}
+
+impl Response<'_> {
+    /// JSON bytes for the authorized local response. The Bytes owner zeroizes
+    /// this allocation when its last body/frame reference is dropped. Hyper
+    /// and the operating system may make their own transport copies.
+    pub fn body_bytes(&self) -> bytes::Bytes {
+        let (value, wrapped) = match &self.body {
+            ResponseBody::Json(value) => (value, false),
+            ResponseBody::Policy(value) => (value.unwrap_or(&Value::Null), true),
+        };
+        let overhead = if wrapped { "{\"policy\": }".len() } else { 0 };
+        let capacity = crate::python_json::encoded_len(value)
+            .checked_add(overhead)
+            .expect("JSON response length overflow");
+        let mut output = Zeroizing::new(String::with_capacity(capacity));
+        if wrapped {
+            output.push_str("{\"policy\": ");
+        }
+        crate::python_json::write(value, &mut *output).expect("String writes cannot fail");
+        if wrapped {
+            output.push('}');
+        }
+        bytes::Bytes::from_owner(Zeroizing::new(std::mem::take(&mut *output).into_bytes()))
+    }
+}
+
 /// Every outcome is a local terminal response, including compatibility failure.
-pub struct Outcome {
-    pub response: Response,
+pub struct Outcome<'a> {
+    pub response: Response<'a>,
     pub audit: Option<AuditIntent>,
     pub blocked_by: &'static str,
     pub handler_owned: bool,
@@ -127,7 +184,7 @@ pub struct Outcome {
     /// Source PolicyEngine increments its evaluation counter even for previews.
     pub policy_evaluations: u64,
 }
-impl Outcome {
+impl Outcome<'_> {
     /// An escaped producer callback error reaches the adjacent source guard.
     /// Ordinary audit file errors are caught on Python's writer thread and must
     /// keep the original response; callers must not use this for sink failures.
@@ -154,7 +211,7 @@ fn route(request: Request<'_>) -> &str {
     let path = path_no_query(request).trim_end_matches('/');
     if path.is_empty() { "/" } else { path }
 }
-fn response(status: u16, body: Value) -> Outcome {
+fn response(status: u16, body: Value) -> Outcome<'static> {
     Outcome {
         response: Response {
             status,
@@ -162,7 +219,7 @@ fn response(status: u16, body: Value) -> Outcome {
                 ("Content-Type".into(), "application/json".into()),
                 ("X-SafeYolo-Agent-API".into(), "true".into()),
             ],
-            body,
+            body: ResponseBody::Json(body),
         },
         audit: None,
         blocked_by: "agent-api",
@@ -174,7 +231,7 @@ fn response(status: u16, body: Value) -> Outcome {
 }
 
 /// Existing adjacent-guard response for an absent or failing API handler.
-pub fn unavailable(request: Request<'_>, failure: Failure) -> Outcome {
+pub fn unavailable(request: Request<'_>, failure: Failure) -> Outcome<'static> {
     let path = path_no_query(request);
     let mut outcome = response(
         503,
@@ -258,12 +315,12 @@ async fn authenticate(path: &Path, supplied: &[u8]) -> Authentication {
 /// Method checks precede token I/O; authentication precedes route/identity/query.
 /// The caller resolves a fresh policy snapshot and owns audit persistence. This
 /// future has no outbound client and calls the shared Policy at most once.
-pub async fn respond_read(
+pub async fn respond_read<'p>(
     request: Request<'_>,
     token_path: &Path,
-    policy: PolicyState<'_>,
+    policy: PolicyState<'p>,
     now_ms: f64,
-) -> Outcome {
+) -> Outcome<'p> {
     let path = route(request);
     if !matches!(request.method, "GET" | "POST" | "DELETE") {
         return response(
@@ -331,6 +388,33 @@ pub async fn respond_read(
     }
     if path == "/lookup" {
         return lookup(request, policy, now_ms);
+    }
+    if path == "/policy" {
+        match policy {
+            PolicyState::Ready(policy) => match policy.baseline() {
+                Ok(baseline) => {
+                    let mut outcome: Outcome<'p> = response(200, Value::Null);
+                    outcome.response.body = ResponseBody::Policy(baseline);
+                    return outcome;
+                }
+                Err(crate::policy::BaselineSerializationError::NonJsonTimestamp) => {
+                    let mut outcome = response(500, json!({"error":"Internal error: TypeError"}));
+                    outcome.failure = Some(Failure::PolicySerialization);
+                    return outcome;
+                }
+            },
+            PolicyState::Unavailable => {
+                return response(503, json!({"error":"PDP not available"}));
+            }
+            PolicyState::NoEngine { .. } => {
+                let mut outcome = response(
+                    503,
+                    json!({"error":"Agent API endpoint unavailable in native development mode"}),
+                );
+                outcome.failure = Some(Failure::DevelopmentEndpoint);
+                return outcome;
+            }
+        }
     }
     if ENDPOINTS.contains(&path)
         || path.starts_with("/api/flows/")
@@ -411,7 +495,7 @@ fn query(request: Request<'_>) -> HashMap<String, Decoded> {
     }
     output
 }
-fn lookup(request: Request<'_>, policy: PolicyState<'_>, now_ms: f64) -> Outcome {
+fn lookup(request: Request<'_>, policy: PolicyState<'_>, now_ms: f64) -> Outcome<'static> {
     let query = query(request);
     if query
         .get("host")

@@ -20,6 +20,12 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+mod baseline;
+mod source;
+use baseline::{Baseline, Builder as BaselineBuilder};
+use source::{ParsedPolicy, TemporalEntry};
+pub(crate) use source::{TemporalValue, TimestampPaths};
+
 #[derive(Clone, Copy, Debug)]
 pub enum Format {
     Toml,
@@ -32,6 +38,11 @@ pub enum ErrorKind {
     Invalid,
     Unsupported,
     Read,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BaselineSerializationError {
+    NonJsonTimestamp,
 }
 
 #[derive(Debug)]
@@ -241,9 +252,7 @@ struct Rule {
 
 impl Rule {
     fn exact(&self) -> bool {
-        self.resource
-            .strip_suffix("/*")
-            .is_some_and(|prefix| !prefix.contains(['/', ':', '*', '?', '[']))
+        exact_resource(&self.resource)
     }
     fn simple(&self) -> bool {
         self.exact()
@@ -252,17 +261,27 @@ impl Rule {
             && !matches!(self.effect, RuleEffect::Budget(_))
     }
     fn score(&self) -> (i64, bool) {
-        let score = if self.resource == "*" {
-            0
-        } else {
-            self.resource.chars().count() as i64 * 10
-                - self.resource.matches('*').count() as i64 * 50
-        };
-        (
-            score + if self.condition.present { 5 } else { 0 },
+        specificity_score(
+            &self.resource,
+            self.condition.present,
             self.condition.ports.is_some(),
         )
     }
+}
+
+fn exact_resource(resource: &str) -> bool {
+    resource
+        .strip_suffix("/*")
+        .is_some_and(|prefix| !prefix.contains(['/', ':', '*', '?', '[']))
+}
+
+fn specificity_score(resource: &str, condition_present: bool, port_present: bool) -> (i64, bool) {
+    let score = if resource == "*" {
+        0
+    } else {
+        resource.chars().count() as i64 * 10 - resource.matches('*').count() as i64 * 50
+    };
+    (score + if condition_present { 5 } else { 0 }, port_present)
 }
 
 /// Concrete controls implemented by the native request guards. Other addon
@@ -290,8 +309,10 @@ struct Override {
 }
 
 /// One proxy permission representation and one atomic GCRA state map.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Policy {
+    baseline: Option<Arc<Baseline>>,
+    gateway: Option<Arc<crate::services::GatewaySnapshot>>,
     rules: Vec<Rule>,
     global_budget: Option<u64>,
     budgets: Arc<Mutex<HashMap<String, f64>>>,
@@ -300,6 +321,17 @@ pub struct Policy {
     domains: Vec<Override>,
     clients: Vec<Override>,
     task: Option<TaskPolicy>,
+}
+
+impl fmt::Debug for Policy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Policy")
+            .field("rules", &self.rules.len())
+            .field("baseline", &self.baseline.is_some())
+            .field("task", &self.task.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -312,19 +344,51 @@ struct TaskPolicy {
 }
 
 impl Policy {
+    /// An initialized local engine without a configured baseline defaults to
+    /// denial while the baseline API reports null.
+    pub fn unconfigured() -> Self {
+        let mut policy = Self::from_document(
+            ParsedPolicy {
+                document: Map::new(),
+                timestamps: TimestampPaths::default(),
+            },
+            None,
+            None,
+            true,
+        )
+        .expect("empty policy matches its schema");
+        policy.baseline = None;
+        policy
+    }
+
     pub fn parse(source: &str, format: Format) -> Result<Self> {
         Self::parse_at(source, format, current_time_ms())
     }
 
     pub fn parse_at(source: &str, format: Format, now_ms: f64) -> Result<Self> {
-        let mut document = parse_document(source, format)?;
-        prune_document(&mut document, now_ms)?;
-        Self::from_document(document, None)
+        Self::parse_with_registry_at(source, format, None, now_ms)
+    }
+
+    /// Load one baseline against an already committed service registry.
+    pub fn parse_with_registry_at(
+        source: &str,
+        format: Format,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+    ) -> Result<Self> {
+        let mut parsed = parse_policy_document(source, format)?;
+        prune_parsed_document(&mut parsed, now_ms)?;
+        Self::from_document(parsed, None, registry, false)
     }
 
     /// Reloaded rule snapshots keep the same host/global budget counters.
     pub fn reload_from_source_at(&self, source: &str, format: Format, now_ms: f64) -> Result<Self> {
-        let mut replacement = Self::parse_at(source, format, now_ms)?;
+        let mut replacement = Self::parse_with_registry_at(
+            source,
+            format,
+            self.gateway.as_ref().and_then(|gateway| gateway.registry()),
+            now_ms,
+        )?;
         replacement.budgets = self.budgets.clone();
         replacement.task = self.task.clone();
         Ok(replacement)
@@ -333,7 +397,22 @@ impl Policy {
     /// File-backed reload also rereads sibling addon defaults. This read-only
     /// loader does not acquire the approval transaction's file lock.
     pub fn reload_from_path_at(&self, path: &Path, now_ms: f64) -> Result<Self> {
-        let mut replacement = Self::from_path_at(path, now_ms)?;
+        self.reload_from_path_with_registry_at(
+            path,
+            self.gateway.as_ref().and_then(|gateway| gateway.registry()),
+            now_ms,
+        )
+    }
+
+    /// Replace a registry and baseline together, preserving shared counters and
+    /// the current task only when the complete load candidate succeeds.
+    pub fn reload_from_path_with_registry_at(
+        &self,
+        path: &Path,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+    ) -> Result<Self> {
+        let mut replacement = Self::from_path_with_registry_at(path, registry, now_ms)?;
         replacement.budgets = self.budgets.clone();
         replacement.task = self.task.clone();
         Ok(replacement)
@@ -342,12 +421,13 @@ impl Policy {
     /// Task loading uses the shipped IAM schema. Host-centric task keys are
     /// ignored by Python's UnifiedPolicy loader and are not compiled here.
     pub fn with_task_source(&self, source: &str, format: Format) -> Result<Self> {
-        let mut document = parse_document(source, format)?;
+        let mut parsed = parse_policy_document(source, format)?;
         for key in ["hosts", "agents", "lists", "global_budget"] {
-            document.shift_remove(key);
+            parsed.document.shift_remove(key);
+            parsed.timestamps.remove_under(&[key]);
         }
-        let enabled = addon_enabled_values(document.get("addons"))?;
-        let task = Self::from_document(document, None)?;
+        let enabled = addon_enabled_values(parsed.document.get("addons"))?;
+        let task = Self::from_document(parsed, None, None, true)?;
         let mut replacement = self.clone();
         replacement.task = Some(TaskPolicy {
             rules: task.rules,
@@ -394,6 +474,15 @@ impl Policy {
     }
 
     pub fn from_path_at(path: &Path, now_ms: f64) -> Result<Self> {
+        Self::from_path_with_registry_at(path, None, now_ms)
+    }
+
+    /// The caller supplies the same service registry used by gateway selection.
+    pub fn from_path_with_registry_at(
+        path: &Path,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+    ) -> Result<Self> {
         let source = std::fs::read_to_string(path).map_err(|error| PolicyError {
             kind: ErrorKind::Read,
             message: error.to_string(),
@@ -403,52 +492,57 @@ impl Policy {
             Some("yaml" | "yml") => Format::Yaml,
             _ => Format::Json,
         };
-        let mut document = parse_document(&source, format)?;
+        let mut parsed = parse_policy_document(&source, format)?;
         // Production expires baseline entries before merging addon defaults or
         // opening list files, so an expired reference cannot require its file.
-        prune_document(&mut document, now_ms)?;
+        prune_parsed_document(&mut parsed, now_ms)?;
         // Existing loader merges sibling addons.yaml defaults before compilation.
         let addons = path.with_file_name("addons.yaml");
         if addons.exists() && addons != path {
-            let defaults = parse_document(
-                &std::fs::read_to_string(addons).map_err(|error| PolicyError {
-                    kind: ErrorKind::Read,
-                    message: error.to_string(),
-                })?,
-                Format::Yaml,
-            )?;
-            for (key, value) in defaults {
-                if key == "addons" && document.contains_key(&key) {
-                    let mut merged = object(&value, "addons")?.clone();
-                    merged.extend(object(&document[&key], "addons")?.clone());
-                    document.insert(key, Value::Object(merged));
-                } else {
-                    document.entry(key).or_insert(value);
-                }
+            let defaults = std::fs::read_to_string(addons)
+                .ok()
+                .and_then(|source| parse_policy_document(&source, Format::Yaml).ok());
+            if let Some(defaults) = defaults {
+                parsed = merge_parsed_defaults(parsed, defaults)?;
             }
         }
-        Self::from_document(document, path.parent())
+        Self::from_document(parsed, path.parent(), registry, false)
     }
 
     fn from_document(
-        mut document: Map<String, Value>,
+        mut parsed: ParsedPolicy,
         list_base_dir: Option<&Path>,
+        registry: Option<Arc<crate::services::Registry>>,
+        is_task: bool,
     ) -> Result<Self> {
-        expand_lists(&mut document, list_base_dir)?;
-        let budgets = document
-            .get("budgets")
-            .map(|budgets| object(budgets, "budgets"))
-            .transpose()?;
-        let global = if document.contains_key("hosts") {
-            document.get("global_budget")
-        } else {
-            None
+        let document = &mut parsed.document;
+        let timestamps = &mut parsed.timestamps;
+        expand_lists(document, list_base_dir, timestamps)?;
+        let host_centric = document.contains_key("hosts");
+        if host_centric {
+            let global = document.get("global_budget").or_else(|| {
+                document
+                    .get("budgets")
+                    .and_then(|budgets| budgets.get("network:request"))
+            });
+            if let Some(global) = global {
+                positive_integer(global, "global network budget")?;
+            }
         }
-        .or_else(|| budgets.and_then(|budgets| budgets.get("network:request")));
-        let global_budget = global
+        if host_centric && document.contains_key("credentials") {
+            source::validate_credential_source(&timestamps.projected(&["credentials"]))?;
+        }
+        if host_centric {
+            source::validate_risk_timestamps(&timestamps.projected(&["gateway", "risk_appetite"]))?;
+        }
+        let mut view = BaselineBuilder::new(document, host_centric, timestamps)?;
+        let global_budget = view.document["budgets"]
+            .get("network:request")
             .map(|value| positive_integer(value, "global network budget"))
             .transpose()?;
         let mut policy = Self {
+            baseline: None,
+            gateway: None,
             rules: Vec::new(),
             global_budget,
             budgets: Arc::new(Mutex::new(HashMap::new())),
@@ -458,58 +552,132 @@ impl Policy {
             clients: Vec::new(),
             task: None,
         };
-        policy.required = document
-            .get("required")
-            .map(|value| {
-                string_array(value, "required")
-                    .map(|values| ADDON_NAMES.map(|name| values.iter().any(|value| value == name)))
-            })
-            .transpose()?
-            .unwrap_or([false; 2]);
-        policy.enabled =
-            addon_enabled_values(document.get("addons"))?.map(|value| value.unwrap_or(true));
-        policy.domains = overrides(document.get("domains"))?;
-        policy.clients = overrides(document.get("clients"))?;
         if let Some(hosts) = document.get("hosts") {
-            policy.compile_hosts(object(hosts, "hosts")?, None)?;
-            policy.compile_risk_appetite(document.get("gateway"))?;
+            policy.compile_hosts(
+                object(hosts, "hosts")?,
+                None,
+                false,
+                &mut view,
+                &timestamps.projected(&["hosts"]),
+            )?;
+            policy.compile_risk_appetite(document.get("gateway"), &mut view)?;
             if let Some(agents) = document.get("agents") {
                 for (agent, config) in object(agents, "agents")? {
+                    if timestamps.value_at(&["agents", agent]).is_some() {
+                        continue;
+                    }
                     let Some(config) = config.as_object() else {
                         continue;
                     };
-                    if let Some(egress) = config.get("egress") {
-                        let effect = egress_effect(egress)?;
-                        policy.rules.push(Rule {
-                            action: Action::Network,
-                            generated_route: false,
-                            resource: "*".into(),
-                            effect,
-                            condition: Condition {
-                                present: true,
-                                agent: Some(agent.clone()),
-                                ..Default::default()
-                            },
-                            inferred: false,
-                        });
+                    if let Some(egress) = config
+                        .get("egress")
+                        .filter(|value| matches!(value.as_str(), Some("allow" | "deny" | "prompt")))
+                    {
+                        if timestamps.key_at(&["agents", agent]).is_some() {
+                            return Err(invalid("condition.agent must be a string"));
+                        }
+                        policy.emit_permission(
+                            &serde_json::json!({
+                                "action":"network:request", "resource":"*", "effect":egress,
+                                "condition":{"agent":agent}
+                            }),
+                            &mut view,
+                            false,
+                        )?;
                     }
                     if let Some(hosts) = config.get("hosts") {
-                        policy.compile_hosts(object(hosts, "agent hosts")?, Some(agent))?;
+                        policy.compile_hosts(
+                            object(hosts, "agent hosts")?,
+                            Some(agent),
+                            timestamps.key_at(&["agents", agent]).is_some(),
+                            &mut view,
+                            &timestamps.projected(&["agents", agent, "hosts"]),
+                        )?;
                     }
                 }
             }
         } else if let Some(permissions) = document.get("permissions") {
-            policy.compile_iam(permissions, false)?;
+            policy.compile_iam(
+                permissions,
+                &mut view,
+                &timestamps.projected(&["permissions"]),
+            )?;
         }
-        // Stable ordering preserves author order when specificity is tied.
+        if !is_task {
+            let gateway = crate::services::GatewaySnapshot::from_typed_document(
+                document,
+                host_centric,
+                registry,
+                timestamps,
+            )
+            .map_err(|_| invalid("gateway snapshot failed to load"))?;
+            view.document["gateway"] = gateway.canonical_gateway().clone();
+            view.timestamps.remove_under(&["gateway"]);
+            view.timestamps
+                .extend(gateway.canonical_timestamps().copy_under(&[], &["gateway"]));
+            for route in gateway.compiled_routes() {
+                policy.emit_gateway_route(route, &mut view);
+            }
+            policy.gateway = Some(Arc::new(gateway));
+        }
+        let baseline = view.finish()?;
+        let fields = baseline.value.as_object().expect("canonical baseline");
+        let required = string_array(&fields["required"], "required")?;
+        policy.required = ADDON_NAMES.map(|name| required.iter().any(|value| value == name));
+        policy.enabled =
+            addon_enabled_values(fields.get("addons"))?.map(|value| value.unwrap_or(true));
+        policy.domains = overrides(fields.get("domains"))?;
+        policy.clients = overrides(fields.get("clients"))?;
         policy
             .rules
             .sort_by_key(|rule| std::cmp::Reverse(rule.score()));
+        policy.baseline = Some(Arc::new(baseline));
         Ok(policy)
     }
 
-    fn compile_hosts(&mut self, hosts: &Map<String, Value>, agent: Option<&str>) -> Result<()> {
+    /// Borrow the canonical baseline for an authorized API response. This value
+    /// may contain gateway tokens and must not enter diagnostics or event logs.
+    pub(crate) fn baseline(
+        &self,
+    ) -> std::result::Result<Option<&Value>, BaselineSerializationError> {
+        if self
+            .baseline
+            .as_ref()
+            .is_some_and(|baseline| !baseline.timestamps.is_empty())
+        {
+            return Err(BaselineSerializationError::NonJsonTimestamp);
+        }
+        Ok(self.baseline.as_ref().map(|baseline| &baseline.value))
+    }
+
+    /// Borrow the active gateway state without minting or reloading tokens.
+    pub fn gateway(&self) -> Option<&crate::services::GatewaySnapshot> {
+        self.gateway.as_deref()
+    }
+
+    fn compile_hosts(
+        &mut self,
+        hosts: &Map<String, Value>,
+        agent: Option<&str>,
+        agent_temporal: bool,
+        view: &mut BaselineBuilder,
+        timestamps: &TimestampPaths,
+    ) -> Result<()> {
+        if timestamps.value_at(&[]).is_some() {
+            return Err(invalid("hosts must be a mapping"));
+        }
         for (pattern, config) in hosts {
+            if timestamps.key_at(&[pattern]).is_some() {
+                return Err(invalid("host keys must be strings"));
+            }
+            let config_timestamps = timestamps.projected(&[pattern]);
+            if config_timestamps.value_at(&[]).is_some() && agent.is_some() {
+                continue;
+            }
+            source::validate_host_timestamps(
+                &config_timestamps,
+                pattern == "*" && agent.is_none(),
+            )?;
             let empty = Map::new();
             let config = if config.is_null() {
                 &empty
@@ -542,18 +710,39 @@ impl Policy {
                     "host rate {rate} exceeds global budget {global}"
                 )));
             }
-            let egress = config.get("egress").map(egress_effect).transpose()?;
+            if port.is_some()
+                && let Some(egress) = config.get("egress")
+            {
+                egress_effect(egress)?;
+            }
+            if agent_temporal
+                && (config.contains_key("rate_limit")
+                    || config.contains_key("credentials")
+                    || config.get("egress").is_some_and(|value| {
+                        matches!(value.as_str(), Some("allow" | "deny" | "prompt"))
+                    }))
+            {
+                return Err(invalid("condition.agent must be a string"));
+            }
             let resource = if (pattern == "*" && agent.is_none()) || (port.is_some() && host == "*")
             {
-                "*".into()
+                "*".to_owned()
             } else {
                 format!("{}/*", if port.is_some() { &host } else { pattern })
             };
-            let condition = || Condition {
-                present: agent.is_some() || port.is_some(),
-                agent: agent.map(str::to_owned),
-                ports: port.map(|port| vec![port]),
-                ..Default::default()
+            let condition = || {
+                let mut fields = Map::new();
+                if let Some(port) = port {
+                    fields.insert("port".into(), Value::from(port));
+                }
+                if let Some(agent) = agent {
+                    fields.insert("agent".into(), Value::String(agent.into()));
+                }
+                if fields.is_empty() {
+                    Value::Null
+                } else {
+                    Value::Object(fields)
+                }
             };
             if port.is_some() {
                 if config
@@ -564,101 +753,100 @@ impl Policy {
                         "endpoint entries support only network egress and rate fields",
                     ));
                 }
-                let effect = match (egress, rate) {
-                    (Some(RuleEffect::Allow) | None, Some(rate)) => RuleEffect::Budget(rate),
-                    (Some(effect), _) => effect,
-                    _ => return Err(invalid("endpoint requires egress or a rate")),
-                };
-                self.rules.push(Rule {
-                    action: Action::Network,
-                    generated_route: false,
-                    resource,
-                    effect,
-                    condition: condition(),
-                    inferred: false,
-                });
+                let effect = config
+                    .get("egress")
+                    .and_then(Value::as_str)
+                    .or_else(|| rate.map(|_| "allow"))
+                    .ok_or_else(|| invalid("endpoint requires egress or a rate"))?;
+                self.emit_permission(
+                    &serde_json::json!({"action":"network:request", "resource":resource,
+                    "effect":if effect == "allow" && rate.is_some() {"budget"} else {effect},
+                    "budget":if effect == "allow" {rate} else {None}, "condition":condition()}),
+                    view,
+                    false,
+                )?;
                 continue;
             }
+            let mut credential = None;
             if pattern == "*" && agent.is_none() {
                 if let Some(value) = config
                     .get("unknown_credentials")
                     .or_else(|| config.get("credentials"))
                     && matches!(value.as_str(), Some("prompt" | "deny"))
                 {
-                    self.rules.push(Rule {
-                        action: Action::Credential,
-                        generated_route: false,
-                        resource: "*".into(),
-                        effect: egress_effect(value)?,
-                        condition: Condition::default(),
-                        inferred: false,
-                    });
+                    credential = Some(
+                        serde_json::json!({"action":"credential:use", "resource":"*", "effect":value}),
+                    );
                 }
             } else if let Some(value) = config.get("credentials") {
-                self.rules.push(Rule {
-                    action: Action::Credential,
-                    generated_route: false,
-                    resource: resource.clone(),
-                    effect: RuleEffect::Allow,
-                    condition: Condition {
-                        present: true,
-                        credentials: (!value.is_null())
-                            .then(|| string_list(value, "credentials"))
-                            .transpose()?,
-                        agent: agent.map(str::to_owned),
-                        ..Default::default()
-                    },
-                    inferred: false,
-                });
+                let credentials = if value.is_string() {
+                    Value::Array(vec![value.clone()])
+                } else {
+                    value.clone()
+                };
+                let mut fields = Map::new();
+                fields.insert("credential".into(), credentials);
+                if let Some(agent) = agent {
+                    fields.insert("agent".into(), Value::String(agent.into()));
+                }
+                credential = Some(
+                    serde_json::json!({"action":"credential:use", "resource":resource, "condition":fields}),
+                );
             }
-            if let Some(effect) = egress
-                && (!matches!(effect, RuleEffect::Allow) || rate.is_none())
+            if agent.is_none()
+                && let Some(credential) = credential.as_ref()
             {
-                self.rules.push(Rule {
-                    action: Action::Network,
-                    generated_route: false,
-                    resource: resource.clone(),
-                    effect,
-                    condition: condition(),
-                    inferred: false,
-                });
+                self.emit_permission(credential, view, false)?;
+            }
+            if let Some(effect) = config.get("egress").and_then(Value::as_str)
+                && matches!(effect, "allow" | "deny" | "prompt")
+                && (effect != "allow" || rate.is_none())
+            {
+                self.emit_permission(&serde_json::json!({"action":"network:request", "resource":resource, "effect":effect, "condition":condition()}), view, false)?;
             }
             if let Some(rate) = rate {
-                self.rules.push(Rule {
-                    action: Action::Network,
-                    generated_route: false,
-                    resource,
-                    effect: RuleEffect::Budget(rate),
-                    condition: condition(),
-                    inferred: false,
-                });
+                self.emit_permission(&serde_json::json!({"action":"network:request", "resource":resource, "effect":"budget", "budget":rate, "condition":condition()}), view, false)?;
             }
-            // The current compiler ignores global '*' domain overrides.
+            // The source agent compiler emits network rules before credentials.
+            if agent.is_some()
+                && let Some(credential) = credential.as_ref()
+            {
+                self.emit_permission(credential, view, false)?;
+            }
             if agent.is_none()
                 && pattern != "*"
                 && (config.contains_key("bypass") || config.contains_key("addons"))
             {
-                let entry = parse_override(pattern, config)?;
-                if let Some(existing) = self
-                    .domains
-                    .iter_mut()
-                    .find(|entry| entry.pattern == *pattern)
-                {
-                    *existing = entry;
-                } else {
-                    self.domains.push(entry);
+                let fields = ["bypass", "addons"]
+                    .into_iter()
+                    .filter_map(|key| config.get(key).map(|value| (key.into(), value.clone())))
+                    .collect();
+                view.document
+                    .get_mut("domains")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| invalid("domains must be a table"))?
+                    .insert(pattern.clone(), Value::Object(fields));
+                view.timestamps.remove_under(&["domains", pattern]);
+                for field in ["bypass", "addons"] {
+                    view.timestamps.extend(
+                        config_timestamps.copy_under(&[field], &["domains", pattern, field]),
+                    );
                 }
             }
             if let Some(rules) = config.get("rules")
                 && agent.is_none()
             {
-                self.compile_iam(rules, true)?;
+                self.compile_iam(rules, view, &config_timestamps.projected(&["rules"]))?;
             }
         }
         Ok(())
     }
 
-    fn compile_risk_appetite(&mut self, gateway: Option<&Value>) -> Result<()> {
+    fn compile_risk_appetite(
+        &mut self,
+        gateway: Option<&Value>,
+        view: &mut BaselineBuilder,
+    ) -> Result<()> {
         let Some(rules) = gateway
             .and_then(Value::as_object)
             .and_then(|gateway| gateway.get("risk_appetite"))
@@ -698,7 +886,7 @@ impl Policy {
             if !condition.is_empty() {
                 permission["condition"] = Value::Object(condition);
             }
-            self.compile_iam(&Value::Array(vec![permission]), true)?;
+            self.emit_permission(&permission, view, false)?;
         }
         Ok(())
     }
@@ -709,131 +897,214 @@ impl Policy {
     pub fn with_gateway_routes(&self, routes: &[crate::services::CompiledRoute]) -> Self {
         let mut replacement = self.clone();
         replacement.rules.retain(|rule| !rule.generated_route);
-        replacement.rules.extend(routes.iter().map(|route| Rule {
-            action: Action::Gateway,
-            generated_route: true,
-            resource: format!("{}:{}", route.service, route.path),
-            effect: RuleEffect::Allow,
-            condition: Condition {
-                present: true,
-                agent: Some(route.agent.clone()),
-                methods: Some(route.methods.clone()),
-                capability: Some(route.capability.clone()),
-                ..Default::default()
-            },
-            inferred: false,
-        }));
+        if self.baseline.is_none() {
+            return replacement;
+        }
+        let baseline = self.baseline.as_deref().expect("configured baseline");
+        let mut view = BaselineBuilder::from_baseline(baseline);
+        for route in routes {
+            replacement.emit_gateway_route(route, &mut view);
+        }
         replacement
             .rules
             .sort_by_key(|rule| std::cmp::Reverse(rule.score()));
+        replacement.baseline = Some(Arc::new(
+            view.finish().expect("previously validated baseline"),
+        ));
         replacement
     }
 
-    fn compile_iam(&mut self, permissions: &Value, host_compiled: bool) -> Result<()> {
-        for value in permissions
+    fn emit_gateway_route(
+        &mut self,
+        route: &crate::services::CompiledRoute,
+        view: &mut BaselineBuilder,
+    ) {
+        let permission = serde_json::json!({"action":"gateway:request", "resource":format!("{}:{}", route.service, route.path),
+            "effect":"allow", "condition":{"agent":route.agent, "method":route.methods, "capability":route.capability}});
+        self.emit_permission(&permission, view, true)
+            .expect("typed compiled route matches the permission schema");
+    }
+
+    fn compile_iam(
+        &mut self,
+        permissions: &Value,
+        view: &mut BaselineBuilder,
+        timestamps: &TimestampPaths,
+    ) -> Result<()> {
+        if timestamps.value_at(&[]).is_some() {
+            return Err(invalid("permissions must be an array"));
+        }
+        for (index, permission) in permissions
             .as_array()
             .ok_or_else(|| invalid("permissions must be an array"))?
+            .iter()
+            .enumerate()
         {
-            let rule = object(value, "permission")?;
-            let action = match rule.get("action").and_then(Value::as_str) {
+            self.emit_typed_permission(
+                permission,
+                view,
+                false,
+                &timestamps.projected(&[&index.to_string()]),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn emit_permission(
+        &mut self,
+        permission: &Value,
+        view: &mut BaselineBuilder,
+        generated: bool,
+    ) -> Result<()> {
+        self.emit_typed_permission(permission, view, generated, &TimestampPaths::default())
+    }
+
+    fn emit_typed_permission(
+        &mut self,
+        permission: &Value,
+        view: &mut BaselineBuilder,
+        generated: bool,
+        timestamps: &TimestampPaths,
+    ) -> Result<()> {
+        if timestamps.value_at(&[]).is_some() {
+            return Err(invalid("permission must be a mapping"));
+        }
+        let raw = object(permission, "permission")?;
+        if view.extract_simple(raw, timestamps)? {
+            source::validate_permission_timestamps(timestamps, true)?;
+            if timestamps.value_at(&["action"]).is_some()
+                || timestamps.value_at(&["effect"]).is_some()
+            {
+                return Ok(());
+            }
+            let action = match raw.get("action").and_then(Value::as_str) {
                 Some("network:request") => Action::Network,
                 Some("credential:use") => Action::Credential,
                 Some("gateway:risky_route") => Action::RiskyRoute,
                 Some("gateway:request") => Action::Gateway,
-                // These accepted actions cannot be requested through this API.
-                Some("file:read" | "file:write" | "subprocess:exec") => continue,
-                _ => return Err(invalid("unknown or missing permission action")),
+                _ => return Ok(()),
             };
-            let resource = string(
-                rule.get("resource")
-                    .ok_or_else(|| invalid("permission needs resource"))?,
-                "resource",
-            )?
-            .to_owned();
-            let effect = if rule.get("effect").and_then(Value::as_str) == Some("budget") {
-                RuleEffect::Budget(positive_integer(
-                    rule.get("budget")
-                        .ok_or_else(|| invalid("budget effect requires budget"))?,
-                    "budget",
-                )?)
-            } else {
-                rule.get("effect")
-                    .map(egress_effect)
-                    .transpose()?
-                    .unwrap_or(RuleEffect::Allow)
-            };
-            let inferred = match rule
-                .get("tier")
-                .map(|value| string(value, "tier"))
-                .transpose()?
-                .unwrap_or("explicit")
+            let effect = match raw
+                .get("effect")
+                .map(Value::as_str)
+                .unwrap_or(Some("allow"))
             {
-                "explicit" => false,
-                "inferred" => true,
-                _ => return Err(invalid("invalid permission tier")),
+                Some("allow") => RuleEffect::Allow,
+                Some("deny") => RuleEffect::Deny,
+                Some("prompt") => RuleEffect::Prompt,
+                _ => return Ok(()),
             };
-            let mut condition = Condition::default();
-            if let Some(value) = rule.get("condition").filter(|value| !value.is_null()) {
-                let fields = object(value, "condition")?;
-                // Host compilation extracts empty-condition exact rules into
-                // simple sets before validation; hand-authored IAM retains them.
-                condition.present = !host_compiled || !fields.is_empty();
-                for (key, value) in fields {
-                    if value.is_null() {
-                        continue;
+            self.rules.push(Rule {
+                action,
+                generated_route: generated,
+                resource: raw["resource"]
+                    .as_str()
+                    .expect("exact string resource")
+                    .into(),
+                effect,
+                condition: Condition::default(),
+                inferred: false,
+            });
+            return Ok(());
+        }
+        source::validate_permission_timestamps(timestamps, false)?;
+        let permission = baseline::permission(permission)?;
+        view.push(permission.clone(), generated);
+        let rule = permission.as_object().expect("normalized permission");
+        let action = match rule.get("action").and_then(Value::as_str) {
+            Some("network:request") => Action::Network,
+            Some("credential:use") => Action::Credential,
+            Some("gateway:risky_route") => Action::RiskyRoute,
+            Some("gateway:request") => Action::Gateway,
+            // These accepted actions cannot be requested through this API.
+            Some("file:read" | "file:write" | "subprocess:exec") => return Ok(()),
+            _ => return Err(invalid("unknown or missing permission action")),
+        };
+        let resource = string(
+            rule.get("resource")
+                .ok_or_else(|| invalid("permission needs resource"))?,
+            "resource",
+        )?
+        .to_owned();
+        let effect = if rule.get("effect").and_then(Value::as_str) == Some("budget") {
+            RuleEffect::Budget(positive_integer(
+                rule.get("budget")
+                    .ok_or_else(|| invalid("budget effect requires budget"))?,
+                "budget",
+            )?)
+        } else {
+            rule.get("effect")
+                .map(egress_effect)
+                .transpose()?
+                .unwrap_or(RuleEffect::Allow)
+        };
+        let inferred = match rule
+            .get("tier")
+            .map(|value| string(value, "tier"))
+            .transpose()?
+            .unwrap_or("explicit")
+        {
+            "explicit" => false,
+            "inferred" => true,
+            _ => return Err(invalid("invalid permission tier")),
+        };
+        let mut condition = Condition::default();
+        if let Some(value) = rule.get("condition").filter(|value| !value.is_null()) {
+            let fields = object(value, "condition")?;
+            // Host compilation extracts empty-condition exact rules into
+            // simple sets before validation; hand-authored IAM retains them.
+            condition.present = true;
+            for (key, value) in fields {
+                if value.is_null() {
+                    continue;
+                }
+                match key.as_str() {
+                    "agent" => condition.agent = Some(string(value, key)?.to_owned()),
+                    "method" => condition.methods = Some(string_list(value, key)?),
+                    "path_prefix" => condition.path_prefix = Some(string(value, key)?.to_owned()),
+                    "port" => {
+                        let values = value
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_else(|| vec![value.clone()]);
+                        if values.is_empty() {
+                            return Err(invalid("port list must not be empty"));
+                        }
+                        condition.ports = Some(
+                            values
+                                .iter()
+                                .map(|value| {
+                                    let port = positive_integer(value, "port")?;
+                                    u16::try_from(port)
+                                        .map_err(|_| invalid("port must be from 1 to 65535"))
+                                })
+                                .collect::<Result<Vec<_>>>()?,
+                        );
                     }
-                    match key.as_str() {
-                        "agent" => condition.agent = Some(string(value, key)?.to_owned()),
-                        "method" => condition.methods = Some(string_list(value, key)?),
-                        "path_prefix" => {
-                            condition.path_prefix = Some(string(value, key)?.to_owned())
-                        }
-                        "port" => {
-                            let values = value
-                                .as_array()
-                                .cloned()
-                                .unwrap_or_else(|| vec![value.clone()]);
-                            if values.is_empty() {
-                                return Err(invalid("port list must not be empty"));
-                            }
-                            condition.ports = Some(
-                                values
-                                    .iter()
-                                    .map(|value| {
-                                        let port = positive_integer(value, "port")?;
-                                        u16::try_from(port)
-                                            .map_err(|_| invalid("port must be from 1 to 65535"))
-                                    })
-                                    .collect::<Result<Vec<_>>>()?,
-                            );
-                        }
-                        "credential" => condition.credentials = Some(string_list(value, key)?),
-                        "content_type" => {
-                            condition.content_type = Some(string(value, key)?.to_owned())
-                        }
-                        "tactics" => condition.tactics = Some(string_array(value, key)?),
-                        "enables" => condition.enables = Some(string_array(value, key)?),
-                        "irreversible" => condition.irreversible = Some(boolean(value, key)?),
-                        "account" => condition.accounts = Some(string_list(value, key)?),
-                        "service" => condition.service = Some(string(value, key)?.to_owned()),
-                        "capability" => condition.capability = Some(string(value, key)?.to_owned()),
-                        _ => {
-                            return Err(unsupported(format!(
-                                "native policy condition is not implemented: {key}"
-                            )));
-                        }
+                    "credential" => condition.credentials = Some(string_list(value, key)?),
+                    "content_type" => condition.content_type = Some(string(value, key)?.to_owned()),
+                    "tactics" => condition.tactics = Some(string_array(value, key)?),
+                    "enables" => condition.enables = Some(string_array(value, key)?),
+                    "irreversible" => condition.irreversible = Some(boolean(value, key)?),
+                    "account" => condition.accounts = Some(string_list(value, key)?),
+                    "service" => condition.service = Some(string(value, key)?.to_owned()),
+                    "capability" => condition.capability = Some(string(value, key)?.to_owned()),
+                    _ => {
+                        return Err(unsupported(format!(
+                            "native policy condition is not implemented: {key}"
+                        )));
                     }
                 }
             }
-            self.rules.push(Rule {
-                action,
-                generated_route: false,
-                resource,
-                effect,
-                condition,
-                inferred,
-            });
         }
+        self.rules.push(Rule {
+            action,
+            generated_route: generated,
+            resource,
+            effect,
+            condition,
+            inferred,
+        });
         Ok(())
     }
 
@@ -1149,6 +1420,65 @@ impl Policy {
     }
 }
 
+fn prune_parsed_document(parsed: &mut ParsedPolicy, now_ms: f64) -> Result<()> {
+    prune_document(&mut parsed.document, now_ms)?;
+    parsed.timestamps.retain_document(&parsed.document);
+    Ok(())
+}
+
+fn merge_parsed_defaults(authored: ParsedPolicy, defaults: ParsedPolicy) -> Result<ParsedPolicy> {
+    let (document, timestamps) = authored.into_parts();
+    let authored = YamlNode {
+        value: Value::Object(document),
+        timestamps,
+    };
+    let (document, timestamps) = defaults.into_parts();
+    let defaults = YamlNode {
+        value: Value::Object(document),
+        timestamps,
+    };
+    let mut merged = YamlMapping::default();
+    for (key, value) in authored.into_mapping()? {
+        merged.insert(key, value);
+    }
+    for (key, value) in defaults.into_mapping()? {
+        if let Some(index) = merged.index.get(&key).copied() {
+            if key == YamlKey::String("addons".into())
+                && value.value.is_object()
+                && value.timestamps.value_at(&[]).is_none()
+                && merged.entries[index].1.value.is_object()
+                && merged.entries[index].1.timestamps.value_at(&[]).is_none()
+            {
+                let authored = std::mem::replace(
+                    &mut merged.entries[index].1,
+                    YamlNode {
+                        value: Value::Null,
+                        timestamps: TimestampPaths::default(),
+                    },
+                );
+                let mut addons = YamlMapping::default();
+                for (key, value) in value.into_mapping()? {
+                    addons.insert(key, value);
+                }
+                for (key, value) in authored.into_mapping()? {
+                    addons.insert(key, value);
+                }
+                merged.entries[index].1 = finish_yaml_mapping(addons.entries);
+            }
+        } else {
+            merged.insert(key, value);
+        }
+    }
+    let node = finish_yaml_mapping(merged.entries);
+    let Value::Object(document) = node.value else {
+        unreachable!("finished mapping")
+    };
+    Ok(ParsedPolicy {
+        document,
+        timestamps: node.timestamps,
+    })
+}
+
 fn prune_document(document: &mut Map<String, Value>, now_ms: f64) -> Result<()> {
     for (agent, host) in expired_host_entries(&Value::Object(document.clone()), now_ms)? {
         let hosts = match agent {
@@ -1167,7 +1497,11 @@ fn prune_document(document: &mut Map<String, Value>, now_ms: f64) -> Result<()> 
 
 /// Existing lists are local files. URL-looking values are filenames too: the
 /// production loader does not fetch remote lists or introduce another egress.
-fn expand_lists(document: &mut Map<String, Value>, base_dir: Option<&Path>) -> Result<()> {
+fn expand_lists(
+    document: &mut Map<String, Value>,
+    base_dir: Option<&Path>,
+    timestamps: &mut TimestampPaths,
+) -> Result<()> {
     let Some(lists) = document
         .get("lists")
         .and_then(Value::as_object)
@@ -1190,11 +1524,14 @@ fn expand_lists(document: &mut Map<String, Value>, base_dir: Option<&Path>) -> R
         return Err(unsupported("host lists require file-backed policy loading"));
     }
     for (_, name, _) in &references {
-        if !lists.contains_key(name) {
+        if !lists.contains_key(name) || timestamps.key_at(&["lists", name]).is_some() {
             return Err(invalid(format!("undefined list reference ${name}")));
         }
     }
     for (host, name, config) in references {
+        if timestamps.value_at(&["lists", &name]).is_some() {
+            return Err(invalid("list path must be a string"));
+        }
         let path = Path::new(string(&lists[&name], "list path")?);
         let path = if path.is_absolute() {
             path.to_owned()
@@ -1219,6 +1556,8 @@ fn expand_lists(document: &mut Map<String, Value>, base_dir: Option<&Path>) -> R
             config
         };
         hosts.shift_remove(&host);
+        let inherited_timestamps = timestamps.projected(&["hosts", &host]);
+        timestamps.remove_under(&["hosts", &host]);
         for line in source.split([
             '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
             '\u{2029}',
@@ -1249,9 +1588,10 @@ fn expand_lists(document: &mut Map<String, Value>, base_dir: Option<&Path>) -> R
             {
                 continue;
             }
-            hosts
-                .entry(entry.to_owned())
-                .or_insert_with(|| config.clone());
+            if !hosts.contains_key(entry) {
+                timestamps.extend(inherited_timestamps.copy_under(&[], &["hosts", entry]));
+                hosts.insert(entry.to_owned(), config.clone());
+            }
         }
     }
     Ok(())
@@ -1505,6 +1845,10 @@ fn egress_effect(value: &Value) -> Result<RuleEffect> {
 /// Resolve typed TOML datetimes before converting to JSON. An authored table
 /// resembling serde's private datetime marker must remain an invalid expiry.
 pub(crate) fn parse_toml_document(source: &str) -> Result<Value> {
+    Ok(parse_toml_with_timestamps(source)?.0)
+}
+
+fn parse_toml_with_timestamps(source: &str) -> Result<(Value, TimestampPaths)> {
     let syntax = source
         .parse::<toml_edit::DocumentMut>()
         .map_err(|error| invalid(error.to_string()))?;
@@ -1550,7 +1894,70 @@ pub(crate) fn parse_toml_document(source: &str) -> Result<Value> {
             );
         }
     }
-    Ok(document)
+    let mut timestamps = TimestampPaths::default();
+    for (key, item) in syntax.iter() {
+        collect_toml_timestamps(item, &mut vec![key.to_owned()], &mut timestamps)?;
+    }
+    Ok((document, timestamps))
+}
+
+fn collect_toml_timestamps(
+    item: &toml_edit::Item,
+    path: &mut Vec<String>,
+    timestamps: &mut TimestampPaths,
+) -> Result<()> {
+    match item {
+        toml_edit::Item::None => {}
+        toml_edit::Item::Value(value) => collect_toml_value_timestamps(value, path, timestamps)?,
+        toml_edit::Item::Table(table) => {
+            for (key, value) in table.iter() {
+                path.push(key.to_owned());
+                collect_toml_timestamps(value, path, timestamps)?;
+                path.pop();
+            }
+        }
+        toml_edit::Item::ArrayOfTables(tables) => {
+            for (index, table) in tables.iter().enumerate() {
+                path.push(index.to_string());
+                for (key, value) in table.iter() {
+                    path.push(key.to_owned());
+                    collect_toml_timestamps(value, path, timestamps)?;
+                    path.pop();
+                }
+                path.pop();
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_toml_value_timestamps(
+    value: &toml_edit::Value,
+    path: &mut Vec<String>,
+    timestamps: &mut TimestampPaths,
+) -> Result<()> {
+    match value {
+        toml_edit::Value::Datetime(value) => timestamps.insert_value(
+            &path.iter().map(String::as_str).collect::<Vec<_>>(),
+            TemporalValue::from_toml(value.value())?,
+        ),
+        toml_edit::Value::Array(array) => {
+            for (index, value) in array.iter().enumerate() {
+                path.push(index.to_string());
+                collect_toml_value_timestamps(value, path, timestamps)?;
+                path.pop();
+            }
+        }
+        toml_edit::Value::InlineTable(table) => {
+            for (key, value) in table.iter() {
+                path.push(key.to_owned());
+                collect_toml_value_timestamps(value, path, timestamps)?;
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn toml_item(item: &toml_edit::Item) -> Result<Value> {
@@ -1673,21 +2080,28 @@ pub(crate) fn parse_yaml(source: &str) -> Result<Value> {
 /// by the vault schema, including timestamp values in those fields.
 pub(crate) fn parse_yaml_for_vault(source: &str) -> Result<Value> {
     let node = parse_yaml_node(source)?;
-    if node.timestamps.iter().any(|path| {
-        path.len() == 3
-            && path[0] == "credentials"
-            && matches!(
-                path[2].as_str(),
-                "name"
-                    | "type"
-                    | "value"
-                    | "refresh_token"
-                    | "token_url"
-                    | "client_id"
-                    | "client_secret"
-                    | "expires_at"
-            )
-    }) {
+    if node
+        .timestamps
+        .entries
+        .iter()
+        .filter(|entry| !entry.key)
+        .any(|entry| {
+            let path = &entry.path;
+            path.len() == 3
+                && path[0] == "credentials"
+                && matches!(
+                    path[2].as_str(),
+                    "name"
+                        | "type"
+                        | "value"
+                        | "refresh_token"
+                        | "token_url"
+                        | "client_id"
+                        | "client_secret"
+                        | "expires_at"
+                )
+        })
+    {
         return Err(invalid(
             "vault credential fields must not contain typed YAML timestamps",
         ));
@@ -1700,7 +2114,7 @@ pub(crate) fn parse_yaml_for_vault(source: &str) -> Result<Value> {
 #[derive(Clone)]
 struct YamlNode {
     value: Value,
-    timestamps: Vec<Vec<String>>,
+    timestamps: TimestampPaths,
 }
 
 impl YamlNode {
@@ -1711,23 +2125,106 @@ impl YamlNode {
         Ok(values
             .into_iter()
             .enumerate()
-            .map(|(index, value)| {
-                let index = index.to_string();
-                Self {
-                    value,
-                    timestamps: self
-                        .timestamps
-                        .iter()
-                        .filter(|path| path.first() == Some(&index))
-                        .map(|path| path[1..].to_vec())
-                        .collect(),
-                }
+            .map(|(index, value)| Self {
+                value,
+                timestamps: self.timestamps.projected(&[&index.to_string()]),
+            })
+            .collect())
+    }
+
+    fn into_mapping(self) -> Result<Vec<(YamlKey, Self)>> {
+        if self.timestamps.value_at(&[]).is_some() {
+            return Err(invalid("YAML merge requires mappings"));
+        }
+        let Value::Object(values) = self.value else {
+            return Err(invalid("YAML merge requires mappings"));
+        };
+        Ok(values
+            .into_iter()
+            .map(|(key, value)| {
+                let typed = self.timestamps.key_at(&[&key]).cloned();
+                let timestamps = self.timestamps.projected(&[&key]);
+                (
+                    typed.map_or_else(|| YamlKey::String(key), YamlKey::Temporal),
+                    Self { value, timestamps },
+                )
             })
             .collect())
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum YamlKey {
+    String(String),
+    Temporal(TemporalValue),
+}
+
+#[derive(Default)]
+struct YamlMapping {
+    entries: Vec<(YamlKey, YamlNode)>,
+    index: HashMap<YamlKey, usize>,
+}
+
+impl YamlMapping {
+    fn insert(&mut self, key: YamlKey, value: YamlNode) {
+        if let Some(index) = self.index.get(&key) {
+            self.entries[*index].1 = value;
+        } else {
+            self.index.insert(key.clone(), self.entries.len());
+            self.entries.push((key, value));
+        }
+    }
+}
+
+fn finish_yaml_mapping(entries: Vec<(YamlKey, YamlNode)>) -> YamlNode {
+    // Every authored string key is known before private identities are chosen.
+    // This spelling is never interpreted as provenance by any consumer.
+    let mut used: std::collections::HashSet<String> = entries
+        .iter()
+        .filter_map(|(key, _)| match key {
+            YamlKey::String(key) => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut serial = 0;
+    let mut values = Map::new();
+    let mut timestamps = TimestampPaths::default();
+    for (key, mut node) in entries {
+        let (key, typed) = match key {
+            YamlKey::String(key) => (key, None),
+            YamlKey::Temporal(value) => {
+                let key = loop {
+                    let key = format!("\0temporal-key-{serial}");
+                    serial += 1;
+                    if used.insert(key.clone()) {
+                        break key;
+                    }
+                };
+                (key, Some(value))
+            }
+        };
+        node.timestamps.prepend(&[&key]);
+        timestamps.extend(node.timestamps);
+        if let Some(value) = typed {
+            timestamps.entries.push(TemporalEntry {
+                path: vec![key.clone()],
+                key: true,
+                value,
+            });
+        }
+        values.insert(key, node.value);
+    }
+    YamlNode {
+        value: Value::Object(values),
+        timestamps,
+    }
+}
+
 fn parse_yaml_node(source: &str) -> Result<YamlNode> {
+    parse_yaml_node_with_keys(source, false)
+}
+
+fn parse_yaml_node_with_keys(source: &str, temporal_keys: bool) -> Result<YamlNode> {
     use yaml_rust2::parser::{Event, Parser};
     let mut parser = Parser::new_from_str(source);
     let next = |parser: &mut Parser<std::str::Chars<'_>>| {
@@ -1743,13 +2240,13 @@ fn parse_yaml_node(source: &str) -> Result<YamlNode> {
         Event::StreamEnd => {
             return Ok(YamlNode {
                 value: Value::Null,
-                timestamps: Vec::new(),
+                timestamps: TimestampPaths::default(),
             });
         }
         Event::DocumentStart => {}
         _ => return Err(invalid("expected YAML document")),
     }
-    let value = yaml_node(&mut parser, &mut HashMap::new())?.0;
+    let value = yaml_node(&mut parser, &mut HashMap::new(), temporal_keys)?.0;
     if next(&mut parser)? != Event::DocumentEnd || next(&mut parser)? != Event::StreamEnd {
         return Err(invalid("policy YAML must contain one document"));
     }
@@ -1759,6 +2256,7 @@ fn parse_yaml_node(source: &str) -> Result<YamlNode> {
 fn yaml_node(
     parser: &mut yaml_rust2::parser::Parser<std::str::Chars<'_>>,
     anchors: &mut HashMap<usize, (YamlNode, bool)>,
+    temporal_keys: bool,
 ) -> Result<(YamlNode, bool)> {
     use yaml_rust2::parser::Event;
     let (event, _) = parser
@@ -1768,21 +2266,13 @@ fn yaml_node(
         Event::Scalar(value, style, anchor, tag) => {
             let mut timestamp = false;
             let (value, is_merge) = yaml_scalar(&value, style, tag.as_ref(), &mut timestamp)?;
-            (
-                anchor,
-                (
-                    YamlNode {
-                        value,
-                        timestamps: if timestamp {
-                            vec![Vec::new()]
-                        } else {
-                            Vec::new()
-                        },
-                    },
-                    is_merge,
-                ),
-            )
+            let mut timestamps = TimestampPaths::default();
+            if timestamp {
+                timestamps.insert_value(&[], TemporalValue::from_yaml(&value)?);
+            }
+            (anchor, (YamlNode { value, timestamps }, is_merge))
         }
+
         Event::Alias(anchor) => {
             return anchors.get(&anchor).cloned().ok_or_else(|| {
                 unsupported("recursive or unresolved YAML aliases are not supported")
@@ -1791,17 +2281,15 @@ fn yaml_node(
         Event::SequenceStart(anchor, tag) => {
             yaml_collection_tag(tag.as_ref(), "seq")?;
             let mut values = Vec::new();
-            let mut timestamps = Vec::new();
+            let mut timestamps = TimestampPaths::default();
             while !matches!(
                 parser.peek().map_err(|error| invalid(error.to_string()))?.0,
                 Event::SequenceEnd
             ) {
-                let node = yaml_node(parser, anchors)?.0;
+                let mut node = yaml_node(parser, anchors, temporal_keys)?.0;
                 let index = values.len().to_string();
-                timestamps.extend(node.timestamps.into_iter().map(|mut path| {
-                    path.insert(0, index.clone());
-                    path
-                }));
+                node.timestamps.prepend(&[&index]);
+                timestamps.extend(node.timestamps);
                 values.push(node.value);
             }
             parser
@@ -1820,14 +2308,13 @@ fn yaml_node(
         }
         Event::MappingStart(anchor, tag) => {
             yaml_collection_tag(tag.as_ref(), "map")?;
-            let (mut merged, mut local) = (Map::new(), Vec::new());
-            let mut timestamps: Vec<Vec<String>> = Vec::new();
+            let (mut merged, mut local) = (YamlMapping::default(), Vec::new());
             while !matches!(
                 parser.peek().map_err(|error| invalid(error.to_string()))?.0,
                 Event::MappingEnd
             ) {
-                let (key, is_merge) = yaml_node(parser, anchors)?;
-                let value = yaml_node(parser, anchors)?.0;
+                let (key, is_merge) = yaml_node(parser, anchors, temporal_keys)?;
+                let value = yaml_node(parser, anchors, temporal_keys)?.0;
                 if is_merge {
                     let parents = match value.value {
                         Value::Object(_) => vec![value],
@@ -1835,42 +2322,35 @@ fn yaml_node(
                         _ => return Err(invalid("YAML merge requires mappings")),
                     };
                     for parent in parents {
-                        // A date scalar has an object representation for policy
-                        // expiry, but remains a scalar and cannot be a merge map.
-                        if parent.timestamps.iter().any(Vec::is_empty) {
-                            return Err(invalid("YAML merge requires mappings"));
+                        for (key, value) in parent.into_mapping()? {
+                            merged.insert(key, value);
                         }
-                        let mapping = object(&parent.value, "YAML merge")?;
-                        timestamps.retain(|path| !mapping.contains_key(&path[0]));
-                        merged.extend(mapping.clone());
-                        timestamps.extend(parent.timestamps);
                     }
                 } else {
-                    local.push((string(&key.value, "YAML mapping key")?.to_owned(), value));
+                    let key = if temporal_keys {
+                        key.timestamps.value_at(&[]).cloned().map(YamlKey::Temporal)
+                    } else {
+                        None
+                    }
+                    .map_or_else(
+                        || {
+                            string(&key.value, "YAML mapping key")
+                                .map(|key| YamlKey::String(key.to_owned()))
+                        },
+                        Ok,
+                    )?;
+                    local.push((key, value));
                 }
             }
             parser
                 .next_token()
                 .map_err(|error| invalid(error.to_string()))?;
-            for (key, node) in local {
-                timestamps.retain(|path| path[0] != key);
-                timestamps.extend(node.timestamps.into_iter().map(|mut path| {
-                    path.insert(0, key.clone());
-                    path
-                }));
-                merged.insert(key, node.value);
+            for (key, value) in local {
+                merged.insert(key, value);
             }
-            (
-                anchor,
-                (
-                    YamlNode {
-                        value: Value::Object(merged),
-                        timestamps,
-                    },
-                    false,
-                ),
-            )
+            (anchor, (finish_yaml_mapping(merged.entries), false))
         }
+
         _ => return Err(invalid("unexpected YAML event")),
     };
     if anchor != 0 {
@@ -2140,40 +2620,175 @@ pub(crate) fn parse_document(source: &str, format: Format) -> Result<Map<String,
         object(&value, "policy document")?.clone()
     };
     if matches!(format, Format::Toml) {
-        if document.contains_key("budget") && document.contains_key("global_budget") {
-            return Err(invalid("budget and global_budget are the same field"));
-        }
-        if let Some(value) = document.remove("budget") {
-            document.insert("global_budget".into(), value);
-        }
-        if let Some(hosts) = document.get_mut("hosts") {
-            normalize_hosts(hosts)?;
-        }
-        if let Some(agents) = document.get_mut("agents") {
-            for config in agents
-                .as_object_mut()
-                .ok_or_else(|| invalid("agents must be a table"))?
-                .values_mut()
-            {
-                if let Some(hosts) = config.get_mut("hosts") {
-                    normalize_hosts(hosts)?;
-                }
-            }
-        }
+        document = normalize_toml(document, &mut TimestampPaths::default())?;
     }
     Ok(document)
 }
 
-fn normalize_hosts(hosts: &mut Value) -> Result<()> {
-    for config in hosts
+fn parse_policy_document(source: &str, format: Format) -> Result<ParsedPolicy> {
+    let (value, mut timestamps) = match format {
+        Format::Yaml => {
+            let node = parse_yaml_node_with_keys(source, true)?;
+            (node.value, node.timestamps)
+        }
+        Format::Toml => parse_toml_with_timestamps(source)?,
+        Format::Json => (
+            parse_json(source, false).map_err(|error| invalid(error.to_string()))?,
+            TimestampPaths::default(),
+        ),
+    };
+    if timestamps.value_at(&[]).is_some() {
+        return Err(invalid("policy document must be a mapping"));
+    }
+    let mut document = if value.is_null() && matches!(format, Format::Yaml) {
+        Map::new()
+    } else if let Value::Object(document) = value {
+        document
+    } else {
+        return Err(invalid("policy document must be a mapping"));
+    };
+    if matches!(format, Format::Toml) {
+        document = normalize_toml(document, &mut timestamps)?;
+    }
+    Ok(ParsedPolicy {
+        document,
+        timestamps,
+    })
+}
+
+fn normalize_toml(
+    mut source: Map<String, Value>,
+    timestamps: &mut TimestampPaths,
+) -> Result<Map<String, Value>> {
+    for (alias, internal) in [("budget", "global_budget"), ("credential", "credentials")] {
+        if source.contains_key(alias) && source.contains_key(internal) {
+            return Err(invalid(format!(
+                "{alias} and {internal} are the same field"
+            )));
+        }
+    }
+    if source.contains_key("risk")
+        && source
+            .get("gateway")
+            .and_then(Value::as_object)
+            .is_some_and(|gateway| gateway.contains_key("risk_appetite"))
+    {
+        return Err(invalid("risk and gateway.risk_appetite are the same field"));
+    }
+    for field in ["hosts", "credential", "agents"] {
+        if let Some(value) = source.get(field) {
+            object(value, field)?;
+        }
+    }
+    if source.get("risk").is_some_and(|value| !value.is_array()) {
+        return Err(invalid("risk must be an array"));
+    }
+    let mut output = Map::new();
+    let metadata: Map<String, Value> = ["version", "description"]
+        .into_iter()
+        .filter_map(|key| source.get(key).map(|value| (key.into(), value.clone())))
+        .collect();
+    if !metadata.is_empty() {
+        timestamps.remove_under(&["metadata"]);
+        for key in ["version", "description"] {
+            timestamps.move_under(&[key], &["metadata", key]);
+        }
+        output.insert("metadata".into(), Value::Object(metadata));
+    }
+    if let Some(value) = source.shift_remove("budget") {
+        timestamps.move_under(&["budget"], &["global_budget"]);
+        output.insert("global_budget".into(), value);
+    }
+    if let Some(mut hosts) = source.shift_remove("hosts") {
+        normalize_hosts(&mut hosts, timestamps, &["hosts"])?;
+        output.insert("hosts".into(), hosts);
+    }
+    if let Some(credentials) = source.shift_remove("credential") {
+        timestamps.move_under(&["credential"], &["credentials"]);
+        let credentials = object(&credentials, "credential")?
+            .iter()
+            .map(|(name, config)| {
+                let value = if let Some(config) = config.as_object() {
+                    let mut renamed = Map::new();
+                    let original = timestamps.projected(&["credentials", name]);
+                    timestamps.remove_under(&["credentials", name]);
+                    for (key, value) in config {
+                        let target = if key == "match" { "patterns" } else { key };
+                        timestamps.remove_under(&["credentials", name, target]);
+                        timestamps
+                            .extend(original.copy_under(&[key], &["credentials", name, target]));
+                        renamed.insert(
+                            if key == "match" {
+                                "patterns".into()
+                            } else {
+                                key.clone()
+                            },
+                            value.clone(),
+                        );
+                    }
+                    Value::Object(renamed)
+                } else {
+                    config.clone()
+                };
+                (name.clone(), value)
+            })
+            .collect();
+        output.insert("credentials".into(), Value::Object(credentials));
+    }
+    if let Some(risk) = source.shift_remove("risk") {
+        timestamps.move_under(&["risk"], &["gateway", "risk_appetite"]);
+        let mut gateway = source
+            .get("gateway")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        gateway.insert("risk_appetite".into(), risk);
+        output.insert("gateway".into(), Value::Object(gateway));
+    }
+    for (key, value) in source {
+        if matches!(key.as_str(), "version" | "description") {
+            continue;
+        }
+        output.entry(key).or_insert(value);
+    }
+    if let Some(agents) = output.get_mut("agents").and_then(Value::as_object_mut) {
+        for (agent, config) in agents.iter_mut() {
+            if let Some(hosts) = config.get_mut("hosts") {
+                normalize_hosts(hosts, timestamps, &["agents", agent, "hosts"])?;
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn normalize_hosts(
+    hosts: &mut Value,
+    timestamps: &mut TimestampPaths,
+    prefix: &[&str],
+) -> Result<()> {
+    for (host, config) in hosts
         .as_object_mut()
         .ok_or_else(|| invalid("hosts must be a table"))?
-        .values_mut()
+        .iter_mut()
     {
         if let Some(fields) = config.as_object_mut() {
             // Preserve source-order assignment when both aliases exist, as normalize() does.
             let source = std::mem::take(fields);
+            let mut base = prefix.to_vec();
+            base.push(host);
+            let original = timestamps.projected(&base);
+            timestamps.remove_under(&base);
             for (key, value) in source {
+                let normalized = match key.as_str() {
+                    "rate" => "rate_limit",
+                    "allow" => "credentials",
+                    "unknown_creds" => "unknown_credentials",
+                    _ => &key,
+                };
+                let mut target = base.clone();
+                target.push(normalized);
+                timestamps.remove_under(&target);
+                timestamps.extend(original.copy_under(&[&key], &target));
                 fields.insert(
                     match key.as_str() {
                         "rate" => "rate_limit".into(),

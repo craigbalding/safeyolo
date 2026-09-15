@@ -711,10 +711,18 @@ pub(crate) fn wipe_json(value: &mut Value) {
     match value {
         Value::String(value) => value.zeroize(),
         Value::Array(values) => values.iter_mut().for_each(wipe_json),
-        Value::Object(values) => values.values_mut().for_each(wipe_json),
+        Value::Object(values) => {
+            // Gateway maps can use credentials as keys. Own each key before
+            // wiping it so the map never retains a modified hash key.
+            for (mut key, mut value) in std::mem::take(values) {
+                key.zeroize();
+                wipe_json(&mut value);
+            }
+        }
         _ => {}
     }
 }
+
 fn encrypt(
     cipher: &Fernet,
     salt: &[u8; SALT_LENGTH],
@@ -837,4 +845,18 @@ fn restore(
         state.stamp = restored_stamp;
     }
     activate(&metadata(&state.credentials)).map_err(|_| error(ErrorKind::Rollback))
+}
+
+#[cfg(test)]
+mod wiping_tests {
+    #[test]
+    fn structural_wipe_removes_object_keys_and_clears_nested_values() {
+        let mut value = serde_json::json!([
+            "synthetic-array-value",
+            {"synthetic-object-key": ["synthetic-nested-value", {"nested-key":"nested-value"}]},
+            ["other-array-value"]
+        ]);
+        super::wipe_json(&mut value);
+        assert_eq!(value, serde_json::json!(["", {}, [""]]));
+    }
 }
