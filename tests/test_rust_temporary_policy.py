@@ -135,3 +135,39 @@ def test_policy_reload_keeps_last_valid_decision(tmp_path):
         policy.write_text("invalid TOML")
         time.sleep(1.1)
         assert request(path)[1]["status"] == 403
+
+
+@pytest.mark.parametrize("wire", [
+    b"POST /decision HTTP/1.1\r\nHost: adapter\r\nContent-Length: 100\r\n\r\n{",
+    b"invalid request line\r\n\r\n",
+])
+def test_disconnected_peer_does_not_stop_adapter(tmp_path, wire):
+    with adapter(tmp_path, '[hosts]\n"*" = {egress = "allow"}\n') as (path, _):
+        with socket.socket(socket.AF_UNIX) as cancelled:
+            cancelled.connect(str(path))
+            cancelled.sendall(wire)
+        assert request(path)[1]["allow"]
+
+
+def test_policy_connection_error_is_still_fatal(tmp_path, monkeypatch):
+    from tools.proxy_migration import temporary_policy
+
+    def fail_policy(*args):
+        raise BrokenPipeError("Synthetic policy failure")
+
+    monkeypatch.setattr(temporary_policy, "decide", fail_policy)
+    metadata = json.dumps({
+        "agent_id": "alice", "request_id": "req-test", "connection_id": "conn-test",
+        "method": "GET", "scheme": "http", "host": "example.invalid", "port": 80,
+        "path": "/",
+    }).encode()
+    with tempfile.TemporaryDirectory(prefix="sy-pdp-fatal-") as directory:
+        path = Path(directory) / "policy.sock"
+        with temporary_policy.PolicyServer(path, None) as server, socket.socket(socket.AF_UNIX) as client:
+            client.connect(str(path))
+            client.sendall(
+                f"POST /decision HTTP/1.1\r\nHost: adapter\r\nContent-Length: {len(metadata)}\r\n\r\n".encode()
+                + metadata
+            )
+            with pytest.raises(RuntimeError, match="adapter request failed"):
+                server.handle_request()

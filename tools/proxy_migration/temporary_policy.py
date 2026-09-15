@@ -14,6 +14,7 @@ import json
 import os
 import signal
 import socketserver
+import sys
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Literal
@@ -90,6 +91,10 @@ class PolicyServer(socketserver.UnixStreamServer):
         return connection, address
 
     def handle_error(self, request, client_address):
+        if isinstance(sys.exception(), ConnectionError):
+            # The Rust request owner cancels its adapter socket when a client
+            # disconnects. A closed peer ends this exchange, not the process.
+            return
         # An unexpected worker error is fatal and visible. Do not print request
         # metadata through socketserver's default traceback logging.
         raise RuntimeError("Temporary policy adapter request failed")
@@ -133,7 +138,13 @@ class PolicyRequestHandler(BaseHTTPRequestHandler):
         except ValidationError:
             self._reply(400, {"error": "Invalid network metadata"})
             return
-        self._reply(200, decide(self.server.pdp, request))
+        try:
+            result = decide(self.server.pdp, request)
+        except ConnectionError as error:
+            # Only this handler's socket errors are expected cancellations.
+            # A policy failure must still reach the server's fatal error path.
+            raise RuntimeError("Temporary policy evaluation failed") from error
+        self._reply(200, result)
 
 
 def serve(socket_path: Path, policy_path: Path) -> None:
