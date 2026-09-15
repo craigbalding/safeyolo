@@ -1,7 +1,8 @@
-//! First migration slice: trusted UDS ingress and HTTP/1 through existing policy.
+//! Development proxy: trusted UDS ingress, HTTP/TLS and admitted CONNECT streams.
 //! The temporary Python network decision bridge is required; this is not production parity.
 
 pub mod approvals;
+pub mod circuits;
 mod config;
 pub mod contracts;
 pub mod credentials;
@@ -9,7 +10,9 @@ pub mod grants;
 mod http;
 pub mod policy;
 pub mod services;
+pub mod test_context;
 pub mod tls;
+mod tunnels;
 
 pub use config::{AgentListener, Config};
 
@@ -52,6 +55,7 @@ pub(crate) struct Runtime {
     parent: Option<config::ParentProxy>,
     tls: Option<Arc<rustls::ClientConfig>>,
     certificate_authority: Option<Arc<tls::CertificateAuthority>>,
+    passthrough: tunnels::Passthrough,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -65,6 +69,10 @@ impl Runtime {
         temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
     ) -> Result<Self, Error> {
         config.validate()?;
+        let passthrough = tunnels::Passthrough::new(
+            &config.ignore_hosts,
+            &std::env::var("SAFEYOLO_IGNORE_CIDRS").unwrap_or_default(),
+        )?;
         let parent = config.parent()?;
         let certificate_authority = config
             .tls_ca_file
@@ -84,6 +92,7 @@ impl Runtime {
             parent,
             tls,
             certificate_authority,
+            passthrough,
             via_token: config
                 .via_token
                 .clone()

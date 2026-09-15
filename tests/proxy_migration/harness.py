@@ -74,7 +74,8 @@ def wait_ready(process, paths, log, *, readiness_file=None):
 
 
 @contextmanager
-def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=False, upstream_ca=None):
+def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=False, upstream_ca=None,
+                 ignore_hosts=(), eager_connect=False):
     """Start one explicitly selected implementation in isolated fixture state."""
     directory.mkdir(parents=True, exist_ok=True)
     policy = directory / "policy.toml"
@@ -102,8 +103,10 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             env.pop("SAFEYOLO_UPSTREAM_PROXY", None)
         if backend == "python":
             config.update(policy_file=str(policy), ca_directory=str(directory / "ca"))
+            config.update(ignore_hosts=list(ignore_hosts), connection_strategy="eager" if eager_connect else "lazy")
             command = [sys.executable, "-m", "tests.proxy_migration.old_proxy"]
         elif backend == "rust":
+            config["ignore_hosts"] = list(ignore_hosts)
             policy_socket = str(Path(sockets) / "policy.sock")
             bridge_directory = directory / "policy-bridge"
             bridge_directory.mkdir()

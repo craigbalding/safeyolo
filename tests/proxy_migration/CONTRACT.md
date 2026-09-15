@@ -41,6 +41,10 @@ The shared assertions cover:
   opposing path-conditioned allow and deny rules.
 - Concurrent HTTP/2 streams from two agents, independent request identities,
   exact encoded queries, protocol negotiation and rejected inner authorities.
+- Opaque CONNECT, server-first traffic and both TCP half-close directions.
+  The old half-close defects remain two strict expected failures.
+- Fragmented TLS prefixes retain the inner request decision. Two old short-prefix
+  cases remain strict expected failures.
 
 The HTTPS fixture creates a fresh mitmproxy CA in private fixture state. Rust
 receives that combined file through `tls_ca_file`. It never replaces an existing
@@ -51,8 +55,32 @@ upstream response and shutdown drains its remaining bytes. The paired HTTP/2
 fixture uses an independent Python protocol peer. Two strict expected failures
 retain the old inner-authority bypass; Rust rejects both cases. Rust can
 negotiate HTTP/2 with the client while using HTTP/1 at the origin, where the old
-proxy negotiates HTTP/1 on both sides. Opaque CONNECT, TLS passthrough and
-WebSockets remain outside this development HTTPS path.
+proxy negotiates HTTP/1 on both sides. Native opaque CONNECT now shares the
+authorized egress path with HTTP/TLS. Native passthrough tests preserve the
+origin's certificate and restore interception after removing an exact entry.
+WebSockets and the documented passthrough matching gaps remain unfinished.
+
+The earlier focused launcher keeps lazy connection setup by default. Tunnel
+fixtures explicitly select the old production eager behavior; native CONNECT
+now always uses that behavior. An allowed CONNECT may open one destination
+connection even when a later inner request is denied. Assertions distinguish
+that authorized contact from forbidden application bytes or a substituted
+destination. A denied CONNECT still opens no connection.
+
+For the real SSH contract on a prepared Linux host, install `ssh`, `ssh-keygen`
+and `sshd`, then run from the repository root:
+
+```sh
+SAFEYOLO_RUN_SSH_CONTRACT=1 uv run --frozen pytest -q \
+  tests/proxy_migration/test_tunnel_contract.py \
+  --proxy-backend python --proxy-backend rust
+```
+
+The test starts an owned loopback SSH daemon with fresh keys and exact host-key
+verification. It transfers 1 MiB of binary input while the server first writes
+512 KiB of output. Both backends run with default classification and an exact
+passthrough entry. Teardown removes private keys and stops the daemon. This
+opt-in test passed on Linux aarch64; it does not establish macOS guest ingress.
 
 The old launcher uses existing `RequestIdGenerator`, `AgentAPIRequestGuard`,
 `NetworkGuard`, `SSEStreaming`, `ProbeSink`, and `TransportGuard` implementations

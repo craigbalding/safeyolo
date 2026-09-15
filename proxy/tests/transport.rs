@@ -100,6 +100,7 @@ fn config(directory: &TempDir) -> Config {
         parent_proxy: None,
         upstream_ca_file: None,
         tls_ca_file: None,
+        ignore_hosts: Vec::new(),
         via_token: Some("test-instance".into()),
     }
 }
@@ -124,6 +125,360 @@ async fn raw(socket: &Path, bytes: &str) -> String {
     })
     .await
     .expect("proxy response timed out")
+}
+
+async fn connect_raw(socket: &Path, authority: &str) -> UnixStream {
+    let mut stream = UnixStream::connect(socket).await.unwrap();
+    stream
+        .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut head = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(stream.read_u8().await.unwrap());
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        head.starts_with(b"HTTP/1.1 200"),
+        "{}",
+        String::from_utf8_lossy(&head)
+    );
+    stream
+}
+
+#[tokio::test]
+async fn opaque_connect_preserves_each_tcp_half_close() {
+    for server_half_first in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let config = config(&directory);
+        let _policy = Policy::start(&config.temporary_policy_socket).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let authority = listener.local_addr().unwrap().to_string();
+        let payload = vec![0; 1024 * 1024];
+        let expected = payload.clone();
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            if server_half_first {
+                stream.write_all(b"server-first").await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, expected);
+            if !server_half_first {
+                stream.write_all(b"after-client-eof").await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+        });
+        let proxy = Proxy::start(config.clone()).await.unwrap();
+        let mut client = connect_raw(&config.listeners[0].socket_path, &authority).await;
+        let mut received = Vec::new();
+        if server_half_first {
+            tokio::time::timeout(Duration::from_secs(3), client.read_to_end(&mut received))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(received, b"server-first");
+        }
+        client.write_all(&payload).await.unwrap();
+        client.shutdown().await.unwrap();
+        if !server_half_first {
+            tokio::time::timeout(Duration::from_secs(3), client.read_to_end(&mut received))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(received, b"after-client-eof");
+        }
+        tokio::time::timeout(Duration::from_secs(3), origin)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(client);
+        // Completion evidence is emitted by the owned tunnel task.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if events(&config)
+                    .iter()
+                    .any(|event| event["event"] == "proxy.tunnel")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let event = events(&config)
+            .into_iter()
+            .find(|event| event["event"] == "proxy.tunnel")
+            .unwrap();
+        assert_eq!(event["uploaded_bytes"], payload.len());
+        assert_eq!(event["downloaded_bytes"], received.len());
+        assert_eq!(event["coverage"], "opaque");
+        assert_eq!(event["outcome"], "completed");
+        assert_eq!(event["agent"], "alice");
+        proxy.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn opaque_connect_uses_parent_tunnel_and_denial_never_dials() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    config.parent_proxy = Some(format!("http://{}", listener.local_addr().unwrap()));
+    let contacts = Arc::new(AtomicUsize::new(0));
+    let seen = contacts.clone();
+    let parent = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        seen.fetch_add(1, Ordering::SeqCst);
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(stream.read_u8().await.unwrap());
+        }
+        assert!(head.starts_with(b"CONNECT destination.invalid:23456 HTTP/1.1\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\nserver-first")
+            .await
+            .unwrap();
+        let mut received = Vec::new();
+        stream.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, b"client");
+    });
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let denied = raw(&config.listeners[1].socket_path, "CONNECT destination.invalid:23456 HTTP/1.1\r\nHost: destination.invalid:23456\r\nConnection: close\r\n\r\n").await;
+    assert!(denied.starts_with("HTTP/1.1 403"));
+    assert_eq!(contacts.load(Ordering::SeqCst), 0);
+    assert!(
+        events(&config)
+            .iter()
+            .all(|event| event["event"] != "proxy.egress")
+    );
+    let mut client = connect_raw(
+        &config.listeners[0].socket_path,
+        "destination.invalid:23456",
+    )
+    .await;
+    let mut banner = [0; 12];
+    tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut banner))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&banner, b"server-first");
+    client.write_all(b"client").await.unwrap();
+    client.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), parent)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(contacts.load(Ordering::SeqCst), 1);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn opaque_disconnect_and_shutdown_release_the_destination() {
+    for shutdown in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let config = config(&directory);
+        let _policy = Policy::start(&config.temporary_policy_socket).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let authority = listener.local_addr().unwrap().to_string();
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream.write_all(b"server-first").await.unwrap();
+            assert_eq!(stream.read(&mut [0; 1]).await.unwrap(), 0);
+        });
+        let proxy = Proxy::start(config.clone()).await.unwrap();
+        let mut client = connect_raw(&config.listeners[0].socket_path, &authority).await;
+        client.read_exact(&mut [0; 12]).await.unwrap();
+        if shutdown {
+            tokio::time::timeout(Duration::from_secs(2), proxy.shutdown())
+                .await
+                .unwrap();
+            assert_eq!(client.read(&mut [0; 1]).await.unwrap(), 0);
+        } else {
+            drop(client);
+            tokio::time::timeout(Duration::from_secs(2), origin)
+                .await
+                .unwrap()
+                .unwrap();
+            proxy.shutdown().await;
+            continue;
+        }
+        tokio::time::timeout(Duration::from_secs(2), origin)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_socket() {
+    for first in [1, 2, 3, 16] {
+        let directory = tempfile::tempdir().unwrap();
+        let config = config(&directory);
+        let policy = Policy::start(&config.temporary_policy_socket).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let authority = listener.local_addr().unwrap().to_string();
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes).await.unwrap();
+            assert!(
+                bytes.is_empty(),
+                "denied inner HTTP reached the destination"
+            );
+        });
+        let proxy = Proxy::start(config.clone()).await.unwrap();
+        let mut client = connect_raw(&config.listeners[0].socket_path, &authority).await;
+        let request =
+            format!("GET /deny-inner HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+        client
+            .write_all(&request.as_bytes()[..first])
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        client
+            .write_all(&request.as_bytes()[first..])
+            .await
+            .unwrap();
+        let mut reply = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            reply.starts_with(b"HTTP/1.1 403"),
+            "{}",
+            String::from_utf8_lossy(&reply)
+        );
+        assert_eq!(
+            policy
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request["method"] == "GET")
+                .count(),
+            1
+        );
+        tokio::time::timeout(Duration::from_secs(2), origin)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            events(&config)
+                .iter()
+                .filter(|event| event["event"] == "proxy.egress")
+                .count(),
+            1
+        );
+        proxy.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let policy = Policy::start(&config.temporary_policy_socket).await;
+    let proxy_ca = interception_ca(&directory, &mut config);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let origin_ca = cert.der().clone();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let authority = format!("localhost:{}", listener.local_addr().unwrap().port());
+    config.ignore_hosts = vec![authority.clone()];
+    let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![origin_ca.clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let origin = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
+            .accept(socket)
+            .await
+            .unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(stream.read_u8().await.unwrap());
+        }
+        assert!(head.starts_with(b"GET /deny-inner HTTP/1.1\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\norigin")
+            .await
+            .unwrap();
+        stream.shutdown().await.unwrap();
+        drop(stream);
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        socket.read_to_end(&mut bytes).await.unwrap();
+        assert!(bytes.is_empty());
+    });
+    let mut proxy = Proxy::start(config.clone()).await.unwrap();
+    let mut client = connect_tls(
+        &config.listeners[0].socket_path,
+        &authority,
+        "localhost",
+        origin_ca,
+    )
+    .await
+    .unwrap();
+    client
+        .write_all(
+            format!("GET /deny-inner HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut received = Vec::new();
+    client.read_to_end(&mut received).await.unwrap();
+    assert!(received.ends_with(b"origin"));
+    drop(client);
+    assert!(
+        policy
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| request["method"] == "CONNECT")
+    );
+    config.ignore_hosts.clear();
+    proxy.reload(config.clone()).await.unwrap();
+    let mut client = connect_tls(
+        &config.listeners[0].socket_path,
+        &authority,
+        "localhost",
+        proxy_ca,
+    )
+    .await
+    .unwrap();
+    client
+        .write_all(
+            format!("GET /deny-inner HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut received = Vec::new();
+    let _ = client.read_to_end(&mut received).await;
+    assert!(received.starts_with(b"HTTP/1.1 403"));
+    tokio::time::timeout(Duration::from_secs(2), origin)
+        .await
+        .unwrap()
+        .unwrap();
+    proxy.shutdown().await;
 }
 
 fn events(config: &Config) -> Vec<Value> {
@@ -810,11 +1165,25 @@ async fn http2_shutdown_drains_a_paused_response() {
 }
 
 #[tokio::test]
-async fn intercepted_https_pins_authority_and_checks_inner_policy_before_egress() {
+async fn intercepted_https_pins_authority_and_checks_inner_policy_before_delivery() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
     let policy = Policy::start(&config.temporary_policy_socket).await;
     let ca = interception_ca(&directory, &mut config);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let authority = format!("localhost:{port}");
+    let origin = tokio::spawn(async move {
+        for _ in 0..7 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            socket.read_to_end(&mut bytes).await.unwrap();
+            assert!(
+                bytes.is_empty(),
+                "inner denial or invalid authority sent origin bytes"
+            );
+        }
+    });
     let proxy = Proxy::start(config.clone()).await.unwrap();
     for (target, expected) in [
         ("GET /deny-inner HTTP/1.1\r\nHost: localhost:18443", 403),
@@ -833,9 +1202,12 @@ async fn intercepted_https_pins_authority_and_checks_inner_policy_before_egress(
             400,
         ),
     ] {
+        let target = target
+            .replace("18443", &port.to_string())
+            .replace("18444", &((port % 65534) + 1).to_string());
         let socket = connect_tls(
             &config.listeners[0].socket_path,
-            "localhost:18443",
+            &authority,
             "localhost",
             ca.clone(),
         )
@@ -857,18 +1229,27 @@ async fn intercepted_https_pins_authority_and_checks_inner_policy_before_egress(
     assert!(
         connect_tls(
             &config.listeners[0].socket_path,
-            "localhost:18443",
+            &authority,
             "other.invalid",
             ca
         )
         .await
         .is_err()
     );
+    let egress = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.egress")
+        .collect::<Vec<_>>();
+    assert_eq!(egress.len(), 7);
     assert!(
-        events(&config)
+        egress
             .iter()
-            .all(|event| event["event"] != "proxy.egress")
+            .all(|event| event["host"] == "localhost" && event["port"] == port)
     );
+    tokio::time::timeout(Duration::from_secs(2), origin)
+        .await
+        .unwrap()
+        .unwrap();
     {
         let requests = policy.requests.lock().unwrap();
         assert_eq!(
@@ -1084,10 +1465,12 @@ async fn shutdown_cancels_an_idle_intercepted_connection() {
     let mut config = config(&directory);
     let _policy = Policy::start(&config.temporary_policy_socket).await;
     let ca = interception_ca(&directory, &mut config);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let authority = format!("localhost:{}", listener.local_addr().unwrap().port());
     let proxy = Proxy::start(config.clone()).await.unwrap();
     let mut socket = connect_tls(
         &config.listeners[0].socket_path,
-        "localhost:18443",
+        &authority,
         "localhost",
         ca,
     )

@@ -79,7 +79,10 @@ async def run(config):
         confdir=config["ca_directory"],
     )
     master = DumpMaster(options, with_termlog=False, with_dumper=False)
-    master.options.update(connection_strategy="lazy")
+    from safeyolo.ignore_hosts import build_ignore_patterns
+
+    master.options.update(connection_strategy=config.get("connection_strategy", "lazy"),
+                          ignore_hosts=build_ignore_patterns(config.get("ignore_hosts", [])))
     if config.get("upstream_ca_file"):
         master.options.update(ssl_verify_upstream_trusted_ca=config["upstream_ca_file"])
     master.addons.add(

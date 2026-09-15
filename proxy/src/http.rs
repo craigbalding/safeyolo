@@ -18,12 +18,10 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::{TcpStream, UnixStream},
-};
+use tokio::net::{TcpStream, UnixStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+use crate::tunnels::{self, BoxStream, Protocol};
 use crate::{ConnectionIdentity, Error, Runtime, RuntimeState, UpgradeTasks, is_reserved};
 
 pub(crate) type Body = BoxBody<Bytes, Error>;
@@ -109,6 +107,13 @@ pub(crate) struct Destination {
     path: String,
 }
 
+/// CONNECT owns one admitted endpoint and its first destination connection.
+/// Inner requests may consume that connection only after their own checks pass.
+pub(crate) struct Tunnel {
+    destination: Destination,
+    upstream: tokio::sync::Mutex<Option<BoxStream>>,
+}
+
 impl Destination {
     fn from_request(
         request: &Request<Incoming>,
@@ -145,12 +150,12 @@ impl Destination {
         }
         let scheme = uri
             .scheme_str()
-            .unwrap_or(if tunnel.is_some() { "https" } else { "http" })
+            .unwrap_or(tunnel.map_or("http", |tunnel| tunnel.scheme.as_str()))
             .to_owned();
         let port =
             crate::config::authority_port(&authority, if scheme == "https" { 443 } else { 80 })?;
         if let Some(tunnel) = tunnel
-            && (host != tunnel.host || port != tunnel.port || scheme != "https")
+            && (host != tunnel.host || port != tunnel.port || scheme != tunnel.scheme)
         {
             return Err("inner authority differs from admitted CONNECT destination".into());
         }
@@ -187,12 +192,14 @@ struct AllowedRequest<'a> {
     request_id: &'a str,
 }
 
-trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
-impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
-
 struct Outbound {
-    stream: Box<dyn Stream>,
+    stream: BoxStream,
     http2: bool,
+}
+
+struct Connected {
+    stream: BoxStream,
+    peer: Option<std::net::Ipv4Addr>,
 }
 
 pub(crate) fn parent_tls(config: &crate::Config) -> Result<Arc<ClientConfig>, Error> {
@@ -222,11 +229,11 @@ pub(crate) fn parent_tls(config: &crate::Config) -> Result<Arc<ClientConfig>, Er
 }
 
 /// The only outbound DNS/socket path. Both routing modes enforce local containment.
-async fn open_outbound(
+async fn open_egress(
     runtime: &Runtime,
     allowed: &AllowedRequest<'_>,
-    offer_http2: bool,
-) -> Result<Outbound, Error> {
+    tunnel: bool,
+) -> Result<Connected, Error> {
     let destination = allowed.destination;
     if is_reserved(&destination.host) {
         return Err("reserved destination cannot egress".into());
@@ -244,7 +251,15 @@ async fn open_outbound(
         "host": destination.host, "port": destination.port, "route": route,
     }))?;
     let socket = TcpStream::connect((host, port)).await?;
-    let mut stream: Box<dyn Stream> = if tls {
+    let peer = if runtime.parent.is_none() {
+        match socket.peer_addr()?.ip() {
+            std::net::IpAddr::V4(address) => Some(address),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let mut stream: BoxStream = if tls {
         let name = ServerName::try_from(host.to_owned())?;
         let tls = runtime
             .tls
@@ -254,33 +269,60 @@ async fn open_outbound(
     } else {
         Box::new(socket)
     };
+    if tunnel && runtime.parent.is_some() {
+        let (mut sender, connection) =
+            hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
+        let task = HttpTask(tokio::spawn(async move {
+            let _ = connection.with_upgrades().await;
+        }));
+        let target = if destination.host.contains(':') {
+            format!("[{}]:{}", destination.host, destination.port)
+        } else {
+            format!("{}:{}", destination.host, destination.port)
+        };
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri(&target)
+            .header(header::HOST, &target)
+            .header(header::VIA, format!("1.1 {}", runtime.via_token))
+            .body(full(Bytes::new()))?;
+        let response = sender.send_request(request).await?;
+        if !response.status().is_success() {
+            return Err("parent proxy refused CONNECT".into());
+        }
+        let upgraded = hyper::upgrade::on(response).await?;
+        drop(task);
+        stream = Box::new(TokioIo::new(upgraded));
+    }
+    Ok(Connected { stream, peer })
+}
+
+async fn open_outbound(
+    runtime: &Runtime,
+    allowed: &AllowedRequest<'_>,
+    offer_http2: bool,
+    tunnel: Option<&Tunnel>,
+) -> Result<Outbound, Error> {
+    let destination = allowed.destination;
+    let existing = if let Some(tunnel) = tunnel {
+        tunnel.upstream.lock().await.take()
+    } else {
+        None
+    };
+    let mut stream = match existing {
+        Some(stream) => stream,
+        None => {
+            open_egress(
+                runtime,
+                allowed,
+                tunnel.is_some() || destination.scheme == "https",
+            )
+            .await?
+            .stream
+        }
+    };
     let mut http2 = false;
     if destination.scheme == "https" {
-        if runtime.parent.is_some() {
-            let (mut sender, connection) =
-                hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
-            let task = HttpTask(tokio::spawn(async move {
-                let _ = connection.with_upgrades().await;
-            }));
-            let target = if destination.host.contains(':') {
-                format!("[{}]:{}", destination.host, destination.port)
-            } else {
-                format!("{}:{}", destination.host, destination.port)
-            };
-            let request = Request::builder()
-                .method(Method::CONNECT)
-                .uri(&target)
-                .header(header::HOST, &target)
-                .header(header::VIA, format!("1.1 {}", runtime.via_token))
-                .body(full(Bytes::new()))?;
-            let response = sender.send_request(request).await?;
-            if !response.status().is_success() {
-                return Err("parent proxy refused CONNECT".into());
-            }
-            let upgraded = hyper::upgrade::on(response).await?;
-            drop(task);
-            stream = Box::new(TokioIo::new(upgraded));
-        }
         let config = runtime
             .tls
             .as_ref()
@@ -371,6 +413,9 @@ fn loop_detected(headers: &HeaderMap, token: &str) -> bool {
         })
 }
 
+// Keep the immutable request snapshot separate from the reloadable state used
+// by later requests inside CONNECT, and keep routing separate from identity.
+#[allow(clippy::too_many_arguments)]
 async fn forward(
     runtime: Arc<Runtime>,
     state: RuntimeState,
@@ -379,6 +424,7 @@ async fn forward(
     request_id: &str,
     mut request: Request<Incoming>,
     destination: &Destination,
+    tunnel: Option<&Tunnel>,
 ) -> Result<(Response<Body>, String), Error> {
     if is_reserved(&destination.host) {
         let status = if request.method() == Method::CONNECT {
@@ -394,8 +440,7 @@ async fn forward(
             "local".into(),
         ));
     }
-    if (request.method() == Method::CONNECT
-        && (runtime.certificate_authority.is_none() || upgrades.is_none()))
+    if (request.method() == Method::CONNECT && upgrades.is_none())
         || !matches!(destination.scheme.as_str(), "http" | "https")
         || (destination.scheme == "https" && runtime.certificate_authority.is_none())
         || request.headers().contains_key(header::UPGRADE)
@@ -468,14 +513,25 @@ async fn forward(
         return Ok((denied, decision.decision));
     }
     if request.method() == Method::CONNECT {
-        let config = runtime
-            .certificate_authority
-            .as_ref()
-            .ok_or("TLS CA is not configured")?
-            .server_config(&destination.host, time::OffsetDateTime::now_utc())?;
+        // Admission precedes DNS/dial. Eager connection supports protocols whose
+        // server greets the client before receiving any client bytes.
+        let connected = open_egress(
+            &runtime,
+            &AllowedRequest {
+                destination,
+                identity,
+                request_id,
+            },
+            true,
+        )
+        .await?;
+        let passthrough =
+            runtime
+                .passthrough
+                .matches(&destination.host, destination.port, connected.peer);
         let upgrade = hyper::upgrade::on(&mut request);
         let identity = identity.clone();
-        let destination = Arc::new(destination.clone());
+        let destination = destination.clone();
         let request_id = request_id.to_owned();
         let upgrades = upgrades.ok_or("nested CONNECT is unsupported")?;
         let mut stop = upgrades.stop.clone();
@@ -484,52 +540,51 @@ async fn forward(
                 if *stop.borrow() {
                     return Ok(());
                 }
-                let tls = tokio::select! {
+                let client: BoxStream = tokio::select! {
                     _ = stop.changed() => return Ok(()),
-                    result = async {
-                        let socket = TokioIo::new(upgrade.await?);
-                        Ok::<_, Error>(TlsAcceptor::from(config).accept(socket).await?)
-                    } => result?,
+                    result = upgrade => Box::new(TokioIo::new(result?)),
                 };
-                let service = hyper::service::service_fn(move |request| {
-                    serve_request(
-                        state.clone(),
-                        identity.clone(),
-                        request,
-                        Some(destination.clone()),
-                        None,
-                    )
-                });
-                if tls.get_ref().1.alpn_protocol() == Some(b"h2") {
-                    let connection = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
-                        .serve_connection(TokioIo::new(tls), service);
-                    tokio::pin!(connection);
-                    if *stop.borrow() {
-                        connection.as_mut().graceful_shutdown();
-                    }
-                    tokio::select! {
-                        result = &mut connection => result?,
-                        _ = stop.changed() => {
-                            connection.as_mut().graceful_shutdown();
-                            connection.await?;
-                        }
-                    }
+                let (protocol, client, server) = if passthrough {
+                    (Protocol::Opaque, client, connected.stream)
                 } else {
-                    let connection = hyper::server::conn::http1::Builder::new()
-                        .serve_connection(TokioIo::new(tls), service);
-                    tokio::pin!(connection);
-                    if *stop.borrow() {
-                        connection.as_mut().graceful_shutdown();
-                    }
-                    tokio::select! {
-                        result = &mut connection => result?,
-                        _ = stop.changed() => {
-                            connection.as_mut().graceful_shutdown();
-                            connection.await?;
-                        }
-                    }
+                    tunnels::classify(client, connected.stream, &mut stop).await?
+                };
+                if protocol == Protocol::Opaque {
+                    let started = std::time::Instant::now();
+                    let result = tunnels::relay(client, server, stop).await;
+                    runtime.record(json!({
+                        "event": "proxy.tunnel", "agent": identity.agent_id,
+                        "connection_id": identity.connection_id, "request_id": request_id,
+                        "host": destination.host, "port": destination.port,
+                        "coverage": if passthrough { "configured_passthrough" } else { "opaque" },
+                        "uploaded_bytes": result.uploaded, "downloaded_bytes": result.downloaded,
+                        "duration_ms": started.elapsed().as_millis(), "outcome": result.outcome,
+                    }))?;
+                    return Ok(());
                 }
-                Ok(())
+                let (client, http2, scheme): (BoxStream, bool, &str) = if protocol == Protocol::Tls
+                {
+                    let config = runtime
+                        .certificate_authority
+                        .as_ref()
+                        .ok_or("TLS CA is not configured")?
+                        .server_config(&destination.host, time::OffsetDateTime::now_utc())?;
+                    let tls = tokio::select! {
+                        _ = stop.changed() => return Ok(()),
+                        result = TlsAcceptor::from(config).accept(client) => result?,
+                    };
+                    let http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
+                    (Box::new(tls), http2, "https")
+                } else {
+                    (client, false, "http")
+                };
+                let mut destination = destination;
+                destination.scheme = scheme.into();
+                let tunnel = Arc::new(Tunnel {
+                    destination,
+                    upstream: tokio::sync::Mutex::new(Some(server)),
+                });
+                serve_tunnel_http(state, identity, tunnel, client, http2, stop).await
             }
             .await;
             if let Err(error) = result {
@@ -556,18 +611,20 @@ async fn forward(
             request_id,
         },
         request.version() == hyper::Version::HTTP_2,
+        tunnel,
     )
     .await?;
-    *request.uri_mut() =
-        if outbound.http2 || (runtime.parent.is_some() && destination.scheme == "http") {
-            format!(
-                "{}://{}{}",
-                destination.scheme, destination.authority, destination.path
-            )
-            .parse::<Uri>()?
-        } else {
-            destination.path.parse::<Uri>()?
-        };
+    *request.uri_mut() = if outbound.http2
+        || (runtime.parent.is_some() && destination.scheme == "http" && tunnel.is_none())
+    {
+        format!(
+            "{}://{}{}",
+            destination.scheme, destination.authority, destination.path
+        )
+        .parse::<Uri>()?
+    } else {
+        destination.path.parse::<Uri>()?
+    };
     let (upstream, connection) = if outbound.http2 {
         // :authority carries the admitted destination. Avoid retaining a second
         // authority representation while translating a proxied request.
@@ -610,17 +667,67 @@ async fn forward(
     ))
 }
 
+async fn serve_tunnel_http(
+    state: RuntimeState,
+    identity: ConnectionIdentity,
+    tunnel: Arc<Tunnel>,
+    client: BoxStream,
+    http2: bool,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), Error> {
+    let service = hyper::service::service_fn(move |request| {
+        serve_request(
+            state.clone(),
+            identity.clone(),
+            request,
+            Some(tunnel.clone()),
+            None,
+        )
+    });
+    if http2 {
+        let connection = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(client), service);
+        tokio::pin!(connection);
+        if *stop.borrow() {
+            connection.as_mut().graceful_shutdown();
+        }
+        tokio::select! {
+            result = &mut connection => result?,
+            _ = stop.changed() => {
+                connection.as_mut().graceful_shutdown();
+                connection.await?;
+            }
+        }
+    } else {
+        let connection = hyper::server::conn::http1::Builder::new()
+            .serve_connection(TokioIo::new(client), service);
+        tokio::pin!(connection);
+        if *stop.borrow() {
+            connection.as_mut().graceful_shutdown();
+        }
+        tokio::select! {
+            result = &mut connection => result?,
+            _ = stop.changed() => {
+                connection.as_mut().graceful_shutdown();
+                connection.await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn serve_request(
     state: RuntimeState,
     identity: ConnectionIdentity,
     request: Request<Incoming>,
-    tunnel: Option<Arc<Destination>>,
+    tunnel: Option<Arc<Tunnel>>,
     upgrades: Option<UpgradeTasks>,
 ) -> Pin<Box<dyn Future<Output = Result<Response<Body>, Infallible>> + Send>> {
     Box::pin(async move {
         let runtime = state.read().expect("runtime read lock").clone();
         let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
-        let destination = Destination::from_request(&request, tunnel.as_deref());
+        let destination =
+            Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination));
         let result = match &destination {
             Ok(destination) => {
                 forward(
@@ -631,6 +738,7 @@ pub(crate) fn serve_request(
                     &request_id,
                     request,
                     destination,
+                    tunnel.as_deref(),
                 )
                 .await
             }

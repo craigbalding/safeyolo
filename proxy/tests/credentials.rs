@@ -10,6 +10,54 @@ use time::OffsetDateTime;
 fn password() -> Secret {
     Secret::new("synthetic vault passphrase — not an operator key")
 }
+
+#[test]
+#[ignore = "Python empty-vault unlock/reload oracle; set SAFEYOLO_POLICY_PYTHON"]
+fn historical_empty_vault_representations_clear_the_active_snapshot() {
+    use serde_json::json;
+    let (_directory, path, vault) = setup();
+    vault.store(credential("kept")).unwrap();
+    let output = python(
+        r#"
+import json,sys
+from pathlib import Path
+from safeyolo.core.vault import Vault
+x=json.load(sys.stdin);path=Path(x['path']);v=Vault(path);v.unlock(x['password'])
+original=path.read_bytes();out=[]
+for index,source in enumerate(['credentials: {}','credentials: ""','0.0','-0.0','credentials: []','credentials: null','credentials: false','credentials: 0','credentials: {bad: value}','credentials: nonempty']):
+ path.write_bytes(original);old=Vault(path);old.unlock(x['password'])
+ raw=v._salt+v._fernet.encrypt(source.encode());target=path.with_name(f'empty-{index}.enc');target.write_bytes(raw);path.write_bytes(raw)
+ try:
+  restarted=Vault(path);restarted.unlock(x['password']);accepted=True;names=restarted.list_names()
+ except (TypeError,AttributeError,KeyError):accepted=False;names=None
+ old._reload()
+ out.append({'path':str(target),'accepted':accepted,'restart_names':names,'reload_names':old.list_names()})
+path.write_bytes(original);print(json.dumps(out))
+"#,
+        &json!({"path":path,"password":password().expose_secret()}),
+    );
+    for case in output.as_array().unwrap() {
+        vault.store(credential("kept")).unwrap();
+        fs::copy(case["path"].as_str().unwrap(), &path).unwrap();
+        if case["accepted"] == true {
+            assert_eq!(case["restart_names"], json!([]));
+            assert_eq!(case["reload_names"], json!([]));
+            vault.reload().unwrap();
+            assert!(vault.list_names().unwrap().is_empty());
+            assert!(
+                Vault::unlock(&path, &password())
+                    .unwrap()
+                    .list_names()
+                    .unwrap()
+                    .is_empty()
+            );
+        } else {
+            assert_eq!(vault.reload().unwrap_err().kind, ErrorKind::Format);
+            assert_eq!(vault.list_names().unwrap(), ["kept"]);
+            assert!(Vault::unlock(&path, &password()).is_err());
+        }
+    }
+}
 fn now() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1704067200).unwrap()
 }

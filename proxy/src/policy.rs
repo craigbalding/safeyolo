@@ -1223,7 +1223,7 @@ fn expand_lists(document: &mut Map<String, Value>, base_dir: Option<&Path>) -> R
 // Python str.strip/split also treat the four information separators as space;
 // Rust's Unicode White_Space predicate omits them. Host-list entries must not
 // retain these bytes and accidentally fall through a permissive default rule.
-fn python_whitespace(character: char) -> bool {
+pub(crate) fn python_whitespace(character: char) -> bool {
     character.is_whitespace() || matches!(character, '\u{1c}'..='\u{1f}')
 }
 
@@ -2243,7 +2243,7 @@ fn overrides(value: Option<&Value>) -> Result<Vec<Override>> {
         .map(|(pattern, value)| parse_override(pattern, object(value, "override")?))
         .collect()
 }
-fn host_matches(host: &str, pattern: &str) -> bool {
+pub(crate) fn host_matches(host: &str, pattern: &str) -> bool {
     let (host, pattern) = (host.to_lowercase(), pattern.to_lowercase());
     pattern
         .strip_prefix("*.")

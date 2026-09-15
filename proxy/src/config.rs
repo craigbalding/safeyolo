@@ -12,7 +12,7 @@ pub struct AgentListener {
     pub socket_path: PathBuf,
 }
 
-/// Development-only M2 configuration. Production CLI selection comes later.
+/// Development configuration. Production CLI selection comes later.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -23,6 +23,9 @@ pub struct Config {
     pub parent_proxy: Option<String>,
     pub upstream_ca_file: Option<PathBuf>,
     pub tls_ca_file: Option<PathBuf>,
+    /// Canonical exact entries emitted by the existing CLI's normalize_ignore_hosts.
+    #[serde(default)]
+    pub ignore_hosts: Vec<String>,
     pub via_token: Option<String>,
 }
 

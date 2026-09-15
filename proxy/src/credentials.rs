@@ -504,7 +504,7 @@ fn decode_credentials(document: &mut Value) -> Result<Vec<Credential>> {
     if matches!(document, Value::Null | Value::Bool(false))
         || document.as_array().is_some_and(Vec::is_empty)
         || document.as_str() == Some("")
-        || document.as_i64() == Some(0)
+        || document.as_f64() == Some(0.0)
     {
         return Ok(Vec::new());
     }
@@ -514,6 +514,11 @@ fn decode_credentials(document: &mut Value) -> Result<Vec<Credential>> {
     let Some(records) = document.get_mut("credentials") else {
         return Ok(Vec::new());
     };
+    // Python iterates these two empty containers without producing records.
+    // Null, booleans and numbers remain invalid credential containers.
+    if records.as_object().is_some_and(Map::is_empty) || records.as_str() == Some("") {
+        return Ok(Vec::new());
+    }
     let records = records
         .as_array_mut()
         .ok_or_else(|| error(ErrorKind::Format))?;

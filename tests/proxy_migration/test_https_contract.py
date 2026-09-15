@@ -33,18 +33,32 @@ resource = "localhost/*"
 effect = "{effect}"
 condition = {{ method = "CONNECT", path_prefix = "/" }}
 '''
-    # A CONNECT head is sufficient: no TLS bytes are sent, and the old lazy
-    # connection strategy does not contact the synthetic destination yet.
-    with launch_proxy(proxy_backend, directory, policy, tls=True) as proxy:
-        with socket.socket(socket.AF_UNIX) as raw:
-            raw.settimeout(5)
-            raw.connect(proxy.paths["alice"])
-            raw.sendall(b"CONNECT localhost:8443 HTTP/1.1\r\nHost: localhost:8443\r\n\r\n")
-            response = http.client.HTTPResponse(raw)
-            response.begin()
-            assert response.status == status
-            response.close()
-        assert proxy.events("proxy.egress") == []
+    # Restore the production eager CONNECT behavior. Admission authorizes this
+    # TCP contact; a denied CONNECT still opens no destination connection.
+    with socket.socket() as origin:
+        origin.bind(("127.0.0.1", 0))
+        origin.listen()
+        origin.settimeout(0.2)
+        authority = f"localhost:{origin.getsockname()[1]}"
+        with launch_proxy(proxy_backend, directory, policy, tls=True, eager_connect=True) as proxy:
+            with socket.socket(socket.AF_UNIX) as raw:
+                raw.settimeout(5)
+                raw.connect(proxy.paths["alice"])
+                raw.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode())
+                response = http.client.HTTPResponse(raw)
+                response.begin()
+                assert response.status == status
+                response.close()
+            if status == 200:
+                accepted, _ = origin.accept()
+                with accepted:
+                    accepted.settimeout(2)
+                    assert accepted.recv(1) == b""
+                assert len(proxy.events("proxy.egress")) == 1
+            else:
+                with pytest.raises(TimeoutError):
+                    origin.accept()
+                assert proxy.events("proxy.egress") == []
 
 
 @pytest.mark.parametrize("certificate_host,trusted,status", [
