@@ -802,6 +802,90 @@ async fn intercepted_https_verifies_origin_and_parent_connect_without_fallback()
 }
 
 #[tokio::test]
+async fn intercepted_https_drains_an_active_response_during_shutdown() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let ca = interception_ca(&directory, &mut config);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let path = directory.path().join("upstream.pem");
+    std::fs::write(&path, cert.pem()).unwrap();
+    config.upstream_ca_file = Some(path);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let authority = format!("localhost:{}", listener.local_addr().unwrap().port());
+    let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let origin = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
+            .accept(socket)
+            .await
+            .unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(socket.read_u8().await.unwrap());
+        }
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nfirst")
+            .await
+            .unwrap();
+        released.await.unwrap();
+        socket.write_all(b"second").await.unwrap();
+        socket.shutdown().await.unwrap();
+    });
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let mut socket = connect_tls(
+        &config.listeners[0].socket_path,
+        &authority,
+        "localhost",
+        ca,
+    )
+    .await
+    .unwrap();
+    socket
+        .write_all(format!("GET /stream HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut bytes = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !bytes.ends_with(b"first") {
+            bytes.push(socket.read_u8().await.unwrap());
+        }
+    })
+    .await
+    .unwrap();
+    let shutdown = tokio::spawn(proxy.shutdown());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown discarded an active TLS response"
+    );
+    release.send(()).unwrap();
+    // A missing TLS close_notify is distinct from the HTTP body completion.
+    let _ = tokio::time::timeout(Duration::from_secs(5), socket.read_to_end(&mut bytes))
+        .await
+        .unwrap();
+    assert!(bytes.starts_with(b"HTTP/1.1 200"));
+    assert!(bytes.ends_with(b"firstsecond"));
+    origin.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), shutdown)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn shutdown_cancels_an_idle_intercepted_connection() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);

@@ -450,7 +450,7 @@ fn save_policy(path: &Path, source: &str) -> std::result::Result<(), SaveError> 
     result.map_err(|error| SaveError { error, committed })
 }
 
-fn update_policy<T>(
+pub(crate) fn update_policy<T>(
     path: &Path,
     skip_unchanged: bool,
     mutate: impl FnOnce(&mut DocumentMut) -> Result<T>,

@@ -4,6 +4,7 @@
 pub mod approvals;
 mod config;
 pub mod contracts;
+pub mod grants;
 mod http;
 pub mod policy;
 pub mod services;
@@ -32,7 +33,12 @@ use tokio::{
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) type RuntimeState = Arc<RwLock<Arc<Runtime>>>;
-pub(crate) type UpgradeTasks = Arc<tokio::sync::Mutex<JoinSet<()>>>;
+pub(crate) type UpgradeTasks = Arc<UpgradeState>;
+
+pub(crate) struct UpgradeState {
+    tasks: tokio::sync::Mutex<JoinSet<()>>,
+    stop: watch::Receiver<bool>,
+}
 
 #[derive(Clone)]
 pub(crate) struct ConnectionIdentity {
@@ -255,7 +261,10 @@ async fn serve_connection(
     runtime: Arc<RwLock<Arc<Runtime>>>,
     mut stop: watch::Receiver<bool>,
 ) {
-    let upgrades: UpgradeTasks = Arc::new(tokio::sync::Mutex::new(JoinSet::new()));
+    let upgrades: UpgradeTasks = Arc::new(UpgradeState {
+        tasks: tokio::sync::Mutex::new(JoinSet::new()),
+        stop: stop.clone(),
+    });
     let request_upgrades = upgrades.clone();
     let service = service_fn(move |request| {
         http::serve_request(
@@ -277,16 +286,11 @@ async fn serve_connection(
             if let Err(error) = connection.await { eprintln!("agent HTTP shutdown: {error}"); }
         }
     }
-    let mut upgrades = upgrades.lock().await;
-    while !upgrades.is_empty() {
-        if *stop.borrow() {
-            upgrades.abort_all();
-        }
-        tokio::select! {
-            _ = upgrades.join_next() => {},
-            _ = stop.changed() => upgrades.abort_all(),
-        }
-    }
+    // Upgrades receive the same shutdown signal as plain HTTP. Their own
+    // protocol driver drains active responses; the listener's existing timeout
+    // still bounds the lifetime of this connection and its owned tasks.
+    let mut upgrades = upgrades.tasks.lock().await;
+    while upgrades.join_next().await.is_some() {}
 }
 
 /// Owns listening sockets. Identity is fixed at accept, never taken from client bytes.

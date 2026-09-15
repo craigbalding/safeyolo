@@ -446,33 +446,49 @@ async fn forward(
         let identity = identity.clone();
         let destination = Arc::new(destination.clone());
         let request_id = request_id.to_owned();
-        upgrades
-            .ok_or("nested CONNECT is unsupported")?
-            .lock()
-            .await
-            .spawn(async move {
-                let result: Result<(), Error> = async {
-                    let socket = TokioIo::new(upgrade.await?);
-                    let tls = TlsAcceptor::from(config).accept(socket).await?;
-                    let service = hyper::service::service_fn(move |request| {
-                        serve_request(
-                            state.clone(),
-                            identity.clone(),
-                            request,
-                            Some(destination.clone()),
-                            None,
-                        )
-                    });
-                    hyper::server::conn::http1::Builder::new()
-                        .serve_connection(TokioIo::new(tls), service)
-                        .await?;
-                    Ok(())
+        let upgrades = upgrades.ok_or("nested CONNECT is unsupported")?;
+        let mut stop = upgrades.stop.clone();
+        upgrades.tasks.lock().await.spawn(async move {
+            let result: Result<(), Error> = async {
+                if *stop.borrow() {
+                    return Ok(());
                 }
-                .await;
-                if let Err(error) = result {
-                    eprintln!("CONNECT {request_id} ended: {error}");
+                let tls = tokio::select! {
+                    _ = stop.changed() => return Ok(()),
+                    result = async {
+                        let socket = TokioIo::new(upgrade.await?);
+                        Ok::<_, Error>(TlsAcceptor::from(config).accept(socket).await?)
+                    } => result?,
+                };
+                let service = hyper::service::service_fn(move |request| {
+                    serve_request(
+                        state.clone(),
+                        identity.clone(),
+                        request,
+                        Some(destination.clone()),
+                        None,
+                    )
+                });
+                let connection = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(tls), service);
+                tokio::pin!(connection);
+                if *stop.borrow() {
+                    connection.as_mut().graceful_shutdown();
                 }
-            });
+                tokio::select! {
+                    result = &mut connection => result?,
+                    _ = stop.changed() => {
+                        connection.as_mut().graceful_shutdown();
+                        connection.await?;
+                    }
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(error) = result {
+                eprintln!("CONNECT {request_id} ended: {error}");
+            }
+        });
         return Ok((Response::new(full(Bytes::new())), decision.decision));
     }
     strip_hop_headers(request.headers_mut());

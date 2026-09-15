@@ -264,6 +264,12 @@ silently reduce accepted message sizes to a library default.
 | D14 | The initial native policy parser accepted scalar `required`/`bypass` values that Python rejects, potentially allowing traffic with the network guard disabled. | Native schema repair requires arrays in these list-only fields and rejects malformed IAM tiers. Conditions that accept either a scalar or a list keep that syntax. Regression and Python-oracle checks accompany the repair; independent follow-up review remains required. |
 | D15 | The Python expiry loader prunes only global hosts. An agent-scoped one-day denial remains active after its timestamp, including at reload. | Native load/reload and durable pruning honor expiry for agent hosts too. Tests explicitly identify this behavior change and verify agent/port scope and preserved reload budgets. There is no new clock-driven reload timer. |
 | D16 | Contract enforcement compares raw query keys before decoding. `name=chosen&%6Eame=forbidden` passes a binding to `chosen`, while an origin receives both decoded values and can select `forbidden`. | Native contract enforcement rejects duplicate decoded keys as ambiguous encoding. A controlled origin proves the old bypass; differential tests identify the intentional rejection. Requests outside service contracts retain their query behavior. |
+| D17 | Rust CONNECT metadata used the routing defaults `http` and `/`; production supplies an empty scheme and path. Slash-path conditions could therefore reverse CONNECT allow/deny decisions. | Repair `8413219` preserves authority-form metadata. Paired live tests prove both conditional allow and deny outcomes and no origin contact; the adapter validates the target form. |
+| D18 | The initial native service YAML loader silently dropped merged binding constraints, allowing a forbidden value or an unbound operation. | Services now use the shared structural YAML frontend, including merge-list and explicit-key precedence. Native route-selection tests reject mismatched and unresolved values. The repair still requires independent acceptance. |
+| D19 | The initial Rust HTTPS path canceled upgraded connections immediately at shutdown, truncating an active response that plain HTTP would drain. | Inner HTTP receives the listener shutdown signal and drains active responses under the existing ten-second listener deadline. Idle TLS handshakes cancel promptly. A controlled TLS stream delivers its final bytes after shutdown begins; independent recheck remains required. |
+| D20 | Native JSON parsing rounded integers larger than `u64` to floating point. Different integer IDs could falsely satisfy a service `equals_var` binding. | JSON integers retain their exact decimal values; integer/float comparison uses the float's represented value. Strict body parsing also keeps authored private-number-marker objects as objects. The expanded contract oracle covers 2,218 outcomes, with only D16's 16 expected differences; independent recheck remains required. |
+| D21 | Python can admit two risky requests using the same once grant before either receives a response. | Native grants reserve one request at a time, release on failure/cancellation, and consume after a successful response. A controlled Python oracle proves the old reuse; native concurrency and stale-lease tests enforce one reservation. Reservations remain process-local, without an exactly-once side-effect claim across persistence failure and restart. |
+| D22 | Python tomlkit persists integers beyond TOML's signed 64-bit range exactly; the native TOML library rejects them. | JSON/YAML preserve large integers, but native TOML binding persistence and reload still reject out-of-range integers before publication. Previous state remains intact. This is an unresolved retained-workflow gap before activation, not a deliberate removal. |
 
 ## Deletion map and evidence still required
 
@@ -411,11 +417,16 @@ The native [network policy](../proxy/src/policy.rs),
 [contract enforcement](../proxy/src/contracts.rs) modules do not yet replace the
 temporary adapter. Their differential tests cover authored precedence, scoped
 mutations and rollback, reload budgets, service/capability routes and contract
-request constraints. Lists, task overlays, remaining conditions, some YAML expiry
-scalar forms, service-risk grant persistence and complete credential decisions
-still require implementation or integration. JSON body compatibility beyond the
-currently tested encodings/numeric range also remains open. Declared state and
-response-validator tiers are not promoted to implemented enforcement.
+request constraints. Local baseline host lists, IAM task overlays and network
+condition defaults follow the existing loader and evaluation context. The shared
+YAML frontend retains scalar style and merge precedence. Native
+[service grants and bindings](../proxy/src/grants.rs) preserve persisted scopes,
+configured TTLs, session lifetime, scoped mutations and rollback; once grants
+add the reservation repair in D21. These modules remain inactive in transport.
+Complete credential and risky-route decisions, TOML's large-integer gap, and
+JSON body compatibility beyond the tested UTF-8 encodings still require work.
+Declared state and response-validator tiers are not promoted to implemented
+enforcement.
 
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those

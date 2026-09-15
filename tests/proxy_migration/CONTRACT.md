@@ -37,11 +37,14 @@ The shared assertions cover:
 - HTTPS through the real policy engine with verified client and origin TLS,
   including a configured private trust root, wrong-host and untrusted-origin
   failures, denied CONNECT, and exact repeated/encoded query bytes.
+- Authority-form CONNECT metadata with no HTTP path or scheme, including
+  opposing path-conditioned allow and deny rules.
 
 The HTTPS fixture creates a fresh mitmproxy CA in private fixture state. Rust
 receives that combined file through `tls_ca_file`. It never replaces an existing
 operator CA. Native transport tests separately exercise inner authority/SNI
-confusion, parent CONNECT and idle TLS shutdown. HTTP/2, opaque CONNECT, TLS
+confusion, parent CONNECT, idle TLS shutdown and active HTTPS response drain
+during shutdown. HTTP/2, opaque CONNECT, TLS
 passthrough and WebSockets remain outside this development HTTPS path.
 
 The old launcher uses existing `RequestIdGenerator`, `AgentAPIRequestGuard`,

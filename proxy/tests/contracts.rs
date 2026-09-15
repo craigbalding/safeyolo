@@ -24,7 +24,10 @@ fn enforce(
     let headers: Vec<(String, String)> =
         serde_json::from_value(request["headers"].clone()).unwrap();
     let body = request["body"].as_str().unwrap_or("").as_bytes();
-    let state = binding();
+    let mut state = binding();
+    if let Some(value) = request.get("bound_value") {
+        state.bound_values.insert("approved".into(), value.clone());
+    }
     enforce_request(
         contract,
         bound.then_some(&state),
@@ -258,7 +261,9 @@ fn types_are_declared_and_missing_fields_are_not_made_required() {
 
 #[test]
 fn integer_bound_values_are_compared_without_float_rounding() {
-    let service = ServiceDefinition::from_value(contract_document(Value::Null)).unwrap();
+    let mut document = contract_document(Value::Null);
+    document["capabilities"]["test"]["contract"]["bindings"]["approved"]["type"] = json!("integer");
+    let service = ServiceDefinition::from_value(document).unwrap();
     let contract = service.capabilities["test"].contract.as_ref().unwrap();
     let mut state = binding();
     state
@@ -283,6 +288,46 @@ fn integer_bound_values_are_compared_without_float_rounding() {
         );
         assert_eq!(result.is_ok(), allowed, "{body}");
     }
+    for (bound, actual, allowed) in [
+        ("18446744073709551616", "18446744073709551616", true),
+        ("18446744073709551616", "18446744073709551617", false),
+        ("18446744073709551617", "18446744073709551616", false),
+        ("18446744073709551616", "18446744073709551616.0", true),
+        ("18446744073709551617", "18446744073709551617.0", false),
+        ("-18446744073709551617", "-18446744073709551616", false),
+        (
+            "10000000000000000000000000",
+            "10000000000000000000000001",
+            false,
+        ),
+        ("10000000000000000000000000", "1e25", false),
+        ("10000000000000000905969664", "1e25", true),
+        ("0", "-0.0", true),
+        (
+            "18446744073709551616",
+            r#"{"$serde_json::private::Number":"18446744073709551616"}"#,
+            false,
+        ),
+    ] {
+        // Exercise typed persisted-state JSON deserialization as well as body
+        // parsing; neither side may round the incoming integer token.
+        let mut state_json = serde_json::to_string(&binding()).unwrap();
+        state_json = state_json.replace("\"chosen\"", bound);
+        let state: ContractBinding = serde_json::from_str(&state_json).unwrap();
+        let body = format!("{{\"name\":{actual}}}");
+        let result = enforce_request(
+            contract,
+            Some(&state),
+            "X-Auth-Token",
+            ContractRequest {
+                method: "POST",
+                target: "/items",
+                headers: &headers,
+                body: body.as_bytes(),
+            },
+        );
+        assert_eq!(result.is_ok(), allowed, "binding {bound}, body {body}");
+    }
 }
 
 #[test]
@@ -304,6 +349,23 @@ fn operation_specificity_is_exact_then_parameter_then_glob_in_source_order() {
         "glob"
     );
     assert_eq!(path_specificity("/items", "/items/*"), 0);
+}
+
+#[test]
+fn binding_json_keeps_authored_marker_objects_and_last_duplicate_value() {
+    let source = r#"{"agent":"alice","service":"test-service","capability":"test","bound_values":{"approved":{"$serde_json::private::Number":"18446744073709551616"},"id":1,"id":2}}"#;
+    let direct: ContractBinding = serde_json::from_str(source).unwrap();
+    let object = &direct.bound_values["approved"];
+    assert!(object.is_object());
+    assert_eq!(
+        object["$serde_json::private::Number"].as_str(),
+        Some("18446744073709551616")
+    );
+    assert_eq!(direct.bound_values["id"], 2);
+    let from_value: ContractBinding =
+        serde_json::from_value(serde_json::to_value(&direct).unwrap()).unwrap();
+    assert!(from_value.bound_values["approved"].is_object());
+    assert_eq!(from_value.bound_values, direct.bound_values);
 }
 
 #[test]
@@ -497,6 +559,48 @@ fn differential_cases() -> Vec<Value> {
             scenarios.push(json!({"document":document,"capability":capability,"bound":bound,"requests":requests}));
         }
     }
+    let mut integer_document = generic.clone();
+    integer_document["capabilities"]["test"]["contract"]["bindings"]["approved"]["type"] =
+        json!("integer");
+    let mut integers: Vec<String> = [
+        "0",
+        "1",
+        "9007199254740992",
+        "9007199254740993",
+        "18446744073709551615",
+        "18446744073709551616",
+        "18446744073709551617",
+        "10000000000000000905969664",
+    ]
+    .map(str::to_owned)
+    .into();
+    for zeros in [25, 50, 200] {
+        integers.push(format!("1{}0", "0".repeat(zeros - 1)));
+        integers.push(format!("1{}1", "0".repeat(zeros - 1)));
+    }
+    integers.extend(
+        integers
+            .clone()
+            .into_iter()
+            .filter(|value| value != "0")
+            .map(|value| format!("-{value}")),
+    );
+    let mut integer_requests = Vec::new();
+    for bound in &integers {
+        for actual in &integers {
+            for actual in [actual.clone(), format!("{actual}.0")] {
+                let mut request = case(
+                    "POST",
+                    "/items",
+                    json!([["Content-Type", "application/json"]]),
+                    &format!("{{\"name\":{actual}}}"),
+                );
+                request["bound_value"] = serde_json::from_str(bound).unwrap();
+                integer_requests.push(request);
+            }
+        }
+    }
+    scenarios.push(json!({"document":integer_document,"capability":"test","bound":true,"requests":integer_requests}));
     assert!(generic.is_object());
     scenarios
 }
@@ -523,6 +627,7 @@ for scenario in x['scenarios']:
  state=ContractBindingState(binding_id='',agent='alice',service=service.name,capability=cap.name,template=cap.contract.template,bound_values=x['binding']['bound_values'],grantable_operations=x['binding']['grantable_operations']) if scenario['bound'] else None
  gateway=ServiceGateway(); results=[]
  for request in scenario['requests']:
+  if state and 'bound_value' in request: state.bound_values['approved']=request['bound_value']
   flow=tflow.tflow(); flow.request.method=request['method']; flow.request.path=request['target']; flow.request.host='synthetic.example'; flow.request.scheme='https'; flow.request.headers=Headers([(k.encode('latin-1'),v.encode('latin-1')) for k,v in request['headers']]); flow.request.content=request['body'].encode(); flow.response=None
   result={}
   def deny(flow,status,reason,code,**kw): result.update(allowed=False,code=code)

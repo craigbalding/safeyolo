@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{
     Deserialize, Serialize,
-    de::{self, MapAccess, SeqAccess, Visitor},
+    de::{self},
 };
 use serde_json::{Map, Value};
 
@@ -217,7 +217,7 @@ pub struct ContractBinding {
     pub capability: String,
     #[serde(default)]
     pub template: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bound_values")]
     pub bound_values: Map<String, Value>,
     #[serde(default)]
     pub grantable_operations: Vec<String>,
@@ -657,31 +657,38 @@ fn python_string(value: &Value) -> String {
         _ => value.to_string(),
     }
 }
-fn python_equal(left: &Value, right: &Value) -> bool {
-    let integer = |value: &Value| match value {
-        Value::Bool(value) => Some(i128::from(*value)),
-        Value::Number(value) => value
-            .as_i64()
-            .map(i128::from)
-            .or_else(|| value.as_u64().map(i128::from)),
-        _ => None,
-    };
-    match (integer(left), integer(right)) {
-        (Some(left), Some(right)) => return left == right,
-        (Some(integer), None) if right.is_f64() => {
-            return float_equals_integer(right.as_f64().unwrap(), integer);
+// JSON integer tokens remain exact at every magnitude. Python compares a
+// float to an integer using the float's exact represented value, not by
+// rounding the integer to f64 first.
+fn integer_text(value: &Value) -> Option<&str> {
+    match value {
+        Value::Bool(value) => Some(if *value { "1" } else { "0" }),
+        Value::Number(number) => {
+            let text = number.as_str();
+            (!text.contains(['.', 'e', 'E'])).then_some(if text == "-0" { "0" } else { text })
         }
-        (None, Some(integer)) if left.is_f64() => {
-            return float_equals_integer(left.as_f64().unwrap(), integer);
+        _ => None,
+    }
+}
+fn numeric_float(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_str().parse().ok(),
+        Value::Bool(value) => Some(if *value { 1. } else { 0. }),
+        _ => None,
+    }
+}
+fn python_equal(left: &Value, right: &Value) -> bool {
+    match (integer_text(left), integer_text(right)) {
+        (Some(left), Some(right)) => return left == right,
+        (Some(integer), None) if right.is_number() => {
+            return numeric_float(right).is_some_and(|float| float_equals_integer(float, integer));
+        }
+        (None, Some(integer)) if left.is_number() => {
+            return numeric_float(left).is_some_and(|float| float_equals_integer(float, integer));
         }
         _ => {}
     }
-    let number = |value: &Value| match value {
-        Value::Bool(value) => Some(if *value { 1. } else { 0. }),
-        Value::Number(value) => value.as_f64(),
-        _ => None,
-    };
-    if let (Some(left), Some(right)) = (number(left), number(right)) {
+    if let (Some(left), Some(right)) = (numeric_float(left), numeric_float(right)) {
         return left == right;
     }
     match (left, right) {
@@ -704,60 +711,36 @@ fn python_equal(left: &Value, right: &Value) -> bool {
     }
 }
 
-fn float_equals_integer(float: f64, integer: i128) -> bool {
-    float.is_finite() && float.fract() == 0.0 && float as i128 == integer
+fn float_equals_integer(float: f64, integer: &str) -> bool {
+    float.is_finite()
+        && float.fract() == 0.0
+        && if float == 0.0 {
+            integer == "0"
+        } else {
+            // Fixed zero-decimal formatting emits the full integer value of
+            // this binary float, including digits beyond shortest notation.
+            format!("{float:.0}") == integer
+        }
 }
 
 struct StrictJson(Value);
 impl<'de> Deserialize<'de> for StrictJson {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct JsonVisitor;
-        impl<'de> Visitor<'de> for JsonVisitor {
-            type Value = StrictJson;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("JSON value without duplicate object keys")
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-                let mut object = Map::new();
-                while let Some((key, value)) = map.next_entry::<String, StrictJson>()? {
-                    if object.insert(key, value.0).is_some() {
-                        return Err(de::Error::custom("duplicate JSON key"));
-                    }
-                }
-                Ok(StrictJson(Value::Object(object)))
-            }
-            fn visit_seq<A: SeqAccess<'de>>(
-                self,
-                mut sequence: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut values = Vec::new();
-                while let Some(value) = sequence.next_element::<StrictJson>()? {
-                    values.push(value.0);
-                }
-                Ok(StrictJson(Value::Array(values)))
-            }
-            fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
-                Ok(StrictJson(value.into()))
-            }
-            fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
-                Ok(StrictJson(value.into()))
-            }
-            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
-                Ok(StrictJson(value.into()))
-            }
-            fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
-                Ok(StrictJson(value.into()))
-            }
-            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                Ok(StrictJson(value.into()))
-            }
-            fn visit_string<E: de::Error>(self, value: String) -> Result<Self::Value, E> {
-                Ok(StrictJson(value.into()))
-            }
-            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
-                Ok(StrictJson(Value::Null))
-            }
-        }
-        deserializer.deserialize_any(JsonVisitor)
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        crate::policy::parse_json(raw.get(), true)
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
+}
+
+/// Decode the authored object before serde's private numeric representation can
+/// reinterpret a literal marker key. Policy/binding JSON retains last-key-wins.
+fn deserialize_bound_values<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Map<String, Value>, D::Error> {
+    let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+    match crate::policy::parse_json(raw.get(), false).map_err(de::Error::custom)? {
+        Value::Object(values) => Ok(values),
+        _ => Err(de::Error::custom("bound_values must be an object")),
     }
 }

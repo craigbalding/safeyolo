@@ -3,8 +3,9 @@
 //! Decisions mirror PolicyEngine.evaluate_request, including its existing exact
 //! index case sensitivity, shared host budgets and separate CONNECT counters.
 //! Credential/service permissions and addon enforcement are outside this API.
-//! Lists, task overlays and unsupported network conditions are not silently
-//! approximated. Loading a document that needs them reports Unsupported.
+//! File-backed host lists and IAM task overlays retain production precedence.
+//! All network conditions use the context actually supplied by evaluate_request;
+//! this API does not claim to validate credential or service policy schemas.
 //! Expiry is applied at load/reload, including the intentional agent-host expiry
 //! fix; reaching a deadline alone does not schedule a reload.
 
@@ -12,7 +13,7 @@ use std::{
     collections::HashMap,
     fmt,
     net::Ipv6Addr,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -95,20 +96,36 @@ enum RuleEffect {
     Budget(u64),
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Debug)]
 struct Condition {
     present: bool,
     agent: Option<String>,
     ports: Option<Vec<u16>>,
     methods: Option<Vec<String>>,
     path_prefix: Option<String>,
+    other_context_matches: bool,
+}
+
+impl Default for Condition {
+    fn default() -> Self {
+        Self {
+            present: false,
+            agent: None,
+            ports: None,
+            methods: None,
+            path_prefix: None,
+            other_context_matches: true,
+        }
+    }
 }
 
 impl Condition {
     fn matches(&self, request: &NetworkRequest<'_>) -> bool {
-        self.agent
-            .as_ref()
-            .is_none_or(|pattern| glob(request.agent.unwrap_or(""), pattern))
+        self.other_context_matches
+            && self
+                .agent
+                .as_ref()
+                .is_none_or(|pattern| glob(request.agent.unwrap_or(""), pattern))
             && self
                 .ports
                 .as_ref()
@@ -125,7 +142,7 @@ impl Condition {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Rule {
     resource: String,
     effect: RuleEffect,
@@ -159,7 +176,7 @@ impl Rule {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 struct Override {
     pattern: String,
     bypass: bool,
@@ -167,7 +184,7 @@ struct Override {
 }
 
 /// One network rule representation and one atomic GCRA state map.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Policy {
     rules: Vec<Rule>,
     global_budget: Option<u64>,
@@ -176,6 +193,16 @@ pub struct Policy {
     enabled: bool,
     domains: Vec<Override>,
     clients: Vec<Override>,
+    task: Option<TaskPolicy>,
+}
+
+#[derive(Clone, Debug)]
+struct TaskPolicy {
+    rules: Vec<Rule>,
+    global_budget: Option<u64>,
+    domains: Vec<Override>,
+    enabled: Option<bool>,
+    path: Option<PathBuf>,
 }
 
 impl Policy {
@@ -184,13 +211,16 @@ impl Policy {
     }
 
     pub fn parse_at(source: &str, format: Format, now_ms: f64) -> Result<Self> {
-        Self::from_document(parse_document(source, format)?, now_ms)
+        let mut document = parse_document(source, format)?;
+        prune_document(&mut document, now_ms)?;
+        Self::from_document(document, None)
     }
 
     /// Reloaded rule snapshots keep the same host/global budget counters.
     pub fn reload_from_source_at(&self, source: &str, format: Format, now_ms: f64) -> Result<Self> {
         let mut replacement = Self::parse_at(source, format, now_ms)?;
         replacement.budgets = self.budgets.clone();
+        replacement.task = self.task.clone();
         Ok(replacement)
     }
 
@@ -199,7 +229,58 @@ impl Policy {
     pub fn reload_from_path_at(&self, path: &Path, now_ms: f64) -> Result<Self> {
         let mut replacement = Self::from_path_at(path, now_ms)?;
         replacement.budgets = self.budgets.clone();
+        replacement.task = self.task.clone();
         Ok(replacement)
+    }
+
+    /// Task loading uses the shipped IAM schema. Host-centric task keys are
+    /// ignored by Python's UnifiedPolicy loader and are not compiled here.
+    pub fn with_task_source(&self, source: &str, format: Format) -> Result<Self> {
+        let mut document = parse_document(source, format)?;
+        for key in ["hosts", "agents", "lists", "global_budget"] {
+            document.shift_remove(key);
+        }
+        let enabled = network_enabled(document.get("addons"))?;
+        let task = Self::from_document(document, None)?;
+        let mut replacement = self.clone();
+        replacement.task = Some(TaskPolicy {
+            rules: task.rules,
+            global_budget: task.global_budget,
+            domains: task.domains,
+            enabled,
+            path: None,
+        });
+        Ok(replacement)
+    }
+
+    pub fn with_task_path(&self, path: &Path) -> Result<Self> {
+        let source = std::fs::read_to_string(path).map_err(|error| PolicyError {
+            kind: ErrorKind::Read,
+            message: error.to_string(),
+        })?;
+        let format = match path.extension().and_then(|value| value.to_str()) {
+            Some("toml") => Format::Toml,
+            Some("yaml" | "yml") => Format::Yaml,
+            _ => Format::Json,
+        };
+        let mut replacement = self.with_task_source(&source, format)?;
+        replacement.task.as_mut().expect("task was loaded").path = Some(path.to_owned());
+        Ok(replacement)
+    }
+
+    /// Reload the task independently, matching the production loader's separate
+    /// baseline/task success boundaries. An error leaves this snapshot valid.
+    pub fn reload_task(&self) -> Result<Self> {
+        match self.task.as_ref().and_then(|task| task.path.as_deref()) {
+            Some(path) => self.with_task_path(path),
+            None => Ok(self.clone()),
+        }
+    }
+
+    pub fn without_task(&self) -> Self {
+        let mut replacement = self.clone();
+        replacement.task = None;
+        replacement
     }
 
     pub fn from_path(path: &Path) -> Result<Self> {
@@ -217,6 +298,9 @@ impl Policy {
             _ => Format::Json,
         };
         let mut document = parse_document(&source, format)?;
+        // Production expires baseline entries before merging addon defaults or
+        // opening list files, so an expired reference cannot require its file.
+        prune_document(&mut document, now_ms)?;
         // Existing loader merges sibling addons.yaml defaults before compilation.
         let addons = path.with_file_name("addons.yaml");
         if addons.exists() && addons != path {
@@ -237,28 +321,14 @@ impl Policy {
                 }
             }
         }
-        Self::from_document(document, now_ms)
+        Self::from_document(document, path.parent())
     }
 
-    fn from_document(mut document: Map<String, Value>, now_ms: f64) -> Result<Self> {
-        let expired = expired_host_entries(&Value::Object(document.clone()), now_ms)?;
-        for (agent, host) in expired {
-            let hosts = match agent {
-                Some(agent) => document
-                    .get_mut("agents")
-                    .and_then(|agents| agents.get_mut(&agent))
-                    .and_then(|agent| agent.get_mut("hosts")),
-                None => document.get_mut("hosts"),
-            };
-            if let Some(hosts) = hosts.and_then(Value::as_object_mut) {
-                hosts.shift_remove(&host);
-            }
-        }
-        if document.contains_key("lists") {
-            return Err(unsupported(
-                "native network policy does not yet expand configured lists",
-            ));
-        }
+    fn from_document(
+        mut document: Map<String, Value>,
+        list_base_dir: Option<&Path>,
+    ) -> Result<Self> {
+        expand_lists(&mut document, list_base_dir)?;
         let budgets = document
             .get("budgets")
             .map(|budgets| object(budgets, "budgets"))
@@ -280,6 +350,7 @@ impl Policy {
             enabled: true,
             domains: Vec::new(),
             clients: Vec::new(),
+            task: None,
         };
         policy.required = document
             .get("required")
@@ -335,11 +406,6 @@ impl Policy {
             } else {
                 object(config, "host configuration")?
             };
-            if pattern.starts_with('$') {
-                return Err(unsupported(
-                    "native network policy does not yet expand host list references",
-                ));
-            }
             if agent.is_some()
                 && config
                     .get("bypass")
@@ -525,6 +591,29 @@ impl Policy {
                                     .collect::<Result<Vec<_>>>()?,
                             );
                         }
+                        "credential" => {
+                            condition.other_context_matches &=
+                                string_list(value, key)?.iter().any(|pattern| {
+                                    !pattern.starts_with("hmac:") && client_matches(":x", pattern)
+                                });
+                        }
+                        "content_type" => {
+                            condition.other_context_matches &= string(value, key)?.is_empty()
+                        }
+                        "tactics" | "enables" => {
+                            string_array(value, key)?;
+                            condition.other_context_matches = false;
+                        }
+                        "irreversible" => {
+                            condition.other_context_matches &= !boolean(value, "irreversible")?
+                        }
+                        "account" => {
+                            condition.other_context_matches &=
+                                string_list(value, key)?.iter().any(String::is_empty)
+                        }
+                        "service" | "capability" => {
+                            condition.other_context_matches &= glob("", string(value, key)?)
+                        }
                         _ => {
                             return Err(unsupported(format!(
                                 "native network condition is not implemented: {key}"
@@ -544,6 +633,18 @@ impl Policy {
     }
 
     fn matching(&self, request: &NetworkRequest<'_>, resource: &str) -> Option<&Rule> {
+        let task = self
+            .task
+            .as_ref()
+            .map_or(&[][..], |task| task.rules.as_slice());
+        let task_exact = task
+            .iter()
+            .any(|rule| rule.exact() && !rule.simple() && rule.resource == resource);
+        let candidates = || {
+            task.iter().chain(self.rules.iter().filter(|rule| {
+                !(task_exact && rule.exact() && !rule.simple() && rule.resource == resource)
+            }))
+        };
         let matches = |rule: &&Rule, agent: bool, exact: bool, port_only: bool| {
             !rule.inferred
                 && rule.exact() == exact
@@ -557,43 +658,26 @@ impl Policy {
                 && rule.condition.matches(request)
         };
         if request.agent.is_some_and(|agent| !agent.is_empty()) {
-            if let Some(rule) = self
-                .rules
-                .iter()
-                .find(|rule| matches(rule, true, true, false))
-            {
+            if let Some(rule) = candidates().find(|rule| matches(rule, true, true, false)) {
                 return Some(rule);
             }
-            if let Some(rule) = self
-                .rules
-                .iter()
-                .find(|rule| matches(rule, true, false, false))
-            {
+            if let Some(rule) = candidates().find(|rule| matches(rule, true, false, false)) {
                 return Some(rule);
             }
         }
-        if let Some(rule) = self
-            .rules
-            .iter()
-            .find(|rule| matches(rule, false, true, true))
-        {
+        if let Some(rule) = candidates().find(|rule| matches(rule, false, true, true)) {
             return Some(rule);
         }
         for effect in [Effect::Deny, Effect::Prompt, Effect::Allow] {
-            if let Some(rule) = self.rules.iter().find(|rule| {
+            if let Some(rule) = candidates().find(|rule| {
                 rule.simple() && rule.resource == resource && effect_of(rule.effect) == effect
             }) {
                 return Some(rule);
             }
         }
-        self.rules
-            .iter()
+        candidates()
             .find(|rule| !rule.simple() && matches(rule, false, true, false))
-            .or_else(|| {
-                self.rules
-                    .iter()
-                    .find(|rule| matches(rule, false, false, false))
-            })
+            .or_else(|| candidates().find(|rule| matches(rule, false, false, false)))
     }
 
     /// `now_ms` is epoch milliseconds; a lookup with consume=false changes no state.
@@ -646,7 +730,14 @@ impl Policy {
             };
             limits.push((format!("{action}:{host}"), rate));
         }
-        if let Some(rate) = self.global_budget {
+        let global_budget = match (
+            self.global_budget,
+            self.task.as_ref().and_then(|task| task.global_budget),
+        ) {
+            (Some(baseline), Some(task)) => Some(baseline.min(task)),
+            (baseline, task) => baseline.or(task),
+        };
+        if let Some(rate) = global_budget {
             limits.push((format!("{action}:__global__"), rate));
         }
         if limits.is_empty() {
@@ -695,6 +786,13 @@ impl Policy {
                 return self.required;
             }
         }
+        if let Some(task) = &self.task {
+            for entry in &task.domains {
+                if host_matches(request.host, &entry.pattern) && entry.bypass {
+                    return self.required;
+                }
+            }
+        }
         if let Some(agent) = request.agent {
             for entry in &self.clients {
                 if client_matches(agent, &entry.pattern)
@@ -712,8 +810,116 @@ impl Policy {
                 enabled = value;
             }
         }
+        if let Some(task_enabled) = self.task.as_ref().and_then(|task| task.enabled) {
+            enabled = self.required || task_enabled;
+        }
         enabled
     }
+}
+
+fn prune_document(document: &mut Map<String, Value>, now_ms: f64) -> Result<()> {
+    for (agent, host) in expired_host_entries(&Value::Object(document.clone()), now_ms)? {
+        let hosts = match agent {
+            Some(agent) => document
+                .get_mut("agents")
+                .and_then(|agents| agents.get_mut(&agent))
+                .and_then(|agent| agent.get_mut("hosts")),
+            None => document.get_mut("hosts"),
+        };
+        if let Some(hosts) = hosts.and_then(Value::as_object_mut) {
+            hosts.shift_remove(&host);
+        }
+    }
+    Ok(())
+}
+
+/// Existing lists are local files. URL-looking values are filenames too: the
+/// production loader does not fetch remote lists or introduce another egress.
+fn expand_lists(document: &mut Map<String, Value>, base_dir: Option<&Path>) -> Result<()> {
+    let Some(lists) = document
+        .get("lists")
+        .and_then(Value::as_object)
+        .filter(|lists| !lists.is_empty())
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let Some(hosts) = document.get_mut("hosts").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    let references: Vec<_> = hosts
+        .iter()
+        .filter_map(|(host, config)| {
+            host.strip_prefix('$')
+                .map(|name| (host.clone(), name.to_owned(), config.clone()))
+        })
+        .collect();
+    if !references.is_empty() && base_dir.is_none() {
+        return Err(unsupported("host lists require file-backed policy loading"));
+    }
+    for (_, name, _) in &references {
+        if !lists.contains_key(name) {
+            return Err(invalid(format!("undefined list reference ${name}")));
+        }
+    }
+    for (host, name, config) in references {
+        let path = Path::new(string(&lists[&name], "list path")?);
+        let path = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            base_dir
+                .ok_or_else(|| {
+                    unsupported("relative host lists require file-backed policy loading")
+                })?
+                .join(path)
+        };
+        let source = std::fs::read_to_string(&path).map_err(|error| PolicyError {
+            kind: ErrorKind::Read,
+            message: format!(
+                "failed to read list {} referenced by ${name}: {error}",
+                path.display()
+            ),
+        })?;
+        let config = if config.is_null() {
+            Value::Object(Map::new())
+        } else {
+            object(&config, "list host configuration")?;
+            config
+        };
+        hosts.shift_remove(&host);
+        for line in source.split([
+            '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
+            '\u{2029}',
+        ]) {
+            let mut entry = line.trim();
+            if entry.is_empty() || entry.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<_> = entry.split_whitespace().collect();
+            if parts.len() >= 2
+                && (matches!(parts[0], "0.0.0.0" | "127.0.0.1" | "255.255.255.255")
+                    || parts[0].starts_with([':', 'f']))
+            {
+                entry = parts[1];
+            }
+            if matches!(
+                entry,
+                "0.0.0.0"
+                    | "127.0.0.1"
+                    | "localhost"
+                    | "localhost.localdomain"
+                    | "local"
+                    | "broadcasthost"
+            ) || !entry.contains('.')
+            {
+                continue;
+            }
+            hosts
+                .entry(entry.to_owned())
+                .or_insert_with(|| config.clone());
+        }
+    }
+    Ok(())
 }
 
 fn current_time_ms() -> f64 {
@@ -946,12 +1152,16 @@ fn egress_effect(value: &Value) -> Result<RuleEffect> {
 /// Resolve typed TOML datetimes before converting to JSON. An authored table
 /// resembling serde's private datetime marker must remain an invalid expiry.
 pub(crate) fn parse_toml_document(source: &str) -> Result<Value> {
-    let mut document: Value = toml::from_str(source).map_err(|error| invalid(error.to_string()))?;
-    // toml::Value's serde visitor also recognizes authored marker tables.
-    // Consult the syntax tree for actual datetime tokens instead.
     let syntax = source
         .parse::<toml_edit::DocumentMut>()
         .map_err(|error| invalid(error.to_string()))?;
+    // Build structure from syntax nodes, never serde's private marker transport.
+    let mut document = Value::Object(
+        syntax
+            .iter()
+            .map(|(key, item)| Ok((key.to_owned(), toml_item(item)?)))
+            .collect::<Result<Map<_, _>>>()?,
+    );
     let normalize = |syntax: Option<&toml_edit::Item>, hosts: Option<&mut Value>| {
         if let (Some(syntax), Some(hosts)) = (
             syntax.and_then(toml_edit::Item::as_table_like),
@@ -990,47 +1200,463 @@ pub(crate) fn parse_toml_document(source: &str) -> Result<Value> {
     Ok(document)
 }
 
-fn reject_ambiguous_yaml_expiry(document: &Value) -> Result<()> {
-    let inspect = |hosts: Option<&Value>| -> Result<()> {
-        if let Some(hosts) = hosts.and_then(Value::as_object) {
-            for config in hosts.values() {
-                if let Some(value) = config.get("expires").and_then(Value::as_str)
-                    && (parse_expiry(value).is_none()
-                        || (value.len() == 10
-                            && value.as_bytes()[4] == b'-'
-                            && value.as_bytes()[7] == b'-'))
-                {
-                    return Err(unsupported(
-                        "ambiguous YAML expiry needs scalar style preservation; use a full ISO datetime until implemented",
-                    ));
+fn toml_item(item: &toml_edit::Item) -> Result<Value> {
+    match item {
+        toml_edit::Item::None => Ok(Value::Null),
+        toml_edit::Item::Value(value) => toml_value(value),
+        toml_edit::Item::Table(table) => table
+            .iter()
+            .map(|(key, value)| Ok((key.to_owned(), toml_item(value)?)))
+            .collect::<Result<Map<_, _>>>()
+            .map(Value::Object),
+        toml_edit::Item::ArrayOfTables(tables) => tables
+            .iter()
+            .map(|table| {
+                table
+                    .iter()
+                    .map(|(key, value)| Ok((key.to_owned(), toml_item(value)?)))
+                    .collect::<Result<Map<_, _>>>()
+                    .map(Value::Object)
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Value::Array),
+    }
+}
+
+fn toml_value(value: &toml_edit::Value) -> Result<Value> {
+    match value {
+        toml_edit::Value::String(value) => Ok(Value::String(value.value().clone())),
+        toml_edit::Value::Integer(value) => Ok(Value::from(*value.value())),
+        toml_edit::Value::Float(value) => serde_json::Number::from_f64(*value.value())
+            .map(Value::Number)
+            .ok_or_else(|| unsupported("non-finite TOML numbers are unsupported")),
+        toml_edit::Value::Boolean(value) => Ok(Value::Bool(*value.value())),
+        toml_edit::Value::Datetime(value) => Ok(Value::Object(Map::from_iter([(
+            "$__toml_private_datetime".into(),
+            Value::String(value.value().to_string()),
+        )]))),
+        toml_edit::Value::Array(values) => values
+            .iter()
+            .map(toml_value)
+            .collect::<Result<Vec<_>>>()
+            .map(Value::Array),
+        toml_edit::Value::InlineTable(table) => table
+            .iter()
+            .map(|(key, value)| Ok((key.to_owned(), toml_value(value)?)))
+            .collect::<Result<Map<_, _>>>()
+            .map(Value::Object),
+    }
+}
+
+/// Preserve source object structure with arbitrary precision numbers enabled.
+/// Request bodies reject duplicates; operator policy files retain last-key-wins.
+pub(crate) fn parse_json(source: &str, reject_duplicates: bool) -> serde_json::Result<Value> {
+    json_value(source, reject_duplicates, 0)
+}
+
+fn json_value(source: &str, reject_duplicates: bool, depth: usize) -> serde_json::Result<Value> {
+    use serde::de::{self, MapAccess, Visitor};
+    use serde_json::value::RawValue;
+    if depth > 128 {
+        return Err(de::Error::custom("JSON nesting limit exceeded"));
+    }
+    match source.trim_start().as_bytes().first() {
+        Some(b'{') => {
+            struct ObjectVisitor {
+                reject_duplicates: bool,
+                depth: usize,
+            }
+            impl<'de> Visitor<'de> for ObjectVisitor {
+                type Value = Value;
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("JSON object")
+                }
+                fn visit_map<A: MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> std::result::Result<Value, A::Error> {
+                    let mut object = Map::new();
+                    while let Some((key, raw)) = map.next_entry::<String, Box<RawValue>>()? {
+                        if self.reject_duplicates && object.contains_key(&key) {
+                            return Err(de::Error::custom("duplicate JSON key"));
+                        }
+                        let value = json_value(raw.get(), self.reject_duplicates, self.depth + 1)
+                            .map_err(de::Error::custom)?;
+                        object.insert(key, value);
+                    }
+                    Ok(Value::Object(object))
                 }
             }
+            let mut deserializer = serde_json::Deserializer::from_str(source);
+            let value = serde::Deserializer::deserialize_map(
+                &mut deserializer,
+                ObjectVisitor {
+                    reject_duplicates,
+                    depth,
+                },
+            )?;
+            deserializer.end()?;
+            Ok(value)
         }
-        Ok(())
+        Some(b'[') => {
+            let raw: Vec<Box<RawValue>> = serde_json::from_str(source)?;
+            raw.iter()
+                .map(|item| json_value(item.get(), reject_duplicates, depth + 1))
+                .collect::<serde_json::Result<Vec<_>>>()
+                .map(Value::Array)
+        }
+        _ => serde_json::from_str(source),
+    }
+}
+
+/// One YAML frontend for native policy consumers. Event scalar styles and tags
+/// preserve the distinctions erased by a generic JSON deserializer.
+pub(crate) fn parse_yaml(source: &str) -> Result<Value> {
+    use yaml_rust2::parser::{Event, Parser};
+    let mut parser = Parser::new_from_str(source);
+    let next = |parser: &mut Parser<std::str::Chars<'_>>| {
+        parser
+            .next_token()
+            .map(|(event, _)| event)
+            .map_err(|error| invalid(error.to_string()))
     };
-    inspect(document.get("hosts"))?;
-    if let Some(agents) = document.get("agents").and_then(Value::as_object) {
-        for agent in agents.values() {
-            inspect(agent.get("hosts"))?;
+    if next(&mut parser)? != Event::StreamStart {
+        return Err(invalid("expected YAML stream"));
+    }
+    match next(&mut parser)? {
+        Event::StreamEnd => return Ok(Value::Null),
+        Event::DocumentStart => {}
+        _ => return Err(invalid("expected YAML document")),
+    }
+    let value = yaml_node(&mut parser, &mut HashMap::new())?.0;
+    if next(&mut parser)? != Event::DocumentEnd || next(&mut parser)? != Event::StreamEnd {
+        return Err(invalid("policy YAML must contain one document"));
+    }
+    Ok(value)
+}
+
+fn yaml_node(
+    parser: &mut yaml_rust2::parser::Parser<std::str::Chars<'_>>,
+    anchors: &mut HashMap<usize, (Value, bool)>,
+) -> Result<(Value, bool)> {
+    use yaml_rust2::parser::Event;
+    let (event, _) = parser
+        .next_token()
+        .map_err(|error| invalid(error.to_string()))?;
+    let (anchor, result) = match event {
+        Event::Scalar(value, style, anchor, tag) => {
+            (anchor, yaml_scalar(&value, style, tag.as_ref())?)
         }
+        Event::Alias(anchor) => {
+            return anchors.get(&anchor).cloned().ok_or_else(|| {
+                unsupported("recursive or unresolved YAML aliases are not supported")
+            });
+        }
+        Event::SequenceStart(anchor, tag) => {
+            yaml_collection_tag(tag.as_ref(), "seq")?;
+            let mut values = Vec::new();
+            while !matches!(
+                parser.peek().map_err(|error| invalid(error.to_string()))?.0,
+                Event::SequenceEnd
+            ) {
+                values.push(yaml_node(parser, anchors)?.0);
+            }
+            parser
+                .next_token()
+                .map_err(|error| invalid(error.to_string()))?;
+            (anchor, (Value::Array(values), false))
+        }
+        Event::MappingStart(anchor, tag) => {
+            yaml_collection_tag(tag.as_ref(), "map")?;
+            let (mut merged, mut local) = (Map::new(), Vec::new());
+            while !matches!(
+                parser.peek().map_err(|error| invalid(error.to_string()))?.0,
+                Event::MappingEnd
+            ) {
+                let (key, is_merge) = yaml_node(parser, anchors)?;
+                let value = yaml_node(parser, anchors)?.0;
+                if is_merge {
+                    let parents = match value {
+                        Value::Object(mapping) => vec![Value::Object(mapping)],
+                        Value::Array(parents) => parents.into_iter().rev().collect(),
+                        _ => return Err(invalid("YAML merge requires mappings")),
+                    };
+                    for parent in parents {
+                        for (key, value) in object(&parent, "YAML merge")? {
+                            merged.insert(key.clone(), value.clone());
+                        }
+                    }
+                } else {
+                    local.push((string(&key, "YAML mapping key")?.to_owned(), value));
+                }
+            }
+            parser
+                .next_token()
+                .map_err(|error| invalid(error.to_string()))?;
+            for (key, value) in local {
+                merged.insert(key, value);
+            }
+            (anchor, (Value::Object(merged), false))
+        }
+        _ => return Err(invalid("unexpected YAML event")),
+    };
+    if anchor != 0 {
+        anchors.insert(anchor, result.clone());
+    }
+    Ok(result)
+}
+
+fn yaml_collection_tag(tag: Option<&yaml_rust2::parser::Tag>, expected: &str) -> Result<()> {
+    if let Some(tag) = tag
+        && (tag.handle != "tag:yaml.org,2002:" || tag.suffix != expected)
+    {
+        return Err(unsupported("unsupported YAML collection tag"));
     }
     Ok(())
 }
 
+fn yaml_scalar(
+    value: &str,
+    style: yaml_rust2::scanner::TScalarStyle,
+    tag: Option<&yaml_rust2::parser::Tag>,
+) -> Result<(Value, bool)> {
+    use yaml_rust2::scanner::TScalarStyle;
+    let explicit = tag
+        .map(|tag| {
+            if tag.handle != "tag:yaml.org,2002:" {
+                return Err(unsupported("unsupported YAML scalar tag"));
+            }
+            Ok(tag.suffix.as_str())
+        })
+        .transpose()?;
+    if explicit == Some("str") || (explicit.is_none() && style != TScalarStyle::Plain) {
+        return Ok((Value::String(value.into()), false));
+    }
+    if explicit == Some("merge") || (explicit.is_none() && value == "<<") {
+        return Ok((Value::String(value.into()), true));
+    }
+    let normalized_boolean = if explicit == Some("bool") {
+        value.to_lowercase()
+    } else {
+        value.to_owned()
+    };
+    let boolean = match normalized_boolean.as_str() {
+        "yes" | "Yes" | "YES" | "true" | "True" | "TRUE" | "on" | "On" | "ON" => Some(true),
+        "no" | "No" | "NO" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF" => Some(false),
+        _ => None,
+    };
+    if explicit == Some("bool") || (explicit.is_none() && boolean.is_some()) {
+        return Ok((
+            Value::Bool(boolean.ok_or_else(|| invalid("invalid YAML boolean"))?),
+            false,
+        ));
+    }
+    if explicit == Some("null")
+        || (explicit.is_none() && matches!(value, "" | "~" | "null" | "Null" | "NULL"))
+    {
+        return Ok((Value::Null, false));
+    }
+    if explicit == Some("timestamp") || (explicit.is_none() && yaml_resolvers()[2].is_match(value))
+    {
+        return Ok((
+            yaml_timestamp(value)?.ok_or_else(|| invalid("invalid YAML timestamp"))?,
+            false,
+        ));
+    }
+    if explicit == Some("int") || (explicit.is_none() && yaml_resolvers()[0].is_match(value)) {
+        return Ok((yaml_integer(value)?, false));
+    }
+    let normalized = value.replace('_', "");
+    if explicit == Some("float") || (explicit.is_none() && yaml_resolvers()[1].is_match(value)) {
+        let (sign, number) = normalized
+            .strip_prefix('-')
+            .map_or((1., normalized.as_str()), |value| (-1., value));
+        let number = number.strip_prefix('+').unwrap_or(number);
+        if matches!(number.to_lowercase().as_str(), ".nan" | ".inf") {
+            return Err(unsupported("non-finite YAML numbers are unsupported"));
+        }
+        let number = number
+            .split(':')
+            .try_fold(0., |total, part| {
+                part.parse::<f64>().map(|part| total * 60. + part)
+            })
+            .map_err(|_| invalid("invalid YAML float"))?
+            * sign;
+        return Ok((
+            serde_json::Number::from_f64(number)
+                .map(Value::Number)
+                .ok_or_else(|| unsupported("non-finite YAML numbers are unsupported"))?,
+            false,
+        ));
+    }
+    if explicit.is_some() {
+        return Err(unsupported("unsupported YAML scalar tag"));
+    }
+    Ok((Value::String(value.into()), false))
+}
+
+/// PyYAML's published YAML1.1 scalar resolver grammars, applied only to decoded
+/// scalar tokens from yaml-rust2; these never parse YAML document structure.
+fn yaml_resolvers() -> &'static [regex::Regex; 3] {
+    static RESOLVERS: std::sync::LazyLock<[regex::Regex; 3]> = std::sync::LazyLock::new(|| {
+        [
+        r"^[-+]?(?:0b[0-1_]+|0[0-7_]+|(?:0|[1-9][0-9_]*)|0x[0-9a-fA-F_]+|[1-9][0-9_]*(?::[0-5]?[0-9])+)$",
+        r"^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$",
+        r"^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt]|[ \t]+)[0-9]{1,2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9]{1,2}(?::[0-9]{2})?))?)$",
+    ].map(|pattern|regex::Regex::new(pattern).expect("fixed scalar resolver regex"))
+    });
+    &RESOLVERS
+}
+
+fn yaml_integer(value: &str) -> Result<Value> {
+    use num_bigint::BigInt;
+    let normalized = value.replace('_', "");
+    let (negative, number) = normalized
+        .strip_prefix('-')
+        .map_or((false, normalized.as_str()), |value| (true, value));
+    let number = number.strip_prefix('+').unwrap_or(number);
+    let integer = if let Some(binary) = number.strip_prefix("0b") {
+        BigInt::parse_bytes(binary.as_bytes(), 2)
+    } else if let Some(hex) = number.strip_prefix("0x") {
+        BigInt::parse_bytes(hex.as_bytes(), 16)
+    } else if number.starts_with('0') && number.len() > 1 {
+        BigInt::parse_bytes(&number.as_bytes()[1..], 8)
+    } else if number.contains(':') {
+        number.split(':').try_fold(BigInt::from(0), |total, part| {
+            BigInt::parse_bytes(part.trim().as_bytes(), 10).map(|part| total * 60 + part)
+        })
+    } else {
+        BigInt::parse_bytes(number.trim().as_bytes(), 10)
+    };
+    let integer = integer.ok_or_else(|| invalid("invalid YAML integer"))?;
+    let decimal = if negative { -integer } else { integer }.to_string();
+    decimal
+        .parse::<serde_json::Number>()
+        .map(Value::Number)
+        .map_err(|error| invalid(error.to_string()))
+}
+
+/// Resolve YAML timestamp scalars after structural parsing. Quoted strings never
+/// enter this resolver unless explicitly tagged !!timestamp.
+fn yaml_timestamp(value: &str) -> Result<Option<Value>> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 8 || bytes.get(4) != Some(&b'-') || !bytes[..4].iter().all(u8::is_ascii_digit)
+    {
+        return Ok(None);
+    }
+    let mut index = 5;
+    let digits = |index: &mut usize, min: usize, max: usize| -> Option<&str> {
+        let start = *index;
+        while *index < bytes.len() && bytes[*index].is_ascii_digit() && *index - start < max {
+            *index += 1;
+        }
+        if *index - start < min {
+            None
+        } else {
+            value.get(start..*index)
+        }
+    };
+    let Some(month) = digits(&mut index, 1, 2) else {
+        return Ok(None);
+    };
+    if bytes.get(index) != Some(&b'-') {
+        return Ok(None);
+    }
+    index += 1;
+    let Some(day) = digits(&mut index, 1, 2) else {
+        return Ok(None);
+    };
+    let date = format!("{}-{:0>2}-{:0>2}", &value[..4], month, day);
+    if index == bytes.len() {
+        if month.len() != 2 || day.len() != 2 {
+            return Ok(None);
+        }
+        if parse_expiry(&date).is_none() {
+            return Err(invalid("invalid YAML date"));
+        }
+        // An actual date object is not a datetime and must stay unexpired.
+        return Ok(Some(serde_json::json!({"yaml_date":date})));
+    }
+    match bytes.get(index) {
+        Some(b'T' | b't') => index += 1,
+        Some(b' ' | b'\t') => {
+            while matches!(bytes.get(index), Some(b' ' | b'\t')) {
+                index += 1;
+            }
+        }
+        _ => return Ok(None),
+    }
+    let Some(hour) = digits(&mut index, 1, 2) else {
+        return Ok(None);
+    };
+    if bytes.get(index) != Some(&b':') {
+        return Ok(None);
+    }
+    index += 1;
+    let Some(minute) = digits(&mut index, 2, 2) else {
+        return Ok(None);
+    };
+    if bytes.get(index) != Some(&b':') {
+        return Ok(None);
+    }
+    index += 1;
+    let Some(second) = digits(&mut index, 2, 2) else {
+        return Ok(None);
+    };
+    let mut rendered = format!("{date}T{hour:0>2}:{minute}:{second}");
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        let start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index > start {
+            rendered.push('.');
+            rendered.push_str(&value[start..index]);
+        }
+    }
+    let before_space = index;
+    while matches!(bytes.get(index), Some(b' ' | b'\t')) {
+        index += 1;
+    }
+    match bytes.get(index) {
+        Some(b'Z') => {
+            rendered.push('Z');
+            index += 1;
+        }
+        Some(sign @ (b'+' | b'-')) => {
+            let sign = *sign as char;
+            index += 1;
+            let Some(hour) = digits(&mut index, 1, 2) else {
+                return Ok(None);
+            };
+            let minute = if bytes.get(index) == Some(&b':') {
+                index += 1;
+                let Some(minute) = digits(&mut index, 2, 2) else {
+                    return Ok(None);
+                };
+                minute
+            } else {
+                "00"
+            };
+            rendered.push_str(&format!("{sign}{hour:0>2}:{minute}"));
+        }
+        None if before_space == index => {}
+        _ => return Ok(None),
+    }
+    if index != bytes.len() {
+        return Ok(None);
+    }
+    if parse_expiry(&rendered).is_none() {
+        return Err(invalid("invalid YAML datetime"));
+    }
+    Ok(Some(Value::String(rendered)))
+}
+
 fn parse_document(source: &str, format: Format) -> Result<Map<String, Value>> {
     let value: Value = match format {
-        Format::Json => serde_json::from_str(source).map_err(|error| invalid(error.to_string()))?,
-        Format::Yaml => {
-            let mut yaml: serde_yaml_ng::Value =
-                serde_yaml_ng::from_str(source).map_err(|error| invalid(error.to_string()))?;
-            merge_yaml(&mut yaml)?;
-            let value = serde_json::to_value(yaml).map_err(|error| invalid(error.to_string()))?;
-            // serde_yaml_ng loses scalar style and does not resolve YAML dates.
-            // PyYAML distinguishes bare date objects from quoted date strings.
-            // Refuse this narrow ambiguity until the YAML frontend retains it.
-            reject_ambiguous_yaml_expiry(&value)?;
-            value
-        }
+        Format::Json => parse_json(source, false).map_err(|error| invalid(error.to_string()))?,
+        Format::Yaml => parse_yaml(source)?,
         Format::Toml => parse_toml_document(source)?,
     };
     let mut document = if value.is_null() && matches!(format, Format::Yaml) {
@@ -1061,48 +1687,6 @@ fn parse_document(source: &str, format: Format) -> Result<Map<String, Value>> {
         }
     }
     Ok(document)
-}
-
-/// PyYAML inserts merged rules before local rules. serde_yaml_ng::apply_merge
-/// inserts them afterwards, changing equal-specificity policy precedence.
-fn merge_yaml(value: &mut serde_yaml_ng::Value) -> Result<()> {
-    use serde_yaml_ng::{Mapping, Value as Yaml};
-    match value {
-        Yaml::Mapping(mapping) => {
-            for child in mapping.values_mut() {
-                merge_yaml(child)?;
-            }
-            if let Some(inherited) = mapping.remove("<<") {
-                let mut merged = Mapping::new();
-                match inherited {
-                    Yaml::Mapping(parent) => merged = parent,
-                    Yaml::Sequence(parents) => {
-                        // In a merge sequence the first mapping takes precedence.
-                        for parent in parents.into_iter().rev() {
-                            let Yaml::Mapping(parent) = parent else {
-                                return Err(invalid("YAML merge requires mappings"));
-                            };
-                            for (key, value) in parent {
-                                merged.insert(key, value);
-                            }
-                        }
-                    }
-                    _ => return Err(invalid("YAML merge requires a mapping or mapping list")),
-                }
-                for (key, value) in std::mem::take(mapping) {
-                    merged.insert(key, value);
-                }
-                *mapping = merged;
-            }
-        }
-        Yaml::Sequence(sequence) => {
-            for value in sequence {
-                merge_yaml(value)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 fn normalize_hosts(hosts: &mut Value) -> Result<()> {
@@ -1163,6 +1747,28 @@ pub(crate) fn split_destination(pattern: &str) -> Result<(String, Option<u16>)> 
     Ok((host, Some(port)))
 }
 
+fn boolean(value: &Value, field: &str) -> Result<bool> {
+    if let Some(value) = value.as_bool() {
+        return Ok(value);
+    }
+    if let Some(value) = value.as_f64() {
+        if value == 0. {
+            return Ok(false);
+        }
+        if value == 1. {
+            return Ok(true);
+        }
+    }
+    if let Some(value) = value.as_str() {
+        match value.to_ascii_lowercase().as_str() {
+            "0" | "off" | "f" | "false" | "n" | "no" => return Ok(false),
+            "1" | "on" | "t" | "true" | "y" | "yes" => return Ok(true),
+            _ => {}
+        }
+    }
+    Err(invalid(format!("{field} must be boolean")))
+}
+
 fn network_enabled(addons: Option<&Value>) -> Result<Option<bool>> {
     let Some(addons) = addons else {
         return Ok(None);
@@ -1172,11 +1778,7 @@ fn network_enabled(addons: Option<&Value>) -> Result<Option<bool>> {
     };
     let value = object(network, "network_guard")?.get("enabled");
     value
-        .map(|value| {
-            value
-                .as_bool()
-                .ok_or_else(|| invalid("addon enabled must be boolean"))
-        })
+        .map(|value| boolean(value, "addon enabled"))
         .transpose()
         .map(|enabled| Some(enabled.unwrap_or(true)))
 }
@@ -1291,4 +1893,193 @@ fn character_class(pattern: &[char], index: usize) -> Option<(usize, bool, usize
         end += 1;
     }
     (end < pattern.len()).then_some((end, negate, start))
+}
+
+#[cfg(test)]
+mod yaml_tests {
+    use super::*;
+
+    #[test]
+    fn authored_private_number_objects_remain_objects_in_every_format() {
+        for (format, source) in [
+            (
+                Format::Json,
+                r#"{"budgets":{"network:request":{"$serde_json::private::Number":"1"}},"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}"#,
+            ),
+            (
+                Format::Toml,
+                "budget={'$serde_json::private::Number'='1'}\n[hosts]\n'*'={egress='allow'}",
+            ),
+            (
+                Format::Yaml,
+                "global_budget: {'$serde_json::private::Number': '1'}\nhosts:\n  '*': {egress: allow}",
+            ),
+        ] {
+            assert_eq!(
+                Policy::parse(source, format).unwrap_err().kind,
+                ErrorKind::Invalid,
+                "{source}"
+            );
+        }
+        for value in [
+            parse_json(
+                r#"{"nested":{"$serde_json::private::Number":"1"},"number":18446744073709551616}"#,
+                false,
+            )
+            .unwrap(),
+            parse_toml_document("nested={'$serde_json::private::Number'='1'}\nnumber=1").unwrap(),
+            parse_yaml("nested: {'$serde_json::private::Number': '1'}\nnumber: 1").unwrap(),
+        ] {
+            assert!(value["nested"].is_object());
+            assert_eq!(
+                value["nested"]["$serde_json::private::Number"].as_str(),
+                Some("1")
+            );
+        }
+        assert_eq!(
+            parse_json("18446744073709551616", false)
+                .unwrap()
+                .as_number()
+                .unwrap()
+                .to_string(),
+            "18446744073709551616"
+        );
+        assert_eq!(
+            parse_json(r#"{"x":1,"x":2}"#, false).unwrap()["x"].as_u64(),
+            Some(2)
+        );
+        assert!(parse_json(r#"{"x":1,"x":2}"#, true).is_err());
+    }
+
+    #[test]
+    fn styles_and_merge_keys_keep_constraints_and_precedence() {
+        let source = "a: &a {limit: 1, inherited: yes}\nb: &b {limit: 2, other: no}\nvalue: {<<: [*a, *b], local: on}\nliteral: {'<<': {limit: 7}}\n";
+        let value = parse_yaml(source).unwrap();
+        assert_eq!(
+            value["value"],
+            serde_json::json!({"limit":1,"other":false,"inherited":true,"local":true})
+        );
+        assert_eq!(value["literal"]["<<"]["limit"], 7);
+        assert_eq!(
+            value["value"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["limit", "other", "inherited", "local"]
+        );
+        assert_eq!(parse_yaml("value: !!str yes").unwrap()["value"], "yes");
+        assert!(parse_yaml("value: !!unknown x").is_err());
+        assert!(parse_yaml("a: &recursive {x: *recursive}").is_err());
+        assert!(parse_yaml("a: 1\n---\na: 2").is_err());
+    }
+
+    #[test]
+    #[ignore = "historical Python scalar oracle; set SAFEYOLO_POLICY_PYTHON"]
+    fn scalar_resolution_matches_pyyaml_tokens() {
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
+        };
+        let tokens = [
+            "yes",
+            "Yes",
+            "YES",
+            "no",
+            "No",
+            "NO",
+            "on",
+            "off",
+            "true",
+            "FALSE",
+            "tRuE",
+            "null",
+            "~",
+            "",
+            "0",
+            "+1",
+            "-1",
+            "010",
+            "08",
+            "0_8",
+            "0b10",
+            "0b12",
+            "0xFf",
+            "0o10",
+            "1_000",
+            "1:02",
+            "0:10",
+            "1:60",
+            "1.2",
+            ".1",
+            "-.1",
+            "+1.2",
+            "1.2e3",
+            "1.2e+3",
+            "1e3",
+            "1:20.5",
+            "-.Inf",
+            ".NaN",
+            "18446744073709551616",
+            "0xFFFFFFFFFFFFFFFFFFFFFFFF",
+            "0b111111111111111111111111111111111111111111111111111111111111111111111111111111",
+            "777777777777777777:59",
+        ];
+        let mut sources = Vec::new();
+        for token in tokens {
+            sources.push(format!("value: {token}"));
+            sources.push(format!("value: '{token}'"));
+            sources.push(format!("value: !!str '{token}'"));
+        }
+        sources.extend(
+            [
+                "value: !!bool tRuE",
+                "value: !!int '012'",
+                "value: !!int '0xFF'",
+                "value: !!float '1:20.5'",
+                "value: !!null arbitrary",
+            ]
+            .map(str::to_owned),
+        );
+        let script = "import json,math,sys,yaml\nout=[]\nfor source in json.load(sys.stdin):\n value=yaml.safe_load(source)['value']\n out.append({'unsupported':'nonfinite'} if isinstance(value,float) and not math.isfinite(value) else {'value':value})\njson.dump(out,sys.stdout)";
+        let mut child = Command::new(
+            std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
+        )
+        .arg("-c")
+        .arg(script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(serde_json::to_string(&sources).unwrap().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected: Value = serde_json::from_slice(&output.stdout).unwrap();
+        for (index, source) in sources.iter().enumerate() {
+            if expected[index].get("unsupported").is_some() {
+                assert_eq!(parse_yaml(source).unwrap_err().kind, ErrorKind::Unsupported);
+            } else {
+                assert_eq!(
+                    parse_yaml(source).unwrap()["value"],
+                    expected[index]["value"],
+                    "{source}"
+                );
+            }
+        }
+        eprintln!(
+            "Compared {} YAML scalar/style cases against PyYAML",
+            sources.len()
+        );
+    }
 }

@@ -163,6 +163,96 @@ fn strict_snapshot_override_and_invalid_reload_leave_previous_candidate_usable()
 }
 
 #[test]
+fn yaml_merge_keys_retain_binding_constraints_and_authored_precedence() {
+    let source = r#"schema_version: 1
+name: example
+default_host: api.example
+auth: {type: bearer}
+project_constraint: &project_constraint {equals_var: project}
+other_constraint: &other_constraint {equals_var: other}
+capabilities:
+  read:
+    routes: []
+    contract:
+      template: restricted-project
+      bindings:
+        project: {type: string}
+        other: {type: string}
+      enforcement: {request_shape: enforced}
+      operations:
+        - name: read
+          request:
+            method: GET
+            path: /items
+            query:
+              allow:
+                project: {MERGE}
+"#;
+    let token = token("example", "read");
+    let binding = ContractBinding {
+        binding_id: "merged-binding".into(),
+        agent: "alice".into(),
+        service: "example".into(),
+        capability: "read".into(),
+        template: "restricted-project".into(),
+        bound_values: json!({"project":"approved","other":"other"})
+            .as_object()
+            .unwrap()
+            .clone(),
+        grantable_operations: vec!["read".into()],
+    };
+    let headers = [("authorization".into(), "Bearer sgw_synthetic".into())];
+    for (merge, allowed) in [
+        ("<<: *project_constraint", "approved"),
+        ("<<: [*project_constraint, *other_constraint]", "approved"),
+        ("<<: *project_constraint, equals_var: other", "other"),
+        ("equals_var: other, <<: *project_constraint", "other"),
+    ] {
+        let registry = Registry::from_sources(
+            &[("example.yaml".into(), source.replace("MERGE", merge))],
+            &[],
+        )
+        .unwrap();
+        for value in ["approved", "other", "forbidden"] {
+            let target = format!("/items?project={value}");
+            let selected = decision(
+                &registry,
+                &token,
+                TrustedIdentity::Agent("alice"),
+                "api.example",
+                &target,
+                "GET",
+                &headers,
+                std::slice::from_ref(&binding),
+            );
+            assert_eq!(
+                code(selected),
+                if value == allowed {
+                    "selected"
+                } else {
+                    "CONTRACT_VIOLATION"
+                },
+                "{merge}: {value}"
+            );
+            let unbound = decision(
+                &registry,
+                &token,
+                TrustedIdentity::Agent("alice"),
+                "api.example",
+                &target,
+                "GET",
+                &headers,
+                &[],
+            );
+            // Compiled routes require resolved binding values before the
+            // contract checker is reached.
+            assert_eq!(code(unbound), "ROUTE_DENIED", "{merge}: {value}");
+        }
+    }
+    assert!(ServiceDefinition::from_yaml(&source.replace("MERGE", "<<: 12")).is_err());
+}
+
+#[test]
 fn token_scope_checks_precede_route_and_credential_selection() {
     let registry = registry();
     let token = token("minifuse", "reader");

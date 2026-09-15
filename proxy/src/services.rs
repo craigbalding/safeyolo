@@ -67,7 +67,7 @@ pub struct ServiceDefinition {
 }
 impl ServiceDefinition {
     pub fn from_yaml(source: &str) -> Result<Self, Error> {
-        let raw: Value = serde_yaml_ng::from_str(source)?;
+        let raw = crate::policy::parse_yaml(source)?;
         Self::from_value(raw)
     }
     pub fn from_value(raw: Value) -> Result<Self, Error> {

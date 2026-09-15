@@ -11,26 +11,28 @@ bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1.11", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
+num-bigint = "0.4"
 pkcs8 = { version = "0.10", features = ["std"] }
 percent-encoding = "2"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
+regex = "1"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
-serde_yaml_ng = "0.10"
-toml = { version = "1.1", features = ["preserve_order"] }
-toml_edit = { version = "0.25", features = ["serde"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
+toml_edit = "0.25"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
 uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
 x509-parser = "0.18"
+yaml-rust2 = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+toml = { version = "1.1", features = ["preserve_order"] }
 
 [[bin]]
 name = "safeyolo-proxy"
