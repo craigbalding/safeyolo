@@ -37,6 +37,164 @@ fn token() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 #[tokio::test]
+async fn sensor_config_reads_the_shared_authorized_snapshot_with_source_bytes() {
+    let (_dir, token_path) = token();
+    let policy = policy(json!({
+        "permissions":[],
+        "credential_rules":[{"name":"base","patterns":["fixture-[0-9]+"],"allowed_hosts":["api.fixture.invalid"]}],
+        "scan_patterns":[{"name":"base","pattern":"fixture-é"}],
+        "addons":{"credential_guard":{"enabled":false,"settings":{"use_default_credential_rules":false},"custom":"preserved"}}
+    }));
+    let source: Value = serde_json::from_str(include_str!("sensor_config_source.json")).unwrap();
+    let expected = source["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["case"] == "configured_defaults_disabled_addon_shared_scope")
+        .unwrap();
+    for identity in [
+        Identity::Resolved("alice"),
+        Identity::Resolved("bob"),
+        Identity::Unavailable,
+        Identity::Conflict,
+    ] {
+        let outcome = respond_read(
+            Request {
+                identity,
+                ..request("/config///?agent=forged&host=other.invalid")
+            },
+            &token_path,
+            PolicyState::Ready(&policy),
+            1000.,
+        )
+        .await;
+        assert_eq!(outcome.response.status, 200);
+        assert_eq!(body(&outcome.response), expected["response"]["body"]);
+        let actual_hex = outcome
+            .response
+            .body_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            actual_hex,
+            expected["response"]["body_hex"].as_str().unwrap()
+        );
+        assert_eq!(outcome.policy_evaluations, 0);
+        assert!(outcome.handler_owned && outcome.audit.is_none() && outcome.failure.is_none());
+    }
+    let unauthenticated = respond_read(
+        Request {
+            authorization: None,
+            ..request("/config")
+        },
+        &token_path,
+        PolicyState::Ready(&policy),
+        1000.,
+    )
+    .await;
+    assert_eq!(unauthenticated.response.status, 401);
+    assert_eq!(
+        body(&unauthenticated.response),
+        json!({"error":"Authorization required","hint":"Bearer <token>"})
+    );
+    let unavailable = respond_read(
+        request("/config"),
+        &token_path,
+        PolicyState::Unavailable,
+        1000.,
+    )
+    .await;
+    assert_eq!(unavailable.response.status, 503);
+    assert_eq!(
+        body(&unavailable.response),
+        json!({"error":"PDP not available"})
+    );
+    let remote = respond_read(
+        request("/config"),
+        &token_path,
+        PolicyState::NoEngine { healthy: true },
+        1000.,
+    )
+    .await;
+    assert_eq!(remote.response.status, 503);
+    assert_eq!(remote.failure, Some(Failure::DevelopmentEndpoint));
+    let unconfigured = Policy::unconfigured();
+    let empty = respond_read(
+        request("/config"),
+        &token_path,
+        PolicyState::Ready(&unconfigured),
+        1000.,
+    )
+    .await;
+    assert_eq!(empty.response.status, 200);
+    assert_eq!(empty.response.body_bytes(), b"{\"credential_rules\": [], \"scan_patterns\": [], \"addons\": {}, \"policy_hash\": \"sha256:e3b0c44298fc1c14\"}".as_slice());
+}
+
+#[tokio::test]
+async fn sensor_config_temporal_errors_follow_the_projection_and_preserve_enforcement() {
+    let (_dir, token_path) = token();
+    for (extra, status) in [
+        ("gateway: {unused: 2024-01-01}\n", 200),
+        (
+            "addons: {credential_guard: {settings: {unused: 2024-01-01}}}\n",
+            500,
+        ),
+    ] {
+        let source = format!(
+            "permissions:\n  - {{action: 'network:request', resource: '*', effect: budget, budget: 1}}\n{extra}"
+        );
+        let policy = Policy::parse(&source, Format::Yaml).unwrap();
+        let charge = NetworkRequest {
+            agent: Some("alice"),
+            host: "alpha.invalid",
+            port: Some(443),
+            method: "GET",
+            path: "/",
+        };
+        assert_eq!(
+            policy.evaluate(charge, 1000., true).unwrap().effect,
+            Effect::Allow
+        );
+        let before = policy.budget_stats(1000.).unwrap();
+        for identity in [Identity::Resolved("alice"), Identity::Resolved("bob")] {
+            let outcome = respond_read(
+                Request {
+                    identity,
+                    ..request("/config")
+                },
+                &token_path,
+                PolicyState::Ready(&policy),
+                1000.,
+            )
+            .await;
+            assert_eq!(outcome.response.status, status);
+            assert_eq!(outcome.policy_evaluations, 0);
+            assert!(outcome.handler_owned && outcome.audit.is_none());
+            if status == 500 {
+                assert_eq!(
+                    outcome.response.body_bytes(),
+                    b"{\"error\": \"Internal error: TypeError\"}".as_slice()
+                );
+                assert_eq!(outcome.failure, Some(Failure::PolicySerialization));
+            } else {
+                assert_eq!(body(&outcome.response)["addons"], json!({}));
+                assert!(outcome.failure.is_none());
+            }
+            assert_eq!(policy.budget_stats(1000.).unwrap(), before);
+        }
+        assert_eq!(
+            policy.evaluate(charge, 1000., true).unwrap().effect,
+            Effect::Allow
+        );
+        assert_eq!(
+            policy.evaluate(charge, 1000., true).unwrap().effect,
+            Effect::BudgetExceeded
+        );
+    }
+}
+
+#[tokio::test]
 async fn budgets_read_shared_counters_after_auth_without_evaluating_or_charging() {
     let (_dir, token_path) = token();
     let policy = policy(json!({

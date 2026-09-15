@@ -391,6 +391,25 @@ pub async fn respond_read<'p>(
     if path == "/lookup" {
         return lookup(request, policy, now_ms);
     }
+    if path == "/config" {
+        match policy {
+            PolicyState::Ready(policy) => {
+                return match policy.sensor_config() {
+                    Ok(config) => response(200, config),
+                    Err(crate::policy::BaselineSerializationError::NonJsonTimestamp) => {
+                        let mut outcome =
+                            response(500, json!({"error":"Internal error: TypeError"}));
+                        outcome.failure = Some(Failure::PolicySerialization);
+                        outcome
+                    }
+                };
+            }
+            PolicyState::Unavailable => {
+                return response(503, json!({"error":"PDP not available"}));
+            }
+            PolicyState::NoEngine { .. } => (),
+        }
+    }
     if path == "/budgets" {
         match policy {
             PolicyState::Ready(policy) => {

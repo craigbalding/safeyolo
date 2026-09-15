@@ -100,6 +100,53 @@ impl TemporalValue {
         }
     }
 
+    /// Pydantic model JSON differs from Python str(datetime): the separator is
+    /// T and a zero UTC offset is Z. Emit only this scalar into the caller's
+    /// sink; do not create another canonical value or alter ordinary API JSON.
+    pub(super) fn write_model_json(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
+        let value = self.value;
+        writer.write_all(b"\"")?;
+        if self.kind != TemporalKind::Time {
+            write!(
+                writer,
+                "{:04}-{:02}-{:02}",
+                value.year(),
+                u8::from(value.month()),
+                value.day()
+            )?;
+        }
+        if self.kind != TemporalKind::Date {
+            if self.kind != TemporalKind::Time {
+                writer.write_all(b"T")?;
+            }
+            write!(
+                writer,
+                "{:02}:{:02}:{:02}",
+                value.hour(),
+                value.minute(),
+                value.second()
+            )?;
+            if value.microsecond() != 0 {
+                write!(writer, ".{:06}", value.microsecond())?;
+            }
+        }
+        if self.kind == TemporalKind::AwareDateTime {
+            let seconds = value.offset().whole_seconds();
+            if seconds == 0 {
+                writer.write_all(b"Z")?;
+            } else {
+                write!(
+                    writer,
+                    "{}{:02}:{:02}",
+                    if seconds < 0 { '-' } else { '+' },
+                    seconds.abs() / 3600,
+                    seconds.abs() / 60 % 60
+                )?;
+            }
+        }
+        writer.write_all(b"\"")
+    }
+
     fn identity(&self) -> (TemporalKind, i128) {
         (self.kind, self.value.unix_timestamp_nanos())
     }

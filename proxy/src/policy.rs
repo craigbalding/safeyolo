@@ -24,6 +24,8 @@ use serde_json::{Map, Value};
 
 mod baseline;
 mod budgets;
+mod model_json;
+mod sensor_config;
 mod source;
 use baseline::{Baseline, Builder as BaselineBuilder};
 pub use budgets::BudgetStatsError;
@@ -339,8 +341,9 @@ impl fmt::Debug for Policy {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct TaskPolicy {
+    baseline: Arc<Baseline>,
     rules: Vec<Rule>,
     global_budget: Option<u64>,
     domains: Vec<Override>,
@@ -435,6 +438,7 @@ impl Policy {
         let task = Self::from_document(parsed, None, None, true)?;
         let mut replacement = self.clone();
         replacement.task = Some(TaskPolicy {
+            baseline: task.baseline.expect("loaded task has a canonical model"),
             rules: task.rules,
             global_budget: task.global_budget,
             domains: task.domains,

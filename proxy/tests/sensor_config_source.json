@@ -1,0 +1,482 @@
+{
+  "source_evidence_sha256": "026650526e9a505c801c64b829909e528f1eeafcd9060e889c803d5eff824668",
+  "source_head": "2fd430cbe334d5b297059fe3502d2a74c1069230",
+  "source_sha256": {
+    "cli/src/safeyolo/mitm_addons/agent_api.py": "ab52434f28e82c9cc5f7ce32bf0b69ff6dcd3158e5e5fd5a446e4a747942e378",
+    "cli/src/safeyolo/core/config_cache.py": "2de3f28e8e71d56fcbd05833cd0ace0bc23559cd453c7adff696882fb4854ad1",
+    "cli/src/safeyolo/policy/engine.py": "a69b61583a87b19ea0f26b2ee56220d8ed2de8b76c6f46dd657329e38c9f8479",
+    "cli/src/safeyolo/policy/loader.py": "74f7da6c9c80c0b6e0cd1780a4d40e8c8e2e3ed81d4371da6cd8e9570c59ace4",
+    "cli/src/safeyolo/policy/models.py": "fc8dbf7131996337cdea7af3ce5d37f95a91f8de14900da93015e4bc645ff97f",
+    "pdp/core.py": "26b5833958ac09f34b530c3413dfbee1836261b99b32e81d75f880b743780ed0",
+    "pdp/client.py": "92e969c07581bdb164633a5b7411ab459fbcf1976f7fa72274c230688441f82f",
+    "proxy/src/lib.rs": "c98e9d2ae50edbb30775322b547f79c3b118b1bdcdf41defae634fc387881ffc",
+    "proxy/src/config.rs": "ead36086077cc3bbd8dd454049ed14d3e010f2771ca7bf258d1006e60ceca438",
+    "proxy/src/policy.rs": "147318ef6080bf848be921b49cdc1a3c02e2f00b92dd19b1c1769a246b989d22",
+    "proxy/src/policy/baseline.rs": "d820e0b38d73c1c033abd85189ad5f9cf8289228ccf259826ffd193e95966a4f",
+    "proxy/src/policy/source.rs": "4d8b443c2eb8628881abeef6389f1aa2a61560e5bb5d67c1c84eb6df528be14a"
+  },
+  "rows": [
+    {
+      "case": "unavailable_empty_cache",
+      "response": {
+        "status": 503,
+        "body": {
+          "error": "PDP not available"
+        },
+        "body_hex": "7b226572726f72223a2022504450206e6f7420617661696c61626c65227d"
+      }
+    },
+    {
+      "case": "initialized_without_baseline",
+      "response": {
+        "status": 200,
+        "body": {
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "policy_hash": "sha256:e3b0c44298fc1c14"
+        },
+        "body_hex": "7b2263726564656e7469616c5f72756c6573223a205b5d2c20227363616e5f7061747465726e73223a205b5d2c20226164646f6e73223a207b7d2c2022706f6c6963795f68617368223a20227368613235363a65336230633434323938666331633134227d"
+      }
+    },
+    {
+      "case": "configured_defaults_disabled_addon_shared_scope",
+      "response": {
+        "status": 200,
+        "body": {
+          "credential_rules": [
+            {
+              "name": "base",
+              "patterns": [
+                "fixture-[0-9]+"
+              ],
+              "allowed_hosts": [
+                "api.fixture.invalid"
+              ],
+              "header_names": [
+                "authorization",
+                "x-api-key"
+              ],
+              "suggested_url": ""
+            }
+          ],
+          "scan_patterns": [
+            {
+              "name": "base",
+              "pattern": "fixture-\u00e9",
+              "target": "both",
+              "scope": [
+                "body"
+              ],
+              "action": "log",
+              "severity": "medium",
+              "message": "",
+              "case_sensitive": true
+            }
+          ],
+          "addons": {
+            "credential_guard": {
+              "enabled": false,
+              "settings": {
+                "use_default_credential_rules": false
+              },
+              "custom": "preserved"
+            }
+          },
+          "policy_hash": "sha256:071744ff2a2174fd"
+        },
+        "body_hex": "7b2263726564656e7469616c5f72756c6573223a205b7b226e616d65223a202262617365222c20227061747465726e73223a205b22666978747572652d5b302d395d2b225d2c2022616c6c6f7765645f686f737473223a205b226170692e666978747572652e696e76616c6964225d2c20226865616465725f6e616d6573223a205b22617574686f72697a6174696f6e222c2022782d6170692d6b6579225d2c20227375676765737465645f75726c223a2022227d5d2c20227363616e5f7061747465726e73223a205b7b226e616d65223a202262617365222c20227061747465726e223a2022666978747572652d5c7530306539222c2022746172676574223a2022626f7468222c202273636f7065223a205b22626f6479225d2c2022616374696f6e223a20226c6f67222c20227365766572697479223a20226d656469756d222c20226d657373616765223a2022222c2022636173655f73656e736974697665223a20747275657d5d2c20226164646f6e73223a207b2263726564656e7469616c5f6775617264223a207b22656e61626c6564223a2066616c73652c202273657474696e6773223a207b227573655f64656661756c745f63726564656e7469616c5f72756c6573223a2066616c73657d2c2022637573746f6d223a2022707265736572766564227d7d2c2022706f6c6963795f68617368223a20227368613235363a30373137343466663261323137346664227d"
+      }
+    },
+    {
+      "case": "api_disabled_local_containment",
+      "response": {
+        "status": 503,
+        "body": {
+          "error": "SafeYolo Agent API handler unavailable",
+          "reason_code": "agent_api_unavailable",
+          "handler": "agent-api",
+          "host": "_safeyolo.proxy.internal",
+          "path": "/config",
+          "request_id": "req-00000000000000000000000000000001"
+        },
+        "body_hex": "7b226572726f72223a202253616665596f6c6f204167656e74204150492068616e646c657220756e617661696c61626c65222c2022726561736f6e5f636f6465223a20226167656e745f6170695f756e617661696c61626c65222c202268616e646c6572223a20226167656e742d617069222c2022686f7374223a20225f73616665796f6c6f2e70726f78792e696e7465726e616c222c202270617468223a20222f636f6e666967222c2022726571756573745f6964223a20227265712d3030303030303030303030303030303030303030303030303030303030303031227d"
+      }
+    },
+    {
+      "case": "valid_baseline_reload_invalidates_cache",
+      "response": {
+        "status": 200,
+        "body": {
+          "credential_rules": [
+            {
+              "name": "reloaded",
+              "patterns": [
+                "fixture-[0-9]+"
+              ],
+              "allowed_hosts": [
+                "api.fixture.invalid"
+              ],
+              "header_names": [
+                "authorization",
+                "x-api-key"
+              ],
+              "suggested_url": ""
+            }
+          ],
+          "scan_patterns": [
+            {
+              "name": "base",
+              "pattern": "fixture-\u00e9",
+              "target": "both",
+              "scope": [
+                "body"
+              ],
+              "action": "log",
+              "severity": "medium",
+              "message": "",
+              "case_sensitive": true
+            }
+          ],
+          "addons": {
+            "credential_guard": {
+              "enabled": true,
+              "settings": {
+                "use_default_credential_rules": false
+              },
+              "custom": "preserved"
+            }
+          },
+          "policy_hash": "sha256:16e3ee46e6a12191"
+        },
+        "body_hex": "7b2263726564656e7469616c5f72756c6573223a205b7b226e616d65223a202272656c6f61646564222c20227061747465726e73223a205b22666978747572652d5b302d395d2b225d2c2022616c6c6f7765645f686f737473223a205b226170692e666978747572652e696e76616c6964225d2c20226865616465725f6e616d6573223a205b22617574686f72697a6174696f6e222c2022782d6170692d6b6579225d2c20227375676765737465645f75726c223a2022227d5d2c20227363616e5f7061747465726e73223a205b7b226e616d65223a202262617365222c20227061747465726e223a2022666978747572652d5c7530306539222c2022746172676574223a2022626f7468222c202273636f7065223a205b22626f6479225d2c2022616374696f6e223a20226c6f67222c20227365766572697479223a20226d656469756d222c20226d657373616765223a2022222c2022636173655f73656e736974697665223a20747275657d5d2c20226164646f6e73223a207b2263726564656e7469616c5f6775617264223a207b22656e61626c6564223a20747275652c202273657474696e6773223a207b227573655f64656661756c745f63726564656e7469616c5f72756c6573223a2066616c73657d2c2022637573746f6d223a2022707265736572766564227d7d2c2022706f6c6963795f68617368223a20227368613235363a31366533656534366536613132313931227d"
+      }
+    },
+    {
+      "case": "invalid_reload_retains_accepted_config",
+      "response": {
+        "status": 200,
+        "body": {
+          "credential_rules": [
+            {
+              "name": "reloaded",
+              "patterns": [
+                "fixture-[0-9]+"
+              ],
+              "allowed_hosts": [
+                "api.fixture.invalid"
+              ],
+              "header_names": [
+                "authorization",
+                "x-api-key"
+              ],
+              "suggested_url": ""
+            }
+          ],
+          "scan_patterns": [
+            {
+              "name": "base",
+              "pattern": "fixture-\u00e9",
+              "target": "both",
+              "scope": [
+                "body"
+              ],
+              "action": "log",
+              "severity": "medium",
+              "message": "",
+              "case_sensitive": true
+            }
+          ],
+          "addons": {
+            "credential_guard": {
+              "enabled": true,
+              "settings": {
+                "use_default_credential_rules": false
+              },
+              "custom": "preserved"
+            }
+          },
+          "policy_hash": "sha256:16e3ee46e6a12191"
+        },
+        "body_hex": "7b2263726564656e7469616c5f72756c6573223a205b7b226e616d65223a202272656c6f61646564222c20227061747465726e73223a205b22666978747572652d5b302d395d2b225d2c2022616c6c6f7765645f686f737473223a205b226170692e666978747572652e696e76616c6964225d2c20226865616465725f6e616d6573223a205b22617574686f72697a6174696f6e222c2022782d6170692d6b6579225d2c20227375676765737465645f75726c223a2022227d5d2c20227363616e5f7061747465726e73223a205b7b226e616d65223a202262617365222c20227061747465726e223a2022666978747572652d5c7530306539222c2022746172676574223a2022626f7468222c202273636f7065223a205b22626f6479225d2c2022616374696f6e223a20226c6f67222c20227365766572697479223a20226d656469756d222c20226d657373616765223a2022222c2022636173655f73656e736974697665223a20747275657d5d2c20226164646f6e73223a207b2263726564656e7469616c5f6775617264223a207b22656e61626c6564223a20747275652c202273657474696e6773223a207b227573655f64656661756c745f63726564656e7469616c5f72756c6573223a2066616c73657d2c2022637573746f6d223a2022707265736572766564227d7d2c2022706f6c6963795f68617368223a20227368613235363a31366533656534366536613132313931227d"
+      }
+    },
+    {
+      "case": "task_file_load_appends_rules_not_addons",
+      "response": {
+        "status": 200,
+        "body": {
+          "credential_rules": [
+            {
+              "name": "reloaded",
+              "patterns": [
+                "fixture-[0-9]+"
+              ],
+              "allowed_hosts": [
+                "api.fixture.invalid"
+              ],
+              "header_names": [
+                "authorization",
+                "x-api-key"
+              ],
+              "suggested_url": ""
+            },
+            {
+              "name": "task",
+              "patterns": [
+                "fixture-[0-9]+"
+              ],
+              "allowed_hosts": [
+                "api.fixture.invalid"
+              ],
+              "header_names": [
+                "authorization",
+                "x-api-key"
+              ],
+              "suggested_url": ""
+            }
+          ],
+          "scan_patterns": [
+            {
+              "name": "base",
+              "pattern": "fixture-\u00e9",
+              "target": "both",
+              "scope": [
+                "body"
+              ],
+              "action": "log",
+              "severity": "medium",
+              "message": "",
+              "case_sensitive": true
+            },
+            {
+              "name": "task",
+              "pattern": "fixture-\u00e9",
+              "target": "both",
+              "scope": [
+                "body"
+              ],
+              "action": "log",
+              "severity": "medium",
+              "message": "",
+              "case_sensitive": true
+            }
+          ],
+          "addons": {
+            "credential_guard": {
+              "enabled": true,
+              "settings": {
+                "use_default_credential_rules": false
+              },
+              "custom": "preserved"
+            }
+          },
+          "policy_hash": "sha256:1b2db160c49d7591"
+        },
+        "body_hex": "7b2263726564656e7469616c5f72756c6573223a205b7b226e616d65223a202272656c6f61646564222c20227061747465726e73223a205b22666978747572652d5b302d395d2b225d2c2022616c6c6f7765645f686f737473223a205b226170692e666978747572652e696e76616c6964225d2c20226865616465725f6e616d6573223a205b22617574686f72697a6174696f6e222c2022782d6170692d6b6579225d2c20227375676765737465645f75726c223a2022227d2c207b226e616d65223a20227461736b222c20227061747465726e73223a205b22666978747572652d5b302d395d2b225d2c2022616c6c6f7765645f686f737473223a205b226170692e666978747572652e696e76616c6964225d2c20226865616465725f6e616d6573223a205b22617574686f72697a6174696f6e222c2022782d6170692d6b6579225d2c20227375676765737465645f75726c223a2022227d5d2c20227363616e5f7061747465726e73223a205b7b226e616d65223a202262617365222c20227061747465726e223a2022666978747572652d5c7530306539222c2022746172676574223a2022626f7468222c202273636f7065223a205b22626f6479225d2c2022616374696f6e223a20226c6f67222c20227365766572697479223a20226d656469756d222c20226d657373616765223a2022222c2022636173655f73656e736974697665223a20747275657d2c207b226e616d65223a20227461736b222c20227061747465726e223a2022666978747572652d5c7530306539222c2022746172676574223a2022626f7468222c202273636f7065223a205b22626f6479225d2c2022616374696f6e223a20226c6f67222c20227365766572697479223a20226d656469756d222c20226d657373616765223a2022222c2022636173655f73656e736974697665223a20747275657d5d2c20226164646f6e73223a207b2263726564656e7469616c5f6775617264223a207b22656e61626c6564223a20747275652c202273657474696e6773223a207b227573655f64656661756c745f63726564656e7469616c5f72756c6573223a2066616c73657d2c2022637573746f6d223a2022707265736572766564227d7d2c2022706f6c6963795f68617368223a20227368613235363a31623264623136306334396437353931227d"
+      }
+    },
+    {
+      "case": "task_clear_leaves_stale_cache",
+      "response": {
+        "status": 200,
+        "body": {
+          "credential_rules": [
+            {
+              "name": "reloaded",
+              "patterns": [
+                "fixture-[0-9]+"
+              ],
+              "allowed_hosts": [
+                "api.fixture.invalid"
+              ],
+              "header_names": [
+                "authorization",
+                "x-api-key"
+              ],
+              "suggested_url": ""
+            },
+            {
+              "name": "task",
+              "patterns": [
+                "fixture-[0-9]+"
+              ],
+              "allowed_hosts": [
+                "api.fixture.invalid"
+              ],
+              "header_names": [
+                "authorization",
+                "x-api-key"
+              ],
+              "suggested_url": ""
+            }
+          ],
+          "scan_patterns": [
+            {
+              "name": "base",
+              "pattern": "fixture-\u00e9",
+              "target": "both",
+              "scope": [
+                "body"
+              ],
+              "action": "log",
+              "severity": "medium",
+              "message": "",
+              "case_sensitive": true
+            },
+            {
+              "name": "task",
+              "pattern": "fixture-\u00e9",
+              "target": "both",
+              "scope": [
+                "body"
+              ],
+              "action": "log",
+              "severity": "medium",
+              "message": "",
+              "case_sensitive": true
+            }
+          ],
+          "addons": {
+            "credential_guard": {
+              "enabled": true,
+              "settings": {
+                "use_default_credential_rules": false
+              },
+              "custom": "preserved"
+            }
+          },
+          "policy_hash": "sha256:1b2db160c49d7591"
+        },
+        "body_hex": "7b2263726564656e7469616c5f72756c6573223a205b7b226e616d65223a202272656c6f61646564222c20227061747465726e73223a205b22666978747572652d5b302d395d2b225d2c2022616c6c6f7765645f686f737473223a205b226170692e666978747572652e696e76616c6964225d2c20226865616465725f6e616d6573223a205b22617574686f72697a6174696f6e222c2022782d6170692d6b6579225d2c20227375676765737465645f75726c223a2022227d2c207b226e616d65223a20227461736b222c20227061747465726e73223a205b22666978747572652d5b302d395d2b225d2c2022616c6c6f7765645f686f737473223a205b226170692e666978747572652e696e76616c6964225d2c20226865616465725f6e616d6573223a205b22617574686f72697a6174696f6e222c2022782d6170692d6b6579225d2c20227375676765737465645f75726c223a2022227d5d2c20227363616e5f7061747465726e73223a205b7b226e616d65223a202262617365222c20227061747465726e223a2022666978747572652d5c7530306539222c2022746172676574223a2022626f7468222c202273636f7065223a205b22626f6479225d2c2022616374696f6e223a20226c6f67222c20227365766572697479223a20226d656469756d222c20226d657373616765223a2022222c2022636173655f73656e736974697665223a20747275657d2c207b226e616d65223a20227461736b222c20227061747465726e223a2022666978747572652d5c7530306539222c2022746172676574223a2022626f7468222c202273636f7065223a205b22626f6479225d2c2022616374696f6e223a20226c6f67222c20227365766572697479223a20226d656469756d222c20226d657373616765223a2022222c2022636173655f73656e736974697665223a20747275657d5d2c20226164646f6e73223a207b2263726564656e7469616c5f6775617264223a207b22656e61626c6564223a20747275652c202273657474696e6773223a207b227573655f64656661756c745f63726564656e7469616c5f72756c6573223a2066616c73657d2c2022637573746f6d223a2022707265736572766564227d7d2c2022706f6c6963795f68617368223a20227368613235363a31623264623136306334396437353931227d"
+      },
+      "live_core_config": {
+        "credential_rules": [
+          {
+            "name": "reloaded",
+            "patterns": [
+              "fixture-[0-9]+"
+            ],
+            "allowed_hosts": [
+              "api.fixture.invalid"
+            ],
+            "header_names": [
+              "authorization",
+              "x-api-key"
+            ],
+            "suggested_url": ""
+          }
+        ],
+        "scan_patterns": [
+          {
+            "name": "base",
+            "pattern": "fixture-\u00e9",
+            "target": "both",
+            "scope": [
+              "body"
+            ],
+            "action": "log",
+            "severity": "medium",
+            "message": "",
+            "case_sensitive": true
+          }
+        ],
+        "addons": {
+          "credential_guard": {
+            "enabled": true,
+            "settings": {
+              "use_default_credential_rules": false
+            },
+            "custom": "preserved"
+          }
+        },
+        "policy_hash": "sha256:16e3ee46e6a12191"
+      },
+      "cache_differs_from_authoritative_core": true
+    },
+    {
+      "case": "explicit_invalidation_after_task_clear",
+      "response": {
+        "status": 200,
+        "body": {
+          "credential_rules": [
+            {
+              "name": "reloaded",
+              "patterns": [
+                "fixture-[0-9]+"
+              ],
+              "allowed_hosts": [
+                "api.fixture.invalid"
+              ],
+              "header_names": [
+                "authorization",
+                "x-api-key"
+              ],
+              "suggested_url": ""
+            }
+          ],
+          "scan_patterns": [
+            {
+              "name": "base",
+              "pattern": "fixture-\u00e9",
+              "target": "both",
+              "scope": [
+                "body"
+              ],
+              "action": "log",
+              "severity": "medium",
+              "message": "",
+              "case_sensitive": true
+            }
+          ],
+          "addons": {
+            "credential_guard": {
+              "enabled": true,
+              "settings": {
+                "use_default_credential_rules": false
+              },
+              "custom": "preserved"
+            }
+          },
+          "policy_hash": "sha256:16e3ee46e6a12191"
+        },
+        "body_hex": "7b2263726564656e7469616c5f72756c6573223a205b7b226e616d65223a202272656c6f61646564222c20227061747465726e73223a205b22666978747572652d5b302d395d2b225d2c2022616c6c6f7765645f686f737473223a205b226170692e666978747572652e696e76616c6964225d2c20226865616465725f6e616d6573223a205b22617574686f72697a6174696f6e222c2022782d6170692d6b6579225d2c20227375676765737465645f75726c223a2022227d5d2c20227363616e5f7061747465726e73223a205b7b226e616d65223a202262617365222c20227061747465726e223a2022666978747572652d5c7530306539222c2022746172676574223a2022626f7468222c202273636f7065223a205b22626f6479225d2c2022616374696f6e223a20226c6f67222c20227365766572697479223a20226d656469756d222c20226d657373616765223a2022222c2022636173655f73656e736974697665223a20747275657d5d2c20226164646f6e73223a207b2263726564656e7469616c5f6775617264223a207b22656e61626c6564223a20747275652c202273657474696e6773223a207b227573655f64656661756c745f63726564656e7469616c5f72756c6573223a2066616c73657d2c2022637573746f6d223a2022707265736572766564227d7d2c2022706f6c6963795f68617368223a20227368613235363a31366533656534366536613132313931227d"
+      }
+    },
+    {
+      "case": "fetch_failure_is_503",
+      "response": {
+        "status": 503,
+        "body": {
+          "error": "PDP not available"
+        },
+        "body_hex": "7b226572726f72223a2022504450206e6f7420617661696c61626c65227d"
+      }
+    },
+    {
+      "case": "timestamp_outside_config_is_hashable",
+      "response": {
+        "status": 200,
+        "body": {
+          "credential_rules": [],
+          "scan_patterns": [],
+          "addons": {},
+          "policy_hash": "sha256:de47be91d54fade2"
+        },
+        "body_hex": "7b2263726564656e7469616c5f72756c6573223a205b5d2c20227363616e5f7061747465726e73223a205b5d2c20226164646f6e73223a207b7d2c2022706f6c6963795f68617368223a20227368613235363a64653437626539316435346661646532227d"
+      },
+      "core_policy_hash": "sha256:de47be91d54fade2"
+    },
+    {
+      "case": "timestamp_inside_addon_is_handler_500",
+      "response": {
+        "status": 500,
+        "body": {
+          "error": "Internal error: TypeError"
+        },
+        "body_hex": "7b226572726f72223a2022496e7465726e616c206572726f723a20547970654572726f72227d"
+      },
+      "core_policy_hash": "sha256:d8b203cda0ca138f"
+    }
+  ]
+}

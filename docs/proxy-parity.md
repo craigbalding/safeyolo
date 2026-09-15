@@ -342,6 +342,7 @@ silently reduce accepted message sizes to a library default.
 | D42 | Native policy method conditions used Rust's newer Unicode uppercasing. An allow condition for U+1C89 therefore matched a lookup for U+1C8A, although the pinned Python engine denies it. The API's returned method was unchanged, hiding the comparison mismatch. | Policy conditions and API method normalization now share pinned Python 3.12 / Unicode 15 uppercase data. The regression compares the actual source denial with native evaluation. Host case conversion is separate and remains outside this repair. |
 | D43 | After the last gateway grant is removed, the source gateway callback returns before clearing its previous token bindings. With a retained host binding and an authored gateway allow rule, an old token can still pass identity, service, capability, host and policy checks and reach vault selection. The compiled baseline already reports an empty token map. | The native gateway snapshot replaces the complete binding collection, including an empty collection. Its canonical view and selector revoke the old token together. Failed candidate construction retains the previous snapshot. This is proven at the shared policy/service boundary; the native HTTP credential pipeline remains unactivated. |
 | D44 | Normal source reload rotates gateway tokens without refreshing contract bindings. A changed body/query approval can keep its old value effective even with generated route permissions. Removed approvals also survive the explicit contract file loader and remain usable when an authored gateway permission permits the route. The stale approval uses the new current token, unlike D43. | Each accepted native snapshot replaces contract bindings together with tokens and permissions. The [gateway regression](../proxy/tests/gateway_snapshot.rs) checks alpha-to-beta replacement with unchanged generated routes, removal despite an authored allow, old-token rejection and retention after invalid TOML. The source witness exercised 32 actual request hooks across 16 observations with isolated in-memory injection and no egress. Native HTTP credential integration remains pending. |
+| D45 | Source task clear removes the active task from PDPCore but does not invalidate the Agent API configuration cache. A populated `/config` response can retain the old task rules and hash until explicit invalidation, while direct core reads already show the baseline. This is an observed state-freshness defect; the witness does not establish an enforcement bypass. | The native projection reads the current immutable snapshot without a second cache. The [sensor configuration tests](../proxy/src/policy/sensor_config.rs) compare baseline, task replacement and the existing `without_task()` snapshot with actual source core responses, retaining the stale source handler response as evidence. HTTP task management and sensor enforcement integration remain pending; the component test does not establish a complete task-clear workflow. |
 
 ## Deletion map and evidence still required
 
@@ -492,7 +493,8 @@ Rust transport tests, strict all-target Clippy and selected hooks pass.
 These are owner results, without independent acceptance or macOS/guest evidence.
 
 The native [Agent API](../proxy/src/agent_api.rs) serves authenticated `/health`,
-`/lookup`, `/policy` and `/budgets` on the reserved hostname. `agent_api_enabled` defaults to true.
+`/lookup`, `/policy`, `/budgets` and `/config` on the reserved hostname.
+`agent_api_enabled` defaults to true.
 Authentication reads `SAFEYOLO_DATA_DIR/agent_token` for every request, defaulting
 to `/safeyolo/data/agent_token`. Method checks precede authentication; lookup uses
 the trusted listener identity and current policy snapshot without spending
@@ -549,6 +551,56 @@ cases; the shared destination parser has 37 source comparisons. Privacy and
 shutdown checks found no minted tokens in artifacts or remaining fixture
 processes, readiness files or socket directories. These are owner results;
 independent acceptance, macOS, real-guest and CI validation remain pending.
+
+The authenticated `/config` response projects `credential_rules`, `scan_patterns`,
+`addons` and `policy_hash` from the current accepted snapshot. Baseline rules
+precede task rules, retaining order and duplicates; addons come from the baseline
+only, including disabled entries. Source defaults and whole-addon replacement
+remain loader behavior. Reads neither evaluate policy nor consume budgets.
+The transient response owns only the projected fields and uses the existing
+zeroizing response owner.
+
+The [policy hash writer](../proxy/src/policy/model_json.rs) streams baseline then
+task model JSON into SHA-256 and returns the source's first 16 hexadecimal digits
+with a `sha256:` prefix. It retains the existing canonical task model rather than
+rebuilding policy. Compact model JSON has different float and temporal spelling
+from ordinary API JSON. Parser-owned temporal provenance also preserves distinct
+mapping entries whose JSON key spellings coincide. Extracted simple host rules
+contribute their counts, so different host sets can have the same source hash.
+A typed date and its quoted string can also have the same hash. This value is a
+source cache identity, not an authorization signature over every native rule.
+
+If a projected field contains an admitted typed temporal value, `/config` returns
+the source 500 `Internal error: TypeError`. A date in an unused gateway field can
+affect the hash while leaving `/config` available even when `/policy` fails.
+An initialized policy with no baseline returns empty fields and the hash of empty
+bytes; an explicitly loaded empty baseline includes model defaults in its hash.
+Unavailable policy returns 503. Remote policy-client cache TTL, fallback and
+previously populated cache behavior remain unintegrated. D45 records the source
+task-clear cache defect and the native snapshot-level behavior. HTTP task
+management and sensor activation remain separate integration work.
+
+The [hash fixtures](../proxy/src/policy/model_json/tests.rs) retain 30 actual
+source cases: 23 match native model bytes and hashes, while seven expose existing
+frontend admission gaps. Those gaps cover literal JSON and TOML nonfinite values,
+YAML non-string scalar keys, UTF-8 and non-UTF-8 binary, YAML sets and JSON lone
+surrogates. The source serializes five of those seven; non-UTF-8 binary and lone
+surrogates fail its model serializer. The finite-float comparison covers 1,015
+samples and does not prove every binary64 value. The source's YAML set ordering
+also depends on its hash seed; native set support remains absent.
+
+Owner validation of `/config` on Linux aarch64 passed 209 wire cases against
+one immutable binary: 69 API, 36 network-policy and 104 WebSocket cases. All
+209 configurations used native policy without an adapter. The eight new config
+cases also passed against Python. The frozen source passed 229 Rust tests,
+including live Python oracles, and 12 compile-fail documentation tests. Strict
+all-target Clippy, formatting and selected hooks passed. All 996 archived and
+working-tree blobs, 21 migration fixtures and the binary stayed unchanged during
+the wire run. Egress reached only owned test peers; artifact scans found no minted
+bearer patterns. All fixture processes, readiness files and socket directories
+were cleaned up. Process sampling or fixture process observations covered 172
+cases; the other 37 retain configuration, native-event and cleanup evidence.
+These are owner results, without independent, macOS, real-guest or CI acceptance.
 
 The authenticated `/policy` response contains the complete compiled baseline,
 shared across callers. It borrows the same immutable snapshot as the matcher:
