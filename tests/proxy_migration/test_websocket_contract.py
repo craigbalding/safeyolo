@@ -27,7 +27,8 @@ from pathlib import Path
 import pytest
 from mitmproxy.certs import CertStore
 
-from tests.proxy_migration.harness import launch_proxy, read_events
+from tests.proxy_migration.harness import launch_proxy as _launch_proxy
+from tests.proxy_migration.harness import read_events
 from tests.proxy_migration.scenarios import POLICY
 from tests.proxy_migration.test_http2_contract import origin_certificate
 
@@ -43,6 +44,33 @@ target = "both"
 scope = ["body"]
 action = "block"
 '''
+
+
+@contextmanager
+def launch_proxy(backend, directory, policy, **options):
+    """Exercise native Rust policy while retaining the Python comparator."""
+    if backend == "rust":
+        options["native_policy"] = True
+    with _launch_proxy(backend, directory, policy, **options) as proxy:
+        if backend == "rust":
+            config = json.loads((directory / "proxy.json").read_text())
+            policy_socket = Path(proxy.paths["alice"]).parents[1] / "policy.sock"
+            assert Path(config["policy_file"]) == directory / "policy.toml"
+            assert "temporary_policy_socket" not in config
+            assert proxy.policy_process is None
+            assert not (directory / "policy-bridge").exists()
+            assert not policy_socket.exists()
+        yield proxy
+        # Fixture exceptions propagate before these assertions. Shutdown cases
+        # can already have stopped the child; inspect its retained events only.
+        if backend == "rust":
+            requests = proxy.events("proxy.request")
+            assert requests, "Fixture completed without request evidence"
+            assert all(row.get("coverage") == "native_network_guard_only" for row in requests)
+            native_ids = {row["request_id"] for row in proxy.events("proxy.network_guard")}
+            for row in requests:
+                if row["status"] in {101, 403}:
+                    assert row["request_id"] in native_ids
 
 
 def exact(stream, length):

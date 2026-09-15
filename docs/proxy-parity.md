@@ -556,10 +556,22 @@ baseline is also outside this local runtime slice.
 
 Owner validation of the `/policy` expansion on Linux aarch64 passed all 193
 wire cases against one immutable binary: 53 API, 36 network-policy and 104
-WebSocket cases. The 89 API/network cases use native policy without an adapter;
-the WebSocket cases retain their existing temporary Python policy bridge.
+WebSocket cases. The 89 API/network cases used native policy without an adapter;
+the WebSocket cases in that run used the temporary Python policy bridge.
 The unchanged health/lookup source baseline passed 35 cases with one strict
 historical D9 failure. All 17 new policy/YAML cases also passed against Python.
+
+The [WebSocket fixture](../tests/proxy_migration/test_websocket_contract.py)
+now selects native policy for Rust. A separate run against the same immutable
+binary passed all 104 cases without a policy adapter. All 151 request events
+reported native network policy coverage. Each of the 100 upgrades and two
+policy denials had a matching native guard event. Fixture processes, listener
+paths and readiness files were removed after shutdown. Four Python comparison
+cases also passed for denial and live scanner-rule reload over WS and WSS.
+The existing 16 strict Python D32 failures remain recorded. The reload cases
+change scanner rules; they do not prove reauthorization of an upgraded
+connection after a network permission changes. D33's opaque-delegate
+cancellation gap also remains.
 
 Staged-source checks passed 188 selected Rust tests, including live Python
 oracles, and 12 compile-fail documentation tests. Strict all-target Clippy,
