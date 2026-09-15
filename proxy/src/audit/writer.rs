@@ -151,6 +151,18 @@ pub struct Writer {
     worker: Mutex<Worker>,
 }
 impl Writer {
+    /// Read retained events for an already validated request ID and trusted
+    /// agent. This performs blocking file I/O and a best-effort freshness wait;
+    /// async callers must use their blocking executor. The returned document
+    /// can contain private event details and must not enter diagnostics.
+    pub fn explain(
+        &self,
+        request_id: &str,
+        agent: &str,
+    ) -> std::result::Result<CircuitValue, super::ExplainError> {
+        super::explain::explain(self, &self.path, &self.settings.backups, request_id, agent)
+    }
+
     pub fn new(path: PathBuf, settings: Settings) -> Self {
         Self {
             path,
@@ -372,7 +384,7 @@ fn rotate(path: &Path, settings: &Settings) -> io::Result<()> {
     }
     Ok(())
 }
-fn backup(path: &Path, index: &BigInt) -> PathBuf {
+pub(super) fn backup(path: &Path, index: &BigInt) -> PathBuf {
     // Python 3.12 treats a terminal dot as no suffix; Rust treats it as an
     // empty extension. Preserve the original filename bytes in that case.
     if path
@@ -416,7 +428,7 @@ fn append(path: &Path, settings: &Settings, batch: &[Record]) -> Result<()> {
     written
 }
 #[cfg(unix)]
-fn close(file: std::fs::File) -> Result<()> {
+pub(super) fn close(file: std::fs::File) -> Result<()> {
     use std::os::fd::IntoRawFd;
     // Ownership transfers exactly once; POSIX close is never retried on EINTR.
     if unsafe { libc::close(file.into_raw_fd()) } == 0 {
@@ -451,3 +463,6 @@ fn fallback(record: &Record, label: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod explain_tests;

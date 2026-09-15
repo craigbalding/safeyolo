@@ -2,12 +2,15 @@
 //! one writer across runtime snapshots; this module performs no global setup.
 
 mod envelope;
+mod explain;
 mod writer;
 
+pub(crate) use envelope::wipe;
 pub use envelope::{
     Approval, ApprovalType, Attribution, AttributionStatus, Decision, Event, Initiator, Kind,
     Severity,
 };
+pub use explain::{ExplainError, ExplainErrorKind};
 pub use writer::{Settings, Submission, Writer};
 
 use std::fmt;

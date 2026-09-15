@@ -1,6 +1,27 @@
 use super::*;
 use crate::policy::{Format, Policy, TimestampPaths};
 
+#[test]
+fn cleanup_of_deep_typed_objects_and_arrays_uses_an_owned_worklist() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(|| {
+            let mut value = CircuitValue::Other(Value::String("owned private fixture".into()));
+            for depth in 0..10_000 {
+                value = if depth % 2 == 0 {
+                    CircuitValue::Array(vec![value])
+                } else {
+                    CircuitValue::Object([("owned private key".into(), value)].into())
+                };
+            }
+            wipe(&mut value);
+            assert!(value.as_object().unwrap().is_empty());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 fn kind(value: &str) -> Kind {
     match value {
         "security" => Kind::Security,

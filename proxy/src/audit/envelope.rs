@@ -405,22 +405,25 @@ impl Drop for Record {
         wipe(&mut self.0);
     }
 }
-fn wipe(value: &mut CircuitValue) {
-    let mut pending = vec![value];
-    while let Some(value) = pending.pop() {
+pub(crate) fn wipe(value: &mut CircuitValue) {
+    fn drain(value: &mut CircuitValue, pending: &mut Vec<CircuitValue>) {
         match value {
             CircuitValue::Other(value) => crate::credentials::wipe_json(value),
-            CircuitValue::Array(values) => pending.extend(values.iter_mut()),
+            CircuitValue::Array(values) => pending.append(values),
             CircuitValue::Object(values) => {
                 // IndexMap keeps keys immutable while indexed: take entries first.
-                let owned = std::mem::take(values);
-                for (mut key, mut value) in owned {
+                for (mut key, value) in std::mem::take(values) {
                     key.zeroize();
-                    wipe(&mut value);
+                    pending.push(value);
                 }
             }
             _ => {}
         }
+    }
+    let mut pending = Vec::new();
+    drain(value, &mut pending);
+    while let Some(mut value) = pending.pop() {
+        drain(&mut value, &mut pending);
     }
 }
 

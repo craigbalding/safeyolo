@@ -17,11 +17,13 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 mod declarations;
+mod explain;
 mod flows;
 pub use declarations::{
     BodyObservation, Controls, DeclarationContext, RequestBody, respond_with_body,
     respond_with_body_and_audit_id,
 };
+pub use explain::ExplainFailure;
 pub use flows::FlowFailure;
 
 use crate::{
@@ -117,6 +119,7 @@ pub enum Failure {
     Declaration(crate::test_context::ContextErrorKind),
     ContentDecoding(crate::http_content::ContentError),
     FlowReporting(FlowFailure),
+    ExplainReporting(ExplainFailure),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -453,6 +456,9 @@ pub async fn respond_read_with_circuits<'p>(
     if let Err(outcome) = authorize(request, token_path).await {
         return outcome;
     }
+    if route(request) == "/explain" {
+        return explain::respond(request, None).await;
+    }
     authenticated_read(request, policy, tasks, now_ms, circuits)
 }
 
@@ -778,7 +784,10 @@ fn query(request: Request<'_>) -> HashMap<String, Decoded> {
     for part in query.split('&').filter(|part| !part.is_empty()) {
         let (key, value) = part.split_once('=').unwrap_or((part, ""));
         if let Decoded::Scalar(key) = unquote(key)
-            && matches!(key.as_str(), "host" | "scheme" | "port" | "method" | "path")
+            && matches!(
+                key.as_str(),
+                "host" | "scheme" | "port" | "method" | "path" | "request_id"
+            )
         {
             output.entry(key).or_insert_with(|| unquote(value));
         }

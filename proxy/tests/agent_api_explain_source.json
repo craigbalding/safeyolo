@@ -1,0 +1,1602 @@
+{
+  "max_lines": 10000,
+  "backups": 3,
+  "rows": [
+    {
+      "input": {
+        "query": "",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [],
+        "pending": 0,
+        "drained": true,
+        "name": "missing_query"
+      },
+      "query_pairs": [],
+      "result": {
+        "status": 400,
+        "body_text": "{\"error\": \"Invalid or missing request_id\", \"usage\": \"/explain?request_id=req-<32hex>\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "86"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [],
+      "retained": [],
+      "scans": []
+    },
+    {
+      "input": {
+        "query": "request_id=req-123",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [],
+        "pending": 0,
+        "drained": true,
+        "name": "invalid_id"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-123"
+        ]
+      ],
+      "result": {
+        "status": 400,
+        "body_text": "{\"error\": \"Invalid or missing request_id\", \"usage\": \"/explain?request_id=req-<32hex>\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "86"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [],
+      "retained": [],
+      "scans": []
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111%0A",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"plain\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\\n\", \"agent\": \"alice\", \"event\": \"lf\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "terminal_lf"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111\n"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\\n\", \"status\": \"complete\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\\n\", \"agent\": \"alice\", \"event\": \"lf\"}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "181"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111\n",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\\n\", \"agent\": \"alice\", \"event\": \"lf\"}]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111&request_id=req-22222222222222222222222222222222",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"first\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-22222222222222222222222222222222\", \"agent\": \"alice\", \"event\": \"second\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "duplicate_first_valid"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ],
+        [
+          "request_id",
+          "req-22222222222222222222222222222222"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"first\"}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "180"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"first\"}]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=&request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [],
+        "pending": 0,
+        "drained": true,
+        "name": "duplicate_first_empty"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          ""
+        ],
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 400,
+        "body_text": "{\"error\": \"Invalid or missing request_id\", \"usage\": \"/explain?request_id=req-<32hex>\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "86"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [],
+      "retained": [],
+      "scans": []
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": false,
+        "current": "audit.jsonl",
+        "files": [],
+        "pending": 0,
+        "drained": true,
+        "name": "unresolved_identity"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 403,
+        "body_text": "{\"error\": \"Could not identify agent\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "37"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [],
+      "retained": [],
+      "scans": []
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [],
+        "pending": 0,
+        "drained": true,
+        "name": "no_retained_files"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": []}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "90"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan"
+      ],
+      "retained": [],
+      "scans": [
+        {
+          "files": [],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"bob\", \"event\": \"foreign\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"event\": \"missing\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"event\": \"nested\", \"attribution\": {\"agent\": \"alice\"}}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "foreign_and_missing"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": []}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "90"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "\n  \nnot JSON\n{\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-22222222222222222222222222222222\", \"agent\": \"alice\", \"event\": \"wrong_id\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"bob\", \"event\": \"wrong_agent\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": [\"alice\"], \"event\": \"typed_agent\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"first\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"typed\", \"value\": NaN, \"count\": 1208925819614629174706176}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "strict_filter_malformed_and_typed"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"first\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"typed\", \"value\": NaN, \"count\": 1208925819614629174706176}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "322"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"first\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"typed\", \"value\": NaN, \"count\": 1208925819614629174706176}]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.log",
+        "files": [
+          {
+            "name": "audit.log",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"current_late\", \"ts\": 9}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"current_early\", \"ts\": 1}\n",
+                "repeat": 1
+              }
+            ]
+          },
+          {
+            "name": "audit.jsonl.1",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup1\", \"ts\": 99}\n",
+                "repeat": 1
+              }
+            ]
+          },
+          {
+            "name": "audit.jsonl.2",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup2\"}\n",
+                "repeat": 1
+              }
+            ]
+          },
+          {
+            "name": "audit.jsonl.3",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup3\"}\n",
+                "repeat": 1
+              }
+            ]
+          },
+          {
+            "name": "audit.log.1",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"wrong_suffix\"}\n",
+                "repeat": 1
+              }
+            ]
+          },
+          {
+            "name": "audit.jsonl.4",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"beyond_retention\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "retention_order_suffix"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"current_late\", \"ts\": 9}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"current_early\", \"ts\": 1}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup1\", \"ts\": 99}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup2\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup3\"}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "597"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.log",
+        "open:audit.jsonl.1",
+        "open:audit.jsonl.2",
+        "open:audit.jsonl.3"
+      ],
+      "retained": [
+        "audit.log",
+        "audit.jsonl.1",
+        "audit.jsonl.2",
+        "audit.jsonl.3"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.log",
+            "audit.jsonl.1",
+            "audit.jsonl.2",
+            "audit.jsonl.3"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"current_late\", \"ts\": 9}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"current_early\", \"ts\": 1}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup1\", \"ts\": 99}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup2\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup3\"}]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl.1",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup1\"}\n",
+                "repeat": 1
+              }
+            ]
+          },
+          {
+            "name": "audit.jsonl.3",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup3\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "backups_without_current"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup1\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup3\"}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "276"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl.1",
+        "open:audit.jsonl.3"
+      ],
+      "retained": [
+        "audit.jsonl.1",
+        "audit.jsonl.3"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl.1",
+            "audit.jsonl.3"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup1\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup3\"}]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"first\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-22222222222222222222222222222222\", \"agent\": \"alice\", \"event\": \"filler\"}\n",
+                "repeat": 9998
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"last\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "tail_at_limit"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"first\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"last\"}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "271"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"first\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"last\"}]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"evicted\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-22222222222222222222222222222222\", \"agent\": \"alice\", \"event\": \"filler\"}\n",
+                "repeat": 9999
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"tail\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "tail_over_limit"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"incomplete_search\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"tail\"}], \"searched_lines_per_file\": 10000}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "222"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"tail\"}]",
+          "incomplete": true,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"unread\"}\n",
+                "repeat": 1
+              }
+            ]
+          },
+          {
+            "name": "audit.jsonl.1",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "read_error_continues",
+        "open_error": "audit.jsonl"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"error\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup\"}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "178"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl",
+        "open:audit.jsonl.1"
+      ],
+      "retained": [
+        "audit.jsonl",
+        "audit.jsonl.1"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl",
+            "audit.jsonl.1"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"backup\"}]",
+          "incomplete": false,
+          "read_error": true
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "hex": "ff0a"
+          },
+          {
+            "name": "audit.jsonl.1",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"unreached\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "unicode_decode_error"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 500,
+        "body_text": "{\"error\": \"Internal error: UnicodeDecodeError\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "47"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl",
+        "audit.jsonl.1"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl",
+            "audit.jsonl.1"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "error_type": "UnicodeDecodeError"
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "[]\n",
+                "repeat": 1
+              }
+            ]
+          },
+          {
+            "name": "audit.jsonl.1",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"unreached\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "nonobject_json"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 500,
+        "body_text": "{\"error\": \"Internal error: AttributeError\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "43"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl",
+        "audit.jsonl.1"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl",
+            "audit.jsonl.1"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "error_type": "AttributeError"
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [],
+        "pending": 1,
+        "drained": true,
+        "name": "drain_creates_file",
+        "drain_files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"created\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ]
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"created\"}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "182"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "wait_for_drain:0.5",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"created\"}]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"before\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 1,
+        "drained": true,
+        "name": "drain_appends_partial",
+        "drain_files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"after\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ]
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"before\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"after\"}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "273"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "wait_for_drain:0.5",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"before\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"after\"}]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"evicted\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-22222222222222222222222222222222\", \"agent\": \"alice\", \"event\": \"filler\"}\n",
+                "repeat": 9999
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"tail\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 1,
+        "drained": false,
+        "name": "pending_precedes_incomplete"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"pending\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"tail\"}], \"searched_lines_per_file\": 10000}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "212"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "wait_for_drain:0.5",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"tail\"}]",
+          "incomplete": true,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"unread\"}\n",
+                "repeat": 1
+              }
+            ]
+          },
+          {
+            "name": "audit.jsonl.1",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"evicted\"}\n",
+                "repeat": 1
+              },
+              {
+                "text": "{\"request_id\": \"req-22222222222222222222222222222222\", \"agent\": \"alice\", \"event\": \"filler\"}\n",
+                "repeat": 9999
+              },
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"tail\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 1,
+        "drained": false,
+        "name": "error_precedes_pending_incomplete",
+        "open_error": "audit.jsonl"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"error\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"tail\"}], \"searched_lines_per_file\": 10000}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "210"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "wait_for_drain:0.5",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl",
+        "open:audit.jsonl.1"
+      ],
+      "retained": [
+        "audit.jsonl",
+        "audit.jsonl.1"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl",
+            "audit.jsonl.1"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"tail\"}]",
+          "incomplete": true,
+          "read_error": true
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"available\"}\n",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 1,
+        "drained": true,
+        "name": "freshness_wait_exception",
+        "drain_error": true
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"available\"}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "184"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "wait_for_drain:0.5",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"available\"}]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "query": "request_id=req-11111111111111111111111111111111",
+        "resolved_identity": true,
+        "current": "audit.jsonl",
+        "files": [
+          {
+            "name": "audit.jsonl",
+            "parts": [
+              {
+                "text": "\u00a0{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"crlf\"}\u2003\r\n{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"cr\"}\r{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"lf\"}\n{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"unterminated\"}",
+                "repeat": 1
+              }
+            ]
+          }
+        ],
+        "pending": 0,
+        "drained": true,
+        "name": "universal_newlines_and_strip"
+      },
+      "query_pairs": [
+        [
+          "request_id",
+          "req-11111111111111111111111111111111"
+        ]
+      ],
+      "result": {
+        "status": 200,
+        "body_text": "{\"request_id\": \"req-11111111111111111111111111111111\", \"status\": \"complete\", \"events\": [{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"crlf\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"cr\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"lf\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"unterminated\"}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "456"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "get_writer",
+        "pending_count",
+        "retained_files",
+        "scan",
+        "open:audit.jsonl"
+      ],
+      "retained": [
+        "audit.jsonl"
+      ],
+      "scans": [
+        {
+          "files": [
+            "audit.jsonl"
+          ],
+          "request_id": "req-11111111111111111111111111111111",
+          "agent": "alice",
+          "events_json": "[{\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"crlf\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"cr\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"lf\"}, {\"request_id\": \"req-11111111111111111111111111111111\", \"agent\": \"alice\", \"event\": \"unterminated\"}]",
+          "incomplete": false,
+          "read_error": false
+        }
+      ]
+    }
+  ],
+  "source_sha256": {
+    "cli/src/safeyolo/mitm_addons/agent_api.py": "ab52434f28e82c9cc5f7ce32bf0b69ff6dcd3158e5e5fd5a446e4a747942e378",
+    "cli/src/safeyolo/mitm_addons/request_id.py": "b79675c29c966d3d653aa6a37cce712a5f0bd7cff95186c59f58b526ed0a395e",
+    "cli/src/safeyolo/core/identity.py": "a5b9352db04c505f12a21c9cfac269d1ba27eb38cbf5989de723ad4ca3e42888",
+    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/audit_writer.py": "7db71d553ef7b1889828d3adabcacb125a12ef1b3f1d070c7948a9e1cf5c5103",
+    "cli/src/safeyolo/core/flow_cache.py": "eb7f8c829e9e39b3234b7218ba4b0929251798fa58b0490d33e70aff284fe5cd",
+    "cli/src/safeyolo/proxy_modes/unix_listener.py": "59f22518f7f6752cc857cf62ed196e8645e01cde3b8540cfb62739734099e3db",
+    "pdp/tokens.py": "0e9f55d14f411a6e71c2b234ca5072f4c65904da4d0c62aba3103a589152d1a5",
+    "tests/test_agent_api.py": "6bb182f1260f2dbc3d0252cd3d9b56e4d1ecd852d89e9f6474ad57febdaa5aeb"
+  }
+}

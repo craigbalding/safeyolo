@@ -9,6 +9,7 @@ use crate::{circuits::CircuitValue, http_content, test_context};
 
 /// Native control owners share process state across request/reload snapshots.
 pub struct Controls<'a> {
+    pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
     pub flows: Option<&'a std::sync::Arc<crate::flow_store::FlowStore>>,
     pub circuits: Option<CircuitContext<'a>>,
     pub declarations: Option<DeclarationContext<'a>>,
@@ -78,6 +79,9 @@ where
 {
     if let Err(outcome) = authorize(request, token_path).await {
         return Ok(outcome);
+    }
+    if route(request) == "/explain" {
+        return Ok(explain::respond(request, controls.audit).await);
     }
     if let Some(route) = flows::recognize(request) {
         return flows::respond(route, request, controls.flows, body).await;

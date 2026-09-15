@@ -668,14 +668,61 @@ transition. The historical separate-addon source test does not establish the
 production container's continuation after that exception.
 
 Policy method comparison and API query formatting use [pinned Python scalar
-data](../proxy/data/agent_api/README.md), including the D42 correction. Other
-operational routes remain unavailable in this development slice.
+data](../proxy/data/agent_api/README.md), including the D42 correction.
+Operational routes without native implementations remain unavailable.
 Python surrogate-escaped query values that cannot enter the native scalar-string
 matcher produce a typed compatibility failure and local 503. The integer parser
 matches Python's default 4,300-digit conversion limit; nondefault Python limits
 remain outside the demonstrated contract. These gaps, audit producers for
 unimplemented routes and global API counters still require integration before
 complete API acceptance.
+
+The authenticated `/explain?request_id=req-<32hex>` route reads canonical audit
+events for the trusted caller. Request ID validation precedes identity checks.
+The query's `agent` or client fields cannot select an owner. A foreign request ID
+and a valid ID with no matching record both return an empty event list; the
+response echoes the queried ID. The reader matches the recorded top-level
+`agent` field exactly. The first query value wins, including an empty first
+value. The source request ID expression accepts one terminal line feed; the
+reader preserves that character for exact record matching.
+
+Before listing retained files, the reader checks the shared writer and waits up
+to 0.5 seconds for pending writes. It scans the current file followed by configured
+backups, newest first, retaining the last 10,000 lines of each file. Within a file,
+matching events keep line order. The source status precedence is `error`,
+`pending`, `incomplete_search`, then `complete`. An incomplete result includes
+`searched_lines_per_file`. These statuses describe the read attempt, not an
+atomic snapshot or durable storage guarantee.
+
+The reader uses the process writer's startup path and backup settings, including
+the development audit-path override. Reload keeps the same writer and reader
+source. File reads and the bounded drain run off async workers. Malformed JSON
+lines are skipped; unreadable retained files mark the result as `error` while
+other files can still contribute events. Exceptions from valid non-object JSON
+or undecodable text remain handler failures. This route does not activate
+`/trace` or the diagnostic probe pipeline.
+
+The [source controls](../proxy/tests/agent_api_explain_source.py) capture actual
+handler, scanner and serializer results. The [reader tests](../proxy/src/audit/explain/tests.rs)
+compare retained-file recipes and exercise the real writer's bounded drain.
+The [API tests](../proxy/tests/agent_api_explain.rs) check authentication, identity,
+query ordering and typed error responses. The [HTTP test](../proxy/src/http/agent_audit_tests.rs)
+uses two private agent sockets and checks shared-writer continuity after reload.
+
+Matching records retain NaN and integers larger than 64 bits. Escaped lone
+surrogates remain unsupported by the existing native JSON representation and
+produce a local compatibility failure. A missing reader preserves the previous
+handler-owned development 503 without an additional guard event. The reader
+preserves Python's empty-path and parent-directory suffix behavior; the existing
+writer's parent-directory rotation behavior is unchanged. These controls do not
+establish parity for arbitrary filesystem races. The native typed parser uses
+iterative traversal and does not reproduce Python's JSON recursion limit.
+
+Validation for this change passed 57 selected Rust tests and 22 actual-source
+controls. The joined HTTP test passed with the process writer supplied by the
+runtime. Four inherited opt-in source oracles remained ignored; existing live
+audit oracles ran in their selected targets. These results are implementation
+evidence and do not establish complete API or migration acceptance.
 
 The authenticated `/budgets` response reads the existing shared rate-limit
 timestamps and current policy matcher. It does not evaluate requests, spend

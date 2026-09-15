@@ -829,6 +829,7 @@ async fn local_agent_api(
             &runtime.tasks,
             crate::policy::current_time_ms(),
             agent_api::Controls {
+                audit: Some(&runtime.audit),
                 flows: runtime.flow_recorder.store(),
                 circuits: runtime.policy.as_ref().map(|_| agent_api::CircuitContext {
                     audit: Some(&runtime.audit),

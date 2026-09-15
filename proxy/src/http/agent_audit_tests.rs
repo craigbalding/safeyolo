@@ -32,7 +32,18 @@ async fn send(
     token: Option<&str>,
     body: &[u8],
 ) -> Vec<u8> {
-    let mut stream = UnixStream::connect(directory.join("alice.sock"))
+    send_as(directory, "alice", method, path, token, body).await
+}
+
+async fn send_as(
+    directory: &Path,
+    agent: &str,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: &[u8],
+) -> Vec<u8> {
+    let mut stream = UnixStream::connect(directory.join(format!("{agent}.sock")))
         .await
         .unwrap();
     let authorization = token.map_or_else(String::new, |token| {
@@ -223,4 +234,152 @@ async fn owned_child(directory: &Path) {
         6
     );
     assert!(!diagnostics.iter().any(|row| row["event"] == "proxy.egress"));
+}
+
+#[test]
+fn explain_uses_trusted_owner_and_shared_writer_after_reload() {
+    const CHILD: &str = "SAFEYOLO_EXPLAIN_HTTP_FIXTURE";
+    if let Some(directory) = std::env::var_os(CHILD) {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(explain_child(Path::new(&directory)));
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("agent_token"), TOKEN).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "http::agent_audit_tests::explain_uses_trusted_owner_and_shared_writer_after_reload",
+            "--nocapture",
+        ])
+        .env(CHILD, directory.path())
+        .env("SAFEYOLO_DATA_DIR", directory.path())
+        .env(
+            "SAFEYOLO_LOG_PATH",
+            directory.path().join("unused-fallback.jsonl"),
+        )
+        .env_remove("SAFEYOLO_AUDIT_QUEUE_MAX")
+        .env_remove("SAFEYOLO_LOG_MAX_MB")
+        .env_remove("SAFEYOLO_LOG_BACKUPS")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for name in [
+        "alice.sock",
+        "bob.sock",
+        "ready",
+        "unused.sqlite3",
+        "unused-fallback.jsonl",
+        "unused-reload.jsonl",
+    ] {
+        assert!(!directory.path().join(name).exists(), "{name}");
+    }
+    for name in ["audit.jsonl", "diagnostics.jsonl"] {
+        let text = std::fs::read_to_string(directory.path().join(name)).unwrap();
+        assert!(!text.contains(TOKEN));
+        let encoded = TOKEN
+            .bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert!(!text.contains(&encoded));
+    }
+}
+
+fn correlation(reply: &[u8]) -> String {
+    let split = reply
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap();
+    let value = std::str::from_utf8(&reply[..split])
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("x-safeyolo-request-id"))
+        .unwrap()
+        .1
+        .trim()
+        .to_owned();
+    assert!(value.starts_with("req-") && value.len() == 36);
+    value
+}
+
+async fn explained(directory: &Path, agent: &str, request_id: &str, suffix: &str) -> Value {
+    let reply = send_as(
+        directory,
+        agent,
+        "GET",
+        &format!("/explain?request_id={request_id}{suffix}"),
+        Some(TOKEN),
+        b"",
+    )
+    .await;
+    assert!(reply.starts_with(b"HTTP/1.1 200"));
+    let value: Value = serde_json::from_slice(body(&reply)).unwrap();
+    assert_eq!(value["request_id"], request_id);
+    assert_eq!(value["status"], "complete");
+    value
+}
+
+async fn explain_child(directory: &Path) {
+    let mut configuration = config(directory);
+    let mut bob = configuration.listeners[0].clone();
+    bob.agent_id = "bob".into();
+    bob.socket_path = directory.join("bob.sock");
+    bob.source_id = Some("192.0.2.11".into());
+    configuration.listeners.push(bob);
+    let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
+    let writer = proxy.runtime.read().unwrap().audit.clone();
+    let alice = send_as(directory, "alice", "GET", "/health", Some(TOKEN), b"").await;
+    let bob = send_as(directory, "bob", "GET", "/health", Some(TOKEN), b"").await;
+    assert!(alice.starts_with(b"HTTP/1.1 200") && bob.starts_with(b"HTTP/1.1 200"));
+    let alice_id = correlation(&alice);
+    let bob_id = correlation(&bob);
+    assert_ne!(alice_id, bob_id);
+    // No explicit test drain: /explain itself must make completed exchanges
+    // visible through the same process writer before performing its scan.
+    let alice_events = explained(directory, "alice", &alice_id, "").await;
+    let bob_events = explained(directory, "bob", &bob_id, "").await;
+    for (value, agent) in [(&alice_events, "alice"), (&bob_events, "bob")] {
+        let events = value["events"].as_array().unwrap();
+        assert_eq!(names(events), ["traffic.request", "traffic.response"]);
+        assert!(events.iter().all(|event| event["agent"] == agent));
+    }
+    for (agent, request_id, suffix) in [
+        ("bob", alice_id.as_str(), ""),
+        ("alice", bob_id.as_str(), ""),
+        (
+            "bob",
+            alice_id.as_str(),
+            "&agent=alice&client_ip=192.0.2.10",
+        ),
+        ("bob", "req-00000000000000000000000000000000", ""),
+    ] {
+        let value = explained(directory, agent, request_id, suffix).await;
+        assert_eq!(value["events"], json!([]));
+    }
+    configuration.audit_log_path = Some(directory.join("unused-reload.jsonl"));
+    proxy.reload(configuration).await.unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &writer,
+        &proxy.runtime.read().unwrap().audit
+    ));
+    assert_eq!(
+        explained(directory, "alice", &alice_id, "").await,
+        alice_events
+    );
+    proxy.shutdown().await;
+    assert!(
+        !records(&directory.join("diagnostics.jsonl"))
+            .iter()
+            .any(|row| row["event"] == "proxy.egress")
+    );
 }
