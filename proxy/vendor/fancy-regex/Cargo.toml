@@ -59,3 +59,7 @@ regex = "1.10"
 [[test]]
 name = "runtime_cancellation"
 path = "tests/runtime_cancellation.rs"
+
+[[test]]
+name = "ascii_backrefs"
+path = "tests/ascii_backrefs.rs"

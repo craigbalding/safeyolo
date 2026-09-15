@@ -513,6 +513,7 @@ struct RegexOptions {
     delegate_size_limit: Option<usize>,
     delegate_dfa_size_limit: Option<usize>,
     oniguruma_mode: bool,
+    allow_ascii_backref_flag: bool,
     ignore_numbered_groups_when_named_groups_exist: bool,
     hard_regex_runtime_options: HardRegexRuntimeOptions,
     bytes_mode: BytesMode,
@@ -541,6 +542,7 @@ impl fmt::Debug for RegexOptions {
             .field("delegate_size_limit", &self.delegate_size_limit)
             .field("delegate_dfa_size_limit", &self.delegate_dfa_size_limit)
             .field("oniguruma_mode", &self.oniguruma_mode)
+            .field("allow_ascii_backref_flag", &self.allow_ascii_backref_flag)
             .field(
                 "ignore_numbered_groups_when_named_groups_exist",
                 &self.ignore_numbered_groups_when_named_groups_exist,
@@ -564,6 +566,7 @@ impl Default for RegexOptions {
             delegate_size_limit: None,
             delegate_dfa_size_limit: None,
             oniguruma_mode: false,
+            allow_ascii_backref_flag: false,
             ignore_numbered_groups_when_named_groups_exist: false,
             hard_regex_runtime_options: HardRegexRuntimeOptions::default(),
             bytes_mode: BytesMode::default(),
@@ -620,6 +623,7 @@ impl RegexOptions {
             | oniguruma_mode
             | crlf
             | named_groups_only
+            | Self::get_flag_value(self.allow_ascii_backref_flag, FLAG_ALLOW_ASCII_BACKREF)
     }
 }
 
@@ -762,6 +766,17 @@ impl RegexOptionsBuilder {
     /// Default is `1_000_000` (1 million).
     pub fn backtrack_limit(&mut self, limit: usize) -> &mut Self {
         self.options.hard_regex_runtime_options.backtrack_limit = limit;
+        self
+    }
+
+    /// Enable the private `(?A:...)` ASCII-backreference scope.
+    ///
+    /// Default false. This compiler-adapter extension changes only backreference
+    /// case folding. It does not change literals, classes, Unicode scalar input,
+    /// or Python operator grammar. SafeYolo lowers those separately and rejects
+    /// authored Python-invalid A flags before enabling this internal syntax.
+    pub fn allow_ascii_backref_flag(&mut self, yes: bool) -> &mut Self {
+        self.options.allow_ascii_backref_flag = yes;
         self
     }
 
@@ -1075,6 +1090,13 @@ impl RegexBuilder {
     /// See [`RegexOptionsBuilder::backtrack_limit`]
     pub fn backtrack_limit(&mut self, limit: usize) -> &mut Self {
         self.options.backtrack_limit(limit);
+        self
+    }
+
+    /// Enable the private compiler-adapter scope; see
+    /// [`RegexOptionsBuilder::allow_ascii_backref_flag`].
+    pub fn allow_ascii_backref_flag(&mut self, yes: bool) -> &mut Self {
+        self.options.allow_ascii_backref_flag(yes);
         self
     }
 
@@ -2323,6 +2345,8 @@ pub enum Expr {
         group: usize,
         /// Whether the matching is case-insensitive or not
         casei: bool,
+        /// Fold only ASCII letters for this reference.
+        ascii: bool,
     },
     /// Back reference to a capture group at the given specified relative recursion level.
     BackrefWithRelativeRecursionLevel {
@@ -2406,6 +2430,8 @@ pub enum AstNode {
         /// Whether the matching is case-insensitive or not
         // TODO: move out of Backref and prefer a Flags AstNode. The resolver can then track the flags and set casei on the resolved Expr accordingly
         casei: bool,
+        /// Fold only ASCII letters for this reference.
+        ascii: bool,
         /// Optional relative recursion level for the backreference
         relative_recursion_level: Option<isize>,
     },
@@ -3262,7 +3288,8 @@ mod tests {
         .is_leaf_node());
         assert!(Expr::Backref {
             group: 1,
-            casei: false
+            casei: false,
+            ascii: false,
         }
         .is_leaf_node());
         assert!(Expr::BackrefWithRelativeRecursionLevel {

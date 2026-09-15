@@ -16,3 +16,8 @@ pub const FLAG_ONIGURUMA_MODE: u32 = 1 << 6;
 pub const FLAG_CRLF: u32 = 1 << 7;
 /// Flag bit for treating numbered groups as non-capturing when named groups exist
 pub const FLAG_IGNORE_NUMBERED_GROUPS_WHEN_NAMED_GROUPS_EXIST: u32 = 1 << 8;
+
+/// Permit the private ASCII-backreference scope emitted by SafeYolo's frontend.
+pub const FLAG_ALLOW_ASCII_BACKREF: u32 = 1 << 9;
+/// ASCII case folding for backreferences, without changing scalar input handling.
+pub const FLAG_ASCII_BACKREF: u32 = 1 << 10;

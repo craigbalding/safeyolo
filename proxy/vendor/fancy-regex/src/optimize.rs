@@ -701,7 +701,8 @@ mod tests {
                     Expr::Group(Arc::new(make_literal("a"))),
                     Expr::Backref {
                         group: 1,
-                        casei: false
+                        casei: false,
+                        ascii: false,
                     }
                 ]))),
                 make_literal("c"),
@@ -933,6 +934,7 @@ mod tests {
                 Expr::Backref {
                     group: 1,
                     casei: false,
+                    ascii: false,
                 },
             ])
         );

@@ -9,7 +9,7 @@ SafeYolo's Python scanner accepts `(a|aa)*\1$` and matches a complete 1,000,100-
 - `RegexBuilder::stack_limit` and `RegexOptionsBuilder::stack_limit` accept `Option<usize>`. The upstream default remains `Some(1_000_000)`. An explicit `None` permits VM buffers to grow as needed. It does not eagerly reserve maximum capacity or change the separate backtracking effort limit.
 - Branches, capture saves, explicit stack storage, atomic-group scratch, delegated capture slots and returned capture vectors use fallible capacity growth. Failure returns `RuntimeError::AllocationFailed` without subject, pattern or allocator diagnostics.
 - With `None`, a scoped guard releases per-search VM buffers on success and error. Compiled rules and bounded-mode scratch reuse keep their existing lifetimes. Concurrent searches use separate pooled scratch states.
-- Python grammar, Unicode classes, case folding and parsing depth are unchanged. Separate compatibility gaps still block production activation.
+- The allocation and cancellation changes preserve matching behavior. The separately gated ASCII-backreference extension below changes case folding only for annotated backreferences. Separate Python compatibility gaps still block production activation.
 
 The fallible-allocation guarantee covers the patched VM buffers. Parsing, compilation, pool bookkeeping and allocations inside the delegated regex engine remain outside this patch. This is not a process-wide guarantee of recovery from arbitrary allocator exhaustion.
 
@@ -53,3 +53,24 @@ CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 cargo t
 All six tests pass in the recorded run. A synthetic input hook proves that the cancellation test has entered VM execution before another thread cancels it. Other cases cover clones, fresh requests, captures, atomic groups, lookbehind, unchanged match offsets and delayed delegated results. The main scanner's cancellable WS API returns a distinct `Cancelled` error. It checks cancellation before counter changes and returns no finding or inspection-error decision for an observed cancellation. A completed counter update is not rolled back if cancellation arrives later. The transport must check its flag again before publishing results because cancellation can race with the API return.
 
 Evidence and runnable commands are recorded under `/home/agent/safeyolo-rust-620-evidence/inspection-cancellation`. There are 19 main scanner tests including five Python oracles, 315 inherited all-feature unit tests, six cancellation regressions and five allocation regressions. Focused library/new-test Clippy and main all-target Clippy pass. Broad vendored all-target Clippy reports 47 existing lints in unchanged upstream tests; this patch retains that source and records the failed command.
+
+## Scoped ASCII backreferences
+
+The SafeYolo frontend lowers Python ASCII scopes and octal escapes before it compiles a rule. ASCII mode changes character categories and case folding. It preserves Unicode scalar input, so a dot still consumes one complete non-ASCII character. Ordinary literals and classes use the existing engine syntax.
+
+Case-insensitive backreferences need one additional bit on each parsed reference. The crate exposes parsing and mutable expression traversal, but its builders accept pattern strings. It has no public builder that accepts an annotated expression tree. `allow_ascii_backref_flag(true)` therefore enables an internal `(?A:...)` scope. The option defaults to false. The SafeYolo frontend rejects authored Python-invalid A flags before it enables the option. The internal scope changes backreferences only; it does not implement a Python ASCII scope by itself.
+
+The parser copies that bit through `AstNode::Backref` and `Expr::Backref`. The compiler selects the existing ASCII comparison instruction for an annotated reference. The virtual machine matching loop is unchanged. Unannotated references keep their existing behavior. Mechanical constructor changes set the new bit to false in inherited tests. `RegexSet` and public expression constructors acquire the same new field through the shared expression type; SafeYolo does not use a separate regex engine or fallback matcher.
+
+From the repository root, run the additional tests with the cached Rust toolchain. The Python command also needs the checkout's existing Python environment, including its test dependencies:
+
+```sh
+CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 cargo test --offline --manifest-path proxy/vendor/fancy-regex/Cargo.toml --test ascii_backrefs
+SAFEYOLO_POLICY_PYTHON="$PWD/.venv/bin/python" CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 cargo test --offline --manifest-path proxy/Cargo.toml --test inspection -- --include-ignored
+```
+
+The external candidate passes three new vendor tests and 23 scanner tests, including six Python oracles. It also passes all 315 inherited all-feature unit tests and the existing five allocation and six cancellation regressions. The finite Python 3.12.14 matrix compares 895 patterns against 87 subjects. Of the 895 compile cases, 827 patterns are accepted by both engines. Their 71,949 match comparisons include nested flags, octal escapes inside and outside classes, numeric and named backreferences, reference ambiguity, case folding, invalid inputs and literal text resembling the internal flag. Focused vendor Clippy and external scanner all-target Clippy pass.
+
+The matrix separates 36 D41 source-defect rows from compatibility results. Python's scoped-ASCII search prefilter can apply a Unicode negative category before its actual ASCII matching instruction. For example, `re.search(r"(?a:\W)", "é")` returns no match, but Python fullmatch and anchored search match the same character. An operator's block rule for characters outside the ASCII word set therefore misses that body in the old scanner. The native scanner enforces that configured rule. The regression records the original search, fullmatch, anchored search and `re.DEBUG` evidence; it does not add a new rule or reproduce the faulty prefilter.
+
+Forty-two matrix rows still differ on Turkish-I case folding. One accepted named-Unicode escape remains unsupported. Other recorded Unicode-version, Unicode-backreference and parsing-depth gaps remain outside this finite repair. Opaque delegated-search cancellation is also unchanged. The external evidence and source review archive are under `/home/agent/safeyolo-rust-620-evidence/regex-ascii-octal`. These results do not establish complete Python regex parity or authorize scanner activation.

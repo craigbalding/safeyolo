@@ -184,12 +184,12 @@ impl<'a> Compiler<'a> {
             Expr::LookAround(_, la) => {
                 self.compile_lookaround(info, la)?;
             }
-            Expr::Backref { group, casei } => {
+            Expr::Backref { group, casei, ascii } => {
                 self.b.add(Insn::Backref {
                     slot: group * 2,
                     casei,
                     // use the pre-computed effective unicode flag (unicode && !Ascii bytes mode)
-                    unicode: self.options.unicode,
+                    unicode: self.options.unicode && !ascii,
                 });
             }
             Expr::BackrefExistsCondition {

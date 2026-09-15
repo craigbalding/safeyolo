@@ -1,17 +1,24 @@
-//! Inactive content-pattern scanner, corresponding to detection/patterns.py and
+//! Content-pattern scanner, corresponding to detection/patterns.py and
 //! mitm_addons/pattern_scanner.py. It inspects one complete message at a time.
 //!
 //! This is a native engine compatibility candidate. `compatibility_gaps()` is
 //! deliberately nonempty: fancy-regex is not an exact Python `re` replacement.
-//! Callers must resolve those gaps before activation. A compile incompatibility
+//! Callers must resolve those gaps before production use. A compile incompatibility
 //! retains the previous snapshot; it never silently removes an accepted rule.
-//! Proved remaining examples include scoped ASCII flags, octal/named Unicode
-//! escapes, Unicode-version and case-insensitive backreference differences, and
+//! Proved remaining examples include named Unicode escapes, Unicode-version
+//! and Unicode case-insensitive backreference differences, and
 //! parse nesting. The pinned engine patch removes the scanner's private stack
 //! cutoff: VM buffers grow fallibly and are released after each scan. The valid
 //! complete-message regression matches at 1,000,100 bytes, 4 MiB and 8 MiB. Remaining
-//! compatibility gaps still block activation. Configurable backtracking and
+//! compatibility gaps still block production acceptance. Configurable backtracking and
 //! compiled-size cutoffs use usize::MAX without eager capacity allocation.
+//!
+//! Python ASCII scopes and octal escapes are lowered before compilation. ASCII
+//! mode changes categories/case folding while preserving Unicode scalar input.
+//! The internal backreference flag is gated and authored Python-invalid A flags
+//! are rejected. Python 3.12's scoped-ASCII INFO prefilter can miss a match that
+//! its own matching instructions accept. Native inspection honors the configured
+//! rule in those proved cases; the oracle records this intentional D41 correction.
 //!
 //! Callers supply mitmproxy-equivalent decoded HTTP text and ordered, combined
 //! header values. HTTP charset/content-encoding and surrogate-escaped text still
@@ -397,13 +404,20 @@ pub(crate) fn compile_python_pattern(
     pattern: &str,
     insensitive: bool,
 ) -> std::result::Result<Regex, PatternIssue> {
-    let adapted = python_pattern(pattern)?;
-    let mut builder = RegexBuilder::new(&adapted);
+    let adapted = python_pattern(pattern, insensitive)?;
+    compile_engine_pattern(&adapted, insensitive)
+}
+fn compile_engine_pattern(
+    adapted: &str,
+    insensitive: bool,
+) -> std::result::Result<Regex, PatternIssue> {
+    let mut builder = RegexBuilder::new(adapted);
     // These are failure cutoffs, not cache capacities. The old scanner does
     // not impose them; ordinary default DFA caching remains bounded. The local
     // patch makes VM growth fallible and releases unbounded buffers after use.
     builder
         .case_insensitive(insensitive)
+        .allow_ascii_backref_flag(true)
         .backtrack_limit(usize::MAX)
         .stack_limit(None)
         .delegate_size_limit(usize::MAX);
@@ -416,139 +430,512 @@ pub(crate) fn compile_python_pattern(
         Err(_) => Err(PatternIssue::Compatibility),
     }
 }
-// This adapter fixes proved token-level differences without pretending to be a
-// full Python parser. Named Unicode escapes and unknown grammar remain explicit
-// compatibility errors. The oracle pins Python 3.12, including empty-string \B.
-fn python_pattern(pattern: &str) -> std::result::Result<String, PatternIssue> {
+#[derive(Clone, Copy)]
+struct PatternMode {
+    ascii: bool,
+    insensitive: bool,
+    verbose: bool,
+}
+struct PatternGroup {
+    mode: PatternMode,
+    capture: Option<usize>,
+    lookbehind_start: Option<usize>,
+}
+fn pattern_literal(value: char, mode: PatternMode) -> String {
+    if mode.ascii && mode.insensitive {
+        if value.is_ascii_alphabetic() {
+            return format!(
+                "(?-i:[{}{}])",
+                value.to_ascii_lowercase(),
+                value.to_ascii_uppercase()
+            );
+        }
+        return format!(r"(?-i:\x{{{:x}}})", value as u32);
+    }
+    format!(r"\x{{{:x}}}", value as u32)
+}
+fn octal_escape(
+    chars: &[char],
+    index: usize,
+    class: bool,
+) -> std::result::Result<Option<(char, usize)>, PatternIssue> {
+    let first = chars[index + 1];
+    if !first.is_ascii_digit() {
+        return Ok(None);
+    }
+    let octal = |ch: char| matches!(ch, '0'..='7');
+    let three_octal = chars
+        .get(index + 1..index + 4)
+        .is_some_and(|digits| digits.iter().copied().all(octal));
+    if first == '0' || class || three_octal {
+        if !octal(first) {
+            return Err(PatternIssue::Invalid);
+        }
+        let mut end = index + 2;
+        while end < (index + 4).min(chars.len()) && octal(chars[end]) {
+            end += 1;
+        }
+        let value = chars[index + 1..end]
+            .iter()
+            .fold(0u32, |value, ch| value * 8 + (*ch as u32 - '0' as u32));
+        if value > 0o377 {
+            return Err(PatternIssue::Invalid);
+        }
+        return Ok(Some((char::from_u32(value).unwrap(), end)));
+    }
+    Ok(None)
+}
+fn hex_escape(chars: &[char], index: usize) -> std::result::Result<(char, usize), PatternIssue> {
+    let width = match chars[index + 1] {
+        'x' => 2,
+        'u' => 4,
+        'U' => 8,
+        _ => unreachable!(),
+    };
+    let end = index + 2 + width;
+    let digits = chars.get(index + 2..end).ok_or(PatternIssue::Invalid)?;
+    if !digits.iter().all(char::is_ascii_hexdigit) {
+        return Err(PatternIssue::Invalid);
+    }
+    let value = digits
+        .iter()
+        .fold(0u32, |value, ch| value * 16 + ch.to_digit(16).unwrap());
+    if value > 0x10ffff {
+        return Err(PatternIssue::Invalid);
+    }
+    let value = char::from_u32(value).ok_or(PatternIssue::Compatibility)?;
+    Ok((value, end))
+}
+fn category(escape: char, ascii: bool) -> Option<String> {
+    let positive = match escape.to_ascii_lowercase() {
+        'w' => {
+            if ascii {
+                "[A-Za-z0-9_]"
+            } else {
+                PYTHON_WORD
+            }
+        }
+        's' => {
+            if ascii {
+                r"[\t-\r ]"
+            } else {
+                PYTHON_SPACE
+            }
+        }
+        'd' => {
+            if ascii {
+                "[0-9]"
+            } else {
+                r"[\p{Nd}]"
+            }
+        }
+        _ => return None,
+    };
+    Some(if escape.is_ascii_uppercase() {
+        format!("[^{}]", &positive[1..positive.len() - 1])
+    } else {
+        positive.into()
+    })
+}
+fn ascii_case_class(class: &str) -> std::result::Result<String, PatternIssue> {
+    // ASCII case folding closes only A-Z/a-z pairs. Determine membership with
+    // the same compiled engine over this already lowered single character class.
+    // No second subject matcher or runtime representation is introduced.
+    let negative = class.starts_with("[^");
+    let positive = if negative {
+        format!("[{}", &class[2..])
+    } else {
+        class.into()
+    };
+    let expression = compile_engine_pattern(&positive, false)?;
+    let mut additions = String::new();
+    for lower in b'a'..=b'z' {
+        let upper = lower.to_ascii_uppercase();
+        let lower_text = char::from(lower).to_string();
+        let upper_text = char::from(upper).to_string();
+        if expression
+            .is_match(&lower_text)
+            .map_err(|_| PatternIssue::Compatibility)?
+            || expression
+                .is_match(&upper_text)
+                .map_err(|_| PatternIssue::Compatibility)?
+        {
+            additions.push(char::from(lower));
+            additions.push(char::from(upper));
+        }
+    }
+    Ok(format!(
+        "(?-i:[{}{}{}])",
+        if negative { "^" } else { "" },
+        positive,
+        additions
+    ))
+}
+fn python_pattern(pattern: &str, insensitive: bool) -> std::result::Result<String, PatternIssue> {
     let chars: Vec<char> = pattern.chars().collect();
     let mut result = String::new();
     let mut index = 0;
-    let mut class = false;
-    let mut class_first = false;
-    let mut verbose = false;
-    let mut modes = Vec::new();
+    let mut mode = PatternMode {
+        ascii: false,
+        insensitive,
+        verbose: false,
+    };
+    let mut groups: Vec<PatternGroup> = Vec::new();
+    let mut captures = vec![false];
+    let mut names: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut lookbehind_start = None;
+    let mut at_start = true;
+    let mut global_ascii = false;
+    let mut global_unicode = false;
     while index < chars.len() {
         let ch = chars[index];
-        if verbose && !class && ch == '#' {
-            while index < chars.len() && chars[index] != '\n' {
-                result.push(chars[index]);
-                index += 1
-            }
-            continue;
-        }
-        if ch == '\\' {
-            let Some(&escape) = chars.get(index + 1) else {
-                return Err(PatternIssue::Invalid);
-            };
-            if escape == 'N' {
-                return Err(PatternIssue::Compatibility);
-            }
-            if escape.is_ascii_alphabetic() && !"aAbBdDsSwWZfnrtuvxU".contains(escape) {
-                return Err(PatternIssue::Invalid);
-            }
-            match escape {
-                'Z' if !class=>result.push_str(r"\z"),
-                's'=>result.push_str(PYTHON_SPACE),
-                'S'=>result.push_str(&format!("[^{}]",&PYTHON_SPACE[1..PYTHON_SPACE.len()-1])),
-                'w'=>result.push_str(PYTHON_WORD),
-                'W'=>result.push_str(r"[^\p{L}\p{N}_]"),
-                'b' if class=>result.push_str(r"\x08"),
-                'b'=>result.push_str(&format!("(?:(?<!{PYTHON_WORD})(?={PYTHON_WORD})|(?<={PYTHON_WORD})(?!{PYTHON_WORD}))")),
-                'B' if !class=>result.push_str(&format!("(?:(?<={PYTHON_WORD})(?={PYTHON_WORD})|(?<!{PYTHON_WORD})(?!{PYTHON_WORD})(?:(?=[\\s\\S])|(?<=[\\s\\S])))")),
-                _=>{result.push(ch);result.push(escape)}
-            }
-            class_first = false;
-            index += 2;
-            continue;
-        }
-        if class {
-            if ch == ']' && !class_first {
-                class = false
-            }
-            // A nested opening bracket is literal in Python character classes;
-            // Rust's delegated class grammar otherwise treats it as a new set.
-            if ch == '[' {
-                result.push('\\')
-            }
-            // Python has no set operations. Escape these operators in classes.
-            if matches!(ch, '&' | '~') {
-                result.push('\\')
-            }
-            result.push(ch);
-            if !(class_first && ch == '^') {
-                class_first = false
-            }
+        if mode.verbose && matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c') {
             index += 1;
+            continue;
+        }
+        if mode.verbose && ch == '#' {
+            while index < chars.len() && chars[index] != '\n' {
+                index += 1;
+            }
             continue;
         }
         if ch == '[' {
-            class = true;
-            class_first = true;
-            result.push(ch);
+            let mut class = String::from("[");
             index += 1;
-            continue;
-        }
-        if ch == '(' && chars.get(index + 1) == Some(&'?') && chars.get(index + 2) == Some(&'#') {
-            // Comments are copied, so dollar signs and escape-looking text in
-            // comments cannot be transformed into executable regex syntax.
-            let mut end = index + 3;
-            while end < chars.len() && chars[end] != ')' {
-                if chars[end] == '\\' {
-                    end += 1
-                }
-                end += 1
+            if chars.get(index) == Some(&'^') {
+                class.push('^');
+                index += 1;
             }
-            if end >= chars.len() {
-                return Err(PatternIssue::Invalid);
+            if chars.get(index) == Some(&']') {
+                class.push_str(r"\]");
+                index += 1;
             }
-            result.extend(&chars[index..=end]);
-            index = end + 1;
-            continue;
-        }
-        if ch == '(' && chars.get(index + 1) == Some(&'?') {
-            let mut end = index + 2;
-            let mut negative = false;
-            let mut changed = verbose;
-            let mut flags = false;
-            while let Some(&flag) = chars.get(end) {
-                if flag == '-' {
-                    negative = true;
-                    end += 1;
+            while index < chars.len() && chars[index] != ']' {
+                let ch = chars[index];
+                if ch == '\\' {
+                    let escape = *chars.get(index + 1).ok_or(PatternIssue::Invalid)?;
+                    if let Some((value, end)) = octal_escape(&chars, index, true)? {
+                        class.push_str(&format!(r"\x{{{:x}}}", value as u32));
+                        index = end;
+                        continue;
+                    }
+                    if matches!(escape, 'x' | 'u' | 'U') {
+                        let (value, end) = hex_escape(&chars, index)?;
+                        class.push_str(&format!(r"\x{{{:x}}}", value as u32));
+                        index = end;
+                        continue;
+                    }
+                    if escape == 'N' {
+                        return Err(PatternIssue::Compatibility);
+                    }
+                    if let Some(value) = category(escape, mode.ascii) {
+                        class.push_str(&value);
+                    } else if escape == 'b' {
+                        class.push_str(r"\x08");
+                    } else if escape.is_ascii_alphabetic() && !"afnrtv".contains(escape) {
+                        return Err(PatternIssue::Invalid);
+                    } else {
+                        class.push('\\');
+                        class.push(escape);
+                    }
+                    index += 2;
                     continue;
                 }
-                if !"aiLmsux".contains(flag) {
-                    break;
+                if matches!(ch, '[' | '&' | '~') {
+                    class.push('\\');
                 }
-                flags = true;
-                if flag == 'x' {
-                    changed = !negative
-                }
-                end += 1;
+                class.push(ch);
+                index += 1;
             }
-            if flags && matches!(chars.get(end), Some(':' | ')')) {
-                if chars[end] == ':' {
-                    modes.push(verbose)
+            if index == chars.len() {
+                return Err(PatternIssue::Invalid);
+            }
+            class.push(']');
+            index += 1;
+            if mode.ascii && mode.insensitive {
+                result.push_str(&ascii_case_class(&class)?);
+            } else {
+                result.push_str(&class);
+            }
+            at_start = false;
+            continue;
+        }
+        if ch == '\\' {
+            let escape = *chars.get(index + 1).ok_or(PatternIssue::Invalid)?;
+            if let Some((value, end)) = octal_escape(&chars, index, false)? {
+                result.push_str(&pattern_literal(value, mode));
+                index = end;
+                at_start = false;
+                continue;
+            }
+            if matches!(escape, 'x' | 'u' | 'U') {
+                let (value, end) = hex_escape(&chars, index)?;
+                result.push_str(&pattern_literal(value, mode));
+                index = end;
+                at_start = false;
+                continue;
+            }
+            if escape.is_ascii_digit() {
+                let end = if chars.get(index + 2).is_some_and(char::is_ascii_digit) {
+                    index + 3
+                } else {
+                    index + 2
+                };
+                let group = chars[index + 1..end].iter().fold(0usize, |value, ch| {
+                    value * 10 + (*ch as usize - '0' as usize)
+                });
+                if !captures.get(group).copied().unwrap_or(false)
+                    || lookbehind_start.is_some_and(|first| group >= first)
+                {
+                    return Err(PatternIssue::Invalid);
                 }
-                verbose = changed;
-                result.extend(&chars[index..=end]);
+                if mode.ascii && mode.insensitive {
+                    result.push_str(&format!(r"(?A:\k<{group}>)"));
+                } else {
+                    result.push_str(&format!(r"\k<{group}>"));
+                }
+                index = end;
+                at_start = false;
+                continue;
+            }
+            if escape == 'N' {
+                return Err(PatternIssue::Compatibility);
+            }
+            if let Some(value) = category(escape, mode.ascii) {
+                if mode.ascii {
+                    result.push_str(&format!("(?-i:{value})"));
+                } else {
+                    result.push_str(&value);
+                }
+            } else {
+                match escape {
+                    'Z' => result.push_str(r"\z"),
+                    'b' | 'B' => {
+                        let word = if mode.ascii {
+                            "(?-i:[A-Za-z0-9_])"
+                        } else {
+                            PYTHON_WORD
+                        };
+                        if escape == 'b' {
+                            result.push_str(&format!(
+                                "(?:(?<!{word})(?={word})|(?<={word})(?!{word}))"
+                            ));
+                        } else {
+                            result.push_str(&format!("(?:(?<={word})(?={word})|(?<!{word})(?!{word})(?:(?=[\\s\\S])|(?<=[\\s\\S])))"));
+                        }
+                    }
+                    'A' | 'a' | 'f' | 'n' | 'r' | 't' | 'v' => {
+                        result.push('\\');
+                        result.push(escape);
+                    }
+                    _ if escape.is_ascii_alphabetic() => return Err(PatternIssue::Invalid),
+                    _ => result.push_str(&pattern_literal(escape, mode)),
+                }
+            }
+            index += 2;
+            at_start = false;
+            continue;
+        }
+        if ch == '(' {
+            if chars.get(index + 1..index + 3) == Some(&['?', '#']) {
+                let mut end = index + 3;
+                while end < chars.len() && chars[end] != ')' {
+                    if chars[end] == '\\' {
+                        end += 1;
+                    }
+                    end += 1;
+                }
+                if end >= chars.len() {
+                    return Err(PatternIssue::Invalid);
+                }
                 index = end + 1;
                 continue;
             }
-        }
-        if ch == '(' {
-            modes.push(verbose)
-        }
-        if ch == ')' {
-            verbose = modes.pop().unwrap_or(verbose)
+            if chars.get(index + 1) == Some(&'?') {
+                let mut end = index + 2;
+                let mut positive = String::new();
+                let mut negative = String::new();
+                let mut minus = false;
+                while let Some(&flag) = chars.get(end) {
+                    if flag == '-' && !minus {
+                        minus = true;
+                        end += 1;
+                        continue;
+                    }
+                    if !"aiLmsux".contains(flag) {
+                        break;
+                    }
+                    if minus {
+                        negative.push(flag);
+                    } else {
+                        positive.push(flag);
+                    }
+                    end += 1;
+                }
+                if end > index + 2 && matches!(chars.get(end), Some(':' | ')')) {
+                    if positive.contains('L')
+                        || positive.contains('a') && positive.contains('u')
+                        || minus && negative.is_empty()
+                        || negative
+                            .chars()
+                            .any(|f| !"imsx".contains(f) || positive.contains(f))
+                    {
+                        return Err(PatternIssue::Invalid);
+                    }
+                    let scoped = chars[end] == ':';
+                    if !scoped && (!at_start || !groups.is_empty() || minus) {
+                        return Err(PatternIssue::Invalid);
+                    }
+                    let mut changed = mode;
+                    if positive.contains('a') {
+                        changed.ascii = true;
+                    }
+                    if positive.contains('u') {
+                        changed.ascii = false;
+                    }
+                    if positive.contains('i') {
+                        changed.insensitive = true;
+                    }
+                    if negative.contains('i') {
+                        changed.insensitive = false;
+                    }
+                    if positive.contains('x') {
+                        changed.verbose = true;
+                    }
+                    if negative.contains('x') {
+                        changed.verbose = false;
+                    }
+                    if scoped {
+                        groups.push(PatternGroup {
+                            mode,
+                            capture: None,
+                            lookbehind_start,
+                        });
+                    } else {
+                        global_ascii |= positive.contains('a');
+                        global_unicode |= positive.contains('u');
+                        // Python raises ValueError (not re.error) for contradictory global type flags.
+                        if global_ascii && global_unicode {
+                            return Err(PatternIssue::Compatibility);
+                        }
+                    }
+                    let flags: String = positive
+                        .chars()
+                        .filter(|flag| !matches!(flag, 'a' | 'u'))
+                        .collect();
+                    if scoped || !flags.is_empty() {
+                        result.push_str("(?");
+                        result.push_str(&flags);
+                        if minus {
+                            result.push('-');
+                            result.push_str(&negative);
+                        }
+                        result.push(if scoped { ':' } else { ')' });
+                    }
+                    mode = changed;
+                    index = end + 1;
+                    continue;
+                }
+                if chars.get(index + 1..index + 4) == Some(&['?', 'P', '=']) {
+                    let end = (index + 4..chars.len())
+                        .find(|&i| chars[i] == ')')
+                        .ok_or(PatternIssue::Invalid)?;
+                    let name: String = chars[index + 4..end].iter().collect();
+                    let group = *names.get(&name).ok_or(PatternIssue::Invalid)?;
+                    if !captures[group] || lookbehind_start.is_some_and(|first| group >= first) {
+                        return Err(PatternIssue::Invalid);
+                    }
+                    if mode.ascii && mode.insensitive {
+                        result.push_str(&format!(r"(?A:\k<{group}>)"));
+                    } else {
+                        result.extend(&chars[index..=end]);
+                    }
+                    index = end + 1;
+                    at_start = false;
+                    continue;
+                }
+                if chars.get(index + 1..index + 4) == Some(&['?', 'P', '<']) {
+                    let end = (index + 4..chars.len())
+                        .find(|&i| chars[i] == '>')
+                        .ok_or(PatternIssue::Invalid)?;
+                    let name: String = chars[index + 4..end].iter().collect();
+                    if names.insert(name, captures.len()).is_some() {
+                        return Err(PatternIssue::Invalid);
+                    }
+                    groups.push(PatternGroup {
+                        mode,
+                        capture: Some(captures.len()),
+                        lookbehind_start,
+                    });
+                    captures.push(false);
+                    result.extend(&chars[index..=end]);
+                    index = end + 1;
+                    at_start = false;
+                    continue;
+                }
+                if chars.get(index + 1..index + 3) == Some(&['?', '(']) {
+                    let end = (index + 3..chars.len())
+                        .find(|&i| chars[i] == ')')
+                        .ok_or(PatternIssue::Invalid)?;
+                    groups.push(PatternGroup {
+                        mode,
+                        capture: None,
+                        lookbehind_start,
+                    });
+                    result.extend(&chars[index..=end]);
+                    index = end + 1;
+                    at_start = false;
+                    continue;
+                }
+                let width = if matches!(chars.get(index + 2), Some(':' | '=' | '!' | '>')) {
+                    3
+                } else if chars.get(index + 2) == Some(&'<')
+                    && matches!(chars.get(index + 3), Some('=' | '!'))
+                {
+                    4
+                } else {
+                    return Err(PatternIssue::Invalid);
+                };
+                groups.push(PatternGroup {
+                    mode,
+                    capture: None,
+                    lookbehind_start,
+                });
+                if width == 4 && lookbehind_start.is_none() {
+                    lookbehind_start = Some(captures.len());
+                }
+                result.extend(&chars[index..index + width]);
+                index += width;
+                at_start = false;
+                continue;
+            }
+            groups.push(PatternGroup {
+                mode,
+                capture: Some(captures.len()),
+                lookbehind_start,
+            });
+            captures.push(false);
+        } else if ch == ')' {
+            let group = groups.pop().ok_or(PatternIssue::Invalid)?;
+            if let Some(capture) = group.capture {
+                captures[capture] = true;
+            }
+            mode = group.mode;
+            lookbehind_start = group.lookbehind_start;
         }
         if ch == '$' {
-            result.push_str(r"(?:(?=\n\z)|$)")
+            result.push_str(r"(?:(?=\n\z)|$)");
+        } else if mode.ascii && mode.insensitive && (ch.is_ascii_alphabetic() || !ch.is_ascii())
+            || mode.verbose && ch.is_whitespace()
+        {
+            result.push_str(&pattern_literal(ch, mode));
         } else {
-            result.push(ch)
+            result.push(ch);
         }
         index += 1;
+        at_start = false;
     }
-    if class {
+    if !groups.is_empty() {
         return Err(PatternIssue::Invalid);
     }
     Ok(result)

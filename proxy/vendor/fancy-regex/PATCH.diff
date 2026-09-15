@@ -27,11 +27,14 @@
 @@ -49 +56 @@
 -quickcheck = "1.0"
 +quickcheck = "=1.0.3"
-@@ -52,11 +59,3 @@
+@@ -52,3 +59,3 @@
 -[[bench]]
 -name = "bench"
 -harness = false
--
++[[test]]
++name = "runtime_cancellation"
++path = "tests/runtime_cancellation.rs"
+@@ -56,7 +63,3 @@
 -[[bench]]
 -name = "regexset_vs_individual"
 -harness = false
@@ -40,8 +43,20 @@
 -name = "compile"
 -harness = false
 +[[test]]
-+name = "runtime_cancellation"
-+path = "tests/runtime_cancellation.rs"
++name = "ascii_backrefs"
++path = "tests/ascii_backrefs.rs"
+--- upstream/src/analyze.rs
++++ vendor/src/analyze.rs
+@@ -1306,0 +1307 @@
++                    ascii: false,
+--- upstream/src/compile.rs
++++ vendor/src/compile.rs
+@@ -187 +187 @@
+-            Expr::Backref { group, casei } => {
++            Expr::Backref { group, casei, ascii } => {
+@@ -192 +192 @@
+-                    unicode: self.options.unicode,
++                    unicode: self.options.unicode && !ascii,
 --- upstream/src/error.rs
 +++ vendor/src/error.rs
 @@ -102,0 +103,4 @@
@@ -100,11 +115,30 @@
 +        self.cancel
 --- upstream/src/lib.rs
 +++ vendor/src/lib.rs
-@@ -579,0 +580 @@
+@@ -515,0 +516 @@
++    allow_ascii_backref_flag: bool,
+@@ -543,0 +545 @@
++            .field("allow_ascii_backref_flag", &self.allow_ascii_backref_flag)
+@@ -566,0 +569 @@
++            allow_ascii_backref_flag: false,
+@@ -579,0 +583 @@
 +    stack_limit: Option<usize>,
-@@ -627,0 +629 @@
+@@ -621,0 +626 @@
++            | Self::get_flag_value(self.allow_ascii_backref_flag, FLAG_ALLOW_ASCII_BACKREF)
+@@ -627,0 +633 @@
 +            stack_limit: Some(1_000_000),
-@@ -762,0 +765,12 @@
+@@ -762,0 +769,23 @@
++        self
++    }
++
++    /// Enable the private `(?A:...)` ASCII-backreference scope.
++    ///
++    /// Default false. This compiler-adapter extension changes only backreference
++    /// case folding. It does not change literals, classes, Unicode scalar input,
++    /// or Python operator grammar. SafeYolo lowers those separately and rejects
++    /// authored Python-invalid A flags before enabling this internal syntax.
++    pub fn allow_ascii_backref_flag(&mut self, yes: bool) -> &mut Self {
++        self.options.allow_ascii_backref_flag = yes;
 +        self
 +    }
 +
@@ -117,14 +151,21 @@
 +    /// each search instead of retained in the scratch pool.
 +    pub fn stack_limit(&mut self, limit: Option<usize>) -> &mut Self {
 +        self.options.hard_regex_runtime_options.stack_limit = limit;
-@@ -1063,0 +1078,6 @@
+@@ -1063,0 +1093,13 @@
++        self
++    }
++
++    /// Enable the private compiler-adapter scope; see
++    /// [`RegexOptionsBuilder::allow_ascii_backref_flag`].
++    pub fn allow_ascii_backref_flag(&mut self, yes: bool) -> &mut Self {
++        self.options.allow_ascii_backref_flag(yes);
 +        self
 +    }
 +
 +    /// See [`RegexOptionsBuilder::stack_limit`].
 +    pub fn stack_limit(&mut self, limit: Option<usize>) -> &mut Self {
 +        self.options.stack_limit(limit);
-@@ -1331,0 +1352,7 @@
+@@ -1331,0 +1374,7 @@
 +        input::checked(input.cancel_flag(), || self.is_match_input_inner(input))?
 +    }
 +
@@ -132,7 +173,7 @@
 +        &self,
 +        input: RegexInput<'_, S>,
 +    ) -> Result<bool> {
-@@ -1440,0 +1468,10 @@
+@@ -1440,0 +1490,10 @@
 +        &self,
 +        input: &RegexInput<'_, S>,
 +        option_flags: u32,
@@ -143,7 +184,7 @@
 +    }
 +
 +    fn find_input_raw_inner<S: input::Input + ?Sized>(
-@@ -1642,0 +1680,10 @@
+@@ -1642,0 +1702,10 @@
 +        &self,
 +        input: &RegexInput<'t, S>,
 +        option_flags: u32,
@@ -154,6 +195,65 @@
 +    }
 +
 +    fn captures_input_with_option_flags_inner<'t, S: input::Input + ?Sized>(
+@@ -2278,0 +2348,2 @@
++        /// Fold only ASCII letters for this reference.
++        ascii: bool,
+@@ -2361,0 +2433,2 @@
++        /// Fold only ASCII letters for this reference.
++        ascii: bool,
+@@ -3218 +3291,2 @@
+-            casei: false
++            casei: false,
++            ascii: false,
+--- upstream/src/optimize.rs
++++ vendor/src/optimize.rs
+@@ -704 +704,2 @@
+-                        casei: false
++                        casei: false,
++                        ascii: false,
+@@ -935,0 +937 @@
++                    ascii: false,
+--- upstream/src/parse.rs
++++ vendor/src/parse.rs
+@@ -416,0 +417 @@
++                        ascii: self.flag(FLAG_ASCII_BACKREF),
+@@ -516,0 +518 @@
++                    ascii: self.flag(FLAG_ASCII_BACKREF),
+@@ -1066,0 +1069 @@
++                b'A' if self.flag(FLAG_ALLOW_ASCII_BACKREF) => self.update_flag(FLAG_ASCII_BACKREF, neg),
+@@ -1500,0 +1504 @@
++                    ascii,
+@@ -1518,0 +1523,3 @@
++                            if *ascii {
++                                return Err(Error::ParseError(*ix, ParseError::InvalidBackref));
++                            }
+@@ -1527,0 +1535 @@
++                                ascii: *ascii,
+@@ -2466,0 +2475 @@
++                    ascii: false,
+@@ -2485,0 +2495 @@
++                    ascii: false,
+@@ -2505,0 +2516 @@
++                    ascii: false,
+@@ -2519,0 +2531 @@
++                    ascii: false,
+@@ -3416,0 +3429 @@
++                    ascii: false,
+@@ -3622,0 +3636 @@
++                            ascii: false,
+--- upstream/src/parse_flags.rs
++++ vendor/src/parse_flags.rs
+@@ -18,0 +19,5 @@
++
++/// Permit the private ASCII-backreference scope emitted by SafeYolo's frontend.
++pub const FLAG_ALLOW_ASCII_BACKREF: u32 = 1 << 9;
++/// ASCII case folding for backreferences, without changing scalar input handling.
++pub const FLAG_ASCII_BACKREF: u32 = 1 << 10;
+--- upstream/src/seek.rs
++++ vendor/src/seek.rs
+@@ -292 +292 @@
+-        Expr::Backref { group, casei }
++        Expr::Backref { group, casei, .. }
 --- upstream/src/vm.rs
 +++ vendor/src/vm.rs
 @@ -78,0 +79 @@

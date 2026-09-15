@@ -372,7 +372,7 @@ fn reload_is_atomic_ordered_and_surfaces_engine_incompatibility_without_skipping
             .unwrap()
             .is_none()
     );
-    let invalid = json!({"policy_hash":"new","scan_patterns":[rule("replace","NEW","body","block"),rule("unsupported",r"(?a:\w+)","body","block")]});
+    let invalid = json!({"policy_hash":"new","scan_patterns":[rule("replace","NEW","body","block"),rule("unsupported",r"\N{LATIN CAPITAL LETTER A}","body","block")]});
     let failure = scanner.maybe_reload(Some(&invalid)).unwrap_err();
     assert_eq!(failure.kind, ErrorKind::RegexCompatibility);
     assert_eq!(failure.rule_index, Some(1));
@@ -881,7 +881,7 @@ print(json.dumps(out))
     }
     // Do not normalize these into agreement: they are retained-workflow gaps,
     // not permission to narrow policy. The module remains inactive.
-    let unresolved = [(r"(?a:\w+)", "ascii"), (r"\N{LATIN CAPITAL LETTER A}", "A")];
+    let unresolved = [(r"\N{LATIN CAPITAL LETTER A}", "A")];
     for (pattern, text) in unresolved {
         assert_eq!(
             python(
@@ -921,7 +921,7 @@ print(json.dumps(out))
     );
     assert!(!compatibility_gaps().is_empty());
     eprintln!(
-        "Compared {} repaired/general Python regex cases; proved 3 unresolved grammar/casefold gaps",
+        "Compared {} repaired/general Python regex cases; proved 2 unresolved grammar/casefold gaps",
         samples.len()
     );
 }
@@ -1187,4 +1187,706 @@ fn uncancelled_websocket_api_preserves_decisions_including_no_rules_and_invalid_
             }
         }
     }
+}
+
+#[test]
+fn ascii_scopes_and_octal_literals_keep_unicode_scalars_and_reference_boundaries() {
+    for (pattern, text, expected) in [
+        (r"(?a:^.$)", "é", true),
+        (r"(?a:^\w$)", "é", false),
+        (r"(?ai:^k$)", "K", false),
+        (r"(?ai:^ä$)", "Ä", false),
+        (r"(?ai:^ä$)", "ä", true),
+        (r"(?ai:^[a-]$)", "-", true),
+        (r"(?ai:^[^a-]$)", "-", false),
+        (r"(?a:\w(?u:\w))", "aé", true),
+        (r"(?a:(?u:\w)\w)", "éa", true),
+        (r"(?ai:(ä)\1)", "äÄ", false),
+        (r"(ä)(?ai:\1)(?i:\1)", "ääÄ", true),
+        (r"\0", "\0", true),
+        (r"\08", "\08", true),
+        (r"\141", "a", true),
+        (r"[\11]", "\t", true),
+        (r"\1110", "I0", true),
+    ] {
+        let scanner = make_scanner(json!([rule("regex", pattern, "body", "log")]));
+        let decision = scanner
+            .scan_websocket_text(
+                Direction::Request,
+                MessageType::Text,
+                text,
+                Options::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            decision.finding.is_some(),
+            expected,
+            "{pattern:?}, {text:?}"
+        );
+    }
+    let pattern = format!("{}\\118", "(a)".repeat(12));
+    let scanner = make_scanner(json!([rule("reference", &pattern, "body", "log")]));
+    assert!(
+        scanner
+            .scan_websocket_text(
+                Direction::Request,
+                MessageType::Text,
+                &format!("{}8", "a".repeat(13)),
+                Options::default()
+            )
+            .unwrap()
+            .finding
+            .is_some()
+    );
+}
+
+#[test]
+fn python_invalid_ascii_flags_and_octal_escapes_cannot_enable_private_native_syntax() {
+    for pattern in [
+        r"(?A:a)",
+        r"(?a:(?A:a))",
+        r"(?au:a)",
+        r"(?-a:a)",
+        r"(?L:a)",
+        r"\400",
+        r"[\777]",
+        r"[\8]",
+        r"(a)\18",
+    ] {
+        let scanner = Scanner::default();
+        let report = scanner
+            .load_policy_config(&json!({"scan_patterns":[rule("invalid",pattern,"body","log")]}))
+            .unwrap();
+        assert_eq!(report.rules_total, 0, "{pattern}");
+    }
+    for pattern in [r"\(\?A:a\)", r"\050\077A:a\051"] {
+        let scanner = make_scanner(json!([rule("literal", pattern, "body", "log")]));
+        assert!(
+            scanner
+                .scan_websocket_text(
+                    Direction::Request,
+                    MessageType::Text,
+                    "(?A:a)",
+                    Options::default()
+                )
+                .unwrap()
+                .finding
+                .is_some()
+        );
+    }
+    let scanner = make_scanner(json!([rule("retained", "keep", "body", "log")]));
+    // These global combinations raise ValueError in Python, rather than re.error.
+    assert_eq!(
+        scanner
+            .load_policy_config(
+                &json!({"scan_patterns":[rule("invalid",r"(?a)(?u)a","body","log")]})
+            )
+            .unwrap_err()
+            .kind,
+        ErrorKind::RegexCompatibility
+    );
+    assert!(
+        scanner
+            .scan_websocket_text(
+                Direction::Request,
+                MessageType::Text,
+                "keep",
+                Options::default()
+            )
+            .unwrap()
+            .finding
+            .is_some()
+    );
+}
+
+#[test]
+fn configured_ascii_negative_categories_enforce_the_rule_despite_python_prefilter_defect() {
+    for (pattern, text) in [(r"(?a:\W)", "é"), (r"(?a:\D)", "١"), (r"(?a:\S)", "\x1c")] {
+        for action in ["log", "block"] {
+            let scanner = make_scanner(json!([rule("non-ascii", pattern, "body", action)]));
+            let decision = scanner
+                .scan_websocket_text(Direction::Request, MessageType::Text, text, block())
+                .unwrap();
+            assert_eq!(
+                decision.outcome,
+                if action == "block" {
+                    Outcome::MatchBlocked
+                } else {
+                    Outcome::MatchLogged
+                }
+            );
+            assert_eq!(decision.finding.unwrap().rule_name, "non-ascii");
+        }
+    }
+}
+
+fn source_prefilter_case(pattern: &str) -> bool {
+    ["a", "ai", "a-i"].iter().any(|flags| {
+        [r"\W", r"\D", r"\S", r"[^\w]", r"[\W]", r"[\W\D]"]
+            .iter()
+            .any(|atom| pattern == format!("(?{flags}:{atom})"))
+    })
+}
+fn retained_unicode_casefold_case(pattern: &str, insensitive: bool) -> bool {
+    [
+        "i",
+        r"[a-z]",
+        r"[^a-z]",
+        r"[A-ÿ]",
+        r"[^A-ÿ]",
+        r"[\0-\177]",
+        r"[\141-\172]",
+    ]
+    .iter()
+    .any(|atom| {
+        [
+            ("u", insensitive),
+            ("ui", true),
+            ("i", true),
+            ("", insensitive),
+        ]
+        .iter()
+        .any(|(flags, active)| {
+            *active
+                && pattern
+                    == if flags.is_empty() {
+                        atom.to_string()
+                    } else {
+                        format!("(?{flags}:{atom})")
+                    }
+        })
+    })
+}
+
+#[test]
+#[ignore = "Actual Python scoped ASCII/octal matrix and intentional prefilter correction; set SAFEYOLO_POLICY_PYTHON"]
+fn python_ascii_octal_matrix_keeps_source_defects_separate_from_remaining_gaps() {
+    let patterns = ascii_octal_patterns();
+    let texts = ascii_octal_subjects();
+    let cases:Vec<_>=patterns.iter().map(|(pattern,insensitive)|json!({"pattern":pattern,"insensitive":insensitive,"texts":texts,"source_prefilter":source_prefilter_case(pattern)})).collect();
+    let actual = python(
+        r#"
+import json,sys,re,contextlib,io
+from safeyolo.detection.patterns import compile_pattern
+out=[]
+for case in json.load(sys.stdin):
+    try:
+        expression=compile_pattern(case['pattern'],case_sensitive=not case['insensitive'])
+        row={'accepted':expression is not None}
+        if expression is not None:
+            row['matches']=[bool(expression.search(text))for text in case['texts']]
+            if case['source_prefilter']:
+                # A universally true assertion disables the incorrect INFO prefilter.
+                guarded=re.compile('(?=)'+case['pattern'],re.I if case['insensitive']else 0)
+                row['guarded']=[bool(guarded.search(text))for text in case['texts']]
+                debug=io.StringIO()
+                with contextlib.redirect_stdout(debug):re.compile(case['pattern'],(re.I if case['insensitive']else 0)|re.DEBUG)
+                row['debug']=debug.getvalue()
+        out.append(row)
+    except ValueError:
+        out.append({'accepted':False,'exception':'ValueError'})
+print(json.dumps(out))
+"#,
+        &json!(cases),
+    );
+    let mut corrected = 0;
+    let mut unicode_gaps = 0;
+    let mut grammar_gaps = 0;
+    for ((pattern, insensitive), old) in patterns.iter().zip(actual.as_array().unwrap()) {
+        let scanner = Scanner::default();
+        let mut config = rule("matrix", pattern, "body", "log");
+        config["case_sensitive"] = json!(!insensitive);
+        let loaded = scanner.load_policy_config(&json!({"scan_patterns":[config]}));
+        let accepted = loaded.as_ref().is_ok_and(|report| report.rules_total == 1);
+        if old["accepted"] == true && !accepted {
+            assert_eq!(pattern, r"(?ai)\N{LATIN CAPITAL LETTER A}");
+            assert_eq!(loaded.unwrap_err().kind, ErrorKind::RegexCompatibility);
+            grammar_gaps += 1;
+            continue;
+        }
+        assert_eq!(
+            json!(accepted),
+            old["accepted"],
+            "acceptance {pattern:?}, insensitive={insensitive}"
+        );
+        if !accepted {
+            continue;
+        }
+        let matches: Vec<_> = texts
+            .iter()
+            .map(|text| {
+                scanner
+                    .scan_websocket_text(
+                        Direction::Request,
+                        MessageType::Text,
+                        text,
+                        Options::default(),
+                    )
+                    .unwrap()
+                    .finding
+                    .is_some()
+            })
+            .collect();
+        if json!(matches) == old["matches"] {
+            continue;
+        }
+        if source_prefilter_case(pattern) {
+            assert_eq!(
+                json!(matches),
+                old["guarded"],
+                "prefilter correction {pattern:?}"
+            );
+            assert!(old["debug"].as_str().unwrap().contains("UNI_"));
+            corrected += 1;
+        } else {
+            assert!(
+                retained_unicode_casefold_case(pattern, *insensitive),
+                "unclassified mismatch {pattern:?}"
+            );
+            for ((text, native), python) in texts
+                .iter()
+                .zip(matches)
+                .zip(old["matches"].as_array().unwrap())
+            {
+                if json!(native) != *python {
+                    assert!(
+                        matches!(*text, "İ" | "ı"),
+                        "new Unicode mismatch {pattern:?} {text:?}"
+                    );
+                }
+            }
+            unicode_gaps += 1;
+        }
+    }
+    assert_eq!((corrected, unicode_gaps, grammar_gaps), (36, 42, 1));
+    eprintln!(
+        "Compared {} patterns x {} subjects; 36 corrected Python prefilter rows, 42 retained Unicode rows, 1 named-Unicode grammar gap",
+        patterns.len(),
+        texts.len()
+    );
+}
+
+fn ascii_octal_patterns() -> Vec<(String, bool)> {
+    let mut patterns = Vec::new();
+    for atom in [
+        "\\w",
+        "\\W",
+        "\\d",
+        "\\D",
+        "\\s",
+        "\\S",
+        "\\b",
+        "\\B",
+        ".",
+        "[^a]",
+        "a",
+        "A",
+        "k",
+        "K",
+        "i",
+        "s",
+        "ä",
+        "É",
+        "α",
+        "\\x41",
+        "\\u00c4",
+        "\\U000003b1",
+        "[a-z]",
+        "[^a-z]",
+        "[A-ÿ]",
+        "[^A-ÿ]",
+        "[À-Ö]",
+        "[\\w]",
+        "[^\\w]",
+        "[\\W]",
+        "[^\\W]",
+        "[\\s\\S]",
+        "[a\\d]",
+        "[[]",
+        "[a&&b]",
+        "[]a]",
+        "[^]a]",
+        "[\\0-\\177]",
+        "[\\141-\\172]",
+        "[a-]",
+        "[-a]",
+        "[^a-]",
+        "[a\\-]",
+        "[\\W\\D]",
+        "[()A?:]",
+    ] {
+        for flags in ["a", "ai", "a-i", "u", "ui", "i", ""] {
+            for insensitive in [false, true] {
+                patterns.push((
+                    if flags.is_empty() {
+                        atom.to_string()
+                    } else {
+                        format!("(?{flags}:{atom})")
+                    },
+                    insensitive,
+                ));
+            }
+        }
+    }
+    patterns.extend([
+        ("(?a)\\w".to_string(),false),
+        ("(?ai)ä".to_string(),false),
+        ("(?a:(?u:\\w))".to_string(),false),
+        ("(?ai:(?u:ä))".to_string(),false),
+        ("(?ui:(?a:ä))".to_string(),false),
+        ("(?i:(?a:k))".to_string(),false),
+        ("(?a:(?i:k))".to_string(),false),
+        ("(?ai:(?-i:k))".to_string(),false),
+        ("(?ai:[k])(?u:k)".to_string(),false),
+        ("(?a:(?u:\\w)\\w)".to_string(),false),
+        ("(?a:\\w(?u:\\w))".to_string(),false),
+        ("(?x) (?a: \\w #comment\\N\n )".to_string(),false),
+        ("(?ax:\\w)\\w".to_string(),false),
+        ("(?a:(?P<name>a)(?P=name))".to_string(),false),
+        ("(?a:(a)\\1)".to_string(),false),
+        ("(?ai:(a)\\1)".to_string(),false),
+        ("(?ai:(ä)\\1)".to_string(),false),
+        ("(?ai:(?P<name>ä)(?P=name))".to_string(),false),
+        ("(?ai:(a)(?-i:\\1))".to_string(),false),
+        ("(?a:(a)?(?(1)b|c))".to_string(),false),
+        ("(?ai:(a)?(?(1)b|c))".to_string(),false),
+        ("(?a)(?u)a".to_string(),false),
+        ("(?u)(?a)a".to_string(),false),
+        ("(?au:a)".to_string(),false),
+        ("(?a-u:a)".to_string(),false),
+        ("(?-a:a)".to_string(),false),
+        ("(?L:a)".to_string(),false),
+        ("(?ii:a)".to_string(),false),
+        ("(?i-i:a)".to_string(),false),
+        ("(?-:a)".to_string(),false),
+        ("a(?i)b".to_string(),false),
+        ("(?x) (?i)a".to_string(),false),
+        ("(?# comment)(?i)a".to_string(),false),
+        ("(?ai)\\N{LATIN CAPITAL LETTER A}".to_string(),false),
+        ("(?ai:\\é)".to_string(),false),
+        ("(?ai:[é])".to_string(),false),
+        ("(?a:\\w)\\w".to_string(),false),
+        ("(?ai)\\141".to_string(),false),
+        ("(?ai)[\\141]".to_string(),false),
+        ("(?ai)[\\300-\\326]".to_string(),false),
+        ("(a)\\1".to_string(),false),
+        ("(a)\\18".to_string(),false),
+        ("(a)\\118".to_string(),false),
+        ("\\1(a)".to_string(),false),
+        ("(a\\1)".to_string(),false),
+        ("(?<=a(b)\\1)c".to_string(),false),
+        ("(a)(?<=\\1)b".to_string(),false),
+        ("\\0".to_string(),false),
+        ("[\\0]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\0".to_string(),false),
+        ("\\00".to_string(),false),
+        ("[\\00]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\00".to_string(),false),
+        ("\\000".to_string(),false),
+        ("[\\000]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\000".to_string(),false),
+        ("\\0000".to_string(),false),
+        ("[\\0000]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\0000".to_string(),false),
+        ("\\08".to_string(),false),
+        ("[\\08]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\08".to_string(),false),
+        ("\\09".to_string(),false),
+        ("[\\09]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\09".to_string(),false),
+        ("\\078".to_string(),false),
+        ("[\\078]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\078".to_string(),false),
+        ("\\099".to_string(),false),
+        ("[\\099]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\099".to_string(),false),
+        ("\\1".to_string(),false),
+        ("[\\1]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\1".to_string(),false),
+        ("\\11".to_string(),false),
+        ("[\\11]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\11".to_string(),false),
+        ("\\111".to_string(),false),
+        ("[\\111]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\111".to_string(),false),
+        ("\\1111".to_string(),false),
+        ("[\\1111]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\1111".to_string(),false),
+        ("\\118".to_string(),false),
+        ("[\\118]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\118".to_string(),false),
+        ("\\141".to_string(),false),
+        ("[\\141]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\141".to_string(),false),
+        ("\\1410".to_string(),false),
+        ("[\\1410]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\1410".to_string(),false),
+        ("\\177".to_string(),false),
+        ("[\\177]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\177".to_string(),false),
+        ("\\200".to_string(),false),
+        ("[\\200]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\200".to_string(),false),
+        ("\\377".to_string(),false),
+        ("[\\377]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\377".to_string(),false),
+        ("\\378".to_string(),false),
+        ("[\\378]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\378".to_string(),false),
+        ("\\400".to_string(),false),
+        ("[\\400]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\400".to_string(),false),
+        ("\\777".to_string(),false),
+        ("[\\777]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\777".to_string(),false),
+        ("\\888".to_string(),false),
+        ("[\\888]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\888".to_string(),false),
+        ("\\999".to_string(),false),
+        ("[\\999]".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\999".to_string(),false),
+        ("(?a)\\0".to_string(),false),
+        ("(?a)[\\0]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\0".to_string(),false),
+        ("(?a)\\00".to_string(),false),
+        ("(?a)[\\00]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\00".to_string(),false),
+        ("(?a)\\000".to_string(),false),
+        ("(?a)[\\000]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\000".to_string(),false),
+        ("(?a)\\0000".to_string(),false),
+        ("(?a)[\\0000]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\0000".to_string(),false),
+        ("(?a)\\08".to_string(),false),
+        ("(?a)[\\08]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\08".to_string(),false),
+        ("(?a)\\09".to_string(),false),
+        ("(?a)[\\09]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\09".to_string(),false),
+        ("(?a)\\078".to_string(),false),
+        ("(?a)[\\078]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\078".to_string(),false),
+        ("(?a)\\099".to_string(),false),
+        ("(?a)[\\099]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\099".to_string(),false),
+        ("(?a)\\1".to_string(),false),
+        ("(?a)[\\1]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\1".to_string(),false),
+        ("(?a)\\11".to_string(),false),
+        ("(?a)[\\11]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\11".to_string(),false),
+        ("(?a)\\111".to_string(),false),
+        ("(?a)[\\111]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\111".to_string(),false),
+        ("(?a)\\1111".to_string(),false),
+        ("(?a)[\\1111]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\1111".to_string(),false),
+        ("(?a)\\118".to_string(),false),
+        ("(?a)[\\118]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\118".to_string(),false),
+        ("(?a)\\141".to_string(),false),
+        ("(?a)[\\141]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\141".to_string(),false),
+        ("(?a)\\1410".to_string(),false),
+        ("(?a)[\\1410]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\1410".to_string(),false),
+        ("(?a)\\177".to_string(),false),
+        ("(?a)[\\177]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\177".to_string(),false),
+        ("(?a)\\200".to_string(),false),
+        ("(?a)[\\200]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\200".to_string(),false),
+        ("(?a)\\377".to_string(),false),
+        ("(?a)[\\377]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\377".to_string(),false),
+        ("(?a)\\378".to_string(),false),
+        ("(?a)[\\378]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\378".to_string(),false),
+        ("(?a)\\400".to_string(),false),
+        ("(?a)[\\400]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\400".to_string(),false),
+        ("(?a)\\777".to_string(),false),
+        ("(?a)[\\777]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\777".to_string(),false),
+        ("(?a)\\888".to_string(),false),
+        ("(?a)[\\888]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\888".to_string(),false),
+        ("(?a)\\999".to_string(),false),
+        ("(?a)[\\999]".to_string(),false),
+        ("(?a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\999".to_string(),false),
+        ("(?ai)\\0".to_string(),false),
+        ("(?ai)[\\0]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\0".to_string(),false),
+        ("(?ai)\\00".to_string(),false),
+        ("(?ai)[\\00]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\00".to_string(),false),
+        ("(?ai)\\000".to_string(),false),
+        ("(?ai)[\\000]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\000".to_string(),false),
+        ("(?ai)\\0000".to_string(),false),
+        ("(?ai)[\\0000]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\0000".to_string(),false),
+        ("(?ai)\\08".to_string(),false),
+        ("(?ai)[\\08]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\08".to_string(),false),
+        ("(?ai)\\09".to_string(),false),
+        ("(?ai)[\\09]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\09".to_string(),false),
+        ("(?ai)\\078".to_string(),false),
+        ("(?ai)[\\078]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\078".to_string(),false),
+        ("(?ai)\\099".to_string(),false),
+        ("(?ai)[\\099]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\099".to_string(),false),
+        ("(?ai)\\1".to_string(),false),
+        ("(?ai)[\\1]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\1".to_string(),false),
+        ("(?ai)\\11".to_string(),false),
+        ("(?ai)[\\11]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\11".to_string(),false),
+        ("(?ai)\\111".to_string(),false),
+        ("(?ai)[\\111]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\111".to_string(),false),
+        ("(?ai)\\1111".to_string(),false),
+        ("(?ai)[\\1111]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\1111".to_string(),false),
+        ("(?ai)\\118".to_string(),false),
+        ("(?ai)[\\118]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\118".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\141".to_string(),false),
+        ("(?ai)\\1410".to_string(),false),
+        ("(?ai)[\\1410]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\1410".to_string(),false),
+        ("(?ai)\\177".to_string(),false),
+        ("(?ai)[\\177]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\177".to_string(),false),
+        ("(?ai)\\200".to_string(),false),
+        ("(?ai)[\\200]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\200".to_string(),false),
+        ("(?ai)\\377".to_string(),false),
+        ("(?ai)[\\377]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\377".to_string(),false),
+        ("(?ai)\\378".to_string(),false),
+        ("(?ai)[\\378]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\378".to_string(),false),
+        ("(?ai)\\400".to_string(),false),
+        ("(?ai)[\\400]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\400".to_string(),false),
+        ("(?ai)\\777".to_string(),false),
+        ("(?ai)[\\777]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\777".to_string(),false),
+        ("(?ai)\\888".to_string(),false),
+        ("(?ai)[\\888]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\888".to_string(),false),
+        ("(?ai)\\999".to_string(),false),
+        ("(?ai)[\\999]".to_string(),false),
+        ("(?ai)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\999".to_string(),false),
+        ("(?ai:(?u:(a))\\1)".to_string(),false),
+        ("(ä)(?ai:\\1)(?i:\\1)".to_string(),false),
+        ("(?ai:(a)\\1)(a)\\2".to_string(),false),
+        ("(?A:a)".to_string(),false),
+        ("(?a:(?A:a))".to_string(),false),
+        ("\\(\\?A:a\\)".to_string(),false),
+        ("[()?A:]".to_string(),false),
+        ("(?ai:[()?A:])".to_string(),false),
+        ("\\050\\077A:a\\051".to_string(),false),
+        ("(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)(a)\\998".to_string(),false),
+        ("(?ax)\u{85}".to_string(),false),
+        ("(?aix)\u{85}".to_string(),false),
+        ("(?x)\u{85}".to_string(),false),
+]);
+    let mut seen = std::collections::HashSet::new();
+    patterns.retain(|case| seen.insert(case.clone()));
+    patterns
+}
+fn ascii_octal_subjects() -> Vec<&'static str> {
+    vec![
+        "",
+        "a",
+        "A",
+        "aa",
+        "aA",
+        "Aa",
+        "AA",
+        "b",
+        "B",
+        "k",
+        "K",
+        "K",
+        "ſ",
+        "s",
+        "S",
+        "i",
+        "I",
+        "İ",
+        "ı",
+        "é",
+        "É",
+        "ä",
+        "Ä",
+        "ää",
+        "äÄ",
+        "Ää",
+        "ÄÄ",
+        "ß",
+        "ss",
+        "α",
+        "Α",
+        "Ω",
+        "ω",
+        "0",
+        "9",
+        "١",
+        "²",
+        "Ⅸ",
+        "_",
+        "!",
+        " ",
+        "\t",
+        "\n",
+        "\r",
+        "\u{b}",
+        "\u{c}",
+        "\u{1c}",
+        "\u{1d}",
+        "\u{1e}",
+        "\u{1f}",
+        "\u{85}",
+        " ",
+        " ",
+        "\u{200b}",
+        "　",
+        "\0",
+        "\08",
+        "\t1",
+        "a0",
+        "a8",
+        "I0",
+        "ÿ",
+        "Ā",
+        "(",
+        ")",
+        "[",
+        "]",
+        "&",
+        "~",
+        "-",
+        "\\",
+        "\\141",
+        "a\né",
+        "aé",
+        "éa",
+        "é_",
+        "_é",
+        "abcABC",
+        "aaaaaaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaa8",
+        "aaaaaaaaaaa8",
+        "aaaaaaaaaaaaa8",
+        "aaaaaaaaaaaaI",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa8",
+        "ääÄ",
+        "äÄÄ",
+        "(?A:a)",
+    ]
 }

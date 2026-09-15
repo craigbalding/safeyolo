@@ -289,7 +289,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                 buf.push(')');
             }
         }
-        Expr::Backref { group, casei }
+        Expr::Backref { group, casei, .. }
         | Expr::BackrefWithRelativeRecursionLevel { group, casei, .. } => {
             // Inline the body of the referenced capture group, wrapping with (?i:...) when
             // the backref is case-insensitive so the approximation remains correct.

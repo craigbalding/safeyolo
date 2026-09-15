@@ -414,6 +414,7 @@ impl<'a> Parser<'a> {
                     AstNode::Backref {
                         target,
                         casei: self.flag(FLAG_CASEI),
+                        ascii: self.flag(FLAG_ASCII_BACKREF),
                         relative_recursion_level,
                     },
                     ix,
@@ -514,6 +515,7 @@ impl<'a> Parser<'a> {
                 AstNode::Backref {
                     target: CaptureGroupTarget::ByNumber(group),
                     casei: self.flag(FLAG_CASEI),
+                    ascii: self.flag(FLAG_ASCII_BACKREF),
                     relative_recursion_level: None,
                 },
                 ix,
@@ -1064,6 +1066,7 @@ impl<'a> Parser<'a> {
             }
             let b = self.re.as_bytes()[ix];
             match b {
+                b'A' if self.flag(FLAG_ALLOW_ASCII_BACKREF) => self.update_flag(FLAG_ASCII_BACKREF, neg),
                 b'i' => self.update_flag(FLAG_CASEI, neg),
                 b'm' => self.update_flag(FLAG_MULTI, neg),
                 b'R' => self.update_flag(FLAG_CRLF, neg),
@@ -1498,6 +1501,7 @@ impl Resolver {
                 AstNode::Backref {
                     target,
                     casei,
+                    ascii,
                     relative_recursion_level,
                 } => {
                     // TODO: if multiple groups with the same name, ideally we would
@@ -1516,6 +1520,9 @@ impl Resolver {
                             self.backrefs.insert(resolved_group);
                         }
                         *expr = if let Some(relative_recursion_level) = *relative_recursion_level {
+                            if *ascii {
+                                return Err(Error::ParseError(*ix, ParseError::InvalidBackref));
+                            }
                             Expr::BackrefWithRelativeRecursionLevel {
                                 group: resolved_group,
                                 casei: *casei,
@@ -1525,6 +1532,7 @@ impl Resolver {
                             Expr::Backref {
                                 group: resolved_group,
                                 casei: *casei,
+                                ascii: *ascii,
                             }
                         };
                     } else {
@@ -2464,6 +2472,7 @@ mod tests {
                 Expr::Backref {
                     group: 1,
                     casei: false,
+                    ascii: false,
                 },
             ])
         );
@@ -2483,6 +2492,7 @@ mod tests {
                 Expr::Backref {
                     group: 1,
                     casei: false,
+                    ascii: false,
                 },
             ])
         );
@@ -2503,6 +2513,7 @@ mod tests {
                 Expr::Backref {
                     group: 2,
                     casei: false,
+                    ascii: false,
                 },
             ])
         );
@@ -2517,6 +2528,7 @@ mod tests {
                 Expr::Backref {
                     group: 2,
                     casei: false,
+                    ascii: false,
                 },
                 make_group(Expr::Any {
                     newline: false,
@@ -3414,6 +3426,7 @@ mod tests {
                 make_group(Expr::Backref {
                     group: 1,
                     casei: false,
+                    ascii: false,
                 },)
             ])
         );
@@ -3620,6 +3633,7 @@ mod tests {
                         Expr::Backref {
                             group: 2,
                             casei: false,
+                            ascii: false,
                         },
                     ],),
                 ],),),
