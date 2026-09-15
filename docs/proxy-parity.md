@@ -492,7 +492,7 @@ Rust transport tests, strict all-target Clippy and selected hooks pass.
 These are owner results, without independent acceptance or macOS/guest evidence.
 
 The native [Agent API](../proxy/src/agent_api.rs) serves authenticated `/health`,
-`/lookup` and `/policy` on the reserved hostname. `agent_api_enabled` defaults to true.
+`/lookup`, `/policy` and `/budgets` on the reserved hostname. `agent_api_enabled` defaults to true.
 Authentication reads `SAFEYOLO_DATA_DIR/agent_token` for every request, defaulting
 to `/safeyolo/data/agent_token`. Method checks precede authentication; lookup uses
 the trusted listener identity and current policy snapshot without spending
@@ -515,6 +515,40 @@ matcher produce a typed compatibility failure and local 503. The integer parser
 matches Python's default 4,300-digit conversion limit; nondefault Python limits
 remain outside the demonstrated contract. These gaps, production audit storage
 and global API counters still require integration before complete API acceptance.
+
+The authenticated `/budgets` response reads the existing shared rate-limit
+timestamps and current policy matcher. It does not evaluate requests, spend
+budgets or remove counters. Tracked keys include counters hidden by the current
+rules; visible entries retain insertion order. Reporting rematches with an empty
+agent, path and credential context. Scoped counters can therefore remain counted
+without appearing in the response. Valid reloads retain those counters and use
+the replacement rules for reporting. A task can lower the effective network
+ceiling while the response's `global_budgets` field retains the authored baseline.
+The shared destination parser normalizes IPv6 addresses and preserves admitted
+scope identifiers before matching. Budget reports retain the original key and
+resource spelling. Invalid retained destinations produce the source handler-owned
+500 `Internal error: ValueError`.
+
+Reporting preserves signed and arbitrary-size integer budgets on non-simple
+permissions, including Allow, Deny and Prompt rules. Simple-rule stand-ins omit
+their budgets as the source does. Numeric conversion failures produce the
+source handler-owned 500 `Internal error: OverflowError` without changing state.
+An unrelated timestamp in addon settings can make `/policy` fail while
+`/budgets` remains available. Native charging still requires positive `u64`
+Budget-effect and global network rates; source admission of other rates remains
+a compatibility gap. Budget reset and persistence workflows remain unintegrated.
+
+Owner validation of `/budgets` on Linux aarch64 passed 201 wire cases against
+one immutable binary: 61 API, 36 network-policy and 104 WebSocket cases. All
+201 configurations selected native policy without an adapter. The eight new
+budget cases also passed against Python. Staged-source checks passed 216 Rust
+tests, including live Python oracles, and 12 compile-fail documentation tests.
+Strict all-target Clippy, formatting and selected hooks passed. The
+[budget fixtures](../proxy/tests/budgets.rs) compare 303 actual source-engine
+cases; the shared destination parser has 37 source comparisons. Privacy and
+shutdown checks found no minted tokens in artifacts or remaining fixture
+processes, readiness files or socket directories. These are owner results;
+independent acceptance, macOS, real-guest and CI validation remain pending.
 
 The authenticated `/policy` response contains the complete compiled baseline,
 shared across callers. It borrows the same immutable snapshot as the matcher:

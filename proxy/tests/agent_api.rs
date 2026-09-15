@@ -37,6 +37,228 @@ fn token() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 #[tokio::test]
+async fn budgets_read_shared_counters_after_auth_without_evaluating_or_charging() {
+    let (_dir, token_path) = token();
+    let policy = policy(json!({
+        "permissions":[{"action":"network:request","resource":"*","effect":"budget","budget":20}],
+        "budgets":{"network:request":100}
+    }));
+    let charge = NetworkRequest {
+        agent: Some("alice"),
+        host: "alpha.invalid",
+        port: Some(443),
+        method: "GET",
+        path: "/",
+    };
+    assert_eq!(
+        policy.evaluate(charge, 1000., true).unwrap().effect,
+        Effect::Allow
+    );
+    let expected = b"{\"tracked_keys\": 2, \"budgets\": {\"network:request:alpha.invalid\": {\"budget_per_minute\": 20, \"remaining\": 1, \"resource\": \"alpha.invalid\"}, \"network:request:__global__\": {\"budget_per_minute\": 100, \"remaining\": 9, \"resource\": \"__global__\"}}, \"global_budgets\": {\"network:request\": 100}}";
+    for identity in [
+        Identity::Resolved("alice"),
+        Identity::Resolved("bob"),
+        Identity::Unavailable,
+        Identity::Conflict,
+    ] {
+        let outcome = respond_read(
+            Request {
+                identity,
+                ..request("/budgets/?agent=forged&host=other.invalid")
+            },
+            &token_path,
+            PolicyState::Ready(&policy),
+            1000.,
+        )
+        .await;
+        assert_eq!(outcome.response.status, 200);
+        assert_eq!(outcome.response.body_bytes(), expected.as_slice());
+        assert_eq!(outcome.policy_evaluations, 0);
+        assert!(outcome.handler_owned && outcome.audit.is_none() && outcome.failure.is_none());
+    }
+    let unauthenticated = respond_read(
+        Request {
+            authorization: None,
+            ..request("/budgets")
+        },
+        &token_path,
+        PolicyState::Ready(&policy),
+        f64::NAN,
+    )
+    .await;
+    assert_eq!(unauthenticated.response.status, 401);
+    assert!(unauthenticated.failure.is_none());
+    let invalid_clock = respond_read(
+        request("/budgets"),
+        &token_path,
+        PolicyState::Ready(&policy),
+        f64::NAN,
+    )
+    .await;
+    assert_eq!(invalid_clock.response.status, 503);
+    assert_eq!(invalid_clock.failure, Some(Failure::PolicyEvaluation));
+    assert!(!invalid_clock.handler_owned && invalid_clock.scrub_request);
+    assert_eq!(
+        policy.budget_stats(1000.).unwrap(),
+        serde_json::from_slice::<Value>(expected).unwrap()
+    );
+
+    let unavailable = respond_read(
+        request("/budgets"),
+        &token_path,
+        PolicyState::Unavailable,
+        1000.,
+    )
+    .await;
+    assert_eq!(unavailable.response.status, 503);
+    assert_eq!(
+        body(&unavailable.response),
+        json!({"error":"PDP not available"})
+    );
+    let remote = respond_read(
+        request("/budgets"),
+        &token_path,
+        PolicyState::NoEngine { healthy: true },
+        1000.,
+    )
+    .await;
+    assert_eq!(remote.response.status, 503);
+    assert_eq!(remote.failure, Some(Failure::DevelopmentEndpoint));
+    let unconfigured = Policy::unconfigured();
+    let empty = respond_read(
+        request("/budgets"),
+        &token_path,
+        PolicyState::Ready(&unconfigured),
+        1000.,
+    )
+    .await;
+    assert_eq!(empty.response.status, 200);
+    assert_eq!(
+        empty.response.body_bytes(),
+        b"{\"tracked_keys\": 0, \"budgets\": {}, \"global_budgets\": {}}".as_slice()
+    );
+}
+
+#[tokio::test]
+async fn budget_report_errors_are_local_handler_responses_and_leave_counters_intact() {
+    use num_bigint::BigInt;
+    let (_dir, token_path) = token();
+    let policy = policy(
+        json!({"permissions":[{"action":"network:request","resource":"*","effect":"budget","budget":20}]}),
+    );
+    let charge = NetworkRequest {
+        agent: Some("alice"),
+        host: "alpha.invalid",
+        port: Some(443),
+        method: "GET",
+        path: "/",
+    };
+    assert_eq!(
+        policy.evaluate(charge, 1_000_000., true).unwrap().effect,
+        Effect::Allow
+    );
+    let original = policy.budget_stats(1_000_000.).unwrap();
+    for (rate, now) in [
+        (BigInt::from(10u8).pow(400), 1_000_000.),
+        (BigInt::from(2u8).pow(1023), 1_600_000.),
+    ] {
+        let source = format!(
+            r#"{{"permissions":[{{"action":"network:request","resource":"*","effect":"allow","budget":{rate},"condition":{{}}}}]}}"#
+        );
+        let replacement = policy
+            .reload_from_source_at(&source, Format::Json, 1_000_000.)
+            .unwrap();
+        let outcome = respond_read(
+            request("/budgets"),
+            &token_path,
+            PolicyState::Ready(&replacement),
+            now,
+        )
+        .await;
+        assert_eq!(outcome.response.status, 500);
+        assert_eq!(
+            outcome.response.body_bytes(),
+            b"{\"error\": \"Internal error: OverflowError\"}".as_slice()
+        );
+        assert_eq!(outcome.failure, Some(Failure::BudgetReporting));
+        assert_eq!(outcome.blocked_by, "agent-api");
+        assert_eq!(outcome.policy_evaluations, 0);
+        assert!(outcome.handler_owned && outcome.audit.is_none());
+        assert_eq!(policy.budget_stats(1_000_000.).unwrap(), original);
+    }
+    // Both policy cores accept this direct input and fail while rematching its
+    // retained key. This does not assert HTTP authority parser admission.
+    assert_eq!(
+        policy
+            .evaluate(
+                NetworkRequest {
+                    host: "bad:port",
+                    ..charge
+                },
+                1_000_000.,
+                true
+            )
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
+    let invalid_key = respond_read(
+        request("/budgets"),
+        &token_path,
+        PolicyState::Ready(&policy),
+        1_000_000.,
+    )
+    .await;
+    assert_eq!(invalid_key.response.status, 500);
+    assert_eq!(
+        invalid_key.response.body_bytes(),
+        b"{\"error\": \"Internal error: ValueError\"}".as_slice()
+    );
+    assert_eq!(invalid_key.failure, Some(Failure::BudgetReporting));
+    assert!(invalid_key.handler_owned && invalid_key.audit.is_none());
+    // A request preview reports the allowance after its hypothetical charge.
+    assert_eq!(
+        policy
+            .evaluate(charge, 1_000_000., false)
+            .unwrap()
+            .budget_remaining,
+        Some(0)
+    );
+}
+
+#[tokio::test]
+async fn budgets_do_not_serialize_unrelated_temporal_baseline_values() {
+    let (_dir, token_path) = token();
+    let policy = Policy::parse(
+        "addons:\n  fixture:\n    settings:\n      observed: 2001-02-03\n",
+        Format::Yaml,
+    )
+    .unwrap();
+    let outcome = respond_read(
+        request("/budgets"),
+        &token_path,
+        PolicyState::Ready(&policy),
+        1000.,
+    )
+    .await;
+    assert_eq!(outcome.response.status, 200);
+    assert_eq!(
+        outcome.response.body_bytes(),
+        b"{\"tracked_keys\": 0, \"budgets\": {}, \"global_budgets\": {}}".as_slice()
+    );
+    assert!(outcome.failure.is_none());
+    let policy_read = respond_read(
+        request("/policy"),
+        &token_path,
+        PolicyState::Ready(&policy),
+        1000.,
+    )
+    .await;
+    assert_eq!(policy_read.response.status, 500);
+    assert_eq!(policy_read.failure, Some(Failure::PolicySerialization));
+}
+
+#[tokio::test]
 async fn policy_reads_borrow_the_loaded_baseline_without_identity_filter_or_budget_charge() {
     let (_dir, token_path) = token();
     let dir = tempfile::tempdir().unwrap();

@@ -17,12 +17,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use indexmap::IndexMap;
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 mod baseline;
+mod budgets;
 mod source;
 use baseline::{Baseline, Builder as BaselineBuilder};
+pub use budgets::BudgetStatsError;
 use source::{ParsedPolicy, TemporalEntry};
 pub(crate) use source::{TemporalValue, TimestampPaths};
 
@@ -246,6 +250,7 @@ struct Rule {
     generated_route: bool,
     resource: String,
     effect: RuleEffect,
+    reporting_budget: Option<BigInt>,
     condition: Condition,
     inferred: bool,
 }
@@ -315,7 +320,7 @@ pub struct Policy {
     gateway: Option<Arc<crate::services::GatewaySnapshot>>,
     rules: Vec<Rule>,
     global_budget: Option<u64>,
-    budgets: Arc<Mutex<HashMap<String, f64>>>,
+    budgets: Arc<Mutex<IndexMap<String, f64>>>,
     required: [bool; 2],
     enabled: [bool; 2],
     domains: Vec<Override>,
@@ -545,7 +550,7 @@ impl Policy {
             gateway: None,
             rules: Vec::new(),
             global_budget,
-            budgets: Arc::new(Mutex::new(HashMap::new())),
+            budgets: Arc::new(Mutex::new(IndexMap::new())),
             required: [false; 2],
             enabled: [true; 2],
             domains: Vec::new(),
@@ -1002,6 +1007,7 @@ impl Policy {
                     .expect("exact string resource")
                     .into(),
                 effect,
+                reporting_budget: None,
                 condition: Condition::default(),
                 inferred: false,
             });
@@ -1038,6 +1044,15 @@ impl Policy {
                 .transpose()?
                 .unwrap_or(RuleEffect::Allow)
         };
+        let reporting_budget = rule
+            .get("budget")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .to_string()
+                    .parse::<BigInt>()
+                    .expect("normalized permission budget is an integer")
+            });
         let inferred = match rule
             .get("tier")
             .map(|value| string(value, "tier"))
@@ -1102,6 +1117,7 @@ impl Policy {
             generated_route: generated,
             resource,
             effect,
+            reporting_budget,
             condition,
             inferred,
         });
@@ -1215,14 +1231,7 @@ impl Policy {
             };
             limits.push((format!("{action}:{host}"), rate));
         }
-        let global_budget = match (
-            self.global_budget,
-            self.task.as_ref().and_then(|task| task.global_budget),
-        ) {
-            (Some(baseline), Some(task)) => Some(baseline.min(task)),
-            (baseline, task) => baseline.or(task),
-        };
-        if let Some(rate) = global_budget {
+        if let Some(rate) = self.effective_network_budget() {
             limits.push((format!("{action}:__global__"), rate));
         }
         self.charge(decision, limits, now_ms, consume)
@@ -1245,7 +1254,7 @@ impl Policy {
             .budgets
             .lock()
             .map_err(|_| invalid("budget state lock poisoned"))?;
-        let mut planned = HashMap::new();
+        let mut planned = IndexMap::new();
         let mut remaining = u64::MAX;
         for (key, rate) in limits {
             let tat = *planned
@@ -2804,6 +2813,30 @@ fn normalize_hosts(
     Ok(())
 }
 
+fn canonical_ipv6(address: &str) -> Result<String> {
+    // CPython's IPv6Address retains a nonempty scope verbatim, except '%' or
+    // '/' within the scope. It canonicalizes only the address before '%'.
+    if address.contains('/') {
+        return Err(invalid("invalid IPv6 host"));
+    }
+    let (address, scope) = match address.split_once('%') {
+        Some((address, scope)) if !scope.is_empty() && !scope.contains('%') => {
+            (address, Some(scope))
+        }
+        Some(_) => return Err(invalid("invalid IPv6 scope")),
+        None => (address, None),
+    };
+    let mut address = address
+        .parse::<Ipv6Addr>()
+        .map_err(|_| invalid("invalid IPv6 host"))?
+        .to_string();
+    if let Some(scope) = scope {
+        address.push('%');
+        address.push_str(scope);
+    }
+    Ok(address)
+}
+
 pub(crate) fn split_destination(pattern: &str) -> Result<(String, Option<u16>)> {
     if !pattern.contains(':') {
         return Ok((pattern.into(), None));
@@ -2811,20 +2844,12 @@ pub(crate) fn split_destination(pattern: &str) -> Result<(String, Option<u16>)> 
     let (host, port) = if let Some(rest) = pattern.strip_prefix('[')
         && let Some((host, port)) = rest.split_once("]:")
     {
-        (
-            host.parse::<Ipv6Addr>()
-                .map_err(|_| invalid("invalid IPv6 endpoint"))?
-                .to_string(),
-            port,
-        )
+        (canonical_ipv6(host)?, port)
     } else if pattern.matches(':').count() == 1 {
         let (host, port) = pattern.rsplit_once(':').unwrap();
         (host.into(), port)
     } else {
-        pattern
-            .parse::<Ipv6Addr>()
-            .map_err(|_| invalid("invalid IPv6 host"))?;
-        return Ok((pattern.into(), None));
+        return Ok((canonical_ipv6(pattern)?, None));
     };
     if host.is_empty() || port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(invalid("destination must be host:port or [IPv6]:port"));

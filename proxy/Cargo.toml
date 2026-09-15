@@ -15,6 +15,7 @@ flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 http-body-util = "0.1"
 hyper = { version = "1.11", features = ["client", "server", "http1", "http2"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
+indexmap = "=2.14.2"
 memmap2 = "0.9"
 num-bigint = "0.4"
 pkcs8 = { version = "0.10", features = ["std"] }

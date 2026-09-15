@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     network_guard::{Identity, sanitize},
-    policy::{Effect, NetworkRequest, Policy, python_whitespace},
+    policy::{BudgetStatsError, Effect, NetworkRequest, Policy, python_whitespace},
     python_text::{decimal, printable, uppercase},
 };
 
@@ -94,6 +94,8 @@ pub enum Failure {
     DevelopmentEndpoint,
     /// Source json.dumps cannot serialize a timestamp retained by the model.
     PolicySerialization,
+    /// The source budget report failed during numeric conversion or key parsing.
+    BudgetReporting,
     /// A Python lone-surrogate query value cannot enter the current Policy API.
     QueryCompatibility,
 }
@@ -388,6 +390,34 @@ pub async fn respond_read<'p>(
     }
     if path == "/lookup" {
         return lookup(request, policy, now_ms);
+    }
+    if path == "/budgets" {
+        match policy {
+            PolicyState::Ready(policy) => {
+                return match policy.budget_stats(now_ms) {
+                    Ok(stats) => response(200, stats),
+                    Err(error @ (BudgetStatsError::Overflow | BudgetStatsError::InvalidKey)) => {
+                        let error_type = match error {
+                            BudgetStatsError::Overflow => "OverflowError",
+                            _ => "ValueError",
+                        };
+                        let mut outcome = response(
+                            500,
+                            json!({"error":format!("Internal error: {error_type}")}),
+                        );
+                        outcome.failure = Some(Failure::BudgetReporting);
+                        outcome
+                    }
+                    Err(BudgetStatsError::InvalidClock | BudgetStatsError::Poisoned) => {
+                        unavailable(request, Failure::PolicyEvaluation)
+                    }
+                };
+            }
+            PolicyState::Unavailable => {
+                return response(503, json!({"error":"PDP not available"}));
+            }
+            PolicyState::NoEngine { .. } => (),
+        }
     }
     if path == "/policy" {
         match policy {
