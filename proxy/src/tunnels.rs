@@ -144,7 +144,7 @@ fn protocol(prefix: &[u8]) -> Option<Protocol> {
     // An HTTP method is a token, including extension methods. Wait for its
     // delimiter instead of treating an incomplete method as opaque bytes.
     for (index, byte) in prefix.iter().enumerate() {
-        if *byte == b' ' && index > 0 {
+        if method_separator(*byte) && index > 0 {
             // SSH is also a valid HTTP method prefix. A complete identification
             // line with a comment can share an HTTP method's first token, so
             // keep it undecided until the line distinguishes the two. HTTP
@@ -164,7 +164,7 @@ fn protocol(prefix: &[u8]) -> Option<Protocol> {
                 let end = prefix.iter().position(|byte| *byte == b'\n')?;
                 let line = prefix[..end].strip_suffix(b"\r").unwrap_or(&prefix[..end]);
                 let version = line
-                    .rsplit(|byte| matches!(byte, b' ' | b'\t'))
+                    .rsplit(|byte| method_separator(*byte))
                     .find(|part| !part.is_empty());
                 return Some(
                     if version.is_some_and(|value| value.starts_with(b"HTTP/")) {
@@ -181,6 +181,14 @@ fn protocol(prefix: &[u8]) -> Option<Protocol> {
         }
     }
     None
+}
+
+// HTTP origins may split the request line on more than SP: Python's HTTP
+// server, for example, decodes Latin-1 and uses str.split(). Keep these
+// spellings on the HTTP parser's path, even when Hyper rejects them. A parser
+// rejection must never confer the admitted tunnel's opaque permission.
+fn method_separator(byte: u8) -> bool {
+    matches!(byte, 0x09..=0x0d | 0x1c..=0x20 | 0x85 | 0xa0)
 }
 
 pub(crate) struct Prefixed {
@@ -390,6 +398,29 @@ mod tests {
         assert_eq!(protocol(banner), Some(Protocol::Opaque));
         assert_eq!(protocol(b"\0\xffraw"), Some(Protocol::Opaque));
         assert_eq!(protocol(b"\r\nGET / HTTP/1.1\r\n"), Some(Protocol::Http));
+        for separator in [9, 10, 11, 12, 13, 28, 29, 30, 31, 32, 0x85, 0xa0] {
+            for method in ["GET", "SSH", "SSH-2.0-test"] {
+                let bytes = [
+                    method.as_bytes(),
+                    &[separator],
+                    b"/forbidden",
+                    &[separator],
+                    b"HTTP/1.1\r\n",
+                ]
+                .concat();
+                for end in 0..=bytes.len() {
+                    // LF within an identification line ends the banner. Other
+                    // request-line whitespace cannot select opaque transport.
+                    if separator != b'\n' || method != "SSH-2.0-test" {
+                        assert_ne!(
+                            protocol(&bytes[..end]),
+                            Some(Protocol::Opaque),
+                            "method={method} separator={separator} end={end}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test(start_paused = true)]

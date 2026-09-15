@@ -45,6 +45,9 @@ The shared assertions cover:
   The old half-close defects remain two strict expected failures.
 - Fragmented TLS prefixes retain the inner request decision. Two old short-prefix
   cases remain strict expected failures.
+- SSH-prefixed HTTP methods retain inner policy. HTTP whitespace variants stay
+  with the HTTP parser, which rejects malformed spelling before delivery.
+  The source classifier bypasses remain strict expected failures.
 
 The HTTPS fixture creates a fresh mitmproxy CA in private fixture state. Rust
 receives that combined file through `tls_ca_file`. It never replaces an existing
@@ -59,6 +62,12 @@ proxy negotiates HTTP/1 on both sides. Native opaque CONNECT now shares the
 authorized egress path with HTTP/TLS. Native passthrough tests preserve the
 origin's certificate and restore interception after removing an exact entry.
 WebSockets and the documented passthrough matching gaps remain unfinished.
+
+The separate native WebSocket module has codec and handshake tests, including
+an actual Python wsproto oracle, complete-message scanner calls, compression
+context after message drops, UTF-8 fragments and private spooling. It remains
+inactive in the HTTP transport. The scanner's documented Python-regex gaps
+also block activation; passing codec tests are not WS/WSS proxy acceptance.
 
 The earlier focused launcher keeps lazy connection setup by default. Tunnel
 fixtures explicitly select the old production eager behavior; native CONNECT

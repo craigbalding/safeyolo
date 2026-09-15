@@ -150,7 +150,7 @@ impl NetworkScope {
                 .map_err(|error| invalid(error.to_string()))?;
         let mut key = String::new();
         for character in compact.chars() {
-            if character.is_ascii() {
+            if character.is_ascii() && character != '\u{7f}' {
                 key.push(character);
             } else {
                 for unit in character.encode_utf16(&mut [0u16; 2]) {

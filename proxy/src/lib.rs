@@ -8,11 +8,14 @@ pub mod contracts;
 pub mod credentials;
 pub mod grants;
 mod http;
+pub mod inspection;
+pub mod network_guard;
 pub mod policy;
 pub mod services;
 pub mod test_context;
 pub mod tls;
 mod tunnels;
+pub mod websocket;
 
 pub use config::{AgentListener, Config};
 
