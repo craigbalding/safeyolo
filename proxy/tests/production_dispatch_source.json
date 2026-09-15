@@ -1,0 +1,344 @@
+{
+  "rows": [
+    {
+      "mode": "production_container",
+      "case": "valid",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 1,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request",
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [],
+      "persisted_rows": 1
+    },
+    {
+      "mode": "production_container",
+      "case": "request_content_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 0,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "ValueError"
+        ]
+      },
+      "logger": {
+        "requests_total": 0,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 1,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "production_container",
+      "case": "response_content_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request"
+      ],
+      "errors": [
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "production_container",
+      "case": "both_content_errors",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 0,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "ValueError"
+        ]
+      },
+      "logger": {
+        "requests_total": 0,
+        "requests_quieted": 0,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [],
+      "errors": [
+        "ValueError",
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "separate_addons_control",
+      "case": "valid",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 1,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request",
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [],
+      "persisted_rows": 1
+    },
+    {
+      "mode": "separate_addons_control",
+      "case": "request_content_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "ValueError",
+          "ValueError"
+        ]
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 1,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [
+        "ValueError",
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "separate_addons_control",
+      "case": "response_content_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 1,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request"
+      ],
+      "errors": [
+        "ValueError",
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "separate_addons_control",
+      "case": "both_content_errors",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "ValueError",
+          "ValueError"
+        ]
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 1,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [],
+      "errors": [
+        "ValueError",
+        "ValueError",
+        "ValueError",
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    }
+  ],
+  "network_attempts": 0,
+  "writer_threads_joined": true,
+  "boundary": "real AddonManager trigger_event with ProductionAddons.__new__ container and four real children; synthetic completed flows, captured audit enqueue only; no full startup or transport proof",
+  "metadata": {
+    "python": "3.12.14",
+    "mitmproxy": "12.2.3",
+    "sha256": {
+      "cli/src/safeyolo/traffic_master.py": "b46e717c41d96de4893415721ee121023e1519e65ddd64facb4565e5497db344",
+      "cli/src/safeyolo/mitm_addons/__init__.py": "d241944dd66ae8dfe6df2b460a11230afc04b1a0174ec0e024cea95f67403a00",
+      "cli/src/safeyolo/mitm_addons/request_id.py": "b79675c29c966d3d653aa6a37cce712a5f0bd7cff95186c59f58b526ed0a395e",
+      "cli/src/safeyolo/mitm_addons/test_context.py": "0c34f07a1bedf17645c1e7fe6cf1582852c545ca376c73e10d935a821cefbd33",
+      "cli/src/safeyolo/mitm_addons/flow_recorder.py": "3425d0b9c38453c93f723aa2b2bdc36e311b59246170dc36f435c999986d1419",
+      "cli/src/safeyolo/mitm_addons/request_logger.py": "71b31e77a81fb679e189426221645c413cbdc0208275d3671530ee72a1ec4d6b",
+      "cli/src/safeyolo/core/trace.py": "7574231ab6c7d597b24c28c84bbd75dd9fdf1e9596e7d9350dee196fb00ef1ff",
+      "cli/src/safeyolo/core/flow_writer.py": "481b336b5d34dc2bb4712ad74244e324bfe0e6bf5a173fca3a91dc0017e45f8f",
+      "cli/src/safeyolo/storage/flow_store.py": "2dfa78c11eba2a4a29aed7b911bb3ed56515990e0528e97614534111ddb51ab0",
+      "mitmproxy/addonmanager.py": "1dc72e4f560c8873a587a750ca6253b32bdff5a07cc1bb4aa574eabede923a78",
+      "mitmproxy/http.py": "f8ff6ff9e8f095eccce799eb04ec172227e56953b32d13775e556f65b2dd4fc9",
+      "mitmproxy/net/encoding.py": "ed6466bd018082ec59f4cbdf43139b6d0235bfe802119f3177323c94796e57ea"
+    }
+  },
+  "temporary_stores_removed": true
+}

@@ -280,7 +280,7 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
     let port = listener.local_addr().unwrap().port();
     let peer = tokio::spawn(async move {
         let mut observed = Vec::new();
-        for index in 0..4 {
+        for index in 0..6 {
             let (mut stream, _) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
             observed.push(origin_request(&mut stream).await);
             let body = if index == 0 {
@@ -293,7 +293,11 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
             } else {
                 "text/plain"
             };
-            let encoding = if index == 0 { "gzip" } else { "identity" };
+            let encoding = if matches!(index, 0 | 4 | 5) {
+                "gzip"
+            } else {
+                "identity"
+            };
             let mut head = b"HTTP/1.1 200 \tOwned ".to_vec();
             head.extend_from_slice(b"\xff\xe9 \t\r\n");
             head.extend_from_slice(format!("X-Repeat: one\r\nx-safeyolo-request-ID: upstream-id\r\nX-Middle: middle\r\nx-repeat: two\r\nX-SAFEYOLO-REQUEST-ID: other-id\r\nContent-Type: {content_type}\r\nContent-Encoding: {encoding}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).as_bytes());
@@ -335,6 +339,16 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
             .await
             .starts_with(b"HTTP/1.1 200")
     );
+    // Production dispatch stops at TestContext's response decode error. The
+    // later recorder is not called, even when request decoding also failed.
+    for (route, body, encoding) in [
+        ("/invalid-response", b"request body".as_slice(), "identity"),
+        ("/both-invalid", b"invalid gzip".as_slice(), "gzip"),
+    ] {
+        let response = send(&alice, port, route, true, body, encoding).await;
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        assert!(response.ends_with(b"streamed response"));
+    }
     let observed = peer.await.unwrap();
     for raw in observed {
         let text = String::from_utf8_lossy(&raw);
@@ -372,7 +386,7 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
         .iter()
         .filter(|event| event["event"] == "proxy.egress")
         .collect();
-    assert_eq!(egress.len(), 5);
+    assert_eq!(egress.len(), 7);
     assert!(
         egress
             .iter()
@@ -448,7 +462,7 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
             .stats(super::super::declaration_time())
             .unwrap()
             .checks_total,
-        6
+        8
     );
 }
 
@@ -459,7 +473,7 @@ async fn h2_unread_response_terminal_records_all_data_and_early_metadata_stays_i
     use http_body_util::Empty;
     use hyper::Response;
     use hyper_util::rt::{TokioExecutor, TokioIo};
-    for applied_before_response in [true, false] {
+    for (applied_before_response, response_error) in [(true, false), (false, false), (true, true)] {
         let directory = tempfile::tempdir().unwrap();
         let mut configuration = config(directory.path());
         configuration.listeners.clear();
@@ -496,7 +510,7 @@ async fn h2_unread_response_terminal_records_all_data_and_early_metadata_stays_i
             "127.0.0.2".into(),
             "/body".into(),
         ));
-        provenance.attach_recording(recording);
+        provenance.attach_recording(recording.clone());
         if applied_before_response {
             provenance
                 .apply_request(context(), Some(b"request body"), Ok(b""), 1000.5)
@@ -513,6 +527,10 @@ async fn h2_unread_response_terminal_records_all_data_and_early_metadata_stays_i
                     Response::builder()
                         .status(200)
                         .header("content-length", "12")
+                        .header(
+                            "content-encoding",
+                            if response_error { "gzip" } else { "identity" },
+                        )
                         .header("content-type", "text/plain")
                         .header("x-proof", "retained")
                         .body(())
@@ -554,7 +572,25 @@ async fn h2_unread_response_terminal_records_all_data_and_early_metadata_stays_i
         assert!(!failed);
         assert!(!capture.finish(true));
         assert!(recorder.shutdown());
-        if applied_before_response {
+        if response_error {
+            // A later teardown cannot retry a hook the production container
+            // skipped after an earlier child failed.
+            recording.finish(false, None, false);
+            assert!(store.get_flow(1).unwrap().is_none());
+            let source: Value = serde_json::from_str(include_str!(
+                "../../../tests/production_dispatch_source.json"
+            ))
+            .unwrap();
+            let source_case = source["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| {
+                    row["mode"] == "production_container" && row["case"] == "response_content_error"
+                })
+                .unwrap();
+            assert_eq!(recorder.stats(), source_case["recorder"]);
+        } else if applied_before_response {
             let row = store.get_flow(1).unwrap().unwrap();
             assert_eq!(row["reason"], "");
             assert_eq!(row["response_body_size"], 12);
@@ -747,4 +783,24 @@ async fn cancelled_buffered_request_before_driver_records_one_error() {
         b"body"
     );
     assert!(store.get_flow(2).unwrap().is_none());
+}
+
+#[test]
+#[ignore = "requires the retained Python 3.12 mitmproxy environment"]
+fn production_container_source_dispatch_stays_reproducible() {
+    let python = std::env::var_os("SAFEYOLO_SOURCE_PYTHON")
+        .expect("set SAFEYOLO_SOURCE_PYTHON to the retained source environment");
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let output = std::process::Command::new(python)
+        .arg(tests.join("production_dispatch.py"))
+        .arg("--check")
+        .arg(tests.join("production_dispatch_source.json"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

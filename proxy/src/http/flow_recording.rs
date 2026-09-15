@@ -303,6 +303,18 @@ impl Recording {
         }
     }
 
+    /// An earlier child in the production response hook raised. Release this
+    /// terminal's private evidence without invoking or counting the recorder.
+    pub(super) fn skip_response(&self) {
+        let record = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record
+            .take();
+        drop(record);
+    }
+
     pub(super) fn finish(&self, success: bool, content: Option<&[u8]>, capture_failed: bool) {
         self.finish_at(
             success,

@@ -138,21 +138,20 @@ impl Provenance {
             .is_err()
     }
 
-    fn response(&self, head: &Head, content: Option<&[u8]>, now: f64) -> bool {
+    fn response(
+        &self,
+        head: &Head,
+        content: Option<&[u8]>,
+        now: f64,
+    ) -> Result<bool, ContentError> {
         let (context, started) = {
             let applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
             let Some(applied) = applied.as_ref() else {
-                return false;
+                return Ok(false);
             };
             (applied.context.clone(), applied.started)
         };
-        let snippet = match body_snippet(content, &head.encoding) {
-            Ok(snippet) => snippet,
-            Err(error) => {
-                eprintln!("Test context response content failed: {error}");
-                return error == ContentError::Allocation;
-            }
-        };
+        let snippet = body_snippet(content, &head.encoding)?;
         // Source uses signed wall-clock elapsed time, truncated toward zero.
         let duration = if started == 0. {
             0.
@@ -162,7 +161,7 @@ impl Provenance {
         let duration_ms: serde_json::Number = format!("{duration:.0}")
             .parse()
             .expect("finite wall-clock duration");
-        self.runtime.record(json!({
+        Ok(self.runtime.record(json!({
             "event": "security.test_context", "kind": "security", "severity": "low",
             "addon": "test-context", "host": self.host,
             "agent": self.identity.agent_id, "request_id": self.request_id,
@@ -175,7 +174,7 @@ impl Provenance {
                 "test_context_source": context.source, "status_code": head.status.as_u16(),
                 "response_body_snippet": snippet, "duration_ms": duration_ms,
             },
-        })).is_err()
+        })).is_err())
     }
 }
 
@@ -376,15 +375,27 @@ impl ResponseCapture {
         };
         let content = capture.body.into_content();
         let content = content.as_deref().map(Vec::as_slice);
-        let failed = self
+        match self
             .provenance
-            .response(&head, content, crate::circuit_runtime::now());
-        // The source recorder follows provenance even when snippet decoding
-        // fails; its own full decode determines recorder errors independently.
-        if let Some(recording) = self.provenance.recording() {
-            recording.finish(true, content, false);
+            .response(&head, content, crate::circuit_runtime::now())
+        {
+            Ok(failed) => {
+                if let Some(recording) = self.provenance.recording() {
+                    recording.finish(true, content, false);
+                }
+                failed
+            }
+            Err(error) => {
+                // ProductionAddons shares one dispatcher exception boundary.
+                // A failed TestContext response hook skips the later recorder;
+                // no recorder counter or retry belongs to this response.
+                if let Some(recording) = self.provenance.recording() {
+                    recording.skip_response();
+                }
+                eprintln!("Test context response content failed: {error}");
+                error == ContentError::Allocation
+            }
         }
-        failed
     }
 }
 

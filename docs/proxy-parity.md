@@ -60,6 +60,10 @@ former script-loader position before later stock transformers. Production
 Python source does not hot-reload. Policy and state have separate reload paths.
 Only failure to import the normal Agent API handler is recoverable during
 production registration; its independent containment guard must still load.
+The production container shares one dispatcher exception boundary. An uncaught
+child-hook exception skips later children for that hook; a later request or
+response hook is dispatched separately. Standalone addon comparisons establish
+only the behavior of the hooks they actually invoke.
 
 Hook order is not simply table order: all `requestheaders` hooks run before
 `request` hooks. CONNECT admission also runs independently of requests inside
@@ -1096,6 +1100,12 @@ and reason, decoded body sizes and configured body prefixes. Streamed bodies
 remain absent. A transport error uses the actual upstream head when one exists;
 a generated proxy 502 does not become an origin response. A pending application
 guard records cancellation before the connection driver takes ownership.
+If TestContext response decoding fails, the production dispatcher skips the
+later recorder. Native completion releases the pending evidence without changing
+recorder counters. A request decode failure keeps applied context available to
+a later valid response hook. Direct recorder comparisons do not establish this
+container ordering; the [actual source dispatcher comparison](../proxy/tests/production_dispatch.py)
+and H1/H2 regressions cover it.
 Parser aborts that erase their diagnostic cause can still produce a null reason.
 Inactive service-gateway, probe and replay producers remain outside this slice.
 
