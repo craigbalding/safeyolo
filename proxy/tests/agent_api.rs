@@ -1,3 +1,4 @@
+use safeyolo_proxy::tasks::Registry;
 use safeyolo_proxy::{
     agent_api::*,
     network_guard::Identity,
@@ -65,6 +66,7 @@ async fn sensor_config_reads_the_shared_authorized_snapshot_with_source_bytes() 
             },
             &token_path,
             PolicyState::Ready(&policy),
+            &Registry::default(),
             1000.,
         )
         .await;
@@ -90,6 +92,7 @@ async fn sensor_config_reads_the_shared_authorized_snapshot_with_source_bytes() 
         },
         &token_path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -102,6 +105,7 @@ async fn sensor_config_reads_the_shared_authorized_snapshot_with_source_bytes() 
         request("/config"),
         &token_path,
         PolicyState::Unavailable,
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -114,6 +118,7 @@ async fn sensor_config_reads_the_shared_authorized_snapshot_with_source_bytes() 
         request("/config"),
         &token_path,
         PolicyState::NoEngine { healthy: true },
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -124,6 +129,7 @@ async fn sensor_config_reads_the_shared_authorized_snapshot_with_source_bytes() 
         request("/config"),
         &token_path,
         PolicyState::Ready(&unconfigured),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -165,6 +171,7 @@ async fn sensor_config_temporal_errors_follow_the_projection_and_preserve_enforc
                 },
                 &token_path,
                 PolicyState::Ready(&policy),
+                &Registry::default(),
                 1000.,
             )
             .await;
@@ -226,6 +233,7 @@ async fn budgets_read_shared_counters_after_auth_without_evaluating_or_charging(
             },
             &token_path,
             PolicyState::Ready(&policy),
+            &Registry::default(),
             1000.,
         )
         .await;
@@ -241,6 +249,7 @@ async fn budgets_read_shared_counters_after_auth_without_evaluating_or_charging(
         },
         &token_path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         f64::NAN,
     )
     .await;
@@ -250,6 +259,7 @@ async fn budgets_read_shared_counters_after_auth_without_evaluating_or_charging(
         request("/budgets"),
         &token_path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         f64::NAN,
     )
     .await;
@@ -265,6 +275,7 @@ async fn budgets_read_shared_counters_after_auth_without_evaluating_or_charging(
         request("/budgets"),
         &token_path,
         PolicyState::Unavailable,
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -277,6 +288,7 @@ async fn budgets_read_shared_counters_after_auth_without_evaluating_or_charging(
         request("/budgets"),
         &token_path,
         PolicyState::NoEngine { healthy: true },
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -287,6 +299,7 @@ async fn budgets_read_shared_counters_after_auth_without_evaluating_or_charging(
         request("/budgets"),
         &token_path,
         PolicyState::Ready(&unconfigured),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -330,6 +343,7 @@ async fn budget_report_errors_are_local_handler_responses_and_leave_counters_int
             request("/budgets"),
             &token_path,
             PolicyState::Ready(&replacement),
+            &Registry::default(),
             now,
         )
         .await;
@@ -364,6 +378,7 @@ async fn budget_report_errors_are_local_handler_responses_and_leave_counters_int
         request("/budgets"),
         &token_path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1_000_000.,
     )
     .await;
@@ -396,6 +411,7 @@ async fn budgets_do_not_serialize_unrelated_temporal_baseline_values() {
         request("/budgets"),
         &token_path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -409,6 +425,7 @@ async fn budgets_do_not_serialize_unrelated_temporal_baseline_values() {
         request("/policy"),
         &token_path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -443,6 +460,7 @@ async fn policy_reads_borrow_the_loaded_baseline_without_identity_filter_or_budg
             },
             &token_path,
             PolicyState::Ready(&policy),
+            &Registry::default(),
             1000.,
         )
         .await;
@@ -471,6 +489,7 @@ async fn policy_reads_borrow_the_loaded_baseline_without_identity_filter_or_budg
         request("/lookup?host=api.invalid"),
         &token_path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -480,6 +499,7 @@ async fn policy_reads_borrow_the_loaded_baseline_without_identity_filter_or_budg
         request("/policy"),
         &token_path,
         PolicyState::Ready(&unconfigured),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -489,6 +509,7 @@ async fn policy_reads_borrow_the_loaded_baseline_without_identity_filter_or_budg
         request("/policy"),
         &token_path,
         PolicyState::Unavailable,
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -504,6 +525,7 @@ async fn policy_reads_borrow_the_loaded_baseline_without_identity_filter_or_budg
         },
         &token_path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -548,6 +570,7 @@ async fn policy_yaml_timestamps_preserve_source_load_and_response_failures() {
             request("/policy"),
             &path,
             PolicyState::Ready(&policy),
+            &Registry::default(),
             1000.,
         )
         .await;
@@ -589,6 +612,7 @@ async fn token_reads_rotate_preserve_source_whitespace_and_auth_failure_containm
             },
             Path::new("/nonexistent-fixture-path"),
             PolicyState::Ready(&policy),
+            &Registry::default(),
             1000.,
         )
         .await;
@@ -602,6 +626,7 @@ async fn token_reads_rotate_preserve_source_whitespace_and_auth_failure_containm
         },
         &path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -647,7 +672,14 @@ async fn token_reads_rotate_preserve_source_whitespace_and_auth_failure_containm
             authorization: Some(&auth),
             ..request("/health?ignored=private-query-placeholder")
         };
-        let outcome = respond_read(req, &path, PolicyState::Ready(&policy), 1000.).await;
+        let outcome = respond_read(
+            req,
+            &path,
+            PolicyState::Ready(&policy),
+            &Registry::default(),
+            1000.,
+        )
+        .await;
         assert_eq!(outcome.response.status, status);
         assert_eq!(outcome.failure, failure);
         if status == 401 {
@@ -677,6 +709,7 @@ async fn token_reads_rotate_preserve_source_whitespace_and_auth_failure_containm
             request("/health"),
             &path,
             PolicyState::Ready(&policy),
+            &Registry::default(),
             1000.
         )
         .await
@@ -690,6 +723,7 @@ async fn token_reads_rotate_preserve_source_whitespace_and_auth_failure_containm
             request("/health"),
             &path,
             PolicyState::Ready(&policy),
+            &Registry::default(),
             1000.
         )
         .await
@@ -718,6 +752,7 @@ async fn trusted_identity_and_route_query_contracts_use_the_shared_policy() {
             },
             &path,
             PolicyState::Ready(&policy),
+            &Registry::default(),
             1000.,
         )
         .await;
@@ -735,6 +770,7 @@ async fn trusted_identity_and_route_query_contracts_use_the_shared_policy() {
             },
             &path,
             PolicyState::Ready(&policy),
+            &Registry::default(),
             1000.,
         )
         .await;
@@ -766,7 +802,14 @@ async fn trusted_identity_and_route_query_contracts_use_the_shared_policy() {
         ),
     ] {
         let raw = format!("/lookup?{query}");
-        let outcome = respond_read(request(&raw), &path, PolicyState::Ready(&policy), 1000.).await;
+        let outcome = respond_read(
+            request(&raw),
+            &path,
+            PolicyState::Ready(&policy),
+            &Registry::default(),
+            1000.,
+        )
+        .await;
         assert_eq!(outcome.response.status, 200);
         assert_eq!(body(&outcome.response)["port"], port);
         assert_eq!(body(&outcome.response)["method"], method);
@@ -776,6 +819,7 @@ async fn trusted_identity_and_route_query_contracts_use_the_shared_policy() {
         request("/lookup?host=&host=api.invalid"),
         &path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -784,14 +828,18 @@ async fn trusted_identity_and_route_query_contracts_use_the_shared_policy() {
         request("/status"),
         &path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;
-    assert_eq!(outcome.failure, Some(Failure::DevelopmentEndpoint));
+    assert_eq!(outcome.response.status, 200);
+    assert!(outcome.failure.is_none());
+    assert_eq!(body(&outcome.response)["task_policies"], 0);
     let outcome = respond_read(
         request("/%68ealth"),
         &path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -809,7 +857,14 @@ async fn source_surrogate_queries_are_explicit_and_unused_fields_do_not_poison_l
         "host=api.invalid&port=%ff",
     ] {
         let raw = format!("/lookup?{query}");
-        let outcome = respond_read(request(&raw), &path, PolicyState::Ready(&policy), 1000.).await;
+        let outcome = respond_read(
+            request(&raw),
+            &path,
+            PolicyState::Ready(&policy),
+            &Registry::default(),
+            1000.,
+        )
+        .await;
         assert_eq!(outcome.failure, Some(Failure::QueryCompatibility));
         assert_eq!(outcome.response.status, 503);
         assert_eq!(outcome.policy_evaluations, 0);
@@ -821,7 +876,14 @@ async fn source_surrogate_queries_are_explicit_and_unused_fields_do_not_poison_l
         "host=api.invalid&host=%ff",
     ] {
         let raw = format!("/lookup?{query}");
-        let outcome = respond_read(request(&raw), &path, PolicyState::Ready(&policy), 1000.).await;
+        let outcome = respond_read(
+            request(&raw),
+            &path,
+            PolicyState::Ready(&policy),
+            &Registry::default(),
+            1000.,
+        )
+        .await;
         assert_eq!(outcome.response.status, 200);
         assert_eq!(body(&outcome.response)["host"], "api.invalid");
     }
@@ -832,6 +894,7 @@ async fn source_surrogate_queries_are_explicit_and_unused_fields_do_not_poison_l
         },
         &path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -854,7 +917,14 @@ async fn policy_method_conditions_share_pinned_uppercase() {
         ("post", "POST", "deny"),
     ] {
         let raw = format!("/lookup?host=api.invalid&method={method}");
-        let outcome = respond_read(request(&raw), &path, PolicyState::Ready(&policy), 1000.).await;
+        let outcome = respond_read(
+            request(&raw),
+            &path,
+            PolicyState::Ready(&policy),
+            &Registry::default(),
+            1000.,
+        )
+        .await;
         assert_eq!(body(&outcome.response)["method"], expected_method);
         assert_eq!(body(&outcome.response)["effect"], effect);
     }
@@ -874,6 +944,7 @@ async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
                 request("/lookup?host=limited.invalid"),
                 &path,
                 PolicyState::Ready(&policy),
+                &Registry::default(),
                 1000.,
             )
             .await;
@@ -909,6 +980,7 @@ async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
         request("/lookup?host=limited.invalid"),
         &path,
         PolicyState::Ready(&reloaded),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -921,6 +993,7 @@ async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
         request("/lookup?host=limited.invalid&method=CONNECT"),
         &path,
         PolicyState::Ready(&reloaded),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -932,6 +1005,7 @@ async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
         request("/lookup?host=limited.invalid"),
         &path,
         PolicyState::Ready(&reloaded),
+        &Registry::default(),
         1000.,
     )
     .await;
@@ -1170,7 +1244,7 @@ asyncio.run(run()); print(json.dumps(output))
             "unhealthy" => PolicyState::NoEngine { healthy: false },
             _ => PolicyState::Ready(&policy),
         };
-        let mut outcome = respond_read(req, &path, state, 1000.).await;
+        let mut outcome = respond_read(req, &path, state, &Registry::default(), 1000.).await;
         if row["audit_failure"].as_bool() == Some(true) {
             outcome = outcome.audit_failed(req);
         }
@@ -1230,6 +1304,7 @@ with tempfile.TemporaryDirectory() as temp,patch.object(PolicyLoader,'start_watc
         request("/lookup?host=api.invalid&method=%E1%B2%8A"),
         &path,
         PolicyState::Ready(&policy),
+        &Registry::default(),
         1000.,
     )
     .await;

@@ -12,6 +12,7 @@ import pytest
 from safeyolo.api import AdminAPI, APIError
 from tests.proxy_migration.harness import request as send_request
 from tests.proxy_migration.scenarios import origin_server
+from tests.proxy_migration.test_agent_api_contract import api_request, assert_api_response
 from tests.proxy_migration.test_native_network_policy import ALLOW, policy_proxy, replace_policy
 
 TOKEN = "synthetic-operator-workflow-original"
@@ -42,13 +43,26 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
     replacement = {"unknown": ["replacement"], "permissions": []}
 
     with origin_server() as origin:
-        with policy_proxy("rust", directory, ALLOW, admin_port=0, admin_api_token_file=token_file) as proxy:
+        with policy_proxy(
+            "rust", directory, ALLOW, admin_port=0, admin_api_token_file=token_file, agent_api=True
+        ) as proxy:
             marker = json.loads(proxy.readiness_file.read_text())
             port = marker["admin_port"]
             assert 0 < port <= 65535 and marker["pid"] == proxy.process.pid
             base_url = f"http://127.0.0.1:{port}"
             client = AdminAPI(base_url=base_url, token=TOKEN, timeout=5)
             wrong = AdminAPI(base_url=base_url, token=NEXT_TOKEN, timeout=5)
+            initial = assert_api_response(api_request(proxy, "/status"), 200)
+
+            def check_task_count(count, evaluations):
+                report = assert_api_response(api_request(proxy, "/status", agent="bob"), 200)
+                assert report["task_policies"] == count
+                assert report["policy_hash"] == initial["policy_hash"]
+                assert report["engine_stats"]["task_permissions"] == 0
+                assert report["engine_stats"]["task_policy_path"] is None
+                assert report["engine_stats"]["evaluations"] == evaluations
+
+            check_task_count(0, 0)
             assert wrong.health() == {"status": "ok"}
             with pytest.raises(APIError) as failure:
                 wrong.get_policy("task/alpha")
@@ -61,6 +75,7 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
                 "message": "Task policy updated",
             }
             assert client.get_policy("task/alpha") == {"task_id": "alpha", "policy": raw}
+            check_task_count(1, 0)
             # A registered blanket deny does not become an active overlay. Both
             # trusted agents still reach the owned origin under the same policy.
             for agent in ("alice", "bob"):
@@ -80,6 +95,9 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
                 client.set_policy("task/alpha", {"permissions": False})
             assert failure.value.status_code == 400
             assert client.get_policy("task/alpha") == {"task_id": "alpha", "policy": replacement}
+            check_task_count(1, 2)
+            assert client.set_policy("task/beta", {})["permission_count"] == 0
+            check_task_count(2, 2)
 
             # Startup token ownership and the actual process-local registry both
             # survive a real binary SIGHUP reload; no facade-only call substitutes.
@@ -90,6 +108,7 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
                 wrong.get_policy("task/alpha")
             assert failure.value.status_code == 401
             assert client.get_policy("task/alpha") == {"task_id": "alpha", "policy": replacement}
+            check_task_count(2, 2)
 
             before = len(proxy.events("proxy.egress")), origin.accepts
             for agent, method, target in (
@@ -106,7 +125,11 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
 
             events = proxy.events("proxy.admin_api")
             updates = [event for event in events if event["audit_intent"] == "admin.task_policy_update"]
-            assert [(event["task_id"], event["permission_count"]) for event in updates] == [("alpha", 1), ("alpha", 0)]
+            assert [(event["task_id"], event["permission_count"]) for event in updates] == [
+                ("alpha", 1),
+                ("alpha", 0),
+                ("beta", 0),
+            ]
             assert sum(event["audit_intent"] == "admin.auth_failure" for event in events) == 2
             for path in (proxy.event_log, directory / "process.log", proxy.readiness_file):
                 contents = path.read_text()

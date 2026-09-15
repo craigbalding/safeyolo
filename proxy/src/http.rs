@@ -700,6 +700,7 @@ async fn local_agent_api(
             api_request,
             &token_path,
             policy,
+            &runtime.tasks,
             crate::policy::current_time_ms(),
         )
         .await

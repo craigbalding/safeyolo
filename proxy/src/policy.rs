@@ -14,7 +14,10 @@ use std::{
     fmt,
     net::Ipv6Addr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use indexmap::IndexMap;
@@ -27,10 +30,12 @@ mod budgets;
 mod model_json;
 mod sensor_config;
 mod source;
+mod stats;
 use baseline::{Baseline, Builder as BaselineBuilder};
 pub use budgets::BudgetStatsError;
 use source::{ParsedPolicy, TemporalEntry};
 pub(crate) use source::{TemporalValue, TimestampPaths};
+pub use stats::EngineStatsError;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Format {
@@ -319,10 +324,12 @@ struct Override {
 #[derive(Clone)]
 pub struct Policy {
     baseline: Option<Arc<Baseline>>,
+    baseline_path: Option<PathBuf>,
     gateway: Option<Arc<crate::services::GatewaySnapshot>>,
     rules: Vec<Rule>,
     global_budget: Option<u64>,
     budgets: Arc<Mutex<IndexMap<String, f64>>>,
+    evaluations: Arc<AtomicU64>,
     required: [bool; 2],
     enabled: [bool; 2],
     domains: Vec<Override>,
@@ -432,6 +439,8 @@ impl Policy {
             now_ms,
         )?;
         replacement.budgets = self.budgets.clone();
+        replacement.evaluations = self.evaluations.clone();
+        replacement.baseline_path = self.baseline_path.clone();
         replacement.task = self.task.clone();
         Ok(replacement)
     }
@@ -456,6 +465,7 @@ impl Policy {
     ) -> Result<Self> {
         let mut replacement = Self::from_path_with_registry_at(path, registry, now_ms)?;
         replacement.budgets = self.budgets.clone();
+        replacement.evaluations = self.evaluations.clone();
         replacement.task = self.task.clone();
         Ok(replacement)
     }
@@ -549,7 +559,9 @@ impl Policy {
                 parsed = merge_parsed_defaults(parsed, defaults)?;
             }
         }
-        Self::from_document(parsed, path.parent(), registry, false)
+        let mut policy = Self::from_document(parsed, path.parent(), registry, false)?;
+        policy.baseline_path = Some(path.to_owned());
+        Ok(policy)
     }
 
     fn from_document(
@@ -585,10 +597,12 @@ impl Policy {
             .transpose()?;
         let mut policy = Self {
             baseline: None,
+            baseline_path: None,
             gateway: None,
             rules: Vec::new(),
             global_budget,
             budgets: Arc::new(Mutex::new(IndexMap::new())),
+            evaluations: Arc::new(AtomicU64::new(0)),
             required: [false; 2],
             enabled: [true; 2],
             domains: Vec::new(),
@@ -1212,7 +1226,8 @@ impl Policy {
             .or_else(|| candidates().find(|rule| matches(rule, false, false, false)))
     }
 
-    /// `now_ms` is epoch milliseconds; a lookup with consume=false changes no state.
+    /// `now_ms` is epoch milliseconds. A lookup with consume=false counts one
+    /// evaluation while leaving the budget counters unchanged.
     pub fn evaluate(
         &self,
         request: NetworkRequest<'_>,
@@ -1222,6 +1237,7 @@ impl Policy {
         if request.port == Some(0) {
             return Err(invalid("port must be from 1 to 65535"));
         }
+        self.evaluations.fetch_add(1, Ordering::Relaxed);
         if !now_ms.is_finite() {
             return Err(invalid("budget timestamp must be finite"));
         }
@@ -1330,6 +1346,7 @@ impl Policy {
         request: CredentialRequest<'_>,
         now_ms: f64,
     ) -> Result<Decision> {
+        self.evaluations.fetch_add(1, Ordering::Relaxed);
         if !now_ms.is_finite() {
             return Err(invalid("budget timestamp must be finite"));
         }
@@ -1372,6 +1389,7 @@ impl Policy {
     /// Raw gateway policy effects match the existing PolicyEngine. In particular
     /// Budget is not charged here; the existing PDP maps it to ERROR for risk.
     pub fn evaluate_risky_route(&self, request: RiskyRouteRequest<'_>) -> Decision {
+        self.evaluations.fetch_add(1, Ordering::Relaxed);
         let context = Context {
             service: request.service,
             agent: Some(request.agent),
@@ -1392,6 +1410,7 @@ impl Policy {
     /// Path contributes to the resource only, preserving the shipped missing
     /// path condition context. The existing gateway PDP maps raw Budget to DENY.
     pub fn evaluate_gateway_request(&self, request: GatewayRequest<'_>) -> Decision {
+        self.evaluations.fetch_add(1, Ordering::Relaxed);
         let context = Context {
             service: request.service,
             capability: request.capability,

@@ -571,13 +571,63 @@ These results are implementation evidence, without independent acceptance,
 macOS or real-guest validation.
 
 The native [Agent API](../proxy/src/agent_api.rs) serves authenticated `/health`,
-`/lookup`, `/policy`, `/budgets` and `/config` on the reserved hostname.
+`/lookup`, `/policy`, `/budgets`, `/config` and `/status` on the reserved hostname.
 `agent_api_enabled` defaults to true.
 Authentication reads `SAFEYOLO_DATA_DIR/agent_token` for every request, defaulting
 to `/safeyolo/data/agent_token`. Method checks precede authentication; lookup uses
 the trusted listener identity and current policy snapshot without spending
 request budgets. Repeated Authorization fields retain the source comma-space
 joining behavior. Root-dot aliases enter the same local API under D9.
+
+The native `/status` report reads the current policy hash, the operator task
+registry count and the policy engine's existing state. Its field order and
+`pdp-0.1.0` engine version match the source. Engine statistics include the
+baseline and task file paths, canonical permission counts, full required-addon
+list, cumulative evaluations and ordered budget keys. File paths retain their
+lexical spelling under the source's Path display rules; reporting does not
+resolve filesystem paths. Uploaded task counts are separate from the active
+file-task overlay. An operator PUT changes that count without activating a task
+or changing the policy hash.
+
+One shared counter increments at each of the four policy evaluator entry points.
+Network evaluation validates the port first; later failures still count.
+Credential, risk and gateway evaluations count at entry. Lookup previews count
+without consuming quota. Ordinary API reads do neither. Accepted reloads retain
+the counter and budget keys; failed reloads preserve the existing snapshot.
+A fresh engine starts at zero. The transport and API do not add a second counter.
+
+A missing policy client returns the existing local 503. Non-UTF8 native policy
+paths and poisoned state locks retain typed reporting failures through the
+local containment response; they are not renamed to Python exceptions. Python
+can represent surrogate-escaped paths that the native report cannot encode.
+The generic `NoEngine` development state still cannot distinguish a corrupted
+local client from a remote client, whose source status results differ.
+This provider distinction and task activation remain unimplemented.
+
+Owner validation on Linux aarch64 passed 268 selected Rust tests across 20
+targets, including the live source oracles, plus 15 compile-fail documentation
+tests, strict all-target Clippy, formatting and selected repository hooks.
+The [status traffic fixture](../tests/proxy_migration/test_agent_api_status.py)
+also passed against the actual Python proxy, with 50 source and helper files
+unchanged. It checks exact report bytes through previews, allowed and denied
+traffic, accepted and rejected reloads, and a fresh process.
+
+All 211 native wire cases passed across 212 proxy instances against one frozen
+executable. The operator workflow confirms real task counts of 0, 1, 1 and 2
+without activation. The status workflow observes two counted previews without
+quota consumption, five evaluations after allowed and budget-denied traffic,
+and six after a policy denial. Reloads retain the count and stale budget keys;
+a fresh process clears them.
+
+All 1,018 source blobs, 23 migration fixtures and the executable remained
+unchanged during native validation. Every configuration selected native policy
+without an adapter. All 155 egress records belonged to owned peers, with no
+unexpected contact. Privacy scans found no raw or hex-encoded minted bearer
+patterns. Readiness files, sockets and processes were cleaned up. Process
+observations cover 179 instances; the remaining 33 have configuration, event
+and cleanup evidence without a sampled-process claim. The four WebSocket
+lifecycle witnesses pass. These are implementation results, without independent
+acceptance, macOS or real-guest validation.
 
 These requests terminate locally before ordinary inspection and egress. Disabled
 or failed handlers remain contained; CONNECT returns the source transport-guard

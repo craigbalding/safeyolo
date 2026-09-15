@@ -18,7 +18,9 @@ use zeroize::Zeroizing;
 
 use crate::{
     network_guard::{Identity, sanitize},
-    policy::{BudgetStatsError, Effect, NetworkRequest, Policy, python_whitespace},
+    policy::{
+        BudgetStatsError, Effect, EngineStatsError, NetworkRequest, Policy, python_whitespace,
+    },
     python_text::{decimal, printable, uppercase},
 };
 
@@ -76,7 +78,9 @@ pub struct Request<'a> {
     pub request_id: &'a str,
 }
 
-/// A configured remote client can report health without a direct policy engine.
+/// A provider can report health without exposing a direct native engine.
+/// NoEngine does not distinguish a remote client from a corrupted local client;
+/// provider-specific status behavior remains a development compatibility gap.
 pub enum PolicyState<'a> {
     Ready(&'a Policy),
     Unavailable,
@@ -96,6 +100,9 @@ pub enum Failure {
     PolicySerialization,
     /// The source budget report failed during numeric conversion or key parsing.
     BudgetReporting,
+    /// Native statistics failures retain their exact, content-free category.
+    EngineReporting(EngineStatsError),
+    TaskRegistry(crate::tasks::Error),
     /// A Python lone-surrogate query value cannot enter the current Policy API.
     QueryCompatibility,
 }
@@ -316,11 +323,12 @@ async fn authenticate(path: &Path, supplied: &[u8]) -> Authentication {
 
 /// Method checks precede token I/O; authentication precedes route/identity/query.
 /// The caller resolves a fresh policy snapshot and owns audit persistence. This
-/// future has no outbound client and calls the shared Policy at most once.
+/// future has no outbound client and evaluates a request at most once.
 pub async fn respond_read<'p>(
     request: Request<'_>,
     token_path: &Path,
     policy: PolicyState<'p>,
+    tasks: &crate::tasks::Registry,
     now_ms: f64,
 ) -> Outcome<'p> {
     let path = route(request);
@@ -390,6 +398,25 @@ pub async fn respond_read<'p>(
     }
     if path == "/lookup" {
         return lookup(request, policy, now_ms);
+    }
+    if path == "/status" {
+        match policy {
+            PolicyState::Ready(policy) => {
+                // Preserve PDPCore.get_stats evaluation order. These reads use
+                // the actual published policy and the operator's task registry;
+                // they neither activate registered tasks nor evaluate requests.
+                let policy_hash = policy.policy_hash();
+                let task_policies = match tasks.count() {
+                    Ok(count) => count,
+                    Err(error) => return unavailable(request, Failure::TaskRegistry(error)),
+                };
+                return status_response(request, policy_hash, task_policies, policy.engine_stats());
+            }
+            PolicyState::Unavailable => {
+                return response(503, json!({"error":"PDP not available"}));
+            }
+            PolicyState::NoEngine { .. } => (),
+        }
     }
     if path == "/config" {
         match policy {
@@ -478,6 +505,22 @@ pub async fn respond_read<'p>(
         return outcome;
     }
     response(404, json!({"error":"Not Found", "endpoints":ENDPOINTS}))
+}
+
+fn status_response(
+    request: Request<'_>,
+    policy_hash: String,
+    task_policies: usize,
+    engine_stats: Result<Value, EngineStatsError>,
+) -> Outcome<'static> {
+    match engine_stats {
+        Ok(engine_stats) => response(
+            200,
+            json!({"engine_version":"pdp-0.1.0", "policy_hash":policy_hash,
+                   "task_policies":task_policies, "engine_stats":engine_stats}),
+        ),
+        Err(error) => unavailable(request, Failure::EngineReporting(error)),
+    }
 }
 
 enum Decoded {
@@ -717,6 +760,30 @@ fn parse_port(source: &str) -> Result<u16, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_reporting_failures_preserve_native_categories() {
+        let request = Request {
+            method: "GET",
+            path_and_query: "/status?ignored=discarded",
+            authorization: None,
+            identity: Identity::Resolved("alice"),
+            client_ip: None,
+            request_id: "req-status-fixture",
+        };
+        for error in [EngineStatsError::PathEncoding, EngineStatsError::Poisoned] {
+            let outcome = status_response(request, "synthetic-hash".into(), 2, Err(error));
+            assert_eq!(outcome.response.status, 503);
+            assert_eq!(outcome.failure, Some(Failure::EngineReporting(error)));
+            assert_eq!(outcome.policy_evaluations, 0);
+            assert!(!outcome.handler_owned && outcome.scrub_request);
+            let body = outcome.response.body_bytes();
+            let body = std::str::from_utf8(&body).unwrap();
+            assert!(!body.contains("synthetic-hash"));
+            assert!(!body.contains("discarded"));
+            assert!(!body.contains(&format!("{error:?}")));
+        }
+    }
 
     #[test]
     #[ignore = "requires pinned Python 3.12.14; set SAFEYOLO_POLICY_PYTHON"]
