@@ -126,9 +126,10 @@ pub(crate) enum Protocol {
 
 fn protocol(prefix: &[u8]) -> Option<Protocol> {
     let first = *prefix.first()?;
-    // Hyper accepts empty lines before a request. They must not turn a later
-    // HTTP request into an uninspected opaque stream.
-    if matches!(first, b'\r' | b'\n') {
+    // Origins may accept leading request-line whitespace as well as empty
+    // lines. Keep all evidenced spellings on the HTTP parser's path even when
+    // Hyper rejects them; rejection never grants uninspected forwarding.
+    if method_separator(first) {
         return Some(Protocol::Http);
     }
     if first == 0x16 {
@@ -399,6 +400,10 @@ mod tests {
         assert_eq!(protocol(b"\0\xffraw"), Some(Protocol::Opaque));
         assert_eq!(protocol(b"\r\nGET / HTTP/1.1\r\n"), Some(Protocol::Http));
         for separator in [9, 10, 11, 12, 13, 28, 29, 30, 31, 32, 0x85, 0xa0] {
+            let leading = [&[separator], b"GET /forbidden HTTP/1.1\r\n".as_slice()].concat();
+            for end in 1..=leading.len() {
+                assert_eq!(protocol(&leading[..end]), Some(Protocol::Http));
+            }
             for method in ["GET", "SSH", "SSH-2.0-test"] {
                 let bytes = [
                     method.as_bytes(),

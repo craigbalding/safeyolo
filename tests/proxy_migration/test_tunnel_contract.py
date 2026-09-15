@@ -116,14 +116,14 @@ def test_fragmented_tls_keeps_the_inner_request_decision(proxy_backend, tmp_path
             assert origin.requests == []
 
 
-@pytest.mark.parametrize("method, separator", [
-    ("SSH", " "), ("SSHGET", " "), ("SSH-EXT", " "), ("SSH-2.0-test", " "),
-    ("GET", "\t"), ("GET", "\v"), ("GET", "\f"),
-])
+@pytest.mark.parametrize("method, separator, leading", [
+    ("SSH", " ", ""), ("SSHGET", " ", ""), ("SSH-EXT", " ", ""), ("SSH-2.0-test", " ", ""),
+    ("GET", "\t", ""), ("GET", "\v", ""), ("GET", "\f", ""),
+] + [("GET", " ", chr(byte)) for byte in (9, 11, 12, 28, 29, 30, 31, 32, 0x85, 0xa0)])
 @pytest.mark.parametrize("first", [0, 1, 3])
-def test_http_method_spelling_remains_inspected(proxy_backend, tmp_path, method, separator, first, request):
+def test_http_method_spelling_remains_inspected(proxy_backend, tmp_path, method, separator, leading, first, request):
     if proxy_backend == "python":
-        request.node.add_marker(pytest.mark.xfail(strict=True, reason="Existing CONNECT classifier makes SSH prefixes or non-space method separators opaque"))
+        request.node.add_marker(pytest.mark.xfail(strict=True, reason="Existing CONNECT classifier makes SSH prefixes or request-line whitespace opaque"))
     observed = []
     policy = INNER_DENY_POLICY.replace('method = "GET"', f'method = "{method}"')
     with socket.socket() as listener:
@@ -150,15 +150,20 @@ def test_http_method_spelling_remains_inspected(proxy_backend, tmp_path, method,
         try:
             with launch_proxy(proxy_backend, tmp_path / proxy_backend, policy, eager_connect=True) as proxy:
                 with tunnel(proxy.paths["alice"], authority) as stream:
-                    message = f"{method}{separator}/forbidden{separator}HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n".encode()
+                    message = f"{leading}{method}{separator}/forbidden{separator}HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n".encode("latin-1")
                     if first:
                         stream.sendall(message[:first])
                         time.sleep(0.025)
-                    stream.sendall(message[first:])
+                    try:
+                        stream.sendall(message[first:])
+                    except BrokenPipeError:
+                        # A parser can reject the leading byte before the rest
+                        # arrives. Its terminal HTTP response is still required.
+                        assert leading and first
                     response = bytearray()
                     while data := stream.recv(8192):
                         response.extend(data)
-                    expected = b"HTTP/1.1 403" if separator == " " else b"HTTP/1.1 400"
+                    expected = b"HTTP/1.1 403" if separator == " " and not leading else b"HTTP/1.1 400"
                     assert response.startswith(expected), bytes(response)
             assert observed == [b""]
         finally:
