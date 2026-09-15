@@ -1003,38 +1003,64 @@ print(json.dumps(out))
 }
 
 #[test]
-#[ignore = "Controlled Python/native regex stack-limit discrepancy; set SAFEYOLO_POLICY_PYTHON"]
-fn python_accepts_message_that_native_engine_cannot_inspect_with_private_stack_limit() {
+fn websocket_valid_large_message_retains_log_and_block_decisions() {
     let payload = "a".repeat(1_000_100);
     let pattern = r"(a|aa)*\1$";
-    let python_match = python(
-        r#"
+    for action in ["log", "block"] {
+        let scanner = make_scanner(json!([rule("large-message", pattern, "body", action)]));
+        for direction in [Direction::Request, Direction::Response] {
+            let decision = scanner
+                .scan_websocket_text(direction, MessageType::Text, &payload, block())
+                .unwrap();
+            assert_eq!(
+                decision.outcome,
+                if action == "block" {
+                    Outcome::MatchBlocked
+                } else {
+                    Outcome::MatchLogged
+                }
+            );
+            assert_eq!(decision.drop_message, action == "block");
+            assert_eq!(decision.error_type, None);
+        }
+    }
+}
+
+#[test]
+#[ignore = "Actual Python/native complete-message stack regression; set SAFEYOLO_POLICY_PYTHON"]
+fn python_large_complete_messages_match_after_native_stack_growth_repair() {
+    let pattern = r"(a|aa)*\1$";
+    for length in [1_000_100, 4_194_304, 8_388_608] {
+        let payload = "a".repeat(length);
+        let python_match = python(
+            r#"
 import json,sys
 from safeyolo.detection.patterns import compile_pattern
 value=json.load(sys.stdin)
 pattern=compile_pattern(value['pattern'])
 print(json.dumps(dict(accepted=pattern is not None,matched=bool(pattern.search(value['text'])))))
 "#,
-        &json!({"pattern":pattern,"text":payload}),
-    );
-    assert_eq!(python_match, json!({"accepted":true,"matched":true}));
-    let scanner = make_scanner(json!([rule("private-stack-limit", pattern, "body", "log")]));
-    let native = scanner
-        .scan_websocket_text(
-            Direction::Request,
-            MessageType::Text,
-            &payload,
-            Options::default(),
-        )
-        .unwrap();
-    assert_eq!(native.outcome, Outcome::InspectionError);
-    assert!(native.drop_message);
-    assert_eq!(native.error_type, Some("RegexRuntimeError"));
+            &json!({"pattern":pattern,"text":payload}),
+        );
+        assert_eq!(python_match, json!({"accepted":true,"matched":true}));
+        let scanner = make_scanner(json!([rule("growing-stack", pattern, "body", "log")]));
+        let native = scanner
+            .scan_websocket_text(
+                Direction::Request,
+                MessageType::Text,
+                &payload,
+                Options::default(),
+            )
+            .unwrap();
+        assert_eq!(native.outcome, Outcome::MatchLogged);
+        assert!(!native.drop_message);
+        assert_eq!(native.error_type, None);
+    }
+    // Compilation, Python grammar and Unicode differences are separate work.
     assert!(
         compatibility_gaps().contains(&"regex_compilation_expansion_and_backtracking_resources")
     );
     eprintln!(
-        "Proved private native regex stack-limit discrepancy on {} bytes: Python matches, native inspection errors and drops; activation remains blocked",
-        payload.len()
+        "Python/native log-mode whole-message matches agree at 1,000,100, 4,194,304 and 8,388,608 bytes; remaining grammar/Unicode gaps still block activation"
     );
 }

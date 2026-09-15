@@ -1,0 +1,339 @@
+# Zero-context substantive diff. Whitespace-only src/parse_flags.rs line 9 cleanup removes two trailing U+0020 characters; exact hashes and details are in UPSTREAM.json.
+--- upstream/.gitignore
++++ vendor/.gitignore
+@@ -1,6 +1,2 @@
+-Cargo.lock
+-target
+-
+-*.iml
+-.idea/
+-.vscode/
++/target/
++/Cargo.lock
+--- upstream/Cargo.toml
++++ vendor/Cargo.toml
+@@ -8,0 +9,3 @@
++autotests = false
++autobenches = false
++autoexamples = false
+@@ -45,0 +49,5 @@
++
++[[test]]
++name = "runtime_allocation"
++path = "tests/runtime_allocation.rs"
++
+@@ -47 +54,0 @@
+-criterion = "0.5"
+@@ -49 +56 @@
+-quickcheck = "1.0"
++quickcheck = "=1.0.3"
+@@ -51,12 +57,0 @@
+-
+-[[bench]]
+-name = "bench"
+-harness = false
+-
+-[[bench]]
+-name = "regexset_vs_individual"
+-harness = false
+-
+-[[bench]]
+-name = "compile"
+-harness = false
+--- upstream/src/error.rs
++++ vendor/src/error.rs
+@@ -102,0 +103,2 @@
++    /// Working-memory allocation or capacity growth failed while matching.
++    AllocationFailed,
+@@ -187,0 +190 @@
++            RuntimeError::AllocationFailed => write!(f, "Working-memory allocation failed"),
+--- upstream/src/lib.rs
++++ vendor/src/lib.rs
+@@ -579,0 +580 @@
++    stack_limit: Option<usize>,
+@@ -627,0 +629 @@
++            stack_limit: Some(1_000_000),
+@@ -762,0 +765,12 @@
++        self
++    }
++
++    /// Set the maximum number of saved backtracking branches.
++    ///
++    /// The default is `Some(1_000_000)`. `None` removes this count limit;
++    /// working memory grows on demand and allocation failure returns
++    /// [`RuntimeError::AllocationFailed`]. This does not change the separate
++    /// backtracking effort limit. With `None`, VM buffers are released after
++    /// each search instead of retained in the scratch pool.
++    pub fn stack_limit(&mut self, limit: Option<usize>) -> &mut Self {
++        self.options.hard_regex_runtime_options.stack_limit = limit;
+@@ -1063,0 +1078,6 @@
++        self
++    }
++
++    /// See [`RegexOptionsBuilder::stack_limit`].
++    pub fn stack_limit(&mut self, limit: Option<usize>) -> &mut Self {
++        self.options.stack_limit(limit);
+--- upstream/src/vm.rs
++++ vendor/src/vm.rs
+@@ -551,0 +552,37 @@
++// SafeYolo patch: grow per-search buffers fallibly. No subject or pattern is
++// retained in the allocation error.
++fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<()> {
++    values.try_reserve(additional)
++        .map_err(|_| Error::RuntimeError(RuntimeError::AllocationFailed))
++}
++
++fn resize<T: Clone>(values: &mut Vec<T>, len: usize, fill: T) -> Result<()> {
++    reserve(values, len.saturating_sub(values.len()))?;
++    values.resize(len, fill);
++    Ok(())
++}
++
++fn copy_saves(values: &[usize]) -> Result<Vec<usize>> {
++    let mut result = Vec::new();
++    reserve(&mut result, values.len())?;
++    result.extend_from_slice(values);
++    Ok(result)
++}
++
++struct ScratchRun<'a> {
++    scratch: &'a mut Scratch,
++    release: bool,
++}
++
++impl Drop for ScratchRun<'_> {
++    fn drop(&mut self) {
++        if self.release {
++            self.scratch.state.saves = Vec::new();
++            self.scratch.state.stack = Vec::new();
++            self.scratch.state.oldsave = Vec::new();
++            self.scratch.state.cut_scratch = Vec::new();
++            self.scratch.inner_slots = Vec::new();
++        }
++    }
++}
++
+@@ -660 +697 @@
+-    fn reset(&mut self, n_saves: usize, options: u32) {
++    fn reset(&mut self, n_saves: usize, options: u32) -> Result<()> {
+@@ -662 +699 @@
+-        self.saves.resize(n_saves, usize::MAX);
++        resize(&mut self.saves, n_saves, usize::MAX)?;
+@@ -667,0 +705 @@
++        Ok(())
+@@ -673,0 +712 @@
++            reserve(&mut self.stack, 1)?;
+@@ -695 +734 @@
+-    fn save(&mut self, slot: usize, val: usize) {
++    fn save(&mut self, slot: usize, val: usize) -> Result<()> {
+@@ -701,3 +740,4 @@
+-                return;
+-            }
+-        }
++                return Ok(());
++            }
++        }
++        reserve(&mut self.oldsave, 1)?;
+@@ -714,0 +755 @@
++        Ok(())
+@@ -723 +764 @@
+-    fn stack_push(&mut self, val: usize) {
++    fn stack_push(&mut self, val: usize) -> Result<()> {
+@@ -724,0 +766 @@
++            reserve(&mut self.saves, 1)?;
+@@ -729,0 +772 @@
++            reserve(&mut self.saves, 1)?;
+@@ -732,3 +775,4 @@
+-            self.save(sp, val);
+-        }
+-        self.save(explicit_sp, sp + 1);
++            self.save(sp, val)?;
++        }
++        self.save(explicit_sp, sp + 1)?;
++        Ok(())
+@@ -738 +782 @@
+-    fn stack_pop(&mut self) -> usize {
++    fn stack_pop(&mut self) -> Result<usize> {
+@@ -742,2 +786,2 @@
+-        self.save(explicit_sp, sp);
+-        result
++        self.save(explicit_sp, sp)?;
++        Ok(result)
+@@ -758 +802 @@
+-    fn backtrack_cut(&mut self, count: usize) {
++    fn backtrack_cut(&mut self, count: usize) -> Result<()> {
+@@ -761 +805 @@
+-            return;
++            return Ok(());
+@@ -778,0 +823 @@
++            reserve(&mut saved, 1)?;
+@@ -787 +832,2 @@
+-                saved.push(slot);
++                reserve(&mut saved, 1)?;
++            saved.push(slot);
+@@ -797,0 +844 @@
++        Ok(())
+@@ -933 +980 @@
+-) {
++) -> Result<()> {
+@@ -949,5 +996,6 @@
+-                state.save(slot, start.get());
+-                state.save(slot + 1, end.get());
+-            }
+-        }
+-    }
++                state.save(slot, start.get())?;
++                state.save(slot + 1, end.get())?;
++            }
++        }
++    }
++    Ok(())
+@@ -996 +1044 @@
+-        state.saves.clone()
++        copy_saves(&state.saves)
+@@ -1012 +1060 @@
+-        (state.get(0), state.get(1))
++        Ok((state.get(0), state.get(1)))
+@@ -1024 +1072 @@
+-    extract: impl FnOnce(&State) -> T,
++    extract: impl FnOnce(&State) -> Result<T>,
+@@ -1033,2 +1081,4 @@
+-    let Scratch { state, inner_slots } = &mut *scratch_guard;
+-    state.reset(prog.n_saves, option_flags);
++    let run = ScratchRun { scratch: &mut scratch_guard, release: options.stack_limit.is_none() };
++    let Scratch { state, inner_slots } = &mut *run.scratch;
++    state.max_stack = options.stack_limit.unwrap_or(usize::MAX);
++    state.reset(prog.n_saves, option_flags)?;
+@@ -1080 +1130 @@
+-                            state.save(0, slot1);
++                            state.save(0, slot1)?;
+@@ -1090 +1140 @@
+-                            best_saves = Some(state.saves.clone());
++                            best_saves = Some(copy_saves(&state.saves)?);
+@@ -1094 +1144 @@
+-                            return Ok(Some(extract(state)));
++                            return Ok(Some(extract(state)?));
+@@ -1098 +1148 @@
+-                    return Ok(Some(extract(state)));
++                    return Ok(Some(extract(state)?));
+@@ -1222 +1272 @@
+-                        return Ok(Some(extract(state)));
++                        return Ok(Some(extract(state)?));
+@@ -1243,2 +1293,2 @@
+-                Insn::Save(slot) => state.save(slot, ix),
+-                Insn::Save0(slot) => state.save(slot, 0),
++                Insn::Save(slot) => state.save(slot, ix)?,
++                Insn::Save0(slot) => state.save(slot, 0)?,
+@@ -1252 +1302 @@
+-                        state.save(start_slot, ix);
++                        state.save(start_slot, ix)?;
+@@ -1267 +1317 @@
+-                    state.save(repeat, repcount + 1);
++                    state.save(repeat, repcount + 1)?;
+@@ -1283 +1333 @@
+-                    state.save(repeat, repcount + 1);
++                    state.save(repeat, repcount + 1)?;
+@@ -1302 +1352 @@
+-                    state.save(repeat, repcount + 1);
++                    state.save(repeat, repcount + 1)?;
+@@ -1304 +1354 @@
+-                        state.save(check, ix);
++                        state.save(check, ix)?;
+@@ -1320 +1370 @@
+-                    state.save(repeat, repcount + 1);
++                    state.save(repeat, repcount + 1)?;
+@@ -1322 +1372 @@
+-                        state.save(check, ix);
++                        state.save(check, ix)?;
+@@ -1416 +1466 @@
+-                                    inner_slots.resize((range.end() - range.start() + 1) * 2, None);
++                                    resize(inner_slots, (range.end() - range.start() + 1) * 2, None)?;
+@@ -1420 +1470 @@
+-                                        store_capture_groups(state, inner_slots, range, true);
++                                        store_capture_groups(state, inner_slots, range, true)?;
+@@ -1438 +1488 @@
+-                    state.stack_push(count);
++                    state.stack_push(count)?;
+@@ -1441,2 +1491,2 @@
+-                    let count = state.stack_pop();
+-                    state.backtrack_cut(count);
++                    let count = state.stack_pop()?;
++                    state.backtrack_cut(count)?;
+@@ -1454 +1504 @@
+-                        inner_slots.resize((range.end() - range.start() + 1) * 2, None);
++                        resize(inner_slots, (range.end() - range.start() + 1) * 2, None)?;
+@@ -1457 +1507 @@
+-                            store_capture_groups(state, inner_slots, range, false);
++                            store_capture_groups(state, inner_slots, range, false)?;
+@@ -1522 +1572 @@
+-                        return Ok(Some(extract(state)));
++                        return Ok(Some(extract(state)?));
+@@ -1591 +1641 @@
+-                return Ok(Some(extract(state)));
++                return Ok(Some(extract(state)?));
+@@ -1601 +1651 @@
+-            return Ok(Some(extract(state)));
++            return Ok(Some(extract(state)?));
+@@ -1660 +1710 @@
+-        state.save(0, 10);
++        state.save(0, 10).unwrap();
+@@ -1662 +1712 @@
+-        state.save(0, 20);
++        state.save(0, 20).unwrap();
+@@ -1670 +1720 @@
+-        state.save(0, 10);
++        state.save(0, 10).unwrap();
+@@ -1672 +1722 @@
+-        state.save(0, 20);
++        state.save(0, 20).unwrap();
+@@ -1674 +1724 @@
+-        state.save(0, 30);
++        state.save(0, 30).unwrap();
+@@ -1686,2 +1736,2 @@
+-        state.stack_push(11);
+-        state.stack_push(12);
++        state.stack_push(11).unwrap();
++        state.stack_push(12).unwrap();
+@@ -1690,3 +1740,3 @@
+-        state.stack_push(13);
+-        assert_eq!(state.stack_pop(), 13);
+-        state.stack_push(14);
++        state.stack_push(13).unwrap();
++        assert_eq!(state.stack_pop().unwrap(), 13);
++        state.stack_push(14).unwrap();
+@@ -1696,2 +1746,2 @@
+-        assert_eq!(state.stack_pop(), 12);
+-        assert_eq!(state.stack_pop(), 11);
++        assert_eq!(state.stack_pop().unwrap(), 12);
++        assert_eq!(state.stack_pop().unwrap(), 11);
+@@ -1703,2 +1753,2 @@
+-        state.save(0, 1);
+-        state.save(1, 2);
++        state.save(0, 1).unwrap();
++        state.save(1, 2).unwrap();
+@@ -1709 +1759 @@
+-        state.save(0, 3);
++        state.save(0, 3).unwrap();
+@@ -1712 +1762 @@
+-        state.backtrack_cut(count);
++        state.backtrack_cut(count).unwrap();
+@@ -1721,2 +1771,2 @@
+-        state.save(0, 1);
+-        state.save(1, 2);
++        state.save(0, 1).unwrap();
++        state.save(1, 2).unwrap();
+@@ -1725 +1775 @@
+-        state.save(0, 3);
++        state.save(0, 3).unwrap();
+@@ -1730 +1780 @@
+-        state.save(0, 4);
++        state.save(0, 4).unwrap();
+@@ -1732 +1782 @@
+-        state.save(1, 5);
++        state.save(1, 5).unwrap();
+@@ -1735 +1785 @@
+-        state.backtrack_cut(count);
++        state.backtrack_cut(count).unwrap();
+@@ -1809 +1859 @@
+-                    state.save(slot, value);
++                    state.save(slot, value).unwrap();

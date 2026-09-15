@@ -5,12 +5,13 @@
 //! deliberately nonempty: fancy-regex is not an exact Python `re` replacement.
 //! Callers must resolve those gaps before activation. A compile incompatibility
 //! retains the previous snapshot; it never silently removes an accepted rule.
-//! Proved remaining examples are scoped ASCII flags, named Unicode escapes and
-//! Turkish-I case folding. The engine also has a private 1,000,000-entry stack
-//! bound: an accepted Python pattern can inspect a message that this backend
-//! drops on inspection failure. That difference blocks activation; it is not a
-//! new operator message limit. Configurable backtracking/compiled-size cutoffs
-//! are raised to usize::MAX without eagerly allocating those capacities.
+//! Proved remaining examples include scoped ASCII flags, octal/named Unicode
+//! escapes, Unicode-version and case-insensitive backreference differences, and
+//! parse nesting. The pinned engine patch removes the scanner's private stack
+//! cutoff: VM buffers grow fallibly and are released after each scan. The valid
+//! complete-message regression matches at 1,000,100 bytes, 4 MiB and 8 MiB. Remaining
+//! compatibility gaps still block activation. Configurable backtracking and
+//! compiled-size cutoffs use usize::MAX without eager capacity allocation.
 //!
 //! Callers supply mitmproxy-equivalent decoded HTTP text and ordered, combined
 //! header values. HTTP charset/content-encoding and surrogate-escaped text still
@@ -370,9 +371,36 @@ fn safe_location(name: &str) -> String {
 const PYTHON_WORD: &str = r"[\p{L}\p{N}_]";
 const PYTHON_SPACE: &str =
     r"[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]";
-enum PatternIssue {
+pub(crate) enum PatternIssue {
     Invalid,
     Compatibility,
+}
+
+/// One Python-pattern adapter for the scanner and credential-header detector.
+/// Callers classify invalid rules separately from engine compatibility gaps;
+/// neither path exposes the operator's expression in diagnostic errors.
+pub(crate) fn compile_python_pattern(
+    pattern: &str,
+    insensitive: bool,
+) -> std::result::Result<Regex, PatternIssue> {
+    let adapted = python_pattern(pattern)?;
+    let mut builder = RegexBuilder::new(&adapted);
+    // These are failure cutoffs, not cache capacities. The old scanner does
+    // not impose them; ordinary default DFA caching remains bounded. The local
+    // patch makes VM growth fallible and releases unbounded buffers after use.
+    builder
+        .case_insensitive(insensitive)
+        .backtrack_limit(usize::MAX)
+        .stack_limit(None)
+        .delegate_size_limit(usize::MAX);
+    match builder.build() {
+        Ok(regex) => Ok(regex),
+        Err(fancy_regex::Error::ParseError(
+            _,
+            fancy_regex::ParseError::UnclosedOpenParen | fancy_regex::ParseError::TrailingBackslash,
+        )) => Err(PatternIssue::Invalid),
+        Err(_) => Err(PatternIssue::Compatibility),
+    }
 }
 // This adapter fixes proved token-level differences without pretending to be a
 // full Python parser. Named Unicode escapes and unknown grammar remain explicit
@@ -637,8 +665,8 @@ fn compile_rules(sensor: &Value) -> Result<(Vec<Rule>, LoadReport)> {
             .unwrap_or("medium")
             .to_owned();
         let insensitive = !config.get("case_sensitive").map(truthy).unwrap_or(true);
-        let adapted = match python_pattern(pattern) {
-            Ok(pattern) => pattern,
+        let compiled = match compile_python_pattern(pattern, insensitive) {
+            Ok(regex) => regex,
             Err(PatternIssue::Invalid) => {
                 skipped.push(SkippedRule {
                     index,
@@ -649,28 +677,6 @@ fn compile_rules(sensor: &Value) -> Result<(Vec<Rule>, LoadReport)> {
             Err(PatternIssue::Compatibility) => {
                 return Err(error(ErrorKind::RegexCompatibility, Some(index)));
             }
-        };
-        let mut builder = RegexBuilder::new(&adapted);
-        // These are failure cutoffs, not cache capacities. The old scanner does
-        // not impose them; ordinary default DFA caching remains bounded.
-        builder
-            .case_insensitive(insensitive)
-            .backtrack_limit(usize::MAX)
-            .delegate_size_limit(usize::MAX);
-        let compiled = match builder.build() {
-            Ok(regex) => regex,
-            Err(fancy_regex::Error::ParseError(
-                _,
-                fancy_regex::ParseError::UnclosedOpenParen
-                | fancy_regex::ParseError::TrailingBackslash,
-            )) => {
-                skipped.push(SkippedRule {
-                    index,
-                    reason: SkipReason::InvalidPattern,
-                });
-                continue;
-            }
-            Err(_) => return Err(error(ErrorKind::RegexCompatibility, Some(index))),
         };
         rules.push(Rule {
             name: safe_value(name, 128, "unnamed"),
