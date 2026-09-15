@@ -253,6 +253,7 @@ mod tests {
                 ConnectionIdentity {
                     agent_id: "alice".into(),
                     connection_id: "owned-connection".into(),
+                    source_id: None,
                 },
                 "owned-request".into(),
                 "owned.invalid".into(),

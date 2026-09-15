@@ -3,6 +3,25 @@
 use super::{BaselineSerializationError, Map, Policy, Value};
 
 impl Policy {
+    /// Apply the baseline's current declaration defaults without serializing
+    /// unrelated Any fields or refreshing target hosts/hash/existing expiry.
+    /// Task addon settings are not part of the source sensor settings.
+    pub fn configure_test_context_declarations(
+        &self,
+        owner: &crate::test_context::TestContext,
+        options: crate::test_context::Options,
+    ) -> crate::test_context::Result<()> {
+        let section = self
+            .baseline
+            .as_deref()
+            .and_then(|baseline| baseline.value["addons"].get("test_context"))
+            .and_then(Value::as_object);
+        // Temporal scalar storage is an object or string, never a bool/number.
+        // The shared exact type checks reject those consumed values; no marker
+        // decoding or full-snapshot serialization is appropriate here.
+        owner.configure_declaration_section(section, options)
+    }
+
     /// Clone only the authorized sensor fields. The API response owner must wipe
     /// this transient JSON after rendering; addon settings can contain secrets.
     pub(crate) fn sensor_config(&self) -> Result<Value, BaselineSerializationError> {
@@ -254,5 +273,44 @@ mod tests {
             json!({"use_default_credential_rules":false})
         );
         assert_eq!(response["addons"]["pattern_scanner"]["enabled"], false);
+    }
+}
+
+#[cfg(test)]
+mod declaration_provenance_tests {
+    use super::*;
+    use crate::policy::Format;
+
+    #[test]
+    fn consumed_temporals_keep_non_boolean_non_numeric_storage() {
+        let policy=Policy::parse_at("addons:\n  test_context:\n    declared_ttl_max: 2030-01-02\n    inject_declared: 2030-01-02T03:04:05Z\n    unrelated: {2030-01-03: 999}\n",Format::Yaml,0.).unwrap();
+        let baseline = policy.baseline.as_ref().unwrap();
+        let section = baseline.value["addons"]["test_context"]
+            .as_object()
+            .unwrap();
+        for field in ["declared_ttl_max", "inject_declared"] {
+            assert!(
+                baseline
+                    .timestamps
+                    .value_at(&["addons", "test_context", field])
+                    .is_some()
+            );
+            assert!(!section[field].is_boolean() && !section[field].is_number());
+        }
+        let typed_key = section["unrelated"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .find(|key| {
+                baseline
+                    .timestamps
+                    .key_at(&["addons", "test_context", "unrelated", key])
+                    .is_some()
+            })
+            .unwrap();
+        assert!(!matches!(
+            typed_key.as_str(),
+            "declared_ttl_max" | "inject_declared"
+        ));
     }
 }

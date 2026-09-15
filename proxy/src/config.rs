@@ -10,6 +10,38 @@ use crate::{Error, is_reserved};
 pub struct AgentListener {
     pub agent_id: String,
     pub socket_path: PathBuf,
+    /// Trusted source slot for declarations on listeners with arbitrary paths.
+    /// Conventional per-agent paths supply their IPv4 source when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+}
+
+impl AgentListener {
+    pub(crate) fn source_id(&self) -> Option<String> {
+        if let Some(source) = &self.source_id {
+            return Some(source.clone());
+        }
+        if self.socket_path.file_name()?.to_str()? != "proxy.sock" {
+            return None;
+        }
+        let parent = self.socket_path.parent()?.file_name()?.to_str()?;
+        let (ip, agent) = parent.split_once('_')?;
+        ip.parse::<std::net::Ipv4Addr>().ok()?;
+        // Match sockets.parse's existing agent-name expression, including its
+        // Python end-anchor acceptance of one final newline. This recognizes a
+        // source convention; it does not constrain other configured paths.
+        let agent = agent.strip_suffix('\n').unwrap_or(agent);
+        let alphanumeric = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+        if agent.is_empty()
+            || agent.len() > 63
+            || !alphanumeric(agent.as_bytes()[0])
+            || !alphanumeric(*agent.as_bytes().last()?)
+            || !agent.bytes().all(|byte| alphanumeric(byte) || byte == b'-')
+        {
+            return None;
+        }
+        Some(ip.to_owned())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

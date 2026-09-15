@@ -8,6 +8,8 @@ license = "MIT"
 
 [dependencies]
 base64 = "0.23"
+brotli-decompressor = "=5.0.3"
+bzip2 = "=0.6.1"
 bytes = "1"
 fernet = { version = "0.2.2", default-features = false, features = ["rustcrypto", "fernet_danger_timestamps"] }
 fancy-regex = "0.19.2"
@@ -43,6 +45,7 @@ unicode-normalization = "0.1"
 x509-parser = "0.18"
 yaml-rust2 = { version = "0.13", default-features = false }
 zeroize = "1"
+zstd = { version = "=0.13.3", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

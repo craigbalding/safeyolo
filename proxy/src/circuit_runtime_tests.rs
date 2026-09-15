@@ -40,6 +40,7 @@ fn actual_source_audit_details_match_typed_writer_and_transition_sink() {
     let identity = ConnectionIdentity {
         agent_id: "alice".into(),
         connection_id: "owned-audit-connection".into(),
+        source_id: None,
     };
     let fixture = source();
     let rows = fixture["source_rows"].as_array().unwrap();

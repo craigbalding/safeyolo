@@ -1,4 +1,4 @@
-//! Test-context parsing and declaration decisions, inactive in transport.
+//! Test-context parsing, declaration state and request decisions.
 //!
 //! Context `agent` is a caller-supplied provenance claim, never trusted identity.
 //! The caller supplies authenticated source/agent identity and the existing trusted
@@ -50,16 +50,32 @@ const LIVE_KEYS: [&str; 9] = [
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContextError(pub String);
+pub struct ContextError(pub String, ContextErrorKind);
+/// Only Value errors belong to the declaration POST's local 400 boundary.
+/// Other kinds propagate to the outer Agent API's categorical error response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextErrorKind {
+    Value,
+    Overflow,
+    Poisoned,
+}
+impl ContextError {
+    pub fn kind(&self) -> ContextErrorKind {
+        self.1
+    }
+}
 impl fmt::Display for ContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
 impl std::error::Error for ContextError {}
-type Result<T> = std::result::Result<T, ContextError>;
+pub(crate) type Result<T> = std::result::Result<T, ContextError>;
 fn invalid(message: impl Into<String>) -> ContextError {
-    ContextError(message.into())
+    ContextError(message.into(), ContextErrorKind::Value)
+}
+fn overflow(message: &'static str) -> ContextError {
+    ContextError(message.into(), ContextErrorKind::Overflow)
 }
 fn trim(value: &str) -> &str {
     value.trim_matches(python_whitespace)
@@ -241,7 +257,7 @@ impl Default for Options {
 }
 #[derive(Debug, Clone)]
 struct Config {
-    targets: Vec<String>,
+    targets: Value,
     last_hash: Value,
     options: Options,
     inject: bool,
@@ -250,13 +266,69 @@ struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            targets: Vec::new(),
+            targets: json!([]),
             last_hash: json!(""),
             options: Options::default(),
             inject: false,
             ttl_max: Number::from(900),
         }
     }
+}
+// Keep only the operations this addon actually performs on target_hosts. No
+// eager item validation: a matching prefix prevents reaching later invalid items.
+fn target_count(targets: &Value) -> Result<usize> {
+    match targets {
+        Value::String(value) => Ok(value.chars().count()),
+        Value::Array(values) => Ok(values.len()),
+        Value::Object(values) => Ok(values.len()),
+        _ => Err(invalid("target_hosts has no length")),
+    }
+}
+fn target_truth(targets: &Value) -> bool {
+    match targets {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64() != Some(0.),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(values) => !values.is_empty(),
+    }
+}
+fn target_matches(targets: &Value, host: &str) -> Result<bool> {
+    match targets {
+        Value::String(value) => Ok(value
+            .chars()
+            .any(|pattern| host_matches(host, pattern.encode_utf8(&mut [0; 4])))),
+        Value::Object(values) => Ok(values.keys().any(|pattern| host_matches(host, pattern))),
+        Value::Array(values) => {
+            for pattern in values {
+                let pattern = pattern
+                    .as_str()
+                    .ok_or_else(|| invalid("target pattern has no string lower method"))?;
+                if host_matches(host, pattern) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => Err(invalid("target_hosts is not iterable")),
+    }
+}
+fn configure_declarations(
+    config: &mut Config,
+    section: Option<&Map<String, Value>>,
+    options: Options,
+) {
+    config.inject = section
+        .and_then(|section| section.get("inject_declared"))
+        .and_then(Value::as_bool)
+        .unwrap_or(options.inject_declared);
+    config.ttl_max = section
+        .and_then(|section| section.get("declared_ttl_max"))
+        .and_then(positive_integer)
+        .or_else(|| positive_integer(&options.declared_ttl))
+        .unwrap_or(Number::from(900));
+    config.options = options;
 }
 fn positive_integer(value: &Value) -> Option<Number> {
     let number = value.as_number()?;
@@ -314,10 +386,16 @@ fn lookup(state: &mut State, identity: &TrustedIdentity, now: f64) -> Result<Opt
         state.declarations.remove(identity.source());
         return Ok(None);
     }
-    let seconds = (record.expires_at - now).ceil().max(1.);
-    if !seconds.is_finite() {
-        return Err(invalid("remaining ttl exceeds monotonic clock range"));
+    let remaining = record.expires_at - now;
+    // Python evaluates math.ceil before max(1, ...). A stored infinite expiry
+    // is legal; only the reached remaining-TTL conversion raises Overflow.
+    if remaining.is_nan() {
+        return Err(invalid("cannot convert float NaN to integer"));
     }
+    if remaining.is_infinite() {
+        return Err(overflow("cannot convert float infinity to integer"));
+    }
+    let seconds = remaining.ceil().max(1.);
     Ok(Some(Declaration {
         context: record.context.clone(),
         expires_in: format!("{seconds:.0}")
@@ -427,52 +505,71 @@ pub struct TestContext {
 }
 impl TestContext {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>> {
-        self.state
-            .lock()
-            .map_err(|_| invalid("test-context state lock poisoned"))
+        self.state.lock().map_err(|_| {
+            ContextError(
+                "test-context state lock poisoned".into(),
+                ContextErrorKind::Poisoned,
+            )
+        })
     }
     /// None represents unavailable policy configuration: retain existing targets,
     /// and use option fallbacks for declaration settings. No new enable flag.
+    ///
+    /// This is the request-side refresh. Targets and their hash are assigned in
+    /// source order, before the logging length check. A returned configuration
+    /// error can therefore leave new state installed; it is not a rollback.
+    /// JSON strings iterate characters, objects iterate keys, and arrays retain
+    /// invalid entries until matching reaches them. Typed non-JSON policy values
+    /// require a provenance-bearing caller seam before transport activation.
     pub fn configure(&self, sensor: Option<&Value>, options: Options) -> Result<()> {
         let mut state = self.lock()?;
-        let mut candidate = state.config.clone();
-        let section = sensor.and_then(|sensor| sensor.pointer("/addons/test_context"));
-        if let Some(section) = section
-            && !section.is_object()
-        {
-            return Err(invalid("test_context config must be an object"));
-        }
+        let config = &mut state.config;
+        configure_declarations(
+            config,
+            sensor
+                .and_then(|sensor| sensor.pointer("/addons/test_context"))
+                .and_then(Value::as_object),
+            options,
+        );
         if let Some(sensor) = sensor {
             let hash = sensor.get("policy_hash").cloned().unwrap_or(json!(""));
-            if hash != candidate.last_hash {
-                let targets = section.and_then(|section| section.get("target_hosts"));
-                candidate.targets = match targets {
-                    None => Vec::new(),
-                    Some(Value::Array(values)) => values
-                        .iter()
-                        .map(|value| {
-                            value
-                                .as_str()
-                                .map(str::to_owned)
-                                .ok_or_else(|| invalid("target host must be a string"))
-                        })
-                        .collect::<Result<_>>()?,
-                    _ => return Err(invalid("target_hosts must be an array")),
-                };
-                candidate.last_hash = hash;
+            if hash != config.last_hash {
+                let section = sensor.pointer("/addons/test_context");
+                if section.is_some_and(|section| !section.is_object()) {
+                    return Err(invalid("test_context config must be an object"));
+                }
+                config.targets = section
+                    .and_then(|section| section.get("target_hosts"))
+                    .cloned()
+                    .unwrap_or(json!([]));
+                config.last_hash = hash;
+                if target_truth(&config.targets) {
+                    target_count(&config.targets)?;
+                }
             }
         }
-        candidate.inject = section
-            .and_then(|section| section.get("inject_declared"))
-            .and_then(Value::as_bool)
-            .unwrap_or(options.inject_declared);
-        candidate.ttl_max = section
-            .and_then(|section| section.get("declared_ttl_max"))
-            .and_then(positive_integer)
-            .or_else(|| positive_integer(&options.declared_ttl))
-            .unwrap_or(Number::from(900));
-        candidate.options = options;
-        state.config = candidate;
+        Ok(())
+    }
+    /// Refresh the independent declaration fallbacks without refreshing target
+    /// hosts/hash or rewriting existing declarations. The declaration API reads
+    /// current TTL directly; it does not call the source request reload hook.
+    pub fn configure_declarations(&self, sensor: Option<&Value>, options: Options) -> Result<()> {
+        self.configure_declaration_section(
+            sensor
+                .and_then(|sensor| sensor.pointer("/addons/test_context"))
+                .and_then(Value::as_object),
+            options,
+        )
+    }
+    /// Apply only the source's direct declaration fields from a borrowed section.
+    /// Exact bool/positive-integer checks deliberately ignore non-scalar values;
+    /// canonical date objects and datetime strings therefore use option fallbacks.
+    pub(crate) fn configure_declaration_section(
+        &self,
+        section: Option<&Map<String, Value>>,
+        options: Options,
+    ) -> Result<()> {
+        configure_declarations(&mut self.lock()?.config, section, options);
         Ok(())
     }
     pub fn set_declaration(
@@ -482,7 +579,6 @@ impl TestContext {
         ttl: Option<&Value>,
         now: f64,
     ) -> Result<Number> {
-        check_time(now)?;
         let mut state = self.lock()?;
         let granted = match ttl.filter(|value| !value.is_null()) {
             None => state.config.ttl_max.clone(),
@@ -494,11 +590,13 @@ impl TestContext {
         let seconds = granted
             .to_string()
             .parse::<f64>()
-            .map_err(|_| invalid("ttl exceeds monotonic clock range"))?;
-        let expires_at = now + seconds;
-        if !expires_at.is_finite() {
-            return Err(invalid("ttl exceeds monotonic clock range"));
+            .map_err(|_| overflow("integer too large to convert to float"))?;
+        if seconds.is_infinite() {
+            return Err(overflow("integer too large to convert to float"));
         }
+        // Python float addition can yield infinity without raising. Conversion
+        // of the integer above, rather than this sum, is the failure boundary.
+        let expires_at = now + seconds;
         state.declarations.insert(
             identity.source.clone(),
             Record {
@@ -514,7 +612,6 @@ impl TestContext {
         identity: &TrustedIdentity,
         now: f64,
     ) -> Result<Option<Declaration>> {
-        check_time(now)?;
         let mut state = self.lock()?;
         lookup(&mut state, identity, now)
     }
@@ -526,19 +623,23 @@ impl TestContext {
             .is_some())
     }
     pub fn stats(&self, now: f64) -> Result<Stats> {
-        check_time(now)?;
         let mut state = self.lock()?;
-        state
-            .declarations
-            .retain(|_, record| now < record.expires_at);
+        let target_hosts = target_count(&state.config.targets)?;
+        state.declarations.retain(|_, record| {
+            !matches!(
+                now.partial_cmp(&record.expires_at),
+                Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater)
+            )
+        });
         let mut stats = state.stats.clone();
-        stats.active = !state.config.targets.is_empty();
-        stats.target_hosts = state.config.targets.len();
+        stats.target_hosts = target_hosts;
+        stats.active = stats.target_hosts > 0;
         stats.declared_active = state.declarations.len();
         Ok(stats)
     }
-    /// Strip every reserved-header occurrence, except a prior-response bypass
-    /// where Python does not touch the already-answered flow. Duplicate values
+    /// Strip every reserved-header occurrence after target matching succeeds.
+    /// Prior-response bypasses and reached target errors leave headers untouched,
+    /// matching source hook ordering. Duplicate values
     /// join with comma-space before parsing, matching mitmproxy Headers.get().
     pub fn request(
         &self,
@@ -550,6 +651,8 @@ impl TestContext {
             return Ok(RequestOutcome::PriorResponse);
         }
         check_time(now)?;
+        let mut state = self.lock()?;
+        let target = target_matches(&state.config.targets, request.host)?;
         let mut value = Vec::new();
         let mut seen = false;
         for (_, part) in headers
@@ -563,12 +666,6 @@ impl TestContext {
             value.extend_from_slice(part);
         }
         headers.retain(|(name, _)| !name.eq_ignore_ascii_case(HEADER));
-        let mut state = self.lock()?;
-        let target = state
-            .config
-            .targets
-            .iter()
-            .any(|pattern| host_matches(request.host, pattern));
         if !target && value.is_empty() {
             return Ok(RequestOutcome::NotTargetHost);
         }
@@ -658,6 +755,80 @@ fn response(status: u16, body: Value) -> ApiOutcome {
         audit: None,
     }
 }
+// Borrow only fields the inner API consumes. No full-document conversion,
+// recursion, numeric coercion or traversal of ignored fields is needed.
+#[derive(Clone, Copy)]
+enum ApiInput<'a> {
+    Json(&'a Value),
+    Typed(&'a crate::circuits::CircuitValue),
+}
+impl<'a> ApiInput<'a> {
+    fn is_object(self) -> bool {
+        match self {
+            Self::Json(value) => value.is_object(),
+            Self::Typed(crate::circuits::CircuitValue::Other(value)) => value.is_object(),
+            Self::Typed(value) => value.as_object().is_some(),
+        }
+    }
+    fn get(self, key: &str) -> Option<Self> {
+        match self {
+            Self::Json(value) => value.get(key).map(Self::Json),
+            Self::Typed(crate::circuits::CircuitValue::Other(value)) => {
+                value.get(key).map(Self::Json)
+            }
+            Self::Typed(value) => value.as_object()?.get(key).map(Self::Typed),
+        }
+    }
+    fn string(self) -> Option<&'a str> {
+        match self {
+            Self::Json(value) | Self::Typed(crate::circuits::CircuitValue::Other(value)) => {
+                value.as_str()
+            }
+            _ => None,
+        }
+    }
+    fn is_null(self) -> bool {
+        matches!(
+            self,
+            Self::Json(Value::Null)
+                | Self::Typed(crate::circuits::CircuitValue::Other(Value::Null))
+        )
+    }
+    fn positive_integer(self) -> Option<Number> {
+        match self {
+            Self::Json(value) | Self::Typed(crate::circuits::CircuitValue::Other(value)) => {
+                positive_integer(value)
+            }
+            Self::Typed(crate::circuits::CircuitValue::Integer(value))
+                if *value > BigInt::from(0) =>
+            {
+                Some(value.to_string().parse().expect("integer JSON"))
+            }
+            _ => None,
+        }
+    }
+}
+/// Check the source's inner-handler prerequisites before an outer caller reads
+/// body bytes. This has no store/clock/body access and emits no audit intent.
+pub fn api_current_preflight(
+    owner: Option<&TestContext>,
+    source: Option<&str>,
+    agent: Option<&str>,
+) -> Option<ApiOutcome> {
+    if agent.is_none_or(|agent| agent.is_empty() || matches!(agent, "unknown" | "default")) {
+        return Some(response(403, json!({"error":"Could not identify agent"})));
+    }
+    if source.is_none_or(|source| source.is_empty() || source == "unknown") {
+        return Some(response(403, json!({"error":"Could not identify source"})));
+    }
+    if owner.is_none() {
+        return Some(response(
+            503,
+            json!({"error":"test-context addon not loaded"}),
+        ));
+    }
+    None
+}
 /// Inner /api/test-context/current handler. The outer Agent API must authenticate
 /// its bearer before calling. Body source_id/agent fields are never authority.
 pub fn api_current(
@@ -668,21 +839,36 @@ pub fn api_current(
     body: Option<&Value>,
     now: f64,
 ) -> Result<ApiOutcome> {
-    let Some(agent) =
-        agent.filter(|agent| !agent.is_empty() && !matches!(*agent, "unknown" | "default"))
-    else {
-        return Ok(response(403, json!({"error":"Could not identify agent"})));
-    };
-    let Some(source) = source.filter(|source| !source.is_empty() && *source != "unknown") else {
-        return Ok(response(403, json!({"error":"Could not identify source"})));
-    };
+    api_current_input(owner, source, agent, method, body.map(ApiInput::Json), now)
+}
+/// Equivalent inner handler for the existing Python-compatible typed JSON body.
+/// Only context/ttl are consumed. Unused nonfinite values and nested containers
+/// are not converted or copied. Body decoding remains the caller's responsibility.
+pub fn api_current_typed(
+    owner: Option<&TestContext>,
+    source: Option<&str>,
+    agent: Option<&str>,
+    method: &str,
+    body: Option<&crate::circuits::CircuitValue>,
+    now: f64,
+) -> Result<ApiOutcome> {
+    api_current_input(owner, source, agent, method, body.map(ApiInput::Typed), now)
+}
+fn api_current_input(
+    owner: Option<&TestContext>,
+    source: Option<&str>,
+    agent: Option<&str>,
+    method: &str,
+    body: Option<ApiInput<'_>>,
+    now: f64,
+) -> Result<ApiOutcome> {
+    if let Some(outcome) = api_current_preflight(owner, source, agent) {
+        return Ok(outcome);
+    }
+    let source = source.expect("source checked by preflight");
+    let agent = agent.expect("agent checked by preflight");
+    let owner = owner.expect("owner checked by preflight");
     let identity = TrustedIdentity::new(source, agent)?;
-    let Some(owner) = owner else {
-        return Ok(response(
-            503,
-            json!({"error":"test-context addon not loaded"}),
-        ));
-    };
     match method {
         "GET" => Ok(response(
             200,
@@ -707,10 +893,10 @@ pub fn api_current(
             })
         }
         "POST" => {
-            let Some(body) = body.and_then(Value::as_object) else {
+            let Some(body) = body.filter(|body| body.is_object()) else {
                 return Ok(response(400, json!({"error":"Invalid JSON body"})));
             };
-            let Some(context) = body.get("context").and_then(Value::as_str) else {
+            let Some(context) = body.get("context").and_then(ApiInput::string) else {
                 return Ok(response(
                     400,
                     json!({"error":"context must be a string","format":"run=<run_id>;agent=<agent_id>;test=<test_id>"}),
@@ -725,16 +911,25 @@ pub fn api_current(
                     ));
                 }
             };
-            let ttl = body.get("ttl").filter(|value| !value.is_null());
-            if ttl.is_some_and(|value| positive_integer(value).is_none()) {
-                return Ok(response(
-                    400,
-                    json!({"error":"ttl must be a positive integer (seconds)"}),
-                ));
-            }
-            let granted = match owner.set_declaration(&identity, context.clone(), ttl, now) {
+            let ttl = match body.get("ttl").filter(|value| !value.is_null()) {
+                None => None,
+                Some(value) => {
+                    let Some(value) = value.positive_integer() else {
+                        return Ok(response(
+                            400,
+                            json!({"error":"ttl must be a positive integer (seconds)"}),
+                        ));
+                    };
+                    Some(Value::Number(value))
+                }
+            };
+            let granted = match owner.set_declaration(&identity, context.clone(), ttl.as_ref(), now)
+            {
                 Ok(granted) => granted,
-                Err(error) => return Ok(response(400, json!({"error":error.to_string()}))),
+                Err(error) if error.kind() == ContextErrorKind::Value => {
+                    return Ok(response(400, json!({"error":error.to_string()})));
+                }
+                Err(error) => return Err(error),
             };
             let details = json!({"source_id":source,"trusted_agent":agent,"declared_agent":context.get("agent"),"test_agent_match":context.get("agent")==Some(agent),"context":context,"requested_ttl":ttl,"granted_ttl":granted});
             Ok(ApiOutcome {
@@ -780,3 +975,15 @@ pub fn capture_body(content: &[u8], max_head: usize, tail_lines: usize) -> Strin
         content.len()
     )
 }
+
+#[cfg(test)]
+#[path = "test_context/target_tests.rs"]
+mod target_tests;
+
+#[cfg(test)]
+#[path = "test_context/declaration_tests.rs"]
+mod declaration_tests;
+
+#[cfg(test)]
+#[path = "test_context/settings_tests.rs"]
+mod settings_tests;

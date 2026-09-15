@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+mod declarations;
+pub use declarations::{Controls, DeclarationContext, RequestBody, respond_with_body};
+
 use crate::{
     network_guard::{Identity, sanitize},
     policy::{
@@ -106,12 +109,16 @@ pub enum Failure {
     TaskRegistry(crate::tasks::Error),
     /// A Python lone-surrogate query value cannot enter the current Policy API.
     QueryCompatibility,
+    Declaration(crate::test_context::ContextErrorKind),
+    ContentDecoding(crate::http_content::ContentError),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuditKind {
     AuthenticationFailed,
     HandlerUnavailable,
+    TestContextDeclared,
+    TestContextCleared,
 }
 
 /// Source event fields only. No token, Authorization or query is retained.
@@ -360,12 +367,19 @@ pub async fn respond_read_with_circuits<'p>(
     now_ms: f64,
     circuits: Option<CircuitContext<'_>>,
 ) -> Outcome<'p> {
+    if let Err(outcome) = authorize(request, token_path).await {
+        return outcome;
+    }
+    authenticated_read(request, policy, tasks, now_ms, circuits)
+}
+
+async fn authorize(request: Request<'_>, token_path: &Path) -> Result<(), Outcome<'static>> {
     let path = route(request);
     if !matches!(request.method, "GET" | "POST" | "DELETE") {
-        return response(
+        return Err(response(
             405,
             json!({"error":"Method Not Allowed", "allowed":["GET","POST","DELETE"]}),
-        );
+        ));
     }
     if matches!(request.method, "POST" | "DELETE")
         && !(path.starts_with("/api/flows")
@@ -375,26 +389,26 @@ pub async fn respond_read_with_circuits<'p>(
             || path == "/api/test-context/current"
             || path == "/desktop/present")
     {
-        return response(
+        return Err(response(
             405,
             json!({"error":"Method Not Allowed", "allowed":["GET"]}),
-        );
+        ));
     }
     let Some(supplied) = request
         .authorization
         .and_then(|value| value.strip_prefix(b"Bearer "))
     else {
-        return response(
+        return Err(response(
             401,
             json!({"error":"Authorization required", "hint":"Bearer <token>"}),
-        );
+        ));
     };
     match authenticate(token_path, supplied).await {
         Authentication::Accepted => (),
         Authentication::Missing => {
-            return response(503, json!({"error":"Agent token not configured"}));
+            return Err(response(503, json!({"error":"Agent token not configured"})));
         }
-        Authentication::Failed(failure) => return unavailable(request, failure),
+        Authentication::Failed(failure) => return Err(unavailable(request, failure)),
         Authentication::Rejected => {
             let mut outcome = response(401, json!({"error":"Invalid agent token"}));
             outcome.audit = Some(AuditIntent {
@@ -411,9 +425,20 @@ pub async fn respond_read_with_circuits<'p>(
                 ),
                 details: json!({"client_ip":request.client_ip.unwrap_or("unknown"), "path":sanitize(path)}),
             });
-            return outcome;
+            return Err(outcome);
         }
     }
+    Ok(())
+}
+
+fn authenticated_read<'p>(
+    request: Request<'_>,
+    policy: PolicyState<'p>,
+    tasks: &crate::tasks::Registry,
+    now_ms: f64,
+    circuits: Option<CircuitContext<'_>>,
+) -> Outcome<'p> {
+    let path = route(request);
     if path == "/health" {
         let healthy = match policy {
             PolicyState::Ready(_) => true,

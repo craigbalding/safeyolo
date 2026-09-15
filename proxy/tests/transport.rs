@@ -92,6 +92,7 @@ fn config(directory: &TempDir) -> Config {
             .map(|agent| AgentListener {
                 agent_id: (*agent).into(),
                 socket_path: directory.path().join(format!("{agent}.sock")),
+                source_id: None,
             })
             .collect(),
         temporary_policy_socket: Some(directory.path().join("policy.sock")),
@@ -762,10 +763,12 @@ async fn reload_adds_removes_and_reassigns_listeners_without_changing_inflight_i
         AgentListener {
             agent_id: "bob".into(),
             socket_path: alice_path.clone(),
+            source_id: None,
         },
         AgentListener {
             agent_id: "alice".into(),
             socket_path: directory.path().join("new-alice.sock"),
+            source_id: None,
         },
     ];
     proxy.reload(config.clone()).await.unwrap();

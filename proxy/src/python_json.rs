@@ -6,6 +6,92 @@
 use std::fmt::{self, Write};
 
 use serde_json::Value;
+use zeroize::Zeroizing;
+
+/// A byte encoding cannot be represented as a strict Rust Unicode string.
+/// Callers map this content-free error to their existing API error class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct JsonEncodingError;
+
+/// Decode JSON bytes using Python's UTF-8/16/32 BOM and byte-order detection.
+/// This preserves the existing OAuth decoder's strict Unicode admission; JSON
+/// syntax and escaped lone-surrogate handling belong to the caller's parser.
+pub(crate) fn decode_json_text(body: &[u8]) -> Result<Zeroizing<String>, JsonEncodingError> {
+    enum Encoding {
+        Utf8,
+        Utf16(bool),
+        Utf32(bool),
+    }
+    let (body, encoding) = if let Some(body) = body.strip_prefix(&[0, 0, 0xfe, 0xff]) {
+        (body, Encoding::Utf32(false))
+    } else if let Some(body) = body.strip_prefix(&[0xff, 0xfe, 0, 0]) {
+        (body, Encoding::Utf32(true))
+    } else if let Some(body) = body.strip_prefix(&[0xfe, 0xff]) {
+        (body, Encoding::Utf16(false))
+    } else if let Some(body) = body.strip_prefix(&[0xff, 0xfe]) {
+        (body, Encoding::Utf16(true))
+    } else if let Some(body) = body.strip_prefix(&[0xef, 0xbb, 0xbf]) {
+        (body, Encoding::Utf8)
+    } else if body.len() >= 4 && body[0] == 0 {
+        (
+            body,
+            if body[1] == 0 {
+                Encoding::Utf32(false)
+            } else {
+                Encoding::Utf16(false)
+            },
+        )
+    } else if body.len() >= 4 && body[1] == 0 {
+        (
+            body,
+            if body[2] == 0 && body[3] == 0 {
+                Encoding::Utf32(true)
+            } else {
+                Encoding::Utf16(true)
+            },
+        )
+    } else if body.len() == 2 && body[0] == 0 {
+        (body, Encoding::Utf16(false))
+    } else if body.len() == 2 && body[1] == 0 {
+        (body, Encoding::Utf16(true))
+    } else {
+        (body, Encoding::Utf8)
+    };
+    let mut text = Zeroizing::new(String::new());
+    match encoding {
+        Encoding::Utf8 => text.push_str(std::str::from_utf8(body).map_err(|_| JsonEncodingError)?),
+        Encoding::Utf16(little) => {
+            if !body.len().is_multiple_of(2) {
+                return Err(JsonEncodingError);
+            }
+            let words = body.chunks_exact(2).map(|bytes| {
+                if little {
+                    u16::from_le_bytes([bytes[0], bytes[1]])
+                } else {
+                    u16::from_be_bytes([bytes[0], bytes[1]])
+                }
+            });
+            for character in char::decode_utf16(words) {
+                text.push(character.map_err(|_| JsonEncodingError)?);
+            }
+        }
+        Encoding::Utf32(little) => {
+            if !body.len().is_multiple_of(4) {
+                return Err(JsonEncodingError);
+            }
+            for bytes in body.chunks_exact(4) {
+                let bytes: [u8; 4] = bytes.try_into().unwrap();
+                let point = if little {
+                    u32::from_le_bytes(bytes)
+                } else {
+                    u32::from_be_bytes(bytes)
+                };
+                text.push(char::from_u32(point).ok_or(JsonEncodingError)?);
+            }
+        }
+    }
+    Ok(text)
+}
 
 struct Length(usize);
 impl Write for Length {
@@ -318,3 +404,7 @@ print(json.dumps({'numbers': numbers, 'scalars': json.dumps(scalars)}))
         );
     }
 }
+
+#[cfg(test)]
+#[path = "python_json_byte_tests.rs"]
+mod byte_tests;

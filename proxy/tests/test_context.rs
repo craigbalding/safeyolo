@@ -163,10 +163,12 @@ fn declarations_cap_exact_integer_ttls_expire_at_boundary_and_remain_source_scop
             .is_err()
     );
     assert!(large_owner.get_declaration(&alice, 1.).unwrap().is_some());
-    assert!(
-        owner
-            .set_declaration(&alice, declared, None, f64::NAN)
-            .is_err()
+    owner
+        .set_declaration(&alice, declared, None, f64::NAN)
+        .unwrap();
+    assert_eq!(
+        owner.get_declaration(&alice, 0.).unwrap_err().kind(),
+        safeyolo_proxy::test_context::ContextErrorKind::Value
     );
     for (source, agent) in [
         ("", "alice"),
@@ -488,8 +490,27 @@ fn configuration_hash_controls_targets_but_not_dynamic_declaration_options_or_ex
             .unwrap(),
         serde_json::Number::from(900)
     );
-    assert!(owner.configure(Some(&json!({"policy_hash":"bad", "addons":{"test_context":{"target_hosts":[false]}}})), Options::default()).is_err());
+    owner
+        .configure(
+            Some(&json!({"policy_hash":"bad", "addons":{"test_context":{"target_hosts":[false]}}})),
+            Options::default(),
+        )
+        .unwrap();
     assert!(owner.stats(2.).unwrap().active);
+    assert!(
+        owner
+            .request(
+                Request {
+                    host: "target.invalid",
+                    prior_response: false,
+                    identity: None,
+                    metadata_agent: None
+                },
+                &mut Vec::new(),
+                2.
+            )
+            .is_err()
+    );
 }
 
 #[test]

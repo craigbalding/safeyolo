@@ -17,6 +17,7 @@ pub mod credentials;
 pub mod grants;
 pub mod host_names;
 mod http;
+pub mod http_content;
 pub mod inspection;
 pub mod network_guard;
 pub mod oauth;
@@ -66,6 +67,7 @@ pub(crate) struct UpgradeState {
 pub(crate) struct ConnectionIdentity {
     agent_id: String,
     connection_id: String,
+    source_id: Option<String>,
 }
 
 pub(crate) struct Runtime {
@@ -81,6 +83,7 @@ pub(crate) struct Runtime {
     admin_shield: admin_shield::AdminShield,
     network_guard: network_guard::NetworkGuard,
     circuits: circuits::CircuitBreaker,
+    test_context: test_context::TestContext,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -118,6 +121,9 @@ impl Runtime {
             .unwrap_or_default();
         let circuits = previous
             .map(|runtime| runtime.circuits.clone())
+            .unwrap_or_default();
+        let test_context = previous
+            .map(|runtime| runtime.test_context.clone())
             .unwrap_or_default();
         let scanner = inspection::Scanner::default();
         if let Some(inspection) = &config.inspection {
@@ -174,6 +180,7 @@ impl Runtime {
             admin_shield,
             network_guard,
             circuits,
+            test_context,
             via_token: config
                 .via_token
                 .clone()
@@ -190,7 +197,21 @@ impl Runtime {
         if circuit_runtime::record_transitions(&runtime, &startup_transitions, None) {
             eprintln!("Circuit startup evidence write failed");
         }
+        if previous.is_none() {
+            runtime.configure_declarations()?;
+        }
         Ok(runtime)
+    }
+
+    fn configure_declarations(&self) -> Result<(), Error> {
+        let options = test_context::Options::default();
+        match &self.policy {
+            Some(policy) => {
+                policy.configure_test_context_declarations(&self.test_context, options)?
+            }
+            None => self.test_context.configure_declarations(None, options)?,
+        }
+        Ok(())
     }
 
     fn record(&self, event: Value) -> Result<(), Error> {
@@ -281,6 +302,7 @@ impl Drop for SocketPath {
 
 struct RunningListener {
     agent_id: String,
+    source_id: Option<String>,
     stop: watch::Sender<bool>,
     task: JoinHandle<()>,
     socket: SocketPath,
@@ -291,12 +313,20 @@ impl RunningListener {
         listener: UnixListener,
         socket: SocketPath,
         agent_id: String,
+        source_id: Option<String>,
         runtime: Arc<RwLock<Arc<Runtime>>>,
     ) -> Self {
         let (stop, receiver) = watch::channel(false);
-        let task = tokio::spawn(accept_agents(listener, agent_id.clone(), runtime, receiver));
+        let task = tokio::spawn(accept_agents(
+            listener,
+            agent_id.clone(),
+            source_id.clone(),
+            runtime,
+            receiver,
+        ));
         Self {
             agent_id,
+            source_id,
             stop,
             task,
             socket,
@@ -313,6 +343,7 @@ impl RunningListener {
 async fn accept_agents(
     listener: UnixListener,
     agent_id: String,
+    source_id: Option<String>,
     runtime: Arc<RwLock<Arc<Runtime>>>,
     mut stop: watch::Receiver<bool>,
 ) {
@@ -323,7 +354,11 @@ async fn accept_agents(
             _ = stop.changed() => break,
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
-                    let identity = ConnectionIdentity { agent_id: agent_id.clone(), connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()) };
+                    let identity = ConnectionIdentity {
+                        agent_id: agent_id.clone(),
+                        connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
+                        source_id: source_id.clone(),
+                    };
                     connections.spawn(serve_connection(socket, identity, runtime.clone(), stop.clone()));
                 }
                 Err(error) => {
@@ -464,7 +499,7 @@ impl Proxy {
         for entry in &config.listeners {
             if !self.listeners.contains_key(&entry.socket_path) {
                 let (listener, socket) = SocketPath::bind(&entry.socket_path)?;
-                additions.push((listener, socket, entry.agent_id.clone()));
+                additions.push((listener, socket, entry.agent_id.clone(), entry.source_id()));
             }
         }
         let removed: Vec<PathBuf> = self
@@ -473,7 +508,9 @@ impl Proxy {
             .filter(|(path, listener)| {
                 listener.task.is_finished()
                     || !config.listeners.iter().any(|entry| {
-                        &entry.socket_path == *path && entry.agent_id == listener.agent_id
+                        &entry.socket_path == *path
+                            && entry.agent_id == listener.agent_id
+                            && entry.source_id() == listener.source_id
                     })
             })
             .map(|(path, _)| path.clone())
@@ -487,13 +524,13 @@ impl Proxy {
                 .find(|entry| entry.socket_path == path)
             {
                 let (listener, socket) = SocketPath::bind(&entry.socket_path)?;
-                additions.push((listener, socket, entry.agent_id.clone()));
+                additions.push((listener, socket, entry.agent_id.clone(), entry.source_id()));
             }
         }
-        for (listener, socket, agent) in additions {
+        for (listener, socket, agent, source) in additions {
             self.listeners.insert(
                 socket.path.clone(),
-                RunningListener::start(listener, socket, agent, self.runtime.clone()),
+                RunningListener::start(listener, socket, agent, source, self.runtime.clone()),
             );
         }
         let mut index = 0;
@@ -552,6 +589,10 @@ impl Proxy {
                     eprintln!("Circuit state load failed");
                 }
             }
+            // Publish current declaration defaults on the process owner. A
+            // POST whose body spans this reload uses these latest settings;
+            // existing declarations retain their original expiry and context.
+            runtime.configure_declarations()?;
             *current = runtime;
         }
         if self.readiness_file != config.readiness_file {

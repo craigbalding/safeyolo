@@ -668,13 +668,21 @@ fn record_agent_api(
     outcome: &crate::agent_api::Outcome<'_>,
 ) -> Result<(), Error> {
     let audit = outcome.audit.as_ref().map(|audit| {
-        json!({
-            "event": audit.event, "kind": "security", "decision": "deny",
+        let mut event = json!({
+            "event": audit.event, "kind": "security",
             "severity": audit.severity, "addon": audit.addon,
             "summary": audit.summary, "agent": audit.agent,
             "request_id": audit.request_id, "host": audit.host,
             "details": audit.details,
-        })
+        });
+        if matches!(
+            audit.kind,
+            crate::agent_api::AuditKind::AuthenticationFailed
+                | crate::agent_api::AuditKind::HandlerUnavailable
+        ) {
+            event["decision"] = json!("deny");
+        }
+        event
     });
     // Development evidence uses the facade's audit fields, excluding request
     // headers and query. Production audit storage is not yet connected.
@@ -718,12 +726,27 @@ async fn local_agent_api(
         .remove::<h2::ext::OriginalHeaderFields>();
     request.headers_mut().remove(header::AUTHORIZATION);
     request.headers_mut().remove(header::PROXY_AUTHORIZATION);
+    let method = request.method().clone();
+    let mut content_encoding = Vec::new();
+    let mut encoding_present = false;
+    for value in request.headers().get_all(header::CONTENT_ENCODING) {
+        if encoding_present {
+            content_encoding.extend_from_slice(b", ");
+        }
+        encoding_present = true;
+        content_encoding.extend_from_slice(value.as_bytes());
+    }
+    let content_length = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok());
     let api_request = agent_api::Request {
-        method: request.method().as_str(),
+        method: method.as_str(),
         path_and_query: &destination.path,
         authorization: present.then_some(authorization.as_slice()),
         identity: crate::network_guard::Identity::Resolved(&identity.agent_id),
-        client_ip: None,
+        client_ip: identity.source_id.as_deref(),
         request_id,
     };
     let outcome = if runtime.config.agent_api_enabled {
@@ -736,19 +759,33 @@ async fn local_agent_api(
             .as_ref()
             .map_or(PolicyState::Unavailable, PolicyState::Ready);
         let mut random = rand::random::<f64>;
-        agent_api::respond_read_with_circuits(
+        agent_api::respond_with_body(
             api_request,
             &token_path,
             policy,
             &runtime.tasks,
             crate::policy::current_time_ms(),
-            runtime.policy.as_ref().map(|_| agent_api::CircuitContext {
-                breaker: &runtime.circuits,
-                enabled: runtime.config.circuit_breaker_enabled,
-                random: &mut random,
-            }),
+            agent_api::Controls {
+                circuits: runtime.policy.as_ref().map(|_| agent_api::CircuitContext {
+                    breaker: &runtime.circuits,
+                    enabled: runtime.config.circuit_breaker_enabled,
+                    random: &mut random,
+                }),
+                declarations: runtime
+                    .policy
+                    .as_ref()
+                    .map(|_| agent_api::DeclarationContext {
+                        owner: &runtime.test_context,
+                        now: declaration_time,
+                    }),
+            },
+            agent_api::RequestBody {
+                body: request.body_mut(),
+                content_encoding: &content_encoding,
+                content_length,
+            },
         )
-        .await
+        .await?
     } else {
         agent_api::unavailable(api_request, Failure::HandlerUnavailable)
     };
@@ -775,6 +812,14 @@ async fn local_agent_api(
             .insert("x-safeyolo-evidence-error", "true".parse()?);
     }
     Ok(reply)
+}
+
+fn declaration_time() -> f64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
 }
 
 /// Resolve policy and refresh circuit settings under current runtime ownership.

@@ -354,6 +354,7 @@ silently reduce accepted message sizes to a library default.
 | D52 | Source circuit configure replaces its InMemoryCircuitState without stopping the former snapshot worker. Shutdown stops only the currently selected state worker. | Native uses one process-owned worker. Runtime publication and snapshot path selection share a lock; file changes attempt to save the former state before selecting new domains. A failed save is reported without preventing selection. Actual Proxy tests cover file switching, clearing persistence and final writer join. Abrupt process termination and blocked filesystem I/O remain outside graceful-shutdown evidence. |
 | D53 | A malformed JSON or UTF-8 circuit-reset body makes the source operator parser and handler send two final 400 responses. No circuit mutation or reset audit follows. | Native sends one terminal 400 and retains state, following the same framing correction as task PUT in D47. Valid reset keys and source exception/audit behavior have separate actual-source comparisons. |
 | D54 | An upstream HTTP/2 response with status 500, partial DATA and RST_STREAM(NO_ERROR) reaches the native downstream as status 500, the partial body and StreamEnded. Python sends a 502 error response. A retained binary from `d089f995` reproduces the native result before circuit completion metadata was added. | Downstream reset-response parity remains unresolved. Circuit counting uses the upstream parser's aborted result and ignores either downstream terminal form. The paired TLS/HTTP2 control retains exact response bytes and separately verifies unchanged circuit failure state. |
+| D55 | With a request above 10 MiB, the source forwards the reserved test-context header before its late request hook removes it. A missing-context request sends all 10,485,761 bytes to the origin; the origin 200 then replaces the hook's attempted 428, despite a deny event. | Concrete source disclosure and pre-denial egress defects. Native test-context HTTP enforcement must run at the request head and strip the control header before origin contact. That integration is still pending; empty snippets for source-streamed bodies are a separate compatibility requirement. |
 
 ## Deletion map and evidence still required
 
@@ -1014,10 +1015,42 @@ The TLS/HTTP2 reset-response difference remains explicit under D54.
 These are implementation results; independent acceptance, supported-host pilots,
 production evidence storage and cutover remain outstanding.
 
-Native [test context](../proxy/src/test_context.rs) still returns outcomes for
-later transport/API integration. Its deterministic clock and shared state
-support comparisons of source/agent scope, declaration expiry, header priority
-and warn/block outcomes. Test-context transport integration remains inactive.
+Native [test-context declarations](../proxy/src/agent_api/declarations.rs) now
+serve authenticated GET, POST and DELETE on `/api/test-context/current` when
+native policy is configured. One process-owned store survives configuration
+reloads. The trusted listener supplies the source slot; a new connection UUID
+does not change that slot. An explicit listener `source_id` supports arbitrary
+socket paths. Otherwise, a source-valid `<IPv4>_<agent>/proxy.sock` path supplies
+the source IP. Other existing paths remain valid and return source-unavailable
+403 for declaration operations.
+
+Method, bearer, trusted agent, source and owner checks precede POST body reads.
+GET and DELETE ignore body content. The shared JSON byte decoder handles
+UTF-8/16/32 detection, and the existing typed JSON parser preserves unused
+nonfinite values and exact integer TTLs. The HTTP content decoder handles gzip,
+deflate, Brotli, Zstandard and the source's binary codec aliases. Above the
+existing 10 MiB encoded streaming threshold, source request content is absent;
+the API treats it as an empty object. This threshold does not limit decoded
+content or reject larger requests. A truncated body propagates its transport
+error without replacing the declaration.
+
+A successful reload changes current declaration defaults without rewriting
+existing expiry or refreshing target hosts. A POST held across reload uses the
+new maximum TTL. Reached integer-to-float overflow returns the source's 500 and
+preserves the previous record. Mutation audits carry trusted attribution and
+no deny decision. [Body ownership tests](../proxy/tests/agent_api_declarations.rs),
+[core tests](../proxy/tests/test_context.rs), and
+[content decoder comparisons](../proxy/tests/http_content.rs) cover these
+boundaries. The [native socket regression](../tests/proxy_migration/test_agent_api_test_context.py)
+checks source reassignment, current TTL across a held POST, mutation audits and
+local containment. The shared decoder extraction also retains OAuth regressions.
+
+HTTP target enforcement, request/response provenance and FlowStore integration
+remain inactive. Header priority and warn/block outcomes still have standalone
+core comparisons. Canonical temporal target operands need a typed request seam;
+they must not be interpreted as their JSON storage forms. The inherited strict
+JSON string representation still cannot preserve lone surrogates. These are
+explicit development gaps, alongside the source streaming defects in D55.
 
 The [network guard](../proxy/src/network_guard.rs) returns existing
 warn/block responses and approval/audit intents around the same native policy
