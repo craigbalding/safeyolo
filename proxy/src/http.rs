@@ -394,10 +394,20 @@ async fn forward(
             connection_id: &identity.connection_id,
             request_id,
             method: request.method().as_str(),
-            scheme: &destination.scheme,
+            // CONNECT carries an authority, without an HTTP scheme or path.
+            // Routing defaults must not become path-condition policy inputs.
+            scheme: if request.method() == Method::CONNECT {
+                ""
+            } else {
+                &destination.scheme
+            },
             host: &destination.host,
             port: destination.port,
-            path: &destination.path,
+            path: if request.method() == Method::CONNECT {
+                ""
+            } else {
+                &destination.path
+            },
             header_names: request.headers().keys().map(|name| name.as_str()).collect(),
             body_present: request.headers().contains_key(header::TRANSFER_ENCODING)
                 || request

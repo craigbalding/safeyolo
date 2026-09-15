@@ -17,6 +17,36 @@ from tests.proxy_migration.harness import launch_proxy, request
 from tests.proxy_migration.scenarios import POLICY, Origin
 
 
+@pytest.mark.parametrize("effect,default_effect,status", [("deny", "allow", 200), ("allow", "deny", 403)])
+def test_connect_has_no_http_path(proxy_backend, tmp_path, effect, default_effect, status):
+    """An authority-form CONNECT must not match an HTTP slash-path condition."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    policy = f'''[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "{default_effect}"
+[[permissions]]
+action = "network:request"
+resource = "localhost/*"
+effect = "{effect}"
+condition = {{ method = "CONNECT", path_prefix = "/" }}
+'''
+    # A CONNECT head is sufficient: no TLS bytes are sent, and the old lazy
+    # connection strategy does not contact the synthetic destination yet.
+    with launch_proxy(proxy_backend, directory, policy, tls=True) as proxy:
+        with socket.socket(socket.AF_UNIX) as raw:
+            raw.settimeout(5)
+            raw.connect(proxy.paths["alice"])
+            raw.sendall(b"CONNECT localhost:8443 HTTP/1.1\r\nHost: localhost:8443\r\n\r\n")
+            response = http.client.HTTPResponse(raw)
+            response.begin()
+            assert response.status == status
+            response.close()
+        assert proxy.events("proxy.egress") == []
+
+
 @pytest.mark.parametrize("certificate_host,trusted,status", [
     ("localhost", True, 200),
     ("wrong.invalid", True, 502),

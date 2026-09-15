@@ -101,7 +101,9 @@ def test_prompt_and_global_budget_use_existing_pdp(tmp_path):
 @pytest.mark.parametrize("changes", [
     {"port": 0}, {"port": "80"}, {"agent_id": ""},
     {"headers": [["authorization", "synthetic-secret-must-not-log"]]},
-    {"scheme": "ftp"},
+    {"scheme": "ftp"}, {"scheme": ""},
+    {"method": "CONNECT", "scheme": "https", "path": ""},
+    {"method": "CONNECT", "scheme": "", "path": "/"},
 ])
 def test_invalid_metadata_is_rejected_without_echo(tmp_path, changes):
     with adapter(tmp_path, '[hosts]\n"*" = {egress = "allow"}\n') as (path, _):
@@ -122,6 +124,21 @@ def test_invalid_startup_policy_never_creates_socket(tmp_path):
     )
     assert result.returncode != 0
     assert not path.exists()
+
+
+def test_connect_metadata_preserves_actual_proxy_parser_target(tmp_path):
+    from mitmproxy.net.http.http1.read import read_request_head
+
+    parsed = read_request_head([
+        b"CONNECT example.invalid:8443 HTTP/1.1",
+        b"Host: example.invalid:8443",
+    ])
+    assert (parsed.scheme, parsed.path) == ("", "")
+    with adapter(tmp_path, '[hosts]\n"*" = {egress = "allow"}\n') as (path, _):
+        status, result = request(path, method=parsed.method, scheme=parsed.scheme,
+                                 path=parsed.path, host=parsed.host, port=parsed.port)
+        assert status == 200
+        assert result == {"allow": True, "decision": "allow"}
 
 
 def test_policy_reload_keeps_last_valid_decision(tmp_path):

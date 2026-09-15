@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from pdp.core import PDPCore
 from pdp.schemas import Effect, IdentitySource, create_http_event
@@ -36,12 +36,21 @@ class NetworkRequest(BaseModel):
     request_id: str = Field(min_length=1)
     connection_id: str = Field(min_length=1)
     method: str = Field(min_length=1)
-    scheme: Literal["http", "https"]
+    scheme: Literal["", "http", "https"]
     host: str = Field(min_length=1)
     port: int = Field(ge=1, le=65535)
     path: str
     header_names: list[str] = Field(default_factory=list)
     body_present: bool = False
+
+    @model_validator(mode="after")
+    def validate_target_form(self):
+        if self.method == "CONNECT":
+            if self.scheme or self.path:
+                raise ValueError("CONNECT metadata has no scheme or path")
+        elif not self.scheme:
+            raise ValueError("HTTP metadata requires a scheme")
+        return self
 
 
 def decide(pdp: PDPCore, request: NetworkRequest) -> dict:
