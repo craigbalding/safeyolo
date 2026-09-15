@@ -10,6 +10,7 @@ pub mod grants;
 mod http;
 pub mod inspection;
 pub mod network_guard;
+pub mod oauth;
 pub mod policy;
 pub mod services;
 pub mod test_context;

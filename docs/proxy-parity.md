@@ -303,7 +303,8 @@ silently reduce accepted message sizes to a library default.
 | D33 | fancy-regex does not reproduce all accepted Python regular expressions. Proven gaps include scoped ASCII flags, Unicode-name escapes and Turkish-I folding. Its private one-million-entry stack limit also makes `(a\|aa)*\1$` fail on 1,000,100 `a` bytes where Python matches. The scanner's existing error rule then drops even a log-mode message. | The scanner remains inactive. Unsupported compilations retain the previous snapshot, and runtime failures are explicit, but that does not resolve the lost workflow. Replace or repair the engine and complete the Unicode/grammar matrix before activation. No message cap was added to hide the difference. HTTP charset and surrogate decoding also remain required. |
 | D34 | The native approval-key JSON helper copied U+007F directly while Python escapes it. A legacy trusted identity containing DEL therefore groups under a different approval key. | The ASCII fast path now escapes DEL. Independent recheck at `19ff784e` passed all 128 ASCII identities plus mixed Unicode cases. The actual guard oracle covers the accepted legacy identity source; UDS listener-name validation remains unchanged. |
 | D35 | Independent review at `06d7282c` found that method tokens followed by HTAB, VT or FF select opaque CONNECT. An actual HTTP origin accepts those separators and receives a GET that inner policy denies. Direct and Python controls reproduce the behavior. | Native classification now keeps HTTP-like whitespace separators on the HTTP path. Hyper may reject the spelling with 400, but rejection cannot grant opaque transport. SSH identification waits for a complete first line and still gives HTTP request-line syntax precedence. Independent recheck at `19ff784e` passed 33 separator cases without origin application requests, plus the prior HTTP-method and SSH identification cases. D36 records the separate leading-whitespace finding. |
-| D36 | Independent review at `19ff784e` found that whitespace before the HTTP method still selects opaque CONNECT. An actual Python HTTP origin accepts ten leading separators and receives a GET that inner policy denies. | Initial classification now keeps the same whitespace set on the HTTP parser's path. Native regression cases require a terminal 400 and zero application bytes, including one-byte and three-byte prefixes. The original Python proxy failures remain explicit comparisons. Independent recheck is required. |
+| D36 | Independent review at `19ff784e` found that whitespace before the HTTP method still selects opaque CONNECT. An actual Python HTTP origin accepts ten leading separators and receives a GET that inner policy denies. | Initial classification now keeps the same whitespace set on the HTTP parser's path. Independent recheck at `583d8978` passed 48 whitespace/fragment cases without forbidden origin requests, plus passthrough and real SSH. Native regression cases require a terminal 400 and zero application bytes, including one-byte and three-byte prefixes. The original Python proxy failures remain explicit comparisons. |
+| D37 | Concurrent Python OAuth refreshes can post the same refresh token twice and let the older response overwrite the newer result. A completed request can also overwrite an intervening credential edit. Expiry or save failure can leave the access token changed in memory before publication succeeds. | The inactive native refresh module shares one attempt per credential across coordinator clones. Vault-bound revisions reject superseded responses. Full response validation and encrypted write rollback retain the previous record on failure. Real Python protocol and concurrency oracles establish the source behavior; independent native recheck and transport integration remain required. |
 
 ## Deletion map and evidence still required
 
@@ -482,6 +483,16 @@ integration, TOML's large-integer gap, and JSON body compatibility beyond the
 tested UTF-8 encodings still require work.
 Declared state and response-validator tiers are not promoted to implemented
 enforcement.
+
+The inactive [OAuth refresh lifecycle](../proxy/src/oauth.rs) produces a secret
+form request for the host credential-management transport. One coordinator and
+its clones share refresh attempts for an active vault. Conditional publication
+preserves intervening edits and retains the exact prior encrypted file after
+activation failure. The protocol oracle covers 64 Python cases, including
+UTF-8/16/32 responses, duplicate keys and expiry rounding. Python JSON extensions,
+lone surrogates and deeper nesting remain accepted-input gaps. HTTP routing,
+URL userinfo, TLS, decompression, timeouts and gateway injection still need
+integration; the module creates no network client or independent egress path.
 
 Native [circuit state](../proxy/src/circuits.rs) and
 [test context](../proxy/src/test_context.rs) return explicit outcomes for later

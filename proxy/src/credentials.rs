@@ -22,10 +22,12 @@
 //! retains the old credential for injection; missing access_token or invalid
 //! expires_in can instead propagate errors during publication. The old method
 //! reselects by name after network completion without a version check or request
-//! deduplication. HTTP execution, refresh response publication, concurrent-refresh
-//! arbitration, key-file loading and secret injection are not implemented here.
+//! deduplication. Conditional publication below prevents a late refresh from
+//! replacing an edited credential. HTTP execution, refresh arbitration, key-file
+//! loading and secret injection belong to the caller.
 
 use std::{
+    collections::HashMap,
     fmt,
     fs::{self, File, Permissions},
     io::{Read, Write},
@@ -226,7 +228,22 @@ struct State {
     cipher: Zeroizing<Fernet>,
     salt: [u8; SALT_LENGTH],
     credentials: Vec<Credential>,
+    revisions: HashMap<String, Arc<()>>,
     stamp: Stamp,
+}
+
+/// An opaque record and revision bound to one Vault and its clones. A late
+/// refresh can publish only while this revision remains current. Secret-bearing
+/// snapshots intentionally have no Debug, Display or Serialize implementation.
+pub struct CredentialSnapshot {
+    credential: Credential,
+    revision: Arc<()>,
+    state: Arc<Mutex<State>>,
+}
+impl CredentialSnapshot {
+    pub fn credential(&self) -> &Credential {
+        &self.credential
+    }
 }
 
 /// All clones share the same local snapshot. Operations perform synchronous KDF
@@ -267,12 +284,17 @@ impl Vault {
                 save_atomic(&path, &bytes).map_err(|failure| failure.error)?,
             )
         };
+        let revisions = credentials
+            .iter()
+            .map(|credential| (credential.name.clone(), Arc::new(())))
+            .collect();
         Ok(Self {
             path,
             state: Arc::new(Mutex::new(State {
                 cipher,
                 salt,
                 credentials,
+                revisions,
                 stamp,
             })),
         })
@@ -287,6 +309,44 @@ impl Vault {
             .iter()
             .find(|credential| credential.name == name)
             .cloned())
+    }
+    pub fn snapshot(&self, name: &str) -> Result<Option<CredentialSnapshot>> {
+        let state = self.lock()?;
+        let Some(credential) = state.credentials.iter().find(|record| record.name == name) else {
+            return Ok(None);
+        };
+        let revision = state
+            .revisions
+            .get(name)
+            .ok_or_else(|| error(ErrorKind::State))?;
+        Ok(Some(CredentialSnapshot {
+            credential: credential.clone(),
+            revision: revision.clone(),
+            state: self.state.clone(),
+        }))
+    }
+    /// Returns false without writing or activating if a store, removal, changed
+    /// reload, or visible external file replacement superseded the snapshot.
+    /// Unrelated credential edits do not invalidate it. This is local atomicity,
+    /// not a cross-process lock: independent vault writers require coordination.
+    pub fn replace_if_current(
+        &self,
+        snapshot: &CredentialSnapshot,
+        replacement: Credential,
+        activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+    ) -> Result<bool> {
+        if replacement.name != snapshot.credential.name {
+            return Err(error(ErrorKind::Format));
+        }
+        self.mutate(
+            Some(snapshot),
+            Some(&snapshot.credential.name),
+            |credentials| {
+                upsert(credentials, replacement);
+                true
+            },
+            activate,
+        )
     }
     pub fn list_names(&self) -> Result<Vec<String>> {
         Ok(self
@@ -307,7 +367,10 @@ impl Vault {
         credential: Credential,
         activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
     ) -> Result<()> {
+        let name = credential.name.clone();
         self.mutate(
+            None,
+            Some(&name),
             |credentials| {
                 upsert(credentials, credential);
                 true
@@ -325,6 +388,8 @@ impl Vault {
         activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
     ) -> Result<bool> {
         self.mutate(
+            None,
+            Some(name),
             |credentials| {
                 let before = credentials.len();
                 credentials.retain(|credential| credential.name != name);
@@ -334,21 +399,35 @@ impl Vault {
         )
     }
     pub fn save(&self) -> Result<()> {
-        self.mutate(|_| true, |_| Ok(())).map(|_| ())
+        self.mutate(None, None, |_| true, |_| Ok(())).map(|_| ())
     }
     /// Callbacks receive metadata only and must not re-enter this Vault. Rejected
     /// activation restores the exact preceding encrypted bytes and old metadata.
     fn mutate(
         &self,
+        expected: Option<&CredentialSnapshot>,
+        invalidate: Option<&str>,
         mutation: impl FnOnce(&mut Vec<Credential>) -> bool,
         mut activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
     ) -> Result<bool> {
         let mut state = self.lock()?;
+        if let Some(snapshot) = expected
+            && (!Arc::ptr_eq(&self.state, &snapshot.state)
+                || state
+                    .revisions
+                    .get(&snapshot.credential.name)
+                    .is_none_or(|revision| !Arc::ptr_eq(revision, &snapshot.revision)))
+        {
+            return Ok(false);
+        }
         let mut candidate = state.credentials.clone();
         if !mutation(&mut candidate) {
             return Ok(false);
         }
-        let original = fs::read(&self.path)?;
+        let (original, original_stamp) = read_file(&self.path)?;
+        if expected.is_some() && original_stamp != state.stamp {
+            return Ok(false);
+        }
         let encrypted = encrypt(&state.cipher, &state.salt, &candidate)?;
         let stamp = match save_atomic(&self.path, &encrypted) {
             Ok(stamp) => stamp,
@@ -363,6 +442,7 @@ impl Vault {
             restore(&self.path, &original, &mut state, &mut activate)?;
             return Err(error(ErrorKind::Activation));
         }
+        state.revisions = revisions_for(&state, &candidate, invalidate);
         state.credentials = candidate;
         state.stamp = stamp;
         Ok(true)
@@ -401,10 +481,54 @@ impl Vault {
             activate(&metadata(&state.credentials)).map_err(|_| error(ErrorKind::Rollback))?;
             return Err(error(ErrorKind::Activation));
         }
+        state.revisions = revisions_for(&state, &candidate, None);
         state.credentials = candidate;
         state.stamp = stamp;
         Ok(())
     }
+}
+
+fn revisions_for(
+    state: &State,
+    candidate: &[Credential],
+    invalidate: Option<&str>,
+) -> HashMap<String, Arc<()>> {
+    let previous: HashMap<_, _> = state
+        .credentials
+        .iter()
+        .map(|credential| (credential.name.as_str(), credential))
+        .collect();
+    candidate
+        .iter()
+        .map(|credential| {
+            let revision = if invalidate != Some(credential.name.as_str())
+                && previous
+                    .get(credential.name.as_str())
+                    .is_some_and(|old| same_credential(old, credential))
+            {
+                state.revisions.get(&credential.name).cloned()
+            } else {
+                None
+            };
+            (
+                credential.name.clone(),
+                revision.unwrap_or_else(|| Arc::new(())),
+            )
+        })
+        .collect()
+}
+
+fn same_credential(left: &Credential, right: &Credential) -> bool {
+    left.name == right.name
+        && left.credential_type == right.credential_type
+        && left.value.expose_secret() == right.value.expose_secret()
+        && left.refresh_token.as_ref().map(Secret::expose_secret)
+            == right.refresh_token.as_ref().map(Secret::expose_secret)
+        && left.token_url == right.token_url
+        && left.client_id == right.client_id
+        && left.client_secret.as_ref().map(Secret::expose_secret)
+            == right.client_secret.as_ref().map(Secret::expose_secret)
+        && left.expires_at == right.expires_at
 }
 
 fn metadata(credentials: &[Credential]) -> Vec<CredentialMetadata> {
@@ -554,7 +678,7 @@ fn optional(record: &mut Map<String, Value>, key: &str) -> Result<Option<String>
         _ => Err(error(ErrorKind::Format)),
     }
 }
-fn wipe_json(value: &mut Value) {
+pub(crate) fn wipe_json(value: &mut Value) {
     match value {
         Value::String(value) => value.zeroize(),
         Value::Array(values) => values.iter_mut().for_each(wipe_json),

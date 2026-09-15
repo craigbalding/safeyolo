@@ -311,6 +311,206 @@ fn shared_writers_publish_complete_credentials_without_lost_local_updates() {
 }
 
 #[test]
+fn simultaneous_refresh_publication_has_one_winner_and_no_lost_unrelated_edit() {
+    let (_directory, path, vault) = setup();
+    vault.store(credential("mail")).unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let workers: Vec<_> = (0..2)
+        .map(|index| {
+            let vault = vault.clone();
+            let snapshot = vault.snapshot("mail").unwrap().unwrap();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let mut replacement = snapshot.credential().clone();
+                replacement.value = Secret::new(format!("synthetic-refresh-{index}"));
+                vault
+                    .replace_if_current(&snapshot, replacement, |_| Ok(()))
+                    .unwrap()
+            })
+        })
+        .collect();
+    vault.store(credential("other")).unwrap();
+    barrier.wait();
+    assert_eq!(
+        workers
+            .into_iter()
+            .map(|worker| usize::from(worker.join().unwrap()))
+            .sum::<usize>(),
+        1
+    );
+    let current = vault.get("mail").unwrap().unwrap();
+    let loaded = Vault::unlock(path, &password()).unwrap();
+    assert!(loaded.get("other").unwrap().is_some());
+    assert_eq!(
+        loaded.get("mail").unwrap().unwrap().value.expose_secret(),
+        current.value.expose_secret()
+    );
+}
+
+#[test]
+fn conditional_publication_rejects_stores_removal_and_name_recreation() {
+    let (_directory, path, vault) = setup();
+    vault.store(credential("mail")).unwrap();
+    assert!(vault.snapshot("missing").unwrap().is_none());
+    for mutation in 0..3 {
+        let snapshot = vault.snapshot("mail").unwrap().unwrap();
+        match mutation {
+            0 => vault.store(credential("mail")).unwrap(),
+            1 => assert!(vault.remove("mail").unwrap()),
+            2 => {
+                assert!(vault.remove("mail").unwrap());
+                vault.store(credential("mail")).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let original = fs::read(&path).unwrap();
+        assert!(
+            !vault
+                .replace_if_current(&snapshot, credential("mail"), |_| {
+                    panic!("stale publication must not activate")
+                })
+                .unwrap()
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        if mutation == 1 {
+            assert!(vault.get("mail").unwrap().is_none());
+            vault.store(credential("mail")).unwrap();
+        }
+    }
+}
+
+#[test]
+fn conditional_publication_is_bound_to_the_vault_and_credential_name() {
+    let (_directory, path, vault) = setup();
+    vault.store(credential("mail")).unwrap();
+    let snapshot = vault.snapshot("mail").unwrap().unwrap();
+    let other = Vault::unlock(&path, &password()).unwrap();
+    let original = fs::read(&path).unwrap();
+    assert!(
+        !other
+            .replace_if_current(&snapshot, credential("mail"), |_| {
+                panic!("foreign snapshot must not activate")
+            })
+            .unwrap()
+    );
+    assert_eq!(
+        vault
+            .replace_if_current(&snapshot, credential("renamed"), |_| {
+                panic!("renamed publication must not activate")
+            })
+            .unwrap_err()
+            .kind,
+        ErrorKind::Format
+    );
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn changed_reload_and_visible_external_edits_supersede_refresh() {
+    let (_directory, path, vault) = setup();
+    vault.store(credential("mail")).unwrap();
+    let external = Vault::unlock(&path, &password()).unwrap();
+    for field in 0..8 {
+        let snapshot = vault.snapshot("mail").unwrap().unwrap();
+        let mut edited = snapshot.credential().clone();
+        match field {
+            0 => edited.value = Secret::new("synthetic-edited-access"),
+            1 => edited.credential_type = "oauth2".into(),
+            2 => edited.refresh_token = Some(Secret::new("synthetic-edited-refresh")),
+            3 => edited.token_url = Some("https://example.invalid/changed-token".into()),
+            4 => edited.client_id = Some("edited-client".into()),
+            5 => edited.client_secret = Some(Secret::new("synthetic-edited-secret")),
+            6 => edited.expires_at = Some("2099-01-01T00:00:00+00:00".into()),
+            7 => {
+                external.remove("mail").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        if field != 7 {
+            external.store(edited).unwrap();
+        }
+        let original = fs::read(&path).unwrap();
+        for reloaded in [false, true] {
+            if reloaded {
+                vault.reload().unwrap();
+            }
+            assert!(
+                !vault
+                    .replace_if_current(&snapshot, credential("mail"), |_| {
+                        panic!("external edit must not activate refresh")
+                    })
+                    .unwrap()
+            );
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+    }
+    assert!(vault.get("mail").unwrap().is_none());
+}
+
+#[test]
+fn unchanged_save_reload_and_unrelated_edits_preserve_pending_refresh() {
+    let (_directory, path, vault) = setup();
+    vault.store(credential("mail")).unwrap();
+    let snapshot = vault.snapshot("mail").unwrap().unwrap();
+    vault.save().unwrap();
+    vault.reload().unwrap();
+    let external = Vault::unlock(&path, &password()).unwrap();
+    external.store(credential("other")).unwrap();
+    vault.reload().unwrap();
+    let mut refreshed = snapshot.credential().clone();
+    refreshed.value = Secret::new("synthetic-refreshed-value");
+    assert!(
+        vault
+            .replace_if_current(&snapshot, refreshed, |_| Ok(()))
+            .unwrap()
+    );
+    let restarted = Vault::unlock(path, &password()).unwrap();
+    assert!(restarted.get("other").unwrap().is_some());
+    assert_eq!(
+        restarted
+            .get("mail")
+            .unwrap()
+            .unwrap()
+            .value
+            .expose_secret(),
+        "synthetic-refreshed-value"
+    );
+}
+
+#[test]
+fn failed_refresh_activation_restores_bytes_and_revision_for_retry() {
+    let (_directory, path, vault) = setup();
+    vault.store(credential("mail")).unwrap();
+    let snapshot = vault.snapshot("mail").unwrap().unwrap();
+    let original = fs::read(&path).unwrap();
+    let mut refreshed = snapshot.credential().clone();
+    refreshed.value = Secret::new("synthetic-refreshed-value");
+    let mut calls = 0;
+    assert_eq!(
+        vault
+            .replace_if_current(&snapshot, refreshed.clone(), |_| {
+                calls += 1;
+                if calls == 1 { Err(()) } else { Ok(()) }
+            })
+            .unwrap_err()
+            .kind,
+        ErrorKind::Activation
+    );
+    assert_eq!(calls, 2);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(
+        vault.get("mail").unwrap().unwrap().value.expose_secret(),
+        snapshot.credential().value.expose_secret()
+    );
+    assert!(
+        vault
+            .replace_if_current(&snapshot, refreshed, |_| Ok(()))
+            .unwrap()
+    );
+}
+
+#[test]
 fn empty_values_unknown_types_and_optional_empty_fields_keep_existing_vault_semantics() {
     let (_directory, path, vault) = setup();
     let mut value = Credential::new("", "operator-custom-type", Secret::new(""));
