@@ -6,19 +6,24 @@
 //! Callers must resolve those gaps before production use. A compile incompatibility
 //! retains the previous snapshot; it never silently removes an accepted rule.
 //! Proved remaining examples include named Unicode escapes, Unicode-version
-//! and Unicode case-insensitive backreference differences, and
-//! parse nesting. The pinned engine patch removes the scanner's private stack
-//! cutoff: VM buffers grow fallibly and are released after each scan. The valid
-//! complete-message regression matches at 1,000,100 bytes, 4 MiB and 8 MiB. Remaining
-//! compatibility gaps still block production acceptance. Configurable backtracking and
-//! compiled-size cutoffs use usize::MAX without eager capacity allocation.
+//! and character-class differences, and parse nesting. The pinned engine patch
+//! removes the scanner's private stack cutoff: VM buffers grow fallibly and are
+//! released after each scan. The complete-message regression matches at 1,000,100
+//! bytes, 4 MiB and 8 MiB. Remaining gaps still block production acceptance.
+//! Configurable backtracking and compiled-size cutoffs use usize::MAX without
+//! eager capacity allocation.
 //!
 //! Python ASCII scopes and octal escapes are lowered before compilation. ASCII
 //! mode changes categories/case folding while preserving Unicode scalar input.
 //! The internal backreference flag is gated and authored Python-invalid A flags
-//! are rejected. Python 3.12's scoped-ASCII INFO prefilter can miss a match that
-//! its own matching instructions accept. Native inspection honors the configured
-//! rule in those proved cases; the oracle records this intentional D41 correction.
+//! are rejected. Unicode-insensitive literals/classes close Python's four-I set.
+//! Backreferences use a separate opt-in scalar-lowercase instruction with pinned
+//! Unicode 15 data; each subject scalar advances by its own UTF-8 byte width.
+//! ASCII backreferences keep non-ASCII scalars exact. Comparisons allocate no
+//! buffer and preserve per-call cancellation. Python 3.12's scoped-ASCII INFO
+//! prefilter can miss a match that its own matching instructions accept. Native
+//! inspection honors the configured rule in those proved cases; the oracle
+//! records this intentional D41 correction.
 //!
 //! Callers supply mitmproxy-equivalent decoded HTTP text and ordered, combined
 //! header values. HTTP charset/content-encoding and surrogate-escaped text still
@@ -49,7 +54,7 @@ use std::{
 
 pub const MAX_URL_SCAN_BYTES: usize = 16 * 1024;
 
-/// These remaining differences block transport activation. They are not new
+/// These remaining differences block production acceptance. They are not new
 /// restrictions on accepted operator policy and must not be hidden by rule skips.
 pub fn compatibility_gaps() -> &'static [&'static str] {
     &[
@@ -418,6 +423,7 @@ fn compile_engine_pattern(
     builder
         .case_insensitive(insensitive)
         .allow_ascii_backref_flag(true)
+        .python_backreferences(true)
         .backtrack_limit(usize::MAX)
         .stack_limit(None)
         .delegate_size_limit(usize::MAX);
@@ -451,6 +457,9 @@ fn pattern_literal(value: char, mode: PatternMode) -> String {
             );
         }
         return format!(r"(?-i:\x{{{:x}}})", value as u32);
+    }
+    if mode.insensitive && matches!(value, 'I' | 'i' | 'İ' | 'ı') {
+        return "(?-i:[Iiİı])".into();
     }
     format!(r"\x{{{:x}}}", value as u32)
 }
@@ -571,6 +580,31 @@ fn ascii_case_class(class: &str) -> std::result::Result<String, PatternIssue> {
         additions
     ))
 }
+fn unicode_i_class(class: &str) -> std::result::Result<String, PatternIssue> {
+    // Close Python's four-I equivalence before complementing a negative class.
+    // Reuse the existing engine for membership in the lowered positive class.
+    let negative = class.starts_with("[^");
+    let positive = if negative {
+        format!("[{}", &class[2..])
+    } else {
+        class.into()
+    };
+    let expression = compile_engine_pattern(&positive, false)?;
+    for text in ["I", "i", "İ", "ı"] {
+        if expression
+            .is_match(text)
+            .map_err(|_| PatternIssue::Compatibility)?
+        {
+            return Ok(format!(
+                "[{}{}Iiİı]",
+                if negative { "^" } else { "" },
+                positive
+            ));
+        }
+    }
+    Ok(class.into())
+}
+
 fn python_pattern(pattern: &str, insensitive: bool) -> std::result::Result<String, PatternIssue> {
     let chars: Vec<char> = pattern.chars().collect();
     let mut result = String::new();
@@ -654,6 +688,8 @@ fn python_pattern(pattern: &str, insensitive: bool) -> std::result::Result<Strin
             index += 1;
             if mode.ascii && mode.insensitive {
                 result.push_str(&ascii_case_class(&class)?);
+            } else if mode.insensitive {
+                result.push_str(&unicode_i_class(&class)?);
             } else {
                 result.push_str(&class);
             }
@@ -925,7 +961,9 @@ fn python_pattern(pattern: &str, insensitive: bool) -> std::result::Result<Strin
         }
         if ch == '$' {
             result.push_str(r"(?:(?=\n\z)|$)");
-        } else if mode.ascii && mode.insensitive && (ch.is_ascii_alphabetic() || !ch.is_ascii())
+        } else if mode.insensitive
+            && (matches!(ch, 'I' | 'i' | 'İ' | 'ı')
+                || mode.ascii && (ch.is_ascii_alphabetic() || !ch.is_ascii()))
             || mode.verbose && ch.is_whitespace()
         {
             result.push_str(&pattern_literal(ch, mode));

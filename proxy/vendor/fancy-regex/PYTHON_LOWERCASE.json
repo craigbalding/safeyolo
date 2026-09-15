@@ -1,0 +1,15 @@
+{
+  "source": "CPython 3.12.14 _sre.unicode_tolower",
+  "unicode_version": "15.0.0",
+  "source_urls": [
+    "https://github.com/python/cpython/blob/v3.12.14/Modules/_sre/sre.c",
+    "https://github.com/python/cpython/blob/v3.12.14/Objects/unicodectype.c",
+    "https://github.com/python/cpython/blob/v3.12.14/Objects/unicodetype_db.h"
+  ],
+  "source_license_file": "LICENSE-CPYTHON",
+  "generator_python": "3.12.14",
+  "nonidentity_mappings": 1433,
+  "strided_delta_ranges": 182,
+  "canonical_pairs_json_sha256": "9c194d67a570656df4baba4ab72b80eafcbf3f2f4ff4594de9b908f48e6430ed",
+  "generated_source_sha256": "0e6c3f110c7381902fcc3ed691c2ce7f6623300d61494c840bd6c60dbfcfbbe5"
+}

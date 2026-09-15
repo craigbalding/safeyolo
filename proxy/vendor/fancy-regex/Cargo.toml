@@ -3,7 +3,7 @@ name = "fancy-regex"
 version = "0.19.2"
 authors = ["Raph Levien <raph@google.com>", "Robin Stocker <robin@nibor.org>", "Keith Hall <keith.hall@available.systems>"]
 edition = "2018"
-license = "MIT"
+license = "MIT AND Python-2.0"
 description = "An implementation of regexes, supporting a relatively rich set of features, including backreferences and look-around. Aims to be compatible with Oniguruma syntax when the relevant flag is set."
 readme = "README.md"
 autotests = false
@@ -63,3 +63,7 @@ path = "tests/runtime_cancellation.rs"
 [[test]]
 name = "ascii_backrefs"
 path = "tests/ascii_backrefs.rs"
+
+[[test]]
+name = "python_backrefs"
+path = "tests/python_backrefs.rs"

@@ -12,6 +12,9 @@
 +/Cargo.lock
 --- upstream/Cargo.toml
 +++ vendor/Cargo.toml
+@@ -6 +6 @@
+-license = "MIT"
++license = "MIT AND Python-2.0"
 @@ -8,0 +9,3 @@
 +autotests = false
 +autobenches = false
@@ -34,29 +37,60 @@
 +[[test]]
 +name = "runtime_cancellation"
 +path = "tests/runtime_cancellation.rs"
-@@ -56,7 +63,3 @@
+@@ -56,3 +63,3 @@
 -[[bench]]
 -name = "regexset_vs_individual"
--harness = false
--
--[[bench]]
--name = "compile"
 -harness = false
 +[[test]]
 +name = "ascii_backrefs"
 +path = "tests/ascii_backrefs.rs"
+@@ -60,3 +67,3 @@
+-[[bench]]
+-name = "compile"
+-harness = false
++[[test]]
++name = "python_backrefs"
++path = "tests/python_backrefs.rs"
 --- upstream/src/analyze.rs
 +++ vendor/src/analyze.rs
 @@ -1306,0 +1307 @@
 +                    ascii: false,
 --- upstream/src/compile.rs
 +++ vendor/src/compile.rs
-@@ -187 +187 @@
+@@ -187,7 +187,16 @@
 -            Expr::Backref { group, casei } => {
-+            Expr::Backref { group, casei, ascii } => {
-@@ -192 +192 @@
+-                self.b.add(Insn::Backref {
+-                    slot: group * 2,
+-                    casei,
+-                    // use the pre-computed effective unicode flag (unicode && !Ascii bytes mode)
 -                    unicode: self.options.unicode,
-+                    unicode: self.options.unicode && !ascii,
+-                });
++            Expr::Backref { group, casei, ascii } => {
++                if casei && self.options.python_backreferences
++                    && !matches!(self.options.bytes_mode, BytesMode::Ascii)
++                {
++                    self.b.add(Insn::PythonBackref {
++                        slot: group * 2,
++                        ascii: !self.options.unicode || ascii,
++                    });
++                } else {
++                    self.b.add(Insn::Backref {
++                        slot: group * 2,
++                        casei,
++                        // Effective Unicode mode excludes ASCII scopes and ASCII byte mode.
++                        unicode: self.options.unicode && !ascii,
++                    });
++                }
+@@ -1199,0 +1209,2 @@
++    /// Select the pinned Python scalar-lowercase backreference instruction.
++    pub python_backreferences: bool,
+@@ -1228,0 +1240 @@
++            .field("python_backreferences", &self.python_backreferences)
+@@ -1246,0 +1259 @@
++            python_backreferences: false,
+@@ -1274 +1287 @@
+-    build_seek_pattern(info, &c.group_info_map, 0, &mut seek_pattern, 0);
++    build_seek_pattern(info, &c.group_info_map, 0, &mut seek_pattern, 0, c.options.python_backreferences);
 --- upstream/src/error.rs
 +++ vendor/src/error.rs
 @@ -102,0 +103,4 @@
@@ -115,19 +149,35 @@
 +        self.cancel
 --- upstream/src/lib.rs
 +++ vendor/src/lib.rs
-@@ -515,0 +516 @@
+@@ -61,0 +62 @@
++mod python_lowercase;
+@@ -515,0 +517,2 @@
 +    allow_ascii_backref_flag: bool,
-@@ -543,0 +545 @@
++    python_backreferences: bool,
+@@ -543,0 +547,2 @@
 +            .field("allow_ascii_backref_flag", &self.allow_ascii_backref_flag)
-@@ -566,0 +569 @@
++            .field("python_backreferences", &self.python_backreferences)
+@@ -566,0 +572,2 @@
 +            allow_ascii_backref_flag: false,
-@@ -579,0 +583 @@
++            python_backreferences: false,
+@@ -579,0 +587 @@
 +    stack_limit: Option<usize>,
-@@ -621,0 +626 @@
+@@ -621,0 +630 @@
 +            | Self::get_flag_value(self.allow_ascii_backref_flag, FLAG_ALLOW_ASCII_BACKREF)
-@@ -627,0 +633 @@
+@@ -627,0 +637 @@
 +            stack_limit: Some(1_000_000),
-@@ -762,0 +769,23 @@
+@@ -762,0 +773,34 @@
++        self
++    }
++
++    /// Use Python 3.12 Unicode-string semantics for case-insensitive backreferences.
++    ///
++    /// Default false. Unicode references compare one scalar lowercase at a time
++    /// using pinned Unicode 15 data. ASCII scopes fold only ASCII letters and keep
++    /// other scalars exact. The subject advances by its own scalar byte widths.
++    /// This option does not change literal/class folding or ASCII byte mode.
++    pub fn python_backreferences(&mut self, yes: bool) -> &mut Self {
++        self.options.python_backreferences = yes;
 +        self
 +    }
 +
@@ -151,7 +201,13 @@
 +    /// each search instead of retained in the scratch pool.
 +    pub fn stack_limit(&mut self, limit: Option<usize>) -> &mut Self {
 +        self.options.hard_regex_runtime_options.stack_limit = limit;
-@@ -1063,0 +1093,13 @@
+@@ -1063,0 +1108,19 @@
++        self
++    }
++
++    /// See [`RegexOptionsBuilder::python_backreferences`].
++    pub fn python_backreferences(&mut self, yes: bool) -> &mut Self {
++        self.options.python_backreferences(yes);
 +        self
 +    }
 +
@@ -165,7 +221,9 @@
 +    /// See [`RegexOptionsBuilder::stack_limit`].
 +    pub fn stack_limit(&mut self, limit: Option<usize>) -> &mut Self {
 +        self.options.stack_limit(limit);
-@@ -1331,0 +1374,7 @@
+@@ -1268,0 +1332 @@
++                python_backreferences: options.python_backreferences,
+@@ -1331,0 +1396,7 @@
 +        input::checked(input.cancel_flag(), || self.is_match_input_inner(input))?
 +    }
 +
@@ -173,7 +231,7 @@
 +        &self,
 +        input: RegexInput<'_, S>,
 +    ) -> Result<bool> {
-@@ -1440,0 +1490,10 @@
+@@ -1440,0 +1512,10 @@
 +        &self,
 +        input: &RegexInput<'_, S>,
 +        option_flags: u32,
@@ -184,7 +242,7 @@
 +    }
 +
 +    fn find_input_raw_inner<S: input::Input + ?Sized>(
-@@ -1642,0 +1702,10 @@
+@@ -1642,0 +1724,10 @@
 +        &self,
 +        input: &RegexInput<'t, S>,
 +        option_flags: u32,
@@ -195,13 +253,13 @@
 +    }
 +
 +    fn captures_input_with_option_flags_inner<'t, S: input::Input + ?Sized>(
-@@ -2278,0 +2348,2 @@
+@@ -2278,0 +2370,2 @@
 +        /// Fold only ASCII letters for this reference.
 +        ascii: bool,
-@@ -2361,0 +2433,2 @@
+@@ -2361,0 +2455,2 @@
 +        /// Fold only ASCII letters for this reference.
 +        ascii: bool,
-@@ -3218 +3291,2 @@
+@@ -3218 +3313,2 @@
 -            casei: false
 +            casei: false,
 +            ascii: false,
@@ -251,9 +309,53 @@
 +pub const FLAG_ASCII_BACKREF: u32 = 1 << 10;
 --- upstream/src/seek.rs
 +++ vendor/src/seek.rs
-@@ -292 +292 @@
+@@ -121,0 +122 @@
++    python_backreferences: bool,
+@@ -131,0 +133 @@
++        python_backreferences,
+@@ -134,0 +137,2 @@
++// Retain the inherited walker arguments while threading one compiler mode.
++#[allow(clippy::too_many_arguments)]
+@@ -142,0 +147 @@
++    python_backreferences: bool,
+@@ -227,0 +233 @@
++                    python_backreferences,
+@@ -250,0 +257 @@
++                    python_backreferences,
+@@ -268,0 +276 @@
++                    python_backreferences,
+@@ -284,0 +293 @@
++                    python_backreferences,
+@@ -292 +301 @@
 -        Expr::Backref { group, casei }
 +        Expr::Backref { group, casei, .. }
+@@ -293,0 +303,7 @@
++            if python_backreferences && *casei {
++                // Python backreferences use scalar lowercase, not the delegated
++                // literal folding relation. A permissive placeholder keeps the
++                // filter sound, including width-changing matches such as i/İ.
++                emit_min_size_placeholder(buf, info.min_size, precedence);
++                return;
++            }
+@@ -325,0 +342 @@
++                                python_backreferences,
+@@ -341,0 +359 @@
++                                python_backreferences,
+@@ -367,0 +386 @@
++                            python_backreferences,
+@@ -388,0 +408 @@
++                    python_backreferences,
+@@ -419,0 +440 @@
++                    python_backreferences,
+@@ -430,0 +452 @@
++                    python_backreferences,
+@@ -441,0 +464 @@
++                    python_backreferences,
+@@ -486,0 +510 @@
++                    python_backreferences,
+@@ -547 +571 @@
+-        build_seek_pattern(&info, &group_info_map, 0, &mut buf, 0);
++        build_seek_pattern(&info, &group_info_map, 0, &mut buf, 0, false);
 --- upstream/src/vm.rs
 +++ vendor/src/vm.rs
 @@ -78,0 +79 @@
@@ -287,7 +389,15 @@
 @@ -295 +297 @@
 -        Some(pos - ix)
 +        Ok(Some(pos - ix))
-@@ -551,0 +554,37 @@
+@@ -503,0 +506,7 @@
++    /// Python case-insensitive scalar backreference, enabled only by its builder option.
++    PythonBackref {
++        /// The save slot representing the start of the capture group.
++        slot: usize,
++        /// Keep non-ASCII scalars exact and fold only ASCII letters.
++        ascii: bool,
++    },
+@@ -551,0 +561,37 @@
 +// SafeYolo patch: grow per-search buffers fallibly. No subject or pattern is
 +// retained in the allocation error.
 +fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<()> {
@@ -325,22 +435,22 @@
 +    }
 +}
 +
-@@ -660 +699 @@
+@@ -660 +706 @@
 -    fn reset(&mut self, n_saves: usize, options: u32) {
 +    fn reset(&mut self, n_saves: usize, options: u32) -> Result<()> {
-@@ -662 +701 @@
+@@ -662 +708 @@
 -        self.saves.resize(n_saves, usize::MAX);
 +        resize(&mut self.saves, n_saves, usize::MAX)?;
-@@ -667,0 +707 @@
+@@ -667,0 +714 @@
 +        Ok(())
-@@ -673,0 +714 @@
+@@ -673,0 +721 @@
 +            reserve(&mut self.stack, 1)?;
-@@ -684 +725 @@
+@@ -684 +732 @@
 -    fn pop(&mut self) -> (usize, usize) {
 +    fn pop(&mut self, cancel: Option<&AtomicBool>) -> Result<(usize, usize)> {
-@@ -685,0 +727 @@
+@@ -685,0 +734 @@
 +            check_cancelled(cancel)?;
-@@ -692,4 +734,4 @@
+@@ -692,4 +741,4 @@
 -        (pc, ix)
 -    }
 -
@@ -349,9 +459,9 @@
 +    }
 +
 +    fn save(&mut self, slot: usize, val: usize, cancel: Option<&AtomicBool>) -> Result<()> {
-@@ -696,0 +739 @@
+@@ -696,0 +746 @@
 +            check_cancelled(cancel)?;
-@@ -701,3 +744,4 @@
+@@ -701,3 +751,4 @@
 -                return;
 -            }
 -        }
@@ -359,16 +469,16 @@
 +            }
 +        }
 +        reserve(&mut self.oldsave, 1)?;
-@@ -714,0 +759 @@
+@@ -714,0 +766 @@
 +        Ok(())
-@@ -723 +768 @@
+@@ -723 +775 @@
 -    fn stack_push(&mut self, val: usize) {
 +    fn stack_push(&mut self, val: usize, cancel: Option<&AtomicBool>) -> Result<()> {
-@@ -724,0 +770 @@
+@@ -724,0 +777 @@
 +            reserve(&mut self.saves, 1)?;
-@@ -729,0 +776 @@
+@@ -729,0 +783 @@
 +            reserve(&mut self.saves, 1)?;
-@@ -732,3 +779,4 @@
+@@ -732,3 +786,4 @@
 -            self.save(sp, val);
 -        }
 -        self.save(explicit_sp, sp + 1);
@@ -376,28 +486,28 @@
 +        }
 +        self.save(explicit_sp, sp + 1, cancel)?;
 +        Ok(())
-@@ -738 +786 @@
+@@ -738 +793 @@
 -    fn stack_pop(&mut self) -> usize {
 +    fn stack_pop(&mut self, cancel: Option<&AtomicBool>) -> Result<usize> {
-@@ -742,2 +790,2 @@
+@@ -742,2 +797,2 @@
 -        self.save(explicit_sp, sp);
 -        result
 +        self.save(explicit_sp, sp, cancel)?;
 +        Ok(result)
-@@ -758 +806 @@
+@@ -758 +813 @@
 -    fn backtrack_cut(&mut self, count: usize) {
 +    fn backtrack_cut(&mut self, count: usize, cancel: Option<&AtomicBool>) -> Result<()> {
-@@ -761 +809 @@
+@@ -761 +816 @@
 -            return;
 +            return Ok(());
-@@ -766,0 +815 @@
+@@ -766,0 +822 @@
 +                check_cancelled(cancel)?;
-@@ -778,0 +828,2 @@
+@@ -778,0 +835,2 @@
 +            check_cancelled(cancel)?;
 +            reserve(&mut saved, 1)?;
-@@ -783,0 +835 @@
+@@ -783,0 +842 @@
 +            check_cancelled(cancel)?;
-@@ -785 +837,8 @@
+@@ -785 +844,8 @@
 -            let new_slot = !saved.contains(&slot);
 +            let mut new_slot = true;
 +            for previous in &saved {
@@ -407,11 +517,11 @@
 +                    break;
 +                }
 +            }
-@@ -786,0 +846 @@
+@@ -786,0 +853 @@
 +                reserve(&mut saved, 1)?;
-@@ -797,0 +858 @@
+@@ -797,0 +865 @@
 +        Ok(())
-@@ -836,0 +898,19 @@
+@@ -836,0 +905,19 @@
 +fn equal_bytes(left: &[u8], right: &[u8], casei: bool, cancel: Option<&AtomicBool>) -> Result<bool> {
 +    if left.len() != right.len() {
 +        return Ok(false);
@@ -431,7 +541,7 @@
 +}
 +
 +#[inline]
-@@ -842,8 +922,10 @@
+@@ -842,8 +929,10 @@
 -) -> bool {
 -    // Compare as bytes because the literal might be a single byte char whereas ix
 -    // points to a multibyte char. Comparing with str would result in an error like
@@ -450,15 +560,15 @@
 +}
 +
 +fn matches_literal_casei_unicode(text: &str, literal: &str, cancel: Option<&AtomicBool>) -> Result<bool> {
-@@ -852,0 +935 @@
+@@ -852,0 +942 @@
 +        check_cancelled(cancel)?;
-@@ -854 +937 @@
+@@ -854 +944 @@
 -            (None, None) => return true,
 +            (None, None) => return Ok(true),
-@@ -863 +946 @@
+@@ -863 +953 @@
 -                    return false;
 +                    return Ok(false);
-@@ -866,5 +949,4 @@
+@@ -866,5 +956,4 @@
 -                    return false;
 -                }
 -            }
@@ -468,11 +578,11 @@
 +                }
 +            }
 +            _ => return Ok(false),
-@@ -897 +979,2 @@
+@@ -897 +986,2 @@
 -) -> bool {
 +    cancel: Option<&AtomicBool>,
 +) -> Result<bool> {
-@@ -899,4 +982,4 @@
+@@ -899,4 +989,4 @@
 -        return false;
 -    }
 -    if matches_literal(s, ix, end, literal) {
@@ -481,10 +591,10 @@
 +    }
 +    if matches_literal(s, ix, end, literal, cancel)? {
 +        return Ok(true);
-@@ -905 +988 @@
+@@ -905 +995 @@
 -        return false;
 +        return Ok(false);
-@@ -908,2 +991,10 @@
+@@ -908,2 +998,10 @@
 -    if text_bytes.is_ascii() && literal.is_ascii() {
 -        return text_bytes.eq_ignore_ascii_case(literal);
 +    let mut ascii = true;
@@ -497,7 +607,7 @@
 +    }
 +    if ascii {
 +        return equal_bytes(text_bytes, literal, true, cancel);
-@@ -912,11 +1003,7 @@
+@@ -912,11 +1010,48 @@
 -        // ASCII-only case folding: if content is not ASCII, no match
 -        return false;
 -    }
@@ -516,13 +626,54 @@
 +        return matches_literal_casei_unicode(text_str, lit_str, cancel);
 +    }
 +    Ok(false)
-@@ -933 +1020,2 @@
++}
++
++/// Decode one scalar without allocating or validating the whole remaining input.
++fn next_scalar<S: HaystackInput + ?Sized>(s: &S, position: &mut usize, limit: usize) -> Option<char> {
++    if *position >= limit || !s.is_char_boundary(*position) {
++        return None;
++    }
++    let end = s.advance_position(*position);
++    if end > limit {
++        return None;
++    }
++    let scalar = core::str::from_utf8(s.as_bytes().get(*position..end)?).ok()?.chars().next()?;
++    *position = end;
++    Some(scalar)
++}
++
++fn matches_python_backref<S: HaystackInput + ?Sized>(
++    s: &S, mut position: usize, mut reference: usize, reference_end: usize,
++    ascii: bool, cancel: Option<&AtomicBool>,
++) -> Result<Option<usize>> {
++    while reference < reference_end {
++        check_cancelled(cancel)?;
++        let (Some(left), Some(right)) = (
++            next_scalar(s, &mut reference, reference_end),
++            next_scalar(s, &mut position, s.len()),
++        ) else {
++            return Ok(None);
++        };
++        let equal = if left == right {
++            true
++        } else if ascii {
++            left.eq_ignore_ascii_case(&right)
++        } else {
++            crate::python_lowercase::lowercase(left) == crate::python_lowercase::lowercase(right)
++        };
++        if !equal {
++            return Ok(None);
++        }
++    }
++    check_cancelled(cancel)?;
++    Ok(Some(position))
+@@ -933 +1068,2 @@
 -) {
 +    cancel: Option<&AtomicBool>,
 +) -> Result<()> {
-@@ -936,0 +1025 @@
+@@ -936,0 +1073 @@
 +        check_cancelled(cancel)?;
-@@ -949,5 +1038,6 @@
+@@ -949,5 +1086,6 @@
 -                state.save(slot, start.get());
 -                state.save(slot + 1, end.get());
 -            }
@@ -534,144 +685,156 @@
 +        }
 +    }
 +    Ok(())
-@@ -996 +1086 @@
+@@ -996 +1134 @@
 -        state.saves.clone()
 +        copy_saves(&state.saves)
-@@ -1012 +1102 @@
+@@ -1012 +1150 @@
 -        (state.get(0), state.get(1))
 +        Ok((state.get(0), state.get(1)))
-@@ -1024 +1114 @@
+@@ -1024 +1162 @@
 -    extract: impl FnOnce(&State) -> T,
 +    extract: impl FnOnce(&State) -> Result<T>,
-@@ -1025,0 +1116,2 @@
+@@ -1025,0 +1164,2 @@
 +    let cancel = input.cancel_flag();
 +    check_cancelled(cancel)?;
-@@ -1033,2 +1125,4 @@
+@@ -1033,2 +1173,4 @@
 -    let Scratch { state, inner_slots } = &mut *scratch_guard;
 -    state.reset(prog.n_saves, option_flags);
 +    let run = ScratchRun { scratch: &mut scratch_guard, release: options.stack_limit.is_none() };
 +    let Scratch { state, inner_slots } = &mut *run.scratch;
 +    state.max_stack = options.stack_limit.unwrap_or(usize::MAX);
 +    state.reset(prog.n_saves, option_flags)?;
-@@ -1054,0 +1149 @@
+@@ -1054,0 +1197 @@
 +            check_cancelled(cancel)?;
-@@ -1080 +1175 @@
+@@ -1080 +1223 @@
 -                            state.save(0, slot1);
 +                            state.save(0, slot1, cancel)?;
-@@ -1090 +1185 @@
+@@ -1090 +1233 @@
 -                            best_saves = Some(state.saves.clone());
 +                            best_saves = Some(copy_saves(&state.saves)?);
-@@ -1094 +1189 @@
+@@ -1094 +1237 @@
 -                            return Ok(Some(extract(state)));
 +                            return Ok(Some(extract(state)?));
-@@ -1098 +1193 @@
+@@ -1098 +1241 @@
 -                    return Ok(Some(extract(state)));
 +                    return Ok(Some(extract(state)?));
-@@ -1126 +1221 @@
+@@ -1126 +1269 @@
 -                    if !matches_literal(haystack, ix, ix_end, val.as_bytes()) {
 +                    if !matches_literal(haystack, ix, ix_end, val.as_bytes(), cancel)? {
-@@ -1131 +1226 @@
+@@ -1131 +1274 @@
 -                Insn::LitCasei(ref lit) => match lit.match_len(haystack, ix) {
 +                Insn::LitCasei(ref lit) => match lit.match_len(haystack, ix, cancel)? {
-@@ -1222 +1317 @@
+@@ -1222 +1365 @@
 -                        return Ok(Some(extract(state)));
 +                        return Ok(Some(extract(state)?));
-@@ -1243,2 +1338,2 @@
+@@ -1243,2 +1386,2 @@
 -                Insn::Save(slot) => state.save(slot, ix),
 -                Insn::Save0(slot) => state.save(slot, 0),
 +                Insn::Save(slot) => state.save(slot, ix, cancel)?,
 +                Insn::Save0(slot) => state.save(slot, 0, cancel)?,
-@@ -1252 +1347 @@
+@@ -1252 +1395 @@
 -                        state.save(start_slot, ix);
 +                        state.save(start_slot, ix, cancel)?;
-@@ -1267 +1362 @@
+@@ -1267 +1410 @@
 -                    state.save(repeat, repcount + 1);
 +                    state.save(repeat, repcount + 1, cancel)?;
-@@ -1283 +1378 @@
+@@ -1283 +1426 @@
 -                    state.save(repeat, repcount + 1);
 +                    state.save(repeat, repcount + 1, cancel)?;
-@@ -1302 +1397 @@
+@@ -1302 +1445 @@
 -                    state.save(repeat, repcount + 1);
 +                    state.save(repeat, repcount + 1, cancel)?;
-@@ -1304 +1399 @@
+@@ -1304 +1447 @@
 -                        state.save(check, ix);
 +                        state.save(check, ix, cancel)?;
-@@ -1320 +1415 @@
+@@ -1320 +1463 @@
 -                    state.save(repeat, repcount + 1);
 +                    state.save(repeat, repcount + 1, cancel)?;
-@@ -1322 +1417 @@
+@@ -1322 +1465 @@
 -                        state.save(check, ix);
 +                        state.save(check, ix, cancel)?;
-@@ -1344 +1439 @@
+@@ -1344 +1487 @@
 -                        let (popped_pc, _) = state.pop();
 +                        let (popped_pc, _) = state.pop(cancel)?;
-@@ -1372 +1467 @@
+@@ -1372 +1515 @@
 -                        if !matches_literal_casei(haystack, ix, ix_end, ref_text, unicode) {
 +                        if !matches_literal_casei(haystack, ix, ix_end, ref_text, unicode, cancel)? {
-@@ -1375 +1470 @@
+@@ -1375 +1518 @@
 -                    } else if !matches_literal(haystack, ix, ix_end, ref_text) {
 +                    } else if !matches_literal(haystack, ix, ix_end, ref_text, cancel)? {
-@@ -1405 +1500 @@
+@@ -1378,0 +1522,11 @@
++                }
++                Insn::PythonBackref { slot, ascii } => {
++                    let lo = state.get(slot);
++                    let hi = state.get(slot + 1);
++                    if lo == usize::MAX || hi == usize::MAX {
++                        break 'fail;
++                    }
++                    let Some(end) = matches_python_backref(haystack, ix, lo, hi, ascii, cancel)? else {
++                        break 'fail;
++                    };
++                    ix = end;
+@@ -1405 +1559 @@
 -                    match dfa.try_search_rev(&mut cache_guard, &input) {
 +                    match checked(cancel, || dfa.try_search_rev(&mut cache_guard, &input))? {
-@@ -1416,3 +1511,3 @@
+@@ -1416,3 +1570,3 @@
 -                                    inner_slots.resize((range.end() - range.start() + 1) * 2, None);
 -
 -                                    if inner.search_slots(&forward_input, inner_slots).is_some() {
 +                                    resize(inner_slots, (range.end() - range.start() + 1) * 2, None)?;
 +
 +                                    if checked(cancel, || inner.search_slots(&forward_input, inner_slots))?.is_some() {
-@@ -1420 +1515 @@
+@@ -1420 +1574 @@
 -                                        store_capture_groups(state, inner_slots, range, true);
 +                                        store_capture_groups(state, inner_slots, range, true, cancel)?;
-@@ -1438 +1533 @@
+@@ -1438 +1592 @@
 -                    state.stack_push(count);
 +                    state.stack_push(count, cancel)?;
-@@ -1441,2 +1536,2 @@
+@@ -1441,2 +1595,2 @@
 -                    let count = state.stack_pop();
 -                    state.backtrack_cut(count);
 +                    let count = state.stack_pop(cancel)?;
 +                    state.backtrack_cut(count, cancel)?;
-@@ -1454,2 +1549,2 @@
+@@ -1454,2 +1608,2 @@
 -                        inner_slots.resize((range.end() - range.start() + 1) * 2, None);
 -                        if inner.search_slots(&input, inner_slots).is_some() {
 +                        resize(inner_slots, (range.end() - range.start() + 1) * 2, None)?;
 +                        if checked(cancel, || inner.search_slots(&input, inner_slots))?.is_some() {
-@@ -1457 +1552 @@
+@@ -1457 +1611 @@
 -                            store_capture_groups(state, inner_slots, range, false);
 +                            store_capture_groups(state, inner_slots, range, false, cancel)?;
-@@ -1464 +1559 @@
+@@ -1464 +1618 @@
 -                        match inner.search_half(&input) {
 +                        match checked(cancel, || inner.search_half(&input))? {
-@@ -1481 +1576 @@
+@@ -1481 +1635 @@
 -                    let delegate_matches_here = delegate.inner.search_half(&input).is_some();
 +                    let delegate_matches_here = checked(cancel, || delegate.inner.search_half(&input))?.is_some();
-@@ -1522 +1617 @@
+@@ -1522 +1676 @@
 -                        return Ok(Some(extract(state)));
 +                        return Ok(Some(extract(state)?));
-@@ -1541 +1636 @@
+@@ -1541 +1695 @@
 -                        match inner.search(&seek_input) {
 +                        match checked(cancel, || inner.search(&seek_input))? {
-@@ -1573 +1668 @@
+@@ -1573 +1727 @@
 -                        && matches_literal(haystack, ix - 1, ix, b"\n")
 +                        && matches_literal(haystack, ix - 1, ix, b"\n", cancel)?
-@@ -1586,0 +1682 @@
+@@ -1586,0 +1741 @@
 +        check_cancelled(cancel)?;
-@@ -1591 +1687 @@
+@@ -1591 +1746 @@
 -                return Ok(Some(extract(state)));
 +                return Ok(Some(extract(state)?));
-@@ -1601 +1697 @@
+@@ -1601 +1756 @@
 -            return Ok(Some(extract(state)));
 +            return Ok(Some(extract(state)?));
-@@ -1609 +1705 @@
+@@ -1609 +1764 @@
 -        let (newpc, newix) = state.pop();
 +        let (newpc, newix) = state.pop(cancel)?;
-@@ -1623,2 +1719,2 @@
+@@ -1623,2 +1778,2 @@
 -        assert!(matches_literal_casei_unicode("ΑΛΦΑ", "αλφα"));
 -        assert!(matches_literal_casei_unicode("σ", "ς"));
 +        assert!(matches_literal_casei_unicode("ΑΛΦΑ", "αλφα", None).unwrap());
 +        assert!(matches_literal_casei_unicode("σ", "ς", None).unwrap());
-@@ -1628,4 +1724,4 @@
+@@ -1628,4 +1783,4 @@
 -        assert!(matches_literal_casei_unicode("ſ", "s"));
 -        assert!(matches_literal_casei_unicode("S", "ſ"));
 -        assert!(matches_literal_casei_unicode("\u{212A}", "k"));
@@ -680,56 +843,56 @@
 +        assert!(matches_literal_casei_unicode("S", "ſ", None).unwrap());
 +        assert!(matches_literal_casei_unicode("\u{212A}", "k", None).unwrap());
 +        assert!(matches_literal_casei_unicode("\u{212B}", "å", None).unwrap());
-@@ -1633 +1729 @@
+@@ -1633 +1788 @@
 -        assert!(matches_literal_casei_unicode("aΛb", "AλB"));
 +        assert!(matches_literal_casei_unicode("aΛb", "AλB", None).unwrap());
-@@ -1635 +1731 @@
+@@ -1635 +1790 @@
 -        assert!(!matches_literal_casei_unicode("straße", "STRASSE"));
 +        assert!(!matches_literal_casei_unicode("straße", "STRASSE", None).unwrap());
-@@ -1637,3 +1733,3 @@
+@@ -1637,3 +1792,3 @@
 -        assert!(!matches_literal_casei_unicode("sab", "ſa"));
 -        assert!(!matches_literal_casei_unicode("ſa", "ſab"));
 -        assert!(!matches_literal_casei_unicode("αα", "α"));
 +        assert!(!matches_literal_casei_unicode("sab", "ſa", None).unwrap());
 +        assert!(!matches_literal_casei_unicode("ſa", "ſab", None).unwrap());
 +        assert!(!matches_literal_casei_unicode("αα", "α", None).unwrap());
-@@ -1648,2 +1744,2 @@
+@@ -1648,2 +1803,2 @@
 -        assert_eq!(state.pop(), (1, 1));
 -        assert_eq!(state.pop(), (0, 0));
 +        assert_eq!(state.pop(None).unwrap(), (1, 1));
 +        assert_eq!(state.pop(None).unwrap(), (0, 0));
-@@ -1653 +1749 @@
+@@ -1653 +1808 @@
 -        assert_eq!(state.pop(), (2, 2));
 +        assert_eq!(state.pop(None).unwrap(), (2, 2));
-@@ -1660 +1756 @@
+@@ -1660 +1815 @@
 -        state.save(0, 10);
 +        state.save(0, 10, None).unwrap();
-@@ -1662,2 +1758,2 @@
+@@ -1662,2 +1817,2 @@
 -        state.save(0, 20);
 -        assert_eq!(state.pop(), (0, 0));
 +        state.save(0, 20, None).unwrap();
 +        assert_eq!(state.pop(None).unwrap(), (0, 0));
-@@ -1670 +1766 @@
+@@ -1670 +1825 @@
 -        state.save(0, 10);
 +        state.save(0, 10, None).unwrap();
-@@ -1672 +1768 @@
+@@ -1672 +1827 @@
 -        state.save(0, 20);
 +        state.save(0, 20, None).unwrap();
-@@ -1674 +1770 @@
+@@ -1674 +1829 @@
 -        state.save(0, 30);
 +        state.save(0, 30, None).unwrap();
-@@ -1677 +1773 @@
+@@ -1677 +1832 @@
 -        assert_eq!(state.pop(), (1, 1));
 +        assert_eq!(state.pop(None).unwrap(), (1, 1));
-@@ -1679 +1775 @@
+@@ -1679 +1834 @@
 -        assert_eq!(state.pop(), (0, 0));
 +        assert_eq!(state.pop(None).unwrap(), (0, 0));
-@@ -1686,2 +1782,2 @@
+@@ -1686,2 +1841,2 @@
 -        state.stack_push(11);
 -        state.stack_push(12);
 +        state.stack_push(11, None).unwrap();
 +        state.stack_push(12, None).unwrap();
-@@ -1690,4 +1786,4 @@
+@@ -1690,4 +1845,4 @@
 -        state.stack_push(13);
 -        assert_eq!(state.stack_pop(), 13);
 -        state.stack_push(14);
@@ -738,45 +901,45 @@
 +        assert_eq!(state.stack_pop(None).unwrap(), 13);
 +        state.stack_push(14, None).unwrap();
 +        assert_eq!(state.pop(None).unwrap(), (100, 101));
-@@ -1696,2 +1792,2 @@
+@@ -1696,2 +1851,2 @@
 -        assert_eq!(state.stack_pop(), 12);
 -        assert_eq!(state.stack_pop(), 11);
 +        assert_eq!(state.stack_pop(None).unwrap(), 12);
 +        assert_eq!(state.stack_pop(None).unwrap(), 11);
-@@ -1703,2 +1799,2 @@
+@@ -1703,2 +1858,2 @@
 -        state.save(0, 1);
 -        state.save(1, 2);
 +        state.save(0, 1, None).unwrap();
 +        state.save(1, 2, None).unwrap();
-@@ -1709 +1805 @@
+@@ -1709 +1864 @@
 -        state.save(0, 3);
 +        state.save(0, 3, None).unwrap();
-@@ -1712 +1808 @@
+@@ -1712 +1867 @@
 -        state.backtrack_cut(count);
 +        state.backtrack_cut(count, None).unwrap();
-@@ -1721,2 +1817,2 @@
+@@ -1721,2 +1876,2 @@
 -        state.save(0, 1);
 -        state.save(1, 2);
 +        state.save(0, 1, None).unwrap();
 +        state.save(1, 2, None).unwrap();
-@@ -1725 +1821 @@
+@@ -1725 +1880 @@
 -        state.save(0, 3);
 +        state.save(0, 3, None).unwrap();
-@@ -1730 +1826 @@
+@@ -1730 +1885 @@
 -        state.save(0, 4);
 +        state.save(0, 4, None).unwrap();
-@@ -1732 +1828 @@
+@@ -1732 +1887 @@
 -        state.save(1, 5);
 +        state.save(1, 5, None).unwrap();
-@@ -1735 +1831 @@
+@@ -1735 +1890 @@
 -        state.backtrack_cut(count);
 +        state.backtrack_cut(count, None).unwrap();
-@@ -1740 +1836 @@
+@@ -1740 +1895 @@
 -        state.pop();
 +        state.pop(None).unwrap();
-@@ -1804 +1900 @@
+@@ -1804 +1959 @@
 -                        state.pop();
 +                        state.pop(None).unwrap();
-@@ -1809 +1905 @@
+@@ -1809 +1964 @@
 -                    state.save(slot, value);
 +                    state.save(slot, value, None).unwrap();

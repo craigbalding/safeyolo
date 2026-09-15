@@ -917,11 +917,11 @@ print(json.dumps(out))
             )
             .unwrap()
             .outcome,
-        Outcome::NoMatch
+        Outcome::MatchLogged
     );
     assert!(!compatibility_gaps().is_empty());
     eprintln!(
-        "Compared {} repaired/general Python regex cases; proved 2 unresolved grammar/casefold gaps",
+        "Compared {} repaired/general Python regex cases; retained named-Unicode grammar gap",
         samples.len()
     );
 }
@@ -1327,37 +1327,6 @@ fn source_prefilter_case(pattern: &str) -> bool {
             .any(|atom| pattern == format!("(?{flags}:{atom})"))
     })
 }
-fn retained_unicode_casefold_case(pattern: &str, insensitive: bool) -> bool {
-    [
-        "i",
-        r"[a-z]",
-        r"[^a-z]",
-        r"[A-ÿ]",
-        r"[^A-ÿ]",
-        r"[\0-\177]",
-        r"[\141-\172]",
-    ]
-    .iter()
-    .any(|atom| {
-        [
-            ("u", insensitive),
-            ("ui", true),
-            ("i", true),
-            ("", insensitive),
-        ]
-        .iter()
-        .any(|(flags, active)| {
-            *active
-                && pattern
-                    == if flags.is_empty() {
-                        atom.to_string()
-                    } else {
-                        format!("(?{flags}:{atom})")
-                    }
-        })
-    })
-}
-
 #[test]
 #[ignore = "Actual Python scoped ASCII/octal matrix and intentional prefilter correction; set SAFEYOLO_POLICY_PYTHON"]
 fn python_ascii_octal_matrix_keeps_source_defects_separate_from_remaining_gaps() {
@@ -1390,7 +1359,6 @@ print(json.dumps(out))
         &json!(cases),
     );
     let mut corrected = 0;
-    let mut unicode_gaps = 0;
     let mut grammar_gaps = 0;
     for ((pattern, insensitive), old) in patterns.iter().zip(actual.as_array().unwrap()) {
         let scanner = Scanner::default();
@@ -1439,28 +1407,12 @@ print(json.dumps(out))
             assert!(old["debug"].as_str().unwrap().contains("UNI_"));
             corrected += 1;
         } else {
-            assert!(
-                retained_unicode_casefold_case(pattern, *insensitive),
-                "unclassified mismatch {pattern:?}"
-            );
-            for ((text, native), python) in texts
-                .iter()
-                .zip(matches)
-                .zip(old["matches"].as_array().unwrap())
-            {
-                if json!(native) != *python {
-                    assert!(
-                        matches!(*text, "İ" | "ı"),
-                        "new Unicode mismatch {pattern:?} {text:?}"
-                    );
-                }
-            }
-            unicode_gaps += 1;
+            panic!("unclassified mismatch {pattern:?}");
         }
     }
-    assert_eq!((corrected, unicode_gaps, grammar_gaps), (36, 42, 1));
+    assert_eq!((corrected, grammar_gaps), (36, 1));
     eprintln!(
-        "Compared {} patterns x {} subjects; 36 corrected Python prefilter rows, 42 retained Unicode rows, 1 named-Unicode grammar gap",
+        "Compared {} patterns x {} subjects; 36 corrected Python prefilter rows, 1 retained named-Unicode grammar gap",
         patterns.len(),
         texts.len()
     );
@@ -1889,4 +1841,175 @@ fn ascii_octal_subjects() -> Vec<&'static str> {
         "äÄÄ",
         "(?A:a)",
     ]
+}
+
+#[test]
+fn unicode_i_literals_classes_and_backreferences_keep_their_distinct_rules() {
+    for (pattern, matched, clear) in [
+        (r"(?i)^i$", vec!["i", "I", "İ", "ı"], vec!["j", "i\u{307}"]),
+        (r"(?i)^[^i]$", vec!["j"], vec!["i", "I", "İ", "ı"]),
+        (r"(?ai)^i$", vec!["i", "I"], vec!["İ", "ı"]),
+        (r"(?ai:(?u:^ı$))", vec!["i", "I", "İ", "ı"], vec!["j"]),
+        (
+            r"(?i)^(.)\1$",
+            vec!["iİ", "İi", "ıı", "Σσ", "Kk", "ßẞ"],
+            vec!["iı", "σς", "µμ", "ſs", "ﬅﬆ"],
+        ),
+    ] {
+        let scanner = make_scanner(json!([rule("fold", pattern, "body", "block")]));
+        for (subjects, expected) in [(matched, Outcome::MatchBlocked), (clear, Outcome::NoMatch)] {
+            for text in subjects {
+                assert_eq!(
+                    scanner
+                        .scan_websocket_text(Direction::Request, MessageType::Text, text, block())
+                        .unwrap()
+                        .outcome,
+                    expected,
+                    "{pattern:?} {text:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ascii_backreferences_allow_ascii_changes_beside_identical_unicode_scalars() {
+    let scanner = make_scanner(json!([rule("mixed", r"(?ai)^(.+)\1$", "body", "block")]));
+    for (text, matched) in [
+        ("äaäA", true),
+        ("aİAİ", true),
+        ("aıAı", true),
+        ("µaµA", true),
+        ("äaÄA", false),
+        ("aİAI", false),
+        ("µaμA", false),
+    ] {
+        assert_eq!(
+            scanner
+                .scan_websocket_text(
+                    Direction::Response,
+                    MessageType::Text,
+                    text,
+                    Options::default()
+                )
+                .unwrap()
+                .finding
+                .is_some(),
+            matched,
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires SAFEYOLO_POLICY_PYTHON with the shipped Python dependencies"]
+fn python_unicode_literal_class_and_backreference_matrix() {
+    let characters = [
+        'I', 'i', 'İ', 'ı', 'j', 'J', 's', 'S', 'ſ', 'σ', 'ς', 'Σ', 'µ', 'μ', 'Μ', 'K', 'k', 'K',
+        'Å', 'å', 'Å', 'ß', 'ẞ', 'α', 'Α', 'ä', 'Ä', 'ﬅ', 'ﬆ', 'é', 'É', '\u{307}', '\u{a7cb}',
+        'ɤ',
+    ];
+    let mut subjects: Vec<String> = characters.iter().map(char::to_string).collect();
+    for left in characters {
+        for right in characters {
+            subjects.push(format!("{left}{right}"));
+            subjects.push(format!("{left}{right}X"));
+        }
+    }
+    subjects.extend(
+        [
+            "", "i\u{307}", "aiaİ", "aİai", "KbKb", "KbKb", "σςσς", "σςσσ", "ſsſs", "ſssſ", "ıiıi",
+            "ıiii", "äaäA", "aİAİ", "aıAı", "µaµA",
+        ]
+        .map(str::to_owned),
+    );
+    let mut patterns = vec![];
+    for atom in [
+        "i",
+        "I",
+        "İ",
+        "ı",
+        r"\x49",
+        r"\u0130",
+        r"[i]",
+        r"[^i]",
+        r"[İ]",
+        r"[^İ]",
+        r"[a-z]",
+        r"[^a-z]",
+        r"[I-J]",
+        r"[\u012f-\u0131]",
+        r"[^\u012f-\u0131]",
+    ] {
+        for (before, after) in [
+            ("(?i:", ")"),
+            ("(?ai:", ")"),
+            ("(?ai:(?u:", "))"),
+            ("(?i:(?-i:", "))"),
+        ] {
+            patterns.push(format!(r"\A{before}{atom}{after}\Z"));
+        }
+    }
+    patterns.extend(
+        [
+            r"(?i)\A(.)\1\Z",
+            r"(?ai)\A(.)\1\Z",
+            r"\A(.)\1\Z",
+            r"\A(.)(?i:\1)\Z",
+            r"(?i)\A(.)(?-i:\1)\Z",
+            r"(?i)\A(?P<a>.)(?P=a)\Z",
+            r"(?i)\A(.+)\1\Z",
+            r"(?ai)\A(.+)\1\Z",
+            r"(?i)\A(.)(?a:\1)\Z",
+            r"(?ai)\A(.)(?u:\1)\Z",
+            r"(?i)\A((?:.{2}))\1\Z",
+            r"(?i)\A(.)\1(?-i:X)\Z",
+            r"(?i)\A(σ)\1\Z",
+            r"(?i)\A(ſ)\1\Z",
+            r"(?i)\A(ı)\1\Z",
+            r"(?i)\A(İ)\1\Z",
+            r"(?i)\A(µ)\1\Z",
+            r"(?i)\A(K)\1\Z",
+            r"(?i)\A(ß)\1\Z",
+            r"(?i)\A(.)\1(?<=\1)\Z",
+        ]
+        .map(str::to_owned),
+    );
+    let input = json!({"patterns":patterns,"texts":subjects});
+    let old = python(
+        r#"
+import json,sys
+from safeyolo.detection.patterns import compile_pattern
+source=json.load(sys.stdin)
+results=[]
+for expression in source['patterns']:
+    compiled=compile_pattern(expression)
+    assert compiled is not None
+    results.append([bool(compiled.search(text)) for text in source['texts']])
+print(json.dumps(results))
+"#,
+        &input,
+    );
+    for (pattern, expected) in patterns.iter().zip(old.as_array().unwrap()) {
+        let scanner = make_scanner(json!([rule("matrix", pattern, "body", "log")]));
+        for (text, matched) in subjects.iter().zip(expected.as_array().unwrap()) {
+            let actual = scanner
+                .scan_websocket_text(
+                    Direction::Request,
+                    MessageType::Text,
+                    text,
+                    Options::default(),
+                )
+                .unwrap()
+                .finding
+                .is_some();
+            assert_eq!(json!(actual), *matched, "{pattern:?} {text:?}");
+        }
+    }
+    eprintln!(
+        "Compared {} Python Unicode patterns x {} subjects = {} matches",
+        patterns.len(),
+        subjects.len(),
+        patterns.len() * subjects.len()
+    );
 }

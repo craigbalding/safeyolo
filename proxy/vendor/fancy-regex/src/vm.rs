@@ -503,6 +503,13 @@ pub enum Insn {
         /// Whether Unicode mode is enabled (affects case folding behavior)
         unicode: bool,
     },
+    /// Python case-insensitive scalar backreference, enabled only by its builder option.
+    PythonBackref {
+        /// The save slot representing the start of the capture group.
+        slot: usize,
+        /// Keep non-ASCII scalars exact and fold only ASCII letters.
+        ascii: bool,
+    },
     /// Begin of atomic group
     BeginAtomic,
     /// End of atomic group
@@ -1009,6 +1016,47 @@ fn matches_literal_casei<S: HaystackInput + ?Sized>(
     Ok(false)
 }
 
+/// Decode one scalar without allocating or validating the whole remaining input.
+fn next_scalar<S: HaystackInput + ?Sized>(s: &S, position: &mut usize, limit: usize) -> Option<char> {
+    if *position >= limit || !s.is_char_boundary(*position) {
+        return None;
+    }
+    let end = s.advance_position(*position);
+    if end > limit {
+        return None;
+    }
+    let scalar = core::str::from_utf8(s.as_bytes().get(*position..end)?).ok()?.chars().next()?;
+    *position = end;
+    Some(scalar)
+}
+
+fn matches_python_backref<S: HaystackInput + ?Sized>(
+    s: &S, mut position: usize, mut reference: usize, reference_end: usize,
+    ascii: bool, cancel: Option<&AtomicBool>,
+) -> Result<Option<usize>> {
+    while reference < reference_end {
+        check_cancelled(cancel)?;
+        let (Some(left), Some(right)) = (
+            next_scalar(s, &mut reference, reference_end),
+            next_scalar(s, &mut position, s.len()),
+        ) else {
+            return Ok(None);
+        };
+        let equal = if left == right {
+            true
+        } else if ascii {
+            left.eq_ignore_ascii_case(&right)
+        } else {
+            crate::python_lowercase::lowercase(left) == crate::python_lowercase::lowercase(right)
+        };
+        if !equal {
+            return Ok(None);
+        }
+    }
+    check_cancelled(cancel)?;
+    Ok(Some(position))
+}
+
 /// Helper function to store capture group positions from inner_slots into state.
 /// This is used by both Delegate and BackwardsDelegate instructions.
 #[inline]
@@ -1471,6 +1519,17 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                         break 'fail;
                     }
                     ix = ix_end;
+                }
+                Insn::PythonBackref { slot, ascii } => {
+                    let lo = state.get(slot);
+                    let hi = state.get(slot + 1);
+                    if lo == usize::MAX || hi == usize::MAX {
+                        break 'fail;
+                    }
+                    let Some(end) = matches_python_backref(haystack, ix, lo, hi, ascii, cancel)? else {
+                        break 'fail;
+                    };
+                    ix = end;
                 }
                 Insn::BackrefExistsCondition(group) => {
                     let lo = state.get(group * 2);

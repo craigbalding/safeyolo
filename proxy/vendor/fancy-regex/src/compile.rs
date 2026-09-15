@@ -185,12 +185,21 @@ impl<'a> Compiler<'a> {
                 self.compile_lookaround(info, la)?;
             }
             Expr::Backref { group, casei, ascii } => {
-                self.b.add(Insn::Backref {
-                    slot: group * 2,
-                    casei,
-                    // use the pre-computed effective unicode flag (unicode && !Ascii bytes mode)
-                    unicode: self.options.unicode && !ascii,
-                });
+                if casei && self.options.python_backreferences
+                    && !matches!(self.options.bytes_mode, BytesMode::Ascii)
+                {
+                    self.b.add(Insn::PythonBackref {
+                        slot: group * 2,
+                        ascii: !self.options.unicode || ascii,
+                    });
+                } else {
+                    self.b.add(Insn::Backref {
+                        slot: group * 2,
+                        casei,
+                        // Effective Unicode mode excludes ASCII scopes and ASCII byte mode.
+                        unicode: self.options.unicode && !ascii,
+                    });
+                }
             }
             Expr::BackrefExistsCondition {
                 group,
@@ -1197,6 +1206,8 @@ pub struct CompileOptions {
     /// to decide whether it is useful enough to replace the `SplitUnanchored` preamble with a
     /// `Seek` instruction. When `None`, seek is disabled entirely.
     pub seek_filter: Option<fn(&str) -> bool>,
+    /// Select the pinned Python scalar-lowercase backreference instruction.
+    pub python_backreferences: bool,
     /// To match Oniguruma behavior where only \z can match at EOF if preceeded by a newline character
     pub disallow_empty_match_at_eof_after_newline: bool,
     /// How the VM should advance positions: byte-level (Ascii) vs codepoint-level (Unicode/UnicodeBytes).
@@ -1226,6 +1237,7 @@ impl core::fmt::Debug for CompileOptions {
             .field("anchored", &self.anchored)
             .field("contains_subroutines", &self.contains_subroutines)
             .field("seek_filter", &seek_filter_desc)
+            .field("python_backreferences", &self.python_backreferences)
             .field(
                 "disallow_empty_match_at_eof_after_newline",
                 &self.disallow_empty_match_at_eof_after_newline,
@@ -1244,6 +1256,7 @@ impl Default for CompileOptions {
             anchored: false,
             contains_subroutines: false,
             seek_filter: None,
+            python_backreferences: false,
             disallow_empty_match_at_eof_after_newline: false,
             bytes_mode: BytesMode::default(),
             unicode: true,
@@ -1271,7 +1284,7 @@ pub fn compile(info: &Info<'_>, options: CompileOptions) -> Result<Prog> {
     };
 
     let mut seek_pattern = String::new();
-    build_seek_pattern(info, &c.group_info_map, 0, &mut seek_pattern, 0);
+    build_seek_pattern(info, &c.group_info_map, 0, &mut seek_pattern, 0, c.options.python_backreferences);
 
     if !c.options.anchored {
         let mut used_seek = false;

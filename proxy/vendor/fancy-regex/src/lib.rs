@@ -59,6 +59,7 @@ mod input;
 mod optimize;
 mod parse;
 mod parse_flags;
+mod python_lowercase;
 mod regexset;
 mod replacer;
 mod seek;
@@ -514,6 +515,7 @@ struct RegexOptions {
     delegate_dfa_size_limit: Option<usize>,
     oniguruma_mode: bool,
     allow_ascii_backref_flag: bool,
+    python_backreferences: bool,
     ignore_numbered_groups_when_named_groups_exist: bool,
     hard_regex_runtime_options: HardRegexRuntimeOptions,
     bytes_mode: BytesMode,
@@ -543,6 +545,7 @@ impl fmt::Debug for RegexOptions {
             .field("delegate_dfa_size_limit", &self.delegate_dfa_size_limit)
             .field("oniguruma_mode", &self.oniguruma_mode)
             .field("allow_ascii_backref_flag", &self.allow_ascii_backref_flag)
+            .field("python_backreferences", &self.python_backreferences)
             .field(
                 "ignore_numbered_groups_when_named_groups_exist",
                 &self.ignore_numbered_groups_when_named_groups_exist,
@@ -567,6 +570,7 @@ impl Default for RegexOptions {
             delegate_dfa_size_limit: None,
             oniguruma_mode: false,
             allow_ascii_backref_flag: false,
+            python_backreferences: false,
             ignore_numbered_groups_when_named_groups_exist: false,
             hard_regex_runtime_options: HardRegexRuntimeOptions::default(),
             bytes_mode: BytesMode::default(),
@@ -766,6 +770,17 @@ impl RegexOptionsBuilder {
     /// Default is `1_000_000` (1 million).
     pub fn backtrack_limit(&mut self, limit: usize) -> &mut Self {
         self.options.hard_regex_runtime_options.backtrack_limit = limit;
+        self
+    }
+
+    /// Use Python 3.12 Unicode-string semantics for case-insensitive backreferences.
+    ///
+    /// Default false. Unicode references compare one scalar lowercase at a time
+    /// using pinned Unicode 15 data. ASCII scopes fold only ASCII letters and keep
+    /// other scalars exact. The subject advances by its own scalar byte widths.
+    /// This option does not change literal/class folding or ASCII byte mode.
+    pub fn python_backreferences(&mut self, yes: bool) -> &mut Self {
+        self.options.python_backreferences = yes;
         self
     }
 
@@ -1093,6 +1108,12 @@ impl RegexBuilder {
         self
     }
 
+    /// See [`RegexOptionsBuilder::python_backreferences`].
+    pub fn python_backreferences(&mut self, yes: bool) -> &mut Self {
+        self.options.python_backreferences(yes);
+        self
+    }
+
     /// Enable the private compiler-adapter scope; see
     /// [`RegexOptionsBuilder::allow_ascii_backref_flag`].
     pub fn allow_ascii_backref_flag(&mut self, yes: bool) -> &mut Self {
@@ -1308,6 +1329,7 @@ impl Regex {
                 anchored: can_compile_as_anchored(&tree.expr),
                 contains_subroutines: tree.contains_subroutines,
                 seek_filter: options.seek_filter,
+                python_backreferences: options.python_backreferences,
                 disallow_empty_match_at_eof_after_newline,
                 bytes_mode: options.bytes_mode,
                 unicode: options.syntaxc.get_unicode()

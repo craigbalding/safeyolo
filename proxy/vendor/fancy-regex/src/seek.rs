@@ -119,6 +119,7 @@ pub(crate) fn build_seek_pattern<'a>(
     depth: usize,
     buf: &mut String,
     precedence: u8,
+    python_backreferences: bool,
 ) {
     let mut inlined_groups = Vec::new();
     build_seek_pattern_impl(
@@ -129,9 +130,12 @@ pub(crate) fn build_seek_pattern<'a>(
         precedence,
         false,
         &mut inlined_groups,
+        python_backreferences,
     );
 }
 
+// Retain the inherited walker arguments while threading one compiler mode.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_seek_pattern_impl<'a>(
     info: &Info<'a>,
     group_info_map: &Map<usize, &'a Info<'a>>,
@@ -140,6 +144,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
     precedence: u8,
     drop_positional_anchors: bool,
     inlined_groups: &mut Vec<usize>,
+    python_backreferences: bool,
 ) {
     // Drop positional anchors at this node when requested (used when inlining for a backref).
     if drop_positional_anchors {
@@ -225,6 +230,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                     2,
                     drop_positional_anchors,
                     inlined_groups,
+                    python_backreferences,
                 );
             }
             if precedence > 1 {
@@ -248,6 +254,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                     1,
                     drop_positional_anchors,
                     inlined_groups,
+                    python_backreferences,
                 );
                 first = false;
             }
@@ -266,6 +273,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                     precedence,
                     drop_positional_anchors,
                     inlined_groups,
+                    python_backreferences,
                 );
             }
         }
@@ -282,6 +290,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                     3,
                     drop_positional_anchors,
                     inlined_groups,
+                    python_backreferences,
                 );
             }
             write_quantifier(buf, *lo, *hi, *greedy);
@@ -291,6 +300,13 @@ pub(crate) fn build_seek_pattern_impl<'a>(
         }
         Expr::Backref { group, casei, .. }
         | Expr::BackrefWithRelativeRecursionLevel { group, casei, .. } => {
+            if python_backreferences && *casei {
+                // Python backreferences use scalar lowercase, not the delegated
+                // literal folding relation. A permissive placeholder keeps the
+                // filter sound, including width-changing matches such as i/İ.
+                emit_min_size_placeholder(buf, info.min_size, precedence);
+                return;
+            }
             // Inline the body of the referenced capture group, wrapping with (?i:...) when
             // the backref is case-insensitive so the approximation remains correct.
             //
@@ -323,6 +339,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                                 0,
                                 true,
                                 inlined_groups,
+                                python_backreferences,
                             );
                             inlined_groups.pop();
                             if !inner.is_empty() {
@@ -339,6 +356,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                                 precedence,
                                 true,
                                 inlined_groups,
+                                python_backreferences,
                             );
                             inlined_groups.pop();
                         }
@@ -365,6 +383,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                             precedence,
                             drop_positional_anchors,
                             inlined_groups,
+                            python_backreferences,
                         );
                         return;
                     }
@@ -386,6 +405,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                     precedence,
                     drop_positional_anchors,
                     inlined_groups,
+                    python_backreferences,
                 );
             }
         }
@@ -417,6 +437,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                     2,
                     drop_positional_anchors,
                     inlined_groups,
+                    python_backreferences,
                 );
             }
             if info.children.len() >= 2 {
@@ -428,6 +449,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                     2,
                     drop_positional_anchors,
                     inlined_groups,
+                    python_backreferences,
                 );
             }
             if info.children.len() >= 3 {
@@ -439,6 +461,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                     1,
                     drop_positional_anchors,
                     inlined_groups,
+                    python_backreferences,
                 );
             }
             // Build the "condition then true-branch" alternative.
@@ -484,6 +507,7 @@ pub(crate) fn build_seek_pattern_impl<'a>(
                     precedence,
                     drop_positional_anchors,
                     inlined_groups,
+                    python_backreferences,
                 );
             }
         }
@@ -544,7 +568,7 @@ mod tests {
         let mut group_info_map = Map::new();
         populate_group_info_map(&mut group_info_map, &info);
         let mut buf = String::new();
-        build_seek_pattern(&info, &group_info_map, 0, &mut buf, 0);
+        build_seek_pattern(&info, &group_info_map, 0, &mut buf, 0, false);
         buf
     }
 
