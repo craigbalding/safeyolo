@@ -9,6 +9,7 @@
     ".gitignore",
     "Cargo.toml",
     "src/error.rs",
+    "src/input.rs",
     "src/lib.rs",
     "src/parse_flags.rs",
     "src/vm.rs"
@@ -32,7 +33,7 @@
     },
     "Cargo.toml": {
       "upstream_sha256": "38ffa9cb6393c5db0f77721781d324f773d974e8b37b686759d11a302095c1af",
-      "vendored_sha256": "2142144dc4b449b51a9fa9ab0cdd73e728533be25dee328d864c3dd0bbe04358"
+      "vendored_sha256": "07d06b2952f756d4dee8b98b4c7e0da9b6e5bb03ed17e4f953a1abdf215fc116"
     },
     "Cargo.toml.orig": {
       "upstream_sha256": "38ffa9cb6393c5db0f77721781d324f773d974e8b37b686759d11a302095c1af",
@@ -92,7 +93,7 @@
     },
     "src/error.rs": {
       "upstream_sha256": "a1b68ff8a76227bdb3be20f847942fe99bbac70d1d6f97c696ee50647217d86a",
-      "vendored_sha256": "c041e3c5e7425f6b80540b9a4475393e0c13bc67fa258df7769f604d9396dc87"
+      "vendored_sha256": "eb8394b7125808e194723306a65e9e3b46543853c67290614743f820e16fc0ce"
     },
     "src/expand.rs": {
       "upstream_sha256": "57a62ab4a981a651cd7a5e98208164c56d630e5ad2ea2f904cfdd695df5484a2",
@@ -100,11 +101,11 @@
     },
     "src/input.rs": {
       "upstream_sha256": "b63c92fb3f1f39ed9dae9c9a0a5cd645d2805685a8764de52f2b10d54266aec8",
-      "vendored_sha256": "b63c92fb3f1f39ed9dae9c9a0a5cd645d2805685a8764de52f2b10d54266aec8"
+      "vendored_sha256": "c6739545125e6e4aaa9df1b00b1c5b9efc67c0f26ccc92219eb2fe25cc1b9dc3"
     },
     "src/lib.rs": {
       "upstream_sha256": "39bafd33072a9372e86f12de42677fde8e662ade48d26a3ea4276eeb59e32f03",
-      "vendored_sha256": "fe20b7d91391ff014772eb21df38ec4c1f066c056efd0870d211e8ef736b31e9"
+      "vendored_sha256": "bd8da5b8d4ef4c9ecd70cc722848e222bf878e3f223c206a97aafec691023424"
     },
     "src/optimize.rs": {
       "upstream_sha256": "7db7522f6abe56b652f6f85385b25b0d5a34417e362f7fcc10e6d64ac61aa17d",
@@ -136,11 +137,15 @@
     },
     "src/vm.rs": {
       "upstream_sha256": "e136fb51d19f01a262ecd5e0c1e78d0b279c21cf63a9abcb9150e24128e59618",
-      "vendored_sha256": "5d6ef24d5a77203b2787186b9789cd73c21812ab8ffd9ec16aeff44496f1b9d1"
+      "vendored_sha256": "cd3ecd8dd08426651d43112d60f24988a8d3951eadf8689abe56687dfe8e7f52"
     },
     "tests/runtime_allocation.rs": {
       "upstream_sha256": null,
-      "vendored_sha256": "950c8c25989ae07d28bed09498dca094fc07c2e8ef5bba40bef14cdd78beccd8"
+      "vendored_sha256": "cde0373662c1d0e1f6e911dd9885c241437d0ceb2862d72e80a7c67c609bb992"
+    },
+    "tests/runtime_cancellation.rs": {
+      "upstream_sha256": null,
+      "vendored_sha256": "7301160a318b0b8beda8b64ddddf8d1fb77935f590e27d05c7c1aa2ea841a397"
     }
   }
 }

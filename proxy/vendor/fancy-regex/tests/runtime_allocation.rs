@@ -1,17 +1,28 @@
 //! Allocation failures are injected only on the current test thread, after
 //! compilation and delegated-engine caches have been warmed. No real OOM.
-use fancy_regex::{Error, Regex, RegexBuilder, RegexOptionsBuilder, RuntimeError};
+use fancy_regex::{Error, Regex, RegexBuilder, RegexInput, RegexOptionsBuilder, RuntimeError};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 thread_local! {
     static FAIL_AT: Cell<usize> = const { Cell::new(0) };
     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    static CANCEL_AT: Cell<usize> = const { Cell::new(0) };
 }
+static CANCEL: AtomicBool = AtomicBool::new(false);
 static LIVE_BYTES: AtomicIsize = AtomicIsize::new(0);
 struct Allocator;
 fn fail_now() -> bool {
+    let _ = CANCEL_AT.try_with(|remaining| {
+        let value = remaining.get();
+        if value > 0 {
+            remaining.set(value - 1);
+            if value == 1 {
+                CANCEL.store(true, Ordering::Relaxed);
+            }
+        }
+    });
     let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
     FAIL_AT
         .try_with(|remaining| {
@@ -187,4 +198,27 @@ fn concurrent_searches_do_not_share_mutable_vm_buffers() {
             worker.join().unwrap();
         }
     });
+}
+
+#[test]
+fn cancellation_after_large_growth_releases_scratch_and_next_request_recovers() {
+    let regex = unlimited(r"(a|aa)*\1$");
+    let text = "a".repeat(1_000_100);
+    assert!(regex.is_match(&text).unwrap());
+    ALLOCATIONS.with(|count| count.set(0));
+    assert!(regex.is_match(&text).unwrap());
+    let allocations = ALLOCATIONS.with(Cell::get);
+    let before = LIVE_BYTES.load(Ordering::Relaxed);
+    CANCEL.store(false, Ordering::Relaxed);
+    // Cancel inside the final growth allocation, after the VM accumulated large
+    // buffers. The allocator still succeeds: this is cancellation, not OOM.
+    CANCEL_AT.with(|value| value.set(allocations));
+    let result = regex.is_match_input(RegexInput::new(&text).with_cancel_flag(&CANCEL));
+    CANCEL_AT.with(|value| value.set(0));
+    assert!(matches!(
+        result,
+        Err(Error::RuntimeError(RuntimeError::Cancelled))
+    ));
+    assert!(LIVE_BYTES.load(Ordering::Relaxed) - before < 1024 * 1024);
+    assert!(regex.is_match("aaaa").unwrap());
 }

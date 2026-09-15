@@ -100,6 +100,8 @@ pub enum CompileError {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum RuntimeError {
+    /// The caller cancelled this individual search.
+    Cancelled,
     /// Working-memory allocation or capacity growth failed while matching.
     AllocationFailed,
     /// Max stack size exceeded for backtracking while executing regex.
@@ -187,6 +189,7 @@ impl fmt::Display for CompileError {
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            RuntimeError::Cancelled => write!(f, "Search cancelled"),
             RuntimeError::AllocationFailed => write!(f, "Working-memory allocation failed"),
             RuntimeError::StackOverflow => write!(f, "Max stack size exceeded for backtracking"),
             RuntimeError::BacktrackLimitExceeded => {

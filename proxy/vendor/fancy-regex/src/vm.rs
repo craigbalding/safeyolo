@@ -76,6 +76,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
+use core::sync::atomic::AtomicBool;
 use regex_automata::meta::Regex;
 use regex_automata::util::look::LookMatcher;
 use regex_automata::util::pool::Pool;
@@ -93,7 +94,7 @@ pub(crate) type CachePoolFn = alloc::boxed::Box<
 >;
 
 use crate::error::RuntimeError;
-use crate::input::{Input as HaystackInput, RegexInput};
+use crate::input::{check_cancelled, checked, Input as HaystackInput, RegexInput};
 use crate::Assertion;
 use crate::BytesMode;
 use crate::Error;
@@ -269,30 +270,31 @@ impl CaseiLiteral {
     /// If the literal matches at `ix`, returns the matched byte length (which
     /// can differ from the literal's own length under folding). `None` on no
     /// match or end of input.
-    fn match_len<S: HaystackInput + ?Sized>(&self, s: &S, ix: usize) -> Option<usize> {
+    fn match_len<S: HaystackInput + ?Sized>(&self, s: &S, ix: usize, cancel: Option<&AtomicBool>) -> Result<Option<usize>> {
         let bytes = s.as_bytes();
         let mut pos = ix;
         for ranges in self.chars.iter() {
+            check_cancelled(cancel)?;
             if pos >= bytes.len() {
-                return None;
+                return Ok(None);
             }
             let len = codepoint_len(bytes[pos]);
             let end = pos + len;
             if end > bytes.len() {
-                return None;
+                return Ok(None);
             }
             // The haystack is valid UTF-8 in Unicode mode, so this decodes the
             // codepoint; the `?` is a safety net for an unexpected boundary.
-            let c = core::str::from_utf8(&bytes[pos..end])
-                .ok()?
-                .chars()
-                .next()?;
+            let c = match core::str::from_utf8(&bytes[pos..end]).ok().and_then(|text| text.chars().next()) {
+                Some(c) => c,
+                None => return Ok(None),
+            };
             if !range_contains(ranges.as_ref(), c) {
-                return None;
+                return Ok(None);
             }
             pos = end;
         }
-        Some(pos - ix)
+        Ok(Some(pos - ix))
     }
 }
 
@@ -720,19 +722,21 @@ impl State {
     }
 
     // pop a backtrack branch
-    fn pop(&mut self) -> (usize, usize) {
+    fn pop(&mut self, cancel: Option<&AtomicBool>) -> Result<(usize, usize)> {
         for _ in 0..self.nsave {
+            check_cancelled(cancel)?;
             let Save { slot, value } = self.oldsave.pop().unwrap();
             self.saves[slot] = value;
         }
         let Branch { pc, ix, nsave } = self.stack.pop().unwrap();
         self.nsave = nsave;
         self.trace_stack("pop");
-        (pc, ix)
+        Ok((pc, ix))
     }
 
-    fn save(&mut self, slot: usize, val: usize) -> Result<()> {
+    fn save(&mut self, slot: usize, val: usize, cancel: Option<&AtomicBool>) -> Result<()> {
         for i in 0..self.nsave {
+            check_cancelled(cancel)?;
             // could avoid this iteration with some overhead; worth it?
             if self.oldsave[self.oldsave.len() - i - 1].slot == slot {
                 // already saved, just update
@@ -761,7 +765,7 @@ impl State {
 
     // push a value onto the explicit stack; note: the entire contents of
     // the explicit stack is saved and restored on backtrack.
-    fn stack_push(&mut self, val: usize) -> Result<()> {
+    fn stack_push(&mut self, val: usize, cancel: Option<&AtomicBool>) -> Result<()> {
         if self.saves.len() == self.explicit_sp {
             reserve(&mut self.saves, 1)?;
             self.saves.push(self.explicit_sp + 1);
@@ -772,18 +776,18 @@ impl State {
             reserve(&mut self.saves, 1)?;
             self.saves.push(val);
         } else {
-            self.save(sp, val)?;
+            self.save(sp, val, cancel)?;
         }
-        self.save(explicit_sp, sp + 1)?;
+        self.save(explicit_sp, sp + 1, cancel)?;
         Ok(())
     }
 
     // pop a value from the explicit stack
-    fn stack_pop(&mut self) -> Result<usize> {
+    fn stack_pop(&mut self, cancel: Option<&AtomicBool>) -> Result<usize> {
         let explicit_sp = self.explicit_sp;
         let sp = self.get(explicit_sp) - 1;
         let result = self.get(sp);
-        self.save(explicit_sp, sp)?;
+        self.save(explicit_sp, sp, cancel)?;
         Ok(result)
     }
 
@@ -799,7 +803,7 @@ impl State {
     /// * Only keep `count` backtrack branches on `stack`, discard the rest
     /// * Keep the first `oldsave` for each slot, discard the rest (multiple pushes might have
     ///   happened with saves to the same slot)
-    fn backtrack_cut(&mut self, count: usize) -> Result<()> {
+    fn backtrack_cut(&mut self, count: usize, cancel: Option<&AtomicBool>) -> Result<()> {
         if self.stack.len() == count {
             // no backtrack branches to discard, all good
             return Ok(());
@@ -808,6 +812,7 @@ impl State {
         let (oldsave_start, oldsave_end) = {
             let mut end = self.oldsave.len() - self.nsave;
             for &Branch { nsave, .. } in &self.stack[count + 1..] {
+                check_cancelled(cancel)?;
                 end -= nsave;
             }
             let start = end - self.stack[count].nsave;
@@ -820,17 +825,26 @@ impl State {
         saved.clear();
         // keep all the old saves of our branch (they're all for different slots)
         for &Save { slot, .. } in &self.oldsave[oldsave_start..oldsave_end] {
+            check_cancelled(cancel)?;
             reserve(&mut saved, 1)?;
             saved.push(slot);
         }
         let mut oldsave_ix = oldsave_end;
         // for other old saves, keep them only if they're for a slot that we haven't saved yet
         for ix in oldsave_end..self.oldsave.len() {
+            check_cancelled(cancel)?;
             let Save { slot, .. } = self.oldsave[ix];
-            let new_slot = !saved.contains(&slot);
+            let mut new_slot = true;
+            for previous in &saved {
+                check_cancelled(cancel)?;
+                if *previous == slot {
+                    new_slot = false;
+                    break;
+                }
+            }
             if new_slot {
                 reserve(&mut saved, 1)?;
-            saved.push(slot);
+                saved.push(slot);
                 // put the save we want to keep (ix) after the ones we already have (oldsave_ix)
                 // note that it's fine if the indexes are the same (then swapping is a no-op)
                 self.oldsave.swap(oldsave_ix, ix);
@@ -881,24 +895,46 @@ fn prev_ix<S: HaystackInput + ?Sized>(s: &S, ix: usize, bytes_mode: BytesMode) -
 }
 
 #[inline]
+fn equal_bytes(left: &[u8], right: &[u8], casei: bool, cancel: Option<&AtomicBool>) -> Result<bool> {
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    let equal = |a: &[u8], b: &[u8]| if casei { a.eq_ignore_ascii_case(b) } else { a == b };
+    if cancel.is_none() {
+        return Ok(equal(left, right));
+    }
+    for (a, b) in left.chunks(4096).zip(right.chunks(4096)) {
+        check_cancelled(cancel)?;
+        if !equal(a, b) {
+            return Ok(false);
+        }
+    }
+    check_cancelled(cancel)?;
+    Ok(true)
+}
+
+#[inline]
 fn matches_literal<S: HaystackInput + ?Sized>(
     s: &S,
     ix: usize,
     end: usize,
     literal: &[u8],
-) -> bool {
-    // Compare as bytes because the literal might be a single byte char whereas ix
-    // points to a multibyte char. Comparing with str would result in an error like
-    // "byte index N is not a char boundary".
-    end <= s.len() && &s.as_bytes()[ix..end] == literal
+    cancel: Option<&AtomicBool>,
+) -> Result<bool> {
+    // Byte comparison also permits non-character boundaries in byte mode.
+    if end > s.len() {
+        return Ok(false);
+    }
+    equal_bytes(&s.as_bytes()[ix..end], literal, false, cancel)
 }
 
-fn matches_literal_casei_unicode(text: &str, literal: &str) -> bool {
+fn matches_literal_casei_unicode(text: &str, literal: &str, cancel: Option<&AtomicBool>) -> Result<bool> {
     let mut text_chars = text.chars();
     let mut literal_chars = literal.chars();
     loop {
+        check_cancelled(cancel)?;
         match (text_chars.next(), literal_chars.next()) {
-            (None, None) => return true,
+            (None, None) => return Ok(true),
             (Some(t), Some(l)) => {
                 if t == l {
                     continue;
@@ -907,14 +943,13 @@ fn matches_literal_casei_unicode(text: &str, literal: &str) -> bool {
                     if t.eq_ignore_ascii_case(&l) {
                         continue;
                     }
-                    return false;
+                    return Ok(false);
                 }
                 if !chars_fold_equal(t, l) {
-                    return false;
+                    return Ok(false);
                 }
             }
-            // One string ended before the other: not equal under folding.
-            _ => return false,
+            _ => return Ok(false),
         }
     }
 }
@@ -941,32 +976,37 @@ fn matches_literal_casei<S: HaystackInput + ?Sized>(
     end: usize,
     literal: &[u8],
     unicode: bool,
-) -> bool {
+    cancel: Option<&AtomicBool>,
+) -> Result<bool> {
     if end > s.len() {
-        return false;
+        return Ok(false);
     }
-    if matches_literal(s, ix, end, literal) {
-        return true;
+    if matches_literal(s, ix, end, literal, cancel)? {
+        return Ok(true);
     }
     if !s.is_char_boundary(ix) || !s.is_char_boundary(end) {
-        return false;
+        return Ok(false);
     }
     let text_bytes = &s.as_bytes()[ix..end];
-    if text_bytes.is_ascii() && literal.is_ascii() {
-        return text_bytes.eq_ignore_ascii_case(literal);
+    let mut ascii = true;
+    for chunk in text_bytes.chunks(4096).chain(literal.chunks(4096)) {
+        check_cancelled(cancel)?;
+        if !chunk.is_ascii() {
+            ascii = false;
+            break;
+        }
+    }
+    if ascii {
+        return equal_bytes(text_bytes, literal, true, cancel);
     }
     if !unicode {
-        // ASCII-only case folding: if content is not ASCII, no match
-        return false;
+        return Ok(false);
     }
-    // text captured and being backreferenced is not ascii, so we utilize regex-automata's case insensitive matching
-    if let (Ok(text_str), Ok(lit_str)) = (
-        core::str::from_utf8(text_bytes),
-        core::str::from_utf8(literal),
-    ) {
-        return matches_literal_casei_unicode(text_str, lit_str);
+    let strings = checked(cancel, || (core::str::from_utf8(text_bytes), core::str::from_utf8(literal)))?;
+    if let (Ok(text_str), Ok(lit_str)) = strings {
+        return matches_literal_casei_unicode(text_str, lit_str, cancel);
     }
-    false
+    Ok(false)
 }
 
 /// Helper function to store capture group positions from inner_slots into state.
@@ -977,10 +1017,12 @@ fn store_capture_groups(
     inner_slots: &[Option<NonMaxUsize>],
     range: CaptureGroupRange,
     skip_earlier_captures: bool,
+    cancel: Option<&AtomicBool>,
 ) -> Result<()> {
     let start_group = range.start();
     let end_group = range.end();
     for i in 0..(end_group - start_group) {
+        check_cancelled(cancel)?;
         let slot = (start_group + i) * 2;
         if let Some(start) = inner_slots[(i + 1) * 2] {
             let end = inner_slots[(i + 1) * 2 + 1].unwrap();
@@ -993,8 +1035,8 @@ fn store_capture_groups(
                     && (end.get() >= existing_end || existing_end == usize::MAX);
             }
             if save {
-                state.save(slot, start.get())?;
-                state.save(slot + 1, end.get())?;
+                state.save(slot, start.get(), cancel)?;
+                state.save(slot + 1, end.get(), cancel)?;
             }
         }
     }
@@ -1071,6 +1113,8 @@ fn run_with<S: HaystackInput + ?Sized, T>(
     options: &HardRegexRuntimeOptions,
     extract: impl FnOnce(&State) -> Result<T>,
 ) -> Result<Option<T>> {
+    let cancel = input.cancel_flag();
+    check_cancelled(cancel)?;
     if input.is_done() {
         return Ok(None);
     }
@@ -1102,6 +1146,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
     loop {
         // break from this loop to fail, causes stack to pop
         'fail: loop {
+            check_cancelled(cancel)?;
             #[cfg(feature = "std")]
             if option_flags & OPTION_TRACE != 0 {
                 println!("{}\t{} {:?}", ix, pc, prog.body[pc]);
@@ -1127,7 +1172,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                         // With some features like keep out (\K), the match start can be after
                         // the match end. Cap the start to <= end.
                         if state.get(0) > slot1 {
-                            state.save(0, slot1)?;
+                            state.save(0, slot1, cancel)?;
                         }
                     }
                     if state.get(0) < match_range.start || state.get(1) > match_range.end {
@@ -1173,12 +1218,12 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                 }
                 Insn::Lit(ref val) => {
                     let ix_end = ix + val.len();
-                    if !matches_literal(haystack, ix, ix_end, val.as_bytes()) {
+                    if !matches_literal(haystack, ix, ix_end, val.as_bytes(), cancel)? {
                         break 'fail;
                     }
                     ix = ix_end
                 }
-                Insn::LitCasei(ref lit) => match lit.match_len(haystack, ix) {
+                Insn::LitCasei(ref lit) => match lit.match_len(haystack, ix, cancel)? {
                     Some(len) => ix += len,
                     None => break 'fail,
                 },
@@ -1290,8 +1335,8 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                     pc = target;
                     continue;
                 }
-                Insn::Save(slot) => state.save(slot, ix)?,
-                Insn::Save0(slot) => state.save(slot, 0)?,
+                Insn::Save(slot) => state.save(slot, ix, cancel)?,
+                Insn::Save0(slot) => state.save(slot, 0, cancel)?,
                 Insn::SaveCaptureGroupStart(group) => {
                     let start_slot = group * 2;
                     // if the capture group's start slot is empty
@@ -1299,7 +1344,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                     // or the end slot for that capture group is complete
                     // then we save the current position in the capture group start slot
                     if state.get(start_slot) == usize::MAX || state.get(start_slot + 1) <= ix {
-                        state.save(start_slot, ix)?;
+                        state.save(start_slot, ix, cancel)?;
                     }
                 }
                 Insn::Restore(slot) => ix = state.get(slot),
@@ -1314,7 +1359,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                         pc = next;
                         continue;
                     }
-                    state.save(repeat, repcount + 1)?;
+                    state.save(repeat, repcount + 1, cancel)?;
                     if repcount >= lo {
                         state.push(next, ix)?;
                     }
@@ -1330,7 +1375,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                         pc = next;
                         continue;
                     }
-                    state.save(repeat, repcount + 1)?;
+                    state.save(repeat, repcount + 1, cancel)?;
                     if repcount >= lo {
                         state.push(pc + 1, ix)?;
                         pc = next;
@@ -1349,9 +1394,9 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                         pc = next;
                         continue;
                     }
-                    state.save(repeat, repcount + 1)?;
+                    state.save(repeat, repcount + 1, cancel)?;
                     if repcount >= lo {
-                        state.save(check, ix)?;
+                        state.save(check, ix, cancel)?;
                         state.push(next, ix)?;
                     }
                 }
@@ -1367,9 +1412,9 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                         pc = next;
                         continue;
                     }
-                    state.save(repeat, repcount + 1)?;
+                    state.save(repeat, repcount + 1, cancel)?;
                     if repcount >= lo {
-                        state.save(check, ix)?;
+                        state.save(check, ix, cancel)?;
                         state.push(pc + 1, ix)?;
                         pc = next;
                         continue;
@@ -1391,7 +1436,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                     // been pushed with the look-around, because we don't want to
                     // explore them.
                     loop {
-                        let (popped_pc, _) = state.pop();
+                        let (popped_pc, _) = state.pop(cancel)?;
                         if popped_pc == pc + 1 {
                             // We've reached the state that would jump us to
                             // after the look-around (in case the look-around
@@ -1419,10 +1464,10 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                     let ref_text = &haystack.as_bytes()[lo..hi];
                     let ix_end = ix + ref_text.len();
                     if casei {
-                        if !matches_literal_casei(haystack, ix, ix_end, ref_text, unicode) {
+                        if !matches_literal_casei(haystack, ix, ix_end, ref_text, unicode, cancel)? {
                             break 'fail;
                         }
-                    } else if !matches_literal(haystack, ix, ix_end, ref_text) {
+                    } else if !matches_literal(haystack, ix, ix_end, ref_text, cancel)? {
                         break 'fail;
                     }
                     ix = ix_end;
@@ -1452,7 +1497,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                         .anchored(Anchored::Yes)
                         .range(0..ix);
 
-                    match dfa.try_search_rev(&mut cache_guard, &input) {
+                    match checked(cancel, || dfa.try_search_rev(&mut cache_guard, &input))? {
                         Ok(Some(match_result)) => {
                             // Update ix to the start position of the match
                             let match_start = match_result.offset();
@@ -1465,9 +1510,9 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                                         .anchored(Anchored::Yes);
                                     resize(inner_slots, (range.end() - range.start() + 1) * 2, None)?;
 
-                                    if inner.search_slots(&forward_input, inner_slots).is_some() {
+                                    if checked(cancel, || inner.search_slots(&forward_input, inner_slots))?.is_some() {
                                         // Store capture group positions, ignoring any whose range is earlier than what has been stored already
-                                        store_capture_groups(state, inner_slots, range, true)?;
+                                        store_capture_groups(state, inner_slots, range, true, cancel)?;
                                     } else {
                                         break 'fail;
                                     }
@@ -1485,11 +1530,11 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                 }
                 Insn::BeginAtomic => {
                     let count = state.backtrack_count();
-                    state.stack_push(count)?;
+                    state.stack_push(count, cancel)?;
                 }
                 Insn::EndAtomic => {
-                    let count = state.stack_pop()?;
-                    state.backtrack_cut(count)?;
+                    let count = state.stack_pop(cancel)?;
+                    state.backtrack_cut(count, cancel)?;
                 }
                 Insn::Delegate(Delegate {
                     ref inner,
@@ -1502,16 +1547,16 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                     if let Some(range) = capture_groups {
                         // Has capture groups, need to extract them
                         resize(inner_slots, (range.end() - range.start() + 1) * 2, None)?;
-                        if inner.search_slots(&input, inner_slots).is_some() {
+                        if checked(cancel, || inner.search_slots(&input, inner_slots))?.is_some() {
                             // store the capture groups, no need to check current state to see if new values are further to the right
-                            store_capture_groups(state, inner_slots, range, false)?;
+                            store_capture_groups(state, inner_slots, range, false, cancel)?;
                             ix = inner_slots[1].unwrap().get();
                         } else {
                             break 'fail;
                         }
                     } else {
                         // No groups, so we can use faster methods
-                        match inner.search_half(&input) {
+                        match checked(cancel, || inner.search_half(&input))? {
                             Some(m) => ix = m.offset(),
                             _ => break 'fail,
                         }
@@ -1528,7 +1573,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                         .span(ix..haystack.len())
                         .anchored(Anchored::Yes);
                     // capture groups in the delegate are always ignored, so we can use the quicker search_half method
-                    let delegate_matches_here = delegate.inner.search_half(&input).is_some();
+                    let delegate_matches_here = checked(cancel, || delegate.inner.search_half(&input))?.is_some();
 
                     if delegate_matches_here {
                         // Delegate matches at current position - we've reached the boundary
@@ -1588,7 +1633,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                         //       as we only care about the start of the match, but unfortunately this doesn't
                         //       always return the correct start position, perhaps a bug in regex-automata
                         let seek_input = Input::new(haystack.as_bytes()).span(ix..match_range.end);
-                        match inner.search(&seek_input) {
+                        match checked(cancel, || inner.search(&seek_input))? {
                             None => return Ok(None),
                             Some(m) => {
                                 // Compute the next position to retry the seek from on backtrack:
@@ -1620,7 +1665,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
                 Insn::RejectEmptyMatchAtEOFFollowingNewline => {
                     if ix == haystack.len()
                         && ix > 0
-                        && matches_literal(haystack, ix - 1, ix, b"\n")
+                        && matches_literal(haystack, ix - 1, ix, b"\n", cancel)?
                         && !slash_z_matched
                         && match_attempt_start == ix
                     {
@@ -1634,6 +1679,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
         if option_flags & OPTION_TRACE != 0 {
             println!("fail");
         }
+        check_cancelled(cancel)?;
         // "break 'fail" goes here
         if state.stack.is_empty() {
             #[cfg(feature = "leftmost_longest")]
@@ -1656,7 +1702,7 @@ fn run_with<S: HaystackInput + ?Sized, T>(
             return Err(Error::RuntimeError(RuntimeError::BacktrackLimitExceeded));
         }
 
-        let (newpc, newix) = state.pop();
+        let (newpc, newix) = state.pop(cancel)?;
         pc = newpc;
         ix = newix;
     }
@@ -1670,23 +1716,23 @@ mod tests {
     #[test]
     fn casei_unicode_fold_equality() {
         // Same-case and simple-fold pairs match.
-        assert!(matches_literal_casei_unicode("ΑΛΦΑ", "αλφα"));
-        assert!(matches_literal_casei_unicode("σ", "ς"));
+        assert!(matches_literal_casei_unicode("ΑΛΦΑ", "αλφα", None).unwrap());
+        assert!(matches_literal_casei_unicode("σ", "ς", None).unwrap());
         // Fold orbits that cross scripts/blocks: ſ (U+017F) folds to s,
         // K (U+212A, Kelvin sign) folds to k, Å (U+212B, Angstrom sign)
         // folds to å.
-        assert!(matches_literal_casei_unicode("ſ", "s"));
-        assert!(matches_literal_casei_unicode("S", "ſ"));
-        assert!(matches_literal_casei_unicode("\u{212A}", "k"));
-        assert!(matches_literal_casei_unicode("\u{212B}", "å"));
+        assert!(matches_literal_casei_unicode("ſ", "s", None).unwrap());
+        assert!(matches_literal_casei_unicode("S", "ſ", None).unwrap());
+        assert!(matches_literal_casei_unicode("\u{212A}", "k", None).unwrap());
+        assert!(matches_literal_casei_unicode("\u{212B}", "å", None).unwrap());
         // Mixed ASCII/non-ASCII content.
-        assert!(matches_literal_casei_unicode("aΛb", "AλB"));
+        assert!(matches_literal_casei_unicode("aΛb", "AλB", None).unwrap());
         // Simple folding does not include full case folding (ß ≠ ss).
-        assert!(!matches_literal_casei_unicode("straße", "STRASSE"));
+        assert!(!matches_literal_casei_unicode("straße", "STRASSE", None).unwrap());
         // Both strings must end together: a folded prefix is not a match.
-        assert!(!matches_literal_casei_unicode("sab", "ſa"));
-        assert!(!matches_literal_casei_unicode("ſa", "ſab"));
-        assert!(!matches_literal_casei_unicode("αα", "α"));
+        assert!(!matches_literal_casei_unicode("sab", "ſa", None).unwrap());
+        assert!(!matches_literal_casei_unicode("ſa", "ſab", None).unwrap());
+        assert!(!matches_literal_casei_unicode("αα", "α", None).unwrap());
     }
 
     #[test]
@@ -1695,71 +1741,71 @@ mod tests {
 
         state.push(0, 0).unwrap();
         state.push(1, 1).unwrap();
-        assert_eq!(state.pop(), (1, 1));
-        assert_eq!(state.pop(), (0, 0));
+        assert_eq!(state.pop(None).unwrap(), (1, 1));
+        assert_eq!(state.pop(None).unwrap(), (0, 0));
         assert!(state.stack.is_empty());
 
         state.push(2, 2).unwrap();
-        assert_eq!(state.pop(), (2, 2));
+        assert_eq!(state.pop(None).unwrap(), (2, 2));
         assert!(state.stack.is_empty());
     }
 
     #[test]
     fn state_save_override() {
         let mut state = State::new(1, MAX_STACK, 0);
-        state.save(0, 10).unwrap();
+        state.save(0, 10, None).unwrap();
         state.push(0, 0).unwrap();
-        state.save(0, 20).unwrap();
-        assert_eq!(state.pop(), (0, 0));
+        state.save(0, 20, None).unwrap();
+        assert_eq!(state.pop(None).unwrap(), (0, 0));
         assert_eq!(state.get(0), 10);
     }
 
     #[test]
     fn state_save_override_twice() {
         let mut state = State::new(1, MAX_STACK, 0);
-        state.save(0, 10).unwrap();
+        state.save(0, 10, None).unwrap();
         state.push(0, 0).unwrap();
-        state.save(0, 20).unwrap();
+        state.save(0, 20, None).unwrap();
         state.push(1, 1).unwrap();
-        state.save(0, 30).unwrap();
+        state.save(0, 30, None).unwrap();
 
         assert_eq!(state.get(0), 30);
-        assert_eq!(state.pop(), (1, 1));
+        assert_eq!(state.pop(None).unwrap(), (1, 1));
         assert_eq!(state.get(0), 20);
-        assert_eq!(state.pop(), (0, 0));
+        assert_eq!(state.pop(None).unwrap(), (0, 0));
         assert_eq!(state.get(0), 10);
     }
 
     #[test]
     fn state_explicit_stack() {
         let mut state = State::new(1, MAX_STACK, 0);
-        state.stack_push(11).unwrap();
-        state.stack_push(12).unwrap();
+        state.stack_push(11, None).unwrap();
+        state.stack_push(12, None).unwrap();
 
         state.push(100, 101).unwrap();
-        state.stack_push(13).unwrap();
-        assert_eq!(state.stack_pop().unwrap(), 13);
-        state.stack_push(14).unwrap();
-        assert_eq!(state.pop(), (100, 101));
+        state.stack_push(13, None).unwrap();
+        assert_eq!(state.stack_pop(None).unwrap(), 13);
+        state.stack_push(14, None).unwrap();
+        assert_eq!(state.pop(None).unwrap(), (100, 101));
 
         // Note: 14 is not there because it was pushed as part of the backtrack branch
-        assert_eq!(state.stack_pop().unwrap(), 12);
-        assert_eq!(state.stack_pop().unwrap(), 11);
+        assert_eq!(state.stack_pop(None).unwrap(), 12);
+        assert_eq!(state.stack_pop(None).unwrap(), 11);
     }
 
     #[test]
     fn state_backtrack_cut_simple() {
         let mut state = State::new(2, MAX_STACK, 0);
-        state.save(0, 1).unwrap();
-        state.save(1, 2).unwrap();
+        state.save(0, 1, None).unwrap();
+        state.save(1, 2, None).unwrap();
 
         let count = state.backtrack_count();
 
         state.push(0, 0).unwrap();
-        state.save(0, 3).unwrap();
+        state.save(0, 3, None).unwrap();
         assert_eq!(state.backtrack_count(), 1);
 
-        state.backtrack_cut(count).unwrap();
+        state.backtrack_cut(count, None).unwrap();
         assert_eq!(state.backtrack_count(), 0);
         assert_eq!(state.get(0), 3);
         assert_eq!(state.get(1), 2);
@@ -1768,26 +1814,26 @@ mod tests {
     #[test]
     fn state_backtrack_cut_complex() {
         let mut state = State::new(2, MAX_STACK, 0);
-        state.save(0, 1).unwrap();
-        state.save(1, 2).unwrap();
+        state.save(0, 1, None).unwrap();
+        state.save(1, 2, None).unwrap();
 
         state.push(0, 0).unwrap();
-        state.save(0, 3).unwrap();
+        state.save(0, 3, None).unwrap();
 
         let count = state.backtrack_count();
 
         state.push(1, 1).unwrap();
-        state.save(0, 4).unwrap();
+        state.save(0, 4, None).unwrap();
         state.push(2, 2).unwrap();
-        state.save(1, 5).unwrap();
+        state.save(1, 5, None).unwrap();
         assert_eq!(state.backtrack_count(), 3);
 
-        state.backtrack_cut(count).unwrap();
+        state.backtrack_cut(count, None).unwrap();
         assert_eq!(state.backtrack_count(), 1);
         assert_eq!(state.get(0), 4);
         assert_eq!(state.get(1), 5);
 
-        state.pop();
+        state.pop(None).unwrap();
         assert_eq!(state.backtrack_count(), 0);
         // Check that oldsave were set correctly
         assert_eq!(state.get(0), 1);
@@ -1851,12 +1897,12 @@ mod tests {
                     // if the stack was empty.
                     if let Some((_, _, previous_saves)) = stack.pop() {
                         saves = previous_saves;
-                        state.pop();
+                        state.pop(None).unwrap();
                     }
                 }
                 Operation::Save(slot, value) => {
                     saves[slot] = value;
-                    state.save(slot, value).unwrap();
+                    state.save(slot, value, None).unwrap();
                 }
             }
 

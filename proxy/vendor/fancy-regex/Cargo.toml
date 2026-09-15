@@ -55,3 +55,7 @@ path = "tests/runtime_allocation.rs"
 matches = "0.1.10"
 quickcheck = "=1.0.3"
 regex = "1.10"
+
+[[test]]
+name = "runtime_cancellation"
+path = "tests/runtime_cancellation.rs"

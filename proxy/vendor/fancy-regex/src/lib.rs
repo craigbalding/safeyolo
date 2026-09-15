@@ -1349,6 +1349,13 @@ impl Regex {
         &self,
         input: RegexInput<'_, S>,
     ) -> Result<bool> {
+        input::checked(input.cancel_flag(), || self.is_match_input_inner(input))?
+    }
+
+    fn is_match_input_inner<S: input::Input + ?Sized>(
+        &self,
+        input: RegexInput<'_, S>,
+    ) -> Result<bool> {
         match &self.inner {
             RegexImpl::Wrap { inner, .. } => {
                 if input.is_done() {
@@ -1458,6 +1465,16 @@ impl Regex {
     }
 
     pub(crate) fn find_input_raw<S: input::Input + ?Sized>(
+        &self,
+        input: &RegexInput<'_, S>,
+        option_flags: u32,
+    ) -> Result<Option<(usize, usize)>> {
+        input::checked(input.cancel_flag(), || {
+            self.find_input_raw_inner(input, option_flags)
+        })?
+    }
+
+    fn find_input_raw_inner<S: input::Input + ?Sized>(
         &self,
         input: &RegexInput<'_, S>,
         option_flags: u32,
@@ -1660,6 +1677,16 @@ impl Regex {
     }
 
     pub(crate) fn captures_input_with_option_flags<'t, S: input::Input + ?Sized>(
+        &self,
+        input: &RegexInput<'t, S>,
+        option_flags: u32,
+    ) -> Result<Option<Captures<'t, S>>> {
+        input::checked(input.cancel_flag(), || {
+            self.captures_input_with_option_flags_inner(input, option_flags)
+        })?
+    }
+
+    fn captures_input_with_option_flags_inner<'t, S: input::Input + ?Sized>(
         &self,
         input: &RegexInput<'t, S>,
         option_flags: u32,

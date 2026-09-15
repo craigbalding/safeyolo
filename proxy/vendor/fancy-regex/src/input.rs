@@ -2,6 +2,24 @@ use crate::bytes::MatchBytes;
 use crate::Match;
 use alloc::string::String;
 use core::ops::Range;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+pub(crate) fn check_cancelled(cancel: Option<&AtomicBool>) -> crate::Result<()> {
+    if cancel.map_or(false, |flag| flag.load(Ordering::Relaxed)) {
+        Err(crate::Error::RuntimeError(crate::RuntimeError::Cancelled))
+    } else {
+        Ok(())
+    }
+}
+
+// Delegated searches and allocation/library calls have no cancellation callback.
+// Observe cancellation on both sides without changing their search semantics.
+pub(crate) fn checked<T>(cancel: Option<&AtomicBool>, run: impl FnOnce() -> T) -> crate::Result<T> {
+    check_cancelled(cancel)?;
+    let result = run();
+    check_cancelled(cancel)?;
+    Ok(result)
+}
 
 /// Returns the smallest possible index of the next valid UTF-8 sequence
 /// starting after `i`.
@@ -24,6 +42,7 @@ pub(crate) fn next_input_pos(text: &[u8], i: usize) -> usize {
 #[derive(Debug)]
 pub struct RegexInput<'h, S: Input + ?Sized> {
     haystack: &'h S,
+    cancel: Option<&'h AtomicBool>,
     start: usize,
     range: Range<usize>,
     anchored: bool,
@@ -38,6 +57,7 @@ impl<'h, S: Input + ?Sized> Clone for RegexInput<'h, S> {
     fn clone(&self) -> Self {
         Self {
             haystack: self.haystack,
+            cancel: self.cancel,
             start: self.start,
             range: self.range.clone(),
             anchored: self.anchored,
@@ -53,6 +73,7 @@ impl<'h, S: Input + ?Sized> RegexInput<'h, S> {
     pub fn new(haystack: &'h S) -> Self {
         Self {
             haystack,
+            cancel: None,
             start: 0,
             range: 0..haystack.len(),
             anchored: false,
@@ -60,6 +81,24 @@ impl<'h, S: Input + ?Sized> RegexInput<'h, S> {
             end_text: None,
             continue_from_previous_match_end: None,
         }
+    }
+
+    /// Cooperatively cancel this search when the borrowed flag becomes true.
+    ///
+    /// The flag belongs only to this input; cloned compiled regexes do not share
+    /// cancellation state. Keep the flag true after cancellation. VM loops poll
+    /// it, but an opaque delegated search must finish before cancellation can be
+    /// observed. This extension covers Regex's direct and iterator input APIs;
+    /// RegexSet's separate candidate-search loop is unchanged. No deadline or
+    /// step limit is imposed. A cancelled call returns
+    /// [`crate::RuntimeError::Cancelled`], not a match or a non-match.
+    pub fn with_cancel_flag(mut self, flag: &'h AtomicBool) -> Self {
+        self.cancel = Some(flag);
+        self
+    }
+
+    pub(crate) fn cancel_flag(&self) -> Option<&'h AtomicBool> {
+        self.cancel
     }
 
     /// Return the haystack being searched.

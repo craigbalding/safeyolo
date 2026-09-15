@@ -19,6 +19,9 @@
 //! The scanner adds no HTTP body or WebSocket message size cap. URL inspection
 //! alone has the shipped 16 KiB UTF-8 byte bound. The transport owns complete
 //! message assembly/decompression, private spooling, identity and audit emission.
+//! Per-call WS cancellation returns a distinct error and suppresses scan results.
+//! VM loops cooperate; opaque delegated searches delay cancellation until return.
+//! The caller checks its connection flag again before publishing any evidence.
 //!
 //! Request/response hooks in Python do not call should_bypass or short-circuit
 //! prior responses. This module adds no policy bypass. WS errors drop the current
@@ -26,12 +29,15 @@
 //! General HTTP matching errors return Error. The old HTTP hook propagates those
 //! exceptions; only URL inspection failures have a shipped unconditional block.
 
-use fancy_regex::{Regex, RegexBuilder};
+use fancy_regex::{Regex, RegexBuilder, RegexInput};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::{
     fmt,
-    sync::{Arc, LazyLock, Mutex, RwLock},
+    sync::{
+        Arc, LazyLock, Mutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 pub const MAX_URL_SCAN_BYTES: usize = 16 * 1024;
@@ -49,6 +55,7 @@ pub fn compatibility_gaps() -> &'static [&'static str] {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
+    Cancelled,
     InvalidConfig,
     RegexCompatibility,
     RegexRuntime,
@@ -66,6 +73,13 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 type Result<T> = std::result::Result<T, Error>;
+fn check_cancelled(cancel: Option<&AtomicBool>) -> Result<()> {
+    if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        Err(error(ErrorKind::Cancelled, None))
+    } else {
+        Ok(())
+    }
+}
 fn error(kind: ErrorKind, index: Option<usize>) -> Error {
     Error {
         kind,
@@ -840,10 +854,20 @@ impl Scanner {
         Ok(result)
     }
     fn count(&self, scans: u64, matches: u64, blocks: u64) -> Result<()> {
+        self.count_cancellable(scans, matches, blocks, None)
+    }
+    fn count_cancellable(
+        &self,
+        scans: u64,
+        matches: u64,
+        blocks: u64,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<()> {
         let mut stats = self
             .stats
             .lock()
             .map_err(|_| error(ErrorKind::StateUnavailable, None))?;
+        check_cancelled(cancel)?;
         stats.scans_total += scans;
         stats.matches_total += matches;
         stats.blocks_total += blocks;
@@ -855,16 +879,33 @@ impl Scanner {
         scope: &str,
         text: &str,
         direction: Direction,
+        cancel: Option<&AtomicBool>,
     ) -> Result<Option<&'a Rule>> {
-        self.count(1, 0, 0)?;
+        check_cancelled(cancel)?;
+        self.count_cancellable(1, 0, 0, cancel)?;
         for (index, rule) in rules.iter().enumerate() {
-            if rule.applies(direction, scope)
-                && rule
-                    .pattern
-                    .is_match(text)
-                    .map_err(|_| error(ErrorKind::RegexRuntime, Some(index)))?
-            {
-                self.count(0, 1, 0)?;
+            check_cancelled(cancel)?;
+            if !rule.applies(direction, scope) {
+                continue;
+            }
+            let input = RegexInput::new(text);
+            let input = match cancel {
+                Some(flag) => input.with_cancel_flag(flag),
+                None => input,
+            };
+            let matched = rule.pattern.is_match_input(input).map_err(|failure| {
+                if matches!(
+                    failure,
+                    fancy_regex::Error::RuntimeError(fancy_regex::RuntimeError::Cancelled)
+                ) {
+                    error(ErrorKind::Cancelled, None)
+                } else {
+                    error(ErrorKind::RegexRuntime, Some(index))
+                }
+            })?;
+            check_cancelled(cancel)?;
+            if matched {
+                self.count_cancellable(0, 1, 0, cancel)?;
                 return Ok(Some(rule));
             }
         }
@@ -898,7 +939,9 @@ impl Scanner {
         location: String,
         message: Option<MessageType>,
         options: Options,
+        cancel: Option<&AtomicBool>,
     ) -> Result<Decision> {
+        check_cancelled(cancel)?;
         let block = rule.action == "block"
             && if message.is_some() {
                 options.websocket(direction)
@@ -954,7 +997,7 @@ impl Scanner {
             }
         }
         if block {
-            self.count(0, 0, 1)?;
+            self.count_cancellable(0, 0, 1, cancel)?;
         }
         decision.finding = Some(finding);
         Ok(decision)
@@ -994,7 +1037,7 @@ impl Scanner {
                 Err(failure) => return self.url_failure(failure),
             };
             if let Some(rule) = self.scan_url(&rules, &text)? {
-                return self.matched(rule, Direction::Request, "url".into(), None, options);
+                return self.matched(rule, Direction::Request, "url".into(), None, options, None);
             }
         }
         self.scan_http_content(&rules, Direction::Request, headers, body, options)
@@ -1024,19 +1067,23 @@ impl Scanner {
         options: Options,
     ) -> Result<Decision> {
         for (name, value) in headers {
-            if let Some(rule) = self.scan_scope(rules, "headers", value, direction)? {
-                return self.matched(rule, direction, safe_location(name), None, options);
+            if let Some(rule) = self.scan_scope(rules, "headers", value, direction, None)? {
+                return self.matched(rule, direction, safe_location(name), None, options, None);
             }
         }
         if let Some(body) = body.filter(|body| !body.is_empty())
-            && let Some(rule) = self.scan_scope(rules, "body", body, direction)?
+            && let Some(rule) = self.scan_scope(rules, "body", body, direction, None)?
         {
-            return self.matched(rule, direction, "body".into(), None, options);
+            return self.matched(rule, direction, "body".into(), None, options, None);
         }
         Ok(Decision::plain(Outcome::NoMatch))
     }
-    fn websocket_failure(&self, error_type: &'static str) -> Result<Decision> {
-        self.count(0, 0, 1)?;
+    fn websocket_failure(
+        &self,
+        error_type: &'static str,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Decision> {
+        self.count_cancellable(0, 0, 1, cancel)?;
         let mut decision = Decision::plain(Outcome::InspectionError);
         decision.drop_message = true;
         decision.failure = Some("inspection_error");
@@ -1064,7 +1111,7 @@ impl Scanner {
         let text = match kind {
             MessageType::Text => match std::str::from_utf8(payload) {
                 Ok(text) => text,
-                Err(_) => return self.websocket_failure("UnicodeDecodeError"),
+                Err(_) => return self.websocket_failure("UnicodeDecodeError", None),
             },
             MessageType::Binary => {
                 binary = payload
@@ -1073,9 +1120,9 @@ impl Scanner {
                     .collect::<String>();
                 &binary
             }
-            MessageType::Other => return self.websocket_failure("ValueError"),
+            MessageType::Other => return self.websocket_failure("ValueError", None),
         };
-        self.websocket_text(&rules, direction, kind, text, options)
+        self.websocket_text(&rules, direction, kind, text, options, None)
     }
     /// Complete validated text, or the complete byte-for-byte Latin-1 mapping of
     /// a binary message. &str proves UTF-8 validity; binary callers must supply
@@ -1092,10 +1139,38 @@ impl Scanner {
             return Ok(Decision::plain(Outcome::NoRules));
         }
         if kind == MessageType::Other {
-            return self.websocket_failure("ValueError");
+            return self.websocket_failure("ValueError", None);
         }
-        self.websocket_text(&rules, direction, kind, text, options)
+        self.websocket_text(&rules, direction, kind, text, options, None)
     }
+    /// Scan complete validated text with cancellation owned by this call.
+    ///
+    /// Keep the flag true once the connection closes or shutdown begins. Observed
+    /// cancellation returns ErrorKind::Cancelled without a finding or inspection
+    /// failure. Regex VM loops cooperate; opaque delegated searches can delay
+    /// observation until they return. The caller must also check the flag before
+    /// publishing results, since cancellation can race with this call returning.
+    pub fn scan_websocket_text_cancellable(
+        &self,
+        direction: Direction,
+        kind: MessageType,
+        text: &str,
+        options: Options,
+        cancel: &AtomicBool,
+    ) -> Result<Decision> {
+        check_cancelled(Some(cancel))?;
+        let rules = self.rules()?;
+        let result = if rules.is_empty() {
+            Ok(Decision::plain(Outcome::NoRules))
+        } else if kind == MessageType::Other {
+            self.websocket_failure("ValueError", Some(cancel))
+        } else {
+            self.websocket_text(&rules, direction, kind, text, options, Some(cancel))
+        };
+        check_cancelled(Some(cancel))?;
+        result
+    }
+
     fn websocket_text(
         &self,
         rules: &[Rule],
@@ -1103,17 +1178,22 @@ impl Scanner {
         kind: MessageType,
         text: &str,
         options: Options,
+        cancel: Option<&AtomicBool>,
     ) -> Result<Decision> {
-        match self.scan_scope(rules, "body", text, direction) {
+        let result = self.scan_scope(rules, "body", text, direction, cancel);
+        check_cancelled(cancel)?;
+        match result {
             Ok(Some(rule)) => self.matched(
                 rule,
                 direction,
                 "websocket_message".into(),
                 Some(kind),
                 options,
+                cancel,
             ),
             Ok(None) => Ok(Decision::plain(Outcome::NoMatch)),
-            Err(_) => self.websocket_failure("RegexRuntimeError"),
+            Err(failure) if failure.kind == ErrorKind::Cancelled => Err(failure),
+            Err(_) => self.websocket_failure("RegexRuntimeError", cancel),
         }
     }
 }

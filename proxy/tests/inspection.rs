@@ -1064,3 +1064,127 @@ print(json.dumps(dict(accepted=pattern is not None,matched=bool(pattern.search(v
         "Python/native log-mode whole-message matches agree at 1,000,100, 4,194,304 and 8,388,608 bytes; remaining grammar/Unicode gaps still block activation"
     );
 }
+
+#[test]
+fn websocket_precancellation_is_distinct_and_has_no_findings_or_counter_effects() {
+    use std::sync::atomic::AtomicBool;
+    let cancel = AtomicBool::new(true);
+    for rules in [
+        json!([]),
+        json!([rule("body", "payload-not-evidence", "body", "block")]),
+    ] {
+        let scanner = make_scanner(rules);
+        for kind in [MessageType::Text, MessageType::Binary, MessageType::Other] {
+            let failure = scanner
+                .scan_websocket_text_cancellable(
+                    Direction::Request,
+                    kind,
+                    "payload-not-evidence",
+                    block(),
+                    &cancel,
+                )
+                .unwrap_err();
+            assert_eq!(failure.kind, ErrorKind::Cancelled);
+            assert_eq!(failure.rule_index, None);
+            assert!(!format!("{failure:?}").contains("payload-not-evidence"));
+            let stats = scanner.stats().unwrap();
+            assert_eq!(
+                (stats.scans_total, stats.matches_total, stats.blocks_total),
+                (0, 0, 0)
+            );
+        }
+    }
+}
+
+#[test]
+fn websocket_running_scan_cancels_without_inspection_error_or_affecting_another_call() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    use std::time::{Duration, Instant};
+    for action in ["log", "block"] {
+        let scanner = Arc::new(make_scanner(json!([rule(
+            "ambiguous",
+            r"^(a|aa)*\1$",
+            "body",
+            action
+        )])));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_scanner = Arc::clone(&scanner);
+        let worker_cancel = Arc::clone(&cancel);
+        let (send, recv) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let text = format!("{}b", "a".repeat(4096));
+            let result = worker_scanner.scan_websocket_text_cancellable(
+                Direction::Request,
+                MessageType::Text,
+                &text,
+                block(),
+                &worker_cancel,
+            );
+            send.send(result).unwrap();
+        });
+        let until = Instant::now() + Duration::from_secs(2);
+        while scanner.stats().unwrap().scans_total == 0 && Instant::now() < until {
+            std::thread::yield_now();
+        }
+        // The vendor's Input-hook test separately proves cancellation inside VM
+        // execution. This scanner test verifies counter/evidence propagation.
+        let started = scanner.stats().unwrap().scans_total == 1;
+        cancel.store(true, Ordering::Relaxed);
+        let result = recv
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cancelled scanner did not finish");
+        worker.join().unwrap();
+        assert!(started);
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+        let stats = scanner.stats().unwrap();
+        assert_eq!((stats.matches_total, stats.blocks_total), (0, 0));
+        let independent = AtomicBool::new(false);
+        let ordinary = scanner
+            .scan_websocket_text_cancellable(
+                Direction::Response,
+                MessageType::Binary,
+                "aaaa",
+                block(),
+                &independent,
+            )
+            .unwrap();
+        assert_eq!(
+            ordinary.outcome,
+            if action == "block" {
+                Outcome::MatchBlocked
+            } else {
+                Outcome::MatchLogged
+            }
+        );
+        assert!(cancel.load(Ordering::Relaxed));
+    }
+}
+
+#[test]
+fn uncancelled_websocket_api_preserves_decisions_including_no_rules_and_invalid_kind() {
+    use std::sync::atomic::AtomicBool;
+    let cancel = AtomicBool::new(false);
+    for rules in [json!([]), json!([rule("body", "abcd", "body", "block")])] {
+        let scanner = make_scanner(rules);
+        for direction in [Direction::Request, Direction::Response] {
+            for kind in [MessageType::Text, MessageType::Binary, MessageType::Other] {
+                for text in ["abcd", "", "nomatch"] {
+                    let ordinary = scanner
+                        .scan_websocket_text(direction, kind, text, block())
+                        .unwrap();
+                    let cancellable = scanner
+                        .scan_websocket_text_cancellable(direction, kind, text, block(), &cancel)
+                        .unwrap();
+                    assert_eq!(
+                        serde_json::to_value(ordinary).unwrap(),
+                        serde_json::to_value(cancellable).unwrap()
+                    );
+                }
+            }
+        }
+    }
+}
