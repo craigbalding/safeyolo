@@ -193,7 +193,7 @@ impl Response {
     /// Match json.dumps(body).encode(), including ASCII escaping and spacing.
     /// Content-Length derives from these bytes, never from the UTF-8 Value.
     pub fn body_bytes(&self) -> Vec<u8> {
-        python_json(&self.body, true).into_bytes()
+        crate::python_json::encode(&self.body).into_bytes()
     }
 }
 
@@ -722,55 +722,6 @@ pub fn sanitize(value: &str) -> String {
         previous = Some(safe);
     }
     output
-}
-
-fn python_json(value: &Value, spaces: bool) -> String {
-    match value {
-        Value::String(text) => {
-            let mut output = String::from("\"");
-            for character in text.chars() {
-                match character {
-                    '"' => output.push_str("\\\""),
-                    '\\' => output.push_str("\\\\"),
-                    '\u{8}' => output.push_str("\\b"),
-                    '\u{c}' => output.push_str("\\f"),
-                    '\n' => output.push_str("\\n"),
-                    '\r' => output.push_str("\\r"),
-                    '\t' => output.push_str("\\t"),
-                    ' '..='~' => output.push(character),
-                    _ => {
-                        for unit in character.encode_utf16(&mut [0u16; 2]) {
-                            output.push_str(&format!("\\u{unit:04x}"));
-                        }
-                    }
-                }
-            }
-            output.push('"');
-            output
-        }
-        Value::Object(fields) => format!(
-            "{{{}}}",
-            fields
-                .iter()
-                .map(|(key, value)| format!(
-                    "{}{}{}",
-                    python_json(&json!(key), spaces),
-                    if spaces { ": " } else { ":" },
-                    python_json(value, spaces)
-                ))
-                .collect::<Vec<_>>()
-                .join(if spaces { ", " } else { "," })
-        ),
-        Value::Array(values) => format!(
-            "[{}]",
-            values
-                .iter()
-                .map(|value| python_json(value, spaces))
-                .collect::<Vec<_>>()
-                .join(if spaces { ", " } else { "," })
-        ),
-        _ => value.to_string(),
-    }
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ pub mod inspection;
 pub mod network_guard;
 pub mod oauth;
 pub mod policy;
+mod python_json;
 mod python_text;
 pub mod services;
 pub mod test_context;
