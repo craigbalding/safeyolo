@@ -2,6 +2,7 @@
 //! Network policy runs natively or through an explicitly configured temporary
 //! Python bridge. The development pipeline does not yet have production parity.
 
+pub mod agent_api;
 pub mod approvals;
 pub mod circuits;
 mod config;
@@ -16,6 +17,7 @@ pub mod inspection;
 pub mod network_guard;
 pub mod oauth;
 pub mod policy;
+mod python_text;
 pub mod services;
 pub mod test_context;
 pub mod tls;

@@ -330,7 +330,7 @@ silently reduce accepted message sizes to a library default.
 | D30 | Independent review at `d2f154b3` found that native vault decoding rejects Python's accepted empty `credentials` mapping/string and floating-zero root values. A live reload therefore retains a credential that Python removes. | The decoder now accepts those empty representations and clears the active snapshot. A ten-case Python unlock/reload comparison also retains errors for null, numeric and nonempty invalid credential containers. Independent recheck passed at `682f622c`. |
 | D31 | Independent review at `682f622c` found that both implementations classify any client prefix `SSH` as opaque. Valid HTTP methods such as `SSH`, `SSHGET` and `SSH-EXT` therefore bypass an explicit inner denial. | Native classification no longer treats three letters as a protocol exemption. Fragmented extension methods stay inspected. An identification line with a comment remains undecided until its first line finishes; HTTP request-line syntax takes precedence when ambiguous. Independent recheck passed at `06d7282c`, including 20 denied requests, 12 identification-line cases and real SSH. D35 records a separate whitespace finding. |
 | D32 | Independent full-production WebSocket tests found that a control frame between compressed fragments resets the Python dependency's message compression flag. All 24 direct controls deliver exact bytes; eight proxy cases fail, covering Ping/Pong in both text/binary directions. Text closes with 1007; binary silently delivers incorrect bytes. | The native message reader keeps compression state until the data message finishes. Independent codec recheck at `19ff784e` passed all 24 wire cases, including exact re-encoding. The owner-run paired WS/WSS fixture now reproduces 16 old-proxy failures and passes every native counterpart. Complete native production-chain evidence remains required; this source defect is not a compatibility requirement. |
-| D33 | fancy-regex does not reproduce all accepted Python regular expressions. Repairs cover scoped ASCII flags, octal escapes, Turkish-I literals and Python backreference comparisons; Unicode-name escapes and other recorded Unicode/class gaps remain. Its original private one-million-entry stack limit also makes `(a\|aa)*\1$` fail on 1,000,100 `a` bytes where Python matches. The scanner's existing error rule then drops even a log-mode message. | A [pinned MIT source patch](../proxy/vendor/fancy-regex/SAFEYOLO.md) removes that private cutoff with fallible VM growth and releases per-search buffers. Python/native log-mode matches now agree at 1,000,100 bytes, 4 MiB and 8 MiB. Allocation-failure recovery is tested. The frontend lowers ASCII scopes and octal escapes. Gated backreference options preserve Python scalar comparisons and subject byte offsets. The scanner runs on the development WS/WSS path; remaining grammar, Unicode/backreference, nesting, delegated-search cancellation and HTTP decoding gaps require resolution before production acceptance. No message cap was added to hide those differences. |
+| D33 | fancy-regex does not reproduce all accepted Python regular expressions. Repairs cover scoped ASCII flags, octal escapes, Turkish-I literals and Python backreference comparisons; Unicode-name escapes and other recorded Unicode/class gaps remain. Its original private one-million-entry stack limit also makes `(a\|aa)*\1$` fail on 1,000,100 `a` bytes where Python matches. The scanner's existing error rule then drops even a log-mode message. | A [pinned source patch](../proxy/vendor/fancy-regex/SAFEYOLO.md) removes that private cutoff with fallible VM growth and releases per-search buffers. Python/native log-mode matches now agree at 1,000,100 bytes, 4 MiB and 8 MiB. Allocation-failure recovery is tested. The frontend lowers ASCII scopes and octal escapes. Gated backreference options preserve Python scalar comparisons and subject byte offsets. The scanner runs on the development WS/WSS path; remaining grammar, Unicode/backreference, nesting, delegated-search cancellation and HTTP decoding gaps require resolution before production acceptance. No message cap was added to hide those differences. |
 | D34 | The native approval-key JSON helper copied U+007F directly while Python escapes it. A legacy trusted identity containing DEL therefore groups under a different approval key. | The ASCII fast path now escapes DEL. Independent recheck at `19ff784e` passed all 128 ASCII identities plus mixed Unicode cases. The actual guard oracle covers the accepted legacy identity source; UDS listener-name validation remains unchanged. |
 | D35 | Independent review at `06d7282c` found that method tokens followed by HTAB, VT or FF select opaque CONNECT. An actual HTTP origin accepts those separators and receives a GET that inner policy denies. Direct and Python controls reproduce the behavior. | Native classification now keeps HTTP-like whitespace separators on the HTTP path. Hyper may reject the spelling with 400, but rejection cannot grant opaque transport. SSH identification waits for a complete first line and still gives HTTP request-line syntax precedence. Independent recheck at `19ff784e` passed 33 separator cases without origin application requests, plus the prior HTTP-method and SSH identification cases. D36 records the separate leading-whitespace finding. |
 | D36 | Independent review at `19ff784e` found that whitespace before the HTTP method still selects opaque CONNECT. An actual Python HTTP origin accepts ten leading separators and receives a GET that inner policy denies. | Initial classification now keeps the same whitespace set on the HTTP parser's path. Independent recheck at `583d8978` passed 48 whitespace/fragment cases without forbidden origin requests, plus passthrough and real SSH. Native regression cases require a terminal 400 and zero application bytes, including one-byte and three-byte prefixes. The original Python proxy failures remain explicit comparisons. |
@@ -339,6 +339,7 @@ silently reduce accepted message sizes to a library default.
 | D39 | The Python gateway can render an additional HTTP header from a credential value containing CRLF. A controlled gateway/Vault case demonstrates the extra field on the resulting request. | Native injection validates the replacement header name and value before removing the gateway token. Invalid material returns a content-free error and leaves input headers intact. A regression exercises the actual source defect and the native rejection; this malformed-header behavior is not a compatibility requirement. |
 | D40 | The Python hostname sensor decodes lowercase ACE in absolute-form requests but preserves uppercase ACE and origin-form ACE. The same mixed-script DNS name therefore blocks in one spelling and reaches an owned parent in the other two. Uppercase ACE can also pass source validation when its decoded text fails IDNA2003 roundtrip checks. | Native network inspection decodes ACE consistently after configured bypass and identity checks. Policy matching and audit keep the source hostname. Raw-decodable mixed-script labels receive the existing homoglyph response; decoding failure receives the existing deny/warn response with a content-free inspection error. Explicit disable and configured bypass keep their order. The source's strict codec remains a separate tested primitive; this repair does not replace it with UTS46. |
 | D41 | Python 3.12's search prefilter uses Unicode negative categories for some scoped-ASCII patterns. For example, search for `(?a:\W)` misses `é`, while fullmatch and anchored search match it. The actual matching instruction uses the correct ASCII category. | Native inspection follows the configured ASCII rule. A regression blocks these matching messages, and the source prefilter defect remains a separate classification in the differential matrix. This correction changes inspection results without adding a policy rule. |
+| D42 | Native policy method conditions used Rust's newer Unicode uppercasing. An allow condition for U+1C89 therefore matched a lookup for U+1C8A, although the pinned Python engine denies it. The API's returned method was unchanged, hiding the comparison mismatch. | Policy conditions and API method normalization now share pinned Python 3.12 / Unicode 15 uppercase data. The regression compares the actual source denial with native evaluation. Host case conversion is separate and remains outside this repair. |
 
 ## Deletion map and evidence still required
 
@@ -474,10 +475,10 @@ request. The source options `network_guard_enabled`, `network_guard_block` and
 budgets and guard counters; invalid configuration keeps the previous runtime.
 Native guard responses preserve the source JSON bytes, status and headers.
 Development `proxy.network_guard` events contain guard intents without raw
-queries or application bytes. Approval persistence, APIs and the remaining
-production pipeline still require integration.
+queries or application bytes. Approval persistence and the remaining production pipeline still require
+integration. The bounded local API reads are described below.
 
-Owner validation on Linux aarch64 passed all 36 native policy wire cases and
+Owner validation at `22c9a008` on Linux aarch64 passed all 36 native policy wire cases and
 104 WebSocket regressions against one frozen binary. The native policy cases
 verify the absence of an adapter process/socket, identity, bypasses, reloads,
 shared budgets, exact deny bytes and denied-request containment. Separate source
@@ -487,6 +488,41 @@ include all Unicode scalar Nameprep outcomes and 155 source parser/sensor rows.
 The native request constructor also matches those 155 rows. All 22 existing
 Rust transport tests, strict all-target Clippy and selected hooks pass.
 These are owner results, without independent acceptance or macOS/guest evidence.
+
+The native [Agent API](../proxy/src/agent_api.rs) serves authenticated `/health`
+and `/lookup` on the reserved hostname. `agent_api_enabled` defaults to true.
+Authentication reads `SAFEYOLO_DATA_DIR/agent_token` for every request, defaulting
+to `/safeyolo/data/agent_token`. Method checks precede authentication; lookup uses
+the trusted listener identity and current policy snapshot without spending
+request budgets. Repeated Authorization fields retain the source comma-space
+joining behavior. Root-dot aliases enter the same local API under D9.
+
+These requests terminate locally before ordinary inspection and egress. Disabled
+or failed handlers remain contained; CONNECT returns the source transport-guard
+403. Development `proxy.agent_api` evidence records response and audit intents
+without bearer values or URL queries. A failed evidence file write preserves the
+response and sets `X-SafeYolo-Evidence-Error`; source production audit writes also
+preserve responses when their sink fails. An exception escaping the source audit
+callback is a separate fault, covered by the facade's local 503 transition.
+
+Policy method comparison and API query formatting use [pinned Python scalar
+data](../proxy/data/agent_api/README.md), including the D42 correction. `/policy`
+and other operational routes remain unavailable in this development slice.
+Python surrogate-escaped query values that cannot enter the native scalar-string
+matcher produce a typed compatibility failure and local 503. The integer parser
+matches Python's default 4,300-digit conversion limit; nondefault Python limits
+remain outside the demonstrated contract. These gaps, production audit storage
+and global API counters still require integration before complete API acceptance.
+
+Owner validation of the API integration on Linux aarch64 passed all 176 wire
+cases against one immutable binary: 36 API, 36 network-policy and 104 WebSocket
+cases. The API source baseline passed 35 cases with one strict historical D9
+failure. Staged-source checks passed seven API, 24 policy and 22 transport tests,
+including the actual Python handler and method-condition oracles, plus strict
+all-target Clippy and selected hooks. Separate scalar checks cover all 1,112,064
+Unicode scalars; Request compile-fail tests prevent routine Debug/Serialize use.
+These results do not establish independent acceptance, macOS, real-guest or CI
+validation, or the remaining production API workflows.
 
 The [host codec](../proxy/data/host_names/README.md) pins the source's IDNA2003
 and Unicode data. Request-form validation preserves the source policy hostname;
@@ -498,9 +534,10 @@ in this case. Wire fixtures assert both exact forms and the unchanged path/query
 The fixture checks decisions, delivered bytes, destination ports, generated
 IDs and trusted attribution. Its `proxy.request` and `proxy.egress` events are
 migration evidence, not replacements for production JSONL or traffic APIs.
-Both reserved local destinations remain local; the Rust slice returns an error
-because their full workflows have not been implemented. An allowed CONNECT now
-opens its authorized destination before protocol selection, matching production
+Both reserved local destinations remain local. The Agent API implements the
+bounded reads below; its other workflows and the diagnostic probe still need
+integration. An allowed CONNECT now opens its authorized destination before
+protocol selection, matching production
 and allowing a server greeting. Denied CONNECT still opens no destination.
 The first allowed inner request reuses that connection. Its policy check
 precedes delivery of application bytes. Changed inner authorities cannot select
@@ -524,11 +561,11 @@ their validating path. Production WebSocket integration, D29's passthrough
 boundary and complete control/evidence integration remain required; this is not
 M4/M5 acceptance.
 
-The native [network policy](../proxy/src/policy.rs),
-[approval persistence](../proxy/src/approvals.rs),
+The native [network policy](../proxy/src/policy.rs) runs without the temporary
+adapter when selected. [Approval persistence](../proxy/src/approvals.rs),
 [service selection](../proxy/src/services.rs) and
-[contract enforcement](../proxy/src/contracts.rs) modules do not yet replace the
-temporary adapter. Their differential tests cover authored precedence, scoped
+[contract enforcement](../proxy/src/contracts.rs) still need runtime integration.
+Their differential tests cover authored precedence, scoped
 mutations and rollback, reload budgets, service/capability routes and contract
 request constraints. Local baseline host lists, IAM task overlays and network
 condition defaults follow the existing loader and evaluation context. The shared
@@ -540,7 +577,7 @@ policy matcher now evaluates credential use, risky routes and service calls;
 9,870 additional Python comparisons cover the existing contexts and effects.
 The native [encrypted vault](../proxy/src/credentials.rs) reads and writes the
 existing format without credential re-entry. Its secret type requires explicit
-access and cannot be serialized into routine metadata. These modules remain
+access and cannot be serialized into routine metadata. The approval, service and credential modules remain
 inactive in transport. Transport injection, OAuth refresh execution, complete control
 integration, TOML's large-integer gap, and JSON body compatibility beyond the
 tested UTF-8 encodings still require work.

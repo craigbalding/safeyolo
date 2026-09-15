@@ -99,6 +99,7 @@ fn config(directory: &TempDir) -> Config {
         network_guard_enabled: true,
         network_guard_block: true,
         network_guard_homoglyph: true,
+        agent_api_enabled: false,
         readiness_file: directory.path().join("ready.json"),
         event_log: directory.path().join("events.jsonl"),
         parent_proxy: None,

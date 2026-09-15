@@ -1,7 +1,8 @@
 """Launch the current UDS/network-policy path for migration comparisons.
 
 This is the focused live-test chain, not the full production proxy. The Agent
-API handler is deliberately absent, exercising its independent containment.
+API handler is opt-in; ordinary transport fixtures exercise its independent
+containment while the handler is absent.
 """
 
 from __future__ import annotations
@@ -86,8 +87,13 @@ async def run(config):
                           ignore_hosts=build_ignore_patterns(config.get("ignore_hosts", [])))
     if config.get("upstream_ca_file"):
         master.options.update(ssl_verify_upstream_trusted_ca=config["upstream_ca_file"])
+    master.addons.add(RequestIdGenerator())
+    if config.get("fixture_agent_api", False):
+        from safeyolo.mitm_addons.agent_api import AgentAPI
+
+        master.addons.add(AgentAPI())
     master.addons.add(
-        RequestIdGenerator(), AgentAPIRequestGuard(), NetworkGuard(),
+        AgentAPIRequestGuard(), NetworkGuard(),
         SSEStreaming(), ProbeSink(), TransportGuard(),
     )
     master.options.update(**{name: config[name] for name in (

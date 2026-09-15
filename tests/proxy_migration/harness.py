@@ -76,7 +76,8 @@ def wait_ready(process, paths, log, *, readiness_file=None):
 @contextmanager
 def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=False, upstream_ca=None,
                  ignore_hosts=(), eager_connect=False, inspection=None, native_policy=False,
-                 network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None):
+                 network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None,
+                 agent_api=False, agent_api_token=b"fixture-agent-api-token-one"):
     """Start one explicitly selected implementation in isolated fixture state."""
     directory.mkdir(parents=True, exist_ok=True)
     policy = directory / "policy.toml"
@@ -101,6 +102,14 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         env = {**os.environ,
                "PYTHONPATH": os.pathsep.join([str(REPO / "cli/src"), str(REPO)]),
                "SAFEYOLO_LOG_PATH": str(directory / "audit.jsonl")}
+        if agent_api:
+            api_data = directory / "api-data"
+            api_data.mkdir()
+            if agent_api_token is not None:
+                token_file = api_data / "agent_token"
+                token_file.touch(mode=0o600)
+                token_file.write_bytes(agent_api_token)
+            env["SAFEYOLO_DATA_DIR"] = str(api_data)
         bridge = None
         # The explicit product parent setting belongs to this fixture. Standard
         # HTTP(S)_PROXY and CA environment variables remain untouched.
@@ -112,9 +121,11 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         if backend == "python":
             config.update(policy_file=str(policy), ca_directory=str(directory / "ca"))
             config.update(ignore_hosts=list(ignore_hosts), connection_strategy="eager" if eager_connect else "lazy")
+            config["fixture_agent_api"] = agent_api
             command = [sys.executable, "-m", "tests.proxy_migration.old_proxy"]
         elif backend == "rust":
             config["ignore_hosts"] = list(ignore_hosts)
+            config["agent_api_enabled"] = agent_api
             if native_policy:
                 config["policy_file"] = str(policy)
             else:

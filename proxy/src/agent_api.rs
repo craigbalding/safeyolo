@@ -1,0 +1,634 @@
+//! Development native Agent API reads, with one policy representation and no egress.
+//!
+//! The caller supplies reserved-host dispatch and reconciled transport identity.
+//! This module owns method/auth/route ordering and reads the shared token anew
+//! off the async worker. It returns local response and audit intent; the caller
+//! owns actual audit persistence, response IDs and request scrubbing.
+//!
+//! `/policy` requires the source compiled baseline projection and remains
+//! explicitly unavailable. Python surrogateescape query values cannot enter the
+//! current scalar-string Policy API: these produce a typed compatibility failure,
+//! never lossy replacement. This is an incomplete development API slice.
+
+use std::{collections::HashMap, fs, path::Path};
+
+use serde_json::{Value, json};
+use subtle::ConstantTimeEq;
+use zeroize::Zeroizing;
+
+use crate::{
+    network_guard::{Identity, Response, sanitize},
+    policy::{Effect, NetworkRequest, Policy, python_whitespace},
+    python_text::{decimal, printable, uppercase},
+};
+
+const API_HOST: &str = "_safeyolo.proxy.internal";
+const ENDPOINTS: &[&str] = &[
+    "/health",
+    "/status",
+    "/policy",
+    "/lookup",
+    "/budgets",
+    "/config",
+    "/explain",
+    "/trace",
+    "/memory",
+    "/agents",
+    "/circuits",
+    "/gateway/services",
+    "/api/flows/search",
+    "/api/test-context/current",
+    "/api/flows/search",
+    "/api/flows/endpoints",
+    "/api/flows/facets",
+    "/api/flows/body-search",
+    "/api/flows/diff",
+    "/api/flows/request-body-search",
+    "/gateway/request-access",
+    "/gateway/submit-binding",
+    "/desktop/present",
+    "/api/flows/{id}",
+    "/api/flows/{id}/request-body",
+    "/api/flows/{id}/response-body",
+    "/api/flows/{id}/tag (POST)",
+    "/api/flows/{id}/tag/{name} (DELETE)",
+];
+
+/// Authorization and query input are never exposed through Debug or Serialize.
+/// The caller combines duplicate Authorization fields with `, `, as mitmproxy
+/// does, and never obtains identity or the request ID from these headers.
+///
+/// ```compile_fail
+/// use safeyolo_proxy::agent_api::Request;
+/// fn cannot_log(request: Request<'_>) { println!("{request:?}"); }
+/// ```
+/// ```compile_fail
+/// use safeyolo_proxy::agent_api::Request;
+/// fn cannot_serialize(request: Request<'_>) { let _ = serde_json::to_string(&request); }
+/// ```
+#[derive(Clone, Copy)]
+pub struct Request<'a> {
+    pub method: &'a str,
+    pub path_and_query: &'a str,
+    pub authorization: Option<&'a [u8]>,
+    pub identity: Identity<'a>,
+    pub client_ip: Option<&'a str>,
+    pub request_id: &'a str,
+}
+
+/// A configured remote client can report health without a direct policy engine.
+pub enum PolicyState<'a> {
+    Ready(&'a Policy),
+    Unavailable,
+    NoEngine { healthy: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    HandlerUnavailable,
+    TokenEncoding,
+    TokenTask,
+    AuthenticationEncoding,
+    AuditWrite,
+    PolicyEvaluation,
+    DevelopmentEndpoint,
+    /// A Python lone-surrogate query value cannot enter the current Policy API.
+    QueryCompatibility,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditKind {
+    AuthenticationFailed,
+    HandlerUnavailable,
+}
+
+/// Source event fields only. No token, Authorization or query is retained.
+pub struct AuditIntent {
+    pub kind: AuditKind,
+    pub event: &'static str,
+    pub severity: &'static str,
+    pub addon: &'static str,
+    pub summary: String,
+    pub agent: Option<String>,
+    pub request_id: Option<String>,
+    pub host: Option<&'static str>,
+    pub details: Value,
+}
+
+/// Every outcome is a local terminal response, including compatibility failure.
+pub struct Outcome {
+    pub response: Response,
+    pub audit: Option<AuditIntent>,
+    pub blocked_by: &'static str,
+    pub handler_owned: bool,
+    /// Remove both auth headers and the query before any downstream observer.
+    pub scrub_request: bool,
+    pub failure: Option<Failure>,
+    /// Source PolicyEngine increments its evaluation counter even for previews.
+    pub policy_evaluations: u64,
+}
+impl Outcome {
+    /// An escaped producer callback error reaches the adjacent source guard.
+    /// Ordinary audit file errors are caught on Python's writer thread and must
+    /// keep the original response; callers must not use this for sink failures.
+    /// A failed containment audit cannot change its already local response.
+    pub fn audit_failed(self, request: Request<'_>) -> Self {
+        if self.audit.as_ref().map(|audit| audit.kind) == Some(AuditKind::AuthenticationFailed) {
+            unavailable(request, Failure::AuditWrite)
+        } else {
+            self
+        }
+    }
+}
+
+fn agent(identity: Identity<'_>) -> Option<&str> {
+    match identity {
+        Identity::Resolved(value) => Some(value),
+        _ => None,
+    }
+}
+fn path_no_query(request: Request<'_>) -> &str {
+    request.path_and_query.split('?').next().unwrap()
+}
+fn route(request: Request<'_>) -> &str {
+    let path = path_no_query(request).trim_end_matches('/');
+    if path.is_empty() { "/" } else { path }
+}
+fn response(status: u16, body: Value) -> Outcome {
+    Outcome {
+        response: Response {
+            status,
+            headers: vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("X-SafeYolo-Agent-API".into(), "true".into()),
+            ],
+            body,
+        },
+        audit: None,
+        blocked_by: "agent-api",
+        handler_owned: true,
+        scrub_request: false,
+        failure: None,
+        policy_evaluations: 0,
+    }
+}
+
+/// Existing adjacent-guard response for an absent or failing API handler.
+pub fn unavailable(request: Request<'_>, failure: Failure) -> Outcome {
+    let path = path_no_query(request);
+    let mut outcome = response(
+        503,
+        json!({
+            "error":"SafeYolo Agent API handler unavailable",
+            "reason_code":"agent_api_unavailable", "handler":"agent-api", "host":API_HOST,
+            "path":path, "request_id":request.request_id,
+        }),
+    );
+    outcome
+        .response
+        .headers
+        .push(("X-SafeYolo-Request-Id".into(), request.request_id.into()));
+    outcome.blocked_by = "agent-api-request-guard";
+    outcome.handler_owned = false;
+    outcome.scrub_request = true;
+    outcome.failure = Some(failure);
+    outcome.audit = Some(AuditIntent {
+        kind: AuditKind::HandlerUnavailable,
+        event: "security.agent_api_unavailable",
+        severity: "high",
+        addon: "agent-api-request-guard",
+        summary: "Agent API handler unavailable; request contained locally".into(),
+        agent: agent(request.identity).map(str::to_owned),
+        request_id: Some(request.request_id.into()),
+        host: Some(API_HOST),
+        details: json!({"reason_code":"agent_api_unavailable", "handler":"agent-api",
+                        "method":request.method, "path":path}),
+    });
+    outcome
+}
+
+enum Authentication {
+    Accepted,
+    Missing,
+    Rejected,
+    Failed(Failure),
+}
+async fn authenticate(path: &Path, supplied: &[u8]) -> Authentication {
+    let path = path.to_owned();
+    let supplied = Zeroizing::new(supplied.to_vec());
+    tokio::task::spawn_blocking(move || {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => Zeroizing::new(bytes),
+            Err(_) => return Authentication::Missing,
+        };
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) => text,
+            Err(_) => return Authentication::Failed(Failure::TokenEncoding),
+        };
+        // Path.read_text uses universal newline conversion before str.strip.
+        let mut token = Zeroizing::new(String::new());
+        let mut chars = text.chars().peekable();
+        while let Some(character) = chars.next() {
+            if character == '\r' {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                token.push('\n');
+            } else {
+                token.push(character);
+            }
+        }
+        let token = token.trim_matches(python_whitespace);
+        if token.is_empty() {
+            return Authentication::Missing;
+        }
+        if !token.is_ascii() || !supplied.is_ascii() {
+            return Authentication::Failed(Failure::AuthenticationEncoding);
+        }
+        if bool::from(token.as_bytes().ct_eq(&supplied)) {
+            Authentication::Accepted
+        } else {
+            Authentication::Rejected
+        }
+    })
+    .await
+    .unwrap_or(Authentication::Failed(Failure::TokenTask))
+}
+
+/// Method checks precede token I/O; authentication precedes route/identity/query.
+/// The caller resolves a fresh policy snapshot and owns audit persistence. This
+/// future has no outbound client and calls the shared Policy at most once.
+pub async fn respond_read(
+    request: Request<'_>,
+    token_path: &Path,
+    policy: PolicyState<'_>,
+    now_ms: f64,
+) -> Outcome {
+    let path = route(request);
+    if !matches!(request.method, "GET" | "POST" | "DELETE") {
+        return response(
+            405,
+            json!({"error":"Method Not Allowed", "allowed":["GET","POST","DELETE"]}),
+        );
+    }
+    if matches!(request.method, "POST" | "DELETE")
+        && !(path.starts_with("/api/flows")
+            || path.starts_with("/gateway/")
+            || path.starts_with("/plumb")
+            || path.starts_with("/api/coord/")
+            || path == "/api/test-context/current"
+            || path == "/desktop/present")
+    {
+        return response(
+            405,
+            json!({"error":"Method Not Allowed", "allowed":["GET"]}),
+        );
+    }
+    let Some(supplied) = request
+        .authorization
+        .and_then(|value| value.strip_prefix(b"Bearer "))
+    else {
+        return response(
+            401,
+            json!({"error":"Authorization required", "hint":"Bearer <token>"}),
+        );
+    };
+    match authenticate(token_path, supplied).await {
+        Authentication::Accepted => (),
+        Authentication::Missing => {
+            return response(503, json!({"error":"Agent token not configured"}));
+        }
+        Authentication::Failed(failure) => return unavailable(request, failure),
+        Authentication::Rejected => {
+            let mut outcome = response(401, json!({"error":"Invalid agent token"}));
+            outcome.audit = Some(AuditIntent {
+                kind: AuditKind::AuthenticationFailed,
+                event: "security.agent_auth_failed",
+                severity: "high",
+                addon: "agent-api",
+                agent: None,
+                request_id: None,
+                host: None,
+                summary: format!(
+                    "Agent API auth failed from {}",
+                    sanitize(request.client_ip.unwrap_or("unknown"))
+                ),
+                details: json!({"client_ip":request.client_ip.unwrap_or("unknown"), "path":sanitize(path)}),
+            });
+            return outcome;
+        }
+    }
+    if path == "/health" {
+        let healthy = match policy {
+            PolicyState::Ready(_) => true,
+            PolicyState::Unavailable => false,
+            PolicyState::NoEngine { healthy } => healthy,
+        };
+        return response(
+            200,
+            json!({"agent_api":"ok", "pdp":if healthy {"ok"} else {"unavailable"}}),
+        );
+    }
+    if path == "/lookup" {
+        return lookup(request, policy, now_ms);
+    }
+    if ENDPOINTS.contains(&path)
+        || path.starts_with("/api/flows/")
+        || path.starts_with("/plumb")
+        || path.starts_with("/api/coord/")
+    {
+        let mut outcome = response(
+            503,
+            json!({"error":"Agent API endpoint unavailable in native development mode"}),
+        );
+        outcome.failure = Some(Failure::DevelopmentEndpoint);
+        return outcome;
+    }
+    response(404, json!({"error":"Not Found", "endpoints":ENDPOINTS}))
+}
+
+enum Decoded {
+    Scalar(String),
+    SurrogateEscape,
+}
+impl Decoded {
+    fn scalar(&self) -> Option<&str> {
+        match self {
+            Self::Scalar(value) => Some(value),
+            Self::SurrogateEscape => None,
+        }
+    }
+}
+fn unquote(value: &str) -> Decoded {
+    let source = value.as_bytes();
+    let mut output = Vec::with_capacity(source.len());
+    let mut index = 0;
+    while index < source.len() {
+        match source[index] {
+            b'+' => output.push(b' '),
+            b'%' if index + 2 < source.len() => {
+                if let (Some(a), Some(b)) = (
+                    (source[index + 1] as char).to_digit(16),
+                    (source[index + 2] as char).to_digit(16),
+                ) {
+                    output.push((a * 16 + b) as u8);
+                    index += 3;
+                    continue;
+                }
+                output.push(source[index]);
+            }
+            _ => output.push(source[index]),
+        }
+        index += 1;
+    }
+    match String::from_utf8(output) {
+        Ok(value) => Decoded::Scalar(value),
+        Err(_) => Decoded::SurrogateEscape,
+    }
+}
+fn query(request: Request<'_>) -> HashMap<String, Decoded> {
+    // urllib.urlparse drops raw TAB/LF/CR globally and treats # as a fragment.
+    let clean: String = request
+        .path_and_query
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\r' | '\n'))
+        .collect();
+    let query = clean
+        .split('#')
+        .next()
+        .unwrap()
+        .split_once('?')
+        .map(|(_, tail)| tail)
+        .unwrap_or("");
+    let mut output = HashMap::new();
+    for part in query.split('&').filter(|part| !part.is_empty()) {
+        let (key, value) = part.split_once('=').unwrap_or((part, ""));
+        if let Decoded::Scalar(key) = unquote(key)
+            && matches!(key.as_str(), "host" | "scheme" | "port" | "method" | "path")
+        {
+            output.entry(key).or_insert_with(|| unquote(value));
+        }
+    }
+    output
+}
+fn lookup(request: Request<'_>, policy: PolicyState<'_>, now_ms: f64) -> Outcome {
+    let query = query(request);
+    if query
+        .get("host")
+        .and_then(Decoded::scalar)
+        .unwrap_or("surrogate")
+        .is_empty()
+        || !query.contains_key("host")
+    {
+        return response(
+            400,
+            json!({"error":"Missing 'host' parameter", "usage":"/lookup?host=example.com"}),
+        );
+    }
+    let Some(agent) = agent(request.identity) else {
+        return response(403, json!({"error":"Could not identify agent"}));
+    };
+    let policy = match policy {
+        PolicyState::Ready(policy) => policy,
+        PolicyState::Unavailable => return response(503, json!({"error":"PDP not available"})),
+        PolicyState::NoEngine { .. } => {
+            return response(503, json!({"error":"Policy engine not available"}));
+        }
+    };
+    let scheme = query
+        .get("scheme")
+        .map(|v| v.scalar())
+        .unwrap_or(Some("https"));
+    let scheme = scheme.map(str::to_ascii_lowercase);
+    let Some(scheme) =
+        scheme.filter(|value| matches!(value.as_str(), "http" | "https" | "ws" | "wss"))
+    else {
+        return response(
+            400,
+            json!({"error":"scheme must be http, https, ws or wss"}),
+        );
+    };
+    let port = query.get("port").map(|v| v.scalar()).unwrap_or(Some(
+        if matches!(scheme.as_str(), "http" | "ws") {
+            "80"
+        } else {
+            "443"
+        },
+    ));
+    let Some(port) = port else {
+        return unavailable(request, Failure::QueryCompatibility);
+    };
+    let port = match parse_port(port) {
+        Ok(port) => port,
+        Err(error) => return response(400, json!({"error":error})),
+    };
+    let host = query.get("host").and_then(Decoded::scalar);
+    let method = query
+        .get("method")
+        .map(|v| v.scalar())
+        .unwrap_or(Some("GET"));
+    let (Some(host), Some(method)) = (host, method) else {
+        return unavailable(request, Failure::QueryCompatibility);
+    };
+    let method = uppercase(method);
+    let path = query
+        .get("path")
+        .map(|v| v.scalar())
+        .unwrap_or(Some(if method == "CONNECT" { "" } else { "/" }));
+    let Some(path) = path else {
+        return unavailable(request, Failure::QueryCompatibility);
+    };
+    let decision = policy.evaluate(
+        NetworkRequest {
+            agent: Some(agent),
+            host,
+            port: Some(port),
+            method: &method,
+            path,
+        },
+        now_ms,
+        false,
+    );
+    let mut outcome = match decision {
+        Ok(decision) => {
+            let reason = if decision.effect == Effect::BudgetExceeded {
+                format!("Request budget exceeded for {host}")
+            } else if decision.matched_resource.is_none() {
+                "No matching permission (default deny)".into()
+            } else {
+                String::new()
+            };
+            response(
+                200,
+                json!({"host":host,"port":port,"method":method,"path":path,"agent":agent,"effect":decision.effect,"reason":reason}),
+            )
+        }
+        Err(_) => {
+            let mut outcome = response(500, json!({"error":"Internal error: ValueError"}));
+            outcome.failure = Some(Failure::PolicyEvaluation);
+            outcome
+        }
+    };
+    outcome.policy_evaluations = 1;
+    outcome
+}
+
+fn repr(value: &str) -> String {
+    let quote = if value.contains('\'') && !value.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut output = String::from(quote);
+    for character in value.chars() {
+        if character == quote || character == '\\' {
+            output.push('\\');
+            output.push(character);
+        } else if matches!(character, '\t' | '\r' | '\n') {
+            output.push_str(&character.escape_debug().to_string());
+        } else if printable(character) {
+            output.push(character);
+        } else {
+            let point = character as u32;
+            output.push_str(&if point <= 255 {
+                format!("\\x{point:02x}")
+            } else if point <= 65535 {
+                format!("\\u{point:04x}")
+            } else {
+                format!("\\U{point:08x}")
+            });
+        }
+    }
+    output.push(quote);
+    output
+}
+fn parse_port(source: &str) -> Result<u16, String> {
+    let invalid = || {
+        format!(
+            "invalid literal for int() with base 10: {}",
+            repr(source).chars().take(200).collect::<String>()
+        )
+    };
+    let value = source.trim_matches(char::is_whitespace);
+    let negative = value.starts_with('-');
+    let value = value.strip_prefix(['+', '-']).unwrap_or(value);
+    let mut number = 0u32;
+    let mut digits = 0usize;
+    let mut previous_digit = false;
+    for character in value.chars() {
+        if let Some(digit) = decimal(character) {
+            digits += 1;
+            number = number.saturating_mul(10).saturating_add(digit);
+            previous_digit = true;
+        } else if character == '_' && previous_digit {
+            previous_digit = false;
+        } else {
+            return Err(invalid());
+        }
+    }
+    if !previous_digit {
+        return Err(invalid());
+    }
+    // The pinned Python process uses its default integer-conversion limit.
+    if digits > 4300 {
+        return Err(format!(
+            "Exceeds the limit (4300 digits) for integer string conversion: value has {digits} digits; use sys.set_int_max_str_digits() to increase the limit"
+        ));
+    }
+    if negative || number == 0 || number > 65535 {
+        return Err("port must be an integer from 1 to 65535".into());
+    }
+    Ok(number as u16)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires pinned Python 3.12.14; set SAFEYOLO_POLICY_PYTHON"]
+    fn scalar_upper_decimal_and_repr_match_every_python_scalar() {
+        use ring::digest::{Context, SHA256};
+        let mut upper = Context::new(&SHA256);
+        let mut digit = Context::new(&SHA256);
+        let mut representation = Context::new(&SHA256);
+        let mut count = 0;
+        for point in 0..=0x10ffff {
+            let Some(character) = char::from_u32(point) else {
+                continue;
+            };
+            upper.update(uppercase(&character.to_string()).as_bytes());
+            upper.update(b"\0");
+            digit.update(&[decimal(character).map_or(255, |value| value as u8)]);
+            representation.update(repr(&character.to_string()).as_bytes());
+            representation.update(b"\0");
+            count += 1;
+        }
+        let hex = |context: Context| {
+            context
+                .finish()
+                .as_ref()
+                .iter()
+                .map(|value| format!("{value:02x}"))
+                .collect::<String>()
+        };
+        let actual = json!({"upper":hex(upper),"decimal":hex(digit),"repr":hex(representation),"count":count});
+        let output = std::process::Command::new(std::env::var("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"))
+            .args(["-c", r#"
+import hashlib,json,platform,unicodedata
+assert platform.python_version()=='3.12.14' and unicodedata.unidata_version=='15.0.0'
+upper=hashlib.sha256();decimal=hashlib.sha256();representation=hashlib.sha256();count=0
+for point in range(0x110000):
+ if 0xd800<=point<=0xdfff: continue
+ value=chr(point);count+=1
+ upper.update(value.upper().encode());upper.update(b'\0')
+ decimal.update(bytes([unicodedata.decimal(value,255)]))
+ representation.update(repr(value).encode());representation.update(b'\0')
+print(json.dumps({'upper':upper.hexdigest(),'decimal':decimal.hexdigest(),'repr':representation.hexdigest(),'count':count}))
+"#]).output().unwrap();
+        assert!(output.status.success());
+        let expected: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(count, 1_112_064);
+    }
+}

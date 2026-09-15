@@ -35,6 +35,8 @@ pub struct Config {
     pub network_guard_block: bool,
     #[serde(default = "enabled")]
     pub network_guard_homoglyph: bool,
+    #[serde(default = "enabled")]
+    pub agent_api_enabled: bool,
     pub readiness_file: PathBuf,
     pub event_log: PathBuf,
     pub parent_proxy: Option<String>,

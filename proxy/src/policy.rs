@@ -1,4 +1,4 @@
-//! Native proxy-policy evaluation under development; not selected by the proxy.
+//! Native proxy-policy evaluation, selected by the development policy_file option.
 //!
 //! Decisions mirror PolicyEngine.evaluate_request, including its existing exact
 //! index case sensitivity, shared host budgets and separate CONNECT counters.
@@ -181,9 +181,10 @@ impl Condition {
                 .as_ref()
                 .is_none_or(|ports| context.port.is_some_and(|port| ports.contains(&port)))
             && self.methods.as_ref().is_none_or(|methods| {
-                methods
-                    .iter()
-                    .any(|method| method.to_uppercase() == context.method.to_uppercase())
+                methods.iter().any(|method| {
+                    crate::python_text::uppercase(method)
+                        == crate::python_text::uppercase(context.method)
+                })
             })
             && self
                 .path_prefix

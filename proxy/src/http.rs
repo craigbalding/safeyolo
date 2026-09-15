@@ -547,6 +547,106 @@ fn loop_detected(headers: &HeaderMap, token: &str) -> bool {
         })
 }
 
+fn record_agent_api(
+    runtime: &Runtime,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    outcome: &crate::agent_api::Outcome,
+) -> Result<(), Error> {
+    let audit = outcome.audit.as_ref().map(|audit| {
+        json!({
+            "event": audit.event, "kind": "security", "decision": "deny",
+            "severity": audit.severity, "addon": audit.addon,
+            "summary": audit.summary, "agent": audit.agent,
+            "request_id": audit.request_id, "host": audit.host,
+            "details": audit.details,
+        })
+    });
+    // Development evidence uses the facade's audit fields, excluding request
+    // headers and query. Production audit storage is not yet connected.
+    runtime.record(json!({
+        "event": "proxy.agent_api", "agent": identity.agent_id,
+        "connection_id": identity.connection_id, "request_id": request_id,
+        "status": outcome.response.status, "blocked_by": outcome.blocked_by,
+        "handler_owned": outcome.handler_owned, "audit": audit,
+        "failure": outcome.failure.map(|failure| format!("{failure:?}")),
+        "policy_evaluations": outcome.policy_evaluations,
+    }))
+}
+
+async fn local_agent_api(
+    runtime: &Runtime,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    request: &mut Request<Incoming>,
+    destination: &Destination,
+) -> Result<Response<Body>, Error> {
+    use crate::agent_api::{self, Failure, PolicyState};
+
+    // mitmproxy combines repeated Authorization fields with a comma and space.
+    // Hold that value only for authentication, outside diagnostic formatting.
+    let mut authorization = zeroize::Zeroizing::new(Vec::new());
+    let mut present = false;
+    for value in request.headers().get_all(header::AUTHORIZATION) {
+        if present {
+            authorization.extend_from_slice(b", ");
+        }
+        present = true;
+        authorization.extend_from_slice(value.as_bytes());
+    }
+    request.headers_mut().remove(header::AUTHORIZATION);
+    request.headers_mut().remove(header::PROXY_AUTHORIZATION);
+    let api_request = agent_api::Request {
+        method: request.method().as_str(),
+        path_and_query: &destination.path,
+        authorization: present.then_some(authorization.as_slice()),
+        identity: crate::network_guard::Identity::Resolved(&identity.agent_id),
+        client_ip: None,
+        request_id,
+    };
+    let outcome = if runtime.config.agent_api_enabled {
+        let token_path = std::env::var_os("SAFEYOLO_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| "/safeyolo/data".into())
+            .join("agent_token");
+        let policy = runtime
+            .policy
+            .as_ref()
+            .map_or(PolicyState::Unavailable, PolicyState::Ready);
+        agent_api::respond_read(
+            api_request,
+            &token_path,
+            policy,
+            crate::policy::current_time_ms(),
+        )
+        .await
+    } else {
+        agent_api::unavailable(api_request, Failure::HandlerUnavailable)
+    };
+    let evidence_failed = record_agent_api(runtime, identity, request_id, &outcome).is_err();
+    if evidence_failed {
+        // Source audit file failures are caught by its writer and preserve the
+        // response. They differ from a callback exception escaping API auth.
+        eprintln!("Agent API evidence write failed");
+    }
+    // This is terminal local dispatch: no remaining observer receives request
+    // headers, query, or body, including when the handler is unavailable.
+    let mut reply = Response::builder()
+        .status(outcome.response.status)
+        .body(full(outcome.response.body_bytes()))?;
+    for (name, value) in outcome.response.headers {
+        reply
+            .headers_mut()
+            .append(header::HeaderName::try_from(name)?, value.parse()?);
+    }
+    if evidence_failed {
+        reply
+            .headers_mut()
+            .insert("x-safeyolo-evidence-error", "true".parse()?);
+    }
+    Ok(reply)
+}
+
 // Keep the immutable request snapshot separate from the reloadable state used
 // by later requests inside CONNECT, and keep routing separate from identity.
 #[allow(clippy::too_many_arguments)]
@@ -561,14 +661,28 @@ async fn forward(
     tunnel: Option<&Tunnel>,
 ) -> Result<(Response<Body>, String), Error> {
     if is_reserved(&destination.host) {
-        let status = if request.method() == Method::CONNECT {
-            StatusCode::FORBIDDEN
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        };
+        if request.method() == Method::CONNECT {
+            let mut reply = response(
+                StatusCode::FORBIDDEN,
+                "Reserved virtual host cannot accept CONNECT",
+            );
+            reply
+                .headers_mut()
+                .insert("x-blocked-by", "transport-guard".parse()?);
+            return Ok((reply, "local".into()));
+        }
+        if destination
+            .host
+            .trim_end_matches('.')
+            .eq_ignore_ascii_case("_safeyolo.proxy.internal")
+        {
+            let reply =
+                local_agent_api(&runtime, identity, request_id, &mut request, destination).await?;
+            return Ok((reply, "local".into()));
+        }
         return Ok((
             response(
-                status,
+                StatusCode::SERVICE_UNAVAILABLE,
                 "Local endpoint is not implemented in the development proxy",
             ),
             "local".into(),
@@ -975,7 +1089,9 @@ pub(crate) fn serve_request(
             "host": destination.as_ref().ok().map(|d| &d.policy_host),
             "port": destination.as_ref().ok().map(|d| d.port),
             "status": reply.status().as_u16(), "decision": decision,
-            "coverage": if runtime.policy.is_some() {
+            "coverage": if destination.as_ref().is_ok_and(|d| is_reserved(&d.host)) {
+                "local_endpoint"
+            } else if runtime.policy.is_some() {
                 "native_network_guard_only"
             } else {
                 "temporary_network_policy_only"
