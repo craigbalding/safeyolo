@@ -3,6 +3,7 @@
 
 mod config;
 mod http;
+pub mod policy;
 
 pub use config::{AgentListener, Config};
 
