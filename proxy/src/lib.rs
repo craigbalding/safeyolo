@@ -6,6 +6,7 @@ pub mod circuits;
 mod config;
 pub mod contracts;
 pub mod credential_guard;
+pub mod credential_injection;
 pub mod credentials;
 pub mod grants;
 mod http;

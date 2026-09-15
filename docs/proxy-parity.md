@@ -336,6 +336,7 @@ silently reduce accepted message sizes to a library default.
 | D36 | Independent review at `19ff784e` found that whitespace before the HTTP method still selects opaque CONNECT. An actual Python HTTP origin accepts ten leading separators and receives a GET that inner policy denies. | Initial classification now keeps the same whitespace set on the HTTP parser's path. Independent recheck at `583d8978` passed 48 whitespace/fragment cases without forbidden origin requests, plus passthrough and real SSH. Native regression cases require a terminal 400 and zero application bytes, including one-byte and three-byte prefixes. The original Python proxy failures remain explicit comparisons. |
 | D37 | Concurrent Python OAuth refreshes can post the same refresh token twice and let the older response overwrite the newer result. A completed request can also overwrite an intervening credential edit. Expiry or save failure can leave the access token changed in memory before publication succeeds. | The inactive native refresh module shares one attempt per credential across coordinator clones. Vault-bound revisions reject superseded responses. Full response validation and encrypted write rollback retain the previous record on failure. Real Python protocol and concurrency oracles establish the source behavior; independent native recheck and transport integration remain required. |
 | D38 | A native rollback could mark stale memory as current: capture credential A, externally replace or remove it, then fail an unrelated local write's activation. Rollback restored the external file but associated its new file stamp with A. A later conditional publication could overwrite the external edit. | Rollback updates the active file stamp only when the restored bytes previously corresponded to the active snapshot. Otherwise it preserves the detectable stale state until reload. A regression reproduced the overwrite before repair and covers external edits/removals; ordinary rollback still preserves valid retry revisions. This is a native repair, without a cross-process locking guarantee. |
+| D39 | The Python gateway can render an additional HTTP header from a credential value containing CRLF. A controlled gateway/Vault case demonstrates the extra field on the resulting request. | Native injection validates the replacement header name and value before removing the gateway token. Invalid material returns a content-free error and leaves input headers intact. A regression exercises the actual source defect and the native rejection; this malformed-header behavior is not a compatibility requirement. |
 
 ## Deletion map and evidence still required
 
@@ -510,7 +511,7 @@ policy matcher now evaluates credential use, risky routes and service calls;
 The native [encrypted vault](../proxy/src/credentials.rs) reads and writes the
 existing format without credential re-entry. Its secret type requires explicit
 access and cannot be serialized into routine metadata. These modules remain
-inactive in transport. Injection, OAuth refresh execution, complete control
+inactive in transport. Transport injection, OAuth refresh execution, complete control
 integration, TOML's large-integer gap, and JSON body compatibility beyond the
 tested UTF-8 encodings still require work.
 Declared state and response-validator tiers are not promoted to implemented
@@ -525,6 +526,23 @@ UTF-8/16/32 responses, duplicate keys and expiry rounding. Python JSON extension
 lone surrogates and deeper nesting remain accepted-input gaps. HTTP routing,
 URL userinfo, TLS, decompression, timeouts and gateway injection still need
 integration; the module creates no network client or independent egress path.
+
+The inactive [injection stage](../proxy/src/credential_injection.rs) takes the
+existing service selection after contract and risky-route checks. It reads the
+shared vault, preserves expiry/refresh/redirect ordering, and produces a validated
+header change plus scoped evidence intents. A pending refresh consumes outcomes
+from the existing OAuth coordinator. Successful refreshes re-fetch the current
+record; cancellation, rejection and supersession return categorical errors.
+Retained results require the captured vault revision to remain current.
+
+The service selection preserves the exact auth kind, including unknown and
+absent kinds with their source delete-only behavior. Ready replacements mark
+header values sensitive and apply metadata only after header mutation succeeds.
+Redirects retain the original URL, including signed queries, through explicit
+secret access. Owner checks cover 57 Python gateway stage cases and composition
+with service selection and credential detection. Six cases isolate the stage
+after earlier selection/risk checks. Request header casing/order still needs the
+transport adapter; grants, cancellation and audit publication need runtime wiring.
 
 Native [circuit state](../proxy/src/circuits.rs) and
 [test context](../proxy/src/test_context.rs) return explicit outcomes for later

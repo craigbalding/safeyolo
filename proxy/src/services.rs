@@ -486,6 +486,9 @@ pub struct CredentialSelection {
     pub capability: String,
     pub vault_token: String,
     pub account: String,
+    /// Exact source kind; None means no auth section. Unknown kinds remain
+    /// remove-only during injection.
+    pub auth_kind: Option<String>,
     pub auth_header: String,
     pub auth_scheme: String,
     pub allow_http: bool,
@@ -653,6 +656,7 @@ pub fn select_route(
             capability: capability.name.clone(),
             vault_token: binding.vault_token.clone(),
             account: binding.account.clone(),
+            auth_kind: auth.map(|auth| auth.kind.clone()),
             auth_header: auth
                 .map_or("Authorization", |auth| auth.header.as_str())
                 .into(),

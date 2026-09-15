@@ -379,6 +379,7 @@ fn selection_returns_reference_and_risk_without_authorizing_injection() {
     };
     assert_eq!(credential.vault_token, "synthetic-credential-ref");
     assert!(!credential.allow_http);
+    assert_eq!(credential.auth_kind.as_deref(), Some("bearer"));
     assert_eq!(credential.auth_scheme, "Bearer");
     assert!(credential.risky_route.unwrap().irreversible);
 }
@@ -555,7 +556,7 @@ for scenario in x['scenarios']:
    risky=next((route.path for route in service.risky_routes if ('*' in route.methods or r['method'].upper() in route.methods) and matches_resource_pattern(r['path'],route.path)),None)
    outcomes.append([compiled,fallback,risky])
   engine.done()
- output.append({'routes':[{'methods':p['condition']['method'],'path':p['resource'].split(':',1)[1]} for p in permissions], 'outcomes':outcomes})
+ output.append({'auth_kind':service.auth.type if service.auth else None,'routes':[{'methods':p['condition']['method'],'path':p['resource'].split(':',1)[1]} for p in permissions], 'outcomes':outcomes})
 json.dump({'scenarios':output,'normalization':[normalize_path(p) for p in x['normalization']]},sys.stdout)
 "#;
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -591,6 +592,10 @@ json.dump({'scenarios':output,'normalization':[normalize_path(p) for p in x['nor
         let name = scenario["service"].as_str().unwrap();
         let cap = scenario["capability"].as_str().unwrap();
         let service = &registry.services[name];
+        assert_eq!(
+            json!(service.auth.as_ref().map(|auth| &auth.kind)),
+            expected["scenarios"][index]["auth_kind"]
+        );
         let token = token(name, cap);
         let states: Vec<ContractBinding> =
             serde_json::from_value(scenario["bindings"].clone()).unwrap();
