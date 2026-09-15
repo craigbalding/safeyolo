@@ -12,6 +12,7 @@ bytes = "1"
 fernet = { version = "0.2.2", default-features = false, features = ["rustcrypto", "fernet_danger_timestamps"] }
 fancy-regex = "0.19.2"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+h2 = "=0.4.19"
 http-body-util = "0.1"
 hyper = { version = "1.11", features = ["client", "server", "http1", "http2"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
@@ -51,3 +52,5 @@ path = "src/main.rs"
 
 [patch.crates-io]
 fancy-regex = { path = "vendor/fancy-regex" }
+hyper = { path = "vendor/hyper" }
+h2 = { path = "vendor/h2" }

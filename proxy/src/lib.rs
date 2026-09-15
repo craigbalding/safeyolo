@@ -22,6 +22,7 @@ pub mod oauth;
 pub mod policy;
 mod python_json;
 mod python_text;
+mod request_headers;
 pub mod services;
 pub mod tasks;
 pub mod test_context;
@@ -351,6 +352,7 @@ async fn serve_connection(
         )
     });
     let connection = hyper::server::conn::http1::Builder::new()
+        .preserve_header_case(true)
         .serve_connection(TokioIo::new(socket), service)
         .with_upgrades();
     tokio::pin!(connection);

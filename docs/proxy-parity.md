@@ -345,6 +345,7 @@ silently reduce accepted message sizes to a library default.
 | D45 | Source task clear removes the active task from PDPCore but does not invalidate the Agent API configuration cache. A populated `/config` response can retain the old task rules and hash until explicit invalidation, while direct core reads already show the baseline. This is an observed state-freshness defect; the witness does not establish an enforcement bypass. | The native projection reads the current immutable snapshot without a second cache. The [sensor configuration tests](../proxy/src/policy/sensor_config.rs) compare baseline, task replacement and the existing `without_task()` snapshot with actual source core responses, retaining the stale source handler response as evidence. HTTP task management and sensor enforcement integration remain pending; the component test does not establish a complete task-clear workflow. |
 | D46 | The source admin shield checks textual hosts before DNS. Numeric aliases, a root dot, mapped IPv6 and a DNS alias can reach a protected loopback endpoint. Configured extra ports have the same hole. Malformed digit-only extra ports raise inside both hooks; the dispatcher swallows those failures and permits the connection. An ephemeral bind or a changed port option can also leave the running listener unprotected. Admin bearer authentication remains a separate boundary. | Native request and CONNECT checks retain the source host/port rules. Before connecting, the sole egress path checks each selected socket against the protected local addresses and the actual startup-owned listener. The same numeric port at a remote address or 127.0.0.2 remains allowed. Invalid numeric extra-port configuration rejects the candidate and preserves the previous live snapshot. The [shield tests](../proxy/tests/admin_shield.rs) retain actual source socket and dispatcher witnesses; the [operator transport tests](../proxy/tests/admin_transport.rs) exercise the integrated boundary. The proxy checks the immediate configured parent socket; origin resolution beyond that parent remains the parent's responsibility. |
 | D47 | A malformed operator JSON or UTF-8 body makes the source task PUT handler write two final 400 responses for one request. Its Content-Length parser also accepts a negative length by reading until EOF, maps non-numeric lengths to a body error, and can disconnect on overflow. | The native operator facade sends one terminal malformed-body 400 with a native decoder diagnostic. Hyper rejects invalid framing before dispatch. Normal task responses retain exact source JSON bytes; decoder wording and transport rejection order are explicit differences. The [operator facade tests](../proxy/src/admin_api.rs) compare valid, auth, method, raw-document and failure contracts. These changes do not add an application body limit or a second HTTP parser. |
+| D48 | The earlier native request cleanup skips an entire Connection value when HeaderValue::to_str rejects non-ASCII bytes. A valid UTF-8 whitespace token therefore leaves its nominated header on the upstream request, while Python removes it. HeaderMap deletion also changes the first-match order needed by credential inspection. | The [ordered header owner](../proxy/src/request_headers.rs) uses fields captured by the existing H1/H2 parsers, preserves first spelling and duplicate order, and applies source header hygiene before network evaluation. The [wire regression](../tests/proxy_migration/test_request_headers.py) matches Python; a retained run against the earlier immutable binary proves it forwards the synthetic nominated field. Invalid bytes remain available and do not become absent headers. This metadata repair does not activate credential regex inspection. |
 
 ## Deletion map and evidence still required
 
@@ -930,10 +931,44 @@ covers both existing guards without a second policy representation.
 Owner checks compare 903 detector cases, the 17-rule generated catalogue,
 112 actual Python addon/PDP operations, eight cached reload steps and 1,800
 addon-enable queries. These checks do not establish transport activation or
-independent acceptance. Raw-header decoding and regex compatibility still need
-integration. Accepted unusual scalar configuration forms remain a gap. A failed
+independent acceptance. Lossless header text for the credential regex matcher
+remains unimplemented, and existing regex compatibility gaps remain. Accepted
+unusual scalar configuration forms remain a gap. A failed
 native reload retains the prior complete snapshot; the source can partially
 update configuration before failing.
+
+The H1/H2 server parsers now retain original regular field order through narrow
+local [Hyper](../proxy/vendor/hyper/SAFEYOLO.md) and
+[h2](../proxy/vendor/h2/SAFEYOLO.md) patches. The private request owner joins
+duplicate values with comma-space and preserves first name spelling. It removes
+internal, hop-by-hop and Connection-nominated fields before network checks, with
+the source WebSocket exception. Network development events retain the consumed
+trace opt-in as `trace_requested`; production trace storage is still
+unimplemented. The local Agent API releases captured bearer fields before
+its response handling.
+
+Header values remain raw bytes in a private wiping owner. The HTTP path releases
+that owner before origin I/O while credential inspection is inactive. Wiping
+these copies does not wipe the transport library's original buffers. Hyper
+retains framing/body ownership, and the existing WebSocket validator still
+checks actual handshakes. The adapter does not add header admission rules or a
+second HTTP parser. The source parser differences in the library patch notes
+remain separate from metadata parity.
+
+The header candidate passed 271 Rust tests, including the selected source
+oracles, 15 documentation tests, strict all-target Clippy and formatting checks
+on Linux aarch64. Its immutable binary passed 212 native-policy wire cases
+across 213 proxy instances. The 162 recorded egress events reached owned peers;
+cleanup checks passed. Fixture process proofs and external sampling cover 173
+instances; the other 40 have configuration, native-event and final cleanup
+evidence without a sampled-process claim. The regular nonbinary artifact scan
+found no minted-bearer patterns.
+
+Seventeen separate HTTP, HTTP/2 and HTTPS wire cases passed with the explicit
+temporary Python adapter. Those checks found and verified the repair for a
+strict-schema rejection: `trace_requested` stays local to native events and is
+excluded from the adapter request. These checks are implementation evidence;
+independent acceptance and the remaining production migration work are pending.
 
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those

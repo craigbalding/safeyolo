@@ -1,0 +1,34 @@
+{
+  "name": "hyper",
+  "version": "1.11.1",
+  "source": "registry+https://github.com/rust-lang/crates.io-index",
+  "archive_sha256": "27b501faa50e7a26c3d3560ca625132f4078a17771f4810baf70475ae48cbe43",
+  "patch_source_sha256": "83f2cd2fa687935e0823cbe3dfdaff8f3cd6a6495a7466c24f84bd4281ab0887",
+  "files": [
+    {
+      "path": "hyper-1.11.1/src/ext/mod.rs",
+      "original_sha256": "45e4e184394742eaf2c53b9d856639c72fefbb8d89ef790215581903760db03c",
+      "candidate_sha256": "223c81ffc4d6f65fe63d12410ec5c6eed4e60683e14b068097412a18ff21efa7",
+      "added": 20,
+      "removed": 0,
+      "proof_candidate_sha256": "1a19794127a1f65e2a88454f2cfd207ce2f3eeac16226cea94069be69eb1f7e6"
+    },
+    {
+      "path": "hyper-1.11.1/src/proto/h1/role.rs",
+      "original_sha256": "4741a413b947a72da0f58a2ef73bc9b209e1dfebe1a110e6ed5752745db93b07",
+      "candidate_sha256": "30eb7937f0d27f5c3a351d99c3cdc561e01a1c3f4f2364456505bd8debacca0c",
+      "added": 11,
+      "removed": 0,
+      "proof_candidate_sha256": "30eb7937f0d27f5c3a351d99c3cdc561e01a1c3f4f2364456505bd8debacca0c"
+    }
+  ],
+  "local_adjustments": [
+    "Updated the proof-only accessor comment for application use."
+  ],
+  "metadata_normalization": {
+    "path": ".cargo_vcs_info.json",
+    "original_sha256": "8e08544c1e6778d3606bb6a827f7ea6496033bc9b3356289710d1954fb71a5cc",
+    "candidate_sha256": "3993dc5af39e5c0684c8dd1e5c549b6616ffa9901a910c93a5e198e4a33bfa38",
+    "change": "Add the terminal newline required by repository hooks."
+  }
+}

@@ -85,6 +85,9 @@ struct PolicyRequest<'a> {
     path: &'a str,
     header_names: Vec<&'a str>,
     body_present: bool,
+    // Native event metadata is outside the temporary adapter protocol.
+    #[serde(skip)]
+    trace_requested: bool,
 }
 
 #[derive(Deserialize)]
@@ -534,6 +537,7 @@ async fn decide(runtime: &Runtime, request: &PolicyRequest<'_>) -> Result<Policy
             "connection_id": request.connection_id, "request_id": request.request_id,
             "host": request.host, "port": request.port,
             "outcome": outcome.kind, "trace": outcome.trace,
+            "trace_requested": request.trace_requested,
             "audit": outcome.audit, "metadata": outcome.metadata, "pdp": outcome.pdp,
         }))?;
         let allow = outcome.kind != OutcomeKind::Blocked;
@@ -677,6 +681,14 @@ async fn local_agent_api(
         present = true;
         authorization.extend_from_slice(value.as_bytes());
     }
+    // Release parser metadata carrying duplicate bearer fields at this local
+    // terminal boundary as well as removing the transport header values.
+    request
+        .extensions_mut()
+        .remove::<hyper::ext::OriginalHeaderFields>();
+    request
+        .extensions_mut()
+        .remove::<h2::ext::OriginalHeaderFields>();
     request.headers_mut().remove(header::AUTHORIZATION);
     request.headers_mut().remove(header::PROXY_AUTHORIZATION);
     let api_request = agent_api::Request {
@@ -800,6 +812,17 @@ async fn forward(
             .insert("x-blocked-by", "loop-guard".parse()?);
         return Ok((response, "deny".into()));
     }
+    // Source request-ID hygiene precedes security addons. Keep inspection order
+    // from the parser while applying the same removals to transport headers.
+    // Framing/body ownership stays with Hyper; the bridge's body hint retains
+    // its existing pre-removal interpretation.
+    let body_present = request.headers().contains_key(header::TRANSFER_ENCODING)
+        || request
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .is_some_and(|value| value != "0");
+    let mut ordered_headers = crate::request_headers::RequestHeaders::take(&mut request)?;
+    let hygiene = ordered_headers.apply_hygiene(request.headers_mut());
     let decision = decide(
         &runtime,
         &PolicyRequest {
@@ -821,15 +844,18 @@ async fn forward(
             } else {
                 &destination.path
             },
-            header_names: request.headers().keys().map(|name| name.as_str()).collect(),
-            body_present: request.headers().contains_key(header::TRANSFER_ENCODING)
-                || request
-                    .headers()
-                    .get(header::CONTENT_LENGTH)
-                    .is_some_and(|v| v != "0"),
+            header_names: ordered_headers
+                .iter()
+                .map(|(name, _)| std::str::from_utf8(name))
+                .collect::<Result<_, _>>()?,
+            body_present,
+            trace_requested: hygiene.trace_requested,
         },
     )
     .await?;
+    // HTTP credential inspection is not active yet. Do not retain its prepared
+    // raw-byte view across origin I/O while the text adapter remains unfinished.
+    drop(ordered_headers);
     if decision.allow != (decision.decision == "allow") {
         return Err("inconsistent policy decision".into());
     }
@@ -930,7 +956,7 @@ async fn forward(
         });
         return Ok((Response::new(full(Bytes::new())), decision.decision));
     }
-    let websocket = if request.headers().contains_key(header::UPGRADE) {
+    let websocket = if hygiene.websocket {
         if upgrades.is_none() {
             return Ok((
                 response(
@@ -1115,6 +1141,7 @@ async fn serve_tunnel_http(
         }
     } else {
         let connection = hyper::server::conn::http1::Builder::new()
+            .preserve_header_case(true)
             .serve_connection(TokioIo::new(client), service)
             .with_upgrades();
         tokio::pin!(connection);
