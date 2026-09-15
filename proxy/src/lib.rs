@@ -1,9 +1,13 @@
 //! First migration slice: trusted UDS ingress and HTTP/1 through existing policy.
 //! The temporary Python network decision bridge is required; this is not production parity.
 
+pub mod approvals;
 mod config;
+pub mod contracts;
 mod http;
 pub mod policy;
+pub mod services;
+pub mod tls;
 
 pub use config::{AgentListener, Config};
 
@@ -27,6 +31,8 @@ use tokio::{
 };
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
+pub(crate) type RuntimeState = Arc<RwLock<Arc<Runtime>>>;
+pub(crate) type UpgradeTasks = Arc<tokio::sync::Mutex<JoinSet<()>>>;
 
 #[derive(Clone)]
 pub(crate) struct ConnectionIdentity {
@@ -38,6 +44,7 @@ pub(crate) struct Runtime {
     config: Config,
     parent: Option<config::ParentProxy>,
     tls: Option<Arc<rustls::ClientConfig>>,
+    certificate_authority: Option<Arc<tls::CertificateAuthority>>,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -52,7 +59,15 @@ impl Runtime {
     ) -> Result<Self, Error> {
         config.validate()?;
         let parent = config.parent()?;
-        let tls = if parent.as_ref().is_some_and(|parent| parent.tls) {
+        let certificate_authority = config
+            .tls_ca_file
+            .as_deref()
+            .map(tls::CertificateAuthority::load)
+            .transpose()?
+            .map(Arc::new);
+        let tls = if parent.as_ref().is_some_and(|parent| parent.tls)
+            || certificate_authority.is_some()
+        {
             Some(http::parent_tls(&config)?)
         } else {
             None
@@ -61,6 +76,7 @@ impl Runtime {
             temporary_policy_lock,
             parent,
             tls,
+            certificate_authority,
             via_token: config
                 .via_token
                 .clone()
@@ -239,18 +255,36 @@ async fn serve_connection(
     runtime: Arc<RwLock<Arc<Runtime>>>,
     mut stop: watch::Receiver<bool>,
 ) {
+    let upgrades: UpgradeTasks = Arc::new(tokio::sync::Mutex::new(JoinSet::new()));
+    let request_upgrades = upgrades.clone();
     let service = service_fn(move |request| {
-        let snapshot = runtime.read().expect("runtime read lock").clone();
-        http::serve_request(snapshot, identity.clone(), request)
+        http::serve_request(
+            runtime.clone(),
+            identity.clone(),
+            request,
+            None,
+            Some(request_upgrades.clone()),
+        )
     });
-    let connection =
-        hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(socket), service);
+    let connection = hyper::server::conn::http1::Builder::new()
+        .serve_connection(TokioIo::new(socket), service)
+        .with_upgrades();
     tokio::pin!(connection);
     tokio::select! {
         result = &mut connection => if let Err(error) = result { eprintln!("agent HTTP connection: {error}"); },
         _ = stop.changed() => {
             connection.as_mut().graceful_shutdown();
             if let Err(error) = connection.await { eprintln!("agent HTTP shutdown: {error}"); }
+        }
+    }
+    let mut upgrades = upgrades.lock().await;
+    while !upgrades.is_empty() {
+        if *stop.borrow() {
+            upgrades.abort_all();
+        }
+        tokio::select! {
+            _ = upgrades.join_next() => {},
+            _ = stop.changed() => upgrades.abort_all(),
         }
     }
 }

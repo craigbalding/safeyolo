@@ -5,15 +5,18 @@ The source baseline is `4116c7ee3d44c623e9d89ae60c14ce671d0f295d` on
 `master`, inspected on 15 September 2026. Implementation starts on
 `feat/rust-proxy-620`. The baseline lockfile selects mitmproxy 12.2.3.
 
-**Status: inventory and baseline captures, awaiting independent review.**
+**Status: M1 and the smallest M2 slice independently accepted at `c2afb9cf`; M3 and M4 implementation continues.**
 A named test below means an existing executable check was located. It does not mean the test ran,
 passed, covered the production chain, or passed against Rust. Run manifests
 must identify the source commit, backend, platform, dependency versions, exact
 test selection and results. Future checks are marked **required**. No production
-deletion or milestone acceptance is established by this document.
+deletion is authorized by the inventory alone. Acceptance applies only to the reviewed revision and scope.
 
 The initial Rust development slice covers trusted Unix domain socket (UDS)
 ingress and basic HTTP through a temporary Python network policy adapter.
+An optional CA file now enables a development HTTPS path. Native network,
+approval and service-contract modules are tested separately and remain inactive
+in the transport path while their remaining policy/state contracts are implemented.
 Unsupported internal APIs return a local error. That response proves
 containment only; it does not establish API parity or a healthy inspection
 pipeline. The production Python proxy remains necessary until the retained
@@ -245,7 +248,7 @@ silently reduce accepted message sizes to a library default.
 
 | ID | Source-backed finding | Classification and required resolution |
 |---|---|---|
-| D1 | `docs/TLS_CERTIFICATE.md` labels `mitmproxy-ca-cert.cer` as DER and describes `mitmproxy-ca.pem` only as the private key. The locked dependency writes PEM in `.cer`, and key plus certificate in `-ca.pem`. | Documentation discrepancy. Use actual formats for fixtures; correct the operator document when the TLS migration is implemented. No CA conversion or rotation is authorized by this discrepancy. |
+| D1 | The baseline TLS document labels `mitmproxy-ca-cert.cer` as DER and describes `mitmproxy-ca.pem` only as the private key. The locked dependency writes PEM in `.cer`, and key plus certificate in `-ca.pem`. | Documentation corrected to the actual formats. Rust tests import a real mitmproxy RSA CA, issue a verified leaf, reload it in Rust and then reload it in mitmproxy. The CA file remains byte-identical; PKCS#1 wrapping happens only in memory. |
 | D2 | Production sets `stream_large_bodies=10m`; the SSE addon sets response streaming. Its docstring says request bodies remain fully inspected, but large-body transport streaming and scanner `get_text()` require separate examination. Buffered-body hooks cannot establish inspection of bytes already forwarded. | Coverage discrepancy requiring live request/response tests. Preserve configured streaming behavior and report actual coverage. A concrete bypass of an applicable blocking rule requires a regression and repair; do not claim full inspection from hook execution. |
 | D3 | Raw CONNECT tests use a client-first `raw-hello` exchange with `--tcp-hosts`; HTTPS/WSS live fixtures set `ssl_insecure=true`. | Test coverage limits. These fixtures prove neither real SSH/server-first/half-close nor upstream certificate validation. Keep separate real-client and invalid-certificate tests. |
 | D4 | CONNECT authority, inner Host/HTTP/2 authority, SNI and actual outbound target are represented separately by the framework. Existing admission tests do not establish the full mismatch matrix. | Unresolved authority-boundary coverage. Test each value independently. A changed inner authority must not inherit permission for another destination. Never fall back to opaque transport after parser/TLS failure. |
@@ -255,8 +258,12 @@ silently reduce accepted message sizes to a library default.
 | D8 | The default production command only explicitly selects lazy connections when sinkhole routing is enabled. The live denial fixtures vary eager/lazy for CONNECT, not every plain-HTTP security decision. | Side-effect coverage gap. Observe DNS and socket attempts independently for denied plain HTTP, CONNECT and malformed local requests. Do not equate an HTTP block response with zero egress. |
 | D9 | Independent wire review found that the baseline's exact reserved-host matchers permit the DNS root-dot spelling, such as `_safeyolo.proxy.internal.`, to reach a configured parent with a bearer header. | Concrete containment defect. Rust now removes one DNS root dot only for reserved-name classification, before policy and at the shared egress boundary. It also refuses these names as configured parents. Original request bytes for other destinations are unchanged. The historical Python baseline retains the defect; its repair is tracked separately. |
 | D10 | Hyper normalizes identical duplicate Content-Length fields and removes Content-Length when Transfer-Encoding controls framing. The old parser rejects those requests. Hyper rejects unequal duplicate lengths. The initial Rust slice also accepted duplicate Host fields. | Protocol difference requiring explicit wire tests. Rust rejects duplicate Host fields before policy or upstream contact. Do not equate normalization to a demonstrated smuggling flaw, or add a second HTTP parser solely to reproduce every rejection. Verify one unambiguous outbound framing and exact delivered bytes. |
-| D11 | Independent review of `5b661dc9` sent 160 requests through the temporary serial Python adapter. At 8, 16 and 32 workers, 18, 10 and 62 requests returned unexpected 502 responses. The adapter socket backlog filled; no fail-open or cross-agent leak was observed. | Concrete availability defect. Repair `ffb189ca015a5e0074eb483675e818a18e49029e` serializes decision roundtrips with one async mutex shared across reload snapshots, without retrying policy decisions. The owner reports a passing 160-request, eight-worker regression for each backend. Independent repair recheck remains pending. The sustained Rust capture predates this repair. |
+| D11 | Independent review of `5b661dc9` sent 160 requests through the temporary serial Python adapter. At 8, 16 and 32 workers, 18, 10 and 62 requests returned unexpected 502 responses. The adapter socket backlog filled; no fail-open or cross-agent leak was observed. | Concrete availability defect. Repair `ffb189ca015a5e0074eb483675e818a18e49029e` serializes decision roundtrips with one async mutex shared across reload snapshots, without retrying policy decisions. The owner reports a passing 160-request, eight-worker regression for each backend. Independent recheck passed all 480 requests at 8/16/32 workers and 16 requests across reload. A subsequent client-disconnect crash in the adapter was repaired at `03437138` and independently rechecked with SIGSTOP/client cancellation/SIGCONT. The sustained Rust capture predates these repairs. |
 | D12 | Full production SIGTERM at checkout `4586a127` exits with status zero and removes readiness, but leaves both agent UDS pathnames. Subsequent connects return `ECONNREFUSED`. `proxy.py::stop_proxy` describes socket-file removal. | Concrete cleanup discrepancy. `test_full_production_shutdown_removes_socket_files` records a strict expected failure. No live listener remains. Fixture-directory teardown removes the dead files; that teardown does not repair production shutdown. |
+| D13 | Independent full-production CONNECT tests at `c2afb9cf` passed real SSH and generic server-first streams on arbitrary allowed ports, with and without an exact passthrough exemption. Both TCP half-close directions lose remaining bytes; direct controls pass. The dependency's HTTP tunnel layer deliberately converts half-closes to full closes. | M5 must preserve the permitted destinations and repair half-close behavior. No SSH port allowlist is justified. The development TLS-only CONNECT path does not yet replace opaque CONNECT. |
+| D14 | The initial native policy parser accepted scalar `required`/`bypass` values that Python rejects, potentially allowing traffic with the network guard disabled. | Native schema repair requires arrays in these list-only fields and rejects malformed IAM tiers. Conditions that accept either a scalar or a list keep that syntax. Regression and Python-oracle checks accompany the repair; independent follow-up review remains required. |
+| D15 | The Python expiry loader prunes only global hosts. An agent-scoped one-day denial remains active after its timestamp, including at reload. | Native load/reload and durable pruning honor expiry for agent hosts too. Tests explicitly identify this behavior change and verify agent/port scope and preserved reload budgets. There is no new clock-driven reload timer. |
+| D16 | Contract enforcement compares raw query keys before decoding. `name=chosen&%6Eame=forbidden` passes a binding to `chosen`, while an origin receives both decoded values and can select `forbidden`. | Native contract enforcement rejects duplicate decoded keys as ambiguous encoding. A controlled origin proves the old bypass; differential tests identify the intentional rejection. Requests outside service contracts retain their query behavior. |
 
 ## Deletion map and evidence still required
 
@@ -325,11 +332,12 @@ the expected failure must not be counted as a passing cleanup assertion.
 
 M1 now has runnable current-production startup, baseline suite results,
 representative measurements for every requested workload category, explicit
-failures and a deletion map. **M1 acceptance remains pending independent review
-of the integrated inventory, fixture and manifest.** The integration handoff
-must identify the final commit and preserve the captured source revisions;
-the earlier review of the Rust transport did not review these M1 additions.
-D11's independent repair recheck also remains open for the M2 handoff.
+failures and a deletion map. **M1 and the smallest M2 slice passed independent review at
+`c2afb9cfcb42107920aeaf9d687e2da6be74dc8c`.** The reviewer verified all eight referenced artifact hashes, the memory summaries,
+and unchanged production sources; the full production smoke independently
+reproduced one pass and the strict cleanup expected failure. D11 and the
+subsequent adapter cancellation repair passed independent rechecks. Later
+changes require review against their own immutable revision.
 
 Later milestones still require approval expiry and one-shot consumption,
 credential/service behavior, interactive traffic workflows, complete evidence
@@ -372,7 +380,8 @@ The Rust fixture launches `safeyolo-proxy --config PATH` and a separately
 named [temporary network-policy adapter](../tools/proxy_migration/temporary_policy.py).
 The JSON configuration provides `listeners` with `agent_id` and `socket_path`,
 `temporary_policy_socket`, `readiness_file` and `event_log`. Optional
-`parent_proxy`, `upstream_ca_file` and `via_token` select parent transport.
+`parent_proxy`, `upstream_ca_file` and `via_token` select upstream transport.
+`tls_ca_file` selects an existing combined CA PEM for the development HTTPS path.
 The listener configuration supplies identity; request headers cannot select it.
 `SIGHUP` reads the configuration again. `SIGTERM` initiates shutdown.
 
@@ -387,8 +396,26 @@ The fixture checks decisions, delivered bytes, destination ports, generated
 IDs and trusted attribution. Its `proxy.request` and `proxy.egress` events are
 migration evidence, not replacements for production JSONL or traffic APIs.
 Both reserved local destinations remain local; the Rust slice returns an error
-because their full workflows have not been implemented. It rejects CONNECT
-and WebSocket upgrades until their transport and inspection contracts exist.
+because their full workflows have not been implemented. Without `tls_ca_file`,
+CONNECT remains unsupported. With it, allowed CONNECT requests receive a TLS
+interception endpoint using the existing CA. SNI and inner HTTP authority cannot
+change the admitted destination. Each inner request runs policy before opening
+its origin connection. Upstream TLS verifies names and trust chains, including
+through a configured parent's CONNECT tunnel. TLS failure never selects an opaque
+fallback. HTTP/2, TLS passthrough, opaque CONNECT and WebSocket handling remain
+required; this HTTP/1 HTTPS slice is not M4/M5 acceptance.
+
+The native [network policy](../proxy/src/policy.rs),
+[approval persistence](../proxy/src/approvals.rs),
+[service selection](../proxy/src/services.rs) and
+[contract enforcement](../proxy/src/contracts.rs) modules do not yet replace the
+temporary adapter. Their differential tests cover authored precedence, scoped
+mutations and rollback, reload budgets, service/capability routes and contract
+request constraints. Lists, task overlays, remaining conditions, some YAML expiry
+scalar forms, service-risk grant persistence and complete credential decisions
+still require implementation or integration. JSON body compatibility beyond the
+currently tested encodings/numeric range also remains open. Declared state and
+response-validator tiers are not promoted to implemented enforcement.
 
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those

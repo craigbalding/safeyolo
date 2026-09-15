@@ -22,6 +22,7 @@ pub struct Config {
     pub event_log: PathBuf,
     pub parent_proxy: Option<String>,
     pub upstream_ca_file: Option<PathBuf>,
+    pub tls_ca_file: Option<PathBuf>,
     pub via_token: Option<String>,
 }
 

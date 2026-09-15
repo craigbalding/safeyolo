@@ -3,10 +3,18 @@
 //! Decisions mirror PolicyEngine.evaluate_request, including its existing exact
 //! index case sensitivity, shared host budgets and separate CONNECT counters.
 //! Credential/service permissions and addon enforcement are outside this API.
-//! Lists, expiry, task overlays and unsupported network conditions are not silently
+//! Lists, task overlays and unsupported network conditions are not silently
 //! approximated. Loading a document that needs them reports Unsupported.
+//! Expiry is applied at load/reload, including the intentional agent-host expiry
+//! fix; reaching a deadline alone does not schedule a reload.
 
-use std::{collections::HashMap, fmt, net::Ipv6Addr, path::Path, sync::Mutex};
+use std::{
+    collections::HashMap,
+    fmt,
+    net::Ipv6Addr,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -163,7 +171,7 @@ struct Override {
 pub struct Policy {
     rules: Vec<Rule>,
     global_budget: Option<u64>,
-    budgets: Mutex<HashMap<String, f64>>,
+    budgets: Arc<Mutex<HashMap<String, f64>>>,
     required: bool,
     enabled: bool,
     domains: Vec<Override>,
@@ -172,10 +180,33 @@ pub struct Policy {
 
 impl Policy {
     pub fn parse(source: &str, format: Format) -> Result<Self> {
-        Self::from_document(parse_document(source, format)?)
+        Self::parse_at(source, format, current_time_ms())
+    }
+
+    pub fn parse_at(source: &str, format: Format, now_ms: f64) -> Result<Self> {
+        Self::from_document(parse_document(source, format)?, now_ms)
+    }
+
+    /// Reloaded rule snapshots keep the same host/global budget counters.
+    pub fn reload_from_source_at(&self, source: &str, format: Format, now_ms: f64) -> Result<Self> {
+        let mut replacement = Self::parse_at(source, format, now_ms)?;
+        replacement.budgets = self.budgets.clone();
+        Ok(replacement)
+    }
+
+    /// File-backed reload also rereads sibling addon defaults. This read-only
+    /// loader does not acquire the approval transaction's file lock.
+    pub fn reload_from_path_at(&self, path: &Path, now_ms: f64) -> Result<Self> {
+        let mut replacement = Self::from_path_at(path, now_ms)?;
+        replacement.budgets = self.budgets.clone();
+        Ok(replacement)
     }
 
     pub fn from_path(path: &Path) -> Result<Self> {
+        Self::from_path_at(path, current_time_ms())
+    }
+
+    pub fn from_path_at(path: &Path, now_ms: f64) -> Result<Self> {
         let source = std::fs::read_to_string(path).map_err(|error| PolicyError {
             kind: ErrorKind::Read,
             message: error.to_string(),
@@ -206,10 +237,23 @@ impl Policy {
                 }
             }
         }
-        Self::from_document(document)
+        Self::from_document(document, now_ms)
     }
 
-    fn from_document(document: Map<String, Value>) -> Result<Self> {
+    fn from_document(mut document: Map<String, Value>, now_ms: f64) -> Result<Self> {
+        let expired = expired_host_entries(&Value::Object(document.clone()), now_ms)?;
+        for (agent, host) in expired {
+            let hosts = match agent {
+                Some(agent) => document
+                    .get_mut("agents")
+                    .and_then(|agents| agents.get_mut(&agent))
+                    .and_then(|agent| agent.get_mut("hosts")),
+                None => document.get_mut("hosts"),
+            };
+            if let Some(hosts) = hosts.and_then(Value::as_object_mut) {
+                hosts.shift_remove(&host);
+            }
+        }
         if document.contains_key("lists") {
             return Err(unsupported(
                 "native network policy does not yet expand configured lists",
@@ -231,7 +275,7 @@ impl Policy {
         let mut policy = Self {
             rules: Vec::new(),
             global_budget,
-            budgets: Mutex::new(HashMap::new()),
+            budgets: Arc::new(Mutex::new(HashMap::new())),
             required: false,
             enabled: true,
             domains: Vec::new(),
@@ -240,7 +284,7 @@ impl Policy {
         policy.required = document
             .get("required")
             .map(|value| {
-                string_list(value, "required")
+                string_array(value, "required")
                     .map(|values| values.iter().any(|value| value == "network_guard"))
             })
             .transpose()?
@@ -291,11 +335,6 @@ impl Policy {
             } else {
                 object(config, "host configuration")?
             };
-            if config.contains_key("expires") {
-                return Err(unsupported(
-                    "native network policy does not yet implement host expiry",
-                ));
-            }
             if pattern.starts_with('$') {
                 return Err(unsupported(
                     "native network policy does not yet expand host list references",
@@ -305,7 +344,7 @@ impl Policy {
                 && config
                     .get("bypass")
                     .map(|value| {
-                        string_list(value, "bypass")
+                        string_array(value, "bypass")
                             .map(|values| values.iter().any(|value| value == "network_guard"))
                     })
                     .transpose()?
@@ -343,7 +382,7 @@ impl Policy {
             if port.is_some() {
                 if config
                     .keys()
-                    .any(|key| !matches!(key.as_str(), "egress" | "rate_limit"))
+                    .any(|key| !matches!(key.as_str(), "egress" | "rate_limit" | "expires"))
                 {
                     return Err(invalid(
                         "endpoint entries support only network egress and rate fields",
@@ -443,7 +482,8 @@ impl Policy {
             };
             let inferred = match rule
                 .get("tier")
-                .and_then(Value::as_str)
+                .map(|value| string(value, "tier"))
+                .transpose()?
                 .unwrap_or("explicit")
             {
                 "explicit" => false,
@@ -676,6 +716,181 @@ impl Policy {
     }
 }
 
+fn current_time_ms() -> f64 {
+    time::OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1_000_000.0
+}
+
+pub(crate) fn expired_host_entries(
+    document: &Value,
+    now_ms: f64,
+) -> Result<Vec<(Option<String>, String)>> {
+    if !now_ms.is_finite() {
+        return Err(invalid("expiry timestamp must be finite"));
+    }
+    let mut expired = Vec::new();
+    let mut scan = |hosts: Option<&Value>, agent: Option<&str>| {
+        if let Some(hosts) = hosts.and_then(Value::as_object) {
+            for (host, config) in hosts {
+                let Some(value) = config.get("expires").filter(|value| !value.is_null()) else {
+                    continue;
+                };
+                let expiry = value.as_str().and_then(parse_expiry);
+                match expiry {
+                    Some(expiry)
+                        if expiry.unix_timestamp_nanos() as f64 / 1_000_000.0 <= now_ms =>
+                    {
+                        expired.push((agent.map(str::to_owned), host.clone()))
+                    }
+                    Some(_) => {}
+                    None => eprintln!(
+                        "policy host {host:?} has an invalid expires value; keeping the entry"
+                    ),
+                }
+            }
+        }
+    };
+    scan(document.get("hosts"), None);
+    if let Some(agents) = document.get("agents").and_then(Value::as_object) {
+        for (agent, config) in agents {
+            scan(config.get("hosts"), Some(agent));
+        }
+    }
+    Ok(expired)
+}
+
+/// The calendar/week dates, basic/extended times, arbitrary date separator,
+/// fractional seconds and UTC offsets accepted by datetime.fromisoformat.
+/// Invalid values remain unexpired, matching the existing loader's warning path.
+pub(crate) fn parse_expiry(value: &str) -> Option<time::OffsetDateTime> {
+    use time::{Duration, Time, UtcOffset};
+    let (date, clock) = expiry_parts(value)?;
+    let Some(clock) = clock else {
+        return Some(date.midnight().assume_utc());
+    };
+    let zone = clock
+        .char_indices()
+        .find(|(_, character)| matches!(character, '+' | '-' | 'Z'));
+    let (clock, offset_ns) = match zone {
+        Some((index, 'Z')) if index + 1 == clock.len() => (&clock[..index], 0),
+        Some((index, sign @ ('+' | '-'))) => (
+            &clock[..index],
+            clock_nanoseconds(&clock[index + 1..], true)? * if sign == '-' { -1 } else { 1 },
+        ),
+        Some(_) => return None,
+        None => (clock, 0),
+    };
+    // CPython treats an offset with zero whole seconds as UTC, ignoring its
+    // fractional part. Retain that existing timestamp interpretation.
+    let offset_ns = if offset_ns.abs() < 1_000_000_000 {
+        0
+    } else {
+        offset_ns
+    };
+    let clock_ns = clock_nanoseconds(clock, false)?;
+    let hour = (clock_ns / 3_600_000_000_000) as u8;
+    let minute = (clock_ns / 60_000_000_000 % 60) as u8;
+    let second = (clock_ns / 1_000_000_000 % 60) as u8;
+    let micros = (clock_ns % 1_000_000_000 / 1000) as u32;
+    let datetime = date.with_time(Time::from_hms_micro(hour, minute, second, micros).ok()?);
+    if offset_ns % 1_000_000_000 == 0 {
+        let offset = UtcOffset::from_whole_seconds((offset_ns / 1_000_000_000) as i32).ok()?;
+        Some(datetime.assume_offset(offset))
+    } else {
+        datetime
+            .assume_utc()
+            .checked_sub(Duration::nanoseconds_i128(offset_ns))
+    }
+}
+
+pub(crate) fn expiry_has_offset(value: &str) -> bool {
+    expiry_parts(value)
+        .is_some_and(|(_, clock)| clock.is_some_and(|clock| clock.contains(['+', '-', 'Z'])))
+}
+
+fn expiry_parts(value: &str) -> Option<(time::Date, Option<&str>)> {
+    use time::{Date, format_description::well_known::Iso8601};
+    let bytes = value.as_bytes();
+    if bytes.len() < 7 {
+        return None;
+    }
+    let (length, week_without_day) = if bytes.get(4) == Some(&b'-') && bytes.get(5) == Some(&b'W') {
+        if bytes.get(8) == Some(&b'-') && bytes.get(9).is_some_and(u8::is_ascii_digit) {
+            (10, false)
+        } else {
+            (8, true)
+        }
+    } else if bytes.get(4) == Some(&b'W') {
+        if bytes.get(7).is_some_and(u8::is_ascii_digit) {
+            (8, false)
+        } else {
+            (7, true)
+        }
+    } else if bytes.get(4) == Some(&b'-') {
+        (10, false)
+    } else {
+        (8, false)
+    };
+    let date = value.get(..length)?;
+    let date = if week_without_day {
+        format!("{date}{}", if date.contains('-') { "-1" } else { "1" })
+    } else {
+        date.to_owned()
+    };
+    let date = Date::parse(&date, &Iso8601::DEFAULT).ok()?;
+    let remaining = value.get(length..)?;
+    if remaining.is_empty() {
+        return Some((date, None));
+    }
+    let separator = remaining.chars().next()?;
+    let clock = &remaining[separator.len_utf8()..];
+    Some((date, Some(clock)))
+}
+
+fn clock_nanoseconds(value: &str, offset: bool) -> Option<i128> {
+    let (whole, fraction) = value.find(['.', ',']).map_or((value, None), |index| {
+        (&value[..index], Some(&value[index + 1..]))
+    });
+    let parts: Vec<&str> = if whole.contains(':') {
+        whole.split(':').collect()
+    } else {
+        if !matches!(whole.len(), 2 | 4 | 6) || !whole.is_ascii() {
+            return None;
+        }
+        (0..whole.len())
+            .step_by(2)
+            .map(|index| &whole[index..index + 2])
+            .collect()
+    };
+    if parts.is_empty()
+        || parts.len() > 3
+        || parts
+            .iter()
+            .any(|part| part.len() != 2 || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
+    let hour = parts[0].parse::<i128>().ok()?;
+    let minute = parts
+        .get(1)
+        .map_or(Some(0), |value| value.parse::<i128>().ok())?;
+    let second = parts
+        .get(2)
+        .map_or(Some(0), |value| value.parse::<i128>().ok())?;
+    let seconds = hour * 3600 + minute * 60 + second;
+    if (offset && seconds >= 86400) || (!offset && (hour >= 24 || minute >= 60 || second >= 60)) {
+        return None;
+    }
+    let micros = match fraction {
+        None => 0,
+        Some(value) if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
+            let count = value.len().min(6);
+            value[..count].parse::<i128>().ok()? * 10i128.pow((6 - count) as u32)
+        }
+        Some(_) => return None,
+    };
+    Some(seconds * 1_000_000_000 + micros * 1000)
+}
+
 fn effect_of(effect: RuleEffect) -> Effect {
     match effect {
         RuleEffect::Allow | RuleEffect::Budget(_) => Effect::Allow,
@@ -705,6 +920,14 @@ fn string_list(value: &Value, field: &str) -> Result<Vec<String>> {
         .map(|value| string(value, field).map(str::to_owned))
         .collect()
 }
+fn string_array(value: &Value, field: &str) -> Result<Vec<String>> {
+    value
+        .as_array()
+        .ok_or_else(|| invalid(format!("{field} must be an array")))?
+        .iter()
+        .map(|value| string(value, field).map(str::to_owned))
+        .collect()
+}
 fn positive_integer(value: &Value, field: &str) -> Result<u64> {
     value
         .as_u64()
@@ -720,6 +943,80 @@ fn egress_effect(value: &Value) -> Result<RuleEffect> {
     }
 }
 
+/// Resolve typed TOML datetimes before converting to JSON. An authored table
+/// resembling serde's private datetime marker must remain an invalid expiry.
+pub(crate) fn parse_toml_document(source: &str) -> Result<Value> {
+    let mut document: Value = toml::from_str(source).map_err(|error| invalid(error.to_string()))?;
+    // toml::Value's serde visitor also recognizes authored marker tables.
+    // Consult the syntax tree for actual datetime tokens instead.
+    let syntax = source
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| invalid(error.to_string()))?;
+    let normalize = |syntax: Option<&toml_edit::Item>, hosts: Option<&mut Value>| {
+        if let (Some(syntax), Some(hosts)) = (
+            syntax.and_then(toml_edit::Item::as_table_like),
+            hosts.and_then(Value::as_object_mut),
+        ) {
+            for (name, config) in syntax.iter() {
+                if let Some(date) = config
+                    .as_table_like()
+                    .and_then(|config| config.get("expires"))
+                    .and_then(toml_edit::Item::as_datetime)
+                    && date.date.is_some()
+                    && date.time.is_some()
+                    && let Some(expiry) =
+                        hosts.get_mut(name).and_then(|host| host.get_mut("expires"))
+                {
+                    *expiry = Value::String(date.to_string());
+                }
+            }
+        }
+    };
+    normalize(syntax.get("hosts"), document.get_mut("hosts"));
+    if let Some(agents) = syntax
+        .get("agents")
+        .and_then(toml_edit::Item::as_table_like)
+    {
+        for (name, agent) in agents.iter() {
+            normalize(
+                agent.as_table_like().and_then(|agent| agent.get("hosts")),
+                document
+                    .get_mut("agents")
+                    .and_then(|agents| agents.get_mut(name))
+                    .and_then(|agent| agent.get_mut("hosts")),
+            );
+        }
+    }
+    Ok(document)
+}
+
+fn reject_ambiguous_yaml_expiry(document: &Value) -> Result<()> {
+    let inspect = |hosts: Option<&Value>| -> Result<()> {
+        if let Some(hosts) = hosts.and_then(Value::as_object) {
+            for config in hosts.values() {
+                if let Some(value) = config.get("expires").and_then(Value::as_str)
+                    && (parse_expiry(value).is_none()
+                        || (value.len() == 10
+                            && value.as_bytes()[4] == b'-'
+                            && value.as_bytes()[7] == b'-'))
+                {
+                    return Err(unsupported(
+                        "ambiguous YAML expiry needs scalar style preservation; use a full ISO datetime until implemented",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    };
+    inspect(document.get("hosts"))?;
+    if let Some(agents) = document.get("agents").and_then(Value::as_object) {
+        for agent in agents.values() {
+            inspect(agent.get("hosts"))?;
+        }
+    }
+    Ok(())
+}
+
 fn parse_document(source: &str, format: Format) -> Result<Map<String, Value>> {
     let value: Value = match format {
         Format::Json => serde_json::from_str(source).map_err(|error| invalid(error.to_string()))?,
@@ -727,9 +1024,14 @@ fn parse_document(source: &str, format: Format) -> Result<Map<String, Value>> {
             let mut yaml: serde_yaml_ng::Value =
                 serde_yaml_ng::from_str(source).map_err(|error| invalid(error.to_string()))?;
             merge_yaml(&mut yaml)?;
-            serde_json::to_value(yaml).map_err(|error| invalid(error.to_string()))?
+            let value = serde_json::to_value(yaml).map_err(|error| invalid(error.to_string()))?;
+            // serde_yaml_ng loses scalar style and does not resolve YAML dates.
+            // PyYAML distinguishes bare date objects from quoted date strings.
+            // Refuse this narrow ambiguity until the YAML frontend retains it.
+            reject_ambiguous_yaml_expiry(&value)?;
+            value
         }
-        Format::Toml => toml::from_str(source).map_err(|error| invalid(error.to_string()))?,
+        Format::Toml => parse_toml_document(source)?,
     };
     let mut document = if value.is_null() && matches!(format, Format::Yaml) {
         Map::new()
@@ -828,7 +1130,7 @@ fn normalize_hosts(hosts: &mut Value) -> Result<()> {
     Ok(())
 }
 
-fn split_destination(pattern: &str) -> Result<(String, Option<u16>)> {
+pub(crate) fn split_destination(pattern: &str) -> Result<(String, Option<u16>)> {
     if !pattern.contains(':') {
         return Ok((pattern.into(), None));
     }
@@ -884,7 +1186,7 @@ fn parse_override(pattern: &str, fields: &Map<String, Value>) -> Result<Override
         bypass: fields
             .get("bypass")
             .map(|value| {
-                string_list(value, "bypass")
+                string_array(value, "bypass")
                     .map(|values| values.iter().any(|value| value == "network_guard"))
             })
             .transpose()?
@@ -925,7 +1227,7 @@ fn resource_matches(resource: &str, pattern: &str) -> bool {
 
 /// Python fnmatch semantics for network resource/agent globs: '*' crosses '/',
 /// '?' matches one character, and bracket classes support ranges/negation.
-fn glob(value: &str, pattern: &str) -> bool {
+pub(crate) fn glob(value: &str, pattern: &str) -> bool {
     let value: Vec<char> = value.chars().collect();
     let pattern: Vec<char> = pattern.chars().collect();
     let mut previous = vec![false; value.len() + 1];

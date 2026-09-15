@@ -36,7 +36,7 @@ class NetworkRequest(BaseModel):
     request_id: str = Field(min_length=1)
     connection_id: str = Field(min_length=1)
     method: str = Field(min_length=1)
-    scheme: Literal["http"]
+    scheme: Literal["http", "https"]
     host: str = Field(min_length=1)
     port: int = Field(ge=1, le=65535)
     path: str

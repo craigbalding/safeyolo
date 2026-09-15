@@ -101,7 +101,7 @@ def test_prompt_and_global_budget_use_existing_pdp(tmp_path):
 @pytest.mark.parametrize("changes", [
     {"port": 0}, {"port": "80"}, {"agent_id": ""},
     {"headers": [["authorization", "synthetic-secret-must-not-log"]]},
-    {"scheme": "https"},
+    {"scheme": "ftp"},
 ])
 def test_invalid_metadata_is_rejected_without_echo(tmp_path, changes):
     with adapter(tmp_path, '[hosts]\n"*" = {egress = "allow"}\n') as (path, _):

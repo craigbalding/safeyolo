@@ -1,5 +1,6 @@
 use std::{
     convert::Infallible,
+    future::Future,
     io::BufReader,
     pin::Pin,
     sync::Arc,
@@ -21,9 +22,9 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpStream, UnixStream},
 };
-use tokio_rustls::TlsConnector;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use crate::{ConnectionIdentity, Error, Runtime, is_reserved};
+use crate::{ConnectionIdentity, Error, Runtime, RuntimeState, UpgradeTasks, is_reserved};
 
 pub(crate) type Body = BoxBody<Bytes, Error>;
 
@@ -99,7 +100,8 @@ struct PolicyDecision {
 }
 
 /// Routing authority is separate from the request's original path and bytes.
-struct Destination {
+#[derive(Clone)]
+pub(crate) struct Destination {
     host: String,
     port: u16,
     authority: String,
@@ -108,7 +110,10 @@ struct Destination {
 }
 
 impl Destination {
-    fn from_request(request: &Request<Incoming>) -> Result<Self, Error> {
+    fn from_request(
+        request: &Request<Incoming>,
+        tunnel: Option<&Destination>,
+    ) -> Result<Self, Error> {
         if request.headers().get_all(header::HOST).iter().count() > 1 {
             return Err("multiple Host headers are ambiguous".into());
         }
@@ -133,9 +138,22 @@ impl Destination {
         if host.is_empty() {
             return Err("empty request hostname".into());
         }
-        let scheme = uri.scheme_str().unwrap_or("http").to_owned();
+        if request.method() == Method::CONNECT
+            && (uri.authority().is_none() || authority.port_u16().is_none())
+        {
+            return Err("CONNECT needs an explicit destination port".into());
+        }
+        let scheme = uri
+            .scheme_str()
+            .unwrap_or(if tunnel.is_some() { "https" } else { "http" })
+            .to_owned();
         let port =
             crate::config::authority_port(&authority, if scheme == "https" { 443 } else { 80 })?;
+        if let Some(tunnel) = tunnel
+            && (host != tunnel.host || port != tunnel.port || scheme != "https")
+        {
+            return Err("inner authority differs from admitted CONNECT destination".into());
+        }
         Ok(Self {
             host,
             port,
@@ -203,19 +221,51 @@ async fn open_outbound(
         "connection_id": allowed.identity.connection_id, "request_id": allowed.request_id,
         "host": destination.host, "port": destination.port, "route": route,
     }))?;
-    let stream = TcpStream::connect((host, port)).await?;
-    if tls {
+    let socket = TcpStream::connect((host, port)).await?;
+    let mut stream: Box<dyn Stream> = if tls {
         let name = ServerName::try_from(host.to_owned())?;
         let tls = runtime
             .tls
             .clone()
             .ok_or("HTTPS parent TLS was not configured")?;
-        Ok(Box::new(
-            TlsConnector::from(tls).connect(name, stream).await?,
-        ))
+        Box::new(TlsConnector::from(tls).connect(name, socket).await?)
     } else {
-        Ok(Box::new(stream))
+        Box::new(socket)
+    };
+    if destination.scheme == "https" {
+        if runtime.parent.is_some() {
+            let (mut sender, connection) =
+                hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
+            let task = HttpTask(tokio::spawn(async move {
+                let _ = connection.with_upgrades().await;
+            }));
+            let target = if destination.host.contains(':') {
+                format!("[{}]:{}", destination.host, destination.port)
+            } else {
+                format!("{}:{}", destination.host, destination.port)
+            };
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri(&target)
+                .header(header::HOST, &target)
+                .header(header::VIA, format!("1.1 {}", runtime.via_token))
+                .body(full(Bytes::new()))?;
+            let response = sender.send_request(request).await?;
+            if !response.status().is_success() {
+                return Err("parent proxy refused CONNECT".into());
+            }
+            let upgraded = hyper::upgrade::on(response).await?;
+            drop(task);
+            stream = Box::new(TokioIo::new(upgraded));
+        }
+        let config = runtime
+            .tls
+            .clone()
+            .ok_or("upstream TLS trust is not configured")?;
+        let name = ServerName::try_from(destination.host.clone())?;
+        stream = Box::new(TlsConnector::from(config).connect(name, stream).await?);
     }
+    Ok(stream)
 }
 
 async fn decide(runtime: &Runtime, request: &PolicyRequest<'_>) -> Result<PolicyDecision, Error> {
@@ -291,7 +341,9 @@ fn loop_detected(headers: &HeaderMap, token: &str) -> bool {
 }
 
 async fn forward(
-    runtime: &Runtime,
+    runtime: Arc<Runtime>,
+    state: RuntimeState,
+    upgrades: Option<UpgradeTasks>,
     identity: &ConnectionIdentity,
     request_id: &str,
     mut request: Request<Incoming>,
@@ -311,8 +363,10 @@ async fn forward(
             "local".into(),
         ));
     }
-    if request.method() == Method::CONNECT
-        || destination.scheme != "http"
+    if (request.method() == Method::CONNECT
+        && (runtime.certificate_authority.is_none() || upgrades.is_none()))
+        || !matches!(destination.scheme.as_str(), "http" | "https")
+        || (destination.scheme == "https" && runtime.certificate_authority.is_none())
         || request.headers().contains_key(header::UPGRADE)
     {
         return Ok((
@@ -334,7 +388,7 @@ async fn forward(
         return Ok((response, "deny".into()));
     }
     let decision = decide(
-        runtime,
+        &runtime,
         &PolicyRequest {
             agent_id: &identity.agent_id,
             connection_id: &identity.connection_id,
@@ -372,6 +426,45 @@ async fn forward(
         strip_hop_headers(denied.headers_mut());
         return Ok((denied, decision.decision));
     }
+    if request.method() == Method::CONNECT {
+        let config = runtime
+            .certificate_authority
+            .as_ref()
+            .ok_or("TLS CA is not configured")?
+            .server_config(&destination.host, time::OffsetDateTime::now_utc())?;
+        let upgrade = hyper::upgrade::on(&mut request);
+        let identity = identity.clone();
+        let destination = Arc::new(destination.clone());
+        let request_id = request_id.to_owned();
+        upgrades
+            .ok_or("nested CONNECT is unsupported")?
+            .lock()
+            .await
+            .spawn(async move {
+                let result: Result<(), Error> = async {
+                    let socket = TokioIo::new(upgrade.await?);
+                    let tls = TlsAcceptor::from(config).accept(socket).await?;
+                    let service = hyper::service::service_fn(move |request| {
+                        serve_request(
+                            state.clone(),
+                            identity.clone(),
+                            request,
+                            Some(destination.clone()),
+                            None,
+                        )
+                    });
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(tls), service)
+                        .await?;
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = result {
+                    eprintln!("CONNECT {request_id} ended: {error}");
+                }
+            });
+        return Ok((Response::new(full(Bytes::new())), decision.decision));
+    }
     strip_hop_headers(request.headers_mut());
     for name in ["x-safeyolo-request-id", "x-safeyolo-trace"] {
         request.headers_mut().remove(name);
@@ -382,13 +475,13 @@ async fn forward(
     request
         .headers_mut()
         .append(header::VIA, format!("1.1 {}", runtime.via_token).parse()?);
-    *request.uri_mut() = if runtime.parent.is_some() {
+    *request.uri_mut() = if runtime.parent.is_some() && destination.scheme == "http" {
         format!("http://{}{}", destination.authority, destination.path).parse::<Uri>()?
     } else {
         destination.path.parse::<Uri>()?
     };
     let stream = open_outbound(
-        runtime,
+        &runtime,
         &AllowedRequest {
             destination,
             identity,
@@ -419,43 +512,59 @@ async fn forward(
     ))
 }
 
-pub(crate) async fn serve_request(
-    runtime: Arc<Runtime>,
+pub(crate) fn serve_request(
+    state: RuntimeState,
     identity: ConnectionIdentity,
     request: Request<Incoming>,
-) -> Result<Response<Body>, Infallible> {
-    let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
-    let destination = Destination::from_request(&request);
-    let result = match &destination {
-        Ok(destination) => forward(&runtime, &identity, &request_id, request, destination).await,
-        Err(_) => Ok((
-            response(StatusCode::BAD_REQUEST, "Invalid request authority"),
-            "invalid".into(),
-        )),
-    };
-    let (mut reply, decision) = result.unwrap_or_else(|error| {
-        // Errors contain no application headers/body. A transport/adapter error never retries another route.
-        eprintln!("request {request_id} failed: {error}");
-        (
-            response(StatusCode::BAD_GATEWAY, "Proxy request failed"),
-            "error".into(),
-        )
-    });
-    if let Err(error) = runtime.record(json!({
-        "event": "proxy.request", "agent": identity.agent_id,
-        "connection_id": identity.connection_id, "request_id": request_id,
-        "host": destination.as_ref().ok().map(|d| &d.host),
-        "port": destination.as_ref().ok().map(|d| d.port),
-        "status": reply.status().as_u16(), "decision": decision,
-        "coverage": "temporary_network_policy_only",
-    })) {
-        eprintln!("request evidence write failed: {error}");
+    tunnel: Option<Arc<Destination>>,
+    upgrades: Option<UpgradeTasks>,
+) -> Pin<Box<dyn Future<Output = Result<Response<Body>, Infallible>> + Send>> {
+    Box::pin(async move {
+        let runtime = state.read().expect("runtime read lock").clone();
+        let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
+        let destination = Destination::from_request(&request, tunnel.as_deref());
+        let result = match &destination {
+            Ok(destination) => {
+                forward(
+                    runtime.clone(),
+                    state,
+                    upgrades,
+                    &identity,
+                    &request_id,
+                    request,
+                    destination,
+                )
+                .await
+            }
+            Err(_) => Ok((
+                response(StatusCode::BAD_REQUEST, "Invalid request authority"),
+                "invalid".into(),
+            )),
+        };
+        let (mut reply, decision) = result.unwrap_or_else(|error| {
+            // Errors contain no application headers/body. A transport/adapter error never retries another route.
+            eprintln!("request {request_id} failed: {error}");
+            (
+                response(StatusCode::BAD_GATEWAY, "Proxy request failed"),
+                "error".into(),
+            )
+        });
+        if let Err(error) = runtime.record(json!({
+            "event": "proxy.request", "agent": identity.agent_id,
+            "connection_id": identity.connection_id, "request_id": request_id,
+            "host": destination.as_ref().ok().map(|d| &d.host),
+            "port": destination.as_ref().ok().map(|d| d.port),
+            "status": reply.status().as_u16(), "decision": decision,
+            "coverage": "temporary_network_policy_only",
+        })) {
+            eprintln!("request evidence write failed: {error}");
+            reply
+                .headers_mut()
+                .insert("x-safeyolo-evidence-error", "true".parse().unwrap());
+        }
         reply
             .headers_mut()
-            .insert("x-safeyolo-evidence-error", "true".parse().unwrap());
-    }
-    reply
-        .headers_mut()
-        .insert("x-safeyolo-request-id", request_id.parse().unwrap());
-    Ok(reply)
+            .insert("x-safeyolo-request-id", request_id.parse().unwrap());
+        Ok(reply)
+    })
 }

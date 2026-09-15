@@ -74,7 +74,7 @@ def wait_ready(process, paths, log, *, readiness_file=None):
 
 
 @contextmanager
-def launch_proxy(backend, directory, policy_text, *, parent_proxy=None):
+def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=False, upstream_ca=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     directory.mkdir(parents=True, exist_ok=True)
     policy = directory / "policy.toml"
@@ -87,6 +87,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None):
             "readiness_file": str(directory / "ready"),
             "event_log": str(directory / "events.jsonl"),
         }
+        if upstream_ca:
+            config["upstream_ca_file"] = str(upstream_ca)
         env = {**os.environ,
                "PYTHONPATH": os.pathsep.join([str(REPO / "cli/src"), str(REPO)]),
                "SAFEYOLO_LOG_PATH": str(directory / "audit.jsonl")}
@@ -111,6 +113,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None):
             ))
             wait_ready(bridge, [Path(policy_socket)], bridge_directory / "process.log")
             config["temporary_policy_socket"] = policy_socket
+            if tls:
+                config["tls_ca_file"] = str(directory / "ca/mitmproxy-ca.pem")
             binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", str(REPO / "proxy/target/debug/safeyolo-proxy")))
             if not binary.is_file():
                 raise FileNotFoundError(f"Build the Rust proxy or set SAFEYOLO_RUST_PROXY: {binary}")

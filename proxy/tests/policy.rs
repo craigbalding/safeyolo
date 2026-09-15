@@ -274,7 +274,6 @@ fn aggregate_and_host_budgets_are_atomic_shared_and_separate_for_connect() {
 fn unsupported_network_features_and_invalid_policies_cannot_be_misread_as_allow() {
     for source in [
         "lists={blocked='hosts.txt'}\n[hosts]\n'*'={egress='allow'}",
-        "[hosts]\n'x'={egress='allow',expires='2099-01-01'}",
         "[hosts]\n'x'={egress='allow'}\n[agents.alice.hosts]\n'x'={bypass=['network_guard']}",
     ] {
         assert_eq!(
@@ -392,6 +391,177 @@ fn concurrent_requests_cannot_double_spend_a_budget() {
 }
 
 #[test]
+fn schema_lists_and_permission_tiers_are_not_silently_coerced() {
+    for document in [
+        json!({"required":"network_guard","hosts":{"x.example":{"egress":"allow"}}}),
+        json!({"hosts":{"x.example":{"egress":"allow","bypass":"network_guard"}}}),
+        json!({"clients":{"alice":{"bypass":"network_guard"}},"hosts":{"x.example":{"egress":"allow"}}}),
+        json!({"domains":{"x.example":{"bypass":"network_guard"}},"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}),
+        json!({"required":[true],"hosts":{"x.example":{"egress":"allow"}}}),
+        json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow","tier":3}]}),
+        json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow","tier":null}]}),
+    ] {
+        assert_eq!(
+            Policy::parse(&document.to_string(), Format::Json)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Invalid,
+            "{document}"
+        );
+    }
+    for method in [json!("GET"), json!(["GET"])] {
+        let document = json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow","condition":{"method":method}}]});
+        assert_eq!(
+            Policy::parse(&document.to_string(), Format::Json)
+                .unwrap()
+                .evaluate(request("x.example", None, 80), 0., false)
+                .unwrap()
+                .effect,
+            Effect::Allow
+        );
+    }
+}
+
+#[test]
+fn expiry_is_scoped_to_agent_and_port_and_applied_only_at_reload() {
+    let source = r#"
+[hosts]
+'*'={egress='allow'}
+'global.example:22'={egress='deny',expires=2026-01-01T00:00:00Z}
+'invalid.example'={egress='deny',expires='not-a-date'}
+'date.example'={egress='deny',expires=2026-01-01}
+'stringdate.example'={egress='deny',expires='2026-01-01'}
+[agents.alice.hosts]
+'agent.example:22'={egress='deny',expires='2026-01-01T00:00:00Z'}
+'agent.example:443'={egress='prompt'}
+"#;
+    let boundary = 1_767_225_600_000.;
+    let before = Policy::parse_at(source, Format::Toml, boundary - 1.).unwrap();
+    assert_eq!(
+        before
+            .evaluate(
+                request("agent.example", Some("alice"), 22),
+                boundary + 1.,
+                false
+            )
+            .unwrap()
+            .effect,
+        Effect::Deny,
+        "evaluation does not promise a timer-driven reload"
+    );
+    let after = before
+        .reload_from_source_at(source, Format::Toml, boundary)
+        .unwrap();
+    for (host, agent, port, effect) in [
+        ("global.example", None, 22, Effect::Allow),
+        ("agent.example", Some("alice"), 22, Effect::Allow),
+        ("agent.example", Some("alice"), 443, Effect::Prompt),
+        ("agent.example", Some("bob"), 443, Effect::Allow),
+        ("invalid.example", None, 443, Effect::Deny),
+        ("date.example", None, 443, Effect::Deny),
+        ("stringdate.example", None, 443, Effect::Allow),
+    ] {
+        assert_eq!(
+            after
+                .evaluate(request(host, agent, port), boundary, false)
+                .unwrap()
+                .effect,
+            effect,
+            "{host}:{port} {agent:?}"
+        );
+    }
+}
+
+#[test]
+fn successful_reload_and_old_snapshots_share_budget_charges() {
+    let source = "budget=10\n[hosts]\n'limited.example'={rate=1}";
+    let original = Policy::parse(source, Format::Toml).unwrap();
+    let network = request("limited.example", Some("alice"), 80);
+    assert_eq!(
+        original.evaluate(network, 1000000., true).unwrap().effect,
+        Effect::Allow
+    );
+    let reloaded = original
+        .reload_from_source_at(source, Format::Toml, 1000000.)
+        .unwrap();
+    assert_eq!(
+        reloaded.evaluate(network, 1000000., true).unwrap().effect,
+        Effect::Allow
+    );
+    assert_eq!(
+        original.evaluate(network, 1000000., true).unwrap().effect,
+        Effect::BudgetExceeded
+    );
+    assert_eq!(
+        reloaded.evaluate(network, 1000000., true).unwrap().effect,
+        Effect::BudgetExceeded
+    );
+    assert!(
+        reloaded
+            .reload_from_source_at("hosts=7", Format::Toml, 1000000.)
+            .is_err()
+    );
+    assert_eq!(
+        reloaded.evaluate(network, 1000000., true).unwrap().effect,
+        Effect::BudgetExceeded
+    );
+}
+
+#[test]
+fn file_reload_keeps_addon_defaults_and_budget_counters() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("policy.toml");
+    std::fs::write(&path, "budget=1\n[hosts]\n'*'={egress='allow'}").unwrap();
+    std::fs::write(
+        path.with_file_name("addons.yaml"),
+        "addons:\n  network_guard: {enabled: false}\n",
+    )
+    .unwrap();
+    let original = Policy::from_path_at(&path, 1000000.).unwrap();
+    let network = request("x.example", None, 80);
+    for _ in 0..2 {
+        assert_eq!(
+            original.evaluate(network, 1000000., true).unwrap().effect,
+            Effect::Allow
+        );
+    }
+    let reloaded = original.reload_from_path_at(&path, 1000000.).unwrap();
+    assert!(!reloaded.network_guard_enabled(network));
+    assert_eq!(
+        reloaded.evaluate(network, 1000000., true).unwrap().effect,
+        Effect::BudgetExceeded
+    );
+}
+
+#[test]
+fn authored_datetime_marker_objects_never_expire_a_denial() {
+    for (format,source) in [
+        (Format::Json,json!({"hosts":{"*":{"egress":"allow"},"x":{"egress":"deny","expires":{"$__toml_private_datetime":"2000-01-01T00:00:00Z"}}}}).to_string()),
+        (Format::Toml,"[hosts]\n'*'={egress='allow'}\n'x'={egress='deny',expires={'$__toml_private_datetime'='2000-01-01T00:00:00Z'}}".into()),
+    ] {
+        assert_eq!(Policy::parse(&source,format).unwrap().evaluate(request("x",None,443),0.,false).unwrap().effect,Effect::Deny);
+    }
+    for value in ["2026-01-01", "'2026-01-01'"] {
+        let source =
+            format!("hosts:\n  '*': {{egress: allow}}\n  x: {{egress: deny, expires: {value}}}\n");
+        assert_eq!(
+            Policy::parse(&source, Format::Yaml).unwrap_err().kind,
+            ErrorKind::Unsupported
+        );
+    }
+    let yaml =
+        "hosts:\n  '*': {egress: allow}\n  x: {egress: deny, expires: 2000-01-01T00:00:00Z}\n";
+    assert_eq!(
+        Policy::parse(yaml, Format::Yaml)
+            .unwrap()
+            .evaluate(request("x", None, 443), 0., false)
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
+}
+
+#[test]
 #[ignore = "historical Python oracle; run with SAFEYOLO_POLICY_PYTHON pointing at the baseline environment"]
 fn differential_matrix_matches_existing_python_policy_engine() {
     use std::{
@@ -409,6 +579,18 @@ import json, pathlib, sys, tempfile
 from unittest.mock import patch
 from safeyolo.policy.engine import PolicyEngine
 from safeyolo.policy.compiler import compile_policy
+from safeyolo.policy.models import UnifiedPolicy
+from pydantic import ValidationError
+invalid_documents=[
+    {'hosts':{'x.example':{'egress':'allow','bypass':'network_guard'}}},
+    {'hosts':{'x.example':{'egress':'allow'}},'clients':{'alice':{'bypass':'network_guard'}}},
+    {'hosts':{'x.example':{'egress':'allow'}},'required':'network_guard'},
+    *[{'permissions':[{'action':'network:request','resource':'*','effect':'allow','tier':tier}]} for tier in (None,3)],
+]
+for document in invalid_documents:
+    try: UnifiedPolicy.model_validate(compile_policy(document) if 'hosts' in document else document)
+    except ValidationError: pass
+    else: raise AssertionError(f'Python unexpectedly accepted {document}')
 # Regression evidence for the currently ineffective agent-host bypass, which
 # native parsing explicitly refuses until its intended contract is resolved.
 compiled = compile_policy({'hosts': {'x.example': {'egress': 'allow'}}, 'agents': {'alice': {'hosts': {'x.example': {'bypass': ['network_guard']}}}}})

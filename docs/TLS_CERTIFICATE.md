@@ -20,8 +20,8 @@ On first run, SafeYolo generates a **unique, local CA** stored in `~/.safeyolo/c
 ```
 ~/.safeyolo/certs/
 ├── mitmproxy-ca-cert.pem    # Public certificate
-├── mitmproxy-ca-cert.cer    # Same cert in DER format
-├── mitmproxy-ca.pem         # Private key (NEVER share this)
+├── mitmproxy-ca-cert.cer    # Same public certificate in PEM format
+├── mitmproxy-ca.pem         # Private key plus CA certificate (NEVER share this)
 └── mitmproxy-ca.p12         # PKCS12 bundle
 ```
 

@@ -80,6 +80,8 @@ async def run(config):
     )
     master = DumpMaster(options, with_termlog=False, with_dumper=False)
     master.options.update(connection_strategy="lazy")
+    if config.get("upstream_ca_file"):
+        master.options.update(ssl_verify_upstream_trusted_ca=config["upstream_ca_file"])
     master.addons.add(
         RequestIdGenerator(), AgentAPIRequestGuard(), NetworkGuard(),
         SSEStreaming(), ProbeSink(), TransportGuard(), Observations(config),

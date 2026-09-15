@@ -34,6 +34,15 @@ The shared assertions cover:
 - Local containment of unavailable Agent API handlers and the reserved probe,
   including mixed-case Agent API hostnames and synthetic bearer credentials.
 - Readiness and graceful process shutdown.
+- HTTPS through the real policy engine with verified client and origin TLS,
+  including a configured private trust root, wrong-host and untrusted-origin
+  failures, denied CONNECT, and exact repeated/encoded query bytes.
+
+The HTTPS fixture creates a fresh mitmproxy CA in private fixture state. Rust
+receives that combined file through `tls_ca_file`. It never replaces an existing
+operator CA. Native transport tests separately exercise inner authority/SNI
+confusion, parent CONNECT and idle TLS shutdown. HTTP/2, opaque CONNECT, TLS
+passthrough and WebSockets remain outside this development HTTPS path.
 
 The old launcher uses existing `RequestIdGenerator`, `AgentAPIRequestGuard`,
 `NetworkGuard`, `SSEStreaming`, `ProbeSink`, and `TransportGuard` implementations
@@ -183,13 +192,15 @@ retain D10's framing normalization difference and D11's concurrent adapter
 failure. Independent review observed 18 unexpected 502 responses in 160
 requests at eight workers before D11's repair. Repair `ffb189ca` serializes
 decision roundtrips across reload snapshots without retrying decisions. The
-owner reports a passing paired regression; independent repair recheck remains
-pending. The older sequential measurements do not establish concurrent health.
+paired regression passes, and independent review verified 480 concurrent
+requests plus requests queued across reload. The subsequent adapter peer-disconnect
+repair also passed independent cancellation checks. The older sequential
+measurements do not establish concurrent health.
 
 The recorded workload categories now include full-production authenticated
-API/approval activity and sustained focused SSE/WS sessions. M1 still needs
-independent review of the integrated inventory, fixture and manifest, with a
-final source commit in the handoff. Baseline capture does not establish Rust
+API/approval activity and sustained focused SSE/WS sessions. Independent review
+accepted M1 and the smallest M2 slice at `c2afb9cfcb42107920aeaf9d687e2da6be74dc8c`,
+including artifact hashes and an independent production smoke run. This does not establish Rust
 API/approval parity, full evidence parity, bounded production stream memory,
 approval expiry/one-shot semantics or supported macOS guest ingress. These
 remain replacement acceptance requirements in later milestones.

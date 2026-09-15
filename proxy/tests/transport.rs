@@ -48,7 +48,8 @@ impl Policy {
                             assert_eq!(request.uri(), "/decision");
                             let body = request.into_body().collect().await.unwrap().to_bytes();
                             let metadata: Value = serde_json::from_slice(&body).unwrap();
-                            let allow = metadata["agent_id"] == "alice";
+                            let allow = metadata["agent_id"] == "alice"
+                                && metadata["path"] != "/deny-inner";
                             let wait = metadata["path"] == "/wait";
                             let inconsistent = metadata["path"] == "/inconsistent";
                             seen.lock().unwrap().push(metadata);
@@ -98,6 +99,7 @@ fn config(directory: &TempDir) -> Config {
         event_log: directory.path().join("events.jsonl"),
         parent_proxy: None,
         upstream_ca_file: None,
+        tls_ca_file: None,
         via_token: Some("test-instance".into()),
     }
 }
@@ -562,6 +564,266 @@ async fn https_parent_uses_configured_ca_and_verifies_hostname() {
     https_parent_case("localhost", true, 200).await;
     https_parent_case("wrong.invalid", true, 502).await;
     https_parent_case("localhost", false, 502).await;
+}
+
+fn interception_ca(
+    directory: &TempDir,
+    config: &mut Config,
+) -> rustls::pki_types::CertificateDer<'static> {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::default();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+    let ca = params.self_signed(&key).unwrap();
+    let path = directory.path().join("mitmproxy-ca.pem");
+    std::fs::write(&path, format!("{}{}", key.serialize_pem(), ca.pem())).unwrap();
+    config.tls_ca_file = Some(path);
+    ca.der().clone()
+}
+
+async fn connect_tls(
+    socket: &Path,
+    authority: &str,
+    sni: &str,
+    ca: rustls::pki_types::CertificateDer<'static>,
+) -> Result<tokio_rustls::client::TlsStream<UnixStream>, safeyolo_proxy::Error> {
+    let mut socket = UnixStream::connect(socket).await?;
+    socket
+        .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
+        .await?;
+    let mut response = Vec::new();
+    while !response.ends_with(b"\r\n\r\n") {
+        response.push(socket.read_u8().await?);
+    }
+    assert!(
+        response.starts_with(b"HTTP/1.1 200"),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca)?;
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect(
+            rustls::pki_types::ServerName::try_from(sni.to_owned())?,
+            socket,
+        )
+        .await?)
+}
+
+#[tokio::test]
+async fn intercepted_https_pins_authority_and_checks_inner_policy_before_egress() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let policy = Policy::start(&config.temporary_policy_socket).await;
+    let ca = interception_ca(&directory, &mut config);
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    for (target, expected) in [
+        ("GET /deny-inner HTTP/1.1\r\nHost: localhost:18443", 403),
+        ("GET / HTTP/1.1\r\nHost: other.invalid:18443", 400),
+        ("GET / HTTP/1.1\r\nHost: localhost:18444", 400),
+        (
+            "GET https://other.invalid:18443/ HTTP/1.1\r\nHost: localhost:18443",
+            400,
+        ),
+        (
+            "GET http://localhost:18443/ HTTP/1.1\r\nHost: localhost:18443",
+            400,
+        ),
+        (
+            "GET / HTTP/1.1\r\nHost: localhost:18443\r\nHost: localhost:18443",
+            400,
+        ),
+    ] {
+        let socket = connect_tls(
+            &config.listeners[0].socket_path,
+            "localhost:18443",
+            "localhost",
+            ca.clone(),
+        )
+        .await
+        .unwrap();
+        let mut socket = socket;
+        socket
+            .write_all(format!("{target}\r\nConnection: close\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut bytes = Vec::new();
+        let _ = socket.read_to_end(&mut bytes).await;
+        assert!(
+            bytes.starts_with(format!("HTTP/1.1 {expected}").as_bytes()),
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+    assert!(
+        connect_tls(
+            &config.listeners[0].socket_path,
+            "localhost:18443",
+            "other.invalid",
+            ca
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        events(&config)
+            .iter()
+            .all(|event| event["event"] != "proxy.egress")
+    );
+    {
+        let requests = policy.requests.lock().unwrap();
+        assert_eq!(
+            requests.iter().filter(|row| row["method"] == "GET").count(),
+            1
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|row| row["method"] == "GET" && row["scheme"] == "https")
+        );
+    }
+    proxy.shutdown().await;
+}
+
+async fn intercepted_https_origin_case(
+    cert_host: &str,
+    trust_origin: bool,
+    parent: bool,
+    expected: u16,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let ca = interception_ca(&directory, &mut config);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec![cert_host.into()]).unwrap();
+    if trust_origin {
+        let path = directory.path().join("upstream.pem");
+        std::fs::write(&path, cert.pem()).unwrap();
+        config.upstream_ca_file = Some(path);
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let authority = if parent {
+        "target.invalid:18443".to_owned()
+    } else {
+        format!("localhost:{port}")
+    };
+    if parent {
+        config.parent_proxy = Some(format!("http://127.0.0.1:{port}"));
+    }
+    let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let origin = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        if parent {
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                head.push(socket.read_u8().await.unwrap());
+            }
+            assert!(head.starts_with(b"CONNECT target.invalid:18443 HTTP/1.1\r\n"));
+            socket
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+        }
+        let tls = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
+            .accept(socket)
+            .await;
+        if expected != 200 {
+            assert!(tls.is_err());
+            return;
+        }
+        let mut socket = tls.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(socket.read_u8().await.unwrap());
+        }
+        assert!(head.starts_with(b"GET /signed?x=one&x=two%2Fthree HTTP/1.1\r\n"));
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+            .await
+            .unwrap();
+        socket.shutdown().await.unwrap();
+    });
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let host = if parent {
+        "target.invalid"
+    } else {
+        "localhost"
+    };
+    let mut socket = connect_tls(&config.listeners[0].socket_path, &authority, host, ca)
+        .await
+        .unwrap();
+    socket.write_all(format!("GET /signed?x=one&x=two%2Fthree HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut bytes = Vec::new();
+    let _ = socket.read_to_end(&mut bytes).await;
+    assert!(
+        bytes.starts_with(format!("HTTP/1.1 {expected}").as_bytes()),
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    if expected == 200 {
+        assert!(bytes.ends_with(b"hello"));
+    }
+    origin.await.unwrap();
+    assert_eq!(
+        events(&config)
+            .iter()
+            .filter(|row| row["event"] == "proxy.egress")
+            .count(),
+        1
+    );
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn intercepted_https_verifies_origin_and_parent_connect_without_fallback() {
+    intercepted_https_origin_case("localhost", true, false, 200).await;
+    intercepted_https_origin_case("wrong.invalid", true, false, 502).await;
+    intercepted_https_origin_case("localhost", false, false, 502).await;
+    intercepted_https_origin_case("target.invalid", true, true, 200).await;
+    intercepted_https_origin_case("wrong.invalid", true, true, 502).await;
+}
+
+#[tokio::test]
+async fn shutdown_cancels_an_idle_intercepted_connection() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let ca = interception_ca(&directory, &mut config);
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let mut socket = connect_tls(
+        &config.listeners[0].socket_path,
+        "localhost:18443",
+        "localhost",
+        ca,
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), proxy.shutdown())
+        .await
+        .unwrap();
+    let mut byte = [0];
+    let result = tokio::time::timeout(Duration::from_secs(2), socket.read(&mut byte))
+        .await
+        .unwrap();
+    assert!(matches!(result, Ok(0) | Err(_)));
 }
 
 #[tokio::test]

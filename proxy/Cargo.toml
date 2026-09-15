@@ -11,6 +11,9 @@ bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1.11", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
+pkcs8 = { version = "0.10", features = ["std"] }
+percent-encoding = "2"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
@@ -18,12 +21,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"
 toml = { version = "1.1", features = ["preserve_order"] }
+toml_edit = { version = "0.25", features = ["serde"] }
+time = { version = "0.3", features = ["parsing", "formatting"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
 uuid = { version = "1", features = ["v4"] }
+unicode-normalization = "0.1"
+x509-parser = "0.18"
 
 [dev-dependencies]
-rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 tempfile = "3"
 
 [[bin]]

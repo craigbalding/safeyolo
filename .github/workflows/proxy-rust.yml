@@ -67,8 +67,8 @@ jobs:
           uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
           uv run --frozen pytest -q tests/test_rust_temporary_policy.py
 
-      - name: Compare native network decisions with the historical policy engine
+      - name: Compare native behavior with the historical implementation
         working-directory: proxy
         env:
           SAFEYOLO_POLICY_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: cargo test --locked --test policy differential_matrix -- --ignored --nocapture
+        run: cargo test --locked -- --ignored --nocapture
