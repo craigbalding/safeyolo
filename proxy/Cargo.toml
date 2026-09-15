@@ -7,20 +7,24 @@ publish = false
 license = "MIT"
 
 [dependencies]
+base64 = "0.23"
 bytes = "1"
+fernet = { version = "0.2.2", default-features = false, features = ["rustcrypto", "fernet_danger_timestamps"] }
 http-body-util = "0.1"
-hyper = { version = "1.11", features = ["client", "server", "http1"] }
+hyper = { version = "1.11", features = ["client", "server", "http1", "http2"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 num-bigint = "0.4"
 pkcs8 = { version = "0.10", features = ["std"] }
 percent-encoding = "2"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
 regex = "1"
+ring = "0.17"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
+tempfile = "3"
 toml_edit = "0.25"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
@@ -29,9 +33,9 @@ uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
 x509-parser = "0.18"
 yaml-rust2 = { version = "0.13", default-features = false }
+zeroize = "1"
 
 [dev-dependencies]
-tempfile = "3"
 toml = { version = "1.1", features = ["preserve_order"] }
 
 [[bin]]

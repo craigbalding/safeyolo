@@ -11,7 +11,7 @@ use std::{
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, body::Incoming, service::service_fn};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use safeyolo_proxy::{AgentListener, Config, Proxy};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -587,6 +587,16 @@ async fn connect_tls(
     sni: &str,
     ca: rustls::pki_types::CertificateDer<'static>,
 ) -> Result<tokio_rustls::client::TlsStream<UnixStream>, safeyolo_proxy::Error> {
+    connect_tls_with_alpn(socket, authority, sni, ca, &[]).await
+}
+
+async fn connect_tls_with_alpn(
+    socket: &Path,
+    authority: &str,
+    sni: &str,
+    ca: rustls::pki_types::CertificateDer<'static>,
+    protocols: &[&[u8]],
+) -> Result<tokio_rustls::client::TlsStream<UnixStream>, safeyolo_proxy::Error> {
     let mut socket = UnixStream::connect(socket).await?;
     socket
         .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
@@ -602,18 +612,201 @@ async fn connect_tls(
     );
     let mut roots = rustls::RootCertStore::empty();
     roots.add(ca)?;
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()?
     .with_root_certificates(roots)
     .with_no_client_auth();
+    config.alpn_protocols = protocols.iter().map(|protocol| protocol.to_vec()).collect();
     Ok(tokio_rustls::TlsConnector::from(Arc::new(config))
         .connect(
             rustls::pki_types::ServerName::try_from(sni.to_owned())?,
             socket,
         )
         .await?)
+}
+
+struct PausedBody {
+    first: bool,
+    finished: bool,
+    release: tokio::sync::oneshot::Receiver<()>,
+    dropped: Arc<Notify>,
+}
+impl hyper::body::Body for PausedBody {
+    type Data = Bytes;
+    type Error = Infallible;
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Infallible>>> {
+        use std::{future::Future, task::Poll};
+        let this = self.get_mut();
+        if !this.first {
+            this.first = true;
+            return Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from_static(
+                b"first",
+            )))));
+        }
+        if this.finished {
+            return Poll::Ready(None);
+        }
+        if std::pin::Pin::new(&mut this.release)
+            .poll(context)
+            .is_ready()
+        {
+            this.finished = true;
+            Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from_static(
+                b"second",
+            )))))
+        } else {
+            Poll::Pending
+        }
+    }
+    fn is_end_stream(&self) -> bool {
+        self.finished
+    }
+}
+impl Drop for PausedBody {
+    fn drop(&mut self) {
+        self.dropped.notify_one();
+    }
+}
+
+async fn http2_stream_lifecycle(cancel_response: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let ca = interception_ca(&directory, &mut config);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let path = directory.path().join("upstream.pem");
+    std::fs::write(&path, cert.pem()).unwrap();
+    config.upstream_ca_file = Some(path);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let authority = format!("localhost:{}", listener.local_addr().unwrap().port());
+    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    let (release, released) = tokio::sync::oneshot::channel();
+    let released = Arc::new(Mutex::new(Some(released)));
+    let dropped = Arc::new(Notify::new());
+    let body_dropped = dropped.clone();
+    let origin = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let socket = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
+            .accept(socket)
+            .await
+            .unwrap();
+        assert_eq!(socket.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+        let service = service_fn(move |_: Request<Incoming>| {
+            let body = PausedBody {
+                first: false,
+                finished: false,
+                release: released.lock().unwrap().take().unwrap(),
+                dropped: body_dropped.clone(),
+            };
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("content-length", "11")
+                        .body(body)
+                        .unwrap(),
+                )
+            }
+        });
+        let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(socket), service)
+            .await;
+    });
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let socket = connect_tls_with_alpn(
+        &config.listeners[0].socket_path,
+        &authority,
+        "localhost",
+        ca,
+        &[b"h2"],
+    )
+    .await
+    .unwrap();
+    assert_eq!(socket.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+    let (mut sender, connection) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(socket))
+            .await
+            .unwrap();
+    let client = tokio::spawn(connection);
+    let mut response = sender
+        .send_request(
+            Request::builder()
+                .uri(format!("https://{authority}/stream"))
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let first = tokio::time::timeout(Duration::from_secs(2), response.body_mut().frame())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.into_data().unwrap(), b"first".as_slice());
+    if cancel_response {
+        drop(response);
+        tokio::time::timeout(Duration::from_secs(2), dropped.notified())
+            .await
+            .expect("reset client stream must drop the paused upstream body");
+        assert!(
+            release.send(()).is_err(),
+            "canceled body still retained its receiver"
+        );
+        tokio::time::timeout(Duration::from_secs(2), proxy.shutdown())
+            .await
+            .unwrap();
+    } else {
+        let shutdown = tokio::spawn(proxy.shutdown());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown discarded an active H2 response"
+        );
+        release.send(()).unwrap();
+        let body = tokio::time::timeout(Duration::from_secs(2), response.into_body().collect())
+            .await
+            .unwrap()
+            .unwrap()
+            .to_bytes();
+        assert_eq!(body, b"second".as_slice());
+        tokio::time::timeout(Duration::from_secs(2), shutdown)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    drop(sender);
+    client.abort();
+    tokio::time::timeout(Duration::from_secs(2), origin)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn http2_cancellation_releases_a_paused_upstream_stream() {
+    http2_stream_lifecycle(true).await;
+}
+
+#[tokio::test]
+async fn http2_shutdown_drains_a_paused_response() {
+    http2_stream_lifecycle(false).await;
 }
 
 #[tokio::test]

@@ -39,13 +39,20 @@ The shared assertions cover:
   failures, denied CONNECT, and exact repeated/encoded query bytes.
 - Authority-form CONNECT metadata with no HTTP path or scheme, including
   opposing path-conditioned allow and deny rules.
+- Concurrent HTTP/2 streams from two agents, independent request identities,
+  exact encoded queries, protocol negotiation and rejected inner authorities.
 
 The HTTPS fixture creates a fresh mitmproxy CA in private fixture state. Rust
 receives that combined file through `tls_ca_file`. It never replaces an existing
 operator CA. Native transport tests separately exercise inner authority/SNI
 confusion, parent CONNECT, idle TLS shutdown and active HTTPS response drain
-during shutdown. HTTP/2, opaque CONNECT, TLS
-passthrough and WebSockets remain outside this development HTTPS path.
+during shutdown. Native HTTP/2 tests also verify cancellation releases a paused
+upstream response and shutdown drains its remaining bytes. The paired HTTP/2
+fixture uses an independent Python protocol peer. Two strict expected failures
+retain the old inner-authority bypass; Rust rejects both cases. Rust can
+negotiate HTTP/2 with the client while using HTTP/1 at the origin, where the old
+proxy negotiates HTTP/1 on both sides. Opaque CONNECT, TLS passthrough and
+WebSockets remain outside this development HTTPS path.
 
 The old launcher uses existing `RequestIdGenerator`, `AgentAPIRequestGuard`,
 `NetworkGuard`, `SSEStreaming`, `ProbeSink`, and `TransportGuard` implementations

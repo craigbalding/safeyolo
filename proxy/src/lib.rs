@@ -4,6 +4,7 @@
 pub mod approvals;
 mod config;
 pub mod contracts;
+pub mod credentials;
 pub mod grants;
 mod http;
 pub mod policy;

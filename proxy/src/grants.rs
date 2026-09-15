@@ -315,6 +315,61 @@ fn load_binding(agent: &str, raw: &Json, now: OffsetDateTime) -> Result<StoredBi
     nonempty(&[&binding.agent, &binding.service, &binding.capability])?;
     Ok(StoredBinding { binding, created })
 }
+
+/// Persist the defaults accepted by the old loader once, before a record can
+/// become a live grant. Regenerating IDs or creation times on each reload would
+/// invalidate an in-flight reservation and prevent durable consumption/revocation.
+fn normalize_legacy_records(document: &mut DocumentMut, now: OffsetDateTime) -> Result<()> {
+    let source =
+        parse_toml_document(&document.to_string()).map_err(|error| invalid(error.to_string()))?;
+    let Some(agents) = source.get("agents") else {
+        return Ok(());
+    };
+    for (agent, data) in agents
+        .as_object()
+        .ok_or_else(|| invalid("agents must be a table"))?
+    {
+        for (collection, fields) in [
+            ("grants", &["grant_id", "scope", "created", "expires"][..]),
+            ("contract_bindings", &["binding_id", "created"][..]),
+        ] {
+            for (index, raw) in records(data.get(collection))?.iter().enumerate() {
+                let defaults = if collection == "grants" {
+                    let Ok(grant) = load_grant(agent, raw, now) else {
+                        // Invalid grants remain reported/skipped by the snapshot
+                        // loader; normalization must not turn them into approvals.
+                        continue;
+                    };
+                    grant_record(&grant)?
+                } else {
+                    binding_record(&load_binding(agent, raw, now)?)?
+                };
+                let item = agent_table(document, agent)?
+                    .and_then(|agent| agent.get_mut(collection))
+                    .ok_or_else(|| invalid("record disappeared during normalization"))?;
+                let record: &mut dyn TableLike = match item {
+                    Item::ArrayOfTables(records) => records
+                        .get_mut(index)
+                        .ok_or_else(|| invalid("grant record disappeared"))?,
+                    Item::Value(Value::Array(records)) => records
+                        .get_mut(index)
+                        .and_then(Value::as_inline_table_mut)
+                        .ok_or_else(|| invalid("grant record must be an inline table"))?,
+                    _ => return Err(invalid("grant/binding records must be an array of tables")),
+                };
+                for field in fields {
+                    if !record.contains_key(field)
+                        || (*field == "expires"
+                            && record.get(field).and_then(Item::as_str) == Some(""))
+                    {
+                        record.insert(field, Item::Value(json_to_toml(&defaults[*field])?));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 fn replace_grant(grants: &mut Vec<Grant>, grant: Grant) {
     if let Some(existing) = grants
         .iter_mut()
@@ -348,14 +403,22 @@ pub struct Store {
     state: Arc<Mutex<Snapshot>>,
 }
 impl Store {
+    /// Normalize accepted legacy metadata atomically under the policy lock before
+    /// publishing a snapshot. The defaults do not change granted permissions.
     pub fn open(path: impl Into<PathBuf>, now: OffsetDateTime) -> Result<Self> {
         let path = path.into();
-        let document = std::fs::read_to_string(&path)?
-            .parse::<DocumentMut>()
-            .map_err(|error| invalid(error.to_string()))?;
+        let snapshot = update_policy(
+            &path,
+            true,
+            |document| {
+                normalize_legacy_records(document, now)?;
+                Snapshot::from_document(document, now, None)
+            },
+            |_| Ok(()),
+        )?;
         Ok(Self {
             path,
-            state: Arc::new(Mutex::new(Snapshot::from_document(&document, now, None)?)),
+            state: Arc::new(Mutex::new(snapshot)),
         })
     }
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Snapshot>> {
@@ -409,6 +472,7 @@ impl Store {
             &self.path,
             skip_unchanged,
             |document| {
+                normalize_legacy_records(document, now)?;
                 let mut next = Snapshot::from_document(document, now, Some(&current))?;
                 let result = mutate(document, &mut next)?;
                 Ok((result, next))

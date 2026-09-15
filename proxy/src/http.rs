@@ -14,7 +14,7 @@ use hyper::{
     body::{Body as HttpBody, Frame, Incoming, SizeHint},
     header,
 };
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -154,6 +154,22 @@ impl Destination {
         {
             return Err("inner authority differs from admitted CONNECT destination".into());
         }
+        if request.version() == hyper::Version::HTTP_2
+            && let Some(host) = request.headers().get(header::HOST)
+        {
+            let host = host.to_str()?.parse::<hyper::http::uri::Authority>()?;
+            let host_port =
+                crate::config::authority_port(&host, if scheme == "https" { 443 } else { 80 })?;
+            if host.as_str().contains('@')
+                || !host
+                    .host()
+                    .trim_matches(['[', ']'])
+                    .eq_ignore_ascii_case(authority.host().trim_matches(['[', ']']))
+                || host_port != port
+            {
+                return Err("HTTP/2 Host differs from request authority".into());
+            }
+        }
         Ok(Self {
             host,
             port,
@@ -173,6 +189,11 @@ struct AllowedRequest<'a> {
 
 trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
+
+struct Outbound {
+    stream: Box<dyn Stream>,
+    http2: bool,
+}
 
 pub(crate) fn parent_tls(config: &crate::Config) -> Result<Arc<ClientConfig>, Error> {
     let mut roots = RootCertStore::empty();
@@ -204,7 +225,8 @@ pub(crate) fn parent_tls(config: &crate::Config) -> Result<Arc<ClientConfig>, Er
 async fn open_outbound(
     runtime: &Runtime,
     allowed: &AllowedRequest<'_>,
-) -> Result<Box<dyn Stream>, Error> {
+    offer_http2: bool,
+) -> Result<Outbound, Error> {
     let destination = allowed.destination;
     if is_reserved(&destination.host) {
         return Err("reserved destination cannot egress".into());
@@ -232,6 +254,7 @@ async fn open_outbound(
     } else {
         Box::new(socket)
     };
+    let mut http2 = false;
     if destination.scheme == "https" {
         if runtime.parent.is_some() {
             let (mut sender, connection) =
@@ -260,12 +283,20 @@ async fn open_outbound(
         }
         let config = runtime
             .tls
-            .clone()
+            .as_ref()
             .ok_or("upstream TLS trust is not configured")?;
+        let mut config = (**config).clone();
+        if offer_http2 {
+            config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        }
         let name = ServerName::try_from(destination.host.clone())?;
-        stream = Box::new(TlsConnector::from(config).connect(name, stream).await?);
+        let tls = TlsConnector::from(Arc::new(config))
+            .connect(name, stream)
+            .await?;
+        http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
+        stream = Box::new(tls);
     }
-    Ok(stream)
+    Ok(Outbound { stream, http2 })
 }
 
 async fn decide(runtime: &Runtime, request: &PolicyRequest<'_>) -> Result<PolicyDecision, Error> {
@@ -372,7 +403,7 @@ async fn forward(
         return Ok((
             response(
                 StatusCode::NOT_IMPLEMENTED,
-                "This development slice supports HTTP/1 forwarding only",
+                "This transport is not implemented in the development proxy",
             ),
             "unsupported".into(),
         ));
@@ -469,17 +500,33 @@ async fn forward(
                         None,
                     )
                 });
-                let connection = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(TokioIo::new(tls), service);
-                tokio::pin!(connection);
-                if *stop.borrow() {
-                    connection.as_mut().graceful_shutdown();
-                }
-                tokio::select! {
-                    result = &mut connection => result?,
-                    _ = stop.changed() => {
+                if tls.get_ref().1.alpn_protocol() == Some(b"h2") {
+                    let connection = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(tls), service);
+                    tokio::pin!(connection);
+                    if *stop.borrow() {
                         connection.as_mut().graceful_shutdown();
-                        connection.await?;
+                    }
+                    tokio::select! {
+                        result = &mut connection => result?,
+                        _ = stop.changed() => {
+                            connection.as_mut().graceful_shutdown();
+                            connection.await?;
+                        }
+                    }
+                } else {
+                    let connection = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(tls), service);
+                    tokio::pin!(connection);
+                    if *stop.borrow() {
+                        connection.as_mut().graceful_shutdown();
+                    }
+                    tokio::select! {
+                        result = &mut connection => result?,
+                        _ = stop.changed() => {
+                            connection.as_mut().graceful_shutdown();
+                            connection.await?;
+                        }
                     }
                 }
                 Ok(())
@@ -501,28 +548,53 @@ async fn forward(
     request
         .headers_mut()
         .append(header::VIA, format!("1.1 {}", runtime.via_token).parse()?);
-    *request.uri_mut() = if runtime.parent.is_some() && destination.scheme == "http" {
-        format!("http://{}{}", destination.authority, destination.path).parse::<Uri>()?
-    } else {
-        destination.path.parse::<Uri>()?
-    };
-    let stream = open_outbound(
+    let outbound = open_outbound(
         &runtime,
         &AllowedRequest {
             destination,
             identity,
             request_id,
         },
+        request.version() == hyper::Version::HTTP_2,
     )
     .await?;
-    let (mut sender, connection) =
-        hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
-    let connection = HttpTask(tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            eprintln!("upstream HTTP connection: {error}");
-        }
-    }));
-    let upstream = sender.send_request(request).await?;
+    *request.uri_mut() =
+        if outbound.http2 || (runtime.parent.is_some() && destination.scheme == "http") {
+            format!(
+                "{}://{}{}",
+                destination.scheme, destination.authority, destination.path
+            )
+            .parse::<Uri>()?
+        } else {
+            destination.path.parse::<Uri>()?
+        };
+    let (upstream, connection) = if outbound.http2 {
+        // :authority carries the admitted destination. Avoid retaining a second
+        // authority representation while translating a proxied request.
+        request.headers_mut().remove(header::HOST);
+        *request.version_mut() = hyper::Version::HTTP_2;
+        let (mut sender, connection) = hyper::client::conn::http2::handshake(
+            TokioExecutor::new(),
+            TokioIo::new(outbound.stream),
+        )
+        .await?;
+        let connection = HttpTask(tokio::spawn(async move {
+            if let Err(error) = connection.await {
+                eprintln!("upstream HTTP/2 connection: {error}");
+            }
+        }));
+        (sender.send_request(request).await?, connection)
+    } else {
+        *request.version_mut() = hyper::Version::HTTP_11;
+        let (mut sender, connection) =
+            hyper::client::conn::http1::handshake(TokioIo::new(outbound.stream)).await?;
+        let connection = HttpTask(tokio::spawn(async move {
+            if let Err(error) = connection.await {
+                eprintln!("upstream HTTP connection: {error}");
+            }
+        }));
+        (sender.send_request(request).await?, connection)
+    };
     let (mut parts, body) = upstream.into_parts();
     strip_hop_headers(&mut parts.headers);
     Ok((

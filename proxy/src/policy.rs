@@ -1,11 +1,11 @@
-//! Native network-policy evaluation under development; not selected by the proxy.
+//! Native proxy-policy evaluation under development; not selected by the proxy.
 //!
 //! Decisions mirror PolicyEngine.evaluate_request, including its existing exact
 //! index case sensitivity, shared host budgets and separate CONNECT counters.
-//! Credential/service permissions and addon enforcement are outside this API.
+//! Credential and gateway decisions share the same rule matcher and budget state.
 //! File-backed host lists and IAM task overlays retain production precedence.
-//! All network conditions use the context actually supplied by evaluate_request;
-//! this API does not claim to validate credential or service policy schemas.
+//! Each action supplies only its existing Python context. Credential detection,
+//! service route compilation, addon enforcement and PDP effect mapping live elsewhere.
 //! Expiry is applied at load/reload, including the intentional agent-host expiry
 //! fix; reaching a deadline alone does not schedule a reload.
 
@@ -69,6 +69,8 @@ pub enum Effect {
     Deny,
     Prompt,
     BudgetExceeded,
+    /// Raw gateway budget effect; these Python paths do not consume budgets.
+    Budget,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -89,6 +91,43 @@ pub struct NetworkRequest<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct CredentialRequest<'a> {
+    pub credential_type: &'a str,
+    pub destination: &'a str,
+    pub path: &'a str,
+    pub credential_hmac: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RiskyRouteRequest<'a> {
+    pub service: &'a str,
+    pub agent: &'a str,
+    pub account: &'a str,
+    pub tactics: &'a [String],
+    pub enables: &'a [String],
+    pub irreversible: bool,
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct GatewayRequest<'a> {
+    pub service: &'a str,
+    pub capability: &'a str,
+    pub agent: &'a str,
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    Network,
+    Credential,
+    RiskyRoute,
+    Gateway,
+}
+
+#[derive(Clone, Copy, Debug)]
 enum RuleEffect {
     Allow,
     Deny,
@@ -96,54 +135,103 @@ enum RuleEffect {
     Budget(u64),
 }
 
-#[derive(Clone, Debug)]
+/// Missing fields retain the defaults used by Condition.matches in Python.
+/// In particular credential evaluation has no agent and gateway has no path.
+#[derive(Default)]
+struct Context<'a> {
+    agent: Option<&'a str>,
+    port: Option<u16>,
+    method: &'a str,
+    path: &'a str,
+    credential_type: &'a str,
+    credential_hmac: &'a str,
+    content_type: &'a str,
+    tactics: &'a [String],
+    enables: &'a [String],
+    irreversible: bool,
+    account: &'a str,
+    service: &'a str,
+    capability: &'a str,
+}
+
+#[derive(Clone, Debug, Default)]
 struct Condition {
     present: bool,
     agent: Option<String>,
     ports: Option<Vec<u16>>,
     methods: Option<Vec<String>>,
     path_prefix: Option<String>,
-    other_context_matches: bool,
-}
-
-impl Default for Condition {
-    fn default() -> Self {
-        Self {
-            present: false,
-            agent: None,
-            ports: None,
-            methods: None,
-            path_prefix: None,
-            other_context_matches: true,
-        }
-    }
+    credentials: Option<Vec<String>>,
+    content_type: Option<String>,
+    tactics: Option<Vec<String>>,
+    enables: Option<Vec<String>>,
+    irreversible: Option<bool>,
+    accounts: Option<Vec<String>>,
+    service: Option<String>,
+    capability: Option<String>,
 }
 
 impl Condition {
-    fn matches(&self, request: &NetworkRequest<'_>) -> bool {
-        self.other_context_matches
-            && self
-                .agent
-                .as_ref()
-                .is_none_or(|pattern| glob(request.agent.unwrap_or(""), pattern))
+    fn matches(&self, context: &Context<'_>) -> bool {
+        self.agent
+            .as_ref()
+            .is_none_or(|pattern| glob(context.agent.unwrap_or(""), pattern))
             && self
                 .ports
                 .as_ref()
-                .is_none_or(|ports| request.port.is_some_and(|port| ports.contains(&port)))
+                .is_none_or(|ports| context.port.is_some_and(|port| ports.contains(&port)))
             && self.methods.as_ref().is_none_or(|methods| {
                 methods
                     .iter()
-                    .any(|method| method.to_uppercase() == request.method.to_uppercase())
+                    .any(|method| method.to_uppercase() == context.method.to_uppercase())
             })
             && self
                 .path_prefix
                 .as_ref()
-                .is_none_or(|prefix| request.path.starts_with(prefix))
+                .is_none_or(|prefix| context.path.starts_with(prefix))
+            && self.credentials.as_ref().is_none_or(|patterns| {
+                patterns.iter().any(|pattern| {
+                    if let Some(hmac) = pattern.strip_prefix("hmac:") {
+                        !context.credential_hmac.is_empty() && context.credential_hmac == hmac
+                    } else {
+                        client_matches(&format!("{}:x", context.credential_type), pattern)
+                    }
+                })
+            })
+            && self
+                .content_type
+                .as_ref()
+                .is_none_or(|value| context.content_type.contains(value))
+            && self
+                .tactics
+                .as_ref()
+                .is_none_or(|values| values.iter().any(|value| context.tactics.contains(value)))
+            && self
+                .enables
+                .as_ref()
+                .is_none_or(|values| values.iter().any(|value| context.enables.contains(value)))
+            && self
+                .irreversible
+                .is_none_or(|value| context.irreversible == value)
+            && self
+                .accounts
+                .as_ref()
+                .is_none_or(|values| values.iter().any(|value| value == context.account))
+            && self
+                .service
+                .as_ref()
+                .is_none_or(|pattern| glob(context.service, pattern))
+            && self
+                .capability
+                .as_ref()
+                .is_none_or(|pattern| glob(context.capability, pattern))
     }
 }
 
 #[derive(Clone, Debug)]
 struct Rule {
+    action: Action,
+    generated_route: bool,
     resource: String,
     effect: RuleEffect,
     condition: Condition,
@@ -183,7 +271,7 @@ struct Override {
     enabled: Option<bool>,
 }
 
-/// One network rule representation and one atomic GCRA state map.
+/// One proxy permission representation and one atomic GCRA state map.
 #[derive(Clone, Debug)]
 pub struct Policy {
     rules: Vec<Rule>,
@@ -365,6 +453,7 @@ impl Policy {
         policy.clients = overrides(document.get("clients"))?;
         if let Some(hosts) = document.get("hosts") {
             policy.compile_hosts(object(hosts, "hosts")?, None)?;
+            policy.compile_risk_appetite(document.get("gateway"))?;
             if let Some(agents) = document.get("agents") {
                 for (agent, config) in object(agents, "agents")? {
                     let Some(config) = config.as_object() else {
@@ -373,6 +462,8 @@ impl Policy {
                     if let Some(egress) = config.get("egress") {
                         let effect = egress_effect(egress)?;
                         policy.rules.push(Rule {
+                            action: Action::Network,
+                            generated_route: false,
                             resource: "*".into(),
                             effect,
                             condition: Condition {
@@ -460,6 +551,8 @@ impl Policy {
                     _ => return Err(invalid("endpoint requires egress or a rate")),
                 };
                 self.rules.push(Rule {
+                    action: Action::Network,
+                    generated_route: false,
                     resource,
                     effect,
                     condition: condition(),
@@ -467,10 +560,44 @@ impl Policy {
                 });
                 continue;
             }
+            if pattern == "*" && agent.is_none() {
+                if let Some(value) = config
+                    .get("unknown_credentials")
+                    .or_else(|| config.get("credentials"))
+                    && matches!(value.as_str(), Some("prompt" | "deny"))
+                {
+                    self.rules.push(Rule {
+                        action: Action::Credential,
+                        generated_route: false,
+                        resource: "*".into(),
+                        effect: egress_effect(value)?,
+                        condition: Condition::default(),
+                        inferred: false,
+                    });
+                }
+            } else if let Some(value) = config.get("credentials") {
+                self.rules.push(Rule {
+                    action: Action::Credential,
+                    generated_route: false,
+                    resource: resource.clone(),
+                    effect: RuleEffect::Allow,
+                    condition: Condition {
+                        present: true,
+                        credentials: (!value.is_null())
+                            .then(|| string_list(value, "credentials"))
+                            .transpose()?,
+                        agent: agent.map(str::to_owned),
+                        ..Default::default()
+                    },
+                    inferred: false,
+                });
+            }
             if let Some(effect) = egress
                 && (!matches!(effect, RuleEffect::Allow) || rate.is_none())
             {
                 self.rules.push(Rule {
+                    action: Action::Network,
+                    generated_route: false,
                     resource: resource.clone(),
                     effect,
                     condition: condition(),
@@ -479,6 +606,8 @@ impl Policy {
             }
             if let Some(rate) = rate {
                 self.rules.push(Rule {
+                    action: Action::Network,
+                    generated_route: false,
                     resource,
                     effect: RuleEffect::Budget(rate),
                     condition: condition(),
@@ -510,27 +639,95 @@ impl Policy {
         Ok(())
     }
 
+    fn compile_risk_appetite(&mut self, gateway: Option<&Value>) -> Result<()> {
+        let Some(rules) = gateway
+            .and_then(Value::as_object)
+            .and_then(|gateway| gateway.get("risk_appetite"))
+        else {
+            return Ok(());
+        };
+        for rule in rules
+            .as_array()
+            .ok_or_else(|| invalid("risk_appetite must be an array"))?
+        {
+            let rule = object(rule, "risk appetite rule")?;
+            let effect = match rule
+                .get("decision")
+                .map(|value| string(value, "risk decision"))
+                .transpose()?
+                .unwrap_or("require_approval")
+            {
+                "allow" => "allow",
+                "require_approval" => "prompt",
+                "deny" => "deny",
+                _ => return Err(invalid("unknown risk appetite decision")),
+            };
+            // The host compiler accepts only these condition fields here. Raw
+            // IAM rules can express method/path and the other schema fields.
+            let condition: Map<String, Value> = [
+                "tactics",
+                "enables",
+                "irreversible",
+                "account",
+                "agent",
+                "service",
+            ]
+            .into_iter()
+            .filter_map(|key| rule.get(key).map(|value| (key.to_owned(), value.clone())))
+            .collect();
+            let mut permission = serde_json::json!({"action":"gateway:risky_route", "resource":"*", "effect":effect});
+            if !condition.is_empty() {
+                permission["condition"] = Value::Object(condition);
+            }
+            self.compile_iam(&Value::Array(vec![permission]), true)?;
+        }
+        Ok(())
+    }
+
+    /// Accept routes already selected and compiled by the service module.
+    /// Replacing generated routes preserves authored IAM rules. A baseline
+    /// reload builds a fresh snapshot; its caller must compile its routes again.
+    pub fn with_gateway_routes(&self, routes: &[crate::services::CompiledRoute]) -> Self {
+        let mut replacement = self.clone();
+        replacement.rules.retain(|rule| !rule.generated_route);
+        replacement.rules.extend(routes.iter().map(|route| Rule {
+            action: Action::Gateway,
+            generated_route: true,
+            resource: format!("{}:{}", route.service, route.path),
+            effect: RuleEffect::Allow,
+            condition: Condition {
+                present: true,
+                agent: Some(route.agent.clone()),
+                methods: Some(route.methods.clone()),
+                capability: Some(route.capability.clone()),
+                ..Default::default()
+            },
+            inferred: false,
+        }));
+        replacement
+            .rules
+            .sort_by_key(|rule| std::cmp::Reverse(rule.score()));
+        replacement
+    }
+
     fn compile_iam(&mut self, permissions: &Value, host_compiled: bool) -> Result<()> {
         for value in permissions
             .as_array()
             .ok_or_else(|| invalid("permissions must be an array"))?
         {
             let rule = object(value, "permission")?;
-            match rule.get("action").and_then(Value::as_str) {
-                Some("network:request") => {}
-                Some(
-                    "credential:use"
-                    | "file:read"
-                    | "file:write"
-                    | "subprocess:exec"
-                    | "gateway:risky_route"
-                    | "gateway:request",
-                ) => continue,
+            let action = match rule.get("action").and_then(Value::as_str) {
+                Some("network:request") => Action::Network,
+                Some("credential:use") => Action::Credential,
+                Some("gateway:risky_route") => Action::RiskyRoute,
+                Some("gateway:request") => Action::Gateway,
+                // These accepted actions cannot be requested through this API.
+                Some("file:read" | "file:write" | "subprocess:exec") => continue,
                 _ => return Err(invalid("unknown or missing permission action")),
-            }
+            };
             let resource = string(
                 rule.get("resource")
-                    .ok_or_else(|| invalid("network permission needs resource"))?,
+                    .ok_or_else(|| invalid("permission needs resource"))?,
                 "resource",
             )?
             .to_owned();
@@ -591,38 +788,27 @@ impl Policy {
                                     .collect::<Result<Vec<_>>>()?,
                             );
                         }
-                        "credential" => {
-                            condition.other_context_matches &=
-                                string_list(value, key)?.iter().any(|pattern| {
-                                    !pattern.starts_with("hmac:") && client_matches(":x", pattern)
-                                });
-                        }
+                        "credential" => condition.credentials = Some(string_list(value, key)?),
                         "content_type" => {
-                            condition.other_context_matches &= string(value, key)?.is_empty()
+                            condition.content_type = Some(string(value, key)?.to_owned())
                         }
-                        "tactics" | "enables" => {
-                            string_array(value, key)?;
-                            condition.other_context_matches = false;
-                        }
-                        "irreversible" => {
-                            condition.other_context_matches &= !boolean(value, "irreversible")?
-                        }
-                        "account" => {
-                            condition.other_context_matches &=
-                                string_list(value, key)?.iter().any(String::is_empty)
-                        }
-                        "service" | "capability" => {
-                            condition.other_context_matches &= glob("", string(value, key)?)
-                        }
+                        "tactics" => condition.tactics = Some(string_array(value, key)?),
+                        "enables" => condition.enables = Some(string_array(value, key)?),
+                        "irreversible" => condition.irreversible = Some(boolean(value, key)?),
+                        "account" => condition.accounts = Some(string_list(value, key)?),
+                        "service" => condition.service = Some(string(value, key)?.to_owned()),
+                        "capability" => condition.capability = Some(string(value, key)?.to_owned()),
                         _ => {
                             return Err(unsupported(format!(
-                                "native network condition is not implemented: {key}"
+                                "native policy condition is not implemented: {key}"
                             )));
                         }
                     }
                 }
             }
             self.rules.push(Rule {
+                action,
+                generated_route: false,
                 resource,
                 effect,
                 condition,
@@ -632,18 +818,20 @@ impl Policy {
         Ok(())
     }
 
-    fn matching(&self, request: &NetworkRequest<'_>, resource: &str) -> Option<&Rule> {
+    fn matching(&self, action: Action, context: &Context<'_>, resource: &str) -> Option<&Rule> {
         let task = self
             .task
             .as_ref()
             .map_or(&[][..], |task| task.rules.as_slice());
-        let task_exact = task
-            .iter()
-            .any(|rule| rule.exact() && !rule.simple() && rule.resource == resource);
+        let task_exact = task.iter().any(|rule| {
+            rule.action == action && rule.exact() && !rule.simple() && rule.resource == resource
+        });
         let candidates = || {
-            task.iter().chain(self.rules.iter().filter(|rule| {
-                !(task_exact && rule.exact() && !rule.simple() && rule.resource == resource)
-            }))
+            task.iter()
+                .chain(self.rules.iter().filter(|rule| {
+                    !(task_exact && rule.exact() && !rule.simple() && rule.resource == resource)
+                }))
+                .filter(|rule| rule.action == action)
         };
         let matches = |rule: &&Rule, agent: bool, exact: bool, port_only: bool| {
             !rule.inferred
@@ -655,9 +843,9 @@ impl Policy {
                 } else {
                     resource_matches(resource, &rule.resource)
                 })
-                && rule.condition.matches(request)
+                && rule.condition.matches(context)
         };
-        if request.agent.is_some_and(|agent| !agent.is_empty()) {
+        if context.agent.is_some_and(|agent| !agent.is_empty()) {
             if let Some(rule) = candidates().find(|rule| matches(rule, true, true, false)) {
                 return Some(rule);
             }
@@ -693,9 +881,16 @@ impl Policy {
         if !now_ms.is_finite() {
             return Err(invalid("budget timestamp must be finite"));
         }
+        let context = Context {
+            agent: request.agent,
+            port: request.port,
+            method: request.method,
+            path: request.path,
+            ..Default::default()
+        };
         let Some(rule) = self
-            .matching(&request, &format!("{}/*", request.host))
-            .or_else(|| self.matching(&request, "*"))
+            .matching(Action::Network, &context, &format!("{}/*", request.host))
+            .or_else(|| self.matching(Action::Network, &context, "*"))
         else {
             return Ok(Decision {
                 effect: Effect::Deny,
@@ -703,7 +898,7 @@ impl Policy {
                 budget_remaining: None,
             });
         };
-        let mut decision = Decision {
+        let decision = Decision {
             effect: effect_of(rule.effect),
             matched_resource: Some(rule.resource.clone()),
             budget_remaining: None,
@@ -740,6 +935,19 @@ impl Policy {
         if let Some(rate) = global_budget {
             limits.push((format!("{action}:__global__"), rate));
         }
+        self.charge(decision, limits, now_ms, consume)
+    }
+
+    fn charge(
+        &self,
+        mut decision: Decision,
+        limits: Vec<(String, u64)>,
+        now_ms: f64,
+        consume: bool,
+    ) -> Result<Decision> {
+        if !now_ms.is_finite() {
+            return Err(invalid("budget timestamp must be finite"));
+        }
         if limits.is_empty() {
             return Ok(decision);
         }
@@ -775,6 +983,93 @@ impl Policy {
         }
         decision.budget_remaining = Some(remaining);
         Ok(decision)
+    }
+
+    /// Credential checks intentionally receive neither agent nor request method.
+    /// Different HMACs of one type share a destination/type counter; network and
+    /// configured aggregate credential budgets do not participate in this path.
+    pub fn evaluate_credential(
+        &self,
+        request: CredentialRequest<'_>,
+        now_ms: f64,
+    ) -> Result<Decision> {
+        if !now_ms.is_finite() {
+            return Err(invalid("budget timestamp must be finite"));
+        }
+        let context = Context {
+            credential_type: request.credential_type,
+            credential_hmac: request.credential_hmac.unwrap_or(""),
+            path: request.path,
+            ..Default::default()
+        };
+        let rule = self
+            .matching(
+                Action::Credential,
+                &context,
+                &format!("{}/*", request.destination),
+            )
+            .or_else(|| self.matching(Action::Credential, &context, "*"));
+        let mut decision = raw_decision(rule, Effect::Prompt);
+        if let Some(Rule {
+            effect: RuleEffect::Budget(rate),
+            ..
+        }) = rule
+        {
+            decision.effect = Effect::Allow;
+            return self.charge(
+                decision,
+                vec![(
+                    format!(
+                        "credential:use:{}:{}",
+                        request.destination, request.credential_type
+                    ),
+                    *rate,
+                )],
+                now_ms,
+                true,
+            );
+        }
+        Ok(decision)
+    }
+
+    /// Raw gateway policy effects match the existing PolicyEngine. In particular
+    /// Budget is not charged here; the existing PDP maps it to ERROR for risk.
+    pub fn evaluate_risky_route(&self, request: RiskyRouteRequest<'_>) -> Decision {
+        let context = Context {
+            service: request.service,
+            agent: Some(request.agent),
+            account: request.account,
+            tactics: request.tactics,
+            enables: request.enables,
+            irreversible: request.irreversible,
+            method: request.method,
+            path: request.path,
+            ..Default::default()
+        };
+        raw_decision(
+            self.matching(Action::RiskyRoute, &context, "*"),
+            Effect::Prompt,
+        )
+    }
+
+    /// Path contributes to the resource only, preserving the shipped missing
+    /// path condition context. The existing gateway PDP maps raw Budget to DENY.
+    pub fn evaluate_gateway_request(&self, request: GatewayRequest<'_>) -> Decision {
+        let context = Context {
+            service: request.service,
+            capability: request.capability,
+            agent: Some(request.agent),
+            method: request.method,
+            ..Default::default()
+        };
+        raw_decision(
+            self.matching(
+                Action::Gateway,
+                &context,
+                &format!("{}:{}", request.service, request.path),
+            ),
+            Effect::Deny,
+        )
     }
 
     /// Mirrors the separate existing addon-enable query without changing the
@@ -891,11 +1186,14 @@ fn expand_lists(document: &mut Map<String, Value>, base_dir: Option<&Path>) -> R
             '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
             '\u{2029}',
         ]) {
-            let mut entry = line.trim();
+            let mut entry = line.trim_matches(python_whitespace);
             if entry.is_empty() || entry.starts_with('#') {
                 continue;
             }
-            let parts: Vec<_> = entry.split_whitespace().collect();
+            let parts: Vec<_> = entry
+                .split(python_whitespace)
+                .filter(|part| !part.is_empty())
+                .collect();
             if parts.len() >= 2
                 && (matches!(parts[0], "0.0.0.0" | "127.0.0.1" | "255.255.255.255")
                     || parts[0].starts_with([':', 'f']))
@@ -920,6 +1218,13 @@ fn expand_lists(document: &mut Map<String, Value>, base_dir: Option<&Path>) -> R
         }
     }
     Ok(())
+}
+
+// Python str.strip/split also treat the four information separators as space;
+// Rust's Unicode White_Space predicate omits them. Host-list entries must not
+// retain these bytes and accidentally fall through a permissive default rule.
+fn python_whitespace(character: char) -> bool {
+    character.is_whitespace() || matches!(character, '\u{1c}'..='\u{1f}')
 }
 
 fn current_time_ms() -> f64 {
@@ -1095,6 +1400,17 @@ fn clock_nanoseconds(value: &str, offset: bool) -> Option<i128> {
         Some(_) => return None,
     };
     Some(seconds * 1_000_000_000 + micros * 1000)
+}
+
+fn raw_decision(rule: Option<&Rule>, default: Effect) -> Decision {
+    Decision {
+        effect: rule.map_or(default, |rule| match rule.effect {
+            RuleEffect::Budget(_) => Effect::Budget,
+            effect => effect_of(effect),
+        }),
+        matched_resource: rule.map(|rule| rule.resource.clone()),
+        budget_remaining: None,
+    }
 }
 
 fn effect_of(effect: RuleEffect) -> Effect {
@@ -1312,6 +1628,69 @@ fn json_value(source: &str, reject_duplicates: bool, depth: usize) -> serde_json
 /// One YAML frontend for native policy consumers. Event scalar styles and tags
 /// preserve the distinctions erased by a generic JSON deserializer.
 pub(crate) fn parse_yaml(source: &str) -> Result<Value> {
+    Ok(parse_yaml_node(source)?.value)
+}
+
+/// Vault fields require strings. Retain timestamp types through aliases and
+/// merges before rejecting them in declared fields; unknown fields are ignored
+/// by the vault schema, including timestamp values in those fields.
+pub(crate) fn parse_yaml_for_vault(source: &str) -> Result<Value> {
+    let node = parse_yaml_node(source)?;
+    if node.timestamps.iter().any(|path| {
+        path.len() == 3
+            && path[0] == "credentials"
+            && matches!(
+                path[2].as_str(),
+                "name"
+                    | "type"
+                    | "value"
+                    | "refresh_token"
+                    | "token_url"
+                    | "client_id"
+                    | "client_secret"
+                    | "expires_at"
+            )
+    }) {
+        return Err(invalid(
+            "vault credential fields must not contain typed YAML timestamps",
+        ));
+    }
+    Ok(node.value)
+}
+
+/// Timestamp provenance is parser-owned, never encoded as an authored JSON
+/// object marker. Paths are relative to this node and survive alias cloning.
+#[derive(Clone)]
+struct YamlNode {
+    value: Value,
+    timestamps: Vec<Vec<String>>,
+}
+
+impl YamlNode {
+    fn into_sequence(self) -> Result<Vec<Self>> {
+        let Value::Array(values) = self.value else {
+            return Err(invalid("expected YAML sequence"));
+        };
+        Ok(values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let index = index.to_string();
+                Self {
+                    value,
+                    timestamps: self
+                        .timestamps
+                        .iter()
+                        .filter(|path| path.first() == Some(&index))
+                        .map(|path| path[1..].to_vec())
+                        .collect(),
+                }
+            })
+            .collect())
+    }
+}
+
+fn parse_yaml_node(source: &str) -> Result<YamlNode> {
     use yaml_rust2::parser::{Event, Parser};
     let mut parser = Parser::new_from_str(source);
     let next = |parser: &mut Parser<std::str::Chars<'_>>| {
@@ -1324,7 +1703,12 @@ pub(crate) fn parse_yaml(source: &str) -> Result<Value> {
         return Err(invalid("expected YAML stream"));
     }
     match next(&mut parser)? {
-        Event::StreamEnd => return Ok(Value::Null),
+        Event::StreamEnd => {
+            return Ok(YamlNode {
+                value: Value::Null,
+                timestamps: Vec::new(),
+            });
+        }
         Event::DocumentStart => {}
         _ => return Err(invalid("expected YAML document")),
     }
@@ -1337,15 +1721,30 @@ pub(crate) fn parse_yaml(source: &str) -> Result<Value> {
 
 fn yaml_node(
     parser: &mut yaml_rust2::parser::Parser<std::str::Chars<'_>>,
-    anchors: &mut HashMap<usize, (Value, bool)>,
-) -> Result<(Value, bool)> {
+    anchors: &mut HashMap<usize, (YamlNode, bool)>,
+) -> Result<(YamlNode, bool)> {
     use yaml_rust2::parser::Event;
     let (event, _) = parser
         .next_token()
         .map_err(|error| invalid(error.to_string()))?;
     let (anchor, result) = match event {
         Event::Scalar(value, style, anchor, tag) => {
-            (anchor, yaml_scalar(&value, style, tag.as_ref())?)
+            let mut timestamp = false;
+            let (value, is_merge) = yaml_scalar(&value, style, tag.as_ref(), &mut timestamp)?;
+            (
+                anchor,
+                (
+                    YamlNode {
+                        value,
+                        timestamps: if timestamp {
+                            vec![Vec::new()]
+                        } else {
+                            Vec::new()
+                        },
+                    },
+                    is_merge,
+                ),
+            )
         }
         Event::Alias(anchor) => {
             return anchors.get(&anchor).cloned().ok_or_else(|| {
@@ -1355,20 +1754,37 @@ fn yaml_node(
         Event::SequenceStart(anchor, tag) => {
             yaml_collection_tag(tag.as_ref(), "seq")?;
             let mut values = Vec::new();
+            let mut timestamps = Vec::new();
             while !matches!(
                 parser.peek().map_err(|error| invalid(error.to_string()))?.0,
                 Event::SequenceEnd
             ) {
-                values.push(yaml_node(parser, anchors)?.0);
+                let node = yaml_node(parser, anchors)?.0;
+                let index = values.len().to_string();
+                timestamps.extend(node.timestamps.into_iter().map(|mut path| {
+                    path.insert(0, index.clone());
+                    path
+                }));
+                values.push(node.value);
             }
             parser
                 .next_token()
                 .map_err(|error| invalid(error.to_string()))?;
-            (anchor, (Value::Array(values), false))
+            (
+                anchor,
+                (
+                    YamlNode {
+                        value: Value::Array(values),
+                        timestamps,
+                    },
+                    false,
+                ),
+            )
         }
         Event::MappingStart(anchor, tag) => {
             yaml_collection_tag(tag.as_ref(), "map")?;
             let (mut merged, mut local) = (Map::new(), Vec::new());
+            let mut timestamps: Vec<Vec<String>> = Vec::new();
             while !matches!(
                 parser.peek().map_err(|error| invalid(error.to_string()))?.0,
                 Event::MappingEnd
@@ -1376,27 +1792,47 @@ fn yaml_node(
                 let (key, is_merge) = yaml_node(parser, anchors)?;
                 let value = yaml_node(parser, anchors)?.0;
                 if is_merge {
-                    let parents = match value {
-                        Value::Object(mapping) => vec![Value::Object(mapping)],
-                        Value::Array(parents) => parents.into_iter().rev().collect(),
+                    let parents = match value.value {
+                        Value::Object(_) => vec![value],
+                        Value::Array(_) => value.into_sequence()?.into_iter().rev().collect(),
                         _ => return Err(invalid("YAML merge requires mappings")),
                     };
                     for parent in parents {
-                        for (key, value) in object(&parent, "YAML merge")? {
-                            merged.insert(key.clone(), value.clone());
+                        // A date scalar has an object representation for policy
+                        // expiry, but remains a scalar and cannot be a merge map.
+                        if parent.timestamps.iter().any(Vec::is_empty) {
+                            return Err(invalid("YAML merge requires mappings"));
                         }
+                        let mapping = object(&parent.value, "YAML merge")?;
+                        timestamps.retain(|path| !mapping.contains_key(&path[0]));
+                        merged.extend(mapping.clone());
+                        timestamps.extend(parent.timestamps);
                     }
                 } else {
-                    local.push((string(&key, "YAML mapping key")?.to_owned(), value));
+                    local.push((string(&key.value, "YAML mapping key")?.to_owned(), value));
                 }
             }
             parser
                 .next_token()
                 .map_err(|error| invalid(error.to_string()))?;
-            for (key, value) in local {
-                merged.insert(key, value);
+            for (key, node) in local {
+                timestamps.retain(|path| path[0] != key);
+                timestamps.extend(node.timestamps.into_iter().map(|mut path| {
+                    path.insert(0, key.clone());
+                    path
+                }));
+                merged.insert(key, node.value);
             }
-            (anchor, (Value::Object(merged), false))
+            (
+                anchor,
+                (
+                    YamlNode {
+                        value: Value::Object(merged),
+                        timestamps,
+                    },
+                    false,
+                ),
+            )
         }
         _ => return Err(invalid("unexpected YAML event")),
     };
@@ -1419,6 +1855,7 @@ fn yaml_scalar(
     value: &str,
     style: yaml_rust2::scanner::TScalarStyle,
     tag: Option<&yaml_rust2::parser::Tag>,
+    timestamp: &mut bool,
 ) -> Result<(Value, bool)> {
     use yaml_rust2::scanner::TScalarStyle;
     let explicit = tag
@@ -1458,6 +1895,7 @@ fn yaml_scalar(
     }
     if explicit == Some("timestamp") || (explicit.is_none() && yaml_resolvers()[2].is_match(value))
     {
+        *timestamp = true;
         return Ok((
             yaml_timestamp(value)?.ok_or_else(|| invalid("invalid YAML timestamp"))?,
             false,
@@ -1821,10 +2259,7 @@ fn client_matches(client: &str, pattern: &str) -> bool {
     }
 }
 fn resource_matches(resource: &str, pattern: &str) -> bool {
-    let (resource, pattern) = (resource.to_lowercase(), pattern.to_lowercase());
-    glob(&resource, &pattern)
-        || (pattern.contains("**")
-            && resource == pattern.trim_end_matches('*').trim_end_matches('/'))
+    crate::services::resource_matches(resource, pattern)
 }
 
 /// Python fnmatch semantics for network resource/agent globs: '*' crosses '/',
@@ -1973,6 +2408,100 @@ mod yaml_tests {
         assert!(parse_yaml("value: !!unknown x").is_err());
         assert!(parse_yaml("a: &recursive {x: *recursive}").is_err());
         assert!(parse_yaml("a: 1\n---\na: 2").is_err());
+    }
+
+    #[test]
+    fn vault_timestamps_keep_type_through_aliases_and_effective_merges() {
+        for field in [
+            "name",
+            "type",
+            "value",
+            "refresh_token",
+            "token_url",
+            "client_id",
+            "client_secret",
+            "expires_at",
+        ] {
+            for timestamp in [
+                "2026-01-01",
+                "2026-01-01T00:00:00Z",
+                "!!timestamp '2026-01-01T00:00:00Z'",
+            ] {
+                let source = format!("credentials: [{{{field}: {timestamp}}}]");
+                assert_eq!(
+                    parse_yaml_for_vault(&source).unwrap_err().kind,
+                    ErrorKind::Invalid,
+                    "{source}"
+                );
+                // Existing policy/service callers still receive their previous
+                // normalized timestamp representation from the same frontend.
+                assert!(parse_yaml(&source).is_ok());
+            }
+        }
+        for (source, accepted) in [
+            ("credentials: [{expires_at: '2026-01-01T00:00:00Z'}]", true),
+            (
+                "credentials: [{expires_at: !!str 2026-01-01T00:00:00Z}]",
+                true,
+            ),
+            (
+                "ignored: 2026-01-01T00:00:00Z\ncredentials: [{extra: !!timestamp '2026-01-01'}]",
+                true,
+            ),
+            (
+                "ignored: &stamp 2026-01-01T00:00:00Z\ncredentials: [{expires_at: *stamp}]",
+                false,
+            ),
+            (
+                "ignored: &stamp '2026-01-01T00:00:00Z'\ncredentials: [{expires_at: *stamp}]",
+                true,
+            ),
+            (
+                "ignored: &record {expires_at: 2026-01-01T00:00:00Z}\ncredentials: [*record]",
+                false,
+            ),
+            (
+                "ignored: &records [{expires_at: 2026-01-01T00:00:00Z}]\ncredentials: *records",
+                false,
+            ),
+            (
+                "defaults: &d {expires_at: 2026-01-01T00:00:00Z}\ncredentials: [{<<: *d}]",
+                false,
+            ),
+            (
+                "defaults: &d {expires_at: 2026-01-01T00:00:00Z}\ncredentials: [{<<: *d, expires_at: '2027-01-01T00:00:00Z'}]",
+                true,
+            ),
+            (
+                "a: &a {expires_at: '2026-01-01T00:00:00Z'}\nb: &b {expires_at: 2026-01-01T00:00:00Z}\ncredentials: [{<<: [*a, *b]}]",
+                true,
+            ),
+            (
+                "a: &a {expires_at: '2026-01-01T00:00:00Z'}\nb: &b {expires_at: 2026-01-01T00:00:00Z}\ncredentials: [{<<: [*b, *a]}]",
+                false,
+            ),
+            (
+                "credentials: [{expires_at: 2026-01-01T00:00:00Z, expires_at: '2027-01-01T00:00:00Z'}]",
+                true,
+            ),
+            (
+                "credentials: [{extra: {expires_at: 2026-01-01T00:00:00Z}}]",
+                true,
+            ),
+        ] {
+            let result = parse_yaml_for_vault(source);
+            assert_eq!(result.is_ok(), accepted, "{source}");
+            if let Ok(value) = result {
+                assert_eq!(value, parse_yaml(source).unwrap());
+            }
+        }
+        for source in ["x: {<<: 2026-01-01}", "x: {<<: [2026-01-01]}"] {
+            assert_eq!(parse_yaml(source).unwrap_err().kind, ErrorKind::Invalid);
+            assert_eq!(
+                parse_yaml_for_vault(source).unwrap_err().kind,
+                ErrorKind::Invalid
+            );
+        }
     }
 
     #[test]

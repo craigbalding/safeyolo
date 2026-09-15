@@ -46,6 +46,160 @@ fn binding(agent: &str) -> ContractBinding {
 }
 
 #[test]
+fn legacy_optional_fields_get_stable_durable_identity_before_admission() {
+    for inline in [false, true] {
+        for omitted in 0..16 {
+            let mut fields = vec!["service='gmail'", "method='DELETE'", "path='/messages/*'"];
+            for (bit, field) in [
+                "grant_id='fixed'",
+                "created='2024-01-01T00:00:00Z'",
+                "expires='2024-01-01T01:00:00Z'",
+                "scope='once'",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if omitted & (1 << bit) == 0 {
+                    fields.push(field);
+                }
+            }
+            let source = if inline {
+                format!(
+                    "# keep\n[agents.alice]\ngrants=[{{{}}}]\n",
+                    fields.join(",")
+                )
+            } else {
+                format!("# keep\n[[agents.alice.grants]]\n{}\n", fields.join("\n"))
+            };
+            let (_directory, path, store) = setup(&source);
+            let normalized = fs::read_to_string(&path).unwrap();
+            assert!(normalized.starts_with("# keep"));
+            let listed = store.list_grants_for_agent("alice", now()).unwrap();
+            assert_eq!(listed.len(), 1);
+            let id = listed[0].grant.grant_id.clone();
+            assert!(normalized.contains(&id));
+            let lease = store
+                .check_grant(scope("alice"), now(), validate)
+                .unwrap()
+                .unwrap();
+            assert_eq!(lease.grant().grant_id, id);
+            store
+                .reload(now() + Duration::milliseconds(1), validate)
+                .unwrap();
+            assert!(
+                store
+                    .check_grant(scope("alice"), now() + Duration::milliseconds(2), validate)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                store
+                    .check_grant(scope("bob"), now(), validate)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                store
+                    .finish_response(
+                        lease,
+                        Some(200),
+                        now() + Duration::milliseconds(3),
+                        validate
+                    )
+                    .unwrap(),
+                ResponseOutcome::Consumed
+            );
+            assert!(
+                store
+                    .check_grant(scope("alice"), now() + Duration::milliseconds(4), validate)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                Store::open(path, now())
+                    .unwrap()
+                    .list_grants_for_agent("alice", now())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+}
+
+#[test]
+fn failed_legacy_normalization_does_not_publish_a_lease_or_partial_metadata() {
+    let (_directory, path, store) = setup(SOURCE);
+    let original = format!(
+        "{SOURCE}\n[[agents.alice.grants]]\nservice='gmail'\nmethod='DELETE'\npath='/messages/*'\n"
+    );
+    fs::write(&path, &original).unwrap();
+    let mut activations = 0;
+    let error = store
+        .check_grant(scope("alice"), now(), |_| {
+            activations += 1;
+            if activations == 1 {
+                Err("synthetic activation failure".into())
+            } else {
+                Ok(())
+            }
+        })
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, ErrorKind::Activation);
+    assert_eq!(activations, 2);
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    assert!(
+        store
+            .list_grants_for_agent("alice", now())
+            .unwrap()
+            .is_empty()
+    );
+    let lease = store
+        .check_grant(scope("alice"), now(), validate)
+        .unwrap()
+        .unwrap();
+    let id = lease.grant().grant_id.clone();
+    drop(lease);
+    assert!(store.revoke_grant("alice", &id, now(), validate).unwrap());
+    assert!(
+        Store::open(path, now())
+            .unwrap()
+            .list_grants_for_agent("alice", now())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn legacy_binding_ids_remain_revocable_across_restart() {
+    let source = "[agents.alice]\ncontract_bindings=[{service='gmail',capability='read_messages',bound_values={label='approved'}}]\n";
+    let (_directory, path, store) = setup(source);
+    let first = store
+        .binding_for_agent("alice", "gmail", "read_messages")
+        .unwrap()
+        .unwrap();
+    let restarted = Store::open(&path, now() + Duration::seconds(1)).unwrap();
+    let next = restarted
+        .binding_for_agent("alice", "gmail", "read_messages")
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.binding.binding_id, next.binding.binding_id);
+    assert_eq!(first.created, next.created);
+    assert!(
+        restarted
+            .revoke_binding("alice", &first.binding.binding_id, now(), validate)
+            .unwrap()
+    );
+    assert!(
+        Store::open(path, now())
+            .unwrap()
+            .binding_for_agent("alice", "gmail", "read_messages")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn scopes_have_default_ttl_and_explicit_durability() {
     let (_directory, path, store) = setup(SOURCE);
     for scope in [

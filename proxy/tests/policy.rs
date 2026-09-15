@@ -952,10 +952,10 @@ with tempfile.TemporaryDirectory() as directory:
         engine=PolicyEngine(baseline_path=path);engine._loader.stop_watcher();expiry.append(evaluate(engine,{'host':'x'}));engine.done()
     outputs['expiry']=expiry
     path=root/'lists.toml';path.write_text("[lists]\nfirst='first.txt'\nsecond='second.txt'\n[hosts]\n'*'={egress='prompt'}\n'$first'={egress='deny'}\n'$second'={egress='allow'}\n'explicit.test'={egress='allow'}\n")
-    (root/'first.txt').write_text('# comment\n0.0.0.0 explicit.test\n::1 shared.test\nblocked.test\nblocked.test\nlocalhost.localdomain\n')
+    (root/'first.txt').write_text('# comment\n0.0.0.0 explicit.test\n::1 shared.test\nblocked.test\nblocked.test\nlocalhost.localdomain\n\x1fleading.test\x1f\n0.0.0.0\x1fprefixed.test\n')
     (root/'second.txt').write_text('shared.test\nallowed.test\n')
     engine=PolicyEngine(baseline_path=path);engine._loader.stop_watcher()
-    list_hosts=['explicit.test','shared.test','blocked.test','allowed.test','new.test'];states=[]
+    list_hosts=['explicit.test','shared.test','blocked.test','allowed.test','new.test','leading.test','prefixed.test'];states=[]
     states.append([evaluate(engine,{'host':host}) for host in list_hosts])
     (root/'first.txt').write_text('new.test\n');assert engine._loader.reload()
     states.append([evaluate(engine,{'host':host}) for host in list_hosts])
@@ -1048,7 +1048,7 @@ json.dump(outputs,sys.stdout)
     let path = directory.path().join("lists.toml");
     std::fs::write(&path,"[lists]\nfirst='first.txt'\nsecond='second.txt'\n[hosts]\n'*'={egress='prompt'}\n'$first'={egress='deny'}\n'$second'={egress='allow'}\n'explicit.test'={egress='allow'}\n").unwrap();
     let first = directory.path().join("first.txt");
-    std::fs::write(&first,"# comment\n0.0.0.0 explicit.test\n::1 shared.test\nblocked.test\nblocked.test\nlocalhost.localdomain\n").unwrap();
+    std::fs::write(&first,"# comment\n0.0.0.0 explicit.test\n::1 shared.test\nblocked.test\nblocked.test\nlocalhost.localdomain\n\u{1f}leading.test\u{1f}\n0.0.0.0\u{1f}prefixed.test\n").unwrap();
     std::fs::write(
         directory.path().join("second.txt"),
         "shared.test\nallowed.test\n",
@@ -1061,6 +1061,8 @@ json.dump(outputs,sys.stdout)
         "blocked.test",
         "allowed.test",
         "new.test",
+        "leading.test",
+        "prefixed.test",
     ];
     let mut states = vec![
         queries
@@ -1091,5 +1093,603 @@ json.dump(outputs,sys.stdout)
         conditions.as_array().unwrap().len(),
         yaml_expiries.len(),
         queries.len() * states.len()
+    );
+}
+
+fn credential<'a>(
+    destination: &'a str,
+    kind: &'a str,
+    hmac: Option<&'a str>,
+) -> safeyolo_proxy::policy::CredentialRequest<'a> {
+    safeyolo_proxy::policy::CredentialRequest {
+        destination,
+        credential_type: kind,
+        credential_hmac: hmac,
+        path: "/v1/read",
+    }
+}
+
+fn gateway<'a>(
+    agent: &'a str,
+    method: &'a str,
+    path: &'a str,
+) -> safeyolo_proxy::policy::GatewayRequest<'a> {
+    safeyolo_proxy::policy::GatewayRequest {
+        service: "forge",
+        capability: "reader",
+        agent,
+        method,
+        path,
+    }
+}
+
+#[test]
+fn host_credentials_use_type_or_exact_hmac_and_do_not_invent_agent_context() {
+    let policy = Policy::parse(
+        r#"
+[hosts.'*']
+unknown_creds = 'deny'
+[hosts.'api.example']
+allow = ['OpenAI:*', 'hmac:exact']
+[agents.alice.hosts.'agent.example']
+allow = ['openai:*']
+"#,
+        Format::Toml,
+    )
+    .unwrap();
+    for (host, kind, hmac, effect) in [
+        ("api.example", "openai", None, Effect::Allow),
+        ("api.example", "other", Some("exact"), Effect::Allow),
+        ("api.example", "other", Some("EXACT"), Effect::Deny),
+        ("other.example", "openai", None, Effect::Deny),
+        ("agent.example", "openai", None, Effect::Deny),
+    ] {
+        assert_eq!(
+            policy
+                .evaluate_credential(credential(host, kind, hmac), 0.)
+                .unwrap()
+                .effect,
+            effect
+        );
+    }
+    // '*' credentials lists do not create a global credential allow rule.
+    let wildcard = Policy::parse("[hosts.'*']\nallow=['openai:*']", Format::Toml).unwrap();
+    assert_eq!(
+        wildcard
+            .evaluate_credential(credential("any", "openai", None), 0.)
+            .unwrap()
+            .effect,
+        Effect::Prompt
+    );
+}
+
+#[test]
+fn credential_budget_scope_is_atomic_across_hmacs_snapshots_and_action_counters() {
+    let source = json!({"budgets":{"credential:use":1,"network:request":1}, "permissions":[
+        {"action":"credential:use","resource":"*","effect":"budget","budget":1},
+        {"action":"network:request","resource":"*","effect":"budget","budget":1}
+    ]})
+    .to_string();
+    let policy = Policy::parse(&source, Format::Json).unwrap();
+    let new = policy
+        .reload_from_source_at(&source, Format::Json, 0.)
+        .unwrap();
+    assert_eq!(
+        policy
+            .evaluate_credential(credential("api", "openai", Some("first")), 0.)
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
+    assert_eq!(
+        new.evaluate_credential(credential("api", "openai", Some("second")), 0.)
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
+    assert_eq!(
+        new.evaluate_credential(credential("api", "openai", None), 0.)
+            .unwrap()
+            .effect,
+        Effect::BudgetExceeded
+    );
+    assert_eq!(
+        new.evaluate_credential(credential("other", "openai", None), 0.)
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
+    assert_eq!(
+        new.evaluate_credential(credential("api", "anthropic", None), 0.)
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
+    assert_eq!(
+        new.evaluate(request("api", Some("alice"), 443), 0., true)
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
+    assert_eq!(
+        new.evaluate(request("api", Some("bob"), 443), 0., true)
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
+    assert_eq!(
+        new.evaluate(request("api", Some("alice"), 443), 0., true)
+            .unwrap()
+            .effect,
+        Effect::BudgetExceeded
+    );
+    let concurrent = Policy::parse(&source, Format::Json).unwrap();
+    let allowed = std::thread::scope(|scope| {
+        let tasks: Vec<_> = (0..32)
+            .map(|_| {
+                scope.spawn(|| {
+                    concurrent
+                        .evaluate_credential(credential("api", "openai", None), 0.)
+                        .unwrap()
+                        .effect
+                })
+            })
+            .collect();
+        tasks
+            .into_iter()
+            .map(|task| task.join().unwrap())
+            .filter(|effect| *effect == Effect::Allow)
+            .count()
+    });
+    assert_eq!(allowed, 2);
+}
+
+#[test]
+fn gateway_generated_routes_replace_only_generated_rules_and_keep_method_context() {
+    use safeyolo_proxy::services::CompiledRoute;
+    let baseline = Policy::parse(&json!({"permissions":[
+        {"action":"gateway:request","resource":"forge:/v1/private","effect":"deny","condition":{"agent":"alice","method":"GET","capability":"reader"}},
+        {"action":"gateway:request","resource":"forge:/authored","effect":"allow","condition":{"agent":"alice"}}
+    ]}).to_string(), Format::Json).unwrap();
+    let routes = [CompiledRoute {
+        agent: "alice".into(),
+        service: "forge".into(),
+        capability: "reader".into(),
+        methods: vec!["GET".into()],
+        path: "/v1/**".into(),
+    }];
+    let policy = baseline.with_gateway_routes(&routes);
+    assert_eq!(
+        policy
+            .evaluate_gateway_request(gateway("alice", "GET", "/v1/private"))
+            .effect,
+        Effect::Deny
+    );
+    assert_eq!(
+        policy
+            .evaluate_gateway_request(gateway("alice", "GET", "/v1/open"))
+            .effect,
+        Effect::Allow
+    );
+    assert_eq!(
+        policy
+            .evaluate_gateway_request(gateway("bob", "GET", "/v1/open"))
+            .effect,
+        Effect::Deny
+    );
+    assert_eq!(
+        policy
+            .evaluate_gateway_request(gateway("alice", "POST", "/v1/open"))
+            .effect,
+        Effect::Deny
+    );
+    let replacement = policy.with_gateway_routes(&[]);
+    assert_eq!(
+        replacement
+            .evaluate_gateway_request(gateway("alice", "GET", "/v1/open"))
+            .effect,
+        Effect::Deny
+    );
+    assert_eq!(
+        replacement
+            .evaluate_gateway_request(gateway("alice", "GET", "/authored"))
+            .effect,
+        Effect::Allow
+    );
+    let wildcard = baseline.with_gateway_routes(&[CompiledRoute {
+        methods: vec!["*".into()],
+        ..routes[0].clone()
+    }]);
+    assert_eq!(
+        wildcard
+            .evaluate_gateway_request(gateway("alice", "GET", "/v1/open"))
+            .effect,
+        Effect::Deny
+    );
+    assert_eq!(
+        wildcard
+            .evaluate_gateway_request(gateway("alice", "*", "/v1/open"))
+            .effect,
+        Effect::Allow
+    );
+}
+
+#[test]
+fn gateway_conditions_preserve_missing_path_and_uncharged_budget() {
+    let path = Policy::parse(&json!({"permissions":[{"action":"gateway:request","resource":"*","effect":"allow","condition":{"path_prefix":"/v1"}}]}).to_string(), Format::Json).unwrap();
+    assert_eq!(
+        path.evaluate_gateway_request(gateway("alice", "GET", "/v1/read"))
+            .effect,
+        Effect::Deny
+    );
+    let budgets = Policy::parse(
+        &json!({"permissions":[
+            {"action":"gateway:request","resource":"*","effect":"budget","budget":1},
+            {"action":"gateway:risky_route","resource":"*","effect":"budget","budget":1}
+        ]})
+        .to_string(),
+        Format::Json,
+    )
+    .unwrap();
+    for _ in 0..5 {
+        assert_eq!(
+            budgets
+                .evaluate_gateway_request(gateway("alice", "GET", "/"))
+                .effect,
+            Effect::Budget
+        );
+        let risk = budgets.evaluate_risky_route(safeyolo_proxy::policy::RiskyRouteRequest {
+            service: "forge",
+            agent: "alice",
+            account: "agent",
+            tactics: &[],
+            enables: &[],
+            irreversible: false,
+            method: "GET",
+            path: "/",
+        });
+        assert_eq!(risk.effect, Effect::Budget);
+        assert_eq!(risk.budget_remaining, None);
+    }
+    for action in [
+        "network:request",
+        "credential:use",
+        "gateway:risky_route",
+        "gateway:request",
+    ] {
+        assert_eq!(
+            Policy::parse(
+                &json!({"permissions":[{"action":action,"resource":"*","effect":"warn"}]})
+                    .to_string(),
+                Format::Json
+            )
+            .unwrap_err()
+            .kind,
+            ErrorKind::Invalid
+        );
+    }
+}
+
+fn proxy_action_requests() -> Vec<Value> {
+    let mut requests = Vec::new();
+    for host in [
+        "api.example",
+        "sub.example",
+        "other",
+        "API.EXAMPLE",
+        "agent.example",
+    ] {
+        for kind in ["openai", "OPENAI", "other", ""] {
+            for hmac in [Value::Null, json!("exact"), json!("EXACT")] {
+                for path in ["/v1/read", "/private"] {
+                    requests.push(json!({"kind":"credential", "destination":host,"credential_type":kind,"credential_hmac":hmac,"path":path}));
+                }
+            }
+        }
+    }
+    for agent in ["alice", "bob", ""] {
+        for service in ["forge", "other"] {
+            for method in ["GET", "post", "*"] {
+                for path in [
+                    "/v1/read",
+                    "/v1/private",
+                    "/v1",
+                    "/V1/read",
+                    "//v1/%72ead",
+                    "/v1/../authored",
+                ] {
+                    requests.push(json!({"kind":"gateway","service":service,"capability":"reader","agent":agent,"method":method,"path":path}));
+                }
+                for (account, tactics, enables, irreversible, path) in [
+                    ("agent", vec![], vec![], false, "/v1/read"),
+                    (
+                        "personal",
+                        vec!["exfiltration"],
+                        vec!["write"],
+                        true,
+                        "/v1/private",
+                    ),
+                    ("personal", vec!["discovery"], vec![], false, "/v1/read"),
+                ] {
+                    requests.push(json!({"kind":"risk","service":service,"agent":agent,"account":account,"tactics":tactics,"enables":enables,"irreversible":irreversible,"method":method,"path":path}));
+                }
+            }
+        }
+    }
+    requests
+}
+
+fn proxy_action_scenarios() -> Vec<Value> {
+    let requests = proxy_action_requests();
+    let mut scenarios = vec![
+        json!({"document":{},"requests":requests}),
+        json!({"document":{"hosts":{"*":{"unknown_credentials":"deny"},"api.example":{"credentials":["OpenAI:*","hmac:exact"]},"*.example":{"credentials":"other:*"}},"agents":{"alice":{"hosts":{"agent.example":{"credentials":"*"}}}}},"requests":requests}),
+        json!({"document":{"hosts":{"*":{"credentials":["openai:*"],"rules":[{"action":"credential:use","resource":"api.example/*","effect":"deny","condition":{"path_prefix":"/private"}}]}},"gateway":{"risk_appetite":[{"agent":"alice","irreversible":true,"decision":"deny"},{"tactics":["discovery"],"account":"personal","decision":"allow"},{"service":"forge","method":"POST","path_prefix":"/never","decision":"allow"}]}},"requests":requests}),
+        json!({"document":{"permissions":[
+            {"action":"network:request","resource":"*","effect":"deny"},
+            {"action":"credential:use","resource":"api.example/*","effect":"allow","condition":{"credential":"openai:*"}},
+            {"action":"credential:use","resource":"*","effect":"deny"},
+            {"action":"gateway:risky_route","resource":"*","effect":"deny","condition":{"agent":"alice","irreversible":true}},
+            {"action":"gateway:risky_route","resource":"*","effect":"allow","condition":{"method":"GET","path_prefix":"/v1","account":["agent"]}},
+            {"action":"gateway:request","resource":"forge:/v1/**","effect":"allow","condition":{"agent":"alice","capability":"reader","method":["GET"]}},
+            {"action":"gateway:request","resource":"forge:/v1/private","effect":"deny","condition":{"agent":"alice"}}
+        ]},"task":{"permissions":[{"action":"network:request","resource":"api.example/*","effect":"deny","condition":{"method":"GET"}},{"action":"gateway:request","resource":"forge:/*","effect":"prompt","condition":{"agent":"bob"}}]},"requests":requests}),
+    ];
+    // Every Condition field is exercised against each action's actual supplied
+    // context, rather than a reconstructed all-fields context.
+    for condition in [
+        json!({"credential":"openai:*"}),
+        json!({"credential":["hmac:exact", "other:*"]}),
+        json!({"credential":"hmac:"}),
+        json!({"method":"GET"}),
+        json!({"method":"*"}),
+        json!({"method":""}),
+        json!({"port":443}),
+        json!({"path_prefix":"/v1"}),
+        json!({"path_prefix":""}),
+        json!({"content_type":"json"}),
+        json!({"content_type":""}),
+        json!({"tactics":["exfiltration"]}),
+        json!({"tactics":[]}),
+        json!({"enables":["write"]}),
+        json!({"irreversible":true}),
+        json!({"irreversible":false}),
+        json!({"account":["agent", "personal"]}),
+        json!({"account":""}),
+        json!({"agent":"alice"}),
+        json!({"agent":"*"}),
+        json!({"agent":""}),
+        json!({"service":"f*"}),
+        json!({"service":""}),
+        json!({"capability":"reader"}),
+        json!({"capability":"*"}),
+    ] {
+        scenarios.push(json!({"document":{"permissions":[
+            {"action":"credential:use","resource":"*","effect":"allow","condition":condition},
+            {"action":"gateway:risky_route","resource":"*","effect":"deny","condition":condition},
+            {"action":"gateway:request","resource":"*","effect":"allow","condition":condition}
+        ]},"requests":requests}));
+    }
+    let service = "schema_version: 1\nname: forge\ncapabilities:\n  reader:\n    routes:\n      - {methods: [GET], path: '/v1/**'}\n      - {methods: ['*'], path: '/authored'}\n";
+    scenarios.push(json!({"service_yaml":service,"document":{"hosts":{"*":{"rules":[{"action":"gateway:request","resource":"forge:/v1/private","effect":"deny","condition":{"agent":"alice","capability":"reader","method":["GET"]}}]}},"agents":{"alice":{"services":{"forge":{"capability":"reader"}}}}},"requests":requests}));
+    // A task can replace exact candidates only for the same action; inferred
+    // entries still shadow the baseline exact key, as in the existing index.
+    scenarios.push(json!({"document":{"permissions":[
+        {"action":"credential:use","resource":"api.example/*","effect":"allow","condition":{"credential":"openai:*"}},
+        {"action":"credential:use","resource":"*","effect":"deny"},
+        {"action":"gateway:risky_route","resource":"*","effect":"allow"}
+    ]},"task":{"permissions":[
+        {"action":"credential:use","resource":"api.example/*","effect":"allow","tier":"inferred","condition":{"path_prefix":"/private"}},
+        {"action":"gateway:risky_route","resource":"*","effect":"deny","condition":{"irreversible":true}}
+    ]},"requests":requests}));
+    for effect in ["allow", "deny", "prompt", "budget"] {
+        scenarios.push(
+            json!({"document":{"budgets":{"credential:use":1,"network:request":1},"permissions":[
+            {"action":"credential:use","resource":"*","effect":effect,"budget":1},
+            {"action":"gateway:risky_route","resource":"*","effect":effect,"budget":1},
+            {"action":"gateway:request","resource":"*","effect":effect,"budget":1}
+        ]},"requests":requests}),
+        );
+    }
+    scenarios
+}
+
+fn evaluate_proxy_action(policy: &Policy, request: &Value) -> Value {
+    use safeyolo_proxy::policy::{CredentialRequest, GatewayRequest, RiskyRouteRequest};
+    let field = |name| request[name].as_str().unwrap();
+    let decision = match field("kind") {
+        "credential" => policy
+            .evaluate_credential(
+                CredentialRequest {
+                    credential_type: field("credential_type"),
+                    destination: field("destination"),
+                    path: field("path"),
+                    credential_hmac: request["credential_hmac"].as_str(),
+                },
+                1000000.,
+            )
+            .unwrap(),
+        "gateway" => policy.evaluate_gateway_request(GatewayRequest {
+            service: field("service"),
+            capability: field("capability"),
+            agent: field("agent"),
+            method: field("method"),
+            path: field("path"),
+        }),
+        "risk" => policy.evaluate_risky_route(RiskyRouteRequest {
+            service: field("service"),
+            agent: field("agent"),
+            account: field("account"),
+            method: field("method"),
+            path: field("path"),
+            tactics: &serde_json::from_value::<Vec<String>>(request["tactics"].clone()).unwrap(),
+            enables: &serde_json::from_value::<Vec<String>>(request["enables"].clone()).unwrap(),
+            irreversible: request["irreversible"].as_bool().unwrap(),
+        }),
+        other => panic!("unknown request kind {other}"),
+    };
+    json!({"effect":decision.effect,"budget_remaining":decision.budget_remaining})
+}
+
+#[test]
+#[ignore = "historical Python oracle; set SAFEYOLO_POLICY_PYTHON"]
+fn credential_risk_and_gateway_matrix_matches_production_engine() {
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+    let scenarios = proxy_action_scenarios();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let script = r#"
+import json, pathlib, sys, tempfile
+from unittest.mock import patch
+from safeyolo.policy.engine import PolicyEngine
+from safeyolo.policy.models import Permission
+from pydantic import ValidationError
+for action in ['network:request','credential:use','gateway:risky_route','gateway:request']:
+    try: Permission(action=action,resource='*',effect='warn')
+    except ValidationError: pass
+    else: raise AssertionError('warn unexpectedly admitted')
+outputs=[]
+for scenario in json.load(sys.stdin):
+    with tempfile.TemporaryDirectory() as directory:
+        path=pathlib.Path(directory)/'policy.json'
+        path.write_text(json.dumps(scenario['document']))
+        registry=None
+        if 'service_yaml' in scenario:
+            from safeyolo.core.service_loader import ServiceRegistry
+            service_dir=pathlib.Path(directory)/'services';service_dir.mkdir()
+            (service_dir/'forge.yaml').write_text(scenario['service_yaml'])
+            registry=ServiceRegistry(service_dir,builtin_dir=pathlib.Path(directory)/'no-builtins')
+            registry.load(strict=True)
+        with patch('safeyolo.policy.compiler._get_service_registry',return_value=registry):
+            engine=PolicyEngine(baseline_path=path)
+        engine._loader.stop_watcher()
+        if 'task' in scenario:
+            task=pathlib.Path(directory)/'task.json'
+            task.write_text(json.dumps(scenario['task']))
+            assert engine.load_task_policy(task)
+        decisions=[]
+        for row in scenario['requests']:
+            row=dict(row)
+            kind=row.pop('kind')
+            with patch('safeyolo.policy.budget_tracker.time.time',return_value=1000):
+                if kind=='credential': result=engine.evaluate_credential(**row)
+                elif kind=='gateway': result=engine.evaluate_gateway_request(**row)
+                else: result=engine.evaluate_risky_route(**row)
+            decisions.append({'effect':result.effect,'budget_remaining':result.budget_remaining})
+        outputs.append(decisions)
+        engine.done()
+json.dump(outputs,sys.stdout)
+"#;
+    let mut child = Command::new(
+        std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
+    )
+    .arg("-c")
+    .arg(script)
+    .env(
+        "PYTHONPATH",
+        format!("{}:{}", root.join("cli/src").display(), root.display()),
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+    let input = serde_json::to_vec(&scenarios).unwrap();
+    // The finite matrix can exceed a pipe buffer while Python emits its output.
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || stdin.write_all(&input).unwrap());
+    let output = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected: Value = serde_json::from_slice(&output.stdout).unwrap();
+    for (index, scenario) in scenarios.iter().enumerate() {
+        let mut policy = Policy::parse(&scenario["document"].to_string(), Format::Json).unwrap();
+        if let Some(source) = scenario.get("service_yaml").and_then(Value::as_str) {
+            use safeyolo_proxy::services::{ServiceDefinition, TokenBinding, compile_routes};
+            let service = ServiceDefinition::from_yaml(source).unwrap();
+            let routes = compile_routes(
+                &service,
+                &TokenBinding {
+                    token: "synthetic".into(),
+                    agent: "alice".into(),
+                    service: "forge".into(),
+                    capability: "reader".into(),
+                    vault_token: String::new(),
+                    account: "agent".into(),
+                },
+                &[],
+            );
+            policy = policy.with_gateway_routes(&routes);
+        }
+        if let Some(task) = scenario.get("task") {
+            policy = policy
+                .with_task_source(&task.to_string(), Format::Json)
+                .unwrap();
+        }
+        for (number, request) in scenario["requests"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(
+                evaluate_proxy_action(&policy, request),
+                expected[index][number],
+                "scenario {index}, request {number}: {request}; document {}",
+                scenario["document"]
+            );
+        }
+    }
+    let count: usize = scenarios
+        .iter()
+        .map(|scenario| scenario["requests"].as_array().unwrap().len())
+        .sum();
+    eprintln!(
+        "Credential/risk/gateway Python oracle: {count} requests across {} documents",
+        scenarios.len()
+    );
+}
+
+#[test]
+fn host_list_python_whitespace_cannot_drop_a_denial() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("policy.toml");
+    std::fs::write(
+        &path,
+        "[lists]\nblocked='blocked.txt'\n[hosts]\n'*'={egress='allow'}\n'$blocked'={egress='deny'}",
+    )
+    .unwrap();
+    // CPython str.isspace's 29 characters, fixed independently of Rust's predicate.
+    let whitespace: Vec<_> = "\t\n\u{b}\u{c}\r\u{1c}\u{1d}\u{1e}\u{1f} \u{85}\u{a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}".chars().collect();
+    let mut data = String::new();
+    for (index, character) in whitespace.iter().enumerate() {
+        data.push_str(&format!("{character}leading{index}.example{character}\n0.0.0.0{character}prefixed{index}.example\n"));
+    }
+    std::fs::write(directory.path().join("blocked.txt"), data).unwrap();
+    let policy = Policy::from_path(&path).unwrap();
+    for index in 0..whitespace.len() {
+        for prefix in ["leading", "prefixed"] {
+            assert_eq!(
+                policy
+                    .evaluate(
+                        request(&format!("{prefix}{index}.example"), None, 443),
+                        0.,
+                        false
+                    )
+                    .unwrap()
+                    .effect,
+                Effect::Deny
+            );
+        }
+    }
+    assert_eq!(
+        policy
+            .evaluate(request("unlisted.example", None, 443), 0., false)
+            .unwrap()
+            .effect,
+        Effect::Allow
     );
 }

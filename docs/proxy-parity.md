@@ -265,11 +265,17 @@ silently reduce accepted message sizes to a library default.
 | D15 | The Python expiry loader prunes only global hosts. An agent-scoped one-day denial remains active after its timestamp, including at reload. | Native load/reload and durable pruning honor expiry for agent hosts too. Tests explicitly identify this behavior change and verify agent/port scope and preserved reload budgets. There is no new clock-driven reload timer. |
 | D16 | Contract enforcement compares raw query keys before decoding. `name=chosen&%6Eame=forbidden` passes a binding to `chosen`, while an origin receives both decoded values and can select `forbidden`. | Native contract enforcement rejects duplicate decoded keys as ambiguous encoding. A controlled origin proves the old bypass; differential tests identify the intentional rejection. Requests outside service contracts retain their query behavior. |
 | D17 | Rust CONNECT metadata used the routing defaults `http` and `/`; production supplies an empty scheme and path. Slash-path conditions could therefore reverse CONNECT allow/deny decisions. | Repair `8413219` preserves authority-form metadata. Paired live tests prove both conditional allow and deny outcomes and no origin contact; the adapter validates the target form. |
-| D18 | The initial native service YAML loader silently dropped merged binding constraints, allowing a forbidden value or an unbound operation. | Services now use the shared structural YAML frontend, including merge-list and explicit-key precedence. Native route-selection tests reject mismatched and unresolved values. The repair still requires independent acceptance. |
-| D19 | The initial Rust HTTPS path canceled upgraded connections immediately at shutdown, truncating an active response that plain HTTP would drain. | Inner HTTP receives the listener shutdown signal and drains active responses under the existing ten-second listener deadline. Idle TLS handshakes cancel promptly. A controlled TLS stream delivers its final bytes after shutdown begins; independent recheck remains required. |
-| D20 | Native JSON parsing rounded integers larger than `u64` to floating point. Different integer IDs could falsely satisfy a service `equals_var` binding. | JSON integers retain their exact decimal values; integer/float comparison uses the float's represented value. Strict body parsing also keeps authored private-number-marker objects as objects. The expanded contract oracle covers 2,218 outcomes, with only D16's 16 expected differences; independent recheck remains required. |
+| D18 | The initial native service YAML loader silently dropped merged binding constraints, allowing a forbidden value or an unbound operation. | Services now use the shared structural YAML frontend, including merge-list and explicit-key precedence. Native route-selection tests reject mismatched and unresolved values. Independent review confirmed the repair at `cc859353`. |
+| D19 | The initial Rust HTTPS path canceled upgraded connections immediately at shutdown, truncating an active response that plain HTTP would drain. | Inner HTTP receives the listener shutdown signal and drains active responses under the existing ten-second listener deadline. Idle TLS handshakes cancel promptly. Independent review at `cc859353` confirmed that a paused TLS response delivers its final bytes after shutdown begins. |
+| D20 | Native JSON parsing rounded integers larger than `u64` to floating point. Different integer IDs could falsely satisfy a service `equals_var` binding. | JSON integers retain their exact decimal values; integer/float comparison uses the float's represented value. Strict body parsing also keeps authored private-number-marker objects as objects. The expanded contract oracle covers 2,218 outcomes, with only D16's 16 expected differences. Independent numeric and contract rechecks passed at `cc859353`. |
 | D21 | Python can admit two risky requests using the same once grant before either receives a response. | Native grants reserve one request at a time, release on failure/cancellation, and consume after a successful response. A controlled Python oracle proves the old reuse; native concurrency and stale-lease tests enforce one reservation. Reservations remain process-local, without an exactly-once side-effect claim across persistence failure and restart. |
 | D22 | Python tomlkit persists integers beyond TOML's signed 64-bit range exactly; the native TOML library rejects them. | JSON/YAML preserve large integers, but native TOML binding persistence and reload still reject out-of-range integers before publication. Previous state remains intact. This is an unresolved retained-workflow gap before activation, not a deliberate removal. |
+| D23 | Independent review at `cc859353` found that missing legacy grant IDs or creation times regenerate during each transaction. A held once reservation can disappear, allowing a second admission. Missing binding IDs also make revocation unstable. | The native store now persists generated defaults under the existing policy file lock before publishing the initial snapshot, and normalizes later legacy additions inside the transaction. Tests cover all combinations of missing grant fields, both TOML array forms, restart, consumption and rollback. Independent recheck remains required. |
+| D24 | Rust's whitespace predicate omits four control characters that Python strips from host-list lines. A listed denial can therefore fall through to an allow rule. | The list reader now uses Python's whitespace set, including U+001C–U+001F. A 29-character denial matrix and live Python list-reload comparisons cover the repair; independent recheck remains required. |
+| D25 | The production HTTP/2 tunnel overwrites policy host/port with the admitted CONNECT destination while forwarding a changed inner `:authority`. A forbidden hostname or another port can inherit the tunnel's permission. | Rust pins the inner authority and any Host header to the admitted host/port. Paired tests retain the old bypass as two strict expected failures and verify no application request reaches either controlled origin after native rejection. The old stack sends a protocol error for Host disagreement; native returns 400. |
+| D26 | Production TLS protocol negotiation depends on the origin. Rust negotiates HTTP/2 with a capable client before opening an origin connection and can translate that request to an HTTP/1 origin. | Paired tests verify delivered requests for HTTP/2-only and HTTP/1-only origins. The negotiation difference is explicit; no-ALPN traffic and cleartext UDS still use HTTP/1. Upstream protocol selection follows verified TLS negotiation, without fallback after a TLS or parser error. |
+| D27 | Python's vault mutates live state before saving and can partially replace it during malformed reload. It also ignores an altered salt on live reload. | Native vault mutations and reload publish only a complete valid candidate, with encrypted-file rollback on activation failure. A changed salt requires unlock. Cross-runtime tests preserve existing encrypted data and no-TTL Fernet behavior. Independent writers still have no cross-process merge guarantee. |
+| D28 | Independent full-production tests allow CONNECT but deny the inner GET. A complete HTTP request or TLS ClientHello stays inspected and returns 403. Sending a short first fragment can instead select raw TCP, delivering the same forbidden GET to the origin. One- or two-byte ClientHello fragments and several incomplete HTTP prefixes reproduce the bypass. | The forthcoming native opaque classifier must retain undecidable prefixes across reads. Packet boundaries, delay and TLS/HTTP parser failures must not select an inspection exemption. The current TLS-only native CONNECT path has no such raw fallback; M5 acceptance must retain this negative regression when opaque support is added. |
 
 ## Deletion map and evidence still required
 
@@ -408,8 +414,11 @@ interception endpoint using the existing CA. SNI and inner HTTP authority cannot
 change the admitted destination. Each inner request runs policy before opening
 its origin connection. Upstream TLS verifies names and trust chains, including
 through a configured parent's CONNECT tunnel. TLS failure never selects an opaque
-fallback. HTTP/2, TLS passthrough, opaque CONNECT and WebSocket handling remain
-required; this HTTP/1 HTTPS slice is not M4/M5 acceptance.
+fallback. Negotiated HTTP/2 streams retain connection identity and independent
+request IDs. Native tests cover response cancellation and shutdown drain; paired
+tests cover concurrent agents, protocol negotiation and authority rejection.
+TLS passthrough, opaque CONNECT and WebSocket handling remain required; this
+HTTPS slice is not M4/M5 acceptance.
 
 The native [network policy](../proxy/src/policy.rs),
 [approval persistence](../proxy/src/approvals.rs),
@@ -422,9 +431,15 @@ condition defaults follow the existing loader and evaluation context. The shared
 YAML frontend retains scalar style and merge precedence. Native
 [service grants and bindings](../proxy/src/grants.rs) preserve persisted scopes,
 configured TTLs, session lifetime, scoped mutations and rollback; once grants
-add the reservation repair in D21. These modules remain inactive in transport.
-Complete credential and risky-route decisions, TOML's large-integer gap, and
-JSON body compatibility beyond the tested UTF-8 encodings still require work.
+add the reservation repair in D21 and stable legacy defaults in D23. The same
+policy matcher now evaluates credential use, risky routes and service calls;
+9,870 additional Python comparisons cover the existing contexts and effects.
+The native [encrypted vault](../proxy/src/credentials.rs) reads and writes the
+existing format without credential re-entry. Its secret type requires explicit
+access and cannot be serialized into routine metadata. These modules remain
+inactive in transport. Injection, OAuth refresh execution, complete control
+integration, TOML's large-integer gap, and JSON body compatibility beyond the
+tested UTF-8 encodings still require work.
 Declared state and response-validator tiers are not promoted to implemented
 enforcement.
 
