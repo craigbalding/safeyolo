@@ -237,7 +237,7 @@ plaintext. If the implementation declines the extension, record the transport
 change and test retained clients and servers. Compression-dependent workflows
 remain a gap until proven or deliberately resolved.
 
-The inactive native [WebSocket module](../proxy/src/websocket.rs) uses
+The native [WebSocket module](../proxy/src/websocket.rs) uses
 tungstenite 0.30.0's frame-header and handshake helpers with flate2 1.1.10
 and its explicit zlib-rs 0.6.7 backend. Its own message assembly retains
 compression state across control frames and spills payloads and fragment indexes
@@ -253,13 +253,39 @@ extension negotiation and RFC 7692 final-block examples. Receive failures return
 content-free categories for protocol errors (1002), invalid payloads (1007),
 transport loss and local storage failure (1011). Thirteen malformed-frame cases
 match the Python close-code oracle. Storage failure cannot yield a partial
-message. The module is not yet
-wired into HTTP upgrades, connection shutdown, or production evidence. These
-library checks do not establish a working native WS/WSS proxy.
+message.
+
+The development [relay](../proxy/src/websocket_relay.rs) connects this codec to
+HTTP/1 upgrades, including intercepted HTTPS. It retains listener identity and
+the admitted destination, applies current scanner rules to each complete
+message, and preserves separate outgoing compression dictionaries after drops.
+An optional `inspection` object in the development configuration names the
+existing policy file and request/response blocking flags. A successful reload
+updates existing sessions; an invalid candidate retains the previous runtime.
+This does not replace the production configuration or evidence interfaces.
+
+The paired [wire fixture](../tests/proxy_migration/test_websocket_contract.py)
+passed 104 Rust cases on Linux aarch64. Python passed 84 cases and reproduced
+16 strict expected failures for D32. The matrix includes WS/WSS, text/binary,
+compression and control frames, directional blocking, denied handshakes with
+zero origin contact, reload retention, data followed immediately by Close,
+protocol-error codes and shutdown. Four native lifecycle cases also verify
+pending-message spool removal and cancellation of an executing VM search after
+peer Close or shutdown. The old fixture uses actual Python addons
+and policy code in a focused chain. These owner-run comparisons establish that
+development path; they do not establish complete production-chain acceptance.
+
+On closure, writers drain admitted messages before sending Close. Scanner VM
+cancellation is per session, and the relay waits for running inspection before
+reporting a clean drain. The existing ten-second closure grace can expire when
+an opaque regex-library search does not return. Such delegated searches remain
+a cancellation limitation. Content-free development events report message and
+session outcomes; production traffic capture, evidence access and storage
+failure integration still require work.
 
 tungstenite, flate2 and memmap2 declare MIT or Apache-2.0 licenses; zlib-rs
 declares Zlib. The scanner candidate uses MIT-licensed fancy-regex 0.19.2.
-Its Python-regex compatibility remains an activation blocker described in D33.
+Its Python-regex compatibility remains a production blocker described in D33.
 
 Required wire fixtures cover fragmentation across pattern boundaries, text
 and binary directions, masked frames, subprotocols, compressed messages,
@@ -303,8 +329,8 @@ silently reduce accepted message sizes to a library default.
 | D29 | The dependency's ignore matcher considers the target, connected address, inner Host and TLS SNI. The native development path currently matches canonical configured target entries and direct destination IPv4 ranges. | Exact-host/port, builtin and CIDR selection, original TLS certificates and removal at reload are implemented. CLI normalization is still required for noncanonical host input. SNI/Host alias matching and parent-address exemption semantics remain an unresolved compatibility boundary before activation; this narrower development matcher is not full passthrough acceptance. |
 | D30 | Independent review at `d2f154b3` found that native vault decoding rejects Python's accepted empty `credentials` mapping/string and floating-zero root values. A live reload therefore retains a credential that Python removes. | The decoder now accepts those empty representations and clears the active snapshot. A ten-case Python unlock/reload comparison also retains errors for null, numeric and nonempty invalid credential containers. Independent recheck passed at `682f622c`. |
 | D31 | Independent review at `682f622c` found that both implementations classify any client prefix `SSH` as opaque. Valid HTTP methods such as `SSH`, `SSHGET` and `SSH-EXT` therefore bypass an explicit inner denial. | Native classification no longer treats three letters as a protocol exemption. Fragmented extension methods stay inspected. An identification line with a comment remains undecided until its first line finishes; HTTP request-line syntax takes precedence when ambiguous. Independent recheck passed at `06d7282c`, including 20 denied requests, 12 identification-line cases and real SSH. D35 records a separate whitespace finding. |
-| D32 | Independent full-production WebSocket tests found that a control frame between compressed fragments resets the Python dependency's message compression flag. All 24 direct controls deliver exact bytes; eight proxy cases fail, covering Ping/Pong in both text/binary directions. Text closes with 1007; binary silently delivers incorrect bytes. | The native message reader keeps compression state until the data message finishes. Independent codec recheck at `19ff784e` passed all 24 wire cases, including exact re-encoding. Full native WS/WSS transport remains required; this source defect is not a compatibility requirement. |
-| D33 | fancy-regex does not reproduce all accepted Python regular expressions. Proven gaps include scoped ASCII flags, Unicode-name escapes and Turkish-I folding. Its original private one-million-entry stack limit also makes `(a\|aa)*\1$` fail on 1,000,100 `a` bytes where Python matches. The scanner's existing error rule then drops even a log-mode message. | A [pinned MIT source patch](../proxy/vendor/fancy-regex/SAFEYOLO.md) removes that private cutoff with fallible VM growth and releases per-search buffers. Python/native log-mode matches now agree at 1,000,100 bytes, 4 MiB and 8 MiB. Allocation-failure recovery is tested. The scanner remains inactive: grammar, Unicode/backreference, nesting, cancellation and HTTP decoding gaps still require resolution before production acceptance. No message cap was added to hide those differences. |
+| D32 | Independent full-production WebSocket tests found that a control frame between compressed fragments resets the Python dependency's message compression flag. All 24 direct controls deliver exact bytes; eight proxy cases fail, covering Ping/Pong in both text/binary directions. Text closes with 1007; binary silently delivers incorrect bytes. | The native message reader keeps compression state until the data message finishes. Independent codec recheck at `19ff784e` passed all 24 wire cases, including exact re-encoding. The owner-run paired WS/WSS fixture now reproduces 16 old-proxy failures and passes every native counterpart. Complete native production-chain evidence remains required; this source defect is not a compatibility requirement. |
+| D33 | fancy-regex does not reproduce all accepted Python regular expressions. Proven gaps include scoped ASCII flags, Unicode-name escapes and Turkish-I folding. Its original private one-million-entry stack limit also makes `(a\|aa)*\1$` fail on 1,000,100 `a` bytes where Python matches. The scanner's existing error rule then drops even a log-mode message. | A [pinned MIT source patch](../proxy/vendor/fancy-regex/SAFEYOLO.md) removes that private cutoff with fallible VM growth and releases per-search buffers. Python/native log-mode matches now agree at 1,000,100 bytes, 4 MiB and 8 MiB. Allocation-failure recovery is tested. The scanner runs on the development WS/WSS path; grammar, Unicode/backreference, nesting, delegated-search cancellation and HTTP decoding gaps still require resolution before production acceptance. No message cap was added to hide those differences. |
 | D34 | The native approval-key JSON helper copied U+007F directly while Python escapes it. A legacy trusted identity containing DEL therefore groups under a different approval key. | The ASCII fast path now escapes DEL. Independent recheck at `19ff784e` passed all 128 ASCII identities plus mixed Unicode cases. The actual guard oracle covers the accepted legacy identity source; UDS listener-name validation remains unchanged. |
 | D35 | Independent review at `06d7282c` found that method tokens followed by HTAB, VT or FF select opaque CONNECT. An actual HTTP origin accepts those separators and receives a GET that inner policy denies. Direct and Python controls reproduce the behavior. | Native classification now keeps HTTP-like whitespace separators on the HTTP path. Hyper may reject the spelling with 400, but rejection cannot grant opaque transport. SSH identification waits for a complete first line and still gives HTTP request-line syntax precedence. Independent recheck at `19ff784e` passed 33 separator cases without origin application requests, plus the prior HTTP-method and SSH identification cases. D36 records the separate leading-whitespace finding. |
 | D36 | Independent review at `19ff784e` found that whitespace before the HTTP method still selects opaque CONNECT. An actual Python HTTP origin accepts ten leading separators and receives a GET that inner policy denies. | Initial classification now keeps the same whitespace set on the HTTP parser's path. Independent recheck at `583d8978` passed 48 whitespace/fragment cases without forbidden origin requests, plus passthrough and real SSH. Native regression cases require a terminal 400 and zero application bytes, including one-byte and three-byte prefixes. The original Python proxy failures remain explicit comparisons. |
@@ -462,8 +488,9 @@ after network admission. Other recognized opaque traffic also retains arbitrary
 permitted destination ports, full duplex and independent half-close. Tunnel
 events report transferred bytes and actual termination, without claiming SSH
 authentication or inspected payloads. Fragmented protocol prefixes remain on
-their validating path. WebSocket handling, D29's passthrough boundary and complete
-control/evidence integration remain required; this is not M4/M5 acceptance.
+their validating path. Production WebSocket integration, D29's passthrough
+boundary and complete control/evidence integration remain required; this is not
+M4/M5 acceptance.
 
 The native [network policy](../proxy/src/policy.rs),
 [approval persistence](../proxy/src/approvals.rs),
@@ -510,9 +537,10 @@ The inactive [network guard](../proxy/src/network_guard.rs) returns existing
 warn/block responses and approval/audit intents around the same native policy
 matcher. Its generated [Unicode data](../proxy/data/network_guard/README.md)
 pins the shipped detector and Python 3.12 sanitizer, with an exhaustive scalar
-oracle. The inactive [pattern scanner](../proxy/src/inspection.rs) preserves
-rule order, directional options, bounded URL inspection and complete-message
-decisions within its documented regex compatibility scope. Neither module
+oracle. The [pattern scanner](../proxy/src/inspection.rs) preserves rule order,
+directional options, bounded URL inspection and complete-message decisions
+within its documented regex compatibility scope. The scanner runs in the
+development WS/WSS relay; HTTP inspection remains unwired. Neither module
 removes the temporary Python adapter or establishes production control parity.
 
 The inactive [credential guard](../proxy/src/credential_guard.rs) uses that same

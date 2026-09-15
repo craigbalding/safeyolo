@@ -152,6 +152,9 @@ impl Destination {
             .scheme_str()
             .unwrap_or(tunnel.map_or("http", |tunnel| tunnel.scheme.as_str()))
             .to_owned();
+        if scheme.eq_ignore_ascii_case("ws") || scheme.eq_ignore_ascii_case("wss") {
+            return Err("WebSocket proxy requests require an HTTP URL".into());
+        }
         let port =
             crate::config::authority_port(&authority, if scheme == "https" { 443 } else { 80 })?;
         if let Some(tunnel) = tunnel
@@ -435,15 +438,14 @@ async fn forward(
         return Ok((
             response(
                 status,
-                "Local endpoint is not implemented in the Rust M2 slice",
+                "Local endpoint is not implemented in the development proxy",
             ),
             "local".into(),
         ));
     }
-    if (request.method() == Method::CONNECT && upgrades.is_none())
+    if (request.method() == Method::CONNECT && (upgrades.is_none() || tunnel.is_some()))
         || !matches!(destination.scheme.as_str(), "http" | "https")
         || (destination.scheme == "https" && runtime.certificate_authority.is_none())
-        || request.headers().contains_key(header::UPGRADE)
     {
         return Ok((
             response(
@@ -593,7 +595,37 @@ async fn forward(
         });
         return Ok((Response::new(full(Bytes::new())), decision.decision));
     }
+    let websocket = if request.headers().contains_key(header::UPGRADE) {
+        if upgrades.is_none() {
+            return Ok((
+                response(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "WebSocket upgrade is unavailable on this connection",
+                ),
+                "unsupported".into(),
+            ));
+        }
+        match crate::websocket::Handshake::request(&mut request) {
+            Ok(handshake) => Some((handshake, hyper::upgrade::on(&mut request))),
+            Err(_) => {
+                return Ok((
+                    response(StatusCode::BAD_REQUEST, "Invalid WebSocket handshake"),
+                    "invalid".into(),
+                ));
+            }
+        }
+    } else {
+        None
+    };
     strip_hop_headers(request.headers_mut());
+    if websocket.is_some() {
+        request
+            .headers_mut()
+            .insert(header::CONNECTION, "Upgrade".parse()?);
+        request
+            .headers_mut()
+            .insert(header::UPGRADE, "websocket".parse()?);
+    }
     for name in ["x-safeyolo-request-id", "x-safeyolo-trace"] {
         request.headers_mut().remove(name);
     }
@@ -625,7 +657,7 @@ async fn forward(
     } else {
         destination.path.parse::<Uri>()?
     };
-    let (upstream, connection) = if outbound.http2 {
+    let (mut upstream, connection) = if outbound.http2 {
         // :authority carries the admitted destination. Avoid retaining a second
         // authority representation while translating a proxied request.
         request.headers_mut().remove(header::HOST);
@@ -646,12 +678,55 @@ async fn forward(
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake(TokioIo::new(outbound.stream)).await?;
         let connection = HttpTask(tokio::spawn(async move {
-            if let Err(error) = connection.await {
+            if let Err(error) = connection.with_upgrades().await {
                 eprintln!("upstream HTTP connection: {error}");
             }
         }));
         (sender.send_request(request).await?, connection)
     };
+    if upstream.status() == StatusCode::SWITCHING_PROTOCOLS {
+        let Some((handshake, client_upgrade)) = websocket else {
+            return Err("unexpected upstream protocol switch".into());
+        };
+        let negotiated = handshake.response(&upstream)?;
+        let server_upgrade = hyper::upgrade::on(&mut upstream);
+        let (mut parts, _) = upstream.into_parts();
+        strip_hop_headers(&mut parts.headers);
+        parts.headers.insert(header::CONNECTION, "Upgrade".parse()?);
+        parts.headers.insert(header::UPGRADE, "websocket".parse()?);
+        let upgrades = upgrades.ok_or("WebSocket upgrade owner unavailable")?;
+        let mut stop = upgrades.stop.clone();
+        let session = crate::websocket_relay::Session {
+            state,
+            identity: identity.clone(),
+            request_id: request_id.to_owned(),
+            host: destination.host.clone(),
+            port: destination.port,
+        };
+        upgrades.tasks.lock().await.spawn(async move {
+            let _connection = connection;
+            let result: Result<(), Error> = async {
+                if *stop.borrow() { return Ok(()); }
+                let (client, server) = tokio::select! {
+                    _ = stop.changed() => return Ok(()),
+                    result = async { tokio::try_join!(client_upgrade, server_upgrade) } => result?,
+                };
+                runtime.record(json!({
+                    "event": "proxy.websocket.start", "agent": session.identity.agent_id,
+                    "connection_id": session.identity.connection_id, "request_id": session.request_id,
+                    "host": session.host, "port": session.port,
+                    "subprotocol": negotiated.subprotocol,
+                    "compressed_client": negotiated.client.is_some(), "compressed_server": negotiated.server.is_some(),
+                }))?;
+                crate::websocket_relay::relay(Box::new(TokioIo::new(client)), Box::new(TokioIo::new(server)), negotiated, session, stop).await
+            }.await;
+            if result.is_err() { eprintln!("WebSocket connection ended with an error"); }
+        });
+        return Ok((
+            Response::from_parts(parts, full(Bytes::new())),
+            decision.decision,
+        ));
+    }
     let (mut parts, body) = upstream.into_parts();
     strip_hop_headers(&mut parts.headers);
     Ok((
@@ -675,13 +750,18 @@ async fn serve_tunnel_http(
     http2: bool,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Error> {
+    let upgrades: UpgradeTasks = Arc::new(crate::UpgradeState {
+        tasks: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
+        stop: stop.clone(),
+    });
+    let request_upgrades = upgrades.clone();
     let service = hyper::service::service_fn(move |request| {
         serve_request(
             state.clone(),
             identity.clone(),
             request,
             Some(tunnel.clone()),
-            None,
+            (!http2).then(|| request_upgrades.clone()),
         )
     });
     if http2 {
@@ -700,7 +780,8 @@ async fn serve_tunnel_http(
         }
     } else {
         let connection = hyper::server::conn::http1::Builder::new()
-            .serve_connection(TokioIo::new(client), service);
+            .serve_connection(TokioIo::new(client), service)
+            .with_upgrades();
         tokio::pin!(connection);
         if *stop.borrow() {
             connection.as_mut().graceful_shutdown();
@@ -713,6 +794,8 @@ async fn serve_tunnel_http(
             }
         }
     }
+    let mut tasks = upgrades.tasks.lock().await;
+    while tasks.join_next().await.is_some() {}
     Ok(())
 }
 

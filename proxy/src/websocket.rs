@@ -856,6 +856,10 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
         self.stream.flush().await?;
         Ok(())
     }
+    pub(crate) async fn shutdown(&mut self) -> Result<(), Error> {
+        self.stream.shutdown().await?;
+        Ok(())
+    }
     async fn frame(
         &mut self,
         mut header: FrameHeader,

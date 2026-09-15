@@ -8,10 +8,7 @@ async fn main() -> Result<(), Error> {
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {
         Some("--version") => {
-            println!(
-                "safeyolo-proxy {} (development M2)",
-                env!("CARGO_PKG_VERSION")
-            );
+            println!("safeyolo-proxy {} (development)", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         Some("--config") => {}

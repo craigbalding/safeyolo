@@ -18,8 +18,9 @@ pub mod test_context;
 pub mod tls;
 mod tunnels;
 pub mod websocket;
+mod websocket_relay;
 
-pub use config::{AgentListener, Config};
+pub use config::{AgentListener, Config, Inspection};
 
 use std::{
     collections::HashMap,
@@ -61,6 +62,7 @@ pub(crate) struct Runtime {
     tls: Option<Arc<rustls::ClientConfig>>,
     certificate_authority: Option<Arc<tls::CertificateAuthority>>,
     passthrough: tunnels::Passthrough,
+    scanner: inspection::Scanner,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -74,6 +76,21 @@ impl Runtime {
         temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
     ) -> Result<Self, Error> {
         config.validate()?;
+        let scanner = inspection::Scanner::default();
+        if let Some(inspection) = &config.inspection {
+            let source = std::fs::read_to_string(&inspection.policy_file)?;
+            let format = match inspection
+                .policy_file
+                .extension()
+                .and_then(|value| value.to_str())
+            {
+                Some("toml") => policy::Format::Toml,
+                Some("yaml" | "yml") => policy::Format::Yaml,
+                _ => policy::Format::Json,
+            };
+            let document = policy::parse_document(&source, format)?;
+            scanner.load_policy_config(&Value::Object(document))?;
+        }
         let passthrough = tunnels::Passthrough::new(
             &config.ignore_hosts,
             &std::env::var("SAFEYOLO_IGNORE_CIDRS").unwrap_or_default(),
@@ -98,6 +115,7 @@ impl Runtime {
             tls,
             certificate_authority,
             passthrough,
+            scanner,
             via_token: config
                 .via_token
                 .clone()

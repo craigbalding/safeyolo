@@ -75,7 +75,7 @@ def wait_ready(process, paths, log, *, readiness_file=None):
 
 @contextmanager
 def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=False, upstream_ca=None,
-                 ignore_hosts=(), eager_connect=False):
+                 ignore_hosts=(), eager_connect=False, inspection=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     directory.mkdir(parents=True, exist_ok=True)
     policy = directory / "policy.toml"
@@ -88,6 +88,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             "readiness_file": str(directory / "ready"),
             "event_log": str(directory / "events.jsonl"),
         }
+        if inspection is not None:
+            config["inspection"] = {"policy_file": str(policy), **inspection}
         if upstream_ca:
             config["upstream_ca_file"] = str(upstream_ca)
         env = {**os.environ,

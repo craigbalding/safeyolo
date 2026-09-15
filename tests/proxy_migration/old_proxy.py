@@ -22,6 +22,7 @@ from safeyolo.core.internal_api import is_agent_api_host
 from safeyolo.core.probe import is_probe_host
 from safeyolo.mitm_addons.agent_api_guard import AgentAPIRequestGuard
 from safeyolo.mitm_addons.network_guard import NetworkGuard
+from safeyolo.mitm_addons.pattern_scanner import PatternScanner
 from safeyolo.mitm_addons.probe_sink import ProbeSink
 from safeyolo.mitm_addons.request_id import RequestIdGenerator
 from safeyolo.mitm_addons.sse_streaming import SSEStreaming
@@ -87,8 +88,19 @@ async def run(config):
         master.options.update(ssl_verify_upstream_trusted_ca=config["upstream_ca_file"])
     master.addons.add(
         RequestIdGenerator(), AgentAPIRequestGuard(), NetworkGuard(),
-        SSEStreaming(), ProbeSink(), TransportGuard(), Observations(config),
+        SSEStreaming(), ProbeSink(), TransportGuard(),
     )
+    if inspection := config.get("inspection"):
+        # The scanner obtains the real LocalPolicyClient sensor projection;
+        # its policy source is the same one used by NetworkGuard in this seam.
+        if Path(inspection["policy_file"]) != Path(config["policy_file"]):
+            raise ValueError("The historical fixture uses one policy file")
+        master.addons.add(PatternScanner())
+        master.options.update(
+            pattern_block_websocket_request=inspection.get("block_websocket_request", False),
+            pattern_block_websocket_response=inspection.get("block_websocket_response", False),
+        )
+    master.addons.add(Observations(config))
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, master.shutdown)
     try:

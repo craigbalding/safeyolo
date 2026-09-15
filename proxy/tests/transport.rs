@@ -102,6 +102,7 @@ fn config(directory: &TempDir) -> Config {
         tls_ca_file: None,
         ignore_hosts: Vec::new(),
         via_token: Some("test-instance".into()),
+        inspection: None,
     }
 }
 

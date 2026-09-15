@@ -12,6 +12,16 @@ pub struct AgentListener {
     pub socket_path: PathBuf,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Inspection {
+    pub policy_file: PathBuf,
+    #[serde(default)]
+    pub block_websocket_request: bool,
+    #[serde(default)]
+    pub block_websocket_response: bool,
+}
+
 /// Development configuration. Production CLI selection comes later.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +37,7 @@ pub struct Config {
     #[serde(default)]
     pub ignore_hosts: Vec<String>,
     pub via_token: Option<String>,
+    pub inspection: Option<Inspection>,
 }
 
 #[derive(Clone)]
