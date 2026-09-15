@@ -7,7 +7,7 @@ use std::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use safeyolo_proxy::{
     Error,
-    websocket::{Compression, Event, Message, MessageType, Reader, Writer},
+    websocket::{Compression, Event, Message, MessageType, Reader, ReceiveError, Writer},
 };
 use serde_json::{Value, json};
 use tungstenite::protocol::frame::{
@@ -262,8 +262,7 @@ async fn large_message_and_fragment_index_spill_without_truncation() {
     assert_eq!(message.with_text(str::to_owned).unwrap(), "firstlast");
 }
 
-#[tokio::test]
-async fn invalid_protocol_is_an_error_and_never_an_opaque_message() {
+fn malformed_frames() -> Vec<(Vec<u8>, u16)> {
     let malformed = [
         frame(OpCode::Data(Data::Text), true, false, false, b"unmasked"),
         frame(OpCode::Data(Data::Continue), true, true, false, b"orphan"),
@@ -290,13 +289,46 @@ async fn invalid_protocol_is_an_error_and_never_an_opaque_message() {
         vec![0x81, 0xfe, 0, 1, 0, 0, 0, 0, b'x'],
         vec![0x81, 0xff, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     ];
-    for wire in malformed {
-        assert!(
-            Reader::new(Cursor::new(wire), true, None)
-                .read()
-                .await
-                .is_err()
+    malformed
+        .into_iter()
+        .zip([
+            1002, 1002, 1002, 1007, 1007, 1002, 1002, 1002, 1002, 1007, 1002, 1002,
+        ])
+        .collect()
+}
+
+#[tokio::test]
+async fn invalid_protocol_is_an_error_and_never_an_opaque_message() {
+    for (wire, code) in malformed_frames() {
+        let failure = Reader::new(Cursor::new(wire), true, None)
+            .read()
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(failure.close_code(), Some(code));
+    }
+    let compressed = frame(OpCode::Data(Data::Binary), true, true, true, &[0xff]);
+    let failure = Reader::new(
+        Cursor::new(compressed),
+        true,
+        Some(Compression::new(15, false).unwrap()),
+    )
+    .read()
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(failure, ReceiveError::InvalidPayload);
+    for wire in [vec![0x81], vec![0x81, 0x81, 0, 0, 0, 0]] {
+        let failure = Reader::new(Cursor::new(wire), true, None)
+            .read()
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            failure,
+            ReceiveError::Transport(std::io::ErrorKind::UnexpectedEof)
         );
+        assert_eq!(failure.close_code(), None);
     }
     let mut incomplete = frame(OpCode::Data(Data::Text), false, true, false, b"first");
     incomplete.extend(text(b"second without continuation"));
@@ -311,52 +343,82 @@ async fn invalid_protocol_is_an_error_and_never_an_opaque_message() {
 #[tokio::test]
 async fn compressed_continuations_survive_control_frames_and_bytewise_transport() {
     use tokio::io::AsyncWriteExt;
-    let compression = Some(Compression::new(15, false).unwrap());
-    let mut original = frame(OpCode::Data(Data::Text), false, true, false, b"PROJ-");
-    original.extend(frame(
-        OpCode::Data(Data::Continue),
-        true,
-        true,
-        false,
-        b"12345",
-    ));
-    let message = next_message(&mut Reader::new(Cursor::new(original), true, None)).await;
-    let mut encoded = Vec::new();
-    Writer::new(&mut encoded, true, compression)
-        .message(message)
-        .await
-        .unwrap();
-    let mut cursor = Cursor::new(&encoded);
-    let (_, length) = FrameHeader::parse(&mut cursor).unwrap().unwrap();
-    let split = cursor.position() as usize + length as usize;
-    encoded.splice(
-        split..split,
-        frame(
-            OpCode::Control(Control::Ping),
-            true,
-            true,
-            false,
-            b"between-fragments",
-        ),
-    );
-    let (mut sender, stream) = tokio::io::duplex(1);
-    let sending = tokio::spawn(async move {
-        for byte in encoded {
-            sender.write_all(&[byte]).await.unwrap();
+    for kind in [Data::Text, Data::Binary] {
+        for from_client in [false, true] {
+            for control in [Control::Ping, Control::Pong] {
+                let compression = Some(Compression::new(15, false).unwrap());
+                let payload = if kind == Data::Text {
+                    "PROJ-12345 😀".repeat(100).into_bytes()
+                } else {
+                    (0..=255).cycle().take(2048).collect::<Vec<u8>>()
+                };
+                let split = payload.len() / 2;
+                let mut original = frame(
+                    OpCode::Data(kind),
+                    false,
+                    from_client,
+                    false,
+                    &payload[..split],
+                );
+                original.extend(frame(
+                    OpCode::Data(Data::Continue),
+                    true,
+                    from_client,
+                    false,
+                    &payload[split..],
+                ));
+                let message =
+                    next_message(&mut Reader::new(Cursor::new(original), from_client, None)).await;
+                let expected = message.with_text(str::to_owned).unwrap();
+                let mut encoded = Vec::new();
+                Writer::new(&mut encoded, from_client, compression)
+                    .message(message)
+                    .await
+                    .unwrap();
+                let mut cursor = Cursor::new(&encoded);
+                let (_, length) = FrameHeader::parse(&mut cursor).unwrap().unwrap();
+                let split = cursor.position() as usize + length as usize;
+                encoded.splice(
+                    split..split,
+                    frame(
+                        OpCode::Control(control),
+                        true,
+                        from_client,
+                        false,
+                        b"between-fragments",
+                    ),
+                );
+                let (mut sender, stream) = tokio::io::duplex(1);
+                let sending = tokio::spawn(async move {
+                    for byte in encoded {
+                        sender.write_all(&[byte]).await.unwrap();
+                    }
+                });
+                let mut reader = Reader::new(stream, from_client, compression);
+                let received = match reader.read().await.unwrap() {
+                    Event::Ping(bytes) if control == Control::Ping => bytes,
+                    Event::Pong(bytes) if control == Control::Pong => bytes,
+                    _ => panic!("control frame changed during fragmented message"),
+                };
+                assert_eq!(received, b"between-fragments");
+                let message = next_message(&mut reader).await;
+                assert_eq!(message.with_text(str::to_owned).unwrap(), expected);
+                let mut delivered = Vec::new();
+                Writer::new(&mut delivered, from_client, compression)
+                    .message(message)
+                    .await
+                    .unwrap();
+                let decoded = next_message(&mut Reader::new(
+                    Cursor::new(delivered),
+                    from_client,
+                    compression,
+                ))
+                .await;
+                assert_eq!(decoded.with_text(str::to_owned).unwrap(), expected);
+                sending.await.unwrap();
+            }
         }
-    });
-    let mut reader = Reader::new(stream, true, compression);
-    assert!(
-        matches!(reader.read().await.unwrap(),Event::Ping(bytes) if bytes==b"between-fragments")
-    );
-    assert_eq!(
-        next_message(&mut reader)
-            .await
-            .with_text(str::to_owned)
-            .unwrap(),
-        "PROJ-12345"
-    );
-    sending.await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -518,6 +580,97 @@ fn python(program: &str, input: &Value) -> Value {
         String::from_utf8_lossy(&result.stderr)
     );
     serde_json::from_slice(&result.stdout).unwrap()
+}
+
+#[tokio::test]
+#[ignore = "historical Python wsproto close-code oracle"]
+async fn malformed_frames_keep_the_historical_protocol_and_payload_close_codes() {
+    let mut rows: Vec<_> = malformed_frames()
+        .into_iter()
+        .map(|(wire, code)| json!({"wire": STANDARD.encode(wire), "code": code, "compressed": false}))
+        .collect();
+    rows.push(json!({
+        "wire": STANDARD.encode(frame(OpCode::Data(Data::Binary), true, true, true, &[0xff])),
+        "code": 1007, "compressed": true,
+    }));
+    let codes = python(
+        r#"
+import base64,json,sys
+from wsproto.connection import Connection,ConnectionType
+from wsproto.events import CloseConnection
+from wsproto.extensions import PerMessageDeflate
+out=[]
+for row in json.load(sys.stdin):
+ extensions=[]
+ if row['compressed']:
+  extension=PerMessageDeflate();extension.finalize('permessage-deflate');extensions.append(extension)
+ connection=Connection(ConnectionType.SERVER,extensions)
+ connection.receive_data(base64.b64decode(row['wire']))
+ out.append([int(event.code) for event in connection.events() if isinstance(event,CloseConnection)])
+print(json.dumps(out))
+"#,
+        &json!(rows),
+    );
+    for (row, codes) in rows.iter().zip(codes.as_array().unwrap()) {
+        assert_eq!(codes, &json!([row["code"]]));
+        let compression = row["compressed"]
+            .as_bool()
+            .unwrap()
+            .then(|| Compression::new(15, false).unwrap());
+        let failure = Reader::new(
+            Cursor::new(STANDARD.decode(row["wire"].as_str().unwrap()).unwrap()),
+            true,
+            compression,
+        )
+        .read()
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(json!(failure.close_code()), row["code"]);
+    }
+}
+
+#[test]
+fn spool_failure_is_a_local_error_and_cannot_yield_a_partial_message() {
+    const CHILD: &str = "SAFEYOLO_WS_SPOOL_FAILURE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let directory = tempfile::tempdir().unwrap();
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "spool_failure_is_a_local_error_and_cannot_yield_a_partial_message",
+            ])
+            .env(CHILD, "1")
+            .env("TMPDIR", directory.path().join("missing"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        return;
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let wire = frame(
+            OpCode::Data(Data::Binary),
+            true,
+            true,
+            false,
+            &[0; 128 * 1024],
+        );
+        let error = Reader::new(Cursor::new(wire), true, None)
+            .read()
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error, ReceiveError::Storage);
+        assert_eq!(error.close_code(), Some(1011));
+    });
 }
 
 #[tokio::test]

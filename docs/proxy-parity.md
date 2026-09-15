@@ -249,7 +249,11 @@ the spool does not establish a hard process-memory limit.
 Native tests compare 84 messages in both directions with actual Python wsproto
 across window sizes 9–15 and context-takeover modes. They also cover independent
 outgoing dictionaries after a dropped message, malformed frames, subprotocols,
-extension negotiation and RFC 7692 final-block examples. The module is not yet
+extension negotiation and RFC 7692 final-block examples. Receive failures return
+content-free categories for protocol errors (1002), invalid payloads (1007),
+transport loss and local storage failure (1011). Thirteen malformed-frame cases
+match the Python close-code oracle. Storage failure cannot yield a partial
+message. The module is not yet
 wired into HTTP upgrades, connection shutdown, or production evidence. These
 library checks do not establish a working native WS/WSS proxy.
 

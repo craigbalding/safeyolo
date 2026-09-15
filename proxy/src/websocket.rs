@@ -21,6 +21,47 @@ use crate::Error;
 const MEMORY_BYTES: usize = 64 * 1024;
 const CHUNK: usize = 16 * 1024;
 
+/// Content-free failures for the connection owner. Transport failures cannot
+/// send a close on the failed leg. Storage failures are local errors, never a
+/// reason to forward a partially assembled or uninspected message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiveError {
+    Protocol,
+    InvalidPayload,
+    Transport(std::io::ErrorKind),
+    Storage,
+}
+impl ReceiveError {
+    pub fn close_code(self) -> Option<u16> {
+        match self {
+            Self::Protocol => Some(1002),
+            Self::InvalidPayload => Some(1007),
+            Self::Transport(_) => None,
+            Self::Storage => Some(1011),
+        }
+    }
+    fn transport(error: std::io::Error) -> Self {
+        Self::Transport(error.kind())
+    }
+}
+impl std::fmt::Display for ReceiveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Protocol => "invalid WebSocket frame sequence",
+            Self::InvalidPayload => "invalid WebSocket message payload",
+            Self::Transport(_) => "WebSocket receive transport failed",
+            Self::Storage => "WebSocket message storage failed",
+        })
+    }
+}
+impl std::error::Error for ReceiveError {}
+fn receive_error(error: Error) -> ReceiveError {
+    error
+        .downcast_ref::<ReceiveError>()
+        .copied()
+        .unwrap_or(ReceiveError::Storage)
+}
+
 /// Each direction has its own negotiated receive/send compression state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Compression {
@@ -428,7 +469,7 @@ struct Utf8 {
     pending: Vec<u8>,
 }
 impl Utf8 {
-    fn check(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
+    fn check(&mut self, mut bytes: &[u8]) -> Result<(), ReceiveError> {
         if !self.pending.is_empty() {
             while self.pending.len() < 4 && !bytes.is_empty() {
                 self.pending.push(bytes[0]);
@@ -439,7 +480,7 @@ impl Utf8 {
                         break;
                     }
                     Err(error) if error.error_len().is_none() => (),
-                    Err(_) => return Err("invalid WebSocket text UTF-8".into()),
+                    Err(_) => return Err(ReceiveError::InvalidPayload),
                 }
             }
             if !self.pending.is_empty() {
@@ -453,7 +494,7 @@ impl Utf8 {
                     .extend_from_slice(&bytes[error.valid_up_to()..]);
                 Ok(())
             }
-            Err(_) => Err("invalid WebSocket text UTF-8".into()),
+            Err(_) => Err(ReceiveError::InvalidPayload),
         }
     }
 }
@@ -474,7 +515,7 @@ impl PendingMessage {
     }
     async fn finish(self) -> Result<Message, Error> {
         if !self.utf8.pending.is_empty() {
-            return Err("incomplete WebSocket text UTF-8".into());
+            return Err(ReceiveError::InvalidPayload.into());
         }
         Ok(Message {
             kind: self.kind,
@@ -510,19 +551,26 @@ impl<R: AsyncRead + Unpin> Reader<R> {
             pending: None,
         }
     }
-    pub async fn read(&mut self) -> Result<Event, Error> {
+    pub async fn read(&mut self) -> Result<Event, ReceiveError> {
         loop {
             let mut bytes = [0u8; 14];
-            self.stream.read_exact(&mut bytes[..2]).await?;
+            self.stream
+                .read_exact(&mut bytes[..2])
+                .await
+                .map_err(ReceiveError::transport)?;
             let extra = match bytes[1] & 127 {
                 126 => 2,
                 127 => 8,
                 _ => 0,
             };
             let length = 2 + extra + if bytes[1] & 128 != 0 { 4 } else { 0 };
-            self.stream.read_exact(&mut bytes[2..length]).await?;
-            let (header, payload_len) = FrameHeader::parse(&mut Cursor::new(&bytes[..length]))?
-                .ok_or("incomplete WebSocket header")?;
+            self.stream
+                .read_exact(&mut bytes[2..length])
+                .await
+                .map_err(ReceiveError::transport)?;
+            let (header, payload_len) = FrameHeader::parse(&mut Cursor::new(&bytes[..length]))
+                .map_err(|_| ReceiveError::Protocol)?
+                .ok_or(ReceiveError::Protocol)?;
             if payload_len >= (1 << 63)
                 || (extra == 2 && payload_len < 126)
                 || (extra == 8 && payload_len <= 65535)
@@ -530,14 +578,17 @@ impl<R: AsyncRead + Unpin> Reader<R> {
                 || header.rsv2
                 || header.rsv3
             {
-                return Err("invalid WebSocket frame header".into());
+                return Err(ReceiveError::Protocol);
             }
             if let OpCode::Control(control) = header.opcode {
                 if !header.is_final || payload_len > 125 || header.rsv1 {
-                    return Err("invalid WebSocket control frame".into());
+                    return Err(ReceiveError::Protocol);
                 }
                 let mut payload = vec![0; payload_len as usize];
-                self.stream.read_exact(&mut payload).await?;
+                self.stream
+                    .read_exact(&mut payload)
+                    .await
+                    .map_err(ReceiveError::transport)?;
                 mask(&mut payload, header.mask, 0);
                 return match control {
                     Control::Ping => Ok(Event::Ping(payload)),
@@ -546,13 +597,13 @@ impl<R: AsyncRead + Unpin> Reader<R> {
                         validate_close(&payload)?;
                         Ok(Event::Close(payload))
                     }
-                    Control::Reserved(_) => Err("reserved WebSocket control opcode".into()),
+                    Control::Reserved(_) => Err(ReceiveError::Protocol),
                 };
             }
             match header.opcode {
                 OpCode::Data(Data::Text | Data::Binary) if self.pending.is_none() => {
                     if header.rsv1 && self.compression.is_none() {
-                        return Err("unnegotiated WebSocket compression".into());
+                        return Err(ReceiveError::Protocol);
                     }
                     if header.rsv1 && self.inflater.is_none() {
                         self.inflater = Some(Inflater::new(self.compression.unwrap().window_bits));
@@ -570,7 +621,7 @@ impl<R: AsyncRead + Unpin> Reader<R> {
                     });
                 }
                 OpCode::Data(Data::Continue) if self.pending.is_some() && !header.rsv1 => (),
-                _ => return Err("invalid WebSocket message continuation".into()),
+                _ => return Err(ReceiveError::Protocol),
             }
             let pending = self.pending.as_mut().unwrap();
             let start = pending.body.len;
@@ -578,17 +629,27 @@ impl<R: AsyncRead + Unpin> Reader<R> {
             let mut buffer = [0u8; CHUNK];
             while offset < payload_len {
                 let count = (payload_len - offset).min(CHUNK as u64) as usize;
-                self.stream.read_exact(&mut buffer[..count]).await?;
+                self.stream
+                    .read_exact(&mut buffer[..count])
+                    .await
+                    .map_err(ReceiveError::transport)?;
                 mask(&mut buffer[..count], header.mask, offset);
                 if pending.compressed {
-                    inflate(self.inflater.as_mut().unwrap(), &buffer[..count], pending).await?;
+                    inflate(self.inflater.as_mut().unwrap(), &buffer[..count], pending)
+                        .await
+                        .map_err(receive_error)?;
                 } else {
-                    pending.append(&buffer[..count]).await?;
+                    pending
+                        .append(&buffer[..count])
+                        .await
+                        .map_err(receive_error)?;
                 }
                 offset += count as u64;
             }
             if header.is_final && pending.compressed {
-                inflate(self.inflater.as_mut().unwrap(), &[0, 0, 255, 255], pending).await?;
+                inflate(self.inflater.as_mut().unwrap(), &[0, 0, 255, 255], pending)
+                    .await
+                    .map_err(receive_error)?;
                 if self.compression.unwrap().no_context_takeover {
                     self.inflater = None;
                 }
@@ -596,9 +657,17 @@ impl<R: AsyncRead + Unpin> Reader<R> {
             pending
                 .fragments
                 .append(&(pending.body.len - start).to_be_bytes())
-                .await?;
+                .await
+                .map_err(receive_error)?;
             if header.is_final {
-                return Ok(Event::Message(self.pending.take().unwrap().finish().await?));
+                return Ok(Event::Message(
+                    self.pending
+                        .take()
+                        .unwrap()
+                        .finish()
+                        .await
+                        .map_err(receive_error)?,
+                ));
             }
         }
     }
@@ -611,16 +680,16 @@ fn mask(bytes: &mut [u8], key: Option<[u8; 4]>, offset: u64) {
         }
     }
 }
-fn validate_close(bytes: &[u8]) -> Result<(), Error> {
+fn validate_close(bytes: &[u8]) -> Result<(), ReceiveError> {
     if bytes.len() == 1 {
-        return Err("incomplete WebSocket close code".into());
+        return Err(ReceiveError::Protocol);
     }
     if bytes.len() >= 2 {
         let code = CloseCode::from(u16::from_be_bytes([bytes[0], bytes[1]]));
         if !code.is_allowed() {
-            return Err("invalid WebSocket close code".into());
+            return Err(ReceiveError::Protocol);
         }
-        std::str::from_utf8(&bytes[2..]).map_err(|_| "invalid WebSocket close reason UTF-8")?;
+        std::str::from_utf8(&bytes[2..]).map_err(|_| ReceiveError::InvalidPayload)?;
     }
     Ok(())
 }
@@ -656,7 +725,8 @@ async fn inflate(
         let mut buffer = [0u8; CHUNK];
         let status = inflater
             .decoder
-            .decompress(bytes, &mut buffer, FlushDecompress::Sync)?;
+            .decompress(bytes, &mut buffer, FlushDecompress::Sync)
+            .map_err(|_| ReceiveError::InvalidPayload)?;
         let read = (inflater.decoder.total_in() - input) as usize;
         let written = (inflater.decoder.total_out() - output) as usize;
         inflater.remember(&buffer[..written]);
@@ -665,14 +735,17 @@ async fn inflate(
             // RFC 7692 permits BFINAL=1 followed by more byte-aligned blocks.
             // Resume raw inflation while retaining the negotiated LZ77 window.
             inflater.decoder.reset(false);
-            inflater.decoder.set_dictionary(&inflater.history)?;
+            inflater
+                .decoder
+                .set_dictionary(&inflater.history)
+                .map_err(|_| ReceiveError::InvalidPayload)?;
         }
         bytes = &bytes[read..];
         if bytes.is_empty() && written < CHUNK {
             return Ok(());
         }
         if read == 0 && written == 0 {
-            return Err("stalled WebSocket decompression".into());
+            return Err(ReceiveError::InvalidPayload.into());
         }
     }
 }
