@@ -27,6 +27,81 @@ pub(crate) fn encode(value: &Value) -> String {
     output
 }
 
+/// Python json.dumps(indent=2), used by the separate operator HTTP API.
+/// The caller must retain these authorized bytes in its wiping response owner.
+pub(crate) fn encode_indented(value: &Value) -> String {
+    let mut length = Length(0);
+    write_indented(value, 0, &mut length).expect("JSON response length overflow");
+    let mut output = String::with_capacity(length.0);
+    write_indented(value, 0, &mut output).expect("String writes cannot fail");
+    output
+}
+
+fn indent(depth: usize, output: &mut impl Write) -> fmt::Result {
+    output.write_char('\n')?;
+    for _ in 0..depth {
+        output.write_str("  ")?;
+    }
+    Ok(())
+}
+
+/// Render a borrowed operator response wrapper without cloning its policy.
+pub(crate) fn encode_indented_fields(fields: &[(&str, &Value)]) -> String {
+    let mut length = Length(0);
+    write_indented_object(fields.iter().copied(), 0, &mut length)
+        .expect("JSON response length overflow");
+    let mut output = String::with_capacity(length.0);
+    write_indented_object(fields.iter().copied(), 0, &mut output)
+        .expect("String writes cannot fail");
+    output
+}
+
+fn write_indented_object<'a>(
+    fields: impl IntoIterator<Item = (&'a str, &'a Value)>,
+    depth: usize,
+    output: &mut impl Write,
+) -> fmt::Result {
+    output.write_char('{')?;
+    let mut any = false;
+    for (key, value) in fields {
+        if any {
+            output.write_char(',')?;
+        }
+        any = true;
+        indent(depth + 1, output)?;
+        string(key, output)?;
+        output.write_str(": ")?;
+        write_indented(value, depth + 1, output)?;
+    }
+    if any {
+        indent(depth, output)?;
+    }
+    output.write_char('}')
+}
+
+fn write_indented(value: &Value, depth: usize, output: &mut impl Write) -> fmt::Result {
+    match value {
+        Value::Object(fields) => write_indented_object(
+            fields.iter().map(|(key, value)| (key.as_str(), value)),
+            depth,
+            output,
+        ),
+        Value::Array(values) if !values.is_empty() => {
+            output.write_char('[')?;
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 {
+                    output.write_char(',')?;
+                }
+                indent(depth + 1, output)?;
+                write_indented(value, depth + 1, output)?;
+            }
+            indent(depth, output)?;
+            output.write_char(']')
+        }
+        _ => write(value, output),
+    }
+}
+
 fn string(value: &str, output: &mut impl Write) -> fmt::Result {
     output.write_char('"')?;
     for character in value.chars() {

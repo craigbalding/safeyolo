@@ -1,0 +1,2645 @@
+{
+  "hooks": [
+    {
+      "host": "localhost",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "LOCALHOST",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "LOCALHOST",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "LOCALHOST",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "a.localhost",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "a.localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "a.localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": ".localhost",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": ".localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": ".localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost.",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost.",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost.",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "a.localhost.",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "a.localhost.",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "a.localhost.",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.0.0.1",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.0.0.1",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "127.0.0.1",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0.0.0.0",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0.0.0.0",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "0.0.0.0",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "::1",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "::1",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "::1",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0:0:0:0:0:0:0:1",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0:0:0:0:0:0:0:1",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0:0:0:0:0:0:0:1",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "::ffff:127.0.0.1",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "::ffff:127.0.0.1",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "::ffff:127.0.0.1",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.1",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.1",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.1",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.0.0.2",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.0.0.2",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.0.0.2",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "2130706433",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "2130706433",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "2130706433",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0x7f000001",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0x7f000001",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0x7f000001",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0177.0.0.1",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0177.0.0.1",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0177.0.0.1",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "host.docker.internal",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "host.docker.internal",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "host.docker.internal",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "safeyolo",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "safeyolo",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "safeyolo",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "remote.invalid",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "remote.invalid",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "remote.invalid",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "203.0.113.8",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "203.0.113.8",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "203.0.113.8",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "\u0430pi.localhost",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "\u0430pi.localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "\u0430pi.localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "9091,9092",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "9091,9092",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": " 9091 ,9091, ",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": " 9091 ,9091, ",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "-1,+9091,909_1",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "-1,+9091,909_1",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "junk,,9091,",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "junk,,9091,",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "\u001c9091\u001f",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "\u001c9091\u001f",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "\u0669\u0660\u0669\u0661",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "\u0669\u0660\u0669\u0661",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "\uff19\uff10\uff19\uff11",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "\uff19\uff10\uff19\uff11",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "\u00b2",
+      "admin_port": 9090,
+      "prior": false,
+      "error": "ValueError"
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "\u00b2",
+      "admin_port": 9090,
+      "prior": false,
+      "error": "ValueError"
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "\u0669\u00b2",
+      "admin_port": 9090,
+      "prior": false,
+      "error": "ValueError"
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "\u0669\u00b2",
+      "admin_port": 9090,
+      "prior": false,
+      "error": "ValueError"
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "\u00b2x",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "\u00b2x",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "\u00bd",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "\u00bd",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "\u216b",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "\u216b",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "65536,0,0009091",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "65536,0,0009091",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "admin_port": 9090,
+      "prior": false,
+      "error": "ValueError"
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "admin_port": 9090,
+      "prior": false,
+      "error": "ValueError"
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+      "admin_port": 9090,
+      "prior": false,
+      "error": "ValueError"
+    },
+    {
+      "host": "localhost",
+      "port": 9091,
+      "hook": "request",
+      "extras": "11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+      "admin_port": 9090,
+      "prior": false,
+      "error": "ValueError"
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "LOCALHOST",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "a.localhost",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": ".localhost",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost.",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "a.localhost.",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.0.0.1",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "0.0.0.0",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "::1",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "0:0:0:0:0:0:0:1",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "::ffff:127.0.0.1",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.1",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.0.0.2",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "2130706433",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0x7f000001",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0177.0.0.1",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "host.docker.internal",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "safeyolo",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "remote.invalid",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "203.0.113.8",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "\u0430pi.localhost",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "localhost",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": true,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "remote.invalid",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": true,
+      "blocked": false,
+      "metadata": {},
+      "response": {
+        "status": 418,
+        "headers": [
+          [
+            "content-length",
+            "7"
+          ]
+        ],
+        "body_hex": "6561726c696572"
+      }
+    }
+  ],
+  "forms": [
+    {
+      "url": "http://localhost:9090/x",
+      "extracted_host": "localhost",
+      "extracted_port": 9090,
+      "observation": {
+        "host": "localhost",
+        "port": 9090,
+        "hook": "request",
+        "extras": "",
+        "admin_port": 9090,
+        "prior": false,
+        "blocked": true,
+        "metadata": {
+          "blocked_by": "admin-shield",
+          "block_reason": "admin_port_access"
+        },
+        "response": {
+          "status": 403,
+          "headers": [
+            [
+              "Content-Type",
+              "application/json"
+            ],
+            [
+              "X-Blocked-By",
+              "admin-shield"
+            ],
+            [
+              "content-length",
+              "75"
+            ]
+          ],
+          "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+        }
+      }
+    },
+    {
+      "url": "https://localhost:9090/x",
+      "extracted_host": "localhost",
+      "extracted_port": 9090,
+      "observation": {
+        "host": "localhost",
+        "port": 9090,
+        "hook": "request",
+        "extras": "",
+        "admin_port": 9090,
+        "prior": false,
+        "blocked": true,
+        "metadata": {
+          "blocked_by": "admin-shield",
+          "block_reason": "admin_port_access"
+        },
+        "response": {
+          "status": 403,
+          "headers": [
+            [
+              "Content-Type",
+              "application/json"
+            ],
+            [
+              "X-Blocked-By",
+              "admin-shield"
+            ],
+            [
+              "content-length",
+              "75"
+            ]
+          ],
+          "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+        }
+      }
+    },
+    {
+      "url": "http://LOCALHOST:9090/x",
+      "extracted_host": "localhost",
+      "extracted_port": 9090,
+      "observation": {
+        "host": "localhost",
+        "port": 9090,
+        "hook": "request",
+        "extras": "",
+        "admin_port": 9090,
+        "prior": false,
+        "blocked": true,
+        "metadata": {
+          "blocked_by": "admin-shield",
+          "block_reason": "admin_port_access"
+        },
+        "response": {
+          "status": 403,
+          "headers": [
+            [
+              "Content-Type",
+              "application/json"
+            ],
+            [
+              "X-Blocked-By",
+              "admin-shield"
+            ],
+            [
+              "content-length",
+              "75"
+            ]
+          ],
+          "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+        }
+      }
+    },
+    {
+      "url": "http://localhost.:9090/x",
+      "extracted_host": "localhost.",
+      "extracted_port": 9090,
+      "observation": {
+        "host": "localhost.",
+        "port": 9090,
+        "hook": "request",
+        "extras": "",
+        "admin_port": 9090,
+        "prior": false,
+        "blocked": false,
+        "metadata": {},
+        "response": null
+      }
+    },
+    {
+      "url": "http://[::1]:9090/x",
+      "extracted_host": "::1",
+      "extracted_port": 9090,
+      "observation": {
+        "host": "::1",
+        "port": 9090,
+        "hook": "request",
+        "extras": "",
+        "admin_port": 9090,
+        "prior": false,
+        "blocked": true,
+        "metadata": {
+          "blocked_by": "admin-shield",
+          "block_reason": "admin_port_access"
+        },
+        "response": {
+          "status": 403,
+          "headers": [
+            [
+              "Content-Type",
+              "application/json"
+            ],
+            [
+              "X-Blocked-By",
+              "admin-shield"
+            ],
+            [
+              "content-length",
+              "75"
+            ]
+          ],
+          "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+        }
+      }
+    },
+    {
+      "url": "http://[0:0:0:0:0:0:0:1]:9090/x",
+      "extracted_host": "0:0:0:0:0:0:0:1",
+      "extracted_port": 9090,
+      "observation": {
+        "host": "0:0:0:0:0:0:0:1",
+        "port": 9090,
+        "hook": "request",
+        "extras": "",
+        "admin_port": 9090,
+        "prior": false,
+        "blocked": false,
+        "metadata": {},
+        "response": null
+      }
+    },
+    {
+      "url": "http://127.1:9090/x",
+      "extracted_host": "127.1",
+      "extracted_port": 9090,
+      "observation": {
+        "host": "127.1",
+        "port": 9090,
+        "hook": "request",
+        "extras": "",
+        "admin_port": 9090,
+        "prior": false,
+        "blocked": false,
+        "metadata": {},
+        "response": null
+      }
+    },
+    {
+      "url": "http://remote.invalid:9090/x",
+      "extracted_host": "remote.invalid",
+      "extracted_port": 9090,
+      "observation": {
+        "host": "remote.invalid",
+        "port": 9090,
+        "hook": "request",
+        "extras": "",
+        "admin_port": 9090,
+        "prior": false,
+        "blocked": false,
+        "metadata": {},
+        "response": null
+      }
+    },
+    {
+      "url": "http://localhost/x",
+      "extracted_host": "localhost",
+      "extracted_port": 80,
+      "observation": {
+        "host": "localhost",
+        "port": 80,
+        "hook": "request",
+        "extras": "",
+        "admin_port": 9090,
+        "prior": false,
+        "blocked": false,
+        "metadata": {},
+        "response": null
+      }
+    },
+    {
+      "url": "https://localhost/x",
+      "extracted_host": "localhost",
+      "extracted_port": 443,
+      "observation": {
+        "host": "localhost",
+        "port": 443,
+        "hook": "request",
+        "extras": "",
+        "admin_port": 9090,
+        "prior": false,
+        "blocked": false,
+        "metadata": {},
+        "response": null
+      }
+    }
+  ],
+  "server_hooks": [
+    {
+      "address": null,
+      "error": null
+    },
+    {
+      "address": [
+        "localhost",
+        9090
+      ],
+      "error": "SafeYolo: admin API not accessible through proxy"
+    },
+    {
+      "address": [
+        "remote.invalid",
+        9090
+      ],
+      "error": null
+    },
+    {
+      "address": [
+        "localhost.",
+        9090
+      ],
+      "error": null
+    },
+    {
+      "address": [
+        "localhost",
+        80
+      ],
+      "error": null
+    }
+  ],
+  "nondecimal_digit_ranges": [
+    [
+      178,
+      179
+    ],
+    [
+      185,
+      185
+    ],
+    [
+      4969,
+      4977
+    ],
+    [
+      6618,
+      6618
+    ],
+    [
+      8304,
+      8304
+    ],
+    [
+      8308,
+      8313
+    ],
+    [
+      8320,
+      8329
+    ],
+    [
+      9312,
+      9320
+    ],
+    [
+      9332,
+      9340
+    ],
+    [
+      9352,
+      9360
+    ],
+    [
+      9450,
+      9450
+    ],
+    [
+      9461,
+      9469
+    ],
+    [
+      9471,
+      9471
+    ],
+    [
+      10102,
+      10110
+    ],
+    [
+      10112,
+      10120
+    ],
+    [
+      10122,
+      10130
+    ],
+    [
+      68160,
+      68163
+    ],
+    [
+      69216,
+      69224
+    ],
+    [
+      69714,
+      69722
+    ],
+    [
+      127232,
+      127242
+    ]
+  ],
+  "nondecimal_digit_all_scalars_sha256": "1804518a9438acac6a28214bba7fac895a516329047692038af597d42e38443e",
+  "transport": {
+    "listener": [
+      "127.0.0.1",
+      43757
+    ],
+    "cases": [
+      {
+        "host": "localhost",
+        "port": 43757,
+        "ingress_blocked": true,
+        "events": [
+          "ServerConnectHook",
+          "ServerConnectErrorHook",
+          "OpenConnectionCompleted"
+        ],
+        "server_error": "SafeYolo: admin API not accessible through proxy",
+        "peer": null,
+        "owned_accepts": 0
+      },
+      {
+        "host": "127.0.0.1",
+        "port": 43757,
+        "ingress_blocked": true,
+        "events": [
+          "ServerConnectHook",
+          "ServerConnectErrorHook",
+          "OpenConnectionCompleted"
+        ],
+        "server_error": "SafeYolo: admin API not accessible through proxy",
+        "peer": null,
+        "owned_accepts": 0
+      },
+      {
+        "host": "localhost.",
+        "port": 43757,
+        "ingress_blocked": false,
+        "events": [
+          "ServerConnectHook",
+          "resolve",
+          "ServerConnectedHook",
+          "OpenConnectionCompleted",
+          "ServerDisconnectedHook"
+        ],
+        "server_error": null,
+        "peer": [
+          "127.0.0.1",
+          43757
+        ],
+        "owned_accepts": 1
+      },
+      {
+        "host": "127.1",
+        "port": 43757,
+        "ingress_blocked": false,
+        "events": [
+          "ServerConnectHook",
+          "resolve",
+          "ServerConnectedHook",
+          "OpenConnectionCompleted",
+          "ServerDisconnectedHook"
+        ],
+        "server_error": null,
+        "peer": [
+          "127.0.0.1",
+          43757
+        ],
+        "owned_accepts": 1
+      },
+      {
+        "host": "2130706433",
+        "port": 43757,
+        "ingress_blocked": false,
+        "events": [
+          "ServerConnectHook",
+          "resolve",
+          "ServerConnectedHook",
+          "OpenConnectionCompleted",
+          "ServerDisconnectedHook"
+        ],
+        "server_error": null,
+        "peer": [
+          "127.0.0.1",
+          43757
+        ],
+        "owned_accepts": 1
+      },
+      {
+        "host": "0x7f000001",
+        "port": 43757,
+        "ingress_blocked": false,
+        "events": [
+          "ServerConnectHook",
+          "resolve",
+          "ServerConnectedHook",
+          "OpenConnectionCompleted",
+          "ServerDisconnectedHook"
+        ],
+        "server_error": null,
+        "peer": [
+          "127.0.0.1",
+          43757
+        ],
+        "owned_accepts": 1
+      },
+      {
+        "host": "0177.0.0.1",
+        "port": 43757,
+        "ingress_blocked": false,
+        "events": [
+          "ServerConnectHook",
+          "resolve",
+          "ServerConnectedHook",
+          "OpenConnectionCompleted",
+          "ServerDisconnectedHook"
+        ],
+        "server_error": null,
+        "peer": [
+          "127.0.0.1",
+          43757
+        ],
+        "owned_accepts": 1
+      },
+      {
+        "host": "::ffff:127.0.0.1",
+        "port": 43757,
+        "ingress_blocked": false,
+        "events": [
+          "ServerConnectHook",
+          "ServerConnectedHook",
+          "OpenConnectionCompleted",
+          "ServerDisconnectedHook"
+        ],
+        "server_error": null,
+        "peer": [
+          "::ffff:127.0.0.1",
+          43757,
+          0,
+          0
+        ],
+        "owned_accepts": 1
+      },
+      {
+        "host": "owned-alias.invalid",
+        "port": 43757,
+        "ingress_blocked": false,
+        "events": [
+          "ServerConnectHook",
+          "resolve",
+          "ServerConnectedHook",
+          "OpenConnectionCompleted",
+          "ServerDisconnectedHook"
+        ],
+        "server_error": null,
+        "peer": [
+          "127.0.0.1",
+          43757
+        ],
+        "owned_accepts": 1
+      },
+      {
+        "host": "alias-unspecified.invalid",
+        "port": 43757,
+        "ingress_blocked": false,
+        "events": [
+          "ServerConnectHook",
+          "resolve",
+          "ServerConnectedHook",
+          "OpenConnectionCompleted",
+          "ServerDisconnectedHook"
+        ],
+        "server_error": null,
+        "peer": [
+          "127.0.0.1",
+          43757
+        ],
+        "owned_accepts": 1
+      },
+      {
+        "host": "other-local.invalid",
+        "port": 43757,
+        "ingress_blocked": false,
+        "events": [
+          "ServerConnectHook",
+          "resolve",
+          "ServerConnectErrorHook",
+          "OpenConnectionCompleted"
+        ],
+        "server_error": "[Errno 111] Connect call failed ('127.0.0.2', 43757)",
+        "peer": null,
+        "owned_accepts": 0
+      }
+    ],
+    "changed_option_old_bound_port": {
+      "host": "127.0.0.1",
+      "port": 43757,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 43758,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    "configured_zero_actual_ephemeral_port": {
+      "host": "127.0.0.1",
+      "port": 43757,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 0,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    "scope": "actual ConnectionHandler.open_connection and shield hook; controlled DNS; owned inert listener only"
+  },
+  "provenance": {
+    "source_commit": "838319a1a6a97a5317350e678fda6abc5a44fed1",
+    "python": "3.12.14",
+    "unicode": "15.0.0",
+    "mitmproxy": "12.2.3",
+    "source_sha256": {
+      "cli/src/safeyolo/mitm_addons/admin_shield.py": "3250bbeb6926a2f4b0d854743f933e9624d65886048c9bb8c3a398990859a6d4",
+      "cli/src/safeyolo/mitm_addons/admin_api.py": "1b617e66e53aefd38412e60b9ffcf24a7075c5f468b61e3e3fa93b71e038a0ac"
+    },
+    "server_sha256": "8e7a49721801ffc20acfe9e8dd723a0c65dfb14933832bca70137c17e352bcbe",
+    "external_network_attempts": 0,
+    "operational_credentials": false
+  }
+}

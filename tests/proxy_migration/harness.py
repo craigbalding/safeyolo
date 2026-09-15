@@ -77,7 +77,8 @@ def wait_ready(process, paths, log, *, readiness_file=None):
 def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=False, upstream_ca=None,
                  ignore_hosts=(), eager_connect=False, inspection=None, native_policy=False,
                  network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None,
-                 agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml"):
+                 agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
+                 admin_port=None, admin_api_token_file=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -128,6 +129,10 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         elif backend == "rust":
             config["ignore_hosts"] = list(ignore_hosts)
             config["agent_api_enabled"] = agent_api
+            if admin_port is not None:
+                config["admin_port"] = admin_port
+            if admin_api_token_file is not None:
+                config["admin_api_token_file"] = str(admin_api_token_file)
             if native_policy:
                 config["policy_file"] = str(policy)
             else:

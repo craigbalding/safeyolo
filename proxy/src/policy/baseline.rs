@@ -368,14 +368,8 @@ fn metadata(value: Option<&Value>) -> Result<Value> {
         let value = nullable_string(source, name)?;
         if name == "task_id"
             && let Some(task) = value.as_str()
-            && (task.is_empty()
-                || task.len() > 128
-                || !task.as_bytes()[0].is_ascii_alphanumeric()
-                || !task
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)))
         {
-            return Err(invalid("invalid task identifier"));
+            super::validate_task_id(task)?;
         }
         output.insert(name.into(), value);
     }

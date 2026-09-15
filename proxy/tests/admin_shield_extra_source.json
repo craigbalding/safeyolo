@@ -1,0 +1,51 @@
+{
+  "listener": [
+    "127.0.0.1",
+    36105
+  ],
+  "configured_admin_port": 36106,
+  "cases": [
+    {
+      "host": "owned-alias.invalid",
+      "port": 36105,
+      "extras": "36105",
+      "ingress_blocked": false,
+      "events": [
+        "ServerConnectHook",
+        "resolve",
+        "ServerConnectedHook",
+        "OpenConnectionCompleted",
+        "ServerDisconnectedHook"
+      ],
+      "server_error": null,
+      "peer": [
+        "127.0.0.1",
+        36105
+      ],
+      "owned_accepts": 1
+    }
+  ],
+  "changed_option_old_bound_port": {
+    "host": "127.0.0.1",
+    "port": 36105,
+    "hook": "request",
+    "extras": "",
+    "admin_port": 36106,
+    "prior": false,
+    "blocked": false,
+    "metadata": {},
+    "response": null
+  },
+  "configured_zero_actual_ephemeral_port": {
+    "host": "127.0.0.1",
+    "port": 36105,
+    "hook": "request",
+    "extras": "",
+    "admin_port": 0,
+    "prior": false,
+    "blocked": false,
+    "metadata": {},
+    "response": null
+  },
+  "scope": "actual ConnectionHandler.open_connection and shield hook; controlled DNS; owned inert listener only"
+}

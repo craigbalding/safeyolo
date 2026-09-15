@@ -2,6 +2,9 @@
 //! Network policy runs natively or through an explicitly configured temporary
 //! Python bridge. The development pipeline does not yet have production parity.
 
+pub mod admin_api;
+mod admin_listener;
+pub mod admin_shield;
 pub mod agent_api;
 pub mod approvals;
 pub mod circuits;
@@ -20,6 +23,7 @@ pub mod policy;
 mod python_json;
 mod python_text;
 pub mod services;
+pub mod tasks;
 pub mod test_context;
 pub mod tls;
 mod tunnels;
@@ -70,6 +74,9 @@ pub(crate) struct Runtime {
     passthrough: tunnels::Passthrough,
     scanner: inspection::Scanner,
     policy: Option<policy::Policy>,
+    tasks: tasks::Registry,
+    admin_address: Option<std::net::SocketAddr>,
+    admin_shield: admin_shield::AdminShield,
     network_guard: network_guard::NetworkGuard,
     via_token: String,
     events: Mutex<File>,
@@ -83,8 +90,16 @@ impl Runtime {
         default_via: &str,
         temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
         previous: Option<&Runtime>,
+        admin_address: Option<std::net::SocketAddr>,
     ) -> Result<Self, Error> {
         config.validate()?;
+        let admin_shield = admin_shield::AdminShield::new(
+            config.admin_port.unwrap_or(9090),
+            &config.admin_shield_extra_ports,
+        )?;
+        let tasks = previous
+            .map(|runtime| runtime.tasks.clone())
+            .unwrap_or_default();
         let policy = config
             .policy_file
             .as_ref()
@@ -139,6 +154,9 @@ impl Runtime {
             passthrough,
             scanner,
             policy,
+            tasks,
+            admin_address,
+            admin_shield,
             network_guard,
             via_token: config
                 .via_token
@@ -354,6 +372,7 @@ async fn serve_connection(
 pub struct Proxy {
     runtime: Arc<RwLock<Arc<Runtime>>>,
     listeners: HashMap<PathBuf, RunningListener>,
+    admin: Option<admin_listener::Running>,
     draining: Vec<JoinHandle<()>>,
     default_via: String,
     readiness_file: PathBuf,
@@ -362,6 +381,11 @@ pub struct Proxy {
 
 impl Proxy {
     pub async fn start(config: Config) -> Result<Self, Error> {
+        config.validate()?;
+        let prepared_admin = admin_listener::Prepared::bind(&config).await?;
+        let admin_address = prepared_admin
+            .as_ref()
+            .map(admin_listener::Prepared::address);
         let default_via = uuid::Uuid::new_v4().simple().to_string();
         let temporary_policy_lock = Arc::new(tokio::sync::Mutex::new(()));
         let runtime = Arc::new(Runtime::new(
@@ -369,17 +393,21 @@ impl Proxy {
             &default_via,
             temporary_policy_lock.clone(),
             None,
+            admin_address,
         )?);
         let mut proxy = Self {
             runtime: Arc::new(RwLock::new(runtime)),
             listeners: HashMap::new(),
+            admin: None,
             draining: Vec::new(),
             default_via,
             readiness_file: config.readiness_file.clone(),
             temporary_policy_lock,
         };
         // A readiness marker is useful only after all configured sockets have bound.
+        // Keep the prepared operator socket locally owned until agent binds succeed.
         proxy.install_listeners(&config).await?;
+        proxy.admin = prepared_admin.map(|listener| listener.start(proxy.runtime.clone()));
         proxy.write_readiness()?;
         Ok(proxy)
     }
@@ -388,14 +416,14 @@ impl Proxy {
         let temporary = self
             .readiness_file
             .with_extension(format!("{}.tmp", std::process::id()));
-        std::fs::write(
-            &temporary,
-            serde_json::to_vec(&json!({
+        let mut marker = json!({
             "ready": true, "pid": std::process::id(), "backend": "rust-m2",
-            "instance_id": self.default_via,
-                "listeners": self.listeners.len(),
-            }))?,
-        )?;
+            "instance_id": self.default_via, "listeners": self.listeners.len(),
+        });
+        if let Some(listener) = &self.admin {
+            marker["admin_port"] = Value::from(listener.address().port());
+        }
+        std::fs::write(&temporary, serde_json::to_vec(&marker)?)?;
         std::fs::rename(temporary, &self.readiness_file)?;
         Ok(())
     }
@@ -462,6 +490,7 @@ impl Proxy {
             &self.default_via,
             self.temporary_policy_lock.clone(),
             Some(&previous),
+            self.admin.as_ref().map(admin_listener::Running::address),
         )?);
         // Once topology changes begin, readiness is re-published only after commit.
         clear_readiness(&self.readiness_file, &self.default_via);
@@ -479,6 +508,9 @@ impl Proxy {
 
     pub async fn shutdown(mut self) {
         clear_readiness(&self.readiness_file, &self.default_via);
+        if let Some(listener) = self.admin.take() {
+            self.draining.push(listener.stop());
+        }
         for (_, listener) in self.listeners.drain() {
             self.draining.push(listener.stop());
         }

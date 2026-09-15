@@ -37,6 +37,12 @@ pub struct Config {
     pub network_guard_homoglyph: bool,
     #[serde(default = "enabled")]
     pub agent_api_enabled: bool,
+    /// Development opt-in for the existing separate IPv4-loopback operator API.
+    /// Listener and token settings are read at process startup.
+    pub admin_port: Option<u16>,
+    pub admin_api_token_file: Option<PathBuf>,
+    #[serde(default)]
+    pub admin_shield_extra_ports: String,
     pub readiness_file: PathBuf,
     pub event_log: PathBuf,
     pub parent_proxy: Option<String>,

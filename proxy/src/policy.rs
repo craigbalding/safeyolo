@@ -351,6 +351,40 @@ struct TaskPolicy {
     path: Option<PathBuf>,
 }
 
+/// Validate a registered task without compiling or activating its permissions.
+/// The operator registry retains the supplied JSON rather than this temporary
+/// canonical model. Validation uses the same schema helpers as policy loading.
+pub(crate) fn validate_task_document(value: &Value) -> Result<usize> {
+    let source = object(value, "task policy")?;
+    let mut builder = BaselineBuilder::new(source, false, &TimestampPaths::default())?;
+    if let Some(permissions) = source.get("permissions") {
+        let permissions = permissions
+            .as_array()
+            .ok_or_else(|| invalid("permissions must be an array"))?;
+        for permission in permissions {
+            builder.push(baseline::permission(permission)?, false);
+        }
+    }
+    let model = builder.finish()?;
+    Ok(model.value["permissions"]
+        .as_array()
+        .expect("canonical permissions are an array")
+        .len())
+}
+
+pub(crate) fn validate_task_id(task: &str) -> Result<()> {
+    if task.is_empty()
+        || task.len() > 128
+        || !task.as_bytes()[0].is_ascii_alphanumeric()
+        || !task
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    {
+        return Err(invalid("invalid task identifier"));
+    }
+    Ok(())
+}
+
 impl Policy {
     /// An initialized local engine without a configured baseline defaults to
     /// denial while the baseline API reports null.

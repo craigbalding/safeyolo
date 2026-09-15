@@ -343,6 +343,8 @@ silently reduce accepted message sizes to a library default.
 | D43 | After the last gateway grant is removed, the source gateway callback returns before clearing its previous token bindings. With a retained host binding and an authored gateway allow rule, an old token can still pass identity, service, capability, host and policy checks and reach vault selection. The compiled baseline already reports an empty token map. | The native gateway snapshot replaces the complete binding collection, including an empty collection. Its canonical view and selector revoke the old token together. Failed candidate construction retains the previous snapshot. This is proven at the shared policy/service boundary; the native HTTP credential pipeline remains unactivated. |
 | D44 | Normal source reload rotates gateway tokens without refreshing contract bindings. A changed body/query approval can keep its old value effective even with generated route permissions. Removed approvals also survive the explicit contract file loader and remain usable when an authored gateway permission permits the route. The stale approval uses the new current token, unlike D43. | Each accepted native snapshot replaces contract bindings together with tokens and permissions. The [gateway regression](../proxy/tests/gateway_snapshot.rs) checks alpha-to-beta replacement with unchanged generated routes, removal despite an authored allow, old-token rejection and retention after invalid TOML. The source witness exercised 32 actual request hooks across 16 observations with isolated in-memory injection and no egress. Native HTTP credential integration remains pending. |
 | D45 | Source task clear removes the active task from PDPCore but does not invalidate the Agent API configuration cache. A populated `/config` response can retain the old task rules and hash until explicit invalidation, while direct core reads already show the baseline. This is an observed state-freshness defect; the witness does not establish an enforcement bypass. | The native projection reads the current immutable snapshot without a second cache. The [sensor configuration tests](../proxy/src/policy/sensor_config.rs) compare baseline, task replacement and the existing `without_task()` snapshot with actual source core responses, retaining the stale source handler response as evidence. HTTP task management and sensor enforcement integration remain pending; the component test does not establish a complete task-clear workflow. |
+| D46 | The source admin shield checks textual hosts before DNS. Numeric aliases, a root dot, mapped IPv6 and a DNS alias can reach a protected loopback endpoint. Configured extra ports have the same hole. Malformed digit-only extra ports raise inside both hooks; the dispatcher swallows those failures and permits the connection. An ephemeral bind or a changed port option can also leave the running listener unprotected. Admin bearer authentication remains a separate boundary. | Native request and CONNECT checks retain the source host/port rules. Before connecting, the sole egress path checks each selected socket against the protected local addresses and the actual startup-owned listener. The same numeric port at a remote address or 127.0.0.2 remains allowed. Invalid numeric extra-port configuration rejects the candidate and preserves the previous live snapshot. The [shield tests](../proxy/tests/admin_shield.rs) retain actual source socket and dispatcher witnesses; the [operator transport tests](../proxy/tests/admin_transport.rs) exercise the integrated boundary. The proxy checks the immediate configured parent socket; origin resolution beyond that parent remains the parent's responsibility. |
+| D47 | A malformed operator JSON or UTF-8 body makes the source task PUT handler write two final 400 responses for one request. Its Content-Length parser also accepts a negative length by reading until EOF, maps non-numeric lengths to a body error, and can disconnect on overflow. | The native operator facade sends one terminal malformed-body 400 with a native decoder diagnostic. Hyper rejects invalid framing before dispatch. Normal task responses retain exact source JSON bytes; decoder wording and transport rejection order are explicit differences. The [operator facade tests](../proxy/src/admin_api.rs) compare valid, auth, method, raw-document and failure contracts. These changes do not add an application body limit or a second HTTP parser. |
 
 ## Deletion map and evidence still required
 
@@ -491,6 +493,82 @@ include all Unicode scalar Nameprep outcomes and 155 source parser/sensor rows.
 The native request constructor also matches those 155 rows. All 22 existing
 Rust transport tests, strict all-target Clippy and selected hooks pass.
 These are owner results, without independent acceptance or macOS/guest evidence.
+
+The native [operator API](../proxy/src/admin_api.rs) implements GET `/health`
+and authenticated GET/PUT `/admin/policy/task/{id}` on a separate IPv4-loopback
+listener. Development configuration opts in with `admin_port`; port zero binds
+an ephemeral port reported as `admin_port` in readiness. The optional
+`admin_api_token_file` contains the startup token. The listener reads and strips
+that file once. Missing or empty tokens deny task access; health remains public.
+Policy reload preserves the actual listener, startup token and task registry.
+Listener or token changes require a process restart, matching the source server's
+startup ownership. Other operator routes and production CLI selection remain
+unimplemented.
+
+A successful task PUT validates the existing model schema and stores the supplied
+JSON in one process-local registry. It does not compile or activate task rules,
+inject a task ID into the stored document, or change the active policy hash.
+GET returns that raw document, including unknown fields and absent defaults.
+Replacing an ID retains the registry count; an invalid update retains the prior
+document. Restart starts a new empty registry. Validation reuses the canonical
+loader's schema helpers without its matcher, host expansion or token issuance.
+Schema-valid budgets or regex strings can therefore register even when native
+activation remains unsupported. HTTP task activation and standalone PDP deletion
+are still separate work.
+
+Operator replies use Python's indented JSON presentation and the shared scalar
+formatter. GET borrows the stored document into one sized, zeroizing response
+allocation. Task document owners and API outcomes omit Debug and general serialization.
+Development `proxy.admin_api` records retain source audit intents for failed auth
+and accepted task updates, without raw task documents or bearer values. Evidence
+write failures preserve the response and set `X-SafeYolo-Evidence-Error`.
+Production event envelopes and storage remain unintegrated.
+
+The listener uses the first Authorization header and exact `Bearer ` prefix.
+It adds no Origin, Host or CORS restriction. Origin-form targets retain the source
+normalization of leading slashes; absolute-form paths remain distinct.
+Non-ASCII authentication and a truthy
+non-object request body retain the source connection-close behavior. Malformed
+JSON or UTF-8 receives one terminal 400, preserving the source's first error
+category with a native decoder diagnostic. The source writes a second response
+on that connection; the native facade does not reproduce that defect. Hyper
+rejects invalid, negative and overflowing Content-Length before dispatch. The
+source can instead report a body error, disconnect, or read until EOF. These
+framing differences and native HTTP version/banner headers remain explicit;
+the normal task response fields and bytes have source comparisons.
+
+The [admin shield](../proxy/src/admin_shield.rs) applies before policy or forwarding
+and again at the sole outbound connection path. D46 records its concrete source
+repairs. `admin_shield_extra_ports` retains the source's comma-separated grammar:
+ordinary non-digit entries are ignored, while digit-only entries that Python
+cannot convert reject the native configuration. Existing rules are retained on a
+failed reload. The actual bound listener stays protected even if the configured
+port option changes. Protected immediate routes resolve once and check each
+selected socket before a connection or egress record. Enforcement records use the
+local decision; an upstream response header cannot claim a local admin block.
+Other routes keep their
+existing connection behavior. Initial admin bind failure prevents readiness;
+shutdown closes its listener and drains connections with the other proxy tasks.
+
+Owner validation on Linux aarch64 passed 253 selected Rust tests, including the
+live source oracles, 15 compile-fail documentation tests, strict all-target
+Clippy, formatting and selected repository hooks. All 210 native wire cases
+passed against one frozen executable: 69 Agent API, 36 network, 104 WebSocket
+and one [operator client workflow](../tests/proxy_migration/test_operator_task_api.py).
+The workflow uses the existing Python AdminAPI client with an owned listener
+and synthetic token. It verifies task registration, reload ownership, unchanged
+network enforcement and proxy-to-admin containment.
+
+All 1,010 source blobs, 22 migration fixtures and the executable stayed unchanged
+during that run. All configurations selected native policy without the temporary
+adapter. All 153 egress records belonged to owned peers, with no unexpected
+contact. Artifact scans found no raw or hex-encoded minted bearer patterns.
+Readiness files, Unix sockets and proxy processes were cleaned up. Process
+observations cover 179 cases; the remaining 31 have configuration, event and
+cleanup evidence without a sampled-process claim. The four WebSocket lifecycle
+witnesses pass; opaque regex delegate cancellation remains unproven.
+These results are implementation evidence, without independent acceptance,
+macOS or real-guest validation.
 
 The native [Agent API](../proxy/src/agent_api.rs) serves authenticated `/health`,
 `/lookup`, `/policy`, `/budgets` and `/config` on the reserved hostname.

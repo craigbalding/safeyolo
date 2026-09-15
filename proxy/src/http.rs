@@ -306,6 +306,28 @@ pub(crate) fn parent_tls(config: &crate::Config) -> Result<Arc<ClientConfig>, Er
     Ok(Arc::new(tls))
 }
 
+#[derive(Debug)]
+struct AdminPortAccess;
+impl std::fmt::Display for AdminPortAccess {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(crate::admin_shield::REJECTION.transport_error)
+    }
+}
+impl std::error::Error for AdminPortAccess {}
+
+fn admin_rejection() -> Response<Body> {
+    let rejection = crate::admin_shield::REJECTION;
+    let mut response = Response::builder()
+        .status(rejection.status)
+        .header(header::CONTENT_LENGTH, rejection.body.len());
+    for (name, value) in rejection.headers {
+        response = response.header(*name, *value);
+    }
+    response
+        .body(full(Bytes::from_static(rejection.body)))
+        .unwrap()
+}
+
 /// The only outbound DNS/socket path. Both routing modes enforce local containment.
 async fn open_egress(
     runtime: &Runtime,
@@ -323,12 +345,73 @@ async fn open_egress(
     if is_reserved(host) {
         return Err("reserved destination cannot be an egress route".into());
     }
-    runtime.record(json!({
-        "event": "proxy.egress", "agent": allowed.identity.agent_id,
-        "connection_id": allowed.identity.connection_id, "request_id": allowed.request_id,
-        "host": destination.host, "port": destination.port, "route": route,
-    }))?;
-    let socket = TcpStream::connect((host, port)).await?;
+    if runtime
+        .admin_shield
+        .blocks_host(&destination.host, destination.port)
+        || runtime.admin_shield.blocks_host(host, port)
+    {
+        return Err(AdminPortAccess.into());
+    }
+    let record_egress = || {
+        runtime.record(json!({
+            "event": "proxy.egress", "agent": allowed.identity.agent_id,
+            "connection_id": allowed.identity.connection_id, "request_id": allowed.request_id,
+            "host": destination.host, "port": destination.port, "route": route,
+        }))
+    };
+    let socket = if runtime.admin_shield.protects_port(port)
+        || runtime
+            .admin_address
+            .is_some_and(|bound| bound.port() == port)
+    {
+        // Resolve this immediate route once before selecting a socket that
+        // could reach the operator listener. Parent-origin DNS remains remote.
+        let addresses = tokio::net::lookup_host((host, port)).await?;
+        let mut socket = None;
+        let mut last_error = None;
+        let mut protected = false;
+        let mut recorded = false;
+        for address in addresses {
+            if runtime.admin_shield.blocks_address(address)
+                || runtime
+                    .admin_address
+                    .is_some_and(|bound| crate::admin_shield::targets_listener(address, bound))
+            {
+                protected = true;
+                continue;
+            }
+            if !recorded {
+                record_egress()?;
+                recorded = true;
+            }
+            match TcpStream::connect(address).await {
+                Ok(connected) => {
+                    socket = Some(connected);
+                    break;
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        match socket {
+            Some(socket) => socket,
+            None => {
+                if protected {
+                    return Err(AdminPortAccess.into());
+                }
+                if let Some(error) = last_error {
+                    return Err(error.into());
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "egress route resolved no socket addresses",
+                )
+                .into());
+            }
+        }
+    } else {
+        record_egress()?;
+        TcpStream::connect((host, port)).await?
+    };
     let peer = if runtime.parent.is_none() {
         match socket.peer_addr()?.ip() {
             std::net::IpAddr::V4(address) => Some(address),
@@ -660,6 +743,12 @@ async fn forward(
     destination: &Destination,
     tunnel: Option<&Tunnel>,
 ) -> Result<(Response<Body>, String), Error> {
+    if runtime
+        .admin_shield
+        .blocks_host(&destination.host, destination.port)
+    {
+        return Ok((admin_rejection(), "admin_port_access".into()));
+    }
     if is_reserved(&destination.host) {
         if request.method() == Method::CONNECT {
             let mut reply = response(
@@ -1076,6 +1165,9 @@ pub(crate) fn serve_request(
             )),
         };
         let (mut reply, decision) = result.unwrap_or_else(|error| {
+            if error.is::<AdminPortAccess>() {
+                return (admin_rejection(), "admin_port_access".into());
+            }
             // Errors contain no application headers/body. A transport/adapter error never retries another route.
             eprintln!("request {request_id} failed: {error}");
             (
@@ -1083,20 +1175,30 @@ pub(crate) fn serve_request(
                 "error".into(),
             )
         });
-        if let Err(error) = runtime.record(json!({
+        // Upstream response headers cannot classify a local enforcement action.
+        let admin_blocked = decision == "admin_port_access";
+        let mut record = json!({
             "event": "proxy.request", "agent": identity.agent_id,
             "connection_id": identity.connection_id, "request_id": request_id,
             "host": destination.as_ref().ok().map(|d| &d.policy_host),
             "port": destination.as_ref().ok().map(|d| d.port),
-            "status": reply.status().as_u16(), "decision": decision,
-            "coverage": if destination.as_ref().is_ok_and(|d| is_reserved(&d.host)) {
+            "status": reply.status().as_u16(),
+            "decision": if admin_blocked { "deny" } else { &decision },
+            "coverage": if admin_blocked {
+                "admin_shield_only"
+            } else if destination.as_ref().is_ok_and(|d| is_reserved(&d.host)) {
                 "local_endpoint"
             } else if runtime.policy.is_some() {
                 "native_network_guard_only"
             } else {
                 "temporary_network_policy_only"
             },
-        })) {
+        });
+        if admin_blocked {
+            record["blocked_by"] = json!(crate::admin_shield::REJECTION.blocked_by);
+            record["block_reason"] = json!(crate::admin_shield::REJECTION.block_reason);
+        }
+        if let Err(error) = runtime.record(record) {
             eprintln!("request evidence write failed: {error}");
             reply
                 .headers_mut()
