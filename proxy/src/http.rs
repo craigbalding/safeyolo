@@ -219,6 +219,10 @@ async fn open_outbound(
 }
 
 async fn decide(runtime: &Runtime, request: &PolicyRequest<'_>) -> Result<PolicyDecision, Error> {
+    // The temporary adapter has one policy/state owner. Queue here instead of
+    // overflowing its Unix accept queue or replaying a charged decision. The
+    // lock is shared across reload snapshots and released on cancellation.
+    let _policy_guard = runtime.temporary_policy_lock.lock().await;
     let socket = UnixStream::connect(&runtime.config.temporary_policy_socket).await?;
     let (mut sender, connection) =
         hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;

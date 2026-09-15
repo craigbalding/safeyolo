@@ -39,11 +39,16 @@ pub(crate) struct Runtime {
     tls: Option<Arc<rustls::ClientConfig>>,
     via_token: String,
     events: Mutex<File>,
+    temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
     instance_id: String,
 }
 
 impl Runtime {
-    fn new(config: Config, default_via: &str) -> Result<Self, Error> {
+    fn new(
+        config: Config,
+        default_via: &str,
+        temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
+    ) -> Result<Self, Error> {
         config.validate()?;
         let parent = config.parent()?;
         let tls = if parent.as_ref().is_some_and(|parent| parent.tls) {
@@ -52,6 +57,7 @@ impl Runtime {
             None
         };
         Ok(Self {
+            temporary_policy_lock,
             parent,
             tls,
             via_token: config
@@ -255,18 +261,25 @@ pub struct Proxy {
     draining: Vec<JoinHandle<()>>,
     default_via: String,
     readiness_file: PathBuf,
+    temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Proxy {
     pub async fn start(config: Config) -> Result<Self, Error> {
         let default_via = uuid::Uuid::new_v4().simple().to_string();
-        let runtime = Arc::new(Runtime::new(config.clone(), &default_via)?);
+        let temporary_policy_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let runtime = Arc::new(Runtime::new(
+            config.clone(),
+            &default_via,
+            temporary_policy_lock.clone(),
+        )?);
         let mut proxy = Self {
             runtime: Arc::new(RwLock::new(runtime)),
             listeners: HashMap::new(),
             draining: Vec::new(),
             default_via,
             readiness_file: config.readiness_file.clone(),
+            temporary_policy_lock,
         };
         // A readiness marker is useful only after all configured sockets have bound.
         proxy.install_listeners(&config).await?;
@@ -342,7 +355,11 @@ impl Proxy {
     }
 
     pub async fn reload(&mut self, config: Config) -> Result<(), Error> {
-        let runtime = Arc::new(Runtime::new(config.clone(), &self.default_via)?);
+        let runtime = Arc::new(Runtime::new(
+            config.clone(),
+            &self.default_via,
+            self.temporary_policy_lock.clone(),
+        )?);
         // Once topology changes begin, readiness is re-published only after commit.
         clear_readiness(&self.readiness_file, &self.default_via);
         self.install_listeners(&config).await?;
