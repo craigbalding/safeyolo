@@ -1,4 +1,4 @@
-//! Operator task registration on a separate authenticated management listener.
+//! Operator task registration and live budgets on the management listener.
 //!
 //! The caller owns loopback binding, startup token loading, transport framing,
 //! audit persistence and shutdown. This facade neither activates tasks nor
@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+use crate::policy::{BudgetStatsError, Policy};
 use crate::tasks::{self, Registry};
 
 /// These errors terminate the connection without a fabricated HTTP response.
@@ -27,6 +28,7 @@ pub enum Error {
     BodyFraming,
     BodyRead,
     RegistryUnavailable,
+    BudgetReporting(BudgetStatsError),
 }
 
 impl fmt::Display for Error {
@@ -37,19 +39,59 @@ impl fmt::Display for Error {
             Self::BodyFraming => "Operator request framing failed",
             Self::BodyRead => "Operator request body read failed",
             Self::RegistryUnavailable => "Task registry unavailable",
+            Self::BudgetReporting(_) => "Operator budget report unavailable",
         })
     }
 }
 
 impl std::error::Error for Error {}
 
-/// The caller supplies peer/path audit metadata; no body or token is retained.
+/// The caller supplies peer/path audit metadata. Reset retains only the selected
+/// resource for authorized structured evidence; its owner wipes it on drop.
 pub enum Audit {
     AuthenticationFailed,
+    BudgetsReset(BudgetResetAudit),
     TaskUpdated {
         task_id: String,
         permission_count: usize,
     },
+}
+
+/// A committed reset; evidence failure does not roll it back. No Debug or
+/// Serialize implementation can accidentally reveal the selected resource.
+pub struct BudgetResetAudit {
+    resource: Value,
+}
+
+impl BudgetResetAudit {
+    pub fn resource(&self) -> &Value {
+        &self.resource
+    }
+
+    pub fn resets_all(&self) -> bool {
+        !truthy(&self.resource)
+    }
+
+    pub fn safe_resource(&self) -> String {
+        let text = match &self.resource {
+            value if !truthy(value) => return "all".into(),
+            Value::String(value) => return crate::network_guard::sanitize(value),
+            Value::Bool(true) => "True".into(),
+            // The shared renderer preserves Python float and arbitrary integer
+            // presentation. Python str(infinity) differs from JSON's spelling.
+            Value::Number(_) => {
+                crate::python_json::encode(&self.resource).replace("Infinity", "inf")
+            }
+            _ => unreachable!("successful reset accepts only truthy scalars"),
+        };
+        crate::network_guard::sanitize(&Zeroizing::new(text))
+    }
+}
+
+impl Drop for BudgetResetAudit {
+    fn drop(&mut self) {
+        crate::credentials::wipe_json(&mut self.resource);
+    }
 }
 
 /// Diagnostics cannot print the authorized raw response accidentally.
@@ -203,6 +245,101 @@ fn truthy(value: &Value) -> bool {
     }
 }
 
+enum ParsedBody {
+    Absent,
+    Value(Json),
+    Terminal(Outcome),
+}
+
+async fn read_json<B: Body<Data = Bytes>>(request: Request<B>) -> Result<ParsedBody, Error> {
+    let length = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or(Error::BodyFraming)
+        })
+        .transpose()?
+        .unwrap_or(0);
+    if length == 0 {
+        return Ok(ParsedBody::Absent);
+    }
+    let bytes = request
+        .into_body()
+        .collect()
+        .await
+        .map_err(|_| Error::BodyRead)?
+        .to_bytes();
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(error) => {
+            return Ok(ParsedBody::Terminal(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"Malformed JSON in request body","detail":error.to_string()}),
+            )));
+        }
+    };
+    let data = match crate::policy::parse_json(text, false) {
+        Ok(value) => Json(value),
+        Err(error) => {
+            return Ok(ParsedBody::Terminal(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"Malformed JSON in request body","detail":error.to_string()}),
+            )));
+        }
+    };
+    Ok(ParsedBody::Value(data))
+}
+
+fn budget_report(policy: &Policy, now_ms: f64) -> Result<Outcome, Error> {
+    policy
+        .budget_stats(now_ms)
+        .map(|value| response(StatusCode::OK, value))
+        .map_err(Error::BudgetReporting)
+}
+
+async fn reset_budgets<B: Body<Data = Bytes>>(
+    request: Request<B>,
+    policy: &Policy,
+) -> Result<Outcome, Error> {
+    let mut data = match read_json(request).await? {
+        ParsedBody::Terminal(outcome) => return Ok(outcome),
+        ParsedBody::Absent => Json(Value::Null),
+        ParsedBody::Value(data) => data,
+    };
+    let resource = if truthy(&data.0) {
+        data.0
+            .as_object_mut()
+            .ok_or(Error::NonObjectBody)?
+            .get_mut("resource")
+            .map(Value::take)
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let audit = BudgetResetAudit { resource };
+    if policy.reset_budgets(Some(audit.resource())).is_err() {
+        return Ok(response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({"error":"Failed to reset budget counters"}),
+        ));
+    }
+    let resource = if audit.resets_all() {
+        Value::String("all".into())
+    } else {
+        audit.resource().clone()
+    };
+    let mut outcome = response(
+        StatusCode::OK,
+        json!({"status":"ok", "resource":resource, "reset_count":0}),
+    );
+    outcome.audit = Some(Audit::BudgetsReset(audit));
+    Ok(outcome)
+}
+
 /// HTTP framing is supplied by the listener. Unknown/negative/overflow lengths
 /// rejected by Hyper are a separate transport compatibility difference.
 /// Body parsing occurs only after method, authentication, route and empty-ID
@@ -211,6 +348,7 @@ pub async fn respond<B>(
     request: Request<B>,
     expected_token: &str,
     registry: &Registry,
+    policy: Option<&Policy>,
 ) -> Result<Outcome, Error>
 where
     B: Body<Data = Bytes>,
@@ -236,6 +374,21 @@ where
         );
         outcome.audit = Some(Audit::AuthenticationFailed);
         return Ok(outcome);
+    }
+    if (method == Method::GET && path == "/admin/budgets")
+        || (method == Method::POST && path == "/admin/budgets/reset")
+    {
+        let Some(policy) = policy else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"Operator budget endpoint unavailable with the temporary policy adapter"}),
+            ));
+        };
+        return if method == Method::GET {
+            budget_report(policy, crate::policy::current_time_ms())
+        } else {
+            reset_budgets(request, policy).await
+        };
     }
     let task_id = path.strip_prefix("/admin/policy/task/");
     if !matches!(*method, Method::GET | Method::PUT) || task_id.is_none() {
@@ -270,48 +423,11 @@ where
             ),
         });
     }
-    let length = request
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .map(|value| {
-            value
-                .to_str()
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .ok_or(Error::BodyFraming)
-        })
-        .transpose()?
-        .unwrap_or(0);
-    if length == 0 {
-        return Ok(response(
-            StatusCode::BAD_REQUEST,
-            json!({"error":"missing request body"}),
-        ));
-    }
     let task_id = task_id.to_owned();
-    let bytes = request
-        .into_body()
-        .collect()
-        .await
-        .map_err(|_| Error::BodyRead)?
-        .to_bytes();
-    let text = match std::str::from_utf8(&bytes) {
-        Ok(text) => text,
-        Err(error) => {
-            return Ok(response(
-                StatusCode::BAD_REQUEST,
-                json!({"error":"Malformed JSON in request body","detail":error.to_string()}),
-            ));
-        }
-    };
-    let mut data = match crate::policy::parse_json(text, false) {
-        Ok(value) => Json(value),
-        Err(error) => {
-            return Ok(response(
-                StatusCode::BAD_REQUEST,
-                json!({"error":"Malformed JSON in request body","detail":error.to_string()}),
-            ));
-        }
+    let mut data = match read_json(request).await? {
+        ParsedBody::Terminal(outcome) => return Ok(outcome),
+        ParsedBody::Absent => Json(Value::Null),
+        ParsedBody::Value(data) => data,
     };
     if !truthy(&data.0) {
         return Ok(response(
@@ -486,7 +602,7 @@ mod tests {
             if let Some(token) = token {
                 request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
             }
-            let outcome = respond(request.body(MustNotRead).unwrap(), TOKEN, &registry)
+            let outcome = respond(request.body(MustNotRead).unwrap(), TOKEN, &registry, None)
                 .await
                 .unwrap();
             assert_eq!(outcome.status().as_u16(), status);
@@ -503,7 +619,7 @@ mod tests {
                 .uri("/health")
                 .body(MustNotRead)
                 .unwrap();
-            let outcome = respond(request, "", &registry).await.unwrap();
+            let outcome = respond(request, "", &registry, None).await.unwrap();
             assert_eq!(outcome.status(), StatusCode::NOT_IMPLEMENTED);
             assert!(outcome.audit().is_none());
             assert_eq!(
@@ -552,7 +668,7 @@ mod tests {
                 .headers_mut()
                 .append(header::AUTHORIZATION, second.parse().unwrap());
             assert_eq!(
-                respond(request, TOKEN, &registry)
+                respond(request, TOKEN, &registry, None)
                     .await
                     .unwrap()
                     .status()
@@ -566,14 +682,15 @@ mod tests {
             header::HeaderValue::from_bytes(b"Bearer \xff").unwrap(),
         );
         assert!(matches!(
-            respond(nonascii, TOKEN, &registry).await,
+            respond(nonascii, TOKEN, &registry, None).await,
             Err(Error::AuthenticationEncoding)
         ));
         assert!(matches!(
             respond(
                 request("GET", "/admin/policy/task/absent", b""),
                 "é",
-                &registry
+                &registry,
+                None
             )
             .await,
             Err(Error::AuthenticationEncoding)
@@ -582,7 +699,8 @@ mod tests {
             respond(
                 request("GET", "/admin/policy/task/absent", b""),
                 "",
-                &registry
+                &registry,
+                None
             )
             .await
             .unwrap()
@@ -603,6 +721,7 @@ mod tests {
             ),
             TOKEN,
             &registry,
+            None,
         )
         .await
         .unwrap();
@@ -622,7 +741,7 @@ mod tests {
             request
                 .headers_mut()
                 .insert("x-safeyolo-agent", "forged".parse().unwrap());
-            let outcome = respond(request, TOKEN, &registry).await.unwrap();
+            let outcome = respond(request, TOKEN, &registry, None).await.unwrap();
             assert!(outcome.audit().is_none());
             assert_eq!(body(outcome).await, expected_get.as_bytes());
         }
@@ -635,6 +754,7 @@ mod tests {
             ),
             TOKEN,
             &registry,
+            None,
         )
         .await
         .unwrap();
@@ -648,6 +768,7 @@ mod tests {
             request("PUT", "/admin/policy/task/alpha", br#"{"policy":{}}"#),
             TOKEN,
             &registry,
+            None,
         )
         .await
         .unwrap();
@@ -669,7 +790,8 @@ mod tests {
                 respond(
                     request("GET", &format!("/admin/policy/task/{id}"), b""),
                     TOKEN,
-                    &registry
+                    &registry,
+                    None
                 )
                 .await
                 .unwrap()
@@ -684,7 +806,8 @@ mod tests {
                         br#"{"policy":{}}"#
                     ),
                     TOKEN,
-                    &registry
+                    &registry,
+                    None
                 )
                 .await
                 .unwrap()
@@ -703,6 +826,7 @@ mod tests {
                 request("PUT", "/admin/policy/task/alpha", bytes),
                 TOKEN,
                 &registry,
+                None,
             )
             .await
             .unwrap();
@@ -717,7 +841,8 @@ mod tests {
                 respond(
                     request("PUT", "/admin/policy/task/alpha", bytes),
                     TOKEN,
-                    &registry
+                    &registry,
+                    None
                 )
                 .await,
                 Err(Error::NonObjectBody)
@@ -728,6 +853,7 @@ mod tests {
                 request("PUT", "/admin/policy/task/alpha", bytes),
                 TOKEN,
                 &registry,
+                None,
             )
             .await
             .unwrap();
@@ -751,6 +877,7 @@ mod tests {
             request("PUT", "/admin/policy/task/raw", raw),
             TOKEN,
             &registry,
+            None,
         )
         .await
         .unwrap();

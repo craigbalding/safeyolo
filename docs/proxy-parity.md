@@ -346,6 +346,7 @@ silently reduce accepted message sizes to a library default.
 | D46 | The source admin shield checks textual hosts before DNS. Numeric aliases, a root dot, mapped IPv6 and a DNS alias can reach a protected loopback endpoint. Configured extra ports have the same hole. Malformed digit-only extra ports raise inside both hooks; the dispatcher swallows those failures and permits the connection. An ephemeral bind or a changed port option can also leave the running listener unprotected. Admin bearer authentication remains a separate boundary. | Native request and CONNECT checks retain the source host/port rules. Before connecting, the sole egress path checks each selected socket against the protected local addresses and the actual startup-owned listener. The same numeric port at a remote address or 127.0.0.2 remains allowed. Invalid numeric extra-port configuration rejects the candidate and preserves the previous live snapshot. The [shield tests](../proxy/tests/admin_shield.rs) retain actual source socket and dispatcher witnesses; the [operator transport tests](../proxy/tests/admin_transport.rs) exercise the integrated boundary. The proxy checks the immediate configured parent socket; origin resolution beyond that parent remains the parent's responsibility. |
 | D47 | A malformed operator JSON or UTF-8 body makes the source task PUT handler write two final 400 responses for one request. Its Content-Length parser also accepts a negative length by reading until EOF, maps non-numeric lengths to a body error, and can disconnect on overflow. | The native operator facade sends one terminal malformed-body 400 with a native decoder diagnostic. Hyper rejects invalid framing before dispatch. Normal task responses retain exact source JSON bytes; decoder wording and transport rejection order are explicit differences. The [operator facade tests](../proxy/src/admin_api.rs) compare valid, auth, method, raw-document and failure contracts. These changes do not add an application body limit or a second HTTP parser. |
 | D48 | The earlier native request cleanup skips an entire Connection value when HeaderValue::to_str rejects non-ASCII bytes. A valid UTF-8 whitespace token therefore leaves its nominated header on the upstream request, while Python removes it. HeaderMap deletion also changes the first-match order needed by credential inspection. | The [ordered header owner](../proxy/src/request_headers.rs) uses fields captured by the existing H1/H2 parsers, preserves first spelling and duplicate order, and applies source header hygiene before network evaluation. The [wire regression](../tests/proxy_migration/test_request_headers.py) matches Python; a retained run against the earlier immutable binary proves it forwards the synthetic nominated field. Invalid bytes remain available and do not become absent headers. This metadata repair does not activate credential regex inspection. |
+| D49 | A malformed JSON or UTF-8 budget-reset body makes the source parser send 400 and return None. The reset handler treats that result as an absent body, clears every budget, emits two success audit events and sends a second 200 response. | The native operator handler sends one terminal 400 and preserves the counters. Intentionally absent bodies and valid falsy JSON still reset all counters. The source handler/state probe and [operator workflow](../tests/proxy_migration/test_operator_budgets.py) retain this concrete defect separately from compatible reset behavior. |
 
 ## Deletion map and evidence still required
 
@@ -495,12 +496,13 @@ The native request constructor also matches those 155 rows. All 22 existing
 Rust transport tests, strict all-target Clippy and selected hooks pass.
 These are owner results, without independent acceptance or macOS/guest evidence.
 
-The native [operator API](../proxy/src/admin_api.rs) implements GET `/health`
-and authenticated GET/PUT `/admin/policy/task/{id}` on a separate IPv4-loopback
-listener. Development configuration opts in with `admin_port`; port zero binds
+The native [operator API](../proxy/src/admin_api.rs) implements GET `/health`,
+authenticated GET/PUT `/admin/policy/task/{id}`, GET `/admin/budgets` and
+POST `/admin/budgets/reset` on a separate IPv4-loopback listener.
+Development configuration opts in with `admin_port`; port zero binds
 an ephemeral port reported as `admin_port` in readiness. The optional
 `admin_api_token_file` contains the startup token. The listener reads and strips
-that file once. Missing or empty tokens deny task access; health remains public.
+that file once. Missing or empty tokens deny management access; health remains public.
 Policy reload preserves the actual listener, startup token and task registry.
 Listener or token changes require a process restart, matching the source server's
 startup ownership. Other operator routes and production CLI selection remain
@@ -667,7 +669,46 @@ source handler-owned 500 `Internal error: OverflowError` without changing state.
 An unrelated timestamp in addon settings can make `/policy` fail while
 `/budgets` remains available. Native charging still requires positive `u64`
 Budget-effect and global network rates; source admission of other rates remains
-a compatibility gap. Budget reset and persistence workflows remain unintegrated.
+a compatibility gap. Budget persistence remains unintegrated.
+
+Operator GET `/admin/budgets` reads that same state. POST `/admin/budgets/reset`
+supports the existing Python `AdminAPI.reset_budget` client. A truthy string
+removes one exact key; wildcards are literal. An absent or falsy resource clears
+all keys. Other truthy scalar resources are successful no-ops; truthy containers
+return the source fixed 500 without mutation. The successful response retains
+the source `reset_count` of zero. Reset does not evaluate policy or alter rules,
+task registration, policy hashes or evaluation counts. Remaining keys keep
+their order, and later charging reinserts a removed key at the end.
+
+Reset and atomic budget charging use the same lock across live policy snapshots.
+Reset commits before the listener attempts the source `admin.budget_reset` and
+`admin.budgets_reset` audit intents. A failed evidence write sets
+`X-SafeYolo-Evidence-Error` on the successful response; it does not roll back the
+reset. The [operator transport test](../proxy/tests/admin_transport.rs) exercises
+an actual failing sink and recovery. These intents use the development event
+sink; production audit storage remains pending.
+
+The operator report preserves the source connection termination on reporting
+failure, while Agent `/budgets` retains its own error response. With the explicit
+temporary Python policy adapter, both operator budget endpoints return 503
+because that adapter has no budget-read/reset protocol. Process restart
+persistence, remote PDP reset and native-to-adapter state continuity remain
+unproved. No reset route is exposed through the Agent API.
+
+The operator-budget candidate passed 145 affected Rust tests, including the
+selected live source oracles, 15 documentation tests, strict all-target Clippy
+and formatting checks on Linux aarch64. Its frozen binary passed 111 native
+wire cases across 112 instances. All 68 recorded egress events targeted owned
+peers; readiness, socket and process cleanup passed. The artifact scan found
+no raw or hex minted-bearer patterns. Process observations came from the
+fixtures; this run had no external process sampler.
+
+The paired source run passed both normal operator workflows and an existing
+budget-preview case. Its two malformed-body cases reproduced D49, including
+the unintended clear, dual audit events and newly allowed retry, before their
+strict historical expected-failure assertion. Native counterparts preserve
+the exhausted state and denied retry. These are implementation results;
+independent acceptance and the remaining migration work are pending.
 
 Owner validation of `/budgets` on Linux aarch64 passed 201 wire cases against
 one immutable binary: 61 API, 36 network-policy and 104 WebSocket cases. All

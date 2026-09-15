@@ -1,4 +1,4 @@
-//! Owned-loopback integration witnesses for the operator task slice.
+//! Owned-loopback integration witnesses for operator tasks and budget resets.
 //!
 //! Source contract: operator-api-task-wire-source/results.json, SHA256
 //! 6d86bb348eaf0657690a3221f59c149f47c3fba0c9bf1bc934d8f7279919be35.
@@ -689,6 +689,96 @@ async fn immediate_parent_alias_and_invalid_shield_reload_preserve_live_containm
         12
     );
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 0);
+    assert_private(&config, &[&token]);
+    assert_shutdown(proxy, &config, port).await;
+    peer.stop().await;
+}
+
+// /dev/full is an actual failing output sink. The policy state and both HTTP
+// listeners remain real; no mocked audit callback supplies the result.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn reset_commits_when_evidence_fails_and_survives_sink_recovery() {
+    let directory = TempDir::new().unwrap();
+    let token = synthetic();
+    let config = config(directory.path(), &token);
+    std::fs::write(
+        config.policy_file.as_ref().unwrap(),
+        "[[permissions]]\naction = \"network:request\"\nresource = \"*\"\neffect = \"budget\"\nbudget = 1\n",
+    )
+    .unwrap();
+    let mut proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    let peer = Peer::bind((Ipv4Addr::LOCALHOST, 0), "").await;
+    let host = peer.address.to_string();
+    let target = format!("http://{host}/budget-evidence");
+    // The source GCRA burst of one permits two immediate initial requests.
+    for expected in [200, 200, 429] {
+        assert_eq!(
+            agent(&config, "alice", "GET", &target, &host, None, b"")
+                .await
+                .status,
+            expected
+        );
+    }
+    assert_eq!(peer.accepts.load(Ordering::SeqCst), 2);
+    let before = admin(port, &token, "GET", "/admin/budgets", b"").await;
+    assert_eq!(before.status, 200);
+    assert_eq!(before.json()["tracked_keys"], 1);
+    let saved_events = std::fs::read(&config.event_log).unwrap();
+
+    let mut broken_sink = config.clone();
+    broken_sink.event_log = "/dev/full".into();
+    proxy.reload(broken_sink.clone()).await.unwrap();
+    assert_eq!(admin_port(&broken_sink), port);
+    // A rejected body must not commit an all-key reset or emit success evidence.
+    let rejected = admin(port, &token, "POST", "/admin/budgets/reset", b"{").await;
+    assert_eq!(rejected.status, 400);
+    assert_eq!(rejected.header("x-safeyolo-evidence-error"), None);
+    assert_eq!(
+        admin(port, &token, "GET", "/admin/budgets", b"")
+            .await
+            .json(),
+        before.json()
+    );
+    let reset = admin(port, &token, "POST", "/admin/budgets/reset", b"").await;
+    assert_eq!(reset.status, 200);
+    assert_eq!(reset.header("x-safeyolo-evidence-error"), Some("true"));
+    assert_eq!(
+        reset.json(),
+        json!({"status":"ok", "resource":"all", "reset_count":0})
+    );
+    let after = admin(port, &token, "GET", "/admin/budgets", b"").await;
+    assert_eq!(after.status, 200);
+    assert_eq!(after.header("x-safeyolo-evidence-error"), None);
+    assert_eq!(after.json()["tracked_keys"], 0);
+    assert!(std::fs::read(&config.event_log).unwrap() == saved_events);
+    assert_eq!(peer.accepts.load(Ordering::SeqCst), 2);
+
+    // A real reload restores the sink while retaining the committed empty map.
+    proxy.reload(config.clone()).await.unwrap();
+    assert_eq!(admin_port(&config), port);
+    assert_eq!(
+        admin(port, &token, "GET", "/admin/budgets", b"")
+            .await
+            .json()["tracked_keys"],
+        0
+    );
+    assert_eq!(
+        agent(&config, "bob", "GET", &target, &host, None, b"")
+            .await
+            .status,
+        200
+    );
+    assert_eq!(peer.accepts.load(Ordering::SeqCst), 3);
+    let reset = admin(port, &token, "POST", "/admin/budgets/reset", b"{}").await;
+    assert_eq!(reset.status, 200);
+    assert_eq!(reset.header("x-safeyolo-evidence-error"), None);
+    let audit_names: Vec<_> = events(&config)
+        .into_iter()
+        .filter_map(|row| row["audit_intent"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(audit_names, ["admin.budget_reset", "admin.budgets_reset"]);
     assert_private(&config, &[&token]);
     assert_shutdown(proxy, &config, port).await;
     peer.stop().await;

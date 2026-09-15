@@ -32,7 +32,7 @@ mod sensor_config;
 mod source;
 mod stats;
 use baseline::{Baseline, Builder as BaselineBuilder};
-pub use budgets::BudgetStatsError;
+pub use budgets::{BudgetResetError, BudgetStatsError};
 use source::{ParsedPolicy, TemporalEntry};
 pub(crate) use source::{TemporalValue, TimestampPaths};
 pub use stats::EngineStatsError;

@@ -150,9 +150,8 @@ mod tests {
         let before = policy.engine_stats().unwrap();
         assert_eq!(before["budget_stats"]["tracked_keys"], 2);
         assert_eq!(before["evaluations"], 2);
-        // The existing tracker owner has no public reset API yet. Clear only
-        // its private state, as the shipped tracker reset_all does; no new
-        // endpoint or reset behavior is introduced by statistics reporting.
+        // Clear the tracker directly to isolate statistics reporting from the
+        // management facade. The evaluation counter has a separate lifetime.
         policy.budgets.lock().unwrap().clear();
         let after = policy.engine_stats().unwrap();
         assert_eq!(after["budget_stats"]["tracked_keys"], 0);

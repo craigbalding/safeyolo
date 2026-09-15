@@ -1,0 +1,748 @@
+{
+  "python": "3.12.14",
+  "scope": "actual source hooks and PDP; no HTTP/auth/listener",
+  "policy": {
+    "permissions": [
+      {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "budget",
+        "budget": 1,
+        "condition": {}
+      }
+    ]
+  },
+  "rows": [
+    {
+      "name": "absent",
+      "input_hex": "",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "null",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "null_body",
+      "input_hex": "6e756c6c",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "null",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "false_body",
+      "input_hex": "66616c7365",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "null",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "zero_body",
+      "input_hex": "30",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "null",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "empty_string_body",
+      "input_hex": "2222",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "null",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "empty_array_body",
+      "input_hex": "5b5d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "null",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "empty_object_body",
+      "input_hex": "7b7d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "null",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "exact_key",
+      "input_hex": "7b227265736f75726365223a20226e6574776f726b3a726571756573743a616c7068612e696e76616c6964227d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"network:request:alpha.invalid\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget reset for network:request:alpha.invalid",
+          "resource_json": "\"network:request:alpha.invalid\"",
+          "safe_resource": "network:request:alpha.invalid",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: network:request:alpha.invalid",
+          "resource_json": "\"network:request:alpha.invalid\"",
+          "safe_resource": "network:request:alpha.invalid",
+          "resource_falsy": false
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "wildcard_literal",
+      "input_hex": "7b227265736f75726365223a226e6574776f726b3a726571756573743a2a227d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"network:request:*\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget reset for network:request:*",
+          "resource_json": "\"network:request:*\"",
+          "safe_resource": "network:request:*",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: network:request:*",
+          "resource_json": "\"network:request:*\"",
+          "safe_resource": "network:request:*",
+          "resource_falsy": false
+        }
+      ],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "truthy_nonobject",
+      "input_hex": "5b315d",
+      "replies": [],
+      "exception": "AttributeError",
+      "events": [],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "true_resource",
+      "input_hex": "7b227265736f75726365223a747275657d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": true,\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget reset for True",
+          "resource_json": "true",
+          "safe_resource": "True",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: True",
+          "resource_json": "true",
+          "safe_resource": "True",
+          "resource_falsy": false
+        }
+      ],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "float_resource",
+      "input_hex": "7b227265736f75726365223a316532307d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": 1e+20,\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget reset for 1e+20",
+          "resource_json": "1e+20",
+          "safe_resource": "1e+20",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: 1e+20",
+          "resource_json": "1e+20",
+          "safe_resource": "1e+20",
+          "resource_falsy": false
+        }
+      ],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "underflow_resource",
+      "input_hex": "7b227265736f75726365223a31652d313030307d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "0.0",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "negative_zero_resource",
+      "input_hex": "7b227265736f75726365223a2d302e307d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "-0.0",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "huge_integer_resource",
+      "input_hex": "7b227265736f75726365223a31303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030307d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget reset for 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000...",
+          "resource_json": "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "safe_resource": "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000...",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000...",
+          "resource_json": "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "safe_resource": "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000...",
+          "resource_falsy": false
+        }
+      ],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "control_resource",
+      "input_hex": "7b227265736f75726365223a2273796e7468657469635c6e5c75303031625b33316d6c696e65227d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"synthetic\\n\\u001b[31mline\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget reset for synthetic?line",
+          "resource_json": "\"synthetic\\n\\u001b[31mline\"",
+          "safe_resource": "synthetic?line",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: synthetic?line",
+          "resource_json": "\"synthetic\\n\\u001b[31mline\"",
+          "safe_resource": "synthetic?line",
+          "resource_falsy": false
+        }
+      ],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "list_resource",
+      "input_hex": "7b227265736f75726365223a5b2273796e746865746963225d7d",
+      "replies": [
+        {
+          "status": 500,
+          "text": "{\n  \"error\": \"Failed to reset budget counters\"\n}"
+        }
+      ],
+      "exception": null,
+      "events": [],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "object_resource",
+      "input_hex": "7b227265736f75726365223a7b2273796e746865746963223a747275657d7d",
+      "replies": [
+        {
+          "status": 500,
+          "text": "{\n  \"error\": \"Failed to reset budget counters\"\n}"
+        }
+      ],
+      "exception": null,
+      "events": [],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "duplicate_last_wins",
+      "input_hex": "7b227265736f75726365223a226d697373696e67222c227265736f75726365223a6e756c6c7d",
+      "replies": [
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "null",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "authored_number_object",
+      "input_hex": "7b227265736f75726365223a7b222473657264655f6a736f6e3a3a707269766174653a3a4e756d626572223a223137227d7d",
+      "replies": [
+        {
+          "status": 500,
+          "text": "{\n  \"error\": \"Failed to reset budget counters\"\n}"
+        }
+      ],
+      "exception": null,
+      "events": [],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true,
+      "intentional_repair": false
+    },
+    {
+      "name": "malformed_json",
+      "input_hex": "7b",
+      "replies": [
+        {
+          "status": 400,
+          "text": "{\n  \"error\": \"Malformed JSON in request body\",\n  \"detail\": \"Expecting property name enclosed in double quotes: line 1 column 2 (char 1)\"\n}"
+        },
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "null",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": true
+    },
+    {
+      "name": "invalid_utf8",
+      "input_hex": "ff",
+      "replies": [
+        {
+          "status": 400,
+          "text": "{\n  \"error\": \"Malformed JSON in request body\",\n  \"detail\": \"'utf-8' codec can't decode byte 0xff in position 0: invalid start byte\"\n}"
+        },
+        {
+          "status": 200,
+          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
+        }
+      ],
+      "exception": null,
+      "events": [
+        {
+          "name": "admin.budget_reset",
+          "addon": "policy-engine",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "All budgets reset",
+          "resource_json": "\"all\"",
+          "safe_resource": "all",
+          "resource_falsy": false
+        },
+        {
+          "name": "admin.budgets_reset",
+          "addon": "admin-api",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Budget counters reset: all",
+          "resource_json": "null",
+          "safe_resource": "all",
+          "resource_falsy": true
+        }
+      ],
+      "tracked_keys": 0,
+      "evaluations_unchanged": true,
+      "intentional_repair": true
+    }
+  ],
+  "get": {
+    "replies": [
+      {
+        "status": 200,
+        "text": "{\n  \"tracked_keys\": 1,\n  \"budgets\": {\n    \"network:request:alpha.invalid\": {\n      \"budget_per_minute\": 1,\n      \"remaining\": 0,\n      \"resource\": \"alpha.invalid\"\n    }\n  },\n  \"global_budgets\": {}\n}"
+      }
+    ],
+    "events": [],
+    "evaluations_unchanged": true
+  },
+  "network_attempts": 0,
+  "tokens_read_or_minted": 0,
+  "source_sha256": {
+    "cli/src/safeyolo/mitm_addons/admin_api.py": "1b617e66e53aefd38412e60b9ffcf24a7075c5f468b61e3e3fa93b71e038a0ac",
+    "pdp/client.py": "92e969c07581bdb164633a5b7411ab459fbcf1976f7fa72274c230688441f82f",
+    "pdp/core.py": "26b5833958ac09f34b530c3413dfbee1836261b99b32e81d75f880b743780ed0",
+    "cli/src/safeyolo/policy/engine.py": "a69b61583a87b19ea0f26b2ee56220d8ed2de8b76c6f46dd657329e38c9f8479",
+    "cli/src/safeyolo/policy/budget_tracker.py": "0547aa7e063228330bd115bef1ba1a53b1f80cda712c7887cb18ccf36ba7f53a",
+    "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072"
+  }
+}

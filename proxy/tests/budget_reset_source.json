@@ -1,0 +1,1305 @@
+{
+  "policy": {
+    "budgets": {
+      "network:request": 1000
+    },
+    "permissions": [
+      {
+        "action": "network:request",
+        "resource": "*",
+        "effect": "budget",
+        "budget": 1000,
+        "condition": {
+          "port": 8443
+        }
+      },
+      {
+        "action": "network:request",
+        "resource": "*",
+        "effect": "budget",
+        "budget": 1000,
+        "condition": {}
+      },
+      {
+        "action": "credential:use",
+        "resource": "*",
+        "effect": "budget",
+        "budget": 1000,
+        "condition": {}
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "missing"
+    },
+    {
+      "name": "null",
+      "resource": null
+    },
+    {
+      "name": "false",
+      "resource": false
+    },
+    {
+      "name": "zero_int",
+      "resource": 0
+    },
+    {
+      "name": "negative_zero_float",
+      "resource": -0.0
+    },
+    {
+      "name": "zero_float",
+      "resource": 0.0
+    },
+    {
+      "name": "underflow_float",
+      "resource": 0.0,
+      "resource_json": "1e-1000"
+    },
+    {
+      "name": "empty_string",
+      "resource": ""
+    },
+    {
+      "name": "empty_array",
+      "resource": []
+    },
+    {
+      "name": "empty_object",
+      "resource": {}
+    },
+    {
+      "name": "true",
+      "resource": true
+    },
+    {
+      "name": "one",
+      "resource": 1
+    },
+    {
+      "name": "negative",
+      "resource": -7
+    },
+    {
+      "name": "fraction",
+      "resource": 1.25
+    },
+    {
+      "name": "huge_integer",
+      "resource": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+    },
+    {
+      "name": "exact_host",
+      "resource": "network:request:zeta.invalid"
+    },
+    {
+      "name": "exact_other_host",
+      "resource": "network:request:alpha.invalid"
+    },
+    {
+      "name": "exact_global",
+      "resource": "network:request:__global__"
+    },
+    {
+      "name": "exact_connect_host",
+      "resource": "network:connect:zeta.invalid:8443"
+    },
+    {
+      "name": "exact_connect_global",
+      "resource": "network:connect:__global__"
+    },
+    {
+      "name": "exact_credential",
+      "resource": "credential:use:credential.invalid:fixture"
+    },
+    {
+      "name": "missing_port",
+      "resource": "network:connect:zeta.invalid"
+    },
+    {
+      "name": "wildcard_literal",
+      "resource": "network:request:*"
+    },
+    {
+      "name": "missing_literal",
+      "resource": "alpha.invalid"
+    },
+    {
+      "name": "space_literal",
+      "resource": " network:request:zeta.invalid"
+    },
+    {
+      "name": "control_literal",
+      "resource": "network:request:zeta.invalid\nsynthetic"
+    },
+    {
+      "name": "array",
+      "resource": [
+        "synthetic"
+      ]
+    },
+    {
+      "name": "object",
+      "resource": {
+        "synthetic": "value"
+      }
+    },
+    {
+      "name": "reset_recharge_order",
+      "resource": "network:request:zeta.invalid",
+      "recharge": true
+    }
+  ],
+  "rows": [
+    {
+      "name": "missing",
+      "result": {
+        "status": "ok",
+        "resource": "all",
+        "reset_count": 0
+      },
+      "keys": [],
+      "report": {
+        "tracked_keys": 0,
+        "budgets": {},
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "null",
+      "result": {
+        "status": "ok",
+        "resource": "all",
+        "reset_count": 0
+      },
+      "keys": [],
+      "report": {
+        "tracked_keys": 0,
+        "budgets": {},
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "false",
+      "result": {
+        "status": "ok",
+        "resource": "all",
+        "reset_count": 0
+      },
+      "keys": [],
+      "report": {
+        "tracked_keys": 0,
+        "budgets": {},
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "zero_int",
+      "result": {
+        "status": "ok",
+        "resource": "all",
+        "reset_count": 0
+      },
+      "keys": [],
+      "report": {
+        "tracked_keys": 0,
+        "budgets": {},
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "negative_zero_float",
+      "result": {
+        "status": "ok",
+        "resource": "all",
+        "reset_count": 0
+      },
+      "keys": [],
+      "report": {
+        "tracked_keys": 0,
+        "budgets": {},
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "zero_float",
+      "result": {
+        "status": "ok",
+        "resource": "all",
+        "reset_count": 0
+      },
+      "keys": [],
+      "report": {
+        "tracked_keys": 0,
+        "budgets": {},
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "underflow_float",
+      "result": {
+        "status": "ok",
+        "resource": "all",
+        "reset_count": 0
+      },
+      "keys": [],
+      "report": {
+        "tracked_keys": 0,
+        "budgets": {},
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "empty_string",
+      "result": {
+        "status": "ok",
+        "resource": "all",
+        "reset_count": 0
+      },
+      "keys": [],
+      "report": {
+        "tracked_keys": 0,
+        "budgets": {},
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "empty_array",
+      "result": {
+        "status": "ok",
+        "resource": "all",
+        "reset_count": 0
+      },
+      "keys": [],
+      "report": {
+        "tracked_keys": 0,
+        "budgets": {},
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "empty_object",
+      "result": {
+        "status": "ok",
+        "resource": "all",
+        "reset_count": 0
+      },
+      "keys": [],
+      "report": {
+        "tracked_keys": 0,
+        "budgets": {},
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "true",
+      "result": {
+        "status": "ok",
+        "resource": true,
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "one",
+      "result": {
+        "status": "ok",
+        "resource": 1,
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "negative",
+      "result": {
+        "status": "ok",
+        "resource": -7,
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "fraction",
+      "result": {
+        "status": "ok",
+        "resource": 1.25,
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "huge_integer",
+      "result": {
+        "status": "ok",
+        "resource": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "exact_host",
+      "result": {
+        "status": "ok",
+        "resource": "network:request:zeta.invalid",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 5,
+        "budgets": {
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "exact_other_host",
+      "result": {
+        "status": "ok",
+        "resource": "network:request:alpha.invalid",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 5,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "exact_global",
+      "result": {
+        "status": "ok",
+        "resource": "network:request:__global__",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 5,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "exact_connect_host",
+      "result": {
+        "status": "ok",
+        "resource": "network:connect:zeta.invalid:8443",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 5,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "exact_connect_global",
+      "result": {
+        "status": "ok",
+        "resource": "network:connect:__global__",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 5,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "exact_credential",
+      "result": {
+        "status": "ok",
+        "resource": "credential:use:credential.invalid:fixture",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__"
+      ],
+      "report": {
+        "tracked_keys": 5,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "missing_port",
+      "result": {
+        "status": "ok",
+        "resource": "network:connect:zeta.invalid",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "wildcard_literal",
+      "result": {
+        "status": "ok",
+        "resource": "network:request:*",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "missing_literal",
+      "result": {
+        "status": "ok",
+        "resource": "alpha.invalid",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "space_literal",
+      "result": {
+        "status": "ok",
+        "resource": " network:request:zeta.invalid",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "control_literal",
+      "result": {
+        "status": "ok",
+        "resource": "network:request:zeta.invalid\nsynthetic",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "array",
+      "result": {
+        "status": "error",
+        "error": "Failed to reset budget counters"
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "object",
+      "result": {
+        "status": "error",
+        "error": "Failed to reset budget counters"
+      },
+      "keys": [
+        "network:request:zeta.invalid",
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 98,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    },
+    {
+      "name": "reset_recharge_order",
+      "result": {
+        "status": "ok",
+        "resource": "network:request:zeta.invalid",
+        "reset_count": 0
+      },
+      "keys": [
+        "network:request:__global__",
+        "network:request:alpha.invalid",
+        "network:connect:zeta.invalid:8443",
+        "network:connect:__global__",
+        "credential:use:credential.invalid:fixture",
+        "network:request:zeta.invalid"
+      ],
+      "report": {
+        "tracked_keys": 6,
+        "budgets": {
+          "network:request:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 97,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "alpha.invalid"
+          },
+          "network:connect:zeta.invalid:8443": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid:8443"
+          },
+          "network:connect:__global__": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "__global__"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "credential.invalid:fixture"
+          },
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 1000,
+            "remaining": 99,
+            "resource": "zeta.invalid"
+          }
+        },
+        "global_budgets": {
+          "network:request": 1000
+        }
+      }
+    }
+  ]
+}

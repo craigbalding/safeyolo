@@ -34,16 +34,21 @@ from safeyolo.proxy_modes.unix_listener import ensure_registered
 class Observations:
     """Expose response attribution and the pre-DNS server-connect boundary."""
 
-    def __init__(self, config):
+    def __init__(self, config, admin_api=None):
         self.events = Path(config["event_log"])
         self.ready = Path(config["readiness_file"])
+        self.admin_api = admin_api
 
     def write(self, event):
         with self.events.open("a") as stream:
             stream.write(json.dumps(event) + "\n")
 
     def running(self):
-        self.ready.write_text(json.dumps({"ready": True, "pid": os.getpid(), "backend": "python"}))
+        marker = {"ready": True, "pid": os.getpid(), "backend": "python"}
+        if self.admin_api is not None:
+            assert self.admin_api.server is not None, "Owned operator listener failed to start"
+            marker["admin_port"] = self.admin_api.server.server_address[1]
+        self.ready.write_text(json.dumps(marker))
 
     def response(self, flow):
         assert get_writer().wait_for_drain(timeout_s=2)
@@ -87,6 +92,15 @@ async def run(config):
                           ignore_hosts=build_ignore_patterns(config.get("ignore_hosts", [])))
     if config.get("upstream_ca_file"):
         master.options.update(ssl_verify_upstream_trusted_ca=config["upstream_ca_file"])
+    admin_api = None
+    if config.get("admin_port") is not None:
+        from safeyolo.mitm_addons.admin_api import AdminAPI
+        from safeyolo.mitm_addons.admin_shield import AdminShield
+
+        admin_api = AdminAPI()
+        master.addons.add(AdminShield(), admin_api)
+        master.options.update(admin_port=config["admin_port"],
+                              admin_api_token_file=config.get("admin_api_token_file", ""))
     master.addons.add(RequestIdGenerator())
     if config.get("fixture_agent_api", False):
         from safeyolo.mitm_addons.agent_api import AgentAPI
@@ -109,7 +123,7 @@ async def run(config):
             pattern_block_websocket_request=inspection.get("block_websocket_request", False),
             pattern_block_websocket_response=inspection.get("block_websocket_response", False),
         )
-    master.addons.add(Observations(config))
+    master.addons.add(Observations(config, admin_api))
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, master.shutdown)
     try:

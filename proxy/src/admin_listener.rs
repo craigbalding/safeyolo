@@ -179,24 +179,49 @@ async fn serve_connection(
                 request,
                 token.trim_matches(python_whitespace),
                 &runtime.tasks,
+                runtime.policy.as_ref(),
             )
             .await?;
-            let audit = outcome.audit().map(|intent| match intent {
-                admin_api::Audit::AuthenticationFailed => json!({
+            let audits = outcome.audit().map(|intent| match intent {
+                admin_api::Audit::AuthenticationFailed => vec![json!({
                     "event":"proxy.admin_api", "audit_intent":"admin.auth_failure",
                     "client_ip":client_ip, "path":path,
                     "reason":"invalid_or_missing_token",
-                }),
+                })],
                 admin_api::Audit::TaskUpdated {
                     task_id,
                     permission_count,
-                } => json!({
+                } => vec![json!({
                     "event":"proxy.admin_api", "audit_intent":"admin.task_policy_update",
                     "client_ip":client_ip, "task_id":task_id,
                     "permission_count":permission_count,
-                }),
+                })],
+                admin_api::Audit::BudgetsReset(reset) => {
+                    let safe_resource = reset.safe_resource();
+                    let engine_resource = if reset.resets_all() {
+                        serde_json::Value::String("all".into())
+                    } else {
+                        reset.resource().clone()
+                    };
+                    vec![
+                        json!({"event":"proxy.admin_api", "audit_intent":"admin.budget_reset",
+                            "kind":"admin", "severity":"medium", "addon":"policy-engine",
+                            "summary":if reset.resets_all() { "All budgets reset".into() }
+                                else { format!("Budget reset for {safe_resource}") },
+                            "resource":engine_resource}),
+                        json!({"event":"proxy.admin_api", "audit_intent":"admin.budgets_reset",
+                            "kind":"admin", "severity":"medium", "addon":"admin-api",
+                            "summary":format!("Budget counters reset: {safe_resource}"),
+                            "client_ip":client_ip, "resource":reset.resource()}),
+                    ]
+                }
             });
-            let failed = audit.is_some_and(|event| runtime.record(event).is_err());
+            // A reset is already committed. Attempt both source audit intents
+            // even if the first sink write fails; never claim state rollback.
+            let mut failed = false;
+            for event in audits.into_iter().flatten() {
+                failed |= runtime.record(event).is_err();
+            }
             let mut response = outcome.into_response();
             if failed {
                 eprintln!("Operator API evidence write failed");

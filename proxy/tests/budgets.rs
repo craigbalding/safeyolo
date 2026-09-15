@@ -192,8 +192,8 @@ fn host_and_global_share_charge_order_and_one_credential_survives_visibility_rel
     consume(&ordered, "alpha.invalid");
     assert_source(&ordered, "ordered_new_host_and_global_keys");
 
-    // Create the source credential witness's global/alpha/zeta timestamps via
-    // real charges. Exact reset remains outside the native product API.
+    // Create the source credential witness's global/alpha/zeta timestamps by
+    // charging the global-only policy before loading the host limits.
     let initial = Policy::parse_at(
         r#"{"budgets":{"network:request":100},"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}"#,
         Format::Json,

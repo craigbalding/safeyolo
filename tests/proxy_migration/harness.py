@@ -102,6 +102,10 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                 config[name] = value
         if upstream_ca:
             config["upstream_ca_file"] = str(upstream_ca)
+        if admin_port is not None:
+            config["admin_port"] = admin_port
+        if admin_api_token_file is not None:
+            config["admin_api_token_file"] = str(admin_api_token_file)
         env = {**os.environ,
                "PYTHONPATH": os.pathsep.join([str(REPO / "cli/src"), str(REPO)]),
                "SAFEYOLO_LOG_PATH": str(directory / "audit.jsonl")}
@@ -129,10 +133,6 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         elif backend == "rust":
             config["ignore_hosts"] = list(ignore_hosts)
             config["agent_api_enabled"] = agent_api
-            if admin_port is not None:
-                config["admin_port"] = admin_port
-            if admin_api_token_file is not None:
-                config["admin_api_token_file"] = str(admin_api_token_file)
             if native_policy:
                 config["policy_file"] = str(policy)
             else:

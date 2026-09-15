@@ -1,4 +1,4 @@
-//! Read the current matcher against retained GCRA timestamps without charging.
+//! Report and reset the existing shared GCRA state.
 
 use super::{Action, BigInt, Context, Map, Policy, Value, fmt, split_destination};
 
@@ -24,7 +24,55 @@ impl fmt::Display for BudgetStatsError {
 
 impl std::error::Error for BudgetStatsError {}
 
+/// Reset failures never expose a supplied resource in diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BudgetResetError {
+    InvalidResource,
+    Poisoned,
+}
+
+impl fmt::Display for BudgetResetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidResource => "budget reset resource is not hashable",
+            Self::Poisoned => "budget state lock poisoned",
+        })
+    }
+}
+
+impl std::error::Error for BudgetResetError {}
+
 impl Policy {
+    /// Reset an exact tracker key, or all keys for an absent/falsy resource.
+    /// Strings are neither parsed nor matched as patterns. Other truthy scalar
+    /// values cannot equal the string keys created by request evaluation.
+    /// Invalid containers fail before mutation. Reset shares the charge lock
+    /// across clones and reloads and changes no policy or evaluation counter.
+    /// The caller owns authentication, response formatting and reset evidence.
+    pub fn reset_budgets(&self, resource: Option<&Value>) -> Result<(), BudgetResetError> {
+        let resource = resource.filter(|value| match value {
+            Value::Null => false,
+            Value::Bool(value) => *value,
+            Value::Number(value) => value.as_f64() != Some(0.0),
+            Value::String(value) => !value.is_empty(),
+            Value::Array(value) => !value.is_empty(),
+            Value::Object(value) => !value.is_empty(),
+        });
+        if matches!(resource, Some(Value::Array(_) | Value::Object(_))) {
+            return Err(BudgetResetError::InvalidResource);
+        }
+        let mut state = self
+            .budgets
+            .lock()
+            .map_err(|_| BudgetResetError::Poisoned)?;
+        if let Some(Value::String(key)) = resource {
+            state.shift_remove(key);
+        } else if resource.is_none() {
+            state.clear();
+        }
+        Ok(())
+    }
+
     pub(super) fn effective_network_budget(&self) -> Option<u64> {
         match (
             self.global_budget,
@@ -148,6 +196,86 @@ fn remaining(now_ms: f64, tat: f64, budget: &BigInt) -> Result<BigInt, BudgetSta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::{Effect, Format, NetworkRequest};
+
+    #[test]
+    fn reset_keeps_other_timestamps_and_does_not_consult_reporting() {
+        let policy = Policy::parse_at(
+            r#"{"budgets":{"network:request":1000},"permissions":[{"action":"network:request","resource":"*","effect":"budget","budget":1000}]}"#,
+            Format::Json,
+            1_000_000.,
+        ).unwrap();
+        for (host, now) in [("first.invalid", 1_000_000.), ("bad:port", 1_000_123.)] {
+            assert_eq!(
+                policy
+                    .evaluate(
+                        NetworkRequest {
+                            agent: None,
+                            host,
+                            port: None,
+                            method: "GET",
+                            path: "/",
+                        },
+                        now,
+                        true
+                    )
+                    .unwrap()
+                    .effect,
+                Effect::Allow
+            );
+        }
+        assert_eq!(
+            policy.budget_stats(1_000_123.),
+            Err(BudgetStatsError::InvalidKey)
+        );
+        let before = policy.budgets.lock().unwrap().clone();
+        policy
+            .reset_budgets(Some(&Value::String("network:request:first.invalid".into())))
+            .unwrap();
+        {
+            let after = policy.budgets.lock().unwrap();
+            assert_eq!(after.len(), before.len() - 1);
+            for (key, tat) in after.iter() {
+                assert_eq!(tat.to_bits(), before[key].to_bits());
+            }
+        }
+        // Exact reset can remove a retained key even when its destination makes
+        // reporting fail. It does not parse the supplied key or read a clock.
+        policy
+            .reset_budgets(Some(&Value::String("network:request:bad:port".into())))
+            .unwrap();
+        assert_eq!(policy.budget_stats(1_000_123.).unwrap()["tracked_keys"], 1);
+    }
+
+    #[test]
+    fn invalid_resource_precedes_poisoned_lock_without_exposing_values() {
+        let policy = Policy::unconfigured();
+        let copy = policy.clone();
+        assert!(
+            std::panic::catch_unwind(move || {
+                let _lock = copy.budgets.lock().unwrap();
+                panic!("synthetic budget owner failure");
+            })
+            .is_err()
+        );
+        let invalid = Value::Array(vec![Value::String("synthetic-private-input".into())]);
+        assert_eq!(
+            policy.reset_budgets(Some(&invalid)),
+            Err(BudgetResetError::InvalidResource)
+        );
+        for resource in [None, Some(&Value::Null), Some(&Value::Bool(true))] {
+            assert_eq!(
+                policy.reset_budgets(resource),
+                Err(BudgetResetError::Poisoned)
+            );
+        }
+        for error in [
+            BudgetResetError::InvalidResource,
+            BudgetResetError::Poisoned,
+        ] {
+            assert!(!format!("{error} {error:?}").contains("synthetic-private-input"));
+        }
+    }
 
     #[test]
     fn shared_destination_parser_matches_actual_source_forms() {
