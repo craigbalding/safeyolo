@@ -109,6 +109,9 @@ struct Destination {
 
 impl Destination {
     fn from_request(request: &Request<Incoming>) -> Result<Self, Error> {
+        if request.headers().get_all(header::HOST).iter().count() > 1 {
+            return Err("multiple Host headers are ambiguous".into());
+        }
         let uri = request.uri();
         let authority = if let Some(authority) = uri.authority() {
             authority.clone()

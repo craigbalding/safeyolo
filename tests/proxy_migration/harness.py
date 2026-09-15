@@ -51,11 +51,23 @@ def child_process(command, directory, env):
                 raise AssertionError(f"Process did not shut down: {command}")
 
 
-def wait_ready(process, paths, log):
+def wait_ready(process, paths, log, *, readiness_file=None):
     deadline = time.monotonic() + 15
-    while not all(path.exists() for path in paths):
+    while True:
         if process.poll() is not None:
             raise AssertionError(f"Proxy process exited {process.returncode}:\n{log.read_text()}")
+        ready = all(path.exists() for path in paths)
+        if ready and readiness_file is not None:
+            try:
+                marker = json.loads(readiness_file.read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                # The fixture may be replacing its marker; only a complete
+                # marker naming this child can establish startup completion.
+                ready = False
+            else:
+                ready = isinstance(marker, dict) and marker.get("ready") is True and marker.get("pid") == process.pid
+        if ready:
+            return
         if time.monotonic() >= deadline:
             raise AssertionError(f"Readiness timed out: {paths}\n{log.read_text()}")
         time.sleep(0.025)
@@ -109,7 +121,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None):
         config_path.write_text(json.dumps(config))
         process = stack.enter_context(child_process(command + ["--config", str(config_path)], directory, env))
         readiness = Path(config["readiness_file"])
-        wait_ready(process, [readiness, *map(Path, paths.values())], directory / "process.log")
+        wait_ready(process, [readiness, *map(Path, paths.values())], directory / "process.log", readiness_file=readiness)
         yield RunningProxy(paths, Path(config["event_log"]), process, readiness, bridge)
 
 

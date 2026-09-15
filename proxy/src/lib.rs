@@ -79,6 +79,9 @@ impl Runtime {
 }
 
 pub(crate) fn is_reserved(host: &str) -> bool {
+    // A DNS root dot denotes the same endpoint. Classify that spelling locally
+    // too, so a parent proxy never receives a reserved API request or token.
+    let host = host.strip_suffix('.').unwrap_or(host);
     host.eq_ignore_ascii_case("_safeyolo.proxy.internal")
         || host.eq_ignore_ascii_case("_safeyolo.probe.internal")
 }

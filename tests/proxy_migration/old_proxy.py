@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import signal
 from pathlib import Path
 
@@ -40,7 +41,7 @@ class Observations:
             stream.write(json.dumps(event) + "\n")
 
     def running(self):
-        self.ready.write_text("ready\n")
+        self.ready.write_text(json.dumps({"ready": True, "pid": os.getpid(), "backend": "python"}))
 
     def response(self, flow):
         assert get_writer().wait_for_drain(timeout_s=2)
