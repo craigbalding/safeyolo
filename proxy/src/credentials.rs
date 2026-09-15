@@ -325,6 +325,27 @@ impl Vault {
             state: self.state.clone(),
         }))
     }
+    /// Observe whether a captured record is still current, including visible
+    /// external replacement or removal of the encrypted file. This read-only
+    /// check does not reserve the record for later transport work.
+    pub fn is_current(&self, snapshot: &CredentialSnapshot) -> Result<bool> {
+        let state = self.lock()?;
+        if !self.same_revision(&state, snapshot) {
+            return Ok(false);
+        }
+        match File::open(&self.path) {
+            Ok(file) => Ok(stamp(&file)? == state.stamp),
+            Err(value) if value.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(value) => Err(value.into()),
+        }
+    }
+    fn same_revision(&self, state: &State, snapshot: &CredentialSnapshot) -> bool {
+        Arc::ptr_eq(&self.state, &snapshot.state)
+            && state
+                .revisions
+                .get(&snapshot.credential.name)
+                .is_some_and(|revision| Arc::ptr_eq(revision, &snapshot.revision))
+    }
     /// Returns false without writing or activating if a store, removal, changed
     /// reload, or visible external file replacement superseded the snapshot.
     /// Unrelated credential edits do not invalidate it. This is local atomicity,
@@ -412,11 +433,7 @@ impl Vault {
     ) -> Result<bool> {
         let mut state = self.lock()?;
         if let Some(snapshot) = expected
-            && (!Arc::ptr_eq(&self.state, &snapshot.state)
-                || state
-                    .revisions
-                    .get(&snapshot.credential.name)
-                    .is_none_or(|revision| !Arc::ptr_eq(revision, &snapshot.revision)))
+            && !self.same_revision(&state, snapshot)
         {
             return Ok(false);
         }

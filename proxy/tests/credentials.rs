@@ -349,12 +349,31 @@ fn simultaneous_refresh_publication_has_one_winner_and_no_lost_unrelated_edit() 
 }
 
 #[test]
+fn current_snapshot_observation_detects_file_removal_without_mutation() {
+    let (directory, path, vault) = setup();
+    vault.store(credential("mail")).unwrap();
+    let snapshot = vault.snapshot("mail").unwrap().unwrap();
+    let original = fs::read(&path).unwrap();
+    assert!(vault.is_current(&snapshot).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), original);
+
+    let moved = directory.path().join("vault-moved.enc");
+    fs::rename(&path, &moved).unwrap();
+    assert!(!vault.is_current(&snapshot).unwrap());
+    assert!(!path.exists(), "observation must not recreate the vault");
+    fs::rename(&moved, &path).unwrap();
+    assert!(vault.is_current(&snapshot).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
 fn conditional_publication_rejects_stores_removal_and_name_recreation() {
     let (_directory, path, vault) = setup();
     vault.store(credential("mail")).unwrap();
     assert!(vault.snapshot("missing").unwrap().is_none());
     for mutation in 0..3 {
         let snapshot = vault.snapshot("mail").unwrap().unwrap();
+        assert!(vault.clone().is_current(&snapshot).unwrap());
         match mutation {
             0 => vault.store(credential("mail")).unwrap(),
             1 => assert!(vault.remove("mail").unwrap()),
@@ -365,6 +384,7 @@ fn conditional_publication_rejects_stores_removal_and_name_recreation() {
             _ => unreachable!(),
         }
         let original = fs::read(&path).unwrap();
+        assert!(!vault.is_current(&snapshot).unwrap());
         assert!(
             !vault
                 .replace_if_current(&snapshot, credential("mail"), |_| {
@@ -387,6 +407,8 @@ fn conditional_publication_is_bound_to_the_vault_and_credential_name() {
     let snapshot = vault.snapshot("mail").unwrap().unwrap();
     let other = Vault::unlock(&path, &password()).unwrap();
     let original = fs::read(&path).unwrap();
+    assert!(vault.is_current(&snapshot).unwrap());
+    assert!(!other.is_current(&snapshot).unwrap());
     assert!(
         !other
             .replace_if_current(&snapshot, credential("mail"), |_| {
@@ -435,6 +457,7 @@ fn changed_reload_and_visible_external_edits_supersede_refresh() {
             if reloaded {
                 vault.reload().unwrap();
             }
+            assert!(!vault.is_current(&snapshot).unwrap());
             assert!(
                 !vault
                     .replace_if_current(&snapshot, credential("mail"), |_| {
@@ -455,9 +478,12 @@ fn unchanged_save_reload_and_unrelated_edits_preserve_pending_refresh() {
     let snapshot = vault.snapshot("mail").unwrap().unwrap();
     vault.save().unwrap();
     vault.reload().unwrap();
+    assert!(vault.is_current(&snapshot).unwrap());
     let external = Vault::unlock(&path, &password()).unwrap();
     external.store(credential("other")).unwrap();
+    assert!(!vault.is_current(&snapshot).unwrap());
     vault.reload().unwrap();
+    assert!(vault.is_current(&snapshot).unwrap());
     let mut refreshed = snapshot.credential().clone();
     refreshed.value = Secret::new("synthetic-refreshed-value");
     assert!(
