@@ -386,6 +386,7 @@ async fn local_response_circuit_exception_skips_later_recorder_and_logger() {
     );
     proxy.shutdown().await;
     let rows = events(directory.path());
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["event"], "traffic.request");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["event"], "security.network_guard");
+    assert_eq!(rows[1]["event"], "traffic.request");
 }

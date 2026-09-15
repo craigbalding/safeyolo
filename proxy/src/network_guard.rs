@@ -1,8 +1,9 @@
 //! Network guard presentation over the single native policy engine.
 //!
 //! The caller supplies request-boundary trusted identity and correlation IDs.
-//! This module never reads identity headers, connects upstream, emits audit
-//! events, or persists approvals. An Allowed outcome authorizes only this guard;
+//! This module never reads identity headers, connects upstream, or persists
+//! approvals. The runtime submits audit intents at the reached source hook.
+//! An Allowed outcome authorizes only this guard;
 //! the caller must still run the remaining pipeline and contain reserved hosts.
 
 use std::{
@@ -15,6 +16,7 @@ use serde_json::{Value, json};
 
 use crate::{
     approvals::{NetworkPrompt, NetworkScope},
+    audit,
     policy::{Effect, NetworkRequest, Policy},
 };
 
@@ -183,6 +185,44 @@ pub struct AuditIntent {
     pub details: Value,
 }
 
+impl AuditIntent {
+    /// Attribution comes from the trusted request snapshot, never HTTP headers.
+    pub fn event(&self, attribution: audit::Attribution) -> audit::Event {
+        let mut event = audit::Event::new(
+            self.event,
+            audit::Kind::Security,
+            match self.severity {
+                Severity::Low => audit::Severity::Low,
+                Severity::Medium => audit::Severity::Medium,
+                Severity::High => audit::Severity::High,
+                Severity::Critical => audit::Severity::Critical,
+            },
+            &self.summary,
+        );
+        event.addon = Some(self.addon.into());
+        event.decision = Some(match self.decision {
+            AuditDecision::Allow => audit::Decision::Allow,
+            AuditDecision::Deny => audit::Decision::Deny,
+            AuditDecision::Warn => audit::Decision::Warn,
+            AuditDecision::RequireApproval => audit::Decision::RequireApproval,
+            AuditDecision::BudgetExceeded => audit::Decision::BudgetExceeded,
+        });
+        event.host = Some(self.host.clone());
+        event.agent = self.agent.clone();
+        event.request_id = self.request_id.clone();
+        event.attribution = Some(attribution);
+        event.approval = self.approval.as_ref().map(|approval| audit::Approval {
+            required: true,
+            approval_type: audit::ApprovalType::NetworkEgress,
+            key: approval.key.clone(),
+            target: approval.target.clone(),
+            scope_hint: json!({"port": approval.scope_hint.port}).into(),
+        });
+        event.details = self.details.clone().into();
+        event
+    }
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Response {
     pub status: u16,
@@ -267,6 +307,20 @@ impl NetworkGuard {
         options: Options,
         now_ms: f64,
     ) -> Result<Outcome> {
+        self.enforce_with_audit(pdp, request, options, now_ms, |_| Ok(()))
+    }
+
+    /// Submit before the source's later counters, metadata and response effects.
+    /// A synchronous submission exception stops those effects. A reported queue
+    /// drop or asynchronous sink failure does not fail this boundary.
+    pub fn enforce_with_audit(
+        &self,
+        pdp: Pdp<'_>,
+        request: Request<'_>,
+        options: Options,
+        now_ms: f64,
+        mut submit: impl FnMut(&AuditIntent) -> Result<()>,
+    ) -> Result<Outcome> {
         let mut output = Outcome {
             kind: OutcomeKind::Bypassed,
             response: None,
@@ -349,7 +403,7 @@ impl NetworkGuard {
             violation
         };
         if let Some(violation) = violation {
-            self.violation(request, options.block, violation, &mut output)?;
+            self.violation(request, options.block, violation, &mut output, &mut submit)?;
         } else {
             self.count(|stats| stats.allowed += 1)?;
             output.kind = OutcomeKind::Allowed;
@@ -361,7 +415,7 @@ impl NetworkGuard {
                 output.metadata["ratelimit_remaining"] = json!(remaining);
             }
             if request.method == "CONNECT" {
-                output.audit = Some(audit(
+                let intent = audit(
                     request,
                     AuditDecision::Allow,
                     Severity::Low,
@@ -372,7 +426,9 @@ impl NetworkGuard {
                     ),
                     None,
                     json!({}),
-                ));
+                );
+                submit(&intent)?;
+                output.audit = Some(intent);
             }
         }
         output.trace.state = "evaluated";
@@ -387,6 +443,7 @@ impl NetworkGuard {
         block: bool,
         violation: Violation,
         output: &mut Outcome,
+        submit: &mut impl FnMut(&AuditIntent) -> Result<()>,
     ) -> Result<()> {
         let domain = request.host;
         let safe = sanitize(domain);
@@ -472,14 +529,16 @@ impl NetworkGuard {
                 )
             }
         };
-        output.audit = Some(audit(
+        let intent = audit(
             request,
             if block { decision } else { AuditDecision::Warn },
             severity,
             summary,
             approval,
             details,
-        ));
+        );
+        submit(&intent)?;
+        output.audit = Some(intent);
         if block {
             self.count(|stats| stats.blocked += 1)?;
             output.kind = OutcomeKind::Blocked;

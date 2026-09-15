@@ -573,11 +573,15 @@ async fn open_outbound(
     Ok(Outbound { stream, http2 })
 }
 
-async fn decide(runtime: &Runtime, request: &PolicyRequest<'_>) -> Result<PolicyDecision, Error> {
+async fn decide(
+    runtime: &Runtime,
+    identity: &ConnectionIdentity,
+    request: &PolicyRequest<'_>,
+) -> Result<PolicyDecision, Error> {
     if let Some(policy) = &runtime.policy {
         use crate::network_guard::{Identity, Options, OutcomeKind, Pdp, Request};
 
-        let outcome = runtime.network_guard.enforce(
+        let outcome = runtime.network_guard.enforce_with_audit(
             Pdp::Ready(policy),
             Request {
                 identity: Identity::Resolved(request.agent_id),
@@ -597,9 +601,16 @@ async fn decide(runtime: &Runtime, request: &PolicyRequest<'_>) -> Result<Policy
                 homoglyph: runtime.config.network_guard_homoglyph,
             },
             crate::policy::current_time_ms(),
+            |intent| {
+                runtime
+                    .audit
+                    .emit(intent.event(identity.audit_attribution()))
+                    .map(|_| ())
+                    .map_err(|error| crate::network_guard::GuardError(error.to_string()))
+            },
         )?;
         // Development guard evidence excludes the URL query and application
-        // bytes. Production audit persistence and approval consumption follow.
+        // bytes. Canonical security audit has its own process-owned writer.
         runtime.record(json!({
             "event": "proxy.network_guard", "agent": request.agent_id,
             "connection_id": request.connection_id, "request_id": request.request_id,
@@ -1157,6 +1168,7 @@ async fn forward(
     let hygiene = ordered_headers.apply_hygiene(request.headers_mut());
     let decision = decide(
         &runtime,
+        identity,
         &PolicyRequest {
             agent_id: &identity.agent_id,
             connection_id: &identity.connection_id,

@@ -1,4 +1,5 @@
 use safeyolo_proxy::{
+    audit::{Attribution, AttributionStatus, Initiator, Settings, Writer},
     network_guard::*,
     policy::{Format, Policy},
 };
@@ -20,6 +21,104 @@ fn request(host: &str) -> Request<'_> {
         connection_id: "conn-generated",
         prior_response: false,
     }
+}
+
+#[test]
+fn submission_exception_preserves_only_preceding_source_effects() {
+    let deny = policy(json!({"permissions":[]}));
+    for block in [true, false] {
+        let guard = NetworkGuard::new();
+        let result = guard.enforce_with_audit(
+            Pdp::Ready(&deny),
+            request("owned.invalid"),
+            Options {
+                block,
+                ..Options::default()
+            },
+            1000.,
+            |_| Err(GuardError("owned submission failure".into())),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            guard.stats().unwrap(),
+            Stats {
+                checks: 1,
+                ..Stats::default()
+            }
+        );
+    }
+    let budget = policy(json!({"permissions":[{
+        "action":"network:request","resource":"*","effect":"budget","budget":1
+    }]}));
+    let guard = NetworkGuard::new();
+    for _ in 0..2 {
+        let first = guard
+            .enforce_with_audit(
+                Pdp::Ready(&budget),
+                request("owned.invalid"),
+                Options::default(),
+                1000.,
+                |_| panic!("ordinary allowed HTTP has no security event"),
+            )
+            .unwrap();
+        assert_eq!(first.kind, OutcomeKind::Allowed);
+    }
+    assert!(
+        guard
+            .enforce_with_audit(
+                Pdp::Ready(&budget),
+                request("owned.invalid"),
+                Options::default(),
+                1000.,
+                |_| Err(GuardError("owned submission failure".into())),
+            )
+            .is_err()
+    );
+    assert_eq!(
+        guard.stats().unwrap(),
+        Stats {
+            checks: 3,
+            allowed: 2,
+            rate_limited: 1,
+            ..Stats::default()
+        }
+    );
+    // The policy charge remains consumed even when audit submission fails.
+    let denied = guard
+        .enforce(
+            Pdp::Ready(&budget),
+            request("owned.invalid"),
+            Options::default(),
+            1000.,
+        )
+        .unwrap();
+    assert_eq!(denied.response.unwrap().status, 429);
+
+    let allow = policy(json!({"permissions":[{
+        "action":"network:request","resource":"*","effect":"allow"
+    }]}));
+    let guard = NetworkGuard::new();
+    let mut connect = request("owned.invalid");
+    connect.method = "CONNECT";
+    assert!(
+        guard
+            .enforce_with_audit(
+                Pdp::Ready(&allow),
+                connect,
+                Options::default(),
+                1000.,
+                |_| Err(GuardError("owned submission failure".into())),
+            )
+            .is_err()
+    );
+    assert_eq!(
+        guard.stats().unwrap(),
+        Stats {
+            checks: 1,
+            allowed: 1,
+            ..Stats::default()
+        }
+    );
 }
 
 #[test]
@@ -518,6 +617,7 @@ from unittest.mock import patch
 from mitmproxy import ctx,http
 from mitmproxy.test import tflow,taddons
 from safeyolo.mitm_addons.network_guard import NetworkGuard
+from safeyolo.core import utils,audit_writer
 from safeyolo.proxy_modes.unix_listener import UnixMode
 from pdp.client import LocalPolicyClient,PolicyClientConfig
 logging.disable(logging.CRITICAL)
@@ -548,7 +648,7 @@ for scenario in json.load(sys.stdin):
      flow.client_conn.proxy_mode=UnixMode.parse(f'unix:/tmp/10.0.0.5_{agent}/proxy.sock')
     if r['agent'] in ('unavailable','conflict'):flow.metadata['agent']='mallory'
     if r['prior_response']:flow.response=http.Response.make(451,b'prior response')
-    audits=[];steps=[];events=[];decisions=[]
+    audits=[];steps=[];events=[];decisions=[];canonical=[]
     real_evaluate=client.evaluate
     def evaluate(event):
      decision=real_evaluate(event)
@@ -559,6 +659,9 @@ for scenario in json.load(sys.stdin):
      if event!='security.network_guard':return
      keys=('kind','addon','decision','severity','summary','host','agent','request_id','details')
      row={key:kwargs[key] for key in keys};row['event']=event;row['approval']=kwargs['approval'].model_dump(mode='json') if kwargs.get('approval') else None;audits.append(row)
+     row['stats_at_submission']=guard.get_stats()
+     if r['agent'] not in ('unavailable','conflict') and '\x7f' not in r['agent']:
+      with patch.object(audit_writer,'put_event',side_effect=canonical.append):utils.write_event(event,**kwargs)
     def step(flow,**kwargs):steps.append(kwargs)
     def get_client():
      if r['pdp']=='missing':raise RuntimeError('not configured')
@@ -577,7 +680,7 @@ for scenario in json.load(sys.stdin):
     if flow.response and not r['prior_response']:
      response={'status':flow.response.status_code,'body':json.loads(flow.response.content),'headers':[[k,v] for k,v in flow.response.headers.items() if k.lower()!='content-length']};body_bytes=flow.response.content.decode('ascii')
     metadata={key:flow.metadata[key] for key in ('blocked_by','block_reason','ratelimit_remaining') if key in flow.metadata}
-    rows.append({'kind':trace['outcome'] or 'bypassed','response':response,'body_bytes':body_bytes,'metadata':metadata,'trace':trace,'audit':audits[0] if audits else None,'policy_event':events[0] if events else None,'pdp':decisions[0] if decisions else None,'stats':guard.get_stats()})
+    rows.append({'kind':trace['outcome'] or 'bypassed','response':response,'body_bytes':body_bytes,'metadata':metadata,'trace':trace,'audit':audits[0] if audits else None,'policy_event':events[0] if events else None,'pdp':decisions[0] if decisions else None,'stats':guard.get_stats(),'canonical_audit':canonical})
   client._pdp._engine.done();outputs.append(rows)
 json.dump(outputs,sys.stdout)
 "#;
@@ -608,6 +711,10 @@ json.dump(outputs,sys.stdout)
         String::from_utf8_lossy(&result.stderr)
     );
     let expected: Value = serde_json::from_slice(&result.stdout).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("network.jsonl");
+    let writer = Writer::new(path.clone(), Settings::default());
+    let mut expected_canonical = Vec::new();
     let mut count = 0;
     for (index, scenario) in scenarios.iter().enumerate() {
         let policy = policy(scenario["document"].clone());
@@ -643,20 +750,62 @@ json.dump(outputs,sys.stdout)
                 },
                 _ => Pdp::Ready(&policy),
             };
-            let out = guard.enforce(pdp, req, options, 1000.).unwrap();
+            let mut stats_at_submission = None;
+            let out = guard
+                .enforce_with_audit(pdp, req, options, 1000., |intent| {
+                    stats_at_submission = Some(guard.stats_json(options.enabled).unwrap());
+                    if let Identity::Resolved(agent) = identity
+                        && !agent.contains('\u{7f}')
+                    {
+                        writer
+                            .emit(intent.event(Attribution {
+                                evidence_owner: Some(agent.into()),
+                                trusted_transport_identity: Some(agent.into()),
+                                initiator: Some(Initiator::Unknown),
+                                status: Some(AttributionStatus::Resolved),
+                                provenance: Some(
+                                    json!({"transport_source":"uds","uds_agent":agent}).into(),
+                                ),
+                            }))
+                            .unwrap();
+                    }
+                    Ok(())
+                })
+                .unwrap();
             let mut observed = serde_json::to_value(&out).unwrap();
+            if let Some(stats) = stats_at_submission {
+                observed["audit"]["stats_at_submission"] = stats;
+            }
             observed["stats"] = guard.stats_json(options.enabled).unwrap();
             observed["body_bytes"] = out
                 .response
                 .map(|response| Value::String(String::from_utf8(response.body_bytes()).unwrap()))
                 .unwrap_or(Value::Null);
+            let mut expected_row = expected[index][offset].clone();
+            let canonical = expected_row
+                .as_object_mut()
+                .unwrap()
+                .remove("canonical_audit")
+                .unwrap();
+            expected_canonical.extend(canonical.as_array().unwrap().iter().cloned());
             assert_eq!(
-                observed, expected[index][offset],
+                observed, expected_row,
                 "document {index}, request {offset}: {r}"
             );
             count += 1;
         }
     }
+    assert!(writer.shutdown(std::time::Duration::from_secs(5)).unwrap());
+    let mut native: Vec<Value> = std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(native.len() > 100);
+    for row in native.iter_mut().chain(expected_canonical.iter_mut()) {
+        assert!(row.as_object_mut().unwrap().remove("ts").is_some());
+    }
+    assert_eq!(native, expected_canonical, "full source security envelopes");
     eprintln!(
         "network guard: {count} actual Python pipeline operations across {} documents",
         scenarios.len()

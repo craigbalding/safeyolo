@@ -586,9 +586,162 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     cleanup(directory.path());
     assert_eq!(stats(&runtime), expected_stats(1, 0, 1));
     let rows = records(directory.path());
-    assert_eq!(rows.len(), 2);
-    check_event(&rows[0], "alice", "127.0.0.2", "/h2", false, 12, true);
-    check_event(&rows[1], "alice", "127.0.0.2", "/h2", true, 13, true);
-    assert_eq!(rows[0]["request_id"], rows[1]["request_id"]);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["event"], "security.network_guard");
+    assert_eq!(rows[0]["decision"], "allow");
+    assert_eq!(rows[0]["details"]["method"], "CONNECT");
+    assert_eq!(rows[0]["details"]["attribution"], attribution("alice"));
+    check_event(&rows[1], "alice", "127.0.0.2", "/h2", false, 12, true);
+    check_event(&rows[2], "alice", "127.0.0.2", "/h2", true, 13, true);
+    assert_eq!(rows[1]["request_id"], rows[2]["request_id"]);
+    assert_ne!(rows[0]["request_id"], rows[1]["request_id"]);
     owned_egress(directory.path(), port, 1);
+}
+
+#[tokio::test]
+async fn network_security_events_precede_traffic_and_use_trusted_uds_identity() {
+    for mode in ["deny", "prompt", "warn", "homoglyph"] {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = listener().await;
+        let port = origin.local_addr().unwrap().port();
+        let mut configuration = config(directory.path(), false);
+        configuration.network_guard_block = mode != "warn";
+        let policy = configuration.policy_file.as_ref().unwrap();
+        std::fs::write(
+            policy,
+            json!({"permissions":[{
+                "action":"network:request","resource":"*",
+                "effect":if mode == "prompt" {"prompt"} else {"deny"}
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        let proxy = Proxy::start(configuration).await.unwrap();
+        let runtime = proxy.runtime.read().unwrap().clone();
+        let origin = Arc::new(origin);
+        let peer = if mode == "warn" {
+            let origin = origin.clone();
+            Some(tokio::spawn(async move {
+                for _ in 0..2 {
+                    let (mut stream, _) = timeout(LIMIT, origin.accept()).await.unwrap().unwrap();
+                    let head = read_head(&mut stream).await;
+                    let head = String::from_utf8(head).unwrap().to_ascii_lowercase();
+                    assert!(!head.contains("forged-id"));
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                }
+            }))
+        } else {
+            None
+        };
+        let host = if mode == "homoglyph" {
+            "xn--pi-6kc.invalid"
+        } else {
+            "127.0.0.2"
+        };
+        let mut ids = Vec::new();
+        for agent in ["alice", "bob"] {
+            let mut stream = UnixStream::connect(directory.path().join(format!("{agent}.sock")))
+                .await
+                .unwrap();
+            stream.write_all(format!("GET http://{host}:{port}/owned?private=query HTTP/1.1\r\nHost: logical.invalid\r\nX-SafeYolo-Agent: forged-agent\r\nX-SafeYolo-Request-Id: forged-id\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            let mut reply = Vec::new();
+            timeout(LIMIT, stream.read_to_end(&mut reply))
+                .await
+                .unwrap()
+                .unwrap();
+            let reply = String::from_utf8(reply).unwrap();
+            let status = match mode {
+                "warn" => 200,
+                "prompt" => 428,
+                _ => 403,
+            };
+            assert!(
+                reply.starts_with(&format!("HTTP/1.1 {status}")),
+                "{mode}: {reply}"
+            );
+            let id = reply
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':')
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("x-safeyolo-request-id"))
+                        .map(|(_, value)| value.trim().to_owned())
+                })
+                .unwrap();
+            assert!(id.starts_with("req-") && id.len() == 36);
+            ids.push(id);
+        }
+        if let Some(peer) = peer {
+            timeout(LIMIT, peer).await.unwrap().unwrap();
+        } else {
+            assert!(
+                timeout(Duration::from_millis(20), origin.accept())
+                    .await
+                    .is_err()
+            );
+        }
+        proxy.shutdown().await;
+        let rows = records(directory.path());
+        for (index, agent) in ["alice", "bob"].iter().enumerate() {
+            let related: Vec<_> = rows
+                .iter()
+                .filter(|row| row["request_id"] == ids[index])
+                .collect();
+            assert_eq!(related.len(), 3, "{mode}: {rows:?}");
+            let security = related[0];
+            assert_eq!(security["event"], "security.network_guard");
+            assert_eq!(security["kind"], "security");
+            assert_eq!(security["addon"], "network-guard");
+            assert_eq!(security["agent"], *agent);
+            assert_eq!(
+                security["host"],
+                if mode == "homoglyph" {
+                    "аpi.invalid"
+                } else {
+                    host
+                }
+            );
+            assert_eq!(security["details"]["method"], "GET");
+            assert_eq!(security["details"]["port"], port);
+            assert_eq!(security["details"]["attribution"], attribution(agent));
+            assert_eq!(
+                security["decision"],
+                match mode {
+                    "prompt" => "require_approval",
+                    "warn" => "warn",
+                    _ => "deny",
+                }
+            );
+            assert_eq!(
+                security["severity"],
+                match mode {
+                    "homoglyph" => "critical",
+                    "prompt" => "medium",
+                    _ => "high",
+                }
+            );
+            assert_eq!(security["schema_version"], 1);
+            if mode == "prompt" {
+                let key: Value =
+                    serde_json::from_str(security["approval"]["key"].as_str().unwrap()).unwrap();
+                assert_eq!(key, json!([agent, host, port]));
+            } else {
+                assert!(security.get("approval").is_none());
+            }
+            assert_eq!(related[1]["event"], "traffic.request");
+            assert_eq!(related[2]["event"], "traffic.response");
+            if mode == "warn" {
+                assert!(related[2]["details"].get("blocked_by").is_none());
+            } else {
+                assert_eq!(related[2]["details"]["blocked_by"], "network-guard");
+            }
+        }
+        assert_eq!(runtime.network_guard.stats().unwrap().checks, 2);
+        let encoded = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+        assert!(!encoded.contains("forged") && !encoded.contains("private=query"));
+    }
 }

@@ -497,9 +497,13 @@ request. The source options `network_guard_enabled`, `network_guard_block` and
 `network_guard_homoglyph` default to true. Valid reloads retain shared policy
 budgets and guard counters; invalid configuration keeps the previous runtime.
 Native guard responses preserve the source JSON bytes, status and headers.
-Development `proxy.network_guard` events contain guard intents without raw
-queries or application bytes. Approval persistence and the remaining production pipeline still require
-integration. The bounded local API reads are described below.
+The shared audit writer emits canonical `security.network_guard` records for
+deny, warn, approval-required, budget and homoglyph decisions, plus allowed
+CONNECT admission. Ordinary allowed HTTP emits no network security event.
+Development `proxy.network_guard` diagnostics retain the guard intents without
+raw queries or application bytes. Approval persistence and the remaining
+production pipeline still require integration. The bounded local API reads are
+described below.
 
 Owner validation at `22c9a008` on Linux aarch64 passed all 36 native policy wire cases and
 104 WebSocket regressions against one frozen binary. The native policy cases
@@ -1217,9 +1221,38 @@ cover API body sizes and header cleanup, completed empty local denials, unsent
 body omission and request-circuit exceptions. [Upgrade and operator tests](../proxy/src/http/traffic/upgrade_stats_tests.rs)
 check one traffic response for a WebSocket 101 handshake, unchanged counts after
 frames, and authenticated request logger statistics. These are implementation-team
-evidence. Other security, circuit, admin and service producers still write
+evidence. Security producers other than NetworkGuard, plus circuit, admin and
+service producers, still write
 development diagnostics or remain inactive. Canonical traffic logging does not
 complete those producers, operator inspection, independent acceptance or cutover.
+
+### Canonical network security audit
+
+NetworkGuard submits each reached security event through the same process-owned
+writer as traffic logging. The event retains the source decision, severity,
+summary, approval scope, method, port and connection ID. Trusted listener identity
+supplies the same UDS attribution as traffic records. Request headers cannot
+supply the agent or request ID. The ordinary allow path emits no event; CONNECT
+allow emits its own event and correlation ID separately from inner HTTP traffic.
+
+Submission occurs at the source counter boundary. Deny and warn submit before
+their terminal counters and block metadata; rate-limited counters and policy
+charges already made remain. CONNECT allow increments its counter before
+submission. A synchronous submission error stops the later guard effects and
+uses the native proxy's existing error path. A queue drop returns successfully
+if its warning succeeds; worker sink failures do not raise on the producer.
+The native proxy still enforces admission
+before body completion under D55; this join does not establish source hook timing
+for an unread request or exception continuation through the production container.
+
+The [guard oracle](../proxy/tests/network_guard.rs) compares complete native
+JSONL envelopes for resolved UDS identities and counters at submission with
+actual source calls. Native
+submission-failure cases check the retained partial effects.
+[Owned HTTP tests](../proxy/src/http/traffic/tests.rs) check deny, warn, prompt
+and homoglyph records, trusted identity, traffic ordering, denied-request
+containment and separate CONNECT correlation. These checks do not prove approval
+consumption, other security producers, file durability or independent acceptance.
 
 The [network guard](../proxy/src/network_guard.rs) returns existing
 warn/block responses and approval/audit intents around the same native policy

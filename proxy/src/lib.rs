@@ -77,6 +77,24 @@ pub(crate) struct ConnectionIdentity {
     source_id: Option<String>,
 }
 
+impl ConnectionIdentity {
+    fn audit_attribution(&self) -> audit::Attribution {
+        audit::Attribution {
+            evidence_owner: Some(self.agent_id.clone()),
+            trusted_transport_identity: Some(self.agent_id.clone()),
+            initiator: Some(audit::Initiator::Unknown),
+            status: Some(audit::AttributionStatus::Resolved),
+            provenance: Some(
+                serde_json::json!({
+                    "transport_source": "uds",
+                    "uds_agent": self.agent_id.chars().take(128).collect::<String>(),
+                })
+                .into(),
+            ),
+        }
+    }
+}
+
 pub(crate) struct Runtime {
     config: Config,
     parent: Option<config::ParentProxy>,

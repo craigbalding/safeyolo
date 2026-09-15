@@ -4,12 +4,10 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use hyper::{Request, header};
-use serde_json::json;
 use zeroize::Zeroizing;
 
 use crate::{
     ConnectionIdentity, RuntimeState,
-    audit::{Attribution, AttributionStatus, Initiator},
     circuits::CircuitValue,
     http_content::{self, ContentError},
     request_logger::{self as logger, Error, ErrorKind},
@@ -46,19 +44,7 @@ impl Traffic {
             state,
             hooks: Mutex::new(HookState {
                 exchange: logger::Exchange::new(
-                    Attribution {
-                        evidence_owner: Some(identity.agent_id.clone()),
-                        trusted_transport_identity: Some(identity.agent_id.clone()),
-                        initiator: Some(Initiator::Unknown),
-                        status: Some(AttributionStatus::Resolved),
-                        provenance: Some(
-                            json!({
-                                "transport_source":"uds",
-                                "uds_agent":identity.agent_id.chars().take(128).collect::<String>(),
-                            })
-                            .into(),
-                        ),
-                    },
+                    identity.audit_attribution(),
                     Some(identity.agent_id.clone()),
                 ),
                 started: None,
