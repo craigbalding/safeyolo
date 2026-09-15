@@ -341,6 +341,7 @@ silently reduce accepted message sizes to a library default.
 | D41 | Python 3.12's search prefilter uses Unicode negative categories for some scoped-ASCII patterns. For example, search for `(?a:\W)` misses `é`, while fullmatch and anchored search match it. The actual matching instruction uses the correct ASCII category. | Native inspection follows the configured ASCII rule. A regression blocks these matching messages, and the source prefilter defect remains a separate classification in the differential matrix. This correction changes inspection results without adding a policy rule. |
 | D42 | Native policy method conditions used Rust's newer Unicode uppercasing. An allow condition for U+1C89 therefore matched a lookup for U+1C8A, although the pinned Python engine denies it. The API's returned method was unchanged, hiding the comparison mismatch. | Policy conditions and API method normalization now share pinned Python 3.12 / Unicode 15 uppercase data. The regression compares the actual source denial with native evaluation. Host case conversion is separate and remains outside this repair. |
 | D43 | After the last gateway grant is removed, the source gateway callback returns before clearing its previous token bindings. With a retained host binding and an authored gateway allow rule, an old token can still pass identity, service, capability, host and policy checks and reach vault selection. The compiled baseline already reports an empty token map. | The native gateway snapshot replaces the complete binding collection, including an empty collection. Its canonical view and selector revoke the old token together. Failed candidate construction retains the previous snapshot. This is proven at the shared policy/service boundary; the native HTTP credential pipeline remains unactivated. |
+| D44 | Normal source reload rotates gateway tokens without refreshing contract bindings. A changed body/query approval can keep its old value effective even with generated route permissions. Removed approvals also survive the explicit contract file loader and remain usable when an authored gateway permission permits the route. The stale approval uses the new current token, unlike D43. | Each accepted native snapshot replaces contract bindings together with tokens and permissions. The [gateway regression](../proxy/tests/gateway_snapshot.rs) checks alpha-to-beta replacement with unchanged generated routes, removal despite an authored allow, old-token rejection and retention after invalid TOML. The source witness exercised 32 actual request hooks across 16 observations with isolated in-memory injection and no egress. Native HTTP credential integration remains pending. |
 
 ## Deletion map and evidence still required
 
@@ -529,10 +530,9 @@ Gateway primitives still have explicit compatibility gaps for partially loaded
 source token maps, unhashable binding lookup keys, non-string vault/account
 values, and structured temporal path values. A non-mapping contract value fails
 only when a constraint attempts its lookup. Earlier denials keep their source
-order. The source callback retains old contract approvals across reloads.
-The native snapshot replaces them; contract revocation and HTTP integration
-require separate regression evidence. These gaps block production gateway
-activation.
+order. D44 records the separate repair for stale contract approvals. These
+compatibility gaps and the remaining HTTP integration block production
+gateway activation.
 
 Native API responses omit Debug and general serialization implementations.
 The explicit response encoder writes borrowed strings and keys into one sized

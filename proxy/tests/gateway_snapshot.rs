@@ -1359,3 +1359,112 @@ agents:
         "CONTRACT_NOT_BOUND"
     );
 }
+
+#[test]
+fn d44_accepted_reload_replaces_contract_scope_and_failed_reload_retains_it() {
+    let registry = Arc::new(
+        Registry::from_sources(
+            &[("demo.yaml".into(), temporal_definition().to_string())],
+            &[],
+        )
+        .unwrap(),
+    );
+    let mut document = json!({
+        "hosts":{"z.invalid":{"service":"demo","egress":"allow"}},
+        "agents":{"alice":{
+            "services":{"demo":"reader"},
+            "contract_bindings":[{
+                "service":"demo","capability":"reader","template":"temporal.v1",
+                "bound_values":{"approved":"alpha"},"grantable_operations":["write"]
+            }]
+        }}
+    });
+    let request = |policy: &Policy, token: &str, approved: &str| {
+        let headers = vec![
+            ("Authorization".into(), format!("Bearer {token}")),
+            ("Content-Type".into(), "application/json".into()),
+        ];
+        let body = json!({"name":approved}).to_string();
+        code(policy.gateway().unwrap().select(GatewayRequest {
+            identity: TrustedIdentity::Agent("alice"),
+            host: "z.invalid",
+            route_mode: RouteMode::CompiledPolicy(policy),
+            request: ContractRequest {
+                method: "POST",
+                target: "/items",
+                headers: &headers,
+                body: body.as_bytes(),
+            },
+        }))
+    };
+    let alpha = load(&document, Some(registry));
+    let alpha_token = token(&alpha, "alice");
+    assert_eq!(request(&alpha, &alpha_token, "alpha"), "selected");
+    assert_eq!(request(&alpha, &alpha_token, "beta"), "CONTRACT_VIOLATION");
+    let generated_route = serde_json::to_value(alpha.gateway().unwrap().compiled_routes()).unwrap();
+    assert_eq!(generated_route.as_array().unwrap().len(), 1);
+    assert_eq!(generated_route[0]["path"], "/items");
+
+    // Source D44 keeps alpha after an ordinary valid reload even though its
+    // token rotates and its compiler has accepted beta. No authored allow is
+    // needed: these body scopes compile to the same POST /items permission.
+    document["agents"]["alice"]["contract_bindings"][0]["bound_values"]["approved"] = json!("beta");
+    let beta = alpha
+        .reload_from_source_at(&document.to_string(), Format::Json, 0.)
+        .unwrap();
+    let beta_token = token(&beta, "alice");
+    assert!(alpha_token != beta_token);
+    assert_eq!(request(&beta, &alpha_token, "alpha"), "INVALID_TOKEN");
+    assert_eq!(request(&beta, &beta_token, "alpha"), "CONTRACT_VIOLATION");
+    assert_eq!(request(&beta, &beta_token, "beta"), "selected");
+    assert_eq!(
+        serde_json::to_value(beta.gateway().unwrap().compiled_routes()).unwrap(),
+        generated_route
+    );
+
+    // A rejected candidate leaves all parts of the accepted beta state intact.
+    assert!(
+        beta.reload_from_source_at("[agents\n", Format::Toml, 0.)
+            .is_err()
+    );
+    assert!(token(&beta, "alice") == beta_token);
+    assert_eq!(request(&beta, &beta_token, "beta"), "selected");
+    assert_eq!(request(&beta, &beta_token, "alpha"), "CONTRACT_VIOLATION");
+    assert_eq!(
+        serde_json::to_value(beta.gateway().unwrap().compiled_routes()).unwrap(),
+        generated_route
+    );
+
+    // Removal must revoke the contract even when a separate authored gateway
+    // permission still permits the route. This uses the new current token and
+    // therefore cannot be explained by the separate D43 stale-token defect.
+    document["agents"]["alice"]["contract_bindings"] = json!([]);
+    document["hosts"]["z.invalid"]["rules"] =
+        json!([{"action":"gateway:request","resource":"*","effect":"allow"}]);
+    let removed = beta
+        .reload_from_source_at(&document.to_string(), Format::Json, 0.)
+        .unwrap();
+    let removed_token = token(&removed, "alice");
+    assert!(removed_token != beta_token);
+    assert_eq!(
+        removed
+            .evaluate_gateway_request(safeyolo_proxy::policy::GatewayRequest {
+                service: "demo",
+                capability: "reader",
+                agent: "alice",
+                method: "POST",
+                path: "/items"
+            })
+            .effect,
+        Effect::Allow
+    );
+    assert_eq!(request(&removed, &beta_token, "beta"), "INVALID_TOKEN");
+    assert_eq!(
+        request(&removed, &removed_token, "beta"),
+        "CONTRACT_NOT_BOUND"
+    );
+    assert_eq!(
+        request(&removed, &removed_token, "alpha"),
+        "CONTRACT_NOT_BOUND"
+    );
+}
