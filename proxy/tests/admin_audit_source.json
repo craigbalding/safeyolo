@@ -1,0 +1,53 @@
+[
+  {
+    "target": "/unknown?query=value",
+    "headers_hex": "",
+    "event": {
+      "schema_version": 1,
+      "event": "admin.auth_failure",
+      "kind": "admin",
+      "severity": "high",
+      "summary": "Auth failure from 127.0.0.1 on /unknown?query=value",
+      "addon": "admin-api",
+      "details": {
+        "client_ip": "127.0.0.1",
+        "path": "/unknown?query=value",
+        "reason": "invalid_or_missing_token"
+      }
+    }
+  },
+  {
+    "target": "//unknown?query=value",
+    "headers_hex": "582d466f727761726465642d466f723a20a0636166e9a02c2069676e6f7265640d0a582d466f727761726465642d466f723a207365636f6e640d0a",
+    "event": {
+      "schema_version": 1,
+      "event": "admin.auth_failure",
+      "kind": "admin",
+      "severity": "high",
+      "summary": "Auth failure from caf\u00e9 on /unknown?query=value",
+      "addon": "admin-api",
+      "details": {
+        "client_ip": "caf\u00e9",
+        "path": "/unknown?query=value",
+        "reason": "invalid_or_missing_token"
+      }
+    }
+  },
+  {
+    "target": "http://owned.invalid/unknown?query=value",
+    "headers_hex": "582d466f727761726465642d466f723a202c2069676e6f7265640d0a",
+    "event": {
+      "schema_version": 1,
+      "event": "admin.auth_failure",
+      "kind": "admin",
+      "severity": "high",
+      "summary": "Auth failure from  on http://owned.invalid/unknown?query=value",
+      "addon": "admin-api",
+      "details": {
+        "client_ip": "",
+        "path": "http://owned.invalid/unknown?query=value",
+        "reason": "invalid_or_missing_token"
+      }
+    }
+  }
+]

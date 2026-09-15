@@ -22,6 +22,7 @@ REPO = Path(os.environ.get("SAFEYOLO_SOURCE_ROOT", Path(__file__).resolve().pare
 sys.path[:0] = [str(REPO), str(REPO / "cli/src")]
 
 from pdp.client import LocalPolicyClient, PolicyClientConfig  # noqa: E402
+from safeyolo.core import audit_writer, utils  # noqa: E402
 from safeyolo.core.audit_schema import sanitize_for_log  # noqa: E402
 from safeyolo.mitm_addons import admin_api  # noqa: E402
 from safeyolo.policy import engine as engine_module  # noqa: E402
@@ -69,6 +70,11 @@ def run():
 
     def record(name, **fields):
         resource = fields.get("details", {}).get("resource")
+        canonical = []
+        with patch.object(audit_writer, "put_event", side_effect=canonical.append):
+            utils.write_event(name, **fields)
+        assert len(canonical) == 1
+        canonical[0].pop("ts")
         events.append(
             {
                 "name": name,
@@ -79,6 +85,7 @@ def run():
                 "resource_json": json.dumps(resource),
                 "safe_resource": sanitize_for_log(resource) if resource else "all",
                 "resource_falsy": not bool(resource),
+                "canonical": canonical[0],
             }
         )
 
@@ -139,6 +146,61 @@ def run():
         )
         handler._handle_get_budgets()
         get = {"replies": replies, "events": events, "evaluations_unchanged": engine._evaluations == before}
+
+        # Keep the successful rows untouched. These controls run the actual
+        # source envelope and fail only its queue submission after mutation.
+        failure_rows = []
+        with (
+            patch.object(engine_module, "write_event", utils.write_event),
+            patch.object(admin_api, "write_event", utils.write_event),
+        ):
+            for fail_on in (1, 2):
+                with patch.object(audit_writer, "put_event"):
+                    client.reset_budgets()
+                for expected in ("allow", "allow", "budget_exceeded"):
+                    assert (
+                        engine.evaluate_request("alpha.invalid", path="/").effect
+                        == expected
+                    )
+                before = engine._evaluations
+                attempts, accepted, replies = [], [], []
+
+                def submit(
+                    event, *, attempts=attempts, accepted=accepted, fail_on=fail_on
+                ):
+                    entry = {key: value for key, value in event.items() if key != "ts"}
+                    attempts.append(entry)
+                    if len(attempts) == fail_on:
+                        raise RuntimeError("synthetic queue submission failure")
+                    accepted.append(entry)
+
+                body = json.dumps({"resource": KEY}).encode()
+                handler.headers = {"Content-Length": str(len(body))}
+                handler.rfile = io.BytesIO(body)
+                handler._send_json = (
+                    lambda value, status=200, output=replies: output.append(
+                        {"status": status, "text": json.dumps(value, indent=2)}
+                    )
+                )
+                error = None
+                with patch.object(audit_writer, "put_event", side_effect=submit):
+                    try:
+                        handler._handle_post_budgets_reset()
+                    except RuntimeError as exc:
+                        error = type(exc).__name__
+                failure_rows.append(
+                    {
+                        "name": f"submission_{fail_on}_fails",
+                        "fail_on": fail_on,
+                        "input_hex": body.hex(),
+                        "attempted": attempts,
+                        "accepted": accepted,
+                        "replies": replies,
+                        "exception": error,
+                        "tracked_keys": len(engine._budget_tracker.get_stats()["keys"]),
+                        "evaluations_unchanged": engine._evaluations == before,
+                    }
+                )
     assert not network
     assert all(row["evaluations_unchanged"] for row in rows)
     assert all(
@@ -156,6 +218,8 @@ def run():
         "cli/src/safeyolo/policy/engine.py",
         "cli/src/safeyolo/policy/budget_tracker.py",
         "cli/src/safeyolo/core/audit_schema.py",
+        "cli/src/safeyolo/core/utils.py",
+        "cli/src/safeyolo/core/audit_writer.py",
     ]
     return {
         "python": platform.python_version(),
@@ -163,6 +227,7 @@ def run():
         "policy": POLICY,
         "rows": rows,
         "get": get,
+        "failure_rows": failure_rows,
         "network_attempts": len(network),
         "tokens_read_or_minted": 0,
         "source_sha256": {path: hashlib.sha256((REPO / path).read_bytes()).hexdigest() for path in paths},

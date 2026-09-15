@@ -112,6 +112,51 @@ def run():
                         "events": [{key: value for key, value in event.items() if key != "ts"} for event in events],
                     }
                 )
+        failure_rows = []
+        for fail_on in (1, 2):
+            cb = circuit_breaker.CircuitBreaker()
+            cb.force_open(HOST)
+            assert cb._state.all_domains() == [HOST]
+            attempts, accepted, replies = [], [], []
+
+            def submit(event, *, attempts=attempts, accepted=accepted, fail_on=fail_on):
+                entry = {key: value for key, value in event.items() if key != "ts"}
+                attempts.append(entry)
+                if len(attempts) == fail_on:
+                    raise RuntimeError("synthetic queue submission failure")
+                accepted.append(entry)
+
+            payload = json.dumps({"host": HOST}).encode()
+            handler = admin_api.AdminRequestHandler.__new__(
+                admin_api.AdminRequestHandler
+            )
+            handler.headers = {"Content-Length": str(len(payload))}
+            handler.rfile = io.BytesIO(payload)
+            handler.client_address = ("127.0.0.1", 43210)
+            handler._get_addon = lambda _name, selected=cb: selected
+            handler._send_json = (
+                lambda value, status=200, output=replies: output.append(
+                    {"status": status, "text": json.dumps(value, indent=2)}
+                )
+            )
+            error = None
+            with patch("safeyolo.core.audit_writer.put_event", side_effect=submit):
+                try:
+                    handler._handle_post_circuit_breaker_reset()
+                except RuntimeError as exc:
+                    error = type(exc).__name__
+            failure_rows.append(
+                {
+                    "name": f"submission_{fail_on}_fails",
+                    "fail_on": fail_on,
+                    "input_hex": payload.hex(),
+                    "attempted": attempts,
+                    "accepted": accepted,
+                    "replies": replies,
+                    "exception": error,
+                    "retained": cb._state.all_domains(),
+                }
+            )
     paths = [
         "cli/src/safeyolo/mitm_addons/circuit_breaker.py",
         "cli/src/safeyolo/mitm_addons/agent_api.py",
@@ -122,6 +167,7 @@ def run():
     return {
         "admin": rows,
         "agent": reads,
+        "failure_rows": failure_rows,
         "source_sha256": {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in paths},
     }
 
@@ -133,6 +179,6 @@ if __name__ == "__main__":
     result = run()
     if args.check:
         assert result == json.loads(args.check.read_text()), "Source circuit API oracle changed"
-        print("22 actual source circuit API rows match")
+        print("22 actual source circuit API rows and 2 submission failures match")
     else:
         print(json.dumps(result, indent=2))

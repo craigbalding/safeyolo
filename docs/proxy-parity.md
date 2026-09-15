@@ -543,10 +543,12 @@ are still separate work.
 Operator replies use Python's indented JSON presentation and the shared scalar
 formatter. GET borrows the stored document into one sized, zeroizing response
 allocation. Task document owners and API outcomes omit Debug and general serialization.
-Development `proxy.admin_api` records retain source audit intents for failed auth
-and accepted task updates, without raw task documents or bearer values. Evidence
-write failures preserve the response and set `X-SafeYolo-Evidence-Error`.
-Production event envelopes and storage remain unintegrated.
+The shared canonical writer emits failed-authentication and accepted-task-update
+events without raw task documents or bearer values. Separate development
+`proxy.admin_api` diagnostics retain the intents. Diagnostic write failures
+preserve the response and set `X-SafeYolo-Evidence-Error`. Synchronous canonical
+submission exceptions terminate the operator handler before its response;
+accepted task mutations remain committed.
 
 The listener uses the first Authorization header and exact `Bearer ` prefix.
 It adds no Origin, Host or CORS restriction. Origin-form targets retain the source
@@ -659,8 +661,11 @@ or failed handlers remain contained; CONNECT returns the source transport-guard
 403. Development `proxy.agent_api` evidence records response and audit intents
 without bearer values or URL queries. A failed evidence file write preserves the
 response and sets `X-SafeYolo-Evidence-Error`; source production audit writes also
-preserve responses when their sink fails. An exception escaping the source audit
-callback is a separate fault, covered by the facade's local 503 transition.
+preserve responses when their sink fails. Native canonical producers now emit
+auth failure, handler unavailable, declaration and clear events before traffic
+hooks. A synchronous auth submission error uses the native local guard's 503
+transition. The historical separate-addon source test does not establish the
+production container's continuation after that exception.
 
 Policy method comparison and API query formatting use [pinned Python scalar
 data](../proxy/data/agent_api/README.md), including the D42 correction. Other
@@ -668,8 +673,9 @@ operational routes remain unavailable in this development slice.
 Python surrogate-escaped query values that cannot enter the native scalar-string
 matcher produce a typed compatibility failure and local 503. The integer parser
 matches Python's default 4,300-digit conversion limit; nondefault Python limits
-remain outside the demonstrated contract. These gaps, production audit storage
-and global API counters still require integration before complete API acceptance.
+remain outside the demonstrated contract. These gaps, audit producers for
+unimplemented routes and global API counters still require integration before
+complete API acceptance.
 
 The authenticated `/budgets` response reads the existing shared rate-limit
 timestamps and current policy matcher. It does not evaluate requests, spend
@@ -703,12 +709,14 @@ task registration, policy hashes or evaluation counts. Remaining keys keep
 their order, and later charging reinserts a removed key at the end.
 
 Reset and atomic budget charging use the same lock across live policy snapshots.
-Reset commits before the listener attempts the source `admin.budget_reset` and
-`admin.budgets_reset` audit intents. A failed evidence write sets
+Reset commits before canonical `admin.budget_reset` and `admin.budgets_reset`
+submission, in that order. A synchronous failure at the first submission returns
+the source fixed 500 and suppresses the second event; a failure at the second
+terminates the handler. Neither failure rolls back the reset. A failed diagnostic write sets
 `X-SafeYolo-Evidence-Error` on the successful response; it does not roll back the
 reset. The [operator transport test](../proxy/tests/admin_transport.rs) exercises
-an actual failing sink and recovery. These intents use the development event
-sink; production audit storage remains pending.
+an actual failing diagnostic sink and recovery. Canonical worker sink failure
+uses the writer's asynchronous fallback and preserves the producer result.
 
 The operator report preserves the source connection termination on reporting
 failure, while Agent `/budgets` retains its own error response. With the explicit
@@ -970,10 +978,11 @@ a source parser difference under D50.
 The authenticated `/circuits` response reads that same owner. Existing operator
 POST `/admin/circuit-breaker/reset` deletes an exact host key without clearing
 lifetime counters or settings. Missing or falsy host fields return 400. Reads can
-advance stale circuits and emit unscoped transitions. Development `proxy.circuit`
-records carry the source ops/security audit intent, request attribution where
-the source supplies it, and the committed outcome. Reset also emits the separate
-admin audit. Evidence write failure preserves committed state and valid response
+advance stale circuits and emit unscoped canonical transitions. Circuit operations
+submit canonical events at their source mutation points. Development
+`proxy.circuit` records remain separate diagnostics. Reset submits its ops event
+before the separate admin event; a non-string host uses the source minimal
+validation-fallback envelope for the ops event. Diagnostic write failure preserves committed state and valid response
 bytes. A failure known before headers adds `X-SafeYolo-Evidence-Error`; a later
 failure produces a content-free diagnostic.
 
@@ -1049,8 +1058,11 @@ error without replacing the declaration.
 A successful reload changes current declaration defaults without rewriting
 existing expiry or refreshing target hosts. A POST held across reload uses the
 new maximum TTL. Reached integer-to-float overflow returns the source's 500 and
-preserves the previous record. Mutation audits carry trusted attribution and
-no deny decision. [Body ownership tests](../proxy/tests/agent_api_declarations.rs),
+preserves the previous record. Mutation audits retain the trusted agent field
+and have no decision or attribution object. Their source-stage request ID is
+optional; normal local dispatch runs before RequestId and omits it. A synchronous
+submission failure returns the handler's 500 after the declaration mutation,
+without rollback. [Body ownership tests](../proxy/tests/agent_api_declarations.rs),
 [core tests](../proxy/tests/test_context.rs), and
 [content decoder comparisons](../proxy/tests/http_content.rs) cover these
 boundaries. The [native socket regression](../tests/proxy_migration/test_agent_api_test_context.py)
@@ -1221,10 +1233,9 @@ cover API body sizes and header cleanup, completed empty local denials, unsent
 body omission and request-circuit exceptions. [Upgrade and operator tests](../proxy/src/http/traffic/upgrade_stats_tests.rs)
 check one traffic response for a WebSocket 101 handshake, unchanged counts after
 frames, and authenticated request logger statistics. These are implementation-team
-evidence. Security producers other than NetworkGuard, plus circuit, admin and
-service producers, still write
-development diagnostics or remain inactive. Canonical traffic logging does not
-complete those producers, operator inspection, independent acceptance or cutover.
+evidence. The canonical security and administrative producers below share this
+writer. Other producers, operator inspection, independent acceptance and cutover
+remain incomplete.
 
 ### Canonical network security audit
 
@@ -1253,6 +1264,57 @@ submission-failure cases check the retained partial effects.
 and homoglyph records, trusted identity, traffic ordering, denied-request
 containment and separate CONNECT correlation. These checks do not prove approval
 consumption, other security producers, file durability or independent acceptance.
+
+### Canonical circuit, TestContext and API audit
+
+Circuit request, response and Agent API reads now submit transitions at the
+reached core operation. Open, reopen and close increment their counters before
+submission and publish their new state afterward. Half-open publishes state
+before submission; a synchronous failure then prevents the later admission slot
+or next stats entry. Reset commits before its events. Successful returned
+transition intents are already submitted and receive only separate diagnostics.
+Ops events have no attribution or decision. Response transitions carry optional
+request metadata only after its request hook has run; early responses do not
+borrow the unconditional native diagnostic ID. Circuit denial events use trusted
+UDS attribution. D55's early admission remains distinct from source body timing.
+
+TestContext decision and applied request/response events now use the canonical
+writer. Applied events have no decision or attribution object. Request metadata
+is installed before decoding and submission; a synchronous failure retains that
+metadata but stops the terminal context counters and later request logging.
+A subsequent response can still use the metadata. Response decoding or
+synchronous submission failure skips later recording and traffic logging.
+Worker sink failures remain successful hook returns. No extra body read or drain
+was added.
+
+Agent API auth, guard, declaration and clear events retain their source field
+omissions and precede later traffic events. Declaration mutations survive a
+synchronous submission failure. The guard retains local containment even if
+its audit submission fails. Operator events include failed authentication, task
+updates and both budget/circuit reset events. Operator client text follows the
+source first-header Latin-1 decoding and first-comma selection; it is not trusted
+agent identity. Failed-auth audit retains the full request target independently
+of route parsing. These operator call sites supply no agent attribution,
+decision or approval.
+
+The native `X-SafeYolo-Evidence-Error` header reports selected diagnostic failures.
+It does not cover every canonical submission exception: circuit hook failures
+and a TestContext head-hook failure can omit the header while preserving their
+existing hook continuation.
+
+[Circuit source controls](../proxy/tests/circuit_audit_order_source.py),
+[TestContext source controls](../proxy/tests/test_context_audit_source.py),
+[Agent API controls](../proxy/tests/agent_api_audit.rs) and the existing reset
+oracles compare canonical fields and partial effects. [Owned circuit tests](../proxy/src/http/circuit_audit_tests.rs)
+check response and denial ordering, early-response field omissions and later
+response hooks after synchronous submission failure. [Owned Agent API tests](../proxy/src/http/agent_audit_tests.rs)
+check actual shared-writer ordering through ordinary HTTP/1 dispatch.
+[Operator tests](../proxy/tests/admin_transport.rs) compare parsed source auth
+facts with owned listener records; their source parser control is not a source
+listener comparison. This evidence does not establish OS thread-start exhaustion,
+file durability, source-container auth exception continuation, rejected HTTP/2
+API mutation-completion behavior, inactive service/credential producers or
+independent acceptance.
 
 The [network guard](../proxy/src/network_guard.rs) returns existing
 warn/block responses and approval/audit intents around the same native policy

@@ -24,6 +24,10 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use crate::tunnels::{self, BoxStream, Protocol};
 use crate::{ConnectionIdentity, Error, Runtime, RuntimeState, UpgradeTasks, is_reserved};
 
+#[cfg(test)]
+mod agent_audit_tests;
+#[cfg(test)]
+mod circuit_audit_tests;
 mod circuit_completion;
 mod flow_recording;
 mod request_body;
@@ -738,8 +742,9 @@ fn record_agent_api(
         }
         event
     });
-    // Development evidence uses the facade's audit fields, excluding request
-    // headers and query. Production audit storage is not yet connected.
+    // Development evidence remains separate from the canonical writer. On a
+    // synchronous submission failure, retain the attempted intent/status before
+    // recording the changed terminal outcome; neither row is a second emission.
     runtime.record(json!({
         "event": "proxy.agent_api", "agent": identity.agent_id,
         "connection_id": identity.connection_id, "request_id": request_id,
@@ -807,7 +812,7 @@ async fn local_agent_api(
         client_ip: identity.source_id.as_deref(),
         request_id,
     };
-    let outcome = if runtime.config.agent_api_enabled {
+    let mut outcome = if runtime.config.agent_api_enabled {
         let token_path = std::env::var_os("SAFEYOLO_DATA_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| "/safeyolo/data".into())
@@ -826,6 +831,7 @@ async fn local_agent_api(
             agent_api::Controls {
                 flows: runtime.flow_recorder.store(),
                 circuits: runtime.policy.as_ref().map(|_| agent_api::CircuitContext {
+                    audit: Some(&runtime.audit),
                     breaker: &runtime.circuits,
                     enabled: runtime.config.circuit_breaker_enabled,
                     random: &mut random,
@@ -849,7 +855,26 @@ async fn local_agent_api(
     } else {
         agent_api::unavailable(api_request, Failure::HandlerUnavailable)
     };
-    let mut evidence_failed = record_agent_api(runtime, identity, request_id, &outcome).is_err()
+    // AgentAPI runs before the later request/response traffic hooks. Only a
+    // synchronous producer error changes its outcome; queue drops and async
+    // sink failures retain the already-established source response semantics.
+    let mut evidence_failed = false;
+    if let Some(audit) = &outcome.audit
+        && let Err(error) = runtime.audit.emit(audit.to_event())
+    {
+        evidence_failed = true;
+        let authentication_failed = audit.kind == agent_api::AuditKind::AuthenticationFailed;
+        if audit.kind != agent_api::AuditKind::HandlerUnavailable {
+            evidence_failed |= record_agent_api(runtime, identity, request_id, &outcome).is_err();
+        }
+        outcome = outcome.audit_submission_failed(api_request, error.kind());
+        if authentication_failed && let Some(guard) = &outcome.audit {
+            // A single independent containment attempt. The guard catches a
+            // second failure and its local response must remain intact.
+            evidence_failed |= runtime.audit.emit(guard.to_event()).is_err();
+        }
+    }
+    evidence_failed |= record_agent_api(runtime, identity, request_id, &outcome).is_err()
         | crate::circuit_runtime::record_transitions(runtime, &outcome.circuit_events, None);
     // The existing API reader supplies only a scalar observation. Its Body
     // terminal is insufficient on H2 NO_ERROR reset: require parser success.
@@ -950,7 +975,7 @@ fn circuit_admission(
         return (None, false, false);
     };
     let host = &destination.policy_host;
-    let result = runtime.circuits.request_current(
+    let result = runtime.circuits.request_current_with_audit(
         policy,
         host,
         RequestGate {
@@ -964,6 +989,7 @@ fn circuit_admission(
         },
         crate::circuit_runtime::now(),
         &mut rand::random::<f64>,
+        &crate::circuits::Audit::new(&runtime.audit, None, None),
     );
     let outcome = match result {
         Ok(outcome) => outcome,
@@ -996,6 +1022,23 @@ fn circuit_admission(
             ("port".into(), json!(destination.port).into()),
             ("connection_id".into(), json!(identity.connection_id).into()),
         ]);
+        let mut security = crate::audit::Event::new(
+            "security.circuit_breaker",
+            crate::audit::Kind::Security,
+            crate::audit::Severity::High,
+            format!(
+                "Circuit breaker open for {} ({count} failures)",
+                crate::network_guard::sanitize(host)
+            ),
+        );
+        security.addon = Some("circuit-breaker".into());
+        security.host = Some(host.to_owned());
+        security.agent = Some(identity.agent_id.clone());
+        security.request_id = Some(request_id.to_owned());
+        security.decision = Some(crate::audit::Decision::Deny);
+        security.attribution = Some(identity.audit_attribution());
+        security.details = CircuitValue::Object(details.clone());
+        runtime.audit.emit(security)?;
         let audit = CircuitValue::Object(indexmap::IndexMap::from([
             ("event".into(), json!("proxy.circuit").into()),
             (

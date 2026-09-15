@@ -81,6 +81,7 @@ fn exception(kind: ErrorKind) -> &'static str {
         ErrorKind::ZeroDivision => "ZeroDivisionError",
         ErrorKind::Compatibility => "Compatibility",
         ErrorKind::Invalid => "Invalid",
+        ErrorKind::Audit(_) => "Audit",
     }
 }
 fn actual(cases: &Value) -> Value {

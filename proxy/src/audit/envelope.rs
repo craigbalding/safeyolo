@@ -46,6 +46,7 @@ pub struct Approval {
 /// Owned audit input. No Debug/Serialize exposes fields to routine diagnostics.
 /// Details retain the existing typed JSON number and temporal representation.
 pub struct Event {
+    validation_failed: bool,
     pub event: String,
     pub kind: Kind,
     pub severity: Severity,
@@ -69,6 +70,7 @@ impl Event {
         summary: impl Into<String>,
     ) -> Self {
         Self {
+            validation_failed: false,
             event: event.into(),
             kind,
             severity,
@@ -83,6 +85,19 @@ impl Event {
             attribution: None,
             details: CircuitValue::Object(IndexMap::new()),
         }
+    }
+
+    /// A concrete producer has reached a source envelope type error. Retain
+    /// only the same five fallback fields through the normal writer path.
+    pub fn validation_fallback(
+        event: impl Into<String>,
+        kind: Kind,
+        severity: Severity,
+        summary: impl Into<String>,
+    ) -> Self {
+        let mut event = Self::new(event, kind, severity, summary);
+        event.validation_failed = true;
+        event
     }
 
     /// Match utils.write_event: invalid envelope fields yield its minimal
@@ -108,7 +123,8 @@ impl Event {
 
     fn envelope(&self, now: OffsetDateTime) -> Result<CircuitValue> {
         let invalid = || Error(ErrorKind::Encoding);
-        if self.summary.is_empty()
+        if self.validation_failed
+            || self.summary.is_empty()
             || !self.event.starts_with(&format!("{}.", self.kind.as_str()))
             || self
                 .event_id

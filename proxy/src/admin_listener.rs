@@ -160,13 +160,26 @@ async fn serve_connection(
                 .read()
                 .map_err(|_| admin_api::Error::RegistryUnavailable)?
                 .clone();
-            let path = request.uri().path().to_owned();
+            let target = request.uri().to_string();
+            // BaseHTTPRequestHandler collapses a leading // before dispatch.
+            // Keep query and absolute-form presentation independently of routes.
+            let path = if target.starts_with("//") {
+                format!("/{}", target.trim_start_matches('/'))
+            } else {
+                target
+            };
             let client_ip = request
                 .headers()
                 .get("x-forwarded-for")
-                .and_then(|value| value.to_str().ok())
-                .filter(|value| !value.is_empty())
+                .filter(|value| !value.as_bytes().is_empty())
                 .map(|value| {
+                    // The source HTTP header parser decodes Latin-1. This is
+                    // client-provided audit text, never trusted agent identity.
+                    let value: String = value
+                        .as_bytes()
+                        .iter()
+                        .map(|byte| char::from(*byte))
+                        .collect();
                     value
                         .split(',')
                         .next()
@@ -195,7 +208,8 @@ async fn serve_connection(
                 runtime.policy.as_ref().map(|_| &runtime.circuits),
                 Some(&stats),
             )
-            .await?;
+            .await?
+            .submit_audit(&runtime.audit, &client_ip, &path)?;
             let audits = outcome.audit().map(|intent| match intent {
                 admin_api::Audit::AuthenticationFailed => vec![json!({
                     "event":"proxy.admin_api", "audit_intent":"admin.auth_failure",
@@ -231,8 +245,8 @@ async fn serve_connection(
                     ]
                 }
             });
-            // A reset is already committed. Attempt both source audit intents
-            // even if the first sink write fails; never claim state rollback.
+            // Diagnostic sink failures remain separate from canonical producer
+            // exceptions. Attempt each diagnostic without claiming rollback.
             let mut failed = false;
             for event in audits.into_iter().flatten() {
                 failed |= runtime.record(event).is_err();

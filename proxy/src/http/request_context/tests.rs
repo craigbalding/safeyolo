@@ -519,3 +519,237 @@ async fn sink_failure_marks_block_and_applied_response_without_rolling_back_coun
     assert!(context.evidence_failed());
     assert_eq!(fixture.counts(), [2, 1, 1, 0, 0]);
 }
+
+#[test]
+fn canonical_test_context_events_and_submission_effects_match_source_hooks() {
+    let Some(python) = std::env::var_os("SAFEYOLO_SOURCE_PYTHON") else {
+        eprintln!("set SAFEYOLO_SOURCE_PYTHON to run the selected source hook oracle");
+        return;
+    };
+    let source = std::process::Command::new(python)
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/test_context_audit_source.py"
+        ))
+        .output()
+        .unwrap();
+    assert!(
+        source.status.success(),
+        "{}",
+        String::from_utf8_lossy(&source.stderr)
+    );
+    let expected: Vec<Value> = serde_json::from_slice(&source.stdout).unwrap();
+    let mut observed = Vec::new();
+    for row in &expected {
+        let case = row["case"].as_str().unwrap();
+        let optional = case.starts_with("optional");
+        let applied = case.starts_with("applied");
+        let fixture = Fixture::new(
+            !case.starts_with("warn"),
+            if optional {
+                json!([])
+            } else {
+                json!(["owned.invalid"])
+            },
+            false,
+        );
+        let mut headers = Vec::new();
+        if applied || optional || case == "malformed" {
+            headers.push((
+                test_context::HEADER.into(),
+                if applied { CLAIM } else { "invalid" }.as_bytes().to_vec(),
+            ));
+        }
+        let identity = fixture.identity();
+        let trusted = TrustedIdentity::new("owned-slot", "alice").unwrap();
+        let prepared = fixture
+            .runtime
+            .test_context
+            .prepare_request_current(
+                fixture.runtime.policy.as_ref(),
+                test_context::Request {
+                    host: "owned.invalid",
+                    prior_response: false,
+                    identity: Some(&trusted),
+                    metadata_agent: Some("alice"),
+                },
+                &mut headers,
+                super::super::declaration_time(),
+            )
+            .unwrap();
+        let block_status = match prepared.result() {
+            Ok(RequestOutcome::Block { status, .. }) => Some(*status),
+            _ => None,
+        };
+        let provenance = Arc::new(Provenance::new(
+            fixture.runtime.clone(),
+            identity.clone(),
+            "owned-request".into(),
+            "POST".into(),
+            "owned.invalid".into(),
+            "/path?raw=1".into(),
+        ));
+        if case.ends_with("error") && case != "applied_response_error" {
+            fixture.runtime.audit.poison_for_test();
+        }
+        let result = apply(&provenance, 8123, prepared, Some(b"body"), Ok(b""), 0.);
+        let mut errors = Vec::new();
+        if result.is_err() {
+            errors.push("request");
+        }
+        let counts = fixture.counts();
+        let request_status = result.is_ok().then_some(block_status).flatten();
+        if applied {
+            if case == "applied_response_error" {
+                fixture.runtime.audit.poison_for_test();
+            }
+            let state = Arc::new(RwLock::new(fixture.runtime.clone()));
+            let request = Request::builder()
+                .method("POST")
+                .uri("http://owned.invalid:8123/path?raw=1")
+                .body(())
+                .unwrap();
+            let traffic = super::super::traffic::Traffic::new(
+                state.clone(),
+                &identity,
+                "owned-request",
+                &request,
+                &fixture.destination(),
+            );
+            let recording = super::super::flow_recording::Recording::new(
+                fixture.runtime.flow_recorder.clone(),
+                identity,
+                "owned-request".into(),
+                true,
+            );
+            let capture = super::super::test_context::ResponseCapture::new(
+                state,
+                Some(provenance),
+                Some(traffic),
+                Some(recording),
+            );
+            hyper::ext::ResponseBodyCapture::head(
+                &capture,
+                StatusCode::OK,
+                &hyper::HeaderMap::new(),
+                false,
+            );
+            hyper::ext::ResponseBodyCapture::data(&capture, b"reply");
+            if capture.finish(true) {
+                errors.push("response");
+            }
+            // A failed provenance hook stops both later production children.
+            let failed = case.ends_with("error");
+            assert_eq!(
+                fixture.runtime.flow_recorder.stats()["skipped"],
+                usize::from(!failed) as u64
+            );
+            assert_eq!(
+                fixture
+                    .runtime
+                    .request_logger
+                    .stats()
+                    .unwrap()
+                    .responses_total,
+                num_bigint::BigInt::from(usize::from(!failed))
+            );
+        }
+        // The drain uses the queue's independent lock, so a request accepted
+        // before the later worker-lock poison can still finish normally.
+        assert!(
+            fixture
+                .runtime
+                .audit
+                .wait_for_drain(Duration::from_secs(3))
+                .unwrap()
+        );
+        let mut events: Vec<Value> =
+            std::fs::read_to_string(fixture.directory.path().join("audit.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .filter(|event: &Value| event["event"] == "security.test_context")
+                .collect();
+        for event in &mut events {
+            event.as_object_mut().unwrap().remove("ts");
+        }
+        let context_applied = errors.contains(&"response")
+            || events
+                .iter()
+                .any(|event| event["details"]["phase"] == "response");
+        observed.push(json!({"case":case, "events":events, "errors":errors,
+            "counts":counts, "request_status":request_status,
+            "context_applied":context_applied, "header_contained":headers.is_empty()}));
+    }
+    assert_eq!(observed, expected);
+}
+
+#[test]
+fn head_audit_error_returns_hook_error_without_committing_block() {
+    let fixture = Fixture::new(true, json!(["owned.invalid"]), false);
+    fixture.runtime.audit.poison_for_test();
+    let mut request = Request::builder()
+        .header(test_context::HEADER, "invalid")
+        .body(())
+        .unwrap();
+    assert!(matches!(
+        fixture.prepare(&mut request).unwrap(),
+        Admission::HookError
+    ));
+    assert!(!request.headers().contains_key(test_context::HEADER));
+    assert_eq!(fixture.counts(), [1, 0, 0, 0, 0]);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn canonical_sink_fallback_keeps_context_counters_and_response_children() {
+    let mut fixture = Fixture::new(true, json!(["owned.invalid"]), false);
+    Arc::get_mut(&mut fixture.runtime).unwrap().audit = Arc::new(crate::audit::Writer::new(
+        "/dev/full".into(),
+        crate::audit::Settings::default(),
+    ));
+    let mut peer = H1::new().await;
+    let mut request = peer.request(0, Some(CLAIM), "identity").await;
+    let context = pending(fixture.prepare(&mut request).unwrap());
+    let (_, context) = context.buffer(request.into_body(), Some(0)).await.unwrap();
+    assert!(!context.evidence_failed());
+    assert_eq!(fixture.counts(), [1, 1, 0, 0, 0]);
+    let state = Arc::new(RwLock::new(fixture.runtime.clone()));
+    let request = Request::builder()
+        .method("POST")
+        .uri("http://owned.invalid:8123/path?raw=1")
+        .body(())
+        .unwrap();
+    let traffic = super::super::traffic::Traffic::new(
+        state.clone(),
+        &fixture.identity(),
+        "owned-request",
+        &request,
+        &fixture.destination(),
+    );
+    let recording = super::super::flow_recording::Recording::new(
+        fixture.runtime.flow_recorder.clone(),
+        fixture.identity(),
+        "owned-request".into(),
+        true,
+    );
+    let capture = super::super::test_context::ResponseCapture::new(
+        state,
+        context.response_provenance(),
+        Some(traffic),
+        Some(recording),
+    );
+    hyper::ext::ResponseBodyCapture::head(&capture, StatusCode::OK, &hyper::HeaderMap::new(), true);
+    assert!(!capture.finish(true));
+    assert_eq!(fixture.runtime.flow_recorder.stats()["skipped"], 1);
+    assert_eq!(
+        fixture
+            .runtime
+            .request_logger
+            .stats()
+            .unwrap()
+            .responses_total,
+        1.into()
+    );
+    assert!(fixture.runtime.audit.wait_for_drain(LIMIT).unwrap());
+}

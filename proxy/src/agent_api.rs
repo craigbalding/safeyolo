@@ -20,6 +20,7 @@ mod declarations;
 mod flows;
 pub use declarations::{
     BodyObservation, Controls, DeclarationContext, RequestBody, respond_with_body,
+    respond_with_body_and_audit_id,
 };
 pub use flows::FlowFailure;
 
@@ -139,6 +140,50 @@ pub struct AuditIntent {
     pub details: Value,
 }
 
+impl AuditIntent {
+    /// Build only the four canonical Agent API producer envelopes. These source
+    /// hooks supply neither an approval nor flow attribution. Declaration IDs
+    /// are optional source-stage metadata, not the native ingress/backstop ID.
+    pub fn to_event(&self) -> crate::audit::Event {
+        use crate::audit::{Decision, Event, Kind, Severity};
+
+        let (name, severity, addon, decision) = match self.kind {
+            AuditKind::AuthenticationFailed => (
+                "security.agent_auth_failed",
+                Severity::High,
+                "agent-api",
+                Some(Decision::Deny),
+            ),
+            AuditKind::HandlerUnavailable => (
+                "security.agent_api_unavailable",
+                Severity::High,
+                "agent-api-request-guard",
+                Some(Decision::Deny),
+            ),
+            AuditKind::TestContextDeclared => (
+                "security.test_context_declared",
+                Severity::Low,
+                "agent-api",
+                None,
+            ),
+            AuditKind::TestContextCleared => (
+                "security.test_context_cleared",
+                Severity::Low,
+                "agent-api",
+                None,
+            ),
+        };
+        let mut event = Event::new(name, Kind::Security, severity, self.summary.clone());
+        event.addon = Some(addon.into());
+        event.decision = decision;
+        event.agent = self.agent.clone();
+        event.request_id = self.request_id.clone();
+        event.host = self.host.map(str::to_owned);
+        event.details = self.details.clone().into();
+        event
+    }
+}
+
 /// Local API responses can contain authorized gateway tokens. Rendering is an
 /// explicit operation; diagnostics and general serialization cannot expose them.
 ///
@@ -215,15 +260,47 @@ pub struct Outcome<'a> {
     pub circuit_events: Vec<crate::circuits::Transition>,
 }
 impl Outcome<'_> {
-    /// An escaped producer callback error reaches the adjacent source guard.
-    /// Ordinary audit file errors are caught on Python's writer thread and must
-    /// keep the original response; callers must not use this for sink failures.
-    /// A failed containment audit cannot change its already local response.
+    /// Native containment for an escaped authentication producer callback.
+    /// The historical source fixture registered handler and guard separately;
+    /// the production addon container may stop before its guard on that error.
+    /// This helper does not claim that production dispatch behavior. Ordinary
+    /// writer-thread sink failures must keep the original response. A failed
+    /// containment audit cannot change its already local response.
     pub fn audit_failed(self, request: Request<'_>) -> Self {
         if self.audit.as_ref().map(|audit| audit.kind) == Some(AuditKind::AuthenticationFailed) {
             unavailable(request, Failure::AuditWrite)
         } else {
             self
+        }
+    }
+
+    /// Apply a synchronous producer-submission failure before returning the
+    /// local response. Declaration mutation is already committed: source's
+    /// handler catches the exception and returns 500 without undoing it.
+    /// Async file failures and successful queue-full/stopped results are not
+    /// submission errors and must never call this method.
+    pub fn audit_submission_failed(
+        self,
+        request: Request<'_>,
+        error: crate::audit::ErrorKind,
+    ) -> Self {
+        match self.audit.as_ref().map(|audit| audit.kind) {
+            Some(AuditKind::TestContextDeclared | AuditKind::TestContextCleared) => {
+                let class = match error {
+                    crate::audit::ErrorKind::Io => "OSError",
+                    // Configuration/Encoding do not escape Writer::emit;
+                    // retain a categorical native internal-error fallback.
+                    crate::audit::ErrorKind::Configuration
+                    | crate::audit::ErrorKind::Encoding
+                    | crate::audit::ErrorKind::ThreadStart
+                    | crate::audit::ErrorKind::Poisoned => "RuntimeError",
+                };
+                let mut outcome =
+                    response(500, json!({"error":format!("Internal error: {class}")}));
+                outcome.failure = Some(Failure::AuditWrite);
+                outcome
+            }
+            _ => self.audit_failed(request),
         }
     }
 }
@@ -359,6 +436,7 @@ pub async fn respond_read<'p>(
 /// A current borrowed circuit owner, with caller-owned time/randomness. Reading
 /// its stats never refreshes settings from policy or increments request checks.
 pub struct CircuitContext<'a> {
+    pub audit: Option<&'a crate::audit::Writer>,
     pub breaker: &'a crate::circuits::CircuitBreaker,
     pub enabled: bool,
     pub random: &'a mut (dyn FnMut() -> f64 + Send),
@@ -577,10 +655,19 @@ fn circuit_response(
     let Some(context) = context else {
         return response(503, json!({"error":"circuit-breaker addon not loaded"}));
     };
-    let (rendered, events) = match context
-        .breaker
-        .stats_document(context.enabled, now, &mut || (context.random)())
-    {
+    let stats = if let Some(writer) = context.audit {
+        context.breaker.stats_document_with_audit(
+            context.enabled,
+            now,
+            &mut || (context.random)(),
+            &crate::circuits::Audit::new(writer, None, None),
+        )
+    } else {
+        context
+            .breaker
+            .stats_document(context.enabled, now, &mut || (context.random)())
+    };
+    let (rendered, events) = match stats {
         Ok(stats) => (stats.value.render_json(false), stats.events),
         Err(error) => {
             let events = error.events().to_vec();
@@ -600,6 +687,8 @@ fn circuit_response(
                 ErrorKind::Value => Some("ValueError"),
                 ErrorKind::Overflow => Some("OverflowError"),
                 ErrorKind::ZeroDivision => Some("ZeroDivisionError"),
+                ErrorKind::Audit(crate::audit::ErrorKind::Io) => Some("OSError"),
+                ErrorKind::Audit(_) => Some("RuntimeError"),
                 ErrorKind::Invalid | ErrorKind::Compatibility => None,
             };
             let failure = Failure::CircuitReporting(error.kind());

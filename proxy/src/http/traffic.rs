@@ -76,6 +76,14 @@ impl Traffic {
             .get_or_insert_with(crate::circuit_runtime::now)
     }
 
+    pub(super) fn source_metadata_reached(&self) -> bool {
+        self.hooks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .started
+            .is_some()
+    }
+
     fn request_facts(&self, started: Option<f64>) -> logger::Request<'_> {
         let parsed = if started.is_some() {
             self.request_parsed.get().unwrap_or(&self.parsed)

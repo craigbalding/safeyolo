@@ -88,8 +88,8 @@ pub(crate) fn record_transitions(
     failed
 }
 
-/// A source hook exception stops later production children. Audit submission
-/// failures remain separate and do not change that hook's continuation.
+/// A source hook or synchronous audit submission exception stops later
+/// production children. Diagnostic and worker sink failures remain separate.
 pub(crate) enum ResponseOutcome {
     Complete { evidence_failed: bool },
     Exception { evidence_failed: bool },
@@ -111,12 +111,14 @@ pub(crate) fn completed_response(
     state: &RuntimeState,
     identity: &ConnectionIdentity,
     request_id: &str,
+    source_metadata_reached: bool,
     host: &str,
     status: u16,
 ) -> ResponseOutcome {
     response_operation(
         state,
         Some((identity, request_id)),
+        source_metadata_reached,
         host,
         Some(status),
         false,
@@ -124,12 +126,13 @@ pub(crate) fn completed_response(
 }
 
 pub(crate) fn local_blocked_response(state: &RuntimeState, host: &str) -> ResponseOutcome {
-    response_operation(state, None, host, None, true)
+    response_operation(state, None, false, host, None, true)
 }
 
 fn response_operation(
     state: &RuntimeState,
     scope: Option<(&ConnectionIdentity, &str)>,
+    source_metadata_reached: bool,
     host: &str,
     status: Option<u16>,
     prior_block: bool,
@@ -145,7 +148,13 @@ fn response_operation(
             evidence_failed: false,
         };
     };
-    let result = runtime.circuits.response_current(
+    let source_scope = scope.filter(|_| source_metadata_reached);
+    let audit = circuits::Audit::new(
+        &runtime.audit,
+        source_scope.map(|(_, request_id)| request_id),
+        source_scope.map(|(identity, _)| identity.agent_id.as_str()),
+    );
+    let result = runtime.circuits.response_current_with_audit(
         policy,
         host,
         circuits::ResponseInput {
@@ -155,6 +164,7 @@ fn response_operation(
         },
         now(),
         &mut rand::random::<f64>,
+        &audit,
     );
     let outcome = match result {
         Ok(outcome) => ResponseOutcome::Complete {

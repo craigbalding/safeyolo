@@ -90,6 +90,9 @@ async fn source_reset_bytes_audit_and_state_with_two_explicit_repairs() {
             assert!(matches!(outcome, Err(Error::NonObjectBody)), "{name}");
         } else {
             let outcome = outcome.unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("audit.jsonl");
+            let writer = safeyolo_proxy::audit::Writer::new(path.clone(), Default::default());
             if row["intentional_repair"] == true {
                 assert_eq!(outcome.status(), StatusCode::BAD_REQUEST, "{name}");
                 assert!(outcome.audit().is_none(), "{name}");
@@ -123,6 +126,24 @@ async fn source_reset_bytes_audit_and_state_with_two_explicit_repairs() {
                     assert_eq!(events[0]["name"], "admin.budget_reset");
                     assert_eq!(events[1]["name"], "admin.budgets_reset");
                 }
+                let outcome = outcome
+                    .submit_audit(&writer, "127.0.0.1", "/admin/budgets/reset")
+                    .unwrap();
+                assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
+                let native: Vec<Value> = std::fs::read_to_string(path)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(|line| {
+                        let mut row: Value = serde_json::from_str(line).unwrap();
+                        assert!(row.as_object_mut().unwrap().remove("ts").is_some());
+                        row
+                    })
+                    .collect();
+                let expected: Vec<_> = events
+                    .iter()
+                    .map(|event| event["canonical"].clone())
+                    .collect();
+                assert_eq!(native, expected, "canonical {name}");
                 assert_eq!(
                     text(outcome).await,
                     reply["text"].as_str().unwrap(),

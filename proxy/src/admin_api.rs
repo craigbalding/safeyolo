@@ -20,6 +20,8 @@ use zeroize::Zeroizing;
 use crate::policy::{BudgetStatsError, Policy};
 use crate::tasks::{self, Registry};
 
+mod audit_events;
+
 /// These errors terminate the connection without a fabricated HTTP response.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -30,6 +32,7 @@ pub enum Error {
     RegistryUnavailable,
     BudgetReporting(BudgetStatsError),
     CircuitOperation(crate::circuits::ErrorKind),
+    Audit(crate::audit::ErrorKind),
 }
 
 impl fmt::Display for Error {
@@ -42,6 +45,7 @@ impl fmt::Display for Error {
             Self::RegistryUnavailable => "Task registry unavailable",
             Self::BudgetReporting(_) => "Operator budget report unavailable",
             Self::CircuitOperation(_) => "Operator circuit operation failed",
+            Self::Audit(_) => "Operator audit submission failed",
         })
     }
 }
@@ -109,7 +113,7 @@ impl CircuitResetAudit {
         &self.host
     }
 
-    pub fn events(&self, client_ip: &str) -> [Value; 2] {
+    fn safe_host(&self) -> String {
         let text = Zeroizing::new(match &self.host {
             Value::String(value) => value.clone(),
             Value::Bool(true) => "True".into(),
@@ -118,7 +122,11 @@ impl CircuitResetAudit {
                 .replace("NaN", "nan"),
             _ => unreachable!("only truthy hashable host keys commit"),
         });
-        let safe_host = crate::network_guard::sanitize(&text);
+        crate::network_guard::sanitize(&text)
+    }
+
+    pub fn events(&self, client_ip: &str) -> [Value; 2] {
+        let safe_host = self.safe_host();
         // AuditEvent.host rejects non-string scalars. Source write_event then
         // preserves only its minimal fallback envelope for the reset event.
         let mut reset = json!({

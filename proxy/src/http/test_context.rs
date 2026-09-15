@@ -8,11 +8,44 @@ use serde_json::json;
 use zeroize::Zeroizing;
 
 use crate::{
-    ConnectionIdentity, Runtime, RuntimeState,
+    ConnectionIdentity, Runtime, RuntimeState, audit,
     http_content::{self, BufferedContent, ContentError},
     policy::Addon,
     test_context::{AppliedContext, Reason},
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HookError {
+    Content(ContentError),
+    Audit(audit::Error),
+}
+
+impl HookError {
+    pub(super) fn evidence_failed(self) -> bool {
+        matches!(
+            self,
+            Self::Content(ContentError::Allocation) | Self::Audit(_)
+        )
+    }
+}
+impl std::fmt::Display for HookError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Content(error) => error.fmt(formatter),
+            Self::Audit(error) => error.fmt(formatter),
+        }
+    }
+}
+impl From<ContentError> for HookError {
+    fn from(error: ContentError) -> Self {
+        Self::Content(error)
+    }
+}
+impl From<audit::Error> for HookError {
+    fn from(error: audit::Error) -> Self {
+        Self::Audit(error)
+    }
+}
 
 struct Applied {
     context: AppliedContext,
@@ -67,15 +100,16 @@ impl Provenance {
     }
 
     /// The caller consumes its single-use request application before this call.
-    /// Ok reports a completed audit attempt; true means its write failed. A
-    /// decoder error leaves metadata installed but skips the allowed counter.
+    /// Ok reports completed canonical submission; true marks a separate
+    /// diagnostic write failure. Content or synchronous submission errors leave
+    /// metadata installed but skip the allowed counter.
     pub(super) fn apply_request(
         &self,
         context: AppliedContext,
         content: Option<&[u8]>,
         encoding: Result<&[u8], ContentError>,
         started: f64,
-    ) -> Result<bool, ContentError> {
+    ) -> Result<bool, HookError> {
         *self.applied.lock().unwrap_or_else(|e| e.into_inner()) = Some(Applied {
             context: context.clone(),
             started,
@@ -84,25 +118,49 @@ impl Provenance {
             recording.applied(&context, content, encoding, started);
         }
         let snippet = body_snippet(content, encoding?)?;
-        let event = json!({
-            "event": "security.test_context", "kind": "security", "severity": "low",
-            "addon": "test-context", "host": self.host,
-            "agent": self.identity.agent_id, "request_id": self.request_id,
-            "summary": format!("Test context request: {} {}{}", self.method,
-                crate::network_guard::sanitize(&self.host), crate::network_guard::sanitize(&self.path)),
-            "details": {
-                "phase": "request", "method": self.method, "path": self.path,
-                "context": context.context, "trusted_agent": context.trusted_agent,
-                "test_agent_match": context.test_agent_match,
-                "test_context_source": context.source, "request_body_snippet": snippet,
-            },
+        let summary = format!(
+            "Test context request: {} {}{}",
+            self.method,
+            crate::network_guard::sanitize(&self.host),
+            crate::network_guard::sanitize(&self.path)
+        );
+        let details = json!({
+            "phase": "request", "method": self.method, "path": self.path,
+            "context": context.context, "trusted_agent": context.trusted_agent,
+            "test_agent_match": context.test_agent_match,
+            "test_context_source": context.source, "request_body_snippet": snippet,
         });
-        Ok(self.runtime.record(event).is_err())
+        let mut event = audit::Event::new(
+            "security.test_context",
+            audit::Kind::Security,
+            audit::Severity::Low,
+            &summary,
+        );
+        event.addon = Some("test-context".into());
+        event.host = Some(self.host.clone());
+        event.agent = Some(self.identity.agent_id.clone());
+        event.request_id = Some(self.request_id.clone());
+        event.details = details.clone().into();
+        self.runtime.audit.emit(event)?;
+        Ok(self
+            .runtime
+            .record(json!({
+                "event": "security.test_context", "kind": "security", "severity": "low",
+                "addon": "test-context", "host": self.host,
+                "agent": self.identity.agent_id, "request_id": self.request_id,
+                "summary": summary, "details": details,
+            }))
+            .is_err())
     }
 
     /// Source warn/block audits resolve attribution from this request's trusted
     /// ingress. An annotation cannot replace that owner or establish initiator.
-    pub(super) fn decision(&self, reason: Reason, blocked: bool, port: u16) -> bool {
+    pub(super) fn decision(
+        &self,
+        reason: Reason,
+        blocked: bool,
+        port: u16,
+    ) -> Result<bool, HookError> {
         let reason_name = match reason {
             Reason::MissingContext => "missing_context",
             Reason::MalformedContext => "malformed_context",
@@ -121,7 +179,32 @@ impl Provenance {
                 if blocked { "" } else { " (warn)" }
             )
         };
-        self.runtime
+        let details = json!({ "reason": reason_name, "path": self.path, "method": self.method,
+            "port": port, "connection_id": self.identity.connection_id });
+        let mut event = audit::Event::new(
+            "security.test_context",
+            audit::Kind::Security,
+            if optional {
+                audit::Severity::Medium
+            } else {
+                audit::Severity::High
+            },
+            &summary,
+        );
+        event.addon = Some("test-context".into());
+        event.decision = Some(if blocked {
+            audit::Decision::Deny
+        } else {
+            audit::Decision::Warn
+        });
+        event.host = Some(self.host.clone());
+        event.agent = Some(self.identity.agent_id.clone());
+        event.request_id = Some(self.request_id.clone());
+        event.attribution = Some(self.identity.audit_attribution());
+        event.details = details.clone().into();
+        self.runtime.audit.emit(event)?;
+        Ok(self
+            .runtime
             .record(json!({
                 "event": "security.test_context", "kind": "security",
                 "severity": if optional { "medium" } else { "high" },
@@ -132,18 +215,12 @@ impl Provenance {
                 "initiator": "unknown", "attribution_status": "resolved",
                 "attribution_provenance": { "transport_source": "uds",
                     "uds_agent": self.identity.agent_id.chars().take(128).collect::<String>() },
-                "details": { "reason": reason_name, "path": self.path, "method": self.method,
-                    "port": port, "connection_id": self.identity.connection_id },
+                "details": details,
             }))
-            .is_err()
+            .is_err())
     }
 
-    fn response(
-        &self,
-        head: &Head,
-        content: Option<&[u8]>,
-        now: f64,
-    ) -> Result<bool, ContentError> {
+    fn response(&self, head: &Head, content: Option<&[u8]>, now: f64) -> Result<bool, HookError> {
         let (context, started) = {
             let applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
             let Some(applied) = applied.as_ref() else {
@@ -161,20 +238,40 @@ impl Provenance {
         let duration_ms: serde_json::Number = format!("{duration:.0}")
             .parse()
             .expect("finite wall-clock duration");
-        Ok(self.runtime.record(json!({
-            "event": "security.test_context", "kind": "security", "severity": "low",
-            "addon": "test-context", "host": self.host,
-            "agent": self.identity.agent_id, "request_id": self.request_id,
-            "summary": format!("Test context response: {} {}{}", head.status.as_u16(),
-                crate::network_guard::sanitize(&self.host), crate::network_guard::sanitize(&self.path)),
-            "details": {
-                "phase": "response", "method": self.method, "path": self.path,
-                "context": context.context, "trusted_agent": context.trusted_agent,
-                "test_agent_match": context.test_agent_match,
-                "test_context_source": context.source, "status_code": head.status.as_u16(),
-                "response_body_snippet": snippet, "duration_ms": duration_ms,
-            },
-        })).is_err())
+        let summary = format!(
+            "Test context response: {} {}{}",
+            head.status.as_u16(),
+            crate::network_guard::sanitize(&self.host),
+            crate::network_guard::sanitize(&self.path)
+        );
+        let details = json!({
+            "phase": "response", "method": self.method, "path": self.path,
+            "context": context.context, "trusted_agent": context.trusted_agent,
+            "test_agent_match": context.test_agent_match,
+            "test_context_source": context.source, "status_code": head.status.as_u16(),
+            "response_body_snippet": snippet, "duration_ms": duration_ms,
+        });
+        let mut event = audit::Event::new(
+            "security.test_context",
+            audit::Kind::Security,
+            audit::Severity::Low,
+            &summary,
+        );
+        event.addon = Some("test-context".into());
+        event.host = Some(self.host.clone());
+        event.agent = Some(self.identity.agent_id.clone());
+        event.request_id = Some(self.request_id.clone());
+        event.details = details.clone().into();
+        self.runtime.audit.emit(event)?;
+        Ok(self
+            .runtime
+            .record(json!({
+                "event": "security.test_context", "kind": "security", "severity": "low",
+                "addon": "test-context", "host": self.host,
+                "agent": self.identity.agent_id, "request_id": self.request_id,
+                "summary": summary, "details": details,
+            }))
+            .is_err())
     }
 }
 
@@ -440,8 +537,8 @@ impl ResponseCapture {
                 if let Some(recording) = self.recording() {
                     recording.skip_response();
                 }
-                eprintln!("Test context response content failed: {error}");
-                error == ContentError::Allocation
+                eprintln!("Test context response hook failed: {error}");
+                error.evidence_failed()
             }
         }
     }
@@ -628,7 +725,7 @@ mod tests {
         let provenance = fixture.provenance();
         assert_eq!(
             provenance.apply_request(context(), Some(b"invalid"), Ok(b"gzip"), 100.),
-            Err(ContentError::Value)
+            Err(HookError::Content(ContentError::Value))
         );
         assert!(fixture.events().is_empty());
         let capture = fixture.capture(provenance, &[], false);

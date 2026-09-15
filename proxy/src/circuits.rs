@@ -1,8 +1,9 @@
 //! Shared circuit-breaker state for native HTTP and operator controls.
 //!
 //! All transitions share one locked state. Clock and jitter inputs are explicit;
-//! the caller owns addon enable/bypass decisions, event emission and scheduling
-//! snapshots on a blocking worker. Transport errors have no shipped error hook.
+//! the caller owns addon enable/bypass decisions, the optional borrowed audit
+//! writer, and scheduling snapshots on a blocking worker. Reached submissions
+//! preserve source state/error ordering. Transport errors have no shipped error hook.
 //! Numeric operations preserve Python scalar kinds and committed transitions on
 //! failure. Typed documents preserve Python nonfinite JSON through persistence
 //! and caller-owned output; the legacy serde_json views remain fallible.
@@ -21,6 +22,8 @@ use indexmap::IndexMap;
 use num_bigint::BigInt;
 use serde::Serialize;
 
+mod audit;
+pub use audit::Audit;
 mod config;
 #[cfg(test)]
 mod file_switch_tests;
@@ -41,6 +44,7 @@ pub enum ErrorKind {
     Overflow,
     ZeroDivision,
     Compatibility,
+    Audit(crate::audit::ErrorKind),
 }
 
 #[derive(Debug)]
@@ -53,7 +57,8 @@ impl Error {
     pub fn kind(&self) -> ErrorKind {
         self.kind
     }
-    /// Transitions already emitted by the source operation before it failed.
+    /// Reached transition intents before failure. With an Audit, these have
+    /// already been submitted and must not be submitted again.
     pub fn events(&self) -> &[Transition] {
         &self.events
     }
@@ -220,6 +225,8 @@ fn serialize_details<S: serde::Serializer>(
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Outcome<T> {
     pub value: T,
+    /// Reached intents. Audit-enabled calls have already submitted these;
+    /// callers must not emit them a second time.
     pub events: Vec<Transition>,
 }
 fn outcome<T>(value: T, events: Vec<Transition>) -> Outcome<T> {
@@ -230,12 +237,18 @@ fn event(
     name: TransitionKind,
     domain: &str,
     details: Option<IndexMap<String, CircuitValue>>,
-) {
-    events.push(Transition {
+    audit: Option<&Audit<'_>>,
+) -> Result<()> {
+    let transition = Transition {
         event: name,
         domain: domain.into(),
         details,
-    });
+    };
+    if let Some(audit) = audit {
+        audit.submit(&transition)?;
+    }
+    events.push(transition);
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -411,7 +424,7 @@ impl CircuitBreaker {
     ) -> Result<Outcome<Status>> {
         finite_time(now)?;
         let mut events = Vec::new();
-        let result = status(&mut *self.lock()?, domain, now, random, &mut events);
+        let result = status(&mut *self.lock()?, domain, now, random, &mut events, None);
         completed(result, events)
     }
     pub fn admit(
@@ -422,7 +435,7 @@ impl CircuitBreaker {
     ) -> Result<Outcome<(bool, Status)>> {
         finite_time(now)?;
         let mut events = Vec::new();
-        let result = admit(&mut *self.lock()?, domain, now, random, &mut events);
+        let result = admit(&mut *self.lock()?, domain, now, random, &mut events, None);
         completed(result, events)
     }
     pub fn record_failure(
@@ -434,7 +447,15 @@ impl CircuitBreaker {
     ) -> Result<Outcome<Status>> {
         finite_time(now)?;
         let mut events = Vec::new();
-        let result = failure(&mut *self.lock()?, domain, error, now, random, &mut events);
+        let result = failure(
+            &mut *self.lock()?,
+            domain,
+            error,
+            now,
+            random,
+            &mut events,
+            None,
+        );
         completed(result, events)
     }
     pub fn record_success(
@@ -445,13 +466,13 @@ impl CircuitBreaker {
     ) -> Result<Outcome<Status>> {
         finite_time(now)?;
         let mut events = Vec::new();
-        let result = success(&mut *self.lock()?, domain, now, random, &mut events);
+        let result = success(&mut *self.lock()?, domain, now, random, &mut events, None);
         completed(result, events)
     }
     pub fn reset(&self, domain: &str) -> Result<Outcome<()>> {
         self.lock()?.states.shift_remove(domain);
         let mut events = Vec::new();
-        event(&mut events, TransitionKind::Reset, domain, None);
+        event(&mut events, TransitionKind::Reset, domain, None, None)?;
         Ok(outcome((), events))
     }
 
@@ -490,7 +511,7 @@ impl CircuitBreaker {
             .into(),
         );
         let mut events = Vec::new();
-        event(&mut events, TransitionKind::ForceOpen, domain, None);
+        event(&mut events, TransitionKind::ForceOpen, domain, None, None)?;
         Ok(outcome((), events))
     }
     pub fn request(
@@ -500,20 +521,23 @@ impl CircuitBreaker {
         now: f64,
         random: &mut impl FnMut() -> f64,
     ) -> Result<Outcome<RequestDecision>> {
-        self.request_with_config(domain, gate, now, random, None)
+        self.request_with_config(domain, gate, now, random, None, None)
     }
 
-    /// Refresh and admission share one state lock. The caller retains its
-    /// current runtime read lock until this operation finishes.
-    pub(crate) fn request_current(
+    /// Refresh/admit atomically and submit transitions at their source points.
+    /// The caller retains its current runtime read lock until this finishes.
+    /// Returned intents are already submitted; only categorical diagnostics may
+    /// inspect them. A synchronous submission error preserves preceding effects.
+    pub fn request_current_with_audit(
         &self,
         policy: &crate::policy::Policy,
         domain: &str,
         gate: RequestGate,
         now: f64,
         random: &mut impl FnMut() -> f64,
+        audit: &Audit<'_>,
     ) -> Result<Outcome<RequestDecision>> {
-        self.request_with_config(domain, gate, now, random, Some(policy))
+        self.request_with_config(domain, gate, now, random, Some(policy), Some(audit))
     }
 
     fn request_with_config(
@@ -523,6 +547,7 @@ impl CircuitBreaker {
         now: f64,
         random: &mut impl FnMut() -> f64,
         policy: Option<&crate::policy::Policy>,
+        audit: Option<&Audit<'_>>,
     ) -> Result<Outcome<RequestDecision>> {
         if !gate.enabled {
             return Ok(outcome(RequestDecision::AddonDisabled, vec![]));
@@ -543,7 +568,7 @@ impl CircuitBreaker {
         }
         let mut events = Vec::new();
         let result = (|| {
-            let (allowed, status) = admit(&mut inner, domain, now, random, &mut events)?;
+            let (allowed, status) = admit(&mut inner, domain, now, random, &mut events, audit)?;
             Ok(if allowed {
                 RequestDecision::Allowed { status }
             } else {
@@ -574,19 +599,22 @@ impl CircuitBreaker {
         now: f64,
         random: &mut impl FnMut() -> f64,
     ) -> Result<Outcome<ResponseDecision>> {
-        self.response_with_config(domain, input, now, random, None)
+        self.response_with_config(domain, input, now, random, None, None)
     }
 
+    /// Refresh/respond atomically and submit before the source's later state
+    /// publication. Returned intents have already been submitted.
     /// Source response refresh runs before a prior local block is skipped.
-    pub(crate) fn response_current(
+    pub fn response_current_with_audit(
         &self,
         policy: &crate::policy::Policy,
         domain: &str,
         input: ResponseInput,
         now: f64,
         random: &mut impl FnMut() -> f64,
+        audit: &Audit<'_>,
     ) -> Result<Outcome<ResponseDecision>> {
-        self.response_with_config(domain, input, now, random, Some(policy))
+        self.response_with_config(domain, input, now, random, Some(policy), Some(audit))
     }
 
     fn response_with_config(
@@ -596,6 +624,7 @@ impl CircuitBreaker {
         now: f64,
         random: &mut impl FnMut() -> f64,
         policy: Option<&crate::policy::Policy>,
+        audit: Option<&Audit<'_>>,
     ) -> Result<Outcome<ResponseDecision>> {
         if !input.enabled {
             return Ok(outcome(ResponseDecision::AddonDisabled, vec![]));
@@ -630,11 +659,12 @@ impl CircuitBreaker {
                     now,
                     random,
                     &mut events,
+                    audit,
                 )?;
                 ResponseDecision::FailureRecorded
             } else if code < 400 {
                 finite_time(now)?;
-                success(&mut inner, domain, now, random, &mut events)?;
+                success(&mut inner, domain, now, random, &mut events, audit)?;
                 ResponseDecision::SuccessRecorded
             } else {
                 ResponseDecision::StatusNoAction
@@ -651,6 +681,28 @@ impl CircuitBreaker {
         now: f64,
         random: &mut impl FnMut() -> f64,
     ) -> Result<Outcome<CircuitValue>> {
+        self.stats_document_with_submission(enabled, now, random, None)
+    }
+
+    /// Status reads may commit half-open transitions. Submit each before the
+    /// source continues to the next domain; intents are already submitted.
+    pub fn stats_document_with_audit(
+        &self,
+        enabled: bool,
+        now: f64,
+        random: &mut impl FnMut() -> f64,
+        audit: &Audit<'_>,
+    ) -> Result<Outcome<CircuitValue>> {
+        self.stats_document_with_submission(enabled, now, random, Some(audit))
+    }
+
+    fn stats_document_with_submission(
+        &self,
+        enabled: bool,
+        now: f64,
+        random: &mut impl FnMut() -> f64,
+        audit: Option<&Audit<'_>>,
+    ) -> Result<Outcome<CircuitValue>> {
         finite_time(now)?;
         let mut inner = self.lock()?;
         let domains: Vec<_> = inner.states.keys().cloned().collect();
@@ -658,7 +710,7 @@ impl CircuitBreaker {
         let mut events = Vec::new();
         let result = (|| {
             for domain in domains {
-                let status = status(&mut inner, &domain, now, random, &mut events)?;
+                let status = status(&mut inner, &domain, now, random, &mut events, audit)?;
                 let remaining = status
                     .time_until_half_open(now)?
                     .unwrap_or_else(|| Value::Null.into());
@@ -1010,6 +1062,7 @@ fn status(
     now: f64,
     random: &mut impl FnMut() -> f64,
     events: &mut Vec<Transition>,
+    audit: Option<&Audit<'_>>,
 ) -> Result<Status> {
     let mut data = record(inner, domain);
     if data.is_empty() {
@@ -1050,7 +1103,7 @@ fn status(
         data.insert("half_open_requests".into(), 0.into());
         inner.states.insert(domain.into(), data.clone());
         inner.counters.half_opens += 1;
-        event(events, TransitionKind::HalfOpen, domain, None);
+        event(events, TransitionKind::HalfOpen, domain, None, audit)?;
     }
     Ok(Status {
         state,
@@ -1069,9 +1122,10 @@ fn admit(
     now: f64,
     random: &mut impl FnMut() -> f64,
     events: &mut Vec<Transition>,
+    audit: Option<&Audit<'_>>,
 ) -> Result<(bool, Status)> {
     inner.counters.checks += 1;
-    let status = status(inner, domain, now, random, events)?;
+    let status = status(inner, domain, now, random, events, audit)?;
     let allowed = match status.state {
         State::Closed => true,
         State::Open => false,
@@ -1096,6 +1150,7 @@ fn failure(
     now: f64,
     random: &mut impl FnMut() -> f64,
     events: &mut Vec<Transition>,
+    audit: Option<&Audit<'_>>,
 ) -> Result<Status> {
     let mut data = record(inner, domain);
     let current = state(&data)?;
@@ -1122,7 +1177,8 @@ fn failure(
                         ]
                         .into(),
                     ),
-                );
+                    audit,
+                )?;
             } else {
                 data.insert("state".into(), json!("closed").into());
             }
@@ -1145,12 +1201,13 @@ fn failure(
                     ]
                     .into(),
                 ),
-            );
+                audit,
+            )?;
         }
         State::Open => {}
     }
     inner.states.insert(domain.into(), data);
-    status(inner, domain, now, random, events)
+    status(inner, domain, now, random, events, audit)
 }
 fn success(
     inner: &mut Inner,
@@ -1158,8 +1215,9 @@ fn success(
     now: f64,
     random: &mut impl FnMut() -> f64,
     events: &mut Vec<Transition>,
+    audit: Option<&Audit<'_>>,
 ) -> Result<Status> {
-    let current = status(inner, domain, now, random, events)?;
+    let current = status(inner, domain, now, random, events, audit)?;
     let mut data = record(inner, domain);
     if data.is_empty() {
         return Ok(current);
@@ -1179,7 +1237,8 @@ fn success(
                     TransitionKind::Close,
                     domain,
                     Some([("success_count".into(), successes)].into()),
-                );
+                    audit,
+                )?;
             } else {
                 data.insert("state".into(), json!("half_open").into());
             }
@@ -1193,7 +1252,7 @@ fn success(
         State::Open => {}
     }
     inner.states.insert(domain.into(), data);
-    status(inner, domain, now, random, events)
+    status(inner, domain, now, random, events, audit)
 }
 
 #[cfg(test)]

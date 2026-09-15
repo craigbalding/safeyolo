@@ -279,6 +279,7 @@ mod tests {
             ErrorKind::ZeroDivision => "ZeroDivisionError",
             ErrorKind::Compatibility => "Compatibility",
             ErrorKind::Invalid => "Invalid",
+            ErrorKind::Audit(_) => "Audit",
         }
     }
 
@@ -463,6 +464,7 @@ mod tests {
                 100.,
                 &mut || 0.5,
                 &mut events,
+                None,
             )
             .unwrap();
             assert_eq!(status.state, super::super::State::Open);

@@ -106,6 +106,7 @@ async fn source_agent_reads_keep_typed_bytes_and_partial_transition_intents() {
             .unwrap();
         let mut random = middle;
         let context = (name != "absent").then_some(CircuitContext {
+            audit: None,
             breaker: &cb,
             enabled: name != "disabled",
             random: &mut random,
@@ -191,6 +192,7 @@ async fn agent_method_and_auth_failures_do_not_observe_stale_circuits() {
             &tasks,
             NOW * 1000.,
             Some(CircuitContext {
+                audit: None,
                 breaker: &cb,
                 enabled: true,
                 random: &mut random,
@@ -263,6 +265,9 @@ async fn source_operator_exact_and_typed_reset_keys_preserve_state_and_audit() {
             )),
             _ => {
                 let outcome = outcome.unwrap();
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("audit.jsonl");
+                let writer = safeyolo_proxy::audit::Writer::new(path.clone(), Default::default());
                 let reply = &row["replies"][0];
                 assert_eq!(
                     outcome.status().as_u16(),
@@ -297,6 +302,20 @@ async fn source_operator_exact_and_typed_reset_keys_preserve_state_and_audit() {
                         assert_eq!(actual, expected, "{name}");
                     }
                 }
+                let outcome = outcome
+                    .submit_audit(&writer, "127.0.0.1", "/admin/circuit-breaker/reset")
+                    .unwrap();
+                assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
+                let native: Vec<Value> = std::fs::read_to_string(path)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(|line| {
+                        let mut row: Value = serde_json::from_str(line).unwrap();
+                        assert!(row.as_object_mut().unwrap().remove("ts").is_some());
+                        row
+                    })
+                    .collect();
+                assert_eq!(json!(native), row["events"], "canonical {name}");
                 let text = admin_text(outcome).await;
                 if matches!(name, "malformed" | "invalid_utf8") {
                     assert_eq!(row["replies"].as_array().unwrap().len(), 2);

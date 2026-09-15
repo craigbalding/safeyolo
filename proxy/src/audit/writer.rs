@@ -163,6 +163,14 @@ impl Writer {
             worker: Mutex::new(Worker::default()),
         }
     }
+    #[cfg(test)]
+    pub(crate) fn poison_for_test(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _worker = self.worker.lock().unwrap();
+            panic!("synthetic audit writer poison");
+        }));
+    }
+
     pub fn emit(&self, event: Event) -> Result<Submission> {
         self.emit_at(event, OffsetDateTime::now_utc())
     }

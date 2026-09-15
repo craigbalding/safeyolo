@@ -396,6 +396,73 @@
       ]
     }
   ],
+  "failure_rows": [
+    {
+      "name": "submission_1_fails",
+      "fail_on": 1,
+      "input_hex": "7b22686f7374223a20226f776e65642e696e76616c6964227d",
+      "attempted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.reset",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reset for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        }
+      ],
+      "accepted": [],
+      "replies": [],
+      "exception": "RuntimeError",
+      "retained": []
+    },
+    {
+      "name": "submission_2_fails",
+      "fail_on": 2,
+      "input_hex": "7b22686f7374223a20226f776e65642e696e76616c6964227d",
+      "attempted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.reset",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reset for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        },
+        {
+          "schema_version": 1,
+          "event": "admin.circuit_breaker_reset",
+          "kind": "admin",
+          "severity": "medium",
+          "summary": "Circuit breaker reset: owned.invalid",
+          "addon": "admin-api",
+          "details": {
+            "client_ip": "127.0.0.1",
+            "host": "owned.invalid"
+          }
+        }
+      ],
+      "accepted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.reset",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reset for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        }
+      ],
+      "replies": [],
+      "exception": "RuntimeError",
+      "retained": []
+    }
+  ],
   "source_sha256": {
     "cli/src/safeyolo/mitm_addons/circuit_breaker.py": "8c77aec89932ac75edec0fac17c5ea211869f1ff2b59645c73d8a60d2fa1fe12",
     "cli/src/safeyolo/mitm_addons/agent_api.py": "ab52434f28e82c9cc5f7ce32bf0b69ff6dcd3158e5e5fd5a446e4a747942e378",

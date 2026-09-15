@@ -31,6 +31,104 @@ const DENY: &str =
     "[[permissions]]\naction = \"network:request\"\nresource = \"*\"\neffect = \"deny\"\n";
 const TASK_PATH: &str = "/admin/policy/task/alpha";
 
+#[test]
+#[ignore = "actual Python parser/auth hook; set SAFEYOLO_POLICY_PYTHON"]
+fn operator_audit_auth_parser_matches_actual_source() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (fixture, failures) in [
+        ("admin_audit_source.json", false),
+        ("admin_audit_failures_source.json", true),
+    ] {
+        let mut command = std::process::Command::new(
+            std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("source Python"),
+        );
+        command
+            .arg("-B")
+            .arg(root.join("tests/admin_audit_source.py"));
+        if failures {
+            command.arg("--failures");
+        }
+        let result = command
+            .arg("--check")
+            .arg(root.join("tests").join(fixture))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+#[tokio::test]
+async fn operator_auth_target_and_client_text_match_source_canonical_events() {
+    let directory = TempDir::new().unwrap();
+    let token = synthetic();
+    let config = config(directory.path(), &token);
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    let cases: Value = serde_json::from_str(include_str!("admin_audit_source.json")).unwrap();
+    for case in cases.as_array().unwrap() {
+        let mut bytes = format!(
+            "GET {} HTTP/1.1\r\nHost: owned.invalid\r\nConnection: close\r\n",
+            case["target"].as_str().unwrap()
+        )
+        .into_bytes();
+        let hex = case["headers_hex"].as_str().unwrap();
+        bytes.extend(
+            (0..hex.len())
+                .step_by(2)
+                .map(|offset| u8::from_str_radix(&hex[offset..offset + 2], 16).unwrap()),
+        );
+        bytes.extend_from_slice(b"\r\n");
+        let reply = exchange(
+            TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .unwrap(),
+            &bytes,
+        )
+        .await;
+        assert_eq!(reply.status, 401);
+    }
+    let reply = admin(
+        port,
+        &token,
+        "PUT",
+        TASK_PATH,
+        br#"{"policy":{"permissions":[]}}"#,
+    )
+    .await;
+    assert_eq!(reply.status, 200);
+    assert_shutdown(proxy, &config, port).await;
+    let rows: Vec<Value> = std::fs::read_to_string(config.audit_log_path.as_ref().unwrap())
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut row: Value = serde_json::from_str(line).unwrap();
+            assert!(row.as_object_mut().unwrap().remove("ts").is_some());
+            row
+        })
+        .collect();
+    assert_eq!(rows.len(), cases.as_array().unwrap().len() + 1);
+    for (row, case) in rows.iter().zip(cases.as_array().unwrap()) {
+        assert_eq!(row, &case["event"]);
+    }
+    assert_eq!(
+        rows.last().unwrap(),
+        &json!({
+            "schema_version":1,"event":"admin.task_policy_update","kind":"admin","severity":"medium",
+            "summary":"Task policy 'alpha' updated: 0 permissions","addon":"admin-api",
+            "details":{"client_ip":"127.0.0.1","task_id":"alpha","permission_count":0}
+        })
+    );
+    assert!(
+        !std::fs::read_to_string(config.audit_log_path.as_ref().unwrap())
+            .unwrap()
+            .contains(&token)
+    );
+}
+
 fn config(directory: &Path, token: &str) -> Config {
     std::fs::write(directory.join("policy.toml"), ALLOW).unwrap();
     std::fs::write(directory.join("operator-token"), token).unwrap();

@@ -1,0 +1,567 @@
+{
+  "now": 1000.0,
+  "settings": {
+    "failure_threshold": 2,
+    "success_threshold": 2,
+    "timeout_seconds": 60,
+    "half_open_max_requests": 3,
+    "use_exponential_backoff": false
+  },
+  "rows": [
+    {
+      "name": "open_success",
+      "operation": "open",
+      "submission_error": false,
+      "initial_states": {
+        "owned.invalid": {
+          "state": "closed",
+          "failure_count": 1,
+          "failure_streak": 0
+        }
+      },
+      "exception": null,
+      "attempts": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit open for owned.invalid",
+          "request_id": "req-circuit-owned",
+          "agent": "alice",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {
+            "failure_count": 2,
+            "error": "HTTP 503"
+          }
+        }
+      ],
+      "submitted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit open for owned.invalid",
+          "request_id": "req-circuit-owned",
+          "agent": "alice",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {
+            "failure_count": 2,
+            "error": "HTTP 503"
+          }
+        }
+      ],
+      "states": {
+        "owned.invalid": {
+          "state": "open",
+          "failure_count": 2,
+          "failure_streak": 0,
+          "last_failure_time": 1000.0,
+          "last_error": "HTTP 503",
+          "opened_at": 1000.0,
+          "success_count": 0
+        }
+      },
+      "counters": {
+        "checks": 0,
+        "opens": 1,
+        "half_opens": 0,
+        "recoveries": 0
+      }
+    },
+    {
+      "name": "open_error",
+      "operation": "open",
+      "submission_error": true,
+      "initial_states": {
+        "owned.invalid": {
+          "state": "closed",
+          "failure_count": 1,
+          "failure_streak": 0
+        }
+      },
+      "exception": "RuntimeError",
+      "attempts": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit open for owned.invalid",
+          "request_id": "req-circuit-owned",
+          "agent": "alice",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {
+            "failure_count": 2,
+            "error": "HTTP 503"
+          }
+        }
+      ],
+      "submitted": [],
+      "states": {
+        "owned.invalid": {
+          "state": "closed",
+          "failure_count": 1,
+          "failure_streak": 0
+        }
+      },
+      "counters": {
+        "checks": 0,
+        "opens": 1,
+        "half_opens": 0,
+        "recoveries": 0
+      }
+    },
+    {
+      "name": "reopen_success",
+      "operation": "reopen",
+      "submission_error": false,
+      "initial_states": {
+        "owned.invalid": {
+          "state": "half_open",
+          "failure_count": 2,
+          "failure_streak": 1
+        }
+      },
+      "exception": null,
+      "attempts": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.reopen",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reopen for owned.invalid",
+          "request_id": "req-circuit-owned",
+          "agent": "alice",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {
+            "streak": 2,
+            "error": "HTTP 503"
+          }
+        }
+      ],
+      "submitted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.reopen",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reopen for owned.invalid",
+          "request_id": "req-circuit-owned",
+          "agent": "alice",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {
+            "streak": 2,
+            "error": "HTTP 503"
+          }
+        }
+      ],
+      "states": {
+        "owned.invalid": {
+          "state": "open",
+          "failure_count": 3,
+          "failure_streak": 2,
+          "last_failure_time": 1000.0,
+          "last_error": "HTTP 503",
+          "opened_at": 1000.0,
+          "success_count": 0
+        }
+      },
+      "counters": {
+        "checks": 0,
+        "opens": 1,
+        "half_opens": 0,
+        "recoveries": 0
+      }
+    },
+    {
+      "name": "reopen_error",
+      "operation": "reopen",
+      "submission_error": true,
+      "initial_states": {
+        "owned.invalid": {
+          "state": "half_open",
+          "failure_count": 2,
+          "failure_streak": 1
+        }
+      },
+      "exception": "RuntimeError",
+      "attempts": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.reopen",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit reopen for owned.invalid",
+          "request_id": "req-circuit-owned",
+          "agent": "alice",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {
+            "streak": 2,
+            "error": "HTTP 503"
+          }
+        }
+      ],
+      "submitted": [],
+      "states": {
+        "owned.invalid": {
+          "state": "half_open",
+          "failure_count": 2,
+          "failure_streak": 1
+        }
+      },
+      "counters": {
+        "checks": 0,
+        "opens": 1,
+        "half_opens": 0,
+        "recoveries": 0
+      }
+    },
+    {
+      "name": "close_success",
+      "operation": "close",
+      "submission_error": false,
+      "initial_states": {
+        "owned.invalid": {
+          "state": "half_open",
+          "failure_count": 3,
+          "success_count": 1,
+          "failure_streak": 1
+        }
+      },
+      "exception": null,
+      "attempts": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.close",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit close for owned.invalid",
+          "request_id": "req-circuit-owned",
+          "agent": "alice",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {
+            "success_count": 2
+          }
+        }
+      ],
+      "submitted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.close",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit close for owned.invalid",
+          "request_id": "req-circuit-owned",
+          "agent": "alice",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {
+            "success_count": 2
+          }
+        }
+      ],
+      "states": {
+        "owned.invalid": {
+          "state": "closed",
+          "failure_count": 0,
+          "success_count": 2,
+          "failure_streak": 0,
+          "last_success_time": 1000.0
+        }
+      },
+      "counters": {
+        "checks": 0,
+        "opens": 0,
+        "half_opens": 0,
+        "recoveries": 1
+      }
+    },
+    {
+      "name": "close_error",
+      "operation": "close",
+      "submission_error": true,
+      "initial_states": {
+        "owned.invalid": {
+          "state": "half_open",
+          "failure_count": 3,
+          "success_count": 1,
+          "failure_streak": 1
+        }
+      },
+      "exception": "RuntimeError",
+      "attempts": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.close",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit close for owned.invalid",
+          "request_id": "req-circuit-owned",
+          "agent": "alice",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {
+            "success_count": 2
+          }
+        }
+      ],
+      "submitted": [],
+      "states": {
+        "owned.invalid": {
+          "state": "half_open",
+          "failure_count": 3,
+          "success_count": 1,
+          "failure_streak": 1
+        }
+      },
+      "counters": {
+        "checks": 0,
+        "opens": 0,
+        "half_opens": 0,
+        "recoveries": 1
+      }
+    },
+    {
+      "name": "half_request_success",
+      "operation": "half_request",
+      "submission_error": false,
+      "initial_states": {
+        "owned.invalid": {
+          "state": "open",
+          "failure_count": 5,
+          "opened_at": 0
+        }
+      },
+      "exception": null,
+      "attempts": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        }
+      ],
+      "submitted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        }
+      ],
+      "states": {
+        "owned.invalid": {
+          "state": "half_open",
+          "failure_count": 5,
+          "opened_at": 0,
+          "success_count": 0,
+          "half_open_requests": 1
+        }
+      },
+      "counters": {
+        "checks": 1,
+        "opens": 0,
+        "half_opens": 1,
+        "recoveries": 0
+      }
+    },
+    {
+      "name": "half_request_error",
+      "operation": "half_request",
+      "submission_error": true,
+      "initial_states": {
+        "owned.invalid": {
+          "state": "open",
+          "failure_count": 5,
+          "opened_at": 0
+        }
+      },
+      "exception": "RuntimeError",
+      "attempts": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        }
+      ],
+      "submitted": [],
+      "states": {
+        "owned.invalid": {
+          "state": "half_open",
+          "failure_count": 5,
+          "opened_at": 0,
+          "success_count": 0,
+          "half_open_requests": 0
+        }
+      },
+      "counters": {
+        "checks": 1,
+        "opens": 0,
+        "half_opens": 1,
+        "recoveries": 0
+      }
+    },
+    {
+      "name": "half_stats_success",
+      "operation": "half_stats",
+      "submission_error": false,
+      "initial_states": {
+        "owned.invalid": {
+          "state": "open",
+          "failure_count": 5,
+          "opened_at": 0
+        },
+        "later.invalid": {
+          "state": "open",
+          "failure_count": 5,
+          "opened_at": 0
+        }
+      },
+      "exception": null,
+      "attempts": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        },
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for later.invalid",
+          "addon": "circuit-breaker",
+          "host": "later.invalid",
+          "details": {}
+        }
+      ],
+      "submitted": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        },
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for later.invalid",
+          "addon": "circuit-breaker",
+          "host": "later.invalid",
+          "details": {}
+        }
+      ],
+      "states": {
+        "owned.invalid": {
+          "state": "half_open",
+          "failure_count": 5,
+          "opened_at": 0,
+          "success_count": 0,
+          "half_open_requests": 0
+        },
+        "later.invalid": {
+          "state": "half_open",
+          "failure_count": 5,
+          "opened_at": 0,
+          "success_count": 0,
+          "half_open_requests": 0
+        }
+      },
+      "counters": {
+        "checks": 0,
+        "opens": 0,
+        "half_opens": 2,
+        "recoveries": 0
+      }
+    },
+    {
+      "name": "half_stats_error",
+      "operation": "half_stats",
+      "submission_error": true,
+      "initial_states": {
+        "owned.invalid": {
+          "state": "open",
+          "failure_count": 5,
+          "opened_at": 0
+        },
+        "later.invalid": {
+          "state": "open",
+          "failure_count": 5,
+          "opened_at": 0
+        }
+      },
+      "exception": "RuntimeError",
+      "attempts": [
+        {
+          "schema_version": 1,
+          "event": "ops.circuit_breaker.half_open",
+          "kind": "ops",
+          "severity": "medium",
+          "summary": "Circuit half_open for owned.invalid",
+          "addon": "circuit-breaker",
+          "host": "owned.invalid",
+          "details": {}
+        }
+      ],
+      "submitted": [],
+      "states": {
+        "owned.invalid": {
+          "state": "half_open",
+          "failure_count": 5,
+          "opened_at": 0,
+          "success_count": 0,
+          "half_open_requests": 0
+        },
+        "later.invalid": {
+          "state": "open",
+          "failure_count": 5,
+          "opened_at": 0
+        }
+      },
+      "counters": {
+        "checks": 0,
+        "opens": 0,
+        "half_opens": 1,
+        "recoveries": 0
+      }
+    }
+  ],
+  "source_sha256": {
+    "cli/src/safeyolo/mitm_addons/circuit_breaker.py": "8c77aec89932ac75edec0fac17c5ea211869f1ff2b59645c73d8a60d2fa1fe12",
+    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072"
+  }
+}

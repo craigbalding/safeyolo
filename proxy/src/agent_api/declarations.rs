@@ -51,6 +51,31 @@ pub async fn respond_with_body<'p, B>(
 where
     B: Body<Data = Bytes> + Unpin,
 {
+    respond_with_body_and_audit_id(
+        request, token_path, policy, tasks, now_ms, controls, body, None,
+    )
+    .await
+}
+
+/// An already-established trusted source request ID, when present, belongs to
+/// declaration audit metadata only. Normal production AgentAPI dispatch precedes
+/// RequestIdGenerator; callers must not substitute headers or native ingress IDs.
+// Retain the existing body facade's call signature while providing the single
+// optional source-stage fact independently of its native containment request ID.
+#[allow(clippy::too_many_arguments)]
+pub async fn respond_with_body_and_audit_id<'p, B>(
+    request: Request<'_>,
+    token_path: &Path,
+    policy: PolicyState<'p>,
+    tasks: &crate::tasks::Registry,
+    now_ms: f64,
+    controls: Controls<'_>,
+    body: RequestBody<'_, B>,
+    source_request_id: Option<&str>,
+) -> Result<Outcome<'p>, B::Error>
+where
+    B: Body<Data = Bytes> + Unpin,
+{
     if let Err(outcome) = authorize(request, token_path).await {
         return Ok(outcome);
     }
@@ -70,7 +95,7 @@ where
     if let Some(outcome) =
         test_context::api_current_preflight(owner, request.client_ip, agent(request.identity))
     {
-        return Ok(declaration_response(request, outcome));
+        return Ok(declaration_response(source_request_id, outcome));
     }
     let mut parsed = None;
     if request.method == "POST" {
@@ -97,7 +122,7 @@ where
             parsed.as_ref(),
             (context.now)(),
         ) {
-            Ok(outcome) => declaration_response(request, outcome),
+            Ok(outcome) => declaration_response(source_request_id, outcome),
             Err(error) => {
                 let kind = error.kind();
                 let class = match kind {
@@ -165,7 +190,7 @@ pub(super) fn content_error(error: http_content::ContentError) -> Outcome<'stati
 }
 
 fn declaration_response(
-    request: Request<'_>,
+    source_request_id: Option<&str>,
     result: test_context::ApiOutcome,
 ) -> Outcome<'static> {
     let mut outcome = response(result.status, result.body);
@@ -185,7 +210,7 @@ fn declaration_response(
                 sanitize(&audit.trusted_agent)
             ),
             agent: Some(audit.trusted_agent),
-            request_id: Some(request.request_id.into()),
+            request_id: source_request_id.map(str::to_owned),
             host: Some(API_HOST),
             details: audit.details,
         }

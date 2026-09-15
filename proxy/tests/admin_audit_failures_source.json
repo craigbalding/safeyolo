@@ -1,0 +1,25 @@
+{
+  "failure_rows": [
+    {
+      "name": "auth_submission_fails_before_401",
+      "attempted": [
+        {
+          "schema_version": 1,
+          "event": "admin.auth_failure",
+          "kind": "admin",
+          "severity": "high",
+          "summary": "Auth failure from 127.0.0.1 on /unknown?query=value",
+          "addon": "admin-api",
+          "details": {
+            "client_ip": "127.0.0.1",
+            "path": "/unknown?query=value",
+            "reason": "invalid_or_missing_token"
+          }
+        }
+      ],
+      "accepted": [],
+      "replies": [],
+      "exception": "RuntimeError"
+    }
+  ]
+}

@@ -51,6 +51,7 @@ pub(super) struct Completion {
     host: String,
     capture: Option<Arc<ResponseCapture>>,
     recording: Option<Arc<super::flow_recording::Recording>>,
+    traffic: Option<Arc<super::traffic::Traffic>>,
 }
 
 impl Completion {
@@ -69,6 +70,7 @@ impl Completion {
         let request_failed = context
             .as_ref()
             .is_some_and(RequestContext::evidence_failed);
+        let traffic = context.as_ref().and_then(RequestContext::traffic);
         let capture = context.as_ref().and_then(|context| {
             let provenance = context.response_provenance();
             let traffic = context.traffic();
@@ -105,6 +107,7 @@ impl Completion {
             host,
             capture,
             recording,
+            traffic,
         })
     }
 
@@ -130,6 +133,9 @@ impl Completion {
                 &self.state,
                 &self.identity,
                 &self.request_id,
+                self.traffic
+                    .as_ref()
+                    .is_some_and(|traffic| traffic.source_metadata_reached()),
                 &self.host,
                 status.as_u16(),
             ),

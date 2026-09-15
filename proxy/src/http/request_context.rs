@@ -137,26 +137,30 @@ pub(super) fn prepare<B>(
         destination.path.clone(),
     ));
     if let Ok(RequestOutcome::Block { status, body, .. }) = prepared.result() {
-        let bytes = crate::network_guard::Response {
-            status: *status,
-            headers: Vec::new(),
-            body: body.clone(),
-        }
-        .body_bytes();
-        let mut response = Response::builder()
-            .status(*status)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header("x-blocked-by", "test-context")
-            .body(super::full(bytes))?;
-        let failed = apply(
+        let status = *status;
+        let body = body.clone();
+        let failed = match apply(
             &provenance,
             destination.port,
             prepared,
             None,
             Ok(&[]),
             crate::circuit_runtime::now(),
-        )
-        .unwrap_or_else(|failed| failed);
+        ) {
+            Ok(failed) => failed,
+            Err(_) => return Ok(Admission::HookError),
+        };
+        let bytes = crate::network_guard::Response {
+            status,
+            headers: Vec::new(),
+            body,
+        }
+        .body_bytes();
+        let mut response = Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-blocked-by", "test-context")
+            .body(super::full(bytes))?;
         if failed {
             response
                 .headers_mut()
@@ -334,28 +338,29 @@ fn apply(
             return Err(error.kind() == ContextErrorKind::Poisoned);
         }
     };
-    let failed = match application.result() {
+    let submitted = match application.result() {
         Ok(RequestOutcome::Applied { applied }) => {
             // Source request_id.request stamps start_time after request EOM,
             // so upload duration is not part of response elapsed time.
-            match provenance.apply_request(applied.clone(), content, encoding, started) {
-                Ok(failed) => failed,
-                Err(error) => {
-                    eprintln!("Test context request content failed: {error}");
-                    return Err(error == ContentError::Allocation);
-                }
-            }
+            provenance.apply_request(applied.clone(), content, encoding, started)
         }
         Ok(RequestOutcome::Warn { reason, .. }) => provenance.decision(*reason, false, port),
         Ok(RequestOutcome::Block { reason, .. }) => provenance.decision(*reason, true, port),
-        Ok(RequestOutcome::PriorResponse | RequestOutcome::NotTargetHost) => false,
+        Ok(RequestOutcome::PriorResponse | RequestOutcome::NotTargetHost) => Ok(false),
         Err(error) => {
             report_core_error(error.kind());
             return Err(error.kind() == ContextErrorKind::Poisoned);
         }
     };
-    // A normal sink write error is swallowed by production submission. Retain
-    // the marker separately and commit its source terminal counters.
+    let failed = match submitted {
+        Ok(failed) => failed,
+        Err(error) => {
+            eprintln!("Test context request hook failed: {error}");
+            return Err(error.evidence_failed());
+        }
+    };
+    // Canonical submission succeeded. An asynchronous writer sink failure does
+    // not undo terminal counters; a separate diagnostic failure only marks evidence.
     match application.finish() {
         Ok(_) => Ok(failed),
         Err(error) => {

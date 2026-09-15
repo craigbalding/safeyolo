@@ -242,6 +242,23 @@ async fn owned_local_child() {
     );
     proxy.shutdown().await;
     let rows = events(&directory);
+    let context: Vec<_> = rows
+        .iter()
+        .filter(|row| row["event"] == "security.test_context")
+        .collect();
+    assert_eq!(context.len(), 1);
+    assert_eq!(context[0]["decision"], "deny");
+    let declarations: Vec<_> = rows
+        .iter()
+        .filter(|row| row["event"] == "security.test_context_declared")
+        .collect();
+    assert_eq!(declarations.len(), 2);
+    assert!(
+        declarations
+            .iter()
+            .all(|row| row.get("request_id").is_none())
+    );
+    let rows: Vec<_> = rows.iter().filter(|row| row["kind"] == "traffic").collect();
     assert_eq!(rows.len(), 14);
     for (index, (request_size, response_size, host, path)) in sizes.into_iter().enumerate() {
         let request = &rows[index * 2];
@@ -344,7 +361,23 @@ async fn circuit_request_exception_skips_later_request_hooks_but_allows_response
         assert_eq!(recorder["recorded"], if invalid { 0 } else { 1 });
         proxy.shutdown().await;
         let rows = events(directory.path());
-        assert_eq!(rows.len(), if invalid { 1 } else { 2 });
+        assert_eq!(rows.len(), if invalid { 2 } else { 5 });
+        let transitions: Vec<_> = rows
+            .iter()
+            .filter(|row| row["event"] == "ops.circuit_breaker.reopen")
+            .collect();
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0]["agent"], "alice");
+        assert!(transitions[0]["request_id"].is_string());
+        let contexts: Vec<_> = rows
+            .iter()
+            .filter(|row| row["event"] == "security.test_context")
+            .collect();
+        assert_eq!(contexts.len(), if invalid { 0 } else { 2 });
+        if !invalid {
+            assert_eq!(contexts[0]["details"]["phase"], "request");
+            assert_eq!(contexts[1]["details"]["phase"], "response");
+        }
         assert_eq!(rows.last().unwrap()["event"], "traffic.response");
         assert!(rows.last().unwrap()["request_id"].is_string());
     }

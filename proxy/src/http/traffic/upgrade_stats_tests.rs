@@ -350,9 +350,12 @@ async fn authenticated_operator_stats_exposes_shared_counters_without_public_lea
             .is_err()
     );
     let rows = records(directory.path());
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["event"], "traffic.request");
-    assert_eq!(rows[1]["event"], "traffic.response");
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[0]["event"], "admin.auth_failure");
+    assert_eq!(rows[1]["event"], "admin.auth_failure");
+    assert_eq!(rows[2]["event"], "traffic.request");
+    assert_eq!(rows[3]["event"], "traffic.response");
+    assert_eq!(rows[4]["event"], "admin.auth_failure");
     let events = diagnostic_events(directory.path());
     let egress: Vec<_> = events
         .iter()
