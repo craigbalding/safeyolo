@@ -1,0 +1,346 @@
+{
+  "schema": 1,
+  "old_proxy_commit": "4116c7ee3d44c623e9d89ae60c14ce671d0f295d",
+  "branch": "feat/rust-proxy-620",
+  "captured_at": "2026-09-15T02:12:35.440398+00:00",
+  "platform": "Linux-6.12.17-aarch64-with-glibc2.41",
+  "machine": "aarch64",
+  "python": "3.12.14 (main, Sep  1 2026, 14:15:30) [Clang 22.1.3 ]",
+  "tools": {
+    "pytest": "9.0.3",
+    "mitmproxy": "12.2.3",
+    "httpx": "0.28.1"
+  },
+  "source_scope": "Old production files unchanged at the recorded commit; new fixture sources and Rust implementation were uncommitted.",
+  "old_fixture_chain": [
+    "RequestIdGenerator",
+    "AgentAPIRequestGuard",
+    "NetworkGuard",
+    "SSEStreaming",
+    "ProbeSink",
+    "TransportGuard"
+  ],
+  "not_full_production_launch": true,
+  "executed_tests": [
+    {
+      "command": "uv run --frozen pytest -q tests/test_connect_live.py tests/test_connect_matrix_live.py",
+      "result": {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "45",
+        "time": "51.812",
+        "timestamp": "2026-09-15T02:03:48.665935+00:00",
+        "hostname": "sylab"
+      },
+      "junit": "/home/agent/safeyolo-rust-620-evidence/old-live-junit.xml",
+      "exit_status": 0,
+      "test_cases": [
+        "tests.test_connect_live::test_denied_connect_never_opens_upstream[lazy-deny-403]",
+        "tests.test_connect_live::test_denied_connect_never_opens_upstream[lazy-prompt-428]",
+        "tests.test_connect_live::test_denied_connect_never_opens_upstream[lazy-None-403]",
+        "tests.test_connect_live::test_denied_connect_never_opens_upstream[eager-deny-403]",
+        "tests.test_connect_live::test_denied_connect_never_opens_upstream[eager-prompt-428]",
+        "tests.test_connect_live::test_denied_connect_never_opens_upstream[eager-None-403]",
+        "tests.test_connect_live::test_allowed_raw_tunnel_exchanges_bytes",
+        "tests.test_connect_live::test_allowed_https_and_wss_exchange[False]",
+        "tests.test_connect_live::test_allowed_https_and_wss_exchange[True]",
+        "tests.test_connect_live::test_inner_http_is_still_evaluated",
+        "tests.test_connect_live::test_endpoint_permission_does_not_open_other_port[GET]",
+        "tests.test_connect_live::test_endpoint_permission_does_not_open_other_port[CONNECT]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[default-allow-http]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[default-allow-https]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[default-allow-ws]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[default-allow-wss]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[default-deny-http]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[default-deny-https]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[default-deny-ws]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[default-deny-wss]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[host-allow-http]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[host-allow-https]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[host-allow-ws]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[host-allow-wss]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[host-deny-http]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[host-deny-https]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[host-deny-ws]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[host-deny-wss]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-default-deny-http]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-default-deny-https]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-default-deny-ws]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-default-deny-wss]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-default-allow-http]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-default-allow-https]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-default-allow-ws]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-default-allow-wss]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-host-deny-http]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-host-deny-https]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-host-deny-ws]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-host-deny-wss]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-host-allow-http]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-host-allow-https]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-host-allow-ws]",
+        "tests.test_connect_matrix_live::test_live_default_host_agent_matrix[agent-host-allow-wss]",
+        "tests.test_connect_matrix_live::test_pending_admission_audit_trace_and_port_scope"
+      ]
+    },
+    {
+      "command": "uv run --frozen pytest -q tests/proxy_migration --proxy-backend python --proxy-backend rust",
+      "result": {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "6",
+        "time": "5.387",
+        "timestamp": "2026-09-15T02:13:01.902012+00:00",
+        "hostname": "sylab"
+      },
+      "junit": "/home/agent/safeyolo-rust-620-evidence/migration-both-junit.xml",
+      "exit_status": 0,
+      "test_cases": [
+        "tests.proxy_migration.test_http_contract::test_two_agent_http_policy_and_attribution[python-direct]",
+        "tests.proxy_migration.test_http_contract::test_two_agent_http_policy_and_attribution[python-parent]",
+        "tests.proxy_migration.test_http_contract::test_two_agent_http_policy_and_attribution[rust-direct]",
+        "tests.proxy_migration.test_http_contract::test_two_agent_http_policy_and_attribution[rust-parent]",
+        "tests.proxy_migration.test_http_contract::test_reserved_hosts_never_resolve_or_contact_parent[python]",
+        "tests.proxy_migration.test_http_contract::test_reserved_hosts_never_resolve_or_contact_parent[rust]"
+      ]
+    }
+  ],
+  "baseline_capture_command": [
+    "/home/agent/safeyolo-rust-620/tests/proxy_migration/run.py",
+    "capture",
+    "--backend",
+    "python",
+    "--extended-workloads",
+    "--evidence",
+    "/home/agent/safeyolo-rust-620-evidence/baseline-recorded",
+    "--output",
+    "/home/agent/safeyolo-rust-620-evidence/baseline-recorded.json"
+  ],
+  "baseline_workloads": [
+    {
+      "workload": "sequential_short_http_connections",
+      "requests": 100,
+      "elapsed_seconds": 0.18038187599449884,
+      "requests_per_second": 554.3794211512121,
+      "latency_median_ms": 1.6736249963287264,
+      "latency_p95_ms": 1.9196249995729886,
+      "runtime_memory_ready": {
+        "processes_kib": {
+          "proxy": {
+            "VmHWM": 89116,
+            "VmRSS": 89116
+          }
+        },
+        "sum_rss_kib": 89116,
+        "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+      },
+      "runtime_memory_after": {
+        "processes_kib": {
+          "proxy": {
+            "VmHWM": 90564,
+            "VmRSS": 90564
+          }
+        },
+        "sum_rss_kib": 90564,
+        "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+      }
+    },
+    {
+      "workload": "paced_sse",
+      "bytes": 1638400,
+      "elapsed_seconds": 2.2257891680055764,
+      "first_chunk_seconds": 0.0109470420065918,
+      "first_chunk_before_completion": true,
+      "bytes_per_second": 736098.4695006366,
+      "runtime_memory_during": {
+        "processes_kib": {
+          "proxy": {
+            "VmHWM": 89792,
+            "VmRSS": 89792
+          }
+        },
+        "sum_rss_kib": 89792,
+        "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+      },
+      "runtime_memory_after": {
+        "processes_kib": {
+          "proxy": {
+            "VmHWM": 89920,
+            "VmRSS": 89920
+          }
+        },
+        "sum_rss_kib": 89920,
+        "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+      },
+      "limitation": "two-second smoke workload, not long-duration bounded-memory proof"
+    },
+    {
+      "workload": "small_websocket_echo",
+      "messages": 100,
+      "payload_bytes": 500,
+      "elapsed_seconds": 0.027864875002705958,
+      "messages_per_second": 3588.7474819208414,
+      "runtime_memory_after": {
+        "processes_kib": {
+          "proxy": {
+            "VmHWM": 89776,
+            "VmRSS": 89776
+          }
+        },
+        "sum_rss_kib": 89776,
+        "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+      },
+      "limitation": "five-byte messages only; no compression/fragmentation/inspection workload"
+    },
+    {
+      "workload": "local_api_unavailable_handler",
+      "requests": 100,
+      "elapsed_seconds": 0.14332912499958184,
+      "requests_per_second": 697.6949032535554,
+      "runtime_memory_after": {
+        "processes_kib": {
+          "proxy": {
+            "VmHWM": 89516,
+            "VmRSS": 89516
+          }
+        },
+        "sum_rss_kib": 89516,
+        "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+      },
+      "limitation": "normal authenticated API and approval creation/consumption are not measured"
+    }
+  ],
+  "rust_capture_command": [
+    "/home/agent/safeyolo-rust-620/tests/proxy_migration/run.py",
+    "capture",
+    "--backend",
+    "rust",
+    "--fixture-from",
+    "/home/agent/safeyolo-rust-620-evidence/baseline-recorded.json",
+    "--evidence",
+    "/home/agent/safeyolo-rust-620-evidence/rust-recorded",
+    "--output",
+    "/home/agent/safeyolo-rust-620-evidence/rust-recorded.json"
+  ],
+  "rust_debug_workloads": [
+    {
+      "workload": "sequential_short_http_connections",
+      "requests": 100,
+      "elapsed_seconds": 0.8748835009973845,
+      "requests_per_second": 114.30093250815453,
+      "latency_median_ms": 8.814416501991218,
+      "latency_p95_ms": 9.501832995738368,
+      "runtime_memory_ready": {
+        "processes_kib": {
+          "proxy": {
+            "VmHWM": 5148,
+            "VmRSS": 5148
+          },
+          "temporary_policy_adapter": {
+            "VmHWM": 38296,
+            "VmRSS": 38296
+          }
+        },
+        "sum_rss_kib": 43444,
+        "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+      },
+      "runtime_memory_after": {
+        "processes_kib": {
+          "proxy": {
+            "VmHWM": 6084,
+            "VmRSS": 6084
+          },
+          "temporary_policy_adapter": {
+            "VmHWM": 39712,
+            "VmRSS": 39712
+          }
+        },
+        "sum_rss_kib": 45796,
+        "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+      }
+    }
+  ],
+  "differential": {
+    "exit_status": 1,
+    "report": "/home/agent/safeyolo-rust-620-evidence/differential.json",
+    "differences": [
+      "http_direct/http_parent: denial JSON lacks old NetworkGuard access_denied/self_correct/reflection presentation.",
+      "local_containment: reserved probe returns Python 200, Rust 503. Both keep zero pre-DNS attempts/upstream connections."
+    ],
+    "matching_asserted_behavior": "Basic allow/deny statuses, trusted agent attribution, request/connection ID uniqueness, exact target ports/query bytes, allowed response bytes and origin effects."
+  },
+  "failures_and_gaps": [
+    "Full differential parity fails with the documented denial-body and local-probe differences.",
+    "Initial debug latency regression was repaired by batching event writes; sustained-load and optimized-build comparison remain unmeasured.",
+    "bounded memory during long-duration streams",
+    "WebSocket inspection workload",
+    "concurrent approval/API responsiveness",
+    "supported macOS host ingress",
+    "proxy.request is a fixture observation in Python; complete audit/trace parity is not claimed",
+    "Rust temporary PDP adapter does not reproduce approval audit/store side effects",
+    "Full production addon chain, normal authenticated API/approval workload, and real supported host VM paths were not exercised by the new fixture.",
+    "Rust SSE/WS workload measurements have not been run; only the old focused chain has extended workload results."
+  ],
+  "artifacts": {
+    "baseline": "/home/agent/safeyolo-rust-620-evidence/baseline-recorded.json",
+    "rust": "/home/agent/safeyolo-rust-620-evidence/rust-recorded.json",
+    "directory": "/home/agent/safeyolo-rust-620-evidence"
+  },
+  "fixture_sources_sha256": {
+    "tests/proxy_migration/__init__.py": "befaa593b5f48b8cfa5f2feb926449a8aa4715f6fe04a996d94b83cbd69f8452",
+    "tests/proxy_migration/conftest.py": "cd18937a70451cacb2a0a3758d6517cf5ec885693b334d06a75fa5a7bd2fb889",
+    "tests/proxy_migration/harness.py": "855abd2dbd4eb1f65d970e2e935fdc251d927026ebb66fc478e8de4f37192dd2",
+    "tests/proxy_migration/old_proxy.py": "6f2641dac566b0a4259d16d0c3a587642caea11ebac1c0d6acee939e8327c2b9",
+    "tests/proxy_migration/run.py": "ab4e341d73e7c1e5d01606fed989bb5f786090eb04bb64c1317ae5bf9ed2593e",
+    "tests/proxy_migration/scenarios.py": "5a411e0366ec1cdcf1ae92cef062e58e8659b855b34b409c97b720026d87b97d",
+    "tests/proxy_migration/test_http_contract.py": "2d1655addb53e1d242bac6a5eb5dcce796930478a9bf1c18ffff8b1199596220"
+  },
+  "deletion": "No production code or dependencies removed.",
+  "rust_log_batching_followup": {
+    "artifact": "/home/agent/safeyolo-rust-620-evidence/rust-batched-log.json",
+    "change": "Serialize each JSONL event and newline before one write_all, instead of many unbuffered serializer writes.",
+    "source_scope": "Uncommitted Rust development slice; identical fixture source hashes to original capture.",
+    "workloads": [
+      {
+        "workload": "sequential_short_http_connections",
+        "requests": 100,
+        "elapsed_seconds": 0.07403162499394966,
+        "requests_per_second": 1350.7740780804506,
+        "latency_median_ms": 0.6232084961084183,
+        "latency_p95_ms": 0.7352920001721941,
+        "runtime_memory_ready": {
+          "processes_kib": {
+            "proxy": {
+              "VmHWM": 5276,
+              "VmRSS": 5276
+            },
+            "temporary_policy_adapter": {
+              "VmHWM": 38300,
+              "VmRSS": 38300
+            }
+          },
+          "sum_rss_kib": 43576,
+          "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+        },
+        "runtime_memory_after": {
+          "processes_kib": {
+            "proxy": {
+              "VmHWM": 6100,
+              "VmRSS": 6100
+            },
+            "temporary_policy_adapter": {
+              "VmHWM": 39716,
+              "VmRSS": 39716
+            }
+          },
+          "sum_rss_kib": 45816,
+          "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"
+        }
+      }
+    ],
+    "interpretation": "The initial short-request regression is explained by evidence-file write overhead. This 100-request debug sample does not establish sustained production performance."
+  }
+}

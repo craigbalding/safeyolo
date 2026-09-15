@@ -1,0 +1,68 @@
+name: Rust proxy migration
+
+on:
+  pull_request:
+    paths:
+      - "proxy/**"
+      - "tests/proxy_migration/**"
+      - "tests/test_rust_temporary_policy.py"
+      - "tools/proxy_migration/**"
+      - ".github/workflows/proxy-rust.yml"
+  push:
+    branches: [master, main]
+    paths:
+      - "proxy/**"
+      - "tests/proxy_migration/**"
+      - "tools/proxy_migration/**"
+      - ".github/workflows/proxy-rust.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  http-slice:
+    name: HTTP migration (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: rustup show active-toolchain
+
+      - name: Check Rust formatting and lint
+        working-directory: proxy
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test and build the Rust proxy
+        working-directory: proxy
+        run: |
+          cargo test --locked
+          cargo build --locked
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+
+      - name: Install the historical comparator and temporary policy adapter
+        run: |
+          uv python install 3.12
+          uv sync --frozen --group dev --python 3.12
+
+      - name: Run shared HTTP contracts against each proxy
+        run: |
+          uv run --frozen pytest -q tests/proxy_migration --proxy-backend python
+          uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
+          uv run --frozen pytest -q tests/test_rust_temporary_policy.py

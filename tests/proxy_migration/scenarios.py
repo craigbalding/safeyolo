@@ -1,0 +1,183 @@
+"""Product observations independent of proxy framework or implementation."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import threading
+import time
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from tests.proxy_migration.harness import launch_proxy, request
+
+POLICY = '''budget = 12000
+[hosts]
+"*" = { egress = "deny" }
+[agents.alice]
+egress = "allow"
+'''
+FORGED_REQUEST_ID = "req-" + "f" * 32
+
+
+class Origin(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, port=0):
+        self.accepts = 0
+        self.requests = []
+        self.stream_finished = threading.Event()
+        super().__init__(("127.0.0.1", port), OriginHandler)
+
+    def get_request(self):
+        result = super().get_request()
+        self.accepts += 1
+        return result
+
+
+class OriginHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        self.server.requests.append({"method": self.command, "target": self.path})
+        if self.path == "/stream":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            chunk = b"data: " + b"x" * (16384 - 8) + b"\n\n"
+            for _ in range(100):
+                self.wfile.write(chunk)
+                self.wfile.flush()
+                time.sleep(0.02)
+            self.server.stream_finished.set()
+            return
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            self.websocket()
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", "5")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(b"hello")
+
+    def websocket(self):
+        # Deliberately small synthetic workload: complete five-byte text
+        # messages. Compression, fragments and inspection need separate tests.
+        key = self.headers["Sec-WebSocket-Key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        accept = base64.b64encode(hashlib.sha1(key.encode()).digest()).decode()
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self.close_connection = True
+        while prefix := self.rfile.read(2):
+            if prefix[0] == 0x88:
+                return
+            assert prefix == b"\x81\x85", prefix
+            mask = self.rfile.read(4)
+            payload = self.rfile.read(5)
+            plain = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+            self.wfile.write(b"\x81\x05" + plain)
+            self.wfile.flush()
+
+
+@contextmanager
+def origin_server(port=0):
+    server = Origin(port)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def network_scenario(backend, directory, *, parent=False, origin_port=0):
+    """Allow alice and deny bob despite forged headers, with no denied egress."""
+    with origin_server(origin_port) as origin:
+        origin_port = origin.server_address[1]
+        # A configured parent answers itself. A made-up target ensures the child
+        # must hand authority to that parent, without resolving the target.
+        host, port = ("target.invalid", 8123) if parent else ("127.0.0.1", origin_port)
+        url = f"http://{host}:{port}/signed?part=one&part=two%2Fthree"
+        parent_url = f"http://127.0.0.1:{origin_port}" if parent else None
+        observations = []
+        with launch_proxy(backend, directory, POLICY, parent_proxy=parent_url) as proxy:
+            identifiers = []
+            for agent, expected in (("bob", 403), ("alice", 200), ("bob", 403), ("alice", 200)):
+                before = origin.accepts
+                egress_before = len(proxy.events("proxy.egress"))
+                status, headers, body = request(proxy.paths[agent], url, headers={
+                    "X-SafeYolo-Agent": "alice" if agent == "bob" else "bob",
+                    "X-SafeYolo-Request-Id": FORGED_REQUEST_ID,
+                    "X-SafeYolo-Trace": "1",
+                })
+                response_headers = {key.lower(): value for key, value in headers.items()}
+                assert status == expected, (status, body)
+                identifier = response_headers.get("x-safeyolo-request-id")
+                assert identifier and identifier != FORGED_REQUEST_ID
+                assert identifier not in identifiers
+                identifiers.append(identifier)
+                assert origin.accepts - before == int(expected == 200)
+                if expected == 403:
+                    assert response_headers["x-blocked-by"] == "network-guard"
+                    assert len(proxy.events("proxy.egress")) == egress_before
+                else:
+                    assert body == b"hello"
+                observations.append({"agent": agent, "status": status,
+                                     "delivered_body": body.decode() if expected == 200 else None,
+                                     "denial_body": json.loads(body) if expected == 403 else None,
+                                     "blocked_by": response_headers.get("x-blocked-by"),
+                                     "origin_connections": origin.accepts - before})
+        events = proxy.events("proxy.request")
+        assert len(events) == len(observations), events
+        for event, observation, identifier in zip(events, observations, identifiers, strict=True):
+            assert event["agent"] == observation["agent"]
+            assert event["request_id"] == identifier
+            assert event["host"] == host and event["port"] == port
+            assert event["status"] == observation["status"]
+            assert event["decision"] == ("allow" if observation["status"] == 200 else "deny")
+            assert event["connection_id"]
+        assert len({event["connection_id"] for event in events}) == len(events)
+        assert len(proxy.events("proxy.egress")) == 2
+        target = url if parent else "/signed?part=one&part=two%2Fthree"
+        assert origin.requests == [{"method": "GET", "target": target}] * 2
+        assert not proxy.readiness_file.exists(), "Graceful shutdown left readiness behind"
+        # Only generated request IDs are substituted. Their one-to-one client,
+        # response and event relationships were asserted above. Error fields,
+        # reflections, destinations, ports and delivered bytes remain intact.
+        serialized = json.dumps(observations)
+        for index, identifier in enumerate(identifiers):
+            serialized = serialized.replace(identifier, f"request-{index}")
+        observations = json.loads(serialized)
+        return {"fixture_origin_port": origin_port,
+                "requests": observations, "origin_targets": [item["target"] for item in origin.requests],
+                "policy_events": [{key: event[key] for key in ("agent", "host", "port", "status", "decision")}
+                                  for event in events]}
+
+
+def reserved_scenario(backend, directory):
+    """Invalid/missing local handlers cannot send even a DNS/connect attempt."""
+    with origin_server() as parent:
+        parent_url = f"http://127.0.0.1:{parent.server_address[1]}"
+        with launch_proxy(backend, directory, POLICY, parent_proxy=parent_url) as proxy:
+            responses = []
+            for host in ("_safeyolo.proxy.internal", "_SAFEYOLO.PROXY.INTERNAL", "_safeyolo.probe.internal"):
+                status, headers, body = request(
+                    proxy.paths["alice"], f"http://{host}/missing?secret=synthetic",
+                    headers={"Authorization": "Bearer synthetic-local-token"},
+                )
+                assert status in {200, 503}, (status, body)
+                assert parent.accepts == 0
+                assert proxy.events("proxy.egress") == []
+                responses.append({"host": host, "status": status})
+        assert parent.requests == []
+        return {"responses": responses, "origin_connections": parent.accepts, "egress_attempts": 0}
