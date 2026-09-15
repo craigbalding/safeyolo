@@ -264,11 +264,28 @@ impl Rule {
     }
 }
 
+/// Concrete controls implemented by the native request guards. Other addon
+/// configuration remains outside this query's validation and representation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Addon {
+    NetworkGuard,
+    CredentialGuard,
+}
+impl Addon {
+    fn index(self) -> usize {
+        match self {
+            Self::NetworkGuard => 0,
+            Self::CredentialGuard => 1,
+        }
+    }
+}
+const ADDON_NAMES: [&str; 2] = ["network_guard", "credential_guard"];
+
 #[derive(Clone, Default, Debug)]
 struct Override {
     pattern: String,
-    bypass: bool,
-    enabled: Option<bool>,
+    bypass: [bool; 2],
+    enabled: [Option<bool>; 2],
 }
 
 /// One proxy permission representation and one atomic GCRA state map.
@@ -277,8 +294,8 @@ pub struct Policy {
     rules: Vec<Rule>,
     global_budget: Option<u64>,
     budgets: Arc<Mutex<HashMap<String, f64>>>,
-    required: bool,
-    enabled: bool,
+    required: [bool; 2],
+    enabled: [bool; 2],
     domains: Vec<Override>,
     clients: Vec<Override>,
     task: Option<TaskPolicy>,
@@ -289,7 +306,7 @@ struct TaskPolicy {
     rules: Vec<Rule>,
     global_budget: Option<u64>,
     domains: Vec<Override>,
-    enabled: Option<bool>,
+    enabled: [Option<bool>; 2],
     path: Option<PathBuf>,
 }
 
@@ -328,7 +345,7 @@ impl Policy {
         for key in ["hosts", "agents", "lists", "global_budget"] {
             document.shift_remove(key);
         }
-        let enabled = network_enabled(document.get("addons"))?;
+        let enabled = addon_enabled_values(document.get("addons"))?;
         let task = Self::from_document(document, None)?;
         let mut replacement = self.clone();
         replacement.task = Some(TaskPolicy {
@@ -434,8 +451,8 @@ impl Policy {
             rules: Vec::new(),
             global_budget,
             budgets: Arc::new(Mutex::new(HashMap::new())),
-            required: false,
-            enabled: true,
+            required: [false; 2],
+            enabled: [true; 2],
             domains: Vec::new(),
             clients: Vec::new(),
             task: None,
@@ -444,11 +461,12 @@ impl Policy {
             .get("required")
             .map(|value| {
                 string_array(value, "required")
-                    .map(|values| values.iter().any(|value| value == "network_guard"))
+                    .map(|values| ADDON_NAMES.map(|name| values.iter().any(|value| value == name)))
             })
             .transpose()?
-            .unwrap_or(false);
-        policy.enabled = network_enabled(document.get("addons"))?.unwrap_or(true);
+            .unwrap_or([false; 2]);
+        policy.enabled =
+            addon_enabled_values(document.get("addons"))?.map(|value| value.unwrap_or(true));
         policy.domains = overrides(document.get("domains"))?;
         policy.clients = overrides(document.get("clients"))?;
         if let Some(hosts) = document.get("hosts") {
@@ -1076,37 +1094,55 @@ impl Policy {
     /// network decision or implementing warn/block mode. Required addons resist
     /// configured bypasses as in the existing engine.
     pub fn network_guard_enabled(&self, request: NetworkRequest<'_>) -> bool {
-        for entry in &self.domains {
-            if host_matches(request.host, &entry.pattern) && entry.bypass {
-                return self.required;
+        self.is_addon_enabled(Addon::NetworkGuard, Some(request.host), request.agent)
+    }
+
+    /// Existing source order: domain bypass, task domain bypass, baseline client
+    /// bypass/disable, then baseline/domain/task enabled overrides. This query
+    /// never evaluates permissions or consumes a budget.
+    pub fn is_addon_enabled(
+        &self,
+        addon: Addon,
+        domain: Option<&str>,
+        client: Option<&str>,
+    ) -> bool {
+        let index = addon.index();
+        let required = self.required[index];
+        if let Some(domain) = domain.filter(|domain| !domain.is_empty()) {
+            for entry in &self.domains {
+                if host_matches(domain, &entry.pattern) && entry.bypass[index] {
+                    return required;
+                }
             }
-        }
-        if let Some(task) = &self.task {
-            for entry in &task.domains {
-                if host_matches(request.host, &entry.pattern) && entry.bypass {
-                    return self.required;
+            if let Some(task) = &self.task {
+                for entry in &task.domains {
+                    if host_matches(domain, &entry.pattern) && entry.bypass[index] {
+                        return required;
+                    }
                 }
             }
         }
-        if let Some(agent) = request.agent {
+        if let Some(client) = client.filter(|client| !client.is_empty()) {
             for entry in &self.clients {
-                if client_matches(agent, &entry.pattern)
-                    && (entry.bypass || entry.enabled == Some(false))
+                if client_matches(client, &entry.pattern)
+                    && (entry.bypass[index] || entry.enabled[index] == Some(false))
                 {
-                    return self.required;
+                    return required;
                 }
             }
         }
-        let mut enabled = self.enabled;
-        for entry in &self.domains {
-            if host_matches(request.host, &entry.pattern)
-                && let Some(value) = entry.enabled
-            {
-                enabled = value;
+        let mut enabled = self.enabled[index];
+        if let Some(domain) = domain.filter(|domain| !domain.is_empty()) {
+            for entry in &self.domains {
+                if host_matches(domain, &entry.pattern)
+                    && let Some(value) = entry.enabled[index]
+                {
+                    enabled = value;
+                }
             }
         }
-        if let Some(task_enabled) = self.task.as_ref().and_then(|task| task.enabled) {
-            enabled = self.required || task_enabled;
+        if let Some(task_enabled) = self.task.as_ref().and_then(|task| task.enabled[index]) {
+            enabled = required || task_enabled;
         }
         enabled
     }
@@ -2091,7 +2127,7 @@ fn yaml_timestamp(value: &str) -> Result<Option<Value>> {
     Ok(Some(Value::String(rendered)))
 }
 
-fn parse_document(source: &str, format: Format) -> Result<Map<String, Value>> {
+pub(crate) fn parse_document(source: &str, format: Format) -> Result<Map<String, Value>> {
     let value: Value = match format {
         Format::Json => parse_json(source, false).map_err(|error| invalid(error.to_string()))?,
         Format::Yaml => parse_yaml(source)?,
@@ -2207,19 +2243,26 @@ fn boolean(value: &Value, field: &str) -> Result<bool> {
     Err(invalid(format!("{field} must be boolean")))
 }
 
-fn network_enabled(addons: Option<&Value>) -> Result<Option<bool>> {
+fn addon_enabled_values(addons: Option<&Value>) -> Result<[Option<bool>; 2]> {
     let Some(addons) = addons else {
-        return Ok(None);
+        return Ok([None; 2]);
     };
-    let Some(network) = object(addons, "addons")?.get("network_guard") else {
-        return Ok(None);
-    };
-    let value = object(network, "network_guard")?.get("enabled");
-    value
-        .map(|value| boolean(value, "addon enabled"))
-        .transpose()
-        .map(|enabled| Some(enabled.unwrap_or(true)))
+    let addons = object(addons, "addons")?;
+    let mut values = [None; 2];
+    for (index, name) in ADDON_NAMES.iter().enumerate() {
+        if let Some(config) = addons.get(*name) {
+            let value = object(config, name)?.get("enabled");
+            values[index] = Some(
+                value
+                    .map(|value| boolean(value, "addon enabled"))
+                    .transpose()?
+                    .unwrap_or(true),
+            );
+        }
+    }
+    Ok(values)
 }
+
 fn parse_override(pattern: &str, fields: &Map<String, Value>) -> Result<Override> {
     Ok(Override {
         pattern: pattern.into(),
@@ -2227,11 +2270,11 @@ fn parse_override(pattern: &str, fields: &Map<String, Value>) -> Result<Override
             .get("bypass")
             .map(|value| {
                 string_array(value, "bypass")
-                    .map(|values| values.iter().any(|value| value == "network_guard"))
+                    .map(|values| ADDON_NAMES.map(|name| values.iter().any(|value| value == name)))
             })
             .transpose()?
-            .unwrap_or(false),
-        enabled: network_enabled(fields.get("addons"))?,
+            .unwrap_or([false; 2]),
+        enabled: addon_enabled_values(fields.get("addons"))?,
     })
 }
 fn overrides(value: Option<&Value>) -> Result<Vec<Override>> {

@@ -1693,3 +1693,131 @@ fn host_list_python_whitespace_cannot_drop_a_denial() {
         Effect::Allow
     );
 }
+
+#[test]
+fn concrete_addon_controls_share_precedence_without_changing_network_wrapper() {
+    use safeyolo_proxy::policy::Addon;
+    let p=Policy::parse(r#"{"permissions":[],"required":["credential_guard"],"addons":{"credential_guard":{"enabled":false},"network_guard":{"enabled":true},"ignored_addon":7},"domains":{"*.example":{"bypass":["credential_guard"]}},"clients":{"alice":{"bypass":["network_guard"]}}}"#,Format::Json).unwrap();
+    assert!(p.is_addon_enabled(Addon::CredentialGuard, Some("api.example"), Some("alice")));
+    assert!(!p.is_addon_enabled(Addon::CredentialGuard, Some("other.invalid"), Some("bob")));
+    assert!(!p.is_addon_enabled(Addon::NetworkGuard, Some("api.example"), Some("alice")));
+    assert_eq!(
+        p.network_guard_enabled(request("api.example", Some("alice"), 443)),
+        p.is_addon_enabled(Addon::NetworkGuard, Some("api.example"), Some("alice"))
+    );
+    let task=p.with_task_source(r#"{"addons":{"credential_guard":{"enabled":false},"network_guard":{"enabled":false}}}"#,Format::Json).unwrap();
+    assert!(task.is_addon_enabled(Addon::CredentialGuard, Some("other.invalid"), Some("bob")));
+    assert!(!task.is_addon_enabled(Addon::NetworkGuard, Some("other.invalid"), Some("bob")));
+    assert!(
+        Policy::parse(
+            r#"{"addons":{"credential_guard":{"enabled":"not-a-boolean"}}}"#,
+            Format::Json
+        )
+        .is_err()
+    );
+}
+
+#[test]
+#[ignore = "historical Python oracle; set SAFEYOLO_POLICY_PYTHON"]
+fn both_guard_enablement_controls_match_shipped_policy_engine() {
+    use safeyolo_proxy::policy::Addon;
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+    let mut cases = vec![];
+    for enabled in [true, false] {
+        for required in [true, false] {
+            for bypass in ["none", "domain", "client"] {
+                for task in [
+                    Value::Null,
+                    json!({"addons":{"network_guard":{"enabled":false},"credential_guard":{"enabled":false}}}),
+                    json!({"domains":{"*.example":{"bypass":["network_guard","credential_guard"]}}}),
+                ] {
+                    let mut document = json!({"permissions":[],"addons":{"network_guard":{"enabled":enabled},"credential_guard":{"enabled":!enabled}},"required":if required{json!(["network_guard","credential_guard"])}else{json!([])},"domains":{"api.example":{"addons":{"network_guard":{"enabled":!enabled},"credential_guard":{"enabled":enabled}}}},"clients":{"bob":{"addons":{"credential_guard":{"enabled":false}}}}});
+                    if bypass == "domain" {
+                        document["domains"]["*.example"] =
+                            json!({"bypass":["network_guard","credential_guard"]});
+                    }
+                    if bypass == "client" {
+                        document["clients"]["alice"] =
+                            json!({"bypass":["network_guard","credential_guard"]});
+                    }
+                    cases.push(json!({"document":document,"task":task}));
+                }
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let script = r#"
+import json,sys,pathlib,tempfile,logging
+from unittest.mock import patch
+from safeyolo.policy.engine import PolicyEngine
+from safeyolo.policy.models import UnifiedPolicy
+logging.disable(logging.CRITICAL)
+patch('safeyolo.policy.loader.write_event').start()
+rows=[]
+for case in json.load(sys.stdin):
+ with tempfile.TemporaryDirectory() as directory:
+  path=pathlib.Path(directory)/'policy.json';path.write_text(json.dumps(case['document']))
+  engine=PolicyEngine(baseline_path=path);engine._loader.stop_watcher()
+  if case['task'] is not None:engine._loader._task_policy=UnifiedPolicy.model_validate(case['task'])
+  rows.append([engine.is_addon_enabled(addon,domain,client) for addon in ['network_guard','credential_guard'] for domain in [None,'','api.example','other.example','else.invalid'] for client in [None,'','alice','bob','ALICE']]);engine.done()
+json.dump(rows,sys.stdout)
+"#;
+    let mut child = Command::new(
+        std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
+    )
+    .arg("-c")
+    .arg(script)
+    .env(
+        "PYTHONPATH",
+        format!("{}:{}", root.join("cli/src").display(), root.display()),
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(json!(cases).to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut count = 0;
+    for (index, case) in cases.iter().enumerate() {
+        let mut p = Policy::parse(&case["document"].to_string(), Format::Json).unwrap();
+        if !case["task"].is_null() {
+            p = p
+                .with_task_source(&case["task"].to_string(), Format::Json)
+                .unwrap();
+        }
+        let mut row = vec![];
+        for addon in [Addon::NetworkGuard, Addon::CredentialGuard] {
+            for domain in [
+                None,
+                Some(""),
+                Some("api.example"),
+                Some("other.example"),
+                Some("else.invalid"),
+            ] {
+                for client in [None, Some(""), Some("alice"), Some("bob"), Some("ALICE")] {
+                    row.push(p.is_addon_enabled(addon, domain, client));
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(json!(row), expected[index], "enablement case {index}");
+    }
+    eprintln!("{count} actual Python addon-enable queries");
+}

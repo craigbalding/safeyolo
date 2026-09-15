@@ -515,6 +515,23 @@ rule order, directional options, bounded URL inspection and complete-message
 decisions within its documented regex compatibility scope. Neither module
 removes the temporary Python adapter or establishes production control parity.
 
+The inactive [credential guard](../proxy/src/credential_guard.rs) uses that same
+policy matcher and regex adapter. It preserves catalogue-first detection,
+ordered headers, Bearer/Basic extraction, configured entropy checks, destination
+decisions and warn/block responses. Private secret values become keyed
+fingerprints in its output. The source evaluates network policy again, without
+agent context, after each allowed credential decision; native comparisons retain
+that ordering and its repeated budget charges. The shared addon-enable query
+covers both existing guards without a second policy representation.
+
+Owner checks compare 903 detector cases, the 17-rule generated catalogue,
+112 actual Python addon/PDP operations, eight cached reload steps and 1,800
+addon-enable queries. These checks do not establish transport activation or
+independent acceptance. Raw-header decoding and regex compatibility still need
+integration. Accepted unusual scalar configuration forms remain a gap. A failed
+native reload retains the prior complete snapshot; the source can partially
+update configuration before failing.
+
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those
 jobs, the macOS VM relay or the Linux guest mount have passed.

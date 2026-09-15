@@ -1,0 +1,236 @@
+[
+  {
+    "name": "openai-admin",
+    "patterns": [
+      "sk-admin-[A-Za-z0-9_-]{8,}"
+    ],
+    "allowed_hosts": [
+      "api.openai.com"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": "https://platform.openai.com/settings/organization/admin-keys"
+  },
+  {
+    "name": "openrouter",
+    "patterns": [
+      "sk-or-v1-[0-9a-f]{64}"
+    ],
+    "allowed_hosts": [
+      "openrouter.ai"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": "https://openrouter.ai/settings/keys"
+  },
+  {
+    "name": "openai",
+    "patterns": [
+      "sk-proj-[A-Za-z0-9_-]{20,}",
+      "sk-svcacct-[A-Za-z0-9_-]{20,}"
+    ],
+    "allowed_hosts": [
+      "api.openai.com"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": "https://platform.openai.com/api-keys"
+  },
+  {
+    "name": "anthropic",
+    "patterns": [
+      "sk-ant-api\\d{2}-[A-Za-z0-9_-]{93}AA",
+      "sk-ant-oat\\d{2}-[A-Za-z0-9_-]{93}AA"
+    ],
+    "allowed_hosts": [
+      "api.anthropic.com",
+      "console.anthropic.com"
+    ],
+    "header_names": [
+      "authorization",
+      "x-api-key"
+    ],
+    "suggested_url": "https://console.anthropic.com/settings/keys"
+  },
+  {
+    "name": "anthropic-admin",
+    "patterns": [
+      "sk-ant-admin\\d{2}-[A-Za-z0-9_-]{93}AA"
+    ],
+    "allowed_hosts": [
+      "api.anthropic.com"
+    ],
+    "header_names": [
+      "x-api-key"
+    ],
+    "suggested_url": "https://console.anthropic.com/settings/keys"
+  },
+  {
+    "name": "anthropic-refresh",
+    "patterns": [
+      "sk-ant-ort\\d{2}-[A-Za-z0-9_-]{93}AA"
+    ],
+    "allowed_hosts": [
+      "console.anthropic.com"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": ""
+  },
+  {
+    "name": "github",
+    "patterns": [
+      "ghp_[A-Za-z0-9._-]{36,}"
+    ],
+    "allowed_hosts": [
+      "api.github.com",
+      "github.com"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": "https://github.com/settings/tokens"
+  },
+  {
+    "name": "github",
+    "patterns": [
+      "gho_[A-Za-z0-9._-]{36,}"
+    ],
+    "allowed_hosts": [
+      "api.github.com",
+      "github.com"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": ""
+  },
+  {
+    "name": "github",
+    "patterns": [
+      "ghu_[A-Za-z0-9._-]{36,}"
+    ],
+    "allowed_hosts": [
+      "api.github.com",
+      "github.com"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": ""
+  },
+  {
+    "name": "github",
+    "patterns": [
+      "ghs_[A-Za-z0-9._-]{36,}"
+    ],
+    "allowed_hosts": [
+      "api.github.com",
+      "github.com"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": ""
+  },
+  {
+    "name": "github-refresh",
+    "patterns": [
+      "ghr_[A-Za-z0-9._-]{36,}"
+    ],
+    "allowed_hosts": [
+      "github.com"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": ""
+  },
+  {
+    "name": "github",
+    "patterns": [
+      "github_pat_[A-Za-z0-9._-]{60,}"
+    ],
+    "allowed_hosts": [
+      "api.github.com",
+      "github.com"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": "https://github.com/settings/personal-access-tokens"
+  },
+  {
+    "name": "google",
+    "patterns": [
+      "AIza[0-9A-Za-z_-]{35}",
+      "AQ\\.[A-Za-z0-9_-]{40,}"
+    ],
+    "allowed_hosts": [
+      "*.googleapis.com"
+    ],
+    "header_names": [
+      "x-goog-api-key"
+    ],
+    "suggested_url": "https://aistudio.google.com/app/apikey"
+  },
+  {
+    "name": "xai",
+    "patterns": [
+      "xai-[A-Za-z0-9_-]{20,}"
+    ],
+    "allowed_hosts": [
+      "api.x.ai"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": "https://console.x.ai/"
+  },
+  {
+    "name": "groq",
+    "patterns": [
+      "gsk_[A-Za-z0-9_-]{20,}"
+    ],
+    "allowed_hosts": [
+      "api.groq.com"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": "https://console.groq.com/keys"
+  },
+  {
+    "name": "huggingface",
+    "patterns": [
+      "hf_[A-Za-z0-9]{20,}",
+      "hf_(?:jwt|oauth)_[A-Za-z0-9_-]{20,}"
+    ],
+    "allowed_hosts": [
+      "huggingface.co",
+      "*.huggingface.co"
+    ],
+    "header_names": [
+      "authorization"
+    ],
+    "suggested_url": "https://huggingface.co/settings/tokens"
+  },
+  {
+    "name": "ambiguous-sk",
+    "patterns": [
+      "sk-(?!admin-)(?!ant-)(?!or-v1-)(?!proj-)(?!svcacct-)[A-Za-z0-9_-]{20,}"
+    ],
+    "allowed_hosts": [],
+    "header_names": [
+      "authorization",
+      "x-api-key",
+      "api-key",
+      "apikey"
+    ],
+    "suggested_url": ""
+  }
+]
