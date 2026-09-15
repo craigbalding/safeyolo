@@ -282,7 +282,7 @@ impl CircuitValue {
             None => Self::Float(-self.float()?),
         })
     }
-    pub(super) fn divide(&self, other: &Self) -> Result<Self> {
+    pub(crate) fn divide(&self, other: &Self) -> Result<Self> {
         if let (Some(left), Some(right)) = (self.integer(), other.integer()) {
             return integer_ratio(&left, &right).map(Self::Float);
         }

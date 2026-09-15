@@ -25,6 +25,7 @@ pub mod host_names;
 mod http;
 pub mod http_content;
 pub mod inspection;
+pub mod memory_monitor;
 pub mod network_guard;
 pub mod oauth;
 mod operator_stats;

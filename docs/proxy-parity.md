@@ -1472,6 +1472,42 @@ strict-schema rejection: `trace_requested` stays local to native events and is
 excluded from the adapter request. These checks are implementation evidence;
 independent acceptance and the remaining production migration work are pending.
 
+### Memory monitor component
+
+The [native memory monitor](../proxy/src/memory_monitor.rs) implements connection and WebSocket state, source
+report construction and the four canonical memory events. It remains a
+component prerequisite. The runtime does not install it; `/memory` remains
+unavailable, and operator `/stats` does not include a memory-monitor entry.
+
+Per-connection flow counts follow reached request hooks. Body sizes measure retained,
+decoded HTTP content. WebSocket hooks count complete
+messages without retaining payloads. Reports show the ten busiest connections
+in stable order and all active WebSocket sessions. Counters and state removals
+that precede a decoding, sampling or audit-submission failure remain committed.
+The periodic event is request-driven at the source's 60-second interval.
+
+The process sampler reads the serving process's `/proc/self/status`, with
+current resident memory as a lower bound when the peak field is absent. The
+[sampler controls](../proxy/tests/memory_sample_source.py) use owned in-memory
+input and the pinned UTF-8 environment. They
+cover partial reads, malformed values and text-decoding order; they are not
+measurements of a running proxy. Source debug logging and the exceptional case
+where a close failure masks a missing-token error remain outside the sampler's
+demonstrated behavior.
+
+The [source oracle](../proxy/tests/memory_monitor_source.py) supplies explicit
+memory samples and clocks while exercising actual callbacks, HTTP decoding and
+canonical event construction. Runtime integration still needs accepted-client
+lifetimes, request and response completion, WebSocket hooks, reload ownership
+and API reporting. Memory accounting must use the original content headers and
+run at the source hook position before later API and security consumers. A
+report of process memory alone does not establish those counters or workflows.
+
+Five focused native tests pass, including replay of 24 source workflows.
+Thirteen separate source sampler controls pass with in-memory readers. These
+checks establish component behavior; transport lifecycle and API integration
+remain unverified.
+
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those
 jobs, the macOS VM relay or the Linux guest mount have passed.

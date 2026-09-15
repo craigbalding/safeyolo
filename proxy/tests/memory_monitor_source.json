@@ -1,0 +1,5665 @@
+{
+  "memory_sampling": "stubbed _read_proc_memory; supplied KiB pairs; no procfs reads",
+  "default_memory_kb": [
+    1280,
+    2560
+  ],
+  "rows": [
+    {
+      "input": {
+        "name": "pristine_stats",
+        "steps": [
+          {
+            "hook": "get_stats",
+            "now": 1000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 1000
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 0, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "startup_two_clock_reads",
+        "steps": [
+          {
+            "hook": "running",
+            "now": [
+              1000.25,
+              1000.75
+            ]
+          },
+          {
+            "hook": "get_stats",
+            "now": 1001.9
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "running",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 1000.25
+            },
+            {
+              "time": 1000.75
+            },
+            "put_event:ops.startup"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000.25,
+            "last_event_time": 1000.75,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 1001.9
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 1.2, \"uptime_s\": 1, \"total_flows\": 0, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000.25,
+            "last_event_time": 1000.75,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 0,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.startup",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "Memory monitor started (baseline RSS: 1 MB)",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_start_mb": 1.2
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 1000.25,
+            "last_event_time": 1000.75,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "startup_submit_error",
+        "steps": [
+          {
+            "hook": "running",
+            "now": [
+              1000.25,
+              1000.75
+            ],
+            "audit_error": "RuntimeError"
+          },
+          {
+            "hook": "get_stats",
+            "now": 1000.75
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "running",
+          "error_class": "RuntimeError",
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 1000.25
+            },
+            {
+              "time": 1000.75
+            },
+            "put_event:ops.startup"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000.25,
+            "last_event_time": 1000.75,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 1000.75
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 1.2, \"uptime_s\": 0, \"total_flows\": 0, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000.25,
+            "last_event_time": 1000.75,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 0,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.startup",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "Memory monitor started (baseline RSS: 1 MB)",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_start_mb": 1.2
+            }
+          },
+          "accepted": false,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 1000.25,
+            "last_event_time": 1000.75,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "repeated_running_preserves_state",
+        "steps": [
+          {
+            "hook": "running",
+            "now": 10.0
+          },
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 11,
+            "body": "abc"
+          },
+          {
+            "hook": "websocket_start",
+            "now": 12
+          },
+          {
+            "hook": "websocket_message",
+            "now": 13
+          },
+          {
+            "hook": "running",
+            "now": [
+              20.25,
+              20.75
+            ],
+            "memory": [
+              3584,
+              4096
+            ]
+          },
+          {
+            "hook": "get_stats",
+            "now": 21,
+            "memory": [
+              4096,
+              5120
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "running",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 10.0
+            },
+            {
+              "time": 10.0
+            },
+            "put_event:ops.startup"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 10.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 10.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 11
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 10.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "websocket_start",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 12
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 10.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_message",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 10.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 1
+              }
+            ]
+          }
+        },
+        {
+          "hook": "running",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                3584,
+                4096
+              ]
+            },
+            {
+              "time": 20.25
+            },
+            {
+              "time": 20.75
+            },
+            "put_event:ops.startup"
+          ],
+          "state_after": {
+            "rss_start_kb": 3584,
+            "started": 20.25,
+            "last_event_time": 20.75,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 1
+              }
+            ]
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                4096,
+                5120
+              ]
+            },
+            {
+              "time": 21
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 4.0, \"rss_hwm_mb\": 5.0, \"rss_start_mb\": 3.5, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 1, \"connections\": [{\"domain\": \"owned.invalid\", \"flows\": 1, \"age_s\": 11, \"bytes_sent\": 3, \"bytes_received\": 0}], \"active_websockets\": 1, \"websockets\": [{\"domain\": \"owned.invalid\", \"messages\": 1, \"age_s\": 9}]}",
+          "state_after": {
+            "rss_start_kb": 3584,
+            "started": 20.25,
+            "last_event_time": 20.75,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 1
+              }
+            ]
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 0,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.startup",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "Memory monitor started (baseline RSS: 1 MB)",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_start_mb": 1.2
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 10.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "step": 5,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.startup",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "Memory monitor started (baseline RSS: 3 MB)",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_start_mb": 3.5
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 3584,
+            "started": 20.25,
+            "last_event_time": 20.75,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "decoded_http_bytes_and_first_domain",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 11,
+            "host": "first.invalid",
+            "body": "\u00e9!",
+            "encoding": "gzip"
+          },
+          {
+            "hook": "response",
+            "now": 12,
+            "body": "reply",
+            "encoding": "gzip"
+          },
+          {
+            "hook": "request",
+            "now": 13,
+            "host": "second.invalid",
+            "body": "x"
+          },
+          {
+            "hook": "get_stats",
+            "now": 15.9
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 11
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "first.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "response",
+          "error_class": null,
+          "timeline": [
+            "response.content"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "first.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 5
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 13
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 2,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "first.invalid",
+                "started": 10.0,
+                "flow_count": 2,
+                "bytes_sent": 4,
+                "bytes_received": 5
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 15.9
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 2, \"active_connections\": 1, \"connections\": [{\"domain\": \"first.invalid\", \"flows\": 2, \"age_s\": 5, \"bytes_sent\": 4, \"bytes_received\": 5}], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 2,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "first.invalid",
+                "started": 10.0,
+                "flow_count": 2,
+                "bytes_sent": 4,
+                "bytes_received": 5
+              }
+            ],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "request_absent_and_empty_content",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 11,
+            "body": null
+          },
+          {
+            "hook": "request",
+            "now": 12,
+            "body": ""
+          },
+          {
+            "hook": "get_stats",
+            "now": 12
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 11
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 12
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 2,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 12
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 2, \"active_connections\": 1, \"connections\": [{\"domain\": \"owned.invalid\", \"flows\": 2, \"age_s\": 2, \"bytes_sent\": 0, \"bytes_received\": 0}], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 2,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "request_decode_failure_before_periodic",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 60,
+            "host": "failed.invalid",
+            "encoding": "invalid_gzip"
+          },
+          {
+            "hook": "get_stats",
+            "now": 60
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": "ValueError",
+          "timeline": [
+            "request.content"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "failed.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 60
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 1, \"connections\": [{\"domain\": \"failed.invalid\", \"flows\": 1, \"age_s\": 50, \"bytes_sent\": 0, \"bytes_received\": 0}], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "failed.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "unknown_request_skips_decode_but_emits_periodic",
+        "steps": [
+          {
+            "hook": "request",
+            "now": 60,
+            "encoding": "invalid_gzip"
+          },
+          {
+            "hook": "get_stats",
+            "now": 60
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 60
+            },
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            "put_event:ops.memory"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 60,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 60
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 60,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 0,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "RSS 1.2MB, 0 conns, 1 flows",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_mb": 1.2,
+              "rss_hwm_mb": 2.5,
+              "rss_start_mb": 0.0,
+              "active_connections": 0,
+              "active_websockets": 0,
+              "total_flows": 1,
+              "top_connections": []
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 60,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "response_decode_failure_preserves_prior_bytes",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 11,
+            "body": "abc"
+          },
+          {
+            "hook": "response",
+            "now": 12,
+            "body": "ok"
+          },
+          {
+            "hook": "response",
+            "now": 12.5,
+            "body": null
+          },
+          {
+            "hook": "response",
+            "now": 13,
+            "encoding": "invalid_gzip"
+          },
+          {
+            "hook": "get_stats",
+            "now": 13
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 11
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "response",
+          "error_class": null,
+          "timeline": [
+            "response.content"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 2
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "response",
+          "error_class": null,
+          "timeline": [
+            "response.content"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 2
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "response",
+          "error_class": "ValueError",
+          "timeline": [
+            "response.content"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 2
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 13
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 1, \"connections\": [{\"domain\": \"owned.invalid\", \"flows\": 1, \"age_s\": 3, \"bytes_sent\": 3, \"bytes_received\": 2}], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 2
+              }
+            ],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "streamed_responses_skip_decode",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 11,
+            "body": "abc"
+          },
+          {
+            "hook": "response",
+            "now": 12,
+            "encoding": "invalid_gzip",
+            "stream": true
+          },
+          {
+            "hook": "response",
+            "now": 13,
+            "encoding": "invalid_gzip",
+            "stream": "callable"
+          },
+          {
+            "hook": "get_stats",
+            "now": 13
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 11
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "response",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "response",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 13
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 1, \"connections\": [{\"domain\": \"owned.invalid\", \"flows\": 1, \"age_s\": 3, \"bytes_sent\": 3, \"bytes_received\": 0}], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "absent_and_unknown_response_skip_decode",
+        "steps": [
+          {
+            "hook": "response",
+            "now": 10.0,
+            "absent": true
+          },
+          {
+            "hook": "response",
+            "now": 11,
+            "encoding": "invalid_gzip"
+          },
+          {
+            "hook": "get_stats",
+            "now": 11
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "response",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "response",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 11
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 0, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "periodic_boundary_and_clock_rollback",
+        "steps": [
+          {
+            "hook": "running",
+            "now": 1000
+          },
+          {
+            "hook": "client_connected",
+            "now": 1000
+          },
+          {
+            "hook": "request",
+            "now": 1059.999
+          },
+          {
+            "hook": "request",
+            "now": 1060
+          },
+          {
+            "hook": "request",
+            "now": 1180
+          },
+          {
+            "hook": "request",
+            "now": 1180
+          },
+          {
+            "hook": "request",
+            "now": 1170
+          },
+          {
+            "hook": "request",
+            "now": 1239.999
+          },
+          {
+            "hook": "request",
+            "now": 1240
+          },
+          {
+            "hook": "get_stats",
+            "now": 1240
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "running",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 1000
+            },
+            {
+              "time": 1000
+            },
+            "put_event:ops.startup"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1000,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 1000
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1000,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 1000,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 1059.999
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1000,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 1060
+            },
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            "put_event:ops.memory"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1060,
+            "total_flows": 2,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 1180
+            },
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            "put_event:ops.memory"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1180,
+            "total_flows": 3,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 3,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 1180
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1180,
+            "total_flows": 4,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 4,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 1170
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1180,
+            "total_flows": 5,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 5,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 1239.999
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1180,
+            "total_flows": 6,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 6,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 1240
+            },
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            "put_event:ops.memory"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1240,
+            "total_flows": 7,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 7,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 1240
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 1.2, \"uptime_s\": 240, \"total_flows\": 7, \"active_connections\": 1, \"connections\": [{\"domain\": \"owned.invalid\", \"flows\": 7, \"age_s\": 240, \"bytes_sent\": 0, \"bytes_received\": 0}], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1240,
+            "total_flows": 7,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 7,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 0,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.startup",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "Memory monitor started (baseline RSS: 1 MB)",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_start_mb": 1.2
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1000,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "step": 3,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "RSS 1.2MB, 1 conns, 2 flows",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_mb": 1.2,
+              "rss_hwm_mb": 2.5,
+              "rss_start_mb": 1.2,
+              "active_connections": 1,
+              "active_websockets": 0,
+              "total_flows": 2,
+              "top_connections": [
+                {
+                  "domain": "owned.invalid",
+                  "flows": 2,
+                  "age_s": 60
+                }
+              ]
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1060,
+            "total_flows": 2,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "step": 4,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "RSS 1.2MB, 1 conns, 3 flows",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_mb": 1.2,
+              "rss_hwm_mb": 2.5,
+              "rss_start_mb": 1.2,
+              "active_connections": 1,
+              "active_websockets": 0,
+              "total_flows": 3,
+              "top_connections": [
+                {
+                  "domain": "owned.invalid",
+                  "flows": 3,
+                  "age_s": 180
+                }
+              ]
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1180,
+            "total_flows": 3,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 3,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "step": 8,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "RSS 1.2MB, 1 conns, 7 flows",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_mb": 1.2,
+              "rss_hwm_mb": 2.5,
+              "rss_start_mb": 1.2,
+              "active_connections": 1,
+              "active_websockets": 0,
+              "total_flows": 7,
+              "top_connections": [
+                {
+                  "domain": "owned.invalid",
+                  "flows": 7,
+                  "age_s": 240
+                }
+              ]
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 1000,
+            "last_event_time": 1240,
+            "total_flows": 7,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 1000,
+                "flow_count": 7,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "periodic_submit_failure_consumes_interval",
+        "steps": [
+          {
+            "hook": "running",
+            "now": 10.0
+          },
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 70,
+            "body": "counted",
+            "audit_error": "RuntimeError"
+          },
+          {
+            "hook": "request",
+            "now": 71
+          },
+          {
+            "hook": "request",
+            "now": 130
+          },
+          {
+            "hook": "get_stats",
+            "now": 130
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "running",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 10.0
+            },
+            {
+              "time": 10.0
+            },
+            "put_event:ops.startup"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 10.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 10.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": "RuntimeError",
+          "timeline": [
+            "request.content",
+            {
+              "time": 70
+            },
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            "put_event:ops.memory"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 70,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 7,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 71
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 70,
+            "total_flows": 2,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 2,
+                "bytes_sent": 7,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 130
+            },
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            "put_event:ops.memory"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 130,
+            "total_flows": 3,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 3,
+                "bytes_sent": 7,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 130
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 1.2, \"uptime_s\": 120, \"total_flows\": 3, \"active_connections\": 1, \"connections\": [{\"domain\": \"owned.invalid\", \"flows\": 3, \"age_s\": 120, \"bytes_sent\": 7, \"bytes_received\": 0}], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 130,
+            "total_flows": 3,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 3,
+                "bytes_sent": 7,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 0,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.startup",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "Memory monitor started (baseline RSS: 1 MB)",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_start_mb": 1.2
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 10.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "RSS 1.2MB, 1 conns, 1 flows",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_mb": 1.2,
+              "rss_hwm_mb": 2.5,
+              "rss_start_mb": 1.2,
+              "active_connections": 1,
+              "active_websockets": 0,
+              "total_flows": 1,
+              "top_connections": [
+                {
+                  "domain": "owned.invalid",
+                  "flows": 1,
+                  "age_s": 60
+                }
+              ]
+            }
+          },
+          "accepted": false,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 70,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 7,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "step": 4,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "RSS 1.2MB, 1 conns, 3 flows",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_mb": 1.2,
+              "rss_hwm_mb": 2.5,
+              "rss_start_mb": 1.2,
+              "active_connections": 1,
+              "active_websockets": 0,
+              "total_flows": 3,
+              "top_connections": [
+                {
+                  "domain": "owned.invalid",
+                  "flows": 3,
+                  "age_s": 120
+                }
+              ]
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 10.0,
+            "last_event_time": 130,
+            "total_flows": 3,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 3,
+                "bytes_sent": 7,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "empty_and_unknown_disconnect_no_event",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "client_disconnected",
+            "now": 20
+          },
+          {
+            "hook": "client_disconnected",
+            "now": 21
+          },
+          {
+            "hook": "get_stats",
+            "now": 21
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "client_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "client_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 21
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 0, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "disconnect_sanitizes_summary_and_truncates_negative_age",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 20.9
+          },
+          {
+            "hook": "request",
+            "now": 10,
+            "host": "owned.invalid\n\u001b[31m",
+            "body": "abc"
+          },
+          {
+            "hook": "response",
+            "now": 10,
+            "body": "reply"
+          },
+          {
+            "hook": "client_disconnected",
+            "now": 19.4
+          },
+          {
+            "hook": "get_stats",
+            "now": 19.4
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 20.9
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 20.9,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 10
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid\n\u001b[31m",
+                "started": 20.9,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "response",
+          "error_class": null,
+          "timeline": [
+            "response.content"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid\n\u001b[31m",
+                "started": 20.9,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 5
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "client_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 19.4
+            },
+            "put_event:ops.memory.conn_closed"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 19.4
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 3,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory.conn_closed",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "Connection closed: owned.invalid? (1 flows, -1s)",
+            "addon": "memory-monitor",
+            "host": "owned.invalid\n\u001b[31m",
+            "details": {
+              "flow_count": 1,
+              "lifetime_s": -1,
+              "bytes_sent": 3,
+              "bytes_received": 5
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "disconnect_submit_error_removes_before_attempt",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 11,
+            "body": "abc"
+          },
+          {
+            "hook": "client_disconnected",
+            "now": 20,
+            "audit_error": "OSError"
+          },
+          {
+            "hook": "client_disconnected",
+            "now": 21
+          },
+          {
+            "hook": "get_stats",
+            "now": 21
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 11
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "client_disconnected",
+          "error_class": "OSError",
+          "timeline": [
+            {
+              "time": 20
+            },
+            "put_event:ops.memory.conn_closed"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "client_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 21
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory.conn_closed",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "Connection closed: owned.invalid (1 flows, 10s)",
+            "addon": "memory-monitor",
+            "host": "owned.invalid",
+            "details": {
+              "flow_count": 1,
+              "lifetime_s": 10,
+              "bytes_sent": 3,
+              "bytes_received": 0
+            }
+          },
+          "accepted": false,
+          "state_at_submit": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "websocket_counts_messages_without_bytes",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 11,
+            "body": "abc"
+          },
+          {
+            "hook": "response",
+            "now": 12,
+            "body": "four"
+          },
+          {
+            "hook": "websocket_start",
+            "now": 13,
+            "host": "socket.invalid"
+          },
+          {
+            "hook": "websocket_message",
+            "now": 14
+          },
+          {
+            "hook": "websocket_message",
+            "now": 15
+          },
+          {
+            "hook": "get_stats",
+            "now": 16
+          },
+          {
+            "hook": "websocket_end",
+            "now": 20
+          },
+          {
+            "hook": "client_disconnected",
+            "now": 21
+          },
+          {
+            "hook": "get_stats",
+            "now": 21
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 11
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "response",
+          "error_class": null,
+          "timeline": [
+            "response.content"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 4
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "websocket_start",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 13
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 4
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "socket.invalid",
+                "started": 13,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_message",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 4
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "socket.invalid",
+                "started": 13,
+                "message_count": 1
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_message",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 4
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "socket.invalid",
+                "started": 13,
+                "message_count": 2
+              }
+            ]
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 16
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 1, \"connections\": [{\"domain\": \"owned.invalid\", \"flows\": 1, \"age_s\": 6, \"bytes_sent\": 3, \"bytes_received\": 4}], \"active_websockets\": 1, \"websockets\": [{\"domain\": \"socket.invalid\", \"messages\": 2, \"age_s\": 3}]}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 4
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "socket.invalid",
+                "started": 13,
+                "message_count": 2
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_end",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 20
+            },
+            "put_event:ops.memory.ws_closed"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 4
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "client_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 21
+            },
+            "put_event:ops.memory.conn_closed"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 21
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 7,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory.ws_closed",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "WebSocket closed: socket.invalid (2 msgs, 7s)",
+            "addon": "memory-monitor",
+            "host": "socket.invalid",
+            "details": {
+              "message_count": 2,
+              "lifetime_s": 7
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 4
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "step": 8,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory.conn_closed",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "Connection closed: owned.invalid (1 flows, 11s)",
+            "addon": "memory-monitor",
+            "host": "owned.invalid",
+            "details": {
+              "flow_count": 1,
+              "lifetime_s": 11,
+              "bytes_sent": 3,
+              "bytes_received": 4
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "missing_websocket_edges_and_independent_cleanup",
+        "steps": [
+          {
+            "hook": "websocket_message",
+            "now": 10.0
+          },
+          {
+            "hook": "websocket_end",
+            "now": 11
+          },
+          {
+            "hook": "websocket_start",
+            "now": 12
+          },
+          {
+            "hook": "client_disconnected",
+            "now": 13
+          },
+          {
+            "hook": "get_stats",
+            "now": 14
+          },
+          {
+            "hook": "websocket_end",
+            "now": 15
+          },
+          {
+            "hook": "get_stats",
+            "now": 15
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "websocket_message",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "websocket_end",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "websocket_start",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 12
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "client_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 14
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 0, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 1, \"websockets\": [{\"domain\": \"owned.invalid\", \"messages\": 0, \"age_s\": 2}]}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_end",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 15
+            },
+            "put_event:ops.memory.ws_closed"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 15
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 0, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 5,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory.ws_closed",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "WebSocket closed: owned.invalid (0 msgs, 3s)",
+            "addon": "memory-monitor",
+            "host": "owned.invalid",
+            "details": {
+              "message_count": 0,
+              "lifetime_s": 3
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "duplicate_lifecycle_replaces_records",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 11,
+            "body": "abc"
+          },
+          {
+            "hook": "websocket_start",
+            "now": 12
+          },
+          {
+            "hook": "websocket_message",
+            "now": 13
+          },
+          {
+            "hook": "client_connected",
+            "now": 14,
+            "client": "peer"
+          },
+          {
+            "hook": "websocket_start",
+            "now": 14,
+            "client": "peer",
+            "host": "peer.invalid"
+          },
+          {
+            "hook": "client_connected",
+            "now": 14
+          },
+          {
+            "hook": "websocket_start",
+            "now": 15,
+            "host": "replacement.invalid"
+          },
+          {
+            "hook": "websocket_message",
+            "now": 16
+          },
+          {
+            "hook": "get_stats",
+            "now": 17
+          },
+          {
+            "hook": "websocket_end",
+            "now": 18
+          },
+          {
+            "hook": "client_disconnected",
+            "now": 19
+          },
+          {
+            "hook": "get_stats",
+            "now": 19
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 11
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "websocket_start",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 12
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_message",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 1
+              }
+            ]
+          }
+        },
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 14
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              },
+              {
+                "id": "peer",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 1
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_start",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 14
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 3,
+                "bytes_received": 0
+              },
+              {
+                "id": "peer",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 1
+              },
+              {
+                "id": "peer",
+                "domain": "peer.invalid",
+                "started": 14,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 14
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "peer",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 12,
+                "message_count": 1
+              },
+              {
+                "id": "peer",
+                "domain": "peer.invalid",
+                "started": 14,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_start",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 15
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "peer",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "replacement.invalid",
+                "started": 15,
+                "message_count": 0
+              },
+              {
+                "id": "peer",
+                "domain": "peer.invalid",
+                "started": 14,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_message",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "peer",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "replacement.invalid",
+                "started": 15,
+                "message_count": 1
+              },
+              {
+                "id": "peer",
+                "domain": "peer.invalid",
+                "started": 14,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 17
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 2, \"connections\": [{\"domain\": \"(unknown)\", \"flows\": 0, \"age_s\": 3, \"bytes_sent\": 0, \"bytes_received\": 0}, {\"domain\": \"(unknown)\", \"flows\": 0, \"age_s\": 3, \"bytes_sent\": 0, \"bytes_received\": 0}], \"active_websockets\": 2, \"websockets\": [{\"domain\": \"replacement.invalid\", \"messages\": 1, \"age_s\": 2}, {\"domain\": \"peer.invalid\", \"messages\": 0, \"age_s\": 3}]}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "peer",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "replacement.invalid",
+                "started": 15,
+                "message_count": 1
+              },
+              {
+                "id": "peer",
+                "domain": "peer.invalid",
+                "started": 14,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_end",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 18
+            },
+            "put_event:ops.memory.ws_closed"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "peer",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "peer",
+                "domain": "peer.invalid",
+                "started": 14,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "client_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "peer",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "peer",
+                "domain": "peer.invalid",
+                "started": 14,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 19
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 1, \"connections\": [{\"domain\": \"(unknown)\", \"flows\": 0, \"age_s\": 5, \"bytes_sent\": 0, \"bytes_received\": 0}], \"active_websockets\": 1, \"websockets\": [{\"domain\": \"peer.invalid\", \"messages\": 0, \"age_s\": 5}]}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "peer",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "peer",
+                "domain": "peer.invalid",
+                "started": 14,
+                "message_count": 0
+              }
+            ]
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 10,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory.ws_closed",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "WebSocket closed: replacement.invalid (1 msgs, 3s)",
+            "addon": "memory-monitor",
+            "host": "replacement.invalid",
+            "details": {
+              "message_count": 1,
+              "lifetime_s": 3
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "peer",
+                "domain": null,
+                "started": 14,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "peer",
+                "domain": "peer.invalid",
+                "started": 14,
+                "message_count": 0
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "websocket_end_submit_error_removes_before_attempt",
+        "steps": [
+          {
+            "hook": "websocket_start",
+            "now": 20.9
+          },
+          {
+            "hook": "websocket_message",
+            "now": 21
+          },
+          {
+            "hook": "websocket_end",
+            "now": 19.4,
+            "audit_error": "RuntimeError"
+          },
+          {
+            "hook": "websocket_end",
+            "now": 22
+          },
+          {
+            "hook": "get_stats",
+            "now": 22
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "websocket_start",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 20.9
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 20.9,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_message",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 20.9,
+                "message_count": 1
+              }
+            ]
+          }
+        },
+        {
+          "hook": "websocket_end",
+          "error_class": "RuntimeError",
+          "timeline": [
+            {
+              "time": 19.4
+            },
+            "put_event:ops.memory.ws_closed"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "websocket_end",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 22
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 0, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory.ws_closed",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "WebSocket closed: owned.invalid (1 msgs, -1s)",
+            "addon": "memory-monitor",
+            "host": "owned.invalid",
+            "details": {
+              "message_count": 1,
+              "lifetime_s": -1
+            }
+          },
+          "accepted": false,
+          "state_at_submit": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "stable_top_ten_and_uncapped_websocket_order",
+        "steps": [
+          {
+            "hook": "populate",
+            "now": 10,
+            "counts": [
+              2,
+              1,
+              2,
+              0,
+              3,
+              3,
+              1,
+              0,
+              4,
+              4,
+              2,
+              1
+            ]
+          },
+          {
+            "hook": "request",
+            "now": 60,
+            "client": "untracked"
+          },
+          {
+            "hook": "get_stats",
+            "now": 61
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "populate",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            },
+            "request.content",
+            {
+              "time": 10
+            },
+            {
+              "time": 10
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 23,
+            "connections": [
+              {
+                "id": "c0",
+                "domain": "h0.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c1",
+                "domain": "h1.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c2",
+                "domain": "h2.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c3",
+                "domain": null,
+                "started": 10,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c4",
+                "domain": "h4.invalid",
+                "started": 10,
+                "flow_count": 3,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c5",
+                "domain": "h5.invalid",
+                "started": 10,
+                "flow_count": 3,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c6",
+                "domain": "h6.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c7",
+                "domain": null,
+                "started": 10,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c8",
+                "domain": "h8.invalid",
+                "started": 10,
+                "flow_count": 4,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c9",
+                "domain": "h9.invalid",
+                "started": 10,
+                "flow_count": 4,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c10",
+                "domain": "h10.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c11",
+                "domain": "h11.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "c0",
+                "domain": "h0.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c1",
+                "domain": "h1.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c2",
+                "domain": "h2.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c3",
+                "domain": "h3.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c4",
+                "domain": "h4.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c5",
+                "domain": "h5.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c6",
+                "domain": "h6.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c7",
+                "domain": "h7.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c8",
+                "domain": "h8.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c9",
+                "domain": "h9.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c10",
+                "domain": "h10.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c11",
+                "domain": "h11.invalid",
+                "started": 10,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 60
+            },
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            "put_event:ops.memory"
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 60,
+            "total_flows": 24,
+            "connections": [
+              {
+                "id": "c0",
+                "domain": "h0.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c1",
+                "domain": "h1.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c2",
+                "domain": "h2.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c3",
+                "domain": null,
+                "started": 10,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c4",
+                "domain": "h4.invalid",
+                "started": 10,
+                "flow_count": 3,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c5",
+                "domain": "h5.invalid",
+                "started": 10,
+                "flow_count": 3,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c6",
+                "domain": "h6.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c7",
+                "domain": null,
+                "started": 10,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c8",
+                "domain": "h8.invalid",
+                "started": 10,
+                "flow_count": 4,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c9",
+                "domain": "h9.invalid",
+                "started": 10,
+                "flow_count": 4,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c10",
+                "domain": "h10.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c11",
+                "domain": "h11.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "c0",
+                "domain": "h0.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c1",
+                "domain": "h1.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c2",
+                "domain": "h2.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c3",
+                "domain": "h3.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c4",
+                "domain": "h4.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c5",
+                "domain": "h5.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c6",
+                "domain": "h6.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c7",
+                "domain": "h7.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c8",
+                "domain": "h8.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c9",
+                "domain": "h9.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c10",
+                "domain": "h10.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c11",
+                "domain": "h11.invalid",
+                "started": 10,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 61
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 24, \"active_connections\": 12, \"connections\": [{\"domain\": \"h8.invalid\", \"flows\": 4, \"age_s\": 51, \"bytes_sent\": 0, \"bytes_received\": 0}, {\"domain\": \"h9.invalid\", \"flows\": 4, \"age_s\": 51, \"bytes_sent\": 0, \"bytes_received\": 0}, {\"domain\": \"h4.invalid\", \"flows\": 3, \"age_s\": 51, \"bytes_sent\": 0, \"bytes_received\": 0}, {\"domain\": \"h5.invalid\", \"flows\": 3, \"age_s\": 51, \"bytes_sent\": 0, \"bytes_received\": 0}, {\"domain\": \"h0.invalid\", \"flows\": 2, \"age_s\": 51, \"bytes_sent\": 0, \"bytes_received\": 0}, {\"domain\": \"h2.invalid\", \"flows\": 2, \"age_s\": 51, \"bytes_sent\": 0, \"bytes_received\": 0}, {\"domain\": \"h10.invalid\", \"flows\": 2, \"age_s\": 51, \"bytes_sent\": 0, \"bytes_received\": 0}, {\"domain\": \"h1.invalid\", \"flows\": 1, \"age_s\": 51, \"bytes_sent\": 0, \"bytes_received\": 0}, {\"domain\": \"h6.invalid\", \"flows\": 1, \"age_s\": 51, \"bytes_sent\": 0, \"bytes_received\": 0}, {\"domain\": \"h11.invalid\", \"flows\": 1, \"age_s\": 51, \"bytes_sent\": 0, \"bytes_received\": 0}], \"active_websockets\": 12, \"websockets\": [{\"domain\": \"h0.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h1.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h2.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h3.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h4.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h5.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h6.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h7.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h8.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h9.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h10.invalid\", \"messages\": 0, \"age_s\": 51}, {\"domain\": \"h11.invalid\", \"messages\": 0, \"age_s\": 51}]}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 60,
+            "total_flows": 24,
+            "connections": [
+              {
+                "id": "c0",
+                "domain": "h0.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c1",
+                "domain": "h1.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c2",
+                "domain": "h2.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c3",
+                "domain": null,
+                "started": 10,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c4",
+                "domain": "h4.invalid",
+                "started": 10,
+                "flow_count": 3,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c5",
+                "domain": "h5.invalid",
+                "started": 10,
+                "flow_count": 3,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c6",
+                "domain": "h6.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c7",
+                "domain": null,
+                "started": 10,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c8",
+                "domain": "h8.invalid",
+                "started": 10,
+                "flow_count": 4,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c9",
+                "domain": "h9.invalid",
+                "started": 10,
+                "flow_count": 4,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c10",
+                "domain": "h10.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c11",
+                "domain": "h11.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "c0",
+                "domain": "h0.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c1",
+                "domain": "h1.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c2",
+                "domain": "h2.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c3",
+                "domain": "h3.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c4",
+                "domain": "h4.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c5",
+                "domain": "h5.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c6",
+                "domain": "h6.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c7",
+                "domain": "h7.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c8",
+                "domain": "h8.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c9",
+                "domain": "h9.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c10",
+                "domain": "h10.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c11",
+                "domain": "h11.invalid",
+                "started": 10,
+                "message_count": 0
+              }
+            ]
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.memory",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "RSS 1.2MB, 12 conns, 24 flows",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_mb": 1.2,
+              "rss_hwm_mb": 2.5,
+              "rss_start_mb": 0.0,
+              "active_connections": 12,
+              "active_websockets": 12,
+              "total_flows": 24,
+              "top_connections": [
+                {
+                  "domain": "h8.invalid",
+                  "flows": 4,
+                  "age_s": 50
+                },
+                {
+                  "domain": "h9.invalid",
+                  "flows": 4,
+                  "age_s": 50
+                },
+                {
+                  "domain": "h4.invalid",
+                  "flows": 3,
+                  "age_s": 50
+                },
+                {
+                  "domain": "h5.invalid",
+                  "flows": 3,
+                  "age_s": 50
+                },
+                {
+                  "domain": "h0.invalid",
+                  "flows": 2,
+                  "age_s": 50
+                },
+                {
+                  "domain": "h2.invalid",
+                  "flows": 2,
+                  "age_s": 50
+                },
+                {
+                  "domain": "h10.invalid",
+                  "flows": 2,
+                  "age_s": 50
+                },
+                {
+                  "domain": "h1.invalid",
+                  "flows": 1,
+                  "age_s": 50
+                },
+                {
+                  "domain": "h6.invalid",
+                  "flows": 1,
+                  "age_s": 50
+                },
+                {
+                  "domain": "h11.invalid",
+                  "flows": 1,
+                  "age_s": 50
+                }
+              ]
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 60,
+            "total_flows": 24,
+            "connections": [
+              {
+                "id": "c0",
+                "domain": "h0.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c1",
+                "domain": "h1.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c2",
+                "domain": "h2.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c3",
+                "domain": null,
+                "started": 10,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c4",
+                "domain": "h4.invalid",
+                "started": 10,
+                "flow_count": 3,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c5",
+                "domain": "h5.invalid",
+                "started": 10,
+                "flow_count": 3,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c6",
+                "domain": "h6.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c7",
+                "domain": null,
+                "started": 10,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c8",
+                "domain": "h8.invalid",
+                "started": 10,
+                "flow_count": 4,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c9",
+                "domain": "h9.invalid",
+                "started": 10,
+                "flow_count": 4,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c10",
+                "domain": "h10.invalid",
+                "started": 10,
+                "flow_count": 2,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              },
+              {
+                "id": "c11",
+                "domain": "h11.invalid",
+                "started": 10,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "c0",
+                "domain": "h0.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c1",
+                "domain": "h1.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c2",
+                "domain": "h2.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c3",
+                "domain": "h3.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c4",
+                "domain": "h4.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c5",
+                "domain": "h5.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c6",
+                "domain": "h6.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c7",
+                "domain": "h7.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c8",
+                "domain": "h8.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c9",
+                "domain": "h9.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c10",
+                "domain": "h10.invalid",
+                "started": 10,
+                "message_count": 0
+              },
+              {
+                "id": "c11",
+                "domain": "h11.invalid",
+                "started": 10,
+                "message_count": 0
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "zero_start_and_negative_clock_ages",
+        "steps": [
+          {
+            "hook": "running",
+            "now": 0
+          },
+          {
+            "hook": "client_connected",
+            "now": 20
+          },
+          {
+            "hook": "websocket_start",
+            "now": 20
+          },
+          {
+            "hook": "request",
+            "now": 10
+          },
+          {
+            "hook": "get_stats",
+            "now": 9.5
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "running",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 0
+            },
+            {
+              "time": 0
+            },
+            "put_event:ops.startup"
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 0,
+            "last_event_time": 0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 20
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 0,
+            "last_event_time": 0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 20,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "websocket_start",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 20
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 0,
+            "last_event_time": 0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 20,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 20,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 10
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 0,
+            "last_event_time": 0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 20,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 20,
+                "message_count": 0
+              }
+            ]
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 9.5
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 1.2, \"uptime_s\": 0, \"total_flows\": 1, \"active_connections\": 1, \"connections\": [{\"domain\": \"owned.invalid\", \"flows\": 1, \"age_s\": -10, \"bytes_sent\": 0, \"bytes_received\": 0}], \"active_websockets\": 1, \"websockets\": [{\"domain\": \"owned.invalid\", \"messages\": 0, \"age_s\": -10}]}",
+          "state_after": {
+            "rss_start_kb": 1280,
+            "started": 0,
+            "last_event_time": 0,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 20,
+                "flow_count": 1,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 20,
+                "message_count": 0
+              }
+            ]
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 0,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "ops.startup",
+            "kind": "ops",
+            "severity": "low",
+            "summary": "Memory monitor started (baseline RSS: 1 MB)",
+            "addon": "memory-monitor",
+            "details": {
+              "rss_start_mb": 1.2
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "rss_start_kb": 1280,
+            "started": 0,
+            "last_event_time": 0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "startup_sample_error_precedes_clock_state",
+        "steps": [
+          {
+            "hook": "running",
+            "now": 10.0,
+            "memory_error": "IndexError"
+          },
+          {
+            "hook": "get_stats",
+            "now": 10.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "running",
+          "error_class": "IndexError",
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 10.0
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 0, \"active_connections\": 0, \"connections\": [], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "periodic_sample_error_retains_counters_and_interval",
+        "steps": [
+          {
+            "hook": "client_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "request",
+            "now": 60,
+            "body": "counted",
+            "memory_error": "IndexError"
+          },
+          {
+            "hook": "request",
+            "now": 61
+          },
+          {
+            "hook": "get_stats",
+            "now": 61
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "client_connected",
+          "error_class": null,
+          "timeline": [
+            {
+              "time": 10.0
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 0.0,
+            "total_flows": 0,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": null,
+                "started": 10.0,
+                "flow_count": 0,
+                "bytes_sent": 0,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": "IndexError",
+          "timeline": [
+            "request.content",
+            {
+              "time": 60
+            },
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 60,
+            "total_flows": 1,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 1,
+                "bytes_sent": 7,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "timeline": [
+            "request.content",
+            {
+              "time": 61
+            }
+          ],
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 60,
+            "total_flows": 2,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 2,
+                "bytes_sent": 7,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "timeline": [
+            {
+              "sample_kb": [
+                1280,
+                2560
+              ]
+            },
+            {
+              "time": 61
+            }
+          ],
+          "stats_json": "{\"rss_mb\": 1.2, \"rss_hwm_mb\": 2.5, \"rss_start_mb\": 0.0, \"uptime_s\": 0, \"total_flows\": 2, \"active_connections\": 1, \"connections\": [{\"domain\": \"owned.invalid\", \"flows\": 2, \"age_s\": 51, \"bytes_sent\": 7, \"bytes_received\": 0}], \"active_websockets\": 0, \"websockets\": []}",
+          "state_after": {
+            "rss_start_kb": 0,
+            "started": 0.0,
+            "last_event_time": 60,
+            "total_flows": 2,
+            "connections": [
+              {
+                "id": "conn",
+                "domain": "owned.invalid",
+                "started": 10.0,
+                "flow_count": 2,
+                "bytes_sent": 7,
+                "bytes_received": 0
+              }
+            ],
+            "websockets": []
+          }
+        }
+      ],
+      "attempts": []
+    }
+  ],
+  "source_sha256": {
+    "cli/src/safeyolo/mitm_addons/memory_monitor.py": "daf0227cfe92e7843ce19d21c69ca8f52c1ca995fb02afd27bffd16d851bcb6b",
+    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
+    "tests/test_memory_monitor.py": "a48687731ad66149037e74ff7c5879c20a15796ea5a4815c4d3297637332c224"
+  }
+}
