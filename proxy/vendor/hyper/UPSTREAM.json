@@ -65,5 +65,49 @@
         "candidate_sha256": "9dd42f390a8dec4eb93913d3dc2ee63fab87121955b862f58509e22f553c57a9"
       }
     ]
+  },
+  "response_capture_patch": {
+    "base_commit": "33682df1e4a8c5ae113b3d4f141c77b7c52a8afc",
+    "scope": "Opt-in synchronous final-head/DATA copy sink on existing response-completion ownership. The application owns bounded capture and errors. Existing parser admission, body queue, cancellation/drain and completion result semantics remain unchanged.",
+    "api": "ext::on_response_complete_with_capture(&mut http::Request<B>, Arc<dyn ResponseBodyCapture>) -> ResponseCompletion",
+    "files": [
+      {
+        "path": "src/ext/response_completion.rs",
+        "base_sha256": "d01022009e3984c449fc4fb8f7afb5097f71e814332a4fcbf423f84c7647e2b0",
+        "candidate_sha256": "258d5605ece2e5b17964e4a6706f04f59f7ae9090c08dfb6aed8bf612c683e06"
+      },
+      {
+        "path": "src/ext/mod.rs",
+        "base_sha256": "62e156c5752032eb399d508a5762eee749791b58c81d88eb8aa1e5a9583d561e",
+        "candidate_sha256": "6c723f8d216c571889c5dea34b8f42fe1296331b792d6d5f663ff888cdbb1111"
+      },
+      {
+        "path": "src/proto/h1/conn.rs",
+        "base_sha256": "9dd42f390a8dec4eb93913d3dc2ee63fab87121955b862f58509e22f553c57a9",
+        "candidate_sha256": "40a7127f1151dbd4749ad8ade5db9286458eb46e43cb9cd42da7665dd67bd7c9"
+      }
+    ]
+  },
+  "request_completion_patch": {
+    "base_commit": "33682df1e4a8c5ae113b3d4f141c77b7c52a8afc",
+    "seed_response_patch_sha256": "b0d7ca9863c3a815ebc87a8dea618465bf5c25daf0396ee3876616556e6ef30b",
+    "scope": "Payload-free request EOM/abort observation at existing server receive validation transitions. No capture, draining, callbacks, framing/admission or flow-control changes. One bounded producer/receiver pair per live parsed request; private extension clones share a single takeable observer.",
+    "files": [
+      {
+        "path": "proxy/vendor/hyper/src/ext/mod.rs",
+        "base_sha256": "6c723f8d216c571889c5dea34b8f42fe1296331b792d6d5f663ff888cdbb1111",
+        "candidate_sha256": "3beafc3ffdea0ecfcb74a802bebc1a81167a426cf76ffdc89554c350ebce8d26"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/ext/request_completion.rs",
+        "base_sha256": null,
+        "candidate_sha256": "fa4742407f4dbf1b94d7834782a13f90a445024f31ddccfdc5cc4d2343e1e144"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/proto/h1/conn.rs",
+        "base_sha256": "40a7127f1151dbd4749ad8ade5db9286458eb46e43cb9cd42da7665dd67bd7c9",
+        "candidate_sha256": "83cbc4c5ba611a56e780cd95846df9d97b9eec5ee1b278b36f7edd1b586f509d"
+      }
+    ]
   }
 }

@@ -32,6 +32,7 @@ mod model_json;
 mod sensor_config;
 mod source;
 mod stats;
+mod test_context_targets;
 use baseline::{Baseline, Builder as BaselineBuilder};
 pub use budgets::{BudgetResetError, BudgetStatsError};
 use source::{ParsedPolicy, TemporalEntry};
@@ -304,6 +305,7 @@ pub enum Addon {
     NetworkGuard,
     CredentialGuard,
     CircuitBreaker,
+    SseStreaming,
 }
 impl Addon {
     fn index(self) -> usize {
@@ -311,11 +313,17 @@ impl Addon {
             Self::NetworkGuard => 0,
             Self::CredentialGuard => 1,
             Self::CircuitBreaker => 2,
+            Self::SseStreaming => 3,
         }
     }
 }
-const ADDON_COUNT: usize = 3;
-const ADDON_NAMES: [&str; ADDON_COUNT] = ["network_guard", "credential_guard", "circuit_breaker"];
+const ADDON_COUNT: usize = 4;
+const ADDON_NAMES: [&str; ADDON_COUNT] = [
+    "network_guard",
+    "credential_guard",
+    "circuit_breaker",
+    "sse_streaming",
+];
 
 #[derive(Clone, Default, Debug)]
 struct Override {

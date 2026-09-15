@@ -113,6 +113,7 @@ pub(super) struct Stream {
     pub pending_push_promises: store::Queue<NextAccept>,
 
     /// Optional validated response completion, independent of receive buffering.
+    pub request_completion: Option<crate::ext::RequestCompletionProducer>,
     pub response_completion: Option<crate::ext::ResponseCompletionProducer>,
     pub response_status: Option<http::StatusCode>,
 
@@ -198,9 +199,19 @@ impl Stream {
             push_task: None,
             pending_push_promises: store::Queue::new(),
             content_length: ContentLength::Omitted,
+            request_completion: None,
             response_completion: None,
             response_status: None,
         }
+    }
+
+    pub(super) fn complete_request(&mut self) {
+        if let Some(producer) = self.request_completion.take() {
+            producer.complete();
+        }
+    }
+    pub(super) fn abort_request(&mut self) {
+        self.request_completion = None;
     }
 
     pub(super) fn complete_response(&mut self) {
@@ -405,6 +416,7 @@ impl Stream {
     /// Notify the send, receive, and push tasks, if they exist.
     pub(super) fn set_reset(&mut self, reason: Reason, initiator: Initiator) {
         self.abort_response();
+        self.abort_request();
         self.state.set_reset(self.id, reason, initiator);
         self.notify_send();
         self.notify_push();

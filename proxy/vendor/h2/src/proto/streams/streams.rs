@@ -1578,6 +1578,7 @@ impl OpaqueStreamRef {
 
         let mut stream = me.store.resolve(self.key);
         stream.abort_response();
+        stream.abort_request();
         stream.is_recv = false;
         me.actions
             .recv

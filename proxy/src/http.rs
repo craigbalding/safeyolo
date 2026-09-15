@@ -25,6 +25,9 @@ use crate::tunnels::{self, BoxStream, Protocol};
 use crate::{ConnectionIdentity, Error, Runtime, RuntimeState, UpgradeTasks, is_reserved};
 
 mod circuit_completion;
+mod request_body;
+mod request_context;
+mod test_context;
 
 pub(crate) type Body = BoxBody<Bytes, Error>;
 
@@ -65,6 +68,37 @@ fn prior_block(mut response: Response<Body>) -> Response<Body> {
 struct UpstreamBody {
     body: Incoming,
     _connection: HttpTask,
+}
+
+/// Apply validated request effects before releasing its terminal bytes to the
+/// origin. The parser observer supplies success; body frames only prompt a check.
+struct ForwardedRequestBody {
+    body: Body,
+    completion: Arc<circuit_completion::Completion>,
+}
+
+impl HttpBody for ForwardedRequestBody {
+    type Data = Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
+        let this = self.get_mut();
+        let _ = this.completion.try_finish();
+        let frame = Pin::new(&mut this.body).poll_frame(cx);
+        let _ = this.completion.try_finish();
+        frame
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body.size_hint()
+    }
 }
 
 impl HttpBody for UpstreamBody {
@@ -1171,6 +1205,22 @@ async fn forward(
     if let Some(reply) = circuit_block {
         return Ok((prior_block(reply), "deny".into()));
     }
+    let context = match request_context::prepare(
+        runtime.clone(),
+        identity,
+        request_id,
+        &mut request,
+        destination,
+    )? {
+        request_context::Admission::Inactive => None,
+        request_context::Admission::Block(reply) => {
+            return Ok((prior_block(reply), "deny".into()));
+        }
+        request_context::Admission::Pending(context) => Some(context),
+    };
+    // The parser's initial size hint supplies source buffering classification,
+    // including framing fields removed by header hygiene. It never proves EOM.
+    let content_length = request.body().size_hint().exact();
     let websocket = if hygiene.websocket {
         if upgrades.is_none() {
             return Ok((
@@ -1211,6 +1261,20 @@ async fn forward(
     request
         .headers_mut()
         .append(header::VIA, format!("1.1 {}", runtime.via_token).parse()?);
+    let (parts, body) = request.into_parts();
+    let (body, context) = match context {
+        Some(context) => {
+            // Complete source-small requests before origin contact. A streamed
+            // request keeps its independent parser observer in the HTTP driver.
+            let (body, context) = context.buffer(body, content_length).await?;
+            (body, Some(context))
+        }
+        None => (
+            body.map_err(|error| -> Error { Box::new(error) }).boxed(),
+            None,
+        ),
+    };
+    let mut request = Request::from_parts(parts, body);
     let outbound = open_outbound(
         &runtime,
         &AllowedRequest {
@@ -1240,7 +1304,12 @@ async fn forward(
         identity.clone(),
         request_id.to_owned(),
         destination.policy_host.clone(),
+        context,
     );
+    let mut request = request.map(|body| ForwardedRequestBody {
+        body,
+        completion: completion.clone(),
+    });
     let (mut upstream, connection) = if outbound.http2 {
         // :authority carries the admitted destination. Avoid retaining a second
         // authority representation while translating a proxied request.
@@ -1276,7 +1345,9 @@ async fn forward(
         };
         (sender.send_request(request).await?, connection)
     };
-    if completion.try_finish() == Some(true) || circuit_evidence_failed {
+    completion.headers_received();
+    let _ = completion.try_finish();
+    if completion.evidence_failed() || circuit_evidence_failed {
         upstream
             .headers_mut()
             .insert("x-safeyolo-evidence-error", "true".parse()?);
@@ -1466,7 +1537,7 @@ pub(crate) fn serve_request(
             } else if destination.as_ref().is_ok_and(|d| is_reserved(&d.host)) {
                 "local_endpoint"
             } else if runtime.policy.is_some() && !connect {
-                "native_network_guard_and_circuits"
+                "native_network_guard_circuits_and_test_context"
             } else if runtime.policy.is_some() {
                 "native_network_guard_only"
             } else {

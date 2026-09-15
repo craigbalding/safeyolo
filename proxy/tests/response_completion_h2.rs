@@ -69,7 +69,8 @@ async fn read_frame(socket: &mut TcpStream) -> io::Result<(u8, u8, u32, Vec<u8>)
 struct Command {
     frames: Vec<Vec<u8>>,
     barrier: bool,
-    done: oneshot::Sender<()>,
+    goaway: bool,
+    done: oneshot::Sender<Option<u32>>,
 }
 struct Peer {
     tx: Option<mpsc::Sender<Command>>,
@@ -111,6 +112,19 @@ impl Peer {
                         return;
                     }
                 }
+                if command.goaway {
+                    loop {
+                        let (kind, _, stream, payload) = read_frame(&mut socket).await.unwrap();
+                        if kind == 7 {
+                            assert_eq!(stream, 0);
+                            assert!(payload.len() >= 8);
+                            let code = u32::from_be_bytes(payload[4..8].try_into().unwrap());
+                            let _ = command.done.send(Some(code));
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 if command.barrier {
                     socket.write_all(&frame(6, 0, b"barrier!")).await.unwrap();
                     loop {
@@ -122,7 +136,7 @@ impl Peer {
                         }
                     }
                 }
-                let _ = command.done.send(());
+                let _ = command.done.send(None);
             }
         });
         let socket = TcpStream::connect(address).await.unwrap();
@@ -142,6 +156,14 @@ impl Peer {
             .unwrap();
     }
     async fn send(&self, frames: Vec<Vec<u8>>, barrier: bool) {
+        assert!(self.exchange(frames, barrier, false).await.is_none());
+    }
+    async fn expect_goaway(&self, frames: Vec<Vec<u8>>) -> u32 {
+        self.exchange(frames, false, true)
+            .await
+            .expect("GOAWAY response")
+    }
+    async fn exchange(&self, frames: Vec<Vec<u8>>, barrier: bool, goaway: bool) -> Option<u32> {
         let (done, wait) = oneshot::channel();
         self.tx
             .as_ref()
@@ -149,11 +171,12 @@ impl Peer {
             .send(Command {
                 frames,
                 barrier,
+                goaway,
                 done,
             })
             .await
             .unwrap();
-        tokio::time::timeout(LIMIT, wait).await.unwrap().unwrap();
+        tokio::time::timeout(LIMIT, wait).await.unwrap().unwrap()
     }
     async fn close(&mut self) {
         self.tx = None;
@@ -176,8 +199,15 @@ struct Session {
 }
 impl Session {
     async fn new() -> Self {
+        Self::with_header_limit(None).await
+    }
+    async fn with_header_limit(limit: Option<u32>) -> Self {
         let (peer, socket) = Peer::start().await;
-        let (sender, connection) = h2::client::handshake(socket).await.unwrap();
+        let mut builder = h2::client::Builder::new();
+        if let Some(limit) = limit {
+            builder.max_header_list_size(limit);
+        }
+        let (sender, connection) = builder.handshake(socket).await.unwrap();
         let driver = Driver(tokio::spawn(async move {
             let _ = connection.await;
         }));
@@ -255,12 +285,6 @@ async fn empty_head_and_nonempty_final_unread_latch_before_response_poll() {
             vec![head(200, false, Some(0)), data(b"", true)],
             "GET",
             200,
-        ),
-        (
-            "existing_trailer_status_ignored",
-            vec![head(202, false, None), head(503, true, None)],
-            "GET",
-            202,
         ),
         (
             "existing_missing_status_default",
@@ -637,5 +661,273 @@ async fn try_result_preserves_registered_waker_and_returns_latched_success_or_ab
             })
         );
         drop(response);
+    }
+}
+
+#[derive(Default)]
+struct Capture(std::sync::Mutex<Captured>);
+
+#[derive(Default, Clone, Debug, PartialEq)]
+struct Captured {
+    heads: Vec<(StatusCode, Vec<Vec<u8>>, bool)>,
+    data: Vec<u8>,
+}
+
+impl h2::ext::ResponseBodyCapture for Capture {
+    fn head(&self, status: StatusCode, headers: &http::HeaderMap, end_stream: bool) {
+        self.0.lock().unwrap().heads.push((
+            status,
+            headers
+                .get_all("content-encoding")
+                .iter()
+                .map(|v| v.as_bytes().to_vec())
+                .collect(),
+            end_stream,
+        ));
+    }
+    fn data(&self, data: &[u8]) {
+        let mut captured = self.0.lock().unwrap();
+        assert!(
+            captured.data.len() + data.len() <= 4096,
+            "finite fixture payload"
+        );
+        captured.data.extend_from_slice(data);
+    }
+}
+
+async fn captured_request(
+    session: &mut Session,
+) -> (
+    ResponseCompletion,
+    h2::client::ResponseFuture,
+    h2::SendStream<Bytes>,
+    Arc<Capture>,
+) {
+    let mut request = Request::builder()
+        .uri("http://owned.invalid/")
+        .body(())
+        .unwrap();
+    let capture = Arc::new(Capture::default());
+    let completion = h2::ext::on_response_complete_with_capture(&mut request, capture.clone());
+    let (response, send) = session.sender.send_request(request, true).unwrap();
+    session.peer.ready().await;
+    (completion, response, send, capture)
+}
+
+#[tokio::test]
+async fn capture_retains_unread_data_excludes_padding_and_ignores_informational() {
+    for trailing_headers in [false, true] {
+        let mut session = Session::new().await;
+        let (mut completion, response, _send, capture) = captured_request(&mut session).await;
+        // Literal indexed names: :status (8), content-encoding (26), repeated.
+        let headers = frame(1, 4, b"\x88\x0f\x0b\x05first\x0f\x0b\x06second");
+        session
+            .peer
+            .send(
+                vec![head(103, false, None), headers, data(b"a\xff", false)],
+                true,
+            )
+            .await;
+        assert!(completion.try_result().is_none());
+        assert_eq!(capture.0.lock().unwrap().data, b"a\xff");
+        let mut frames = vec![frame(0, 8 | u8::from(!trailing_headers), b"\x02z\0\0")];
+        if trailing_headers {
+            frames.push(trailers());
+        }
+        session.peer.send(frames, true).await;
+        assert_eq!(terminal(&mut completion).await.unwrap(), StatusCode::OK);
+        assert_eq!(
+            capture.0.lock().unwrap().heads,
+            vec![(
+                StatusCode::OK,
+                vec![b"first".to_vec(), b"second".to_vec()],
+                false
+            )]
+        );
+        assert_eq!(capture.0.lock().unwrap().data, b"a\xffz");
+        let body = response.await.unwrap().into_body();
+        assert!(
+            !body.is_end_stream(),
+            "normal queue still contains every DATA frame"
+        );
+        let before = capture.0.lock().unwrap().clone();
+        drop(body);
+        session.peer.close().await;
+        assert_eq!(completion.try_result(), Some(Ok(StatusCode::OK)));
+        assert_eq!(*capture.0.lock().unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn capture_stops_at_cancellation_and_never_accepts_invalid_final_data() {
+    for mode in [
+        "cancel",
+        "no_error",
+        "short_length",
+        "long_length",
+        "bad_head",
+    ] {
+        let mut session = Session::new().await;
+        let (mut completion, response, _send, capture) = captured_request(&mut session).await;
+        if mode == "bad_head" {
+            session
+                .peer
+                .send(vec![head(200, true, Some(1))], false)
+                .await;
+            assert_eq!(terminal(&mut completion).await, Err(Aborted));
+            assert!(capture.0.lock().unwrap().heads.is_empty());
+            drop(response);
+            continue;
+        }
+        let length = match mode {
+            "short_length" => Some(3),
+            "long_length" => Some(1),
+            _ => None,
+        };
+        session
+            .peer
+            .send(vec![head(200, false, length), data(b"a", false)], true)
+            .await;
+        assert_eq!(capture.0.lock().unwrap().data, b"a");
+        let body = response.await.unwrap().into_body();
+        let before = capture.0.lock().unwrap().clone();
+        if mode == "cancel" {
+            drop(body);
+            assert_eq!(terminal(&mut completion).await, Err(Aborted));
+            session.peer.send(vec![data(b"late", true)], false).await;
+            session.peer.close().await;
+        } else {
+            session
+                .peer
+                .send(
+                    vec![if mode == "no_error" {
+                        reset(0)
+                    } else {
+                        data(b"b", true)
+                    }],
+                    false,
+                )
+                .await;
+            assert_eq!(terminal(&mut completion).await, Err(Aborted));
+            drop(body);
+        }
+        assert_eq!(*capture.0.lock().unwrap(), before, "{mode}");
+    }
+}
+
+#[tokio::test]
+async fn actual_hyper_h2_captures_before_response_future_or_body_is_polled() {
+    use http_body_util::Empty;
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    for empty in [false, true] {
+        let (mut peer, socket) = Peer::start().await;
+        let (mut sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(socket))
+                .await
+                .unwrap();
+        let _driver = Driver(tokio::spawn(async move {
+            let _ = connection.await;
+        }));
+        let mut request = Request::builder()
+            .uri("http://owned.invalid/")
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+        let capture = Arc::new(Capture::default());
+        let mut completion =
+            h2::ext::on_response_complete_with_capture(&mut request, capture.clone());
+        let response = sender.send_request(request);
+        peer.ready().await;
+        let frames = if empty {
+            vec![head(204, true, Some(99))]
+        } else {
+            vec![
+                head(200, false, Some(3)),
+                data(b"a", false),
+                data(b"bc", true),
+            ]
+        };
+        let status = if empty {
+            StatusCode::NO_CONTENT
+        } else {
+            StatusCode::OK
+        };
+        peer.send(frames, true).await;
+        assert_eq!(terminal(&mut completion).await.unwrap(), status);
+        assert_eq!(
+            capture.0.lock().unwrap().heads,
+            vec![(status, vec![], empty)]
+        );
+        assert_eq!(
+            capture.0.lock().unwrap().data,
+            if empty {
+                b"".as_slice()
+            } else {
+                b"abc".as_slice()
+            }
+        );
+        let before = capture.0.lock().unwrap().clone();
+        drop(response);
+        peer.close().await;
+        assert_eq!(*capture.0.lock().unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn capture_is_released_on_unsent_drop_and_replacement_without_callbacks() {
+    let capture = Arc::new(Capture::default());
+    let mut request = Request::new(());
+    let mut first = h2::ext::on_response_complete_with_capture(&mut request, capture.clone());
+    assert_eq!(Arc::strong_count(&capture), 2);
+    let mut second = on_response_complete(&mut request);
+    assert_eq!(terminal(&mut first).await, Err(Aborted));
+    assert_eq!(Arc::strong_count(&capture), 1);
+    drop(request);
+    assert_eq!(terminal(&mut second).await, Err(Aborted));
+    assert_eq!(*capture.0.lock().unwrap(), Captured::default());
+}
+
+#[tokio::test]
+async fn response_pseudo_trailers_send_goaway_without_completing_or_changing_capture() {
+    let mut oversized_path = vec![4, 127, 217, 3]; // :path, literal 600-byte value
+    oversized_path.extend_from_slice(&[b'a'; 600]);
+    let mut oversized_ordinary = b"\0\x07x-proof\x7f\xd9\x03".to_vec();
+    oversized_ordinary.extend_from_slice(&[b'a'; 600]);
+    for (name, trailer, reason) in [
+        ("path", b"\x84".as_slice(), 1),
+        ("status", b"\x88".as_slice(), 1),
+        ("oversized-path", oversized_path.as_slice(), 11),
+        ("oversized-ordinary", oversized_ordinary.as_slice(), 11),
+    ] {
+        let mut session = Session::with_header_limit(Some(512)).await;
+        let (mut completion, response, send, capture) = captured_request(&mut session).await;
+        session
+            .peer
+            .send(vec![head(200, false, Some(2)), data(b"ab", false)], true)
+            .await;
+        let mut body = response.await.unwrap().into_body();
+        assert!(completion.try_result().is_none());
+        assert_eq!(capture.0.lock().unwrap().data, b"ab");
+        let captured = capture.0.lock().unwrap().clone();
+        // Read accepted prefix so the failure assertion cannot confuse discarded
+        // queued DATA with an invented or altered body payload.
+        assert_eq!(body.data().await.unwrap().unwrap(), b"ab".as_slice());
+        body.flow_control().release_capacity(2).unwrap();
+        assert_eq!(
+            session.peer.expect_goaway(vec![frame(1, 5, trailer)]).await,
+            reason,
+            "{name}"
+        );
+        assert!(terminal(&mut completion).await.is_err());
+        assert!(body.trailers().await.is_err());
+        assert_eq!(*capture.0.lock().unwrap(), captured);
+        drop(body);
+        drop(send);
+        session.peer.close().await;
+        tokio::time::timeout(LIMIT, &mut session._driver.0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(completion.try_result().unwrap().is_err());
+        println!("PASS response trailer={name} goaway={reason} prefix=ab joined=true");
     }
 }

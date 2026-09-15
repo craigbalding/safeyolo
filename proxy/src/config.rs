@@ -73,6 +73,16 @@ pub struct Config {
     pub circuit_state_file: Option<PathBuf>,
     #[serde(default = "enabled")]
     pub agent_api_enabled: bool,
+    #[serde(default = "enabled")]
+    pub test_context_block: bool,
+    #[serde(default)]
+    pub test_context_inject_declared: bool,
+    #[serde(default = "declared_ttl")]
+    pub test_context_declared_ttl: serde_json::Value,
+    #[serde(default = "enabled")]
+    pub sse_streaming_enabled: bool,
+    #[serde(default)]
+    pub sse_stream_json: bool,
     /// Development opt-in for the existing separate IPv4-loopback operator API.
     /// Listener and token settings are read at process startup.
     pub admin_port: Option<u16>,
@@ -93,6 +103,10 @@ pub struct Config {
 
 fn enabled() -> bool {
     true
+}
+
+fn declared_ttl() -> serde_json::Value {
+    serde_json::json!(900)
 }
 
 #[derive(Clone)]

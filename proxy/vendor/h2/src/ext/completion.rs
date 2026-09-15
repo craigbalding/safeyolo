@@ -4,7 +4,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 const PENDING: u16 = 0;
@@ -24,9 +24,47 @@ const ABORTED: u16 = 1;
 /// Cloning request extensions shares a registration: use a fresh registration
 /// for each independently sent request.
 pub fn on_response_complete<B>(request: &mut Request<B>) -> ResponseCompletion {
+    register(request, None)
+}
+
+/// A synchronous sink for accepted response headers and encoded DATA payloads.
+///
+/// Calls run under protocol/producer locks. Short private capture-state
+/// synchronization is permitted for bounded copying or state updates. Do not
+/// perform I/O, wait for protocol/task progress, panic, or re-enter the protocol
+/// or observer. Body decoding and policy decisions belong to the application
+/// after these calls return. A partial capture is not evidence of a complete
+/// response; use the paired completion result.
+pub trait ResponseBodyCapture: Send + Sync {
+    /// Observe the final accepted head, before delivery or head-only completion.
+    /// `end_stream_at_head` distinguishes a response with no following body.
+    fn head(&self, status: StatusCode, headers: &http::HeaderMap, end_stream_at_head: bool);
+
+    /// Observe accepted body bytes, excluding transfer framing and padding.
+    /// The final payload is observed before successful completion is published.
+    fn data(&self, payload: &[u8]);
+}
+
+/// Observe completion and copy accepted response bytes into a caller sink.
+///
+/// The sink sees the final head and DATA before their ordinary delivery. Calls
+/// stop when completion or cancellation wins. No additional reads, flow-control
+/// releases, payload queue or content decoding is introduced.
+pub fn on_response_complete_with_capture<B>(
+    request: &mut Request<B>,
+    capture: Arc<dyn ResponseBodyCapture>,
+) -> ResponseCompletion {
+    register(request, Some(capture))
+}
+
+fn register<B>(
+    request: &mut Request<B>,
+    capture: Option<Arc<dyn ResponseBodyCapture>>,
+) -> ResponseCompletion {
     let shared = Arc::new(Shared {
         terminal: AtomicU16::new(PENDING),
         waker: AtomicWaker::new(),
+        capture: Mutex::new(capture),
     });
     let producer = ResponseCompletionProducer(Arc::new(Producer {
         shared: shared.clone(),
@@ -37,7 +75,7 @@ pub fn on_response_complete<B>(request: &mut Request<B>) -> ResponseCompletion {
     ResponseCompletion { shared }
 }
 
-/// A response-completion observation containing no request or response content.
+/// A response-completion observation with content-free `Debug` output.
 #[must_use = "completion is observed by polling this future"]
 pub struct ResponseCompletion {
     shared: Arc<Shared>,
@@ -91,17 +129,28 @@ impl Future for ResponseCompletion {
 struct Shared {
     terminal: AtomicU16,
     waker: AtomicWaker,
+    // Serializes callbacks with the existing terminal latch. No payload is
+    // stored here; the caller owns its bounded capture and error state.
+    capture: Mutex<Option<Arc<dyn ResponseBodyCapture>>>,
 }
 
 impl Shared {
     fn finish(&self, terminal: u16) {
-        if self
+        let mut capture = self
+            .capture
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let changed = self
             .terminal
             .compare_exchange(PENDING, terminal, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
+            .is_ok();
+        let finished_capture = capture.take();
+        drop(capture);
+        // Never wake or drop the caller-owned sink while holding our mutex.
+        if changed {
             self.waker.wake();
         }
+        drop(finished_capture);
     }
 }
 
@@ -121,6 +170,30 @@ impl Drop for Producer {
 pub(crate) struct ResponseCompletionProducer(Arc<Producer>);
 
 impl ResponseCompletionProducer {
+    pub(crate) fn head(&self, status: StatusCode, headers: &http::HeaderMap, end_stream: bool) {
+        let capture = self
+            .0
+            .shared
+            .capture
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(capture) = capture.as_ref() {
+            capture.head(status, headers, end_stream);
+        }
+    }
+
+    pub(crate) fn data(&self, payload: &[u8]) {
+        let capture = self
+            .0
+            .shared
+            .capture
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(capture) = capture.as_ref() {
+            capture.data(payload);
+        }
+    }
+
     pub(crate) fn complete(&self, status: StatusCode) {
         self.0.shared.finish(status.as_u16());
     }

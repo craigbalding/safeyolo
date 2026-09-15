@@ -26,10 +26,6 @@ pub struct RequestBody<'a, B> {
     pub content_length: Option<u64>,
 }
 
-// The existing production stream_large_bodies=10m threshold selects whether
-// request.content exists. It is not an admission or decoded-content size limit.
-const BUFFERED_BODY_THRESHOLD: usize = 10 * 1024 * 1024;
-
 pub async fn respond_with_body<'p, B>(
     request: Request<'_>,
     token_path: &Path,
@@ -91,6 +87,8 @@ where
                 let class = match kind {
                     test_context::ContextErrorKind::Value => "ValueError",
                     test_context::ContextErrorKind::Overflow => "OverflowError",
+                    test_context::ContextErrorKind::Type => "TypeError",
+                    test_context::ContextErrorKind::Attribute => "AttributeError",
                     test_context::ContextErrorKind::Poisoned => "RuntimeError",
                 };
                 let mut outcome =
@@ -108,30 +106,18 @@ async fn read_content<B>(
 where
     B: Body<Data = Bytes> + Unpin,
 {
-    let mut encoded = Zeroizing::new(Vec::new());
-    let mut streamed = body
-        .content_length
-        .is_some_and(|length| length > BUFFERED_BODY_THRESHOLD as u64);
+    let mut content = http_content::BufferedContent::new(body.content_length, false);
     while let Some(frame) = body.body.frame().await {
         let frame = frame?;
-        if let Ok(data) = frame.into_data()
-            && !streamed
-        {
-            if data.len() > BUFFERED_BODY_THRESHOLD - encoded.len() {
-                // Once streaming begins, source raw_content is absent. Continue
-                // consuming through EOM, including transport errors, without
-                // retaining or attempting to decode a partial request body.
-                zeroize::Zeroize::zeroize(&mut *encoded);
-                streamed = true;
-            } else {
-                encoded.extend_from_slice(&data);
-            }
+        if let Ok(data) = frame.into_data() {
+            content.push(&data);
         }
     }
-    Ok(if streamed {
-        Ok(Zeroizing::new(Vec::new()))
-    } else {
-        http_content::decode(&encoded, body.content_encoding)
+    // Consume through EOM even after source raw content becomes absent, so a
+    // later transport failure still prevents declaration mutation or decoding.
+    Ok(match content.into_content() {
+        Some(encoded) => http_content::decode(&encoded, body.content_encoding),
+        None => Ok(Zeroizing::new(Vec::new())),
     })
 }
 

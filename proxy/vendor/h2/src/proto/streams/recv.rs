@@ -265,9 +265,15 @@ impl Recv {
                 .convert_poll_message(pseudo, fields, stream_id)?;
             if let crate::proto::peer::PollMessage::Server(request) = &mut message {
                 request.extensions_mut().insert(original_fields);
+                stream.request_completion = Some(crate::ext::register_request_completion(
+                    request.extensions_mut(),
+                ));
             }
             if let crate::proto::peer::PollMessage::Client(response) = &message {
                 stream.response_status = Some(response.status());
+                if let Some(producer) = &stream.response_completion {
+                    producer.head(response.status(), response.headers(), end_stream);
+                }
             }
 
             // Push the frame onto the stream's recv buffer
@@ -276,6 +282,7 @@ impl Recv {
                 .push_back(&mut self.buffer, Event::Headers(message));
             if end_stream {
                 stream.complete_response();
+                stream.complete_request();
             }
             stream.notify_recv();
 
@@ -433,6 +440,20 @@ impl Recv {
         frame: frame::Headers,
         stream: &mut store::Ptr,
     ) -> Result<(), Error> {
+        // HPACK may discard fields after the configured header-list limit.
+        // Reject that block before testing retained pseudo fields or accepting EOM.
+        if frame.is_over_size() {
+            proto_err!(conn: "recv_trailers: header list over size; stream={:?}", stream.id);
+            return Err(Error::library_go_away(Reason::ENHANCE_YOUR_CALM));
+        }
+
+        // Pseudo fields are never trailers. Reject before closing the receive
+        // side or discarding these fields, for both requests and responses.
+        if frame.pseudo() != &frame::Pseudo::default() {
+            proto_err!(conn: "recv_trailers: pseudo-header field; stream={:?}", stream.id);
+            return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
+        }
+
         // Transition the state
         stream.state.recv_close()?;
 
@@ -448,6 +469,7 @@ impl Recv {
             .pending_recv
             .push_back(&mut self.buffer, Event::Trailers(trailers));
         stream.complete_response();
+        stream.complete_request();
         stream.notify_recv();
 
         Ok(())
@@ -782,6 +804,11 @@ impl Recv {
             return Ok(());
         }
 
+        if !frame.payload().is_empty() {
+            if let Some(producer) = &stream.response_completion {
+                producer.data(frame.payload());
+            }
+        }
         let is_budgeted = !frame.is_end_stream();
         let event = Event::Data(DataEvent {
             payload: frame.into_payload(),
@@ -792,6 +819,7 @@ impl Recv {
         stream.pending_recv.push_back(&mut self.buffer, event);
         if !is_budgeted {
             stream.complete_response();
+            stream.complete_request();
         }
         stream.notify_recv();
 
@@ -941,6 +969,7 @@ impl Recv {
 
         // Notify the stream
         stream.abort_response();
+        stream.abort_request();
         stream.state.recv_reset(frame, stream.is_pending_send);
 
         stream.notify_send();
@@ -954,6 +983,7 @@ impl Recv {
     pub fn handle_error(&mut self, err: &proto::Error, stream: &mut Stream) {
         // Receive an error
         stream.abort_response();
+        stream.abort_request();
         stream.state.handle_error(err);
 
         // If a receiver is waiting, notify it
@@ -969,6 +999,7 @@ impl Recv {
 
     pub fn recv_eof(&mut self, stream: &mut Stream) {
         stream.abort_response();
+        stream.abort_request();
         stream.state.recv_eof();
         stream.notify_send();
         stream.notify_recv();

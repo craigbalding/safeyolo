@@ -131,7 +131,84 @@
     },
     "inherited_parser_limits": [
       "Missing response :status defaults to 200.",
-      "A pseudo :status in trailers is discarded and the original response completes."
+      "Historical pseudo-header trailer acceptance is repaired by trailer_validation_patch below."
     ]
+  },
+  "response_capture_patch": {
+    "base_commit": "33682df1e4a8c5ae113b3d4f141c77b7c52a8afc",
+    "scope": "Opt-in synchronous final-head/DATA copy sink on existing response-completion ownership. The application owns bounded capture and errors. Existing parser admission, body queue, cancellation/drain and completion result semantics remain unchanged.",
+    "api": "ext::on_response_complete_with_capture(&mut http::Request<B>, Arc<dyn ResponseBodyCapture>) -> ResponseCompletion",
+    "files": [
+      {
+        "path": "src/ext/completion.rs",
+        "base_sha256": "7eadeb393d8c7f9d25165cdcdfb709daa6cc21e6137369a1e8b2acd764ea52d8",
+        "candidate_sha256": "f92613afc9adb271b341402ea82c247718dee0c848f439591f9838c07866c09f"
+      },
+      {
+        "path": "src/ext.rs",
+        "base_sha256": "7d0e17ac538a9d1cbd9e45a2aefa67a9f4ace6f9ec6b420711e532cffefb426c",
+        "candidate_sha256": "b08b4eb32a8d7f162913984f360a999cb50efc02f7b6caca8302d8565ef5ca65"
+      },
+      {
+        "path": "src/proto/streams/recv.rs",
+        "base_sha256": "1a736e95dad16c431c3480c5a6ea8168d4c3da460e160ccbe417f9bf632d2473",
+        "candidate_sha256": "627837fdb239bf5141cb74a1bf6745806431137a5d134d2905774b3e8d77fbc0"
+      }
+    ]
+  },
+  "request_completion_patch": {
+    "base_commit": "33682df1e4a8c5ae113b3d4f141c77b7c52a8afc",
+    "seed_response_patch_sha256": "b0d7ca9863c3a815ebc87a8dea618465bf5c25daf0396ee3876616556e6ef30b",
+    "scope": "Payload-free request EOM/abort observation at existing server receive validation transitions. No capture, draining, callbacks, framing/admission or flow-control changes. One bounded producer/receiver pair per live parsed request; private extension clones share a single takeable observer.",
+    "files": [
+      {
+        "path": "proxy/vendor/h2/src/ext.rs",
+        "base_sha256": "b08b4eb32a8d7f162913984f360a999cb50efc02f7b6caca8302d8565ef5ca65",
+        "candidate_sha256": "1a028c7efe990e25e44955e909d951827ad9021245c1dc24fcd1b8a5e2ebf85a"
+      },
+      {
+        "path": "proxy/vendor/h2/src/ext/request_completion.rs",
+        "base_sha256": null,
+        "candidate_sha256": "0ad1a862eb893497851bfc2720968c8e61c81fd35c13544897ffbc630abdff3b"
+      },
+      {
+        "path": "proxy/vendor/h2/src/proto/streams/stream.rs",
+        "base_sha256": "16a6415126ab3284d8edf130993330c511b456f514171ec8591342348544154c",
+        "candidate_sha256": "4d2663d93853a5c8b6ccf6f0b515c64dc984b95f56c0a950dd235b35a08e2387"
+      },
+      {
+        "path": "proxy/vendor/h2/src/proto/streams/recv.rs",
+        "base_sha256": "627837fdb239bf5141cb74a1bf6745806431137a5d134d2905774b3e8d77fbc0",
+        "candidate_sha256": "dc9fadc3bcd990fb8d7761d390048779af58443a41d03f73d784a720ee4049fb"
+      },
+      {
+        "path": "proxy/vendor/h2/src/proto/streams/send.rs",
+        "base_sha256": "2bf4a8e31d8848e6d815054d035c46d5f75d4347c154495ce2d354510da81d60",
+        "candidate_sha256": "bbb19481b6e0240f5464b5d2f65bc181c12d94bb180e624c7f1650a9b4b396fd"
+      },
+      {
+        "path": "proxy/vendor/h2/src/proto/streams/streams.rs",
+        "base_sha256": "6ac798abc93e6098beea955f89ac603b73ab65ea80cfba0743996da477af4f77",
+        "candidate_sha256": "d9d91dc6085fcedf19e559a4cea9935926febef2a69a73ddeb64c6b54e8c884a"
+      }
+    ]
+  },
+  "trailer_validation_patch": {
+    "base_commit": "33682df1e4a8c5ae113b3d4f141c77b7c52a8afc",
+    "seed_response_patch_sha256": "b0d7ca9863c3a815ebc87a8dea618465bf5c25daf0396ee3876616556e6ef30b",
+    "seed_request_corrected_patch_sha256": "08c95372533c404b2a6ee4a592b4d2b1ce3f1b9dd961461b5f0af4af322ca8f1",
+    "scope": "Reject request and response trailer blocks marked over the existing configured header-list limit with connection GOAWAY ENHANCE_YOUR_CALM (11), then reject any retained pseudo fields with GOAWAY PROTOCOL_ERROR (1), before receive close, body-length validation, field discard or completion. The size check also covers pseudo fields HPACK discarded after reaching the limit. No configured limit, initial-header behavior, DATA handling, reset handling or terminal-result ownership changes.",
+    "files": [
+      {
+        "path": "src/proto/streams/recv.rs",
+        "before_sha256": "dc9fadc3bcd990fb8d7761d390048779af58443a41d03f73d784a720ee4049fb",
+        "after_sha256": "9d666cca08f5cc6345df02fb1722023888f084e2a63ec5b773282516b74dc374"
+      }
+    ],
+    "validation": [
+      "proxy/tests/request_completion_h2.rs",
+      "proxy/tests/response_completion_h2.rs"
+    ],
+    "source_correlation": "Configured Python source rejects pseudo :path trailers with PROTOCOL_ERROR before request EOM and origin contact. Its existing HPACK decoder rejects oversized blocks before trailer validation with ENHANCE_YOUR_CALM. Native protocol tests establish completion abort, body error, accepted prefix preservation and connection error scope; application effects are a separate integration gate."
   }
 }

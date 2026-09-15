@@ -79,6 +79,8 @@ where
                 on_response_complete: None,
                 #[cfg(feature = "client")]
                 response_status: None,
+                #[cfg(feature = "server")]
+                on_request_complete: None,
                 notify_read: false,
                 reading: Reading::Init,
                 writing: Writing::Init,
@@ -280,6 +282,15 @@ where
             self.state.h1_header_read_timeout_fut = None;
         }
 
+        #[cfg(feature = "server")]
+        let mut msg = msg;
+        #[cfg(feature = "server")]
+        if T::should_read_first() {
+            self.state.on_request_complete = Some(crate::ext::register_request_completion(
+                &mut msg.head.extensions,
+            ));
+        }
+
         // Note: don't deconstruct `msg` into local variables, it appears
         // the optimizer doesn't remove the extra copies.
 
@@ -293,6 +304,11 @@ where
         {
             self.state.on_informational = None;
             self.state.response_status = T::incoming_status(&msg.head);
+            if let (Some(producer), Some(status)) =
+                (&self.state.on_response_complete, self.state.response_status)
+            {
+                producer.head(status, &msg.head.headers, msg.decode == DecodedLength::ZERO);
+            }
         }
 
         self.state.busy();
@@ -312,6 +328,8 @@ where
             self.state.reading = Reading::KeepAlive;
             #[cfg(feature = "client")]
             self.state.complete_response();
+            #[cfg(feature = "server")]
+            self.state.complete_request();
             if !T::should_read_first() {
                 self.try_keep_alive(cx);
             }
@@ -375,6 +393,12 @@ where
                     Ok(frame) => {
                         if frame.is_data() {
                             let slice = frame.data_ref().unwrap_or_else(|| unreachable!());
+                            #[cfg(feature = "client")]
+                            if !slice.is_empty() {
+                                if let Some(producer) = &self.state.on_response_complete {
+                                    producer.data(slice);
+                                }
+                            }
                             let (reading, maybe_frame) = if decoder.is_eof() {
                                 debug!("incoming body completed");
                                 (
@@ -428,6 +452,12 @@ where
         match reading {
             Reading::KeepAlive => self.state.complete_response(),
             Reading::Closed => self.state.abort_response(),
+            _ => (),
+        }
+        #[cfg(feature = "server")]
+        match reading {
+            Reading::KeepAlive => self.state.complete_request(),
+            Reading::Closed => self.state.abort_request(),
             _ => (),
         }
         self.state.reading = reading;
@@ -878,6 +908,8 @@ where
         // Cheap connection reuse below must not turn that into completion.
         #[cfg(feature = "client")]
         self.state.abort_response();
+        #[cfg(feature = "server")]
+        self.state.abort_request();
         if let Reading::Continue(decoder) = &mut self.state.reading {
             // skip sending the 100-continue
             // just move forward to a read, in case a tiny body was included
@@ -980,6 +1012,8 @@ struct State {
     on_response_complete: Option<crate::ext::OnResponseComplete>,
     #[cfg(feature = "client")]
     response_status: Option<http::StatusCode>,
+    #[cfg(feature = "server")]
+    on_request_complete: Option<crate::ext::RequestCompletionProducer>,
     /// Set to true when the Dispatcher should poll read operations
     /// again. See the `maybe_notify` method for more.
     notify_read: bool,
@@ -1081,6 +1115,17 @@ impl KA {
 }
 
 impl State {
+    #[cfg(feature = "server")]
+    fn complete_request(&mut self) {
+        if let Some(completion) = self.on_request_complete.take() {
+            completion.complete();
+        }
+    }
+    #[cfg(feature = "server")]
+    fn abort_request(&mut self) {
+        // Dropping the sole parser producer aborts its pending observation.
+        self.on_request_complete = None;
+    }
     #[cfg(feature = "client")]
     fn complete_response(&mut self) {
         if let Some(completion) = self.on_response_complete.take() {
@@ -1103,6 +1148,8 @@ impl State {
     fn close(&mut self) {
         #[cfg(feature = "client")]
         self.abort_response();
+        #[cfg(feature = "server")]
+        self.abort_request();
         trace!("State::close()");
         self.reading = Reading::Closed;
         self.writing = Writing::Closed;
@@ -1112,6 +1159,8 @@ impl State {
     fn close_read(&mut self) {
         #[cfg(feature = "client")]
         self.abort_response();
+        #[cfg(feature = "server")]
+        self.abort_request();
         trace!("State::close_read()");
         self.reading = Reading::Closed;
         self.keep_alive.disable();

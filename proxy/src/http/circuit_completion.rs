@@ -1,5 +1,5 @@
-//! One application observation of the protocol receiver's completed response.
-//! The connection owner supplies its lifetime; this module never reads a body.
+//! Request and response application effects owned by the HTTP connection driver.
+//! Protocol receivers supply completion; this module never reads a body.
 
 use std::{
     future::Future,
@@ -10,6 +10,7 @@ use std::{
 
 use hyper::{Request, StatusCode};
 
+use super::{request_context::RequestContext, test_context::ResponseCapture};
 use crate::{ConnectionIdentity, RuntimeState};
 
 enum Protocol {
@@ -36,16 +37,19 @@ impl Protocol {
 struct Observation {
     protocol: Option<Protocol>,
     applied: Option<bool>,
+    request: Option<RequestContext>,
+    request_failed: bool,
 }
 
-/// Trusted request context plus one cached terminal circuit/evidence outcome.
-/// No request or response headers/body are retained or exposed in Debug output.
+/// Trusted request context and cached application outcomes. Selected response
+/// fields and bounded content remain private in the optional capture owner.
 pub(super) struct Completion {
     observation: Mutex<Observation>,
     state: RuntimeState,
     identity: ConnectionIdentity,
     request_id: String,
     host: String,
+    capture: Option<Arc<ResponseCapture>>,
 }
 
 impl Completion {
@@ -56,21 +60,38 @@ impl Completion {
         identity: ConnectionIdentity,
         request_id: String,
         host: String,
+        context: Option<RequestContext>,
     ) -> Arc<Self> {
-        let protocol = if http2 {
-            Protocol::Http2(h2::ext::on_response_complete(request))
-        } else {
-            Protocol::Http1(hyper::ext::on_response_complete(request))
+        let request_failed = context
+            .as_ref()
+            .is_some_and(RequestContext::evidence_failed);
+        let capture = context
+            .as_ref()
+            .and_then(RequestContext::response_provenance)
+            .map(|provenance| Arc::new(ResponseCapture::new(state.clone(), provenance)));
+        let protocol = match (http2, &capture) {
+            (true, Some(capture)) => Protocol::Http2(h2::ext::on_response_complete_with_capture(
+                request,
+                capture.clone(),
+            )),
+            (false, Some(capture)) => Protocol::Http1(
+                hyper::ext::on_response_complete_with_capture(request, capture.clone()),
+            ),
+            (true, None) => Protocol::Http2(h2::ext::on_response_complete(request)),
+            (false, None) => Protocol::Http1(hyper::ext::on_response_complete(request)),
         };
         Arc::new(Self {
             observation: Mutex::new(Observation {
                 protocol: Some(protocol),
                 applied: None,
+                request: context,
+                request_failed,
             }),
             state,
             identity,
             request_id,
             host,
+            capture,
         })
     }
 
@@ -86,7 +107,12 @@ impl Completion {
     fn apply(&self, observation: &mut Observation, result: Result<StatusCode, ()>) -> bool {
         observation.applied = Some(true);
         observation.protocol = None;
-        let failed = match result {
+        if result.is_ok()
+            && let Some(capture) = &self.capture
+        {
+            capture.apply_head();
+        }
+        let mut failed = match result {
             Ok(status) => crate::circuit_runtime::completed_response(
                 &self.state,
                 &self.identity,
@@ -96,6 +122,9 @@ impl Completion {
             ),
             Err(()) => false,
         };
+        if let Some(capture) = &self.capture {
+            failed |= capture.finish(result.is_ok());
+        }
         observation.applied = Some(failed);
         failed
     }
@@ -104,28 +133,61 @@ impl Completion {
     /// Some is terminal; true reports an evidence failure after application.
     pub(super) fn try_finish(&self) -> Option<bool> {
         let mut observation = self.lock();
-        if let Some(failed) = observation.applied {
-            return Some(failed);
+        if observation.applied.is_none()
+            && let Some(result) = observation.protocol.as_mut().and_then(Protocol::try_result)
+        {
+            self.apply(&mut observation, result);
         }
-        let result = observation.protocol.as_mut()?.try_result()?;
-        Some(self.apply(&mut observation, result))
+        // Source response() reads currently applied metadata. Do not publish a
+        // later request hook ahead of a response completion already observable.
+        if let Some(failed) = observation
+            .request
+            .as_mut()
+            .and_then(RequestContext::try_finish)
+        {
+            observation.request_failed |= failed;
+            observation.request = None;
+        }
+        observation
+            .applied
+            .map(|failed| failed || observation.request_failed)
     }
 
     /// Poll with the connection driver's waker and cache application exactly once.
     pub(super) fn poll(&self, cx: &mut Context<'_>) -> Poll<bool> {
         let mut observation = self.lock();
-        if let Some(failed) = observation.applied {
-            return Poll::Ready(failed);
-        }
-        match observation
-            .protocol
-            .as_mut()
-            .expect("pending observation has a protocol receiver")
-            .poll(cx)
+        if observation.applied.is_none()
+            && let Poll::Ready(result) = observation
+                .protocol
+                .as_mut()
+                .expect("pending observation has a protocol receiver")
+                .poll(cx)
         {
-            Poll::Ready(result) => Poll::Ready(self.apply(&mut observation, result)),
-            Poll::Pending => Poll::Pending,
+            self.apply(&mut observation, result);
         }
+        if let Some(request) = observation.request.as_mut()
+            && let Poll::Ready(failed) = request.poll(cx)
+        {
+            observation.request_failed |= failed;
+            observation.request = None;
+        }
+        match observation.applied {
+            Some(failed) => Poll::Ready(failed || observation.request_failed),
+            None => Poll::Pending,
+        }
+    }
+
+    /// Run the source header-time streaming decision once, outside parser locks.
+    pub(super) fn headers_received(&self) {
+        let _observation = self.lock();
+        if let Some(capture) = &self.capture {
+            capture.apply_head();
+        }
+    }
+
+    pub(super) fn evidence_failed(&self) -> bool {
+        let observation = self.lock();
+        observation.request_failed || observation.applied.unwrap_or(false)
     }
 
     /// Construct the teardown owner now, so even an unpolled future has its guard.
@@ -257,6 +319,7 @@ mod tests {
                 },
                 "owned-request".into(),
                 "owned.invalid".into(),
+                None,
             );
             (request, completion)
         }

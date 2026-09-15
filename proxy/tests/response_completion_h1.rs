@@ -391,4 +391,192 @@ mod tests {
         }
         cleanup(driver).await;
     }
+    #[derive(Default)]
+    struct Capture(std::sync::Mutex<Captured>);
+
+    #[derive(Default, Clone, Debug, PartialEq)]
+    struct Captured {
+        heads: Vec<(StatusCode, Vec<Vec<u8>>, bool)>,
+        data: Vec<u8>,
+    }
+
+    impl hyper::ext::ResponseBodyCapture for Capture {
+        fn head(&self, status: StatusCode, headers: &hyper::HeaderMap, end_stream: bool) {
+            self.0.lock().unwrap().heads.push((
+                status,
+                headers
+                    .get_all("content-encoding")
+                    .iter()
+                    .map(|v| v.as_bytes().to_vec())
+                    .collect(),
+                end_stream,
+            ));
+        }
+        fn data(&self, data: &[u8]) {
+            let mut captured = self.0.lock().unwrap();
+            assert!(
+                captured.data.len() + data.len() <= 4096,
+                "finite fixture payload"
+            );
+            captured.data.extend_from_slice(data);
+        }
+    }
+
+    fn capture_request(
+        method: &str,
+    ) -> (
+        Request<Empty<Bytes>>,
+        ResponseCompletion,
+        std::sync::Arc<Capture>,
+    ) {
+        let mut request = Request::builder()
+            .method(method)
+            .uri("http://fixture.test/")
+            .body(Empty::new())
+            .unwrap();
+        let capture = std::sync::Arc::new(Capture::default());
+        let completion =
+            hyper::ext::on_response_complete_with_capture(&mut request, capture.clone());
+        (request, completion, capture)
+    }
+
+    #[tokio::test]
+    async fn capture_final_head_precedes_empty_completion_and_ignores_informational() {
+        for (method, head, status) in [
+            (
+                "HEAD",
+                "200 OK\r\nContent-Length: 99999\r\n",
+                StatusCode::OK,
+            ),
+            ("GET", "204 Empty\r\n", StatusCode::NO_CONTENT),
+            (
+                "GET",
+                "101 Upgrade\r\nConnection: upgrade\r\nUpgrade: fixture\r\n",
+                StatusCode::SWITCHING_PROTOCOLS,
+            ),
+        ] {
+            let (mut sender, mut server, driver) = connection().await;
+            let (request, completion, capture) = capture_request(method);
+            let response = sender.send_request(request);
+            read_request(&mut server).await;
+            server.write_all(format!("HTTP/1.1 103 Early Hints\r\nContent-Encoding: ignored\r\n\r\nHTTP/1.1 {head}Content-Encoding: first\r\nContent-Encoding: second\r\n\r\n").as_bytes()).await.unwrap();
+            assert_eq!(timeout(LIMIT, completion).await.unwrap().unwrap(), status);
+            assert_eq!(
+                capture.0.lock().unwrap().heads,
+                vec![(status, vec![b"first".to_vec(), b"second".to_vec()], true)]
+            );
+            assert!(capture.0.lock().unwrap().data.is_empty());
+            // Completion and head capture precede polling even the header future.
+            drop(response);
+            cleanup(driver).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_final_data_precedes_incoming_consumption() {
+        use hyper::body::Body;
+        use std::{pin::Pin, task::Poll};
+        let (mut sender, mut server, driver) = connection().await;
+        let (request, completion, capture) = capture_request("GET");
+        let response = sender.send_request(request);
+        read_request(&mut server).await;
+        server
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc")
+            .await
+            .unwrap();
+        let mut response = response.await.unwrap();
+        assert_eq!(
+            response
+                .body_mut()
+                .frame()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_data()
+                .unwrap(),
+            "abc"
+        );
+        // Establish demand, but never poll again to consume the queued final DATA.
+        std::future::poll_fn(|cx| {
+            assert!(Pin::new(response.body_mut()).poll_frame(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        server.write_all(b"\0\xffz").await.unwrap();
+        assert_eq!(
+            timeout(LIMIT, completion).await.unwrap().unwrap(),
+            StatusCode::OK
+        );
+        assert_eq!(capture.0.lock().unwrap().data, b"abc\0\xffz");
+        let before = capture.0.lock().unwrap().clone();
+        drop(response);
+        cleanup(driver).await;
+        assert_eq!(*capture.0.lock().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn capture_excludes_chunk_framing_and_tracks_eof_or_faults() {
+        for (framing, body, succeeds) in [
+            (
+                "Transfer-Encoding: chunked",
+                b"2\r\na\xff\r\n1\r\nz\r\n0\r\nX-Trailer: yes\r\n\r\n".as_slice(),
+                true,
+            ),
+            ("Connection: close", b"a\xffz".as_slice(), true),
+            ("Content-Length: 4", b"a\xffz".as_slice(), false),
+            (
+                "Transfer-Encoding: chunked",
+                b"3\r\na\xffz\r\n".as_slice(),
+                false,
+            ),
+        ] {
+            let (mut sender, mut server, driver) = connection().await;
+            let (request, completion, capture) = capture_request("GET");
+            let response = sender.send_request(request);
+            read_request(&mut server).await;
+            server
+                .write_all(format!("HTTP/1.1 500 Failure\r\n{framing}\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            server.write_all(body).await.unwrap();
+            server.shutdown().await.unwrap();
+            let response = response.await.unwrap();
+            let received = response.into_body().collect().await;
+            assert_eq!(received.is_ok(), succeeds);
+            assert_eq!(timeout(LIMIT, completion).await.unwrap().is_ok(), succeeds);
+            assert_eq!(capture.0.lock().unwrap().data, b"a\xffz");
+            if let Ok(body) = received {
+                assert_eq!(body.to_bytes(), b"a\xffz".as_slice());
+            }
+            cleanup(driver).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_stops_before_canceled_body_reuse_drain() {
+        for (framing, tail) in [
+            ("Content-Length: 1", b"a".as_slice()),
+            ("Transfer-Encoding: chunked", b"0\r\n\r\n".as_slice()),
+        ] {
+            let (mut sender, mut server, driver) = connection().await;
+            let (request, mut completion, capture) = capture_request("GET");
+            let response = sender.send_request(request);
+            read_request(&mut server).await;
+            server
+                .write_all(format!("HTTP/1.1 200 OK\r\n{framing}\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let response = response.await.unwrap();
+            server.write_all(tail).await.unwrap();
+            assert!(completion.try_result().is_none());
+            drop(response);
+            assert!(timeout(LIMIT, completion).await.unwrap().is_err());
+            cleanup(driver).await;
+            assert!(
+                capture.0.lock().unwrap().data.is_empty(),
+                "a canceled reuse drain is not capture"
+            );
+            assert_eq!(capture.0.lock().unwrap().heads.len(), 1);
+        }
+    }
 }

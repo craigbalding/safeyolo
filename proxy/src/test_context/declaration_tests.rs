@@ -13,6 +13,8 @@ fn error_class(error: ContextError) -> &'static str {
         ContextErrorKind::Value => "ValueError",
         ContextErrorKind::Overflow => "OverflowError",
         ContextErrorKind::Poisoned => "Poisoned",
+        ContextErrorKind::Type => "TypeError",
+        ContextErrorKind::Attribute => "AttributeError",
     }
 }
 fn observe(row: &Value) -> Vec<Value> {

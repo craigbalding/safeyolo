@@ -1,9 +1,9 @@
-//! Completed HTTP content decoding shared by local JSON and provenance capture.
+//! HTTP content buffering and decoding shared by local JSON and provenance capture.
 //!
 //! Prefix capture discards later output while still executing the entire source
 //! decode operation. In particular, source gzip and Zstandard accept incomplete
 //! final streams; gzip ignores later members, while Zstandard crosses frames.
-//! The caller separately decides whether a source-streamed body has no content.
+//! Buffering preserves source-streamed content absence independently of decoding.
 
 use std::fmt;
 
@@ -14,6 +14,60 @@ use base64::{
 use flate2::{Decompress, FlushDecompress, Status};
 use zeroize::{Zeroize, Zeroizing};
 use zstd::stream::raw::Operation;
+
+/// Production `stream_large_bodies=10m` selects whether raw content is retained.
+/// This encoded-body threshold is not an admission or decoded-content limit.
+pub const BUFFERED_BODY_THRESHOLD: usize = 10 * 1024 * 1024;
+
+/// Retain source-buffered encoded bytes until streaming makes raw content absent.
+///
+/// The caller owns body completion and transport errors. Only use the returned
+/// content for completed bodies; this owner does not parse or decode body frames.
+/// Dropping the owner or switching to streamed content wipes its retained bytes.
+pub struct BufferedContent {
+    content: Option<Zeroizing<Vec<u8>>>,
+}
+
+impl BufferedContent {
+    pub fn new(content_length: Option<u64>, streamed: bool) -> Self {
+        let streamed = streamed
+            || content_length.is_some_and(|length| length > BUFFERED_BODY_THRESHOLD as u64);
+        Self {
+            content: (!streamed).then(|| Zeroizing::new(Vec::new())),
+        }
+    }
+
+    pub fn push(&mut self, data: &[u8]) {
+        self.try_push(data).expect("HTTP content allocation failed");
+    }
+
+    /// Capture callbacks cannot propagate a transport error. Their owner can
+    /// retain this categorical failure and discard the incomplete capture.
+    pub fn try_push(&mut self, data: &[u8]) -> Result<(), ContentError> {
+        let Some(content) = self.content.as_mut() else {
+            return Ok(());
+        };
+        if data.len() > BUFFERED_BODY_THRESHOLD - content.len() {
+            // Dropping Zeroizing wipes and releases the buffered allocation.
+            self.content = None;
+        } else {
+            content
+                .try_reserve(data.len())
+                .map_err(|_| ContentError::Allocation)?;
+            content.extend_from_slice(data);
+        }
+        Ok(())
+    }
+
+    pub fn is_streamed(&self) -> bool {
+        self.content.is_none()
+    }
+
+    /// Return encoded content, or `None` when source raw content is absent.
+    pub fn into_content(self) -> Option<Zeroizing<Vec<u8>>> {
+        self.content
+    }
+}
 
 /// Payload-free decoding failures. No encoding name or content is retained.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

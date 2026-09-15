@@ -204,7 +204,11 @@ impl Runtime {
     }
 
     fn configure_declarations(&self) -> Result<(), Error> {
-        let options = test_context::Options::default();
+        let options = test_context::Options {
+            block: self.config.test_context_block,
+            inject_declared: self.config.test_context_inject_declared,
+            declared_ttl: self.config.test_context_declared_ttl.clone(),
+        };
         match &self.policy {
             Some(policy) => {
                 policy.configure_test_context_declarations(&self.test_context, options)?

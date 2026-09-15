@@ -186,14 +186,17 @@ async fn truncated_post_preserves_declaration_and_returns_original_transport_fai
             0.,
         )
         .unwrap();
-    for length in [None, Some(20 * 1024 * 1024)] {
+    for (length, cross_threshold) in [(None, false), (Some(20 * 1024 * 1024), false), (None, true)]
+    {
+        let mut frames = VecDeque::from([Ok(Frame::data(Bytes::from_static(
+            br#"{"context":"run=new;agent=alice;test=replacement"}"#,
+        )))]);
+        if cross_threshold {
+            frames.push_back(Ok(Frame::data(Bytes::from(vec![b' '; 10 * 1024 * 1024]))));
+        }
+        frames.push_back(Err("fixture truncated body"));
         let mut body = Frames {
-            frames: VecDeque::from([
-                Ok(Frame::data(Bytes::from_static(
-                    br#"{"context":"run=new;agent=alice;test=replacement"}"#,
-                ))),
-                Err("fixture truncated body"),
-            ]),
+            frames,
             polls: 0,
             forbid_poll: false,
         };
@@ -218,7 +221,7 @@ async fn truncated_post_preserves_declaration_and_returns_original_transport_fai
         )
         .await;
         assert!(matches!(result, Err("fixture truncated body")));
-        assert_eq!(body.polls, 2);
+        assert_eq!(body.polls, if cross_threshold { 3 } else { 2 });
         assert_eq!(
             owner
                 .get_declaration(&identity, 10.)
@@ -245,8 +248,14 @@ async fn buffered_json_is_parsed_after_eom_and_missing_streamed_content_is_empty
         let mut encoded = Vec::from(document.as_slice());
         encoded.resize(size, b' ');
         let length = known_length.then_some(size as u64);
+        let encoded = Bytes::from(encoded);
         let mut body = Frames {
-            frames: VecDeque::from([Ok(Frame::data(Bytes::from(encoded)))]),
+            frames: VecDeque::from([
+                Ok(Frame::data(encoded.slice(..8))),
+                Ok(Frame::data(Bytes::new())),
+                Ok(Frame::data(encoded.slice(8..))),
+                Ok(Frame::trailers(hyper::HeaderMap::new())),
+            ]),
             polls: 0,
             forbid_poll: false,
         };
@@ -271,7 +280,7 @@ async fn buffered_json_is_parsed_after_eom_and_missing_streamed_content_is_empty
         )
         .await
         .unwrap();
-        assert_eq!(body.polls, 2);
+        assert_eq!(body.polls, 5);
         assert_eq!(outcome.response.status, status);
         let response: Value = serde_json::from_slice(&outcome.response.body_bytes()).unwrap();
         if status == 200 {

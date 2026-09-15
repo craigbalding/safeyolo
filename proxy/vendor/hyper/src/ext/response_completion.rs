@@ -18,10 +18,50 @@ use tokio::sync::oneshot;
 /// drain a canceled body for reuse; that does not complete the observer.
 /// This extension does not drain bodies, change buffering, or support HTTP/2.
 pub fn on_response_complete<B>(request: &mut http::Request<B>) -> ResponseCompletion {
+    register(request, None)
+}
+
+/// A synchronous sink for accepted response headers and encoded DATA payloads.
+///
+/// Calls run under protocol/producer locks. Short private capture-state
+/// synchronization is permitted for bounded copying or state updates. Do not
+/// perform I/O, wait for protocol/task progress, panic, or re-enter the protocol
+/// or observer. Body decoding and policy decisions belong to the application
+/// after these calls return. A partial capture is not evidence of a complete
+/// response; use the paired completion result.
+pub trait ResponseBodyCapture: Send + Sync {
+    /// Observe the final accepted head, before delivery or head-only completion.
+    /// `end_stream_at_head` distinguishes a response with no following body.
+    fn head(&self, status: StatusCode, headers: &http::HeaderMap, end_stream_at_head: bool);
+
+    /// Observe accepted body bytes, excluding transfer framing and padding.
+    /// The final payload is observed before successful completion is published.
+    fn data(&self, payload: &[u8]);
+}
+
+/// Observe HTTP/1 completion and copy accepted response bytes into a caller sink.
+///
+/// The sink sees a final head and DATA before their ordinary delivery. Calls stop
+/// when completion or cancellation wins, including before a canceled-body reuse
+/// drain. No additional reads, payload queue or content decoding is introduced.
+pub fn on_response_complete_with_capture<B>(
+    request: &mut http::Request<B>,
+    capture: Arc<dyn ResponseBodyCapture>,
+) -> ResponseCompletion {
+    register(request, Some(capture))
+}
+
+fn register<B>(
+    request: &mut http::Request<B>,
+    capture: Option<Arc<dyn ResponseBodyCapture>>,
+) -> ResponseCompletion {
     let (sender, receiver) = oneshot::channel();
     request
         .extensions_mut()
-        .insert(OnResponseComplete(Arc::new(Mutex::new(Some(sender)))));
+        .insert(OnResponseComplete(Arc::new(Mutex::new(Some(Producer {
+            sender,
+            capture,
+        })))));
     ResponseCompletion(receiver)
 }
 
@@ -66,28 +106,53 @@ impl Future for ResponseCompletion {
     }
 }
 
+struct Producer {
+    sender: oneshot::Sender<StatusCode>,
+    capture: Option<Arc<dyn ResponseBodyCapture>>,
+}
+
 #[derive(Clone)]
-pub(crate) struct OnResponseComplete(Arc<Mutex<Option<oneshot::Sender<StatusCode>>>>);
+pub(crate) struct OnResponseComplete(Arc<Mutex<Option<Producer>>>);
 
 impl OnResponseComplete {
+    pub(crate) fn head(&self, status: StatusCode, headers: &http::HeaderMap, end_stream: bool) {
+        let producer = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(capture) = producer
+            .as_ref()
+            .and_then(|producer| producer.capture.as_ref())
+        {
+            capture.head(status, headers, end_stream);
+        }
+    }
+
+    pub(crate) fn data(&self, payload: &[u8]) {
+        let producer = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(capture) = producer
+            .as_ref()
+            .and_then(|producer| producer.capture.as_ref())
+        {
+            capture.data(payload);
+        }
+    }
+
     pub(crate) fn complete(self, status: StatusCode) {
-        let sender = self
+        let producer = self
             .0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take();
-        if let Some(sender) = sender {
+        if let Some(producer) = producer {
             // Wake only after releasing the latch lock.
-            let _ = sender.send(status);
+            let _ = producer.sender.send(status);
         }
     }
 
     pub(crate) fn abort(self) {
-        let sender = self
+        let producer = self
             .0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take();
-        drop(sender);
+        drop(producer);
     }
 }

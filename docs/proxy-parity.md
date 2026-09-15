@@ -354,7 +354,8 @@ silently reduce accepted message sizes to a library default.
 | D52 | Source circuit configure replaces its InMemoryCircuitState without stopping the former snapshot worker. Shutdown stops only the currently selected state worker. | Native uses one process-owned worker. Runtime publication and snapshot path selection share a lock; file changes attempt to save the former state before selecting new domains. A failed save is reported without preventing selection. Actual Proxy tests cover file switching, clearing persistence and final writer join. Abrupt process termination and blocked filesystem I/O remain outside graceful-shutdown evidence. |
 | D53 | A malformed JSON or UTF-8 circuit-reset body makes the source operator parser and handler send two final 400 responses. No circuit mutation or reset audit follows. | Native sends one terminal 400 and retains state, following the same framing correction as task PUT in D47. Valid reset keys and source exception/audit behavior have separate actual-source comparisons. |
 | D54 | An upstream HTTP/2 response with status 500, partial DATA and RST_STREAM(NO_ERROR) reaches the native downstream as status 500, the partial body and StreamEnded. Python sends a 502 error response. A retained binary from `d089f995` reproduces the native result before circuit completion metadata was added. | Downstream reset-response parity remains unresolved. Circuit counting uses the upstream parser's aborted result and ignores either downstream terminal form. The paired TLS/HTTP2 control retains exact response bytes and separately verifies unchanged circuit failure state. |
-| D55 | With a request above 10 MiB, the source forwards the reserved test-context header before its late request hook removes it. A missing-context request sends all 10,485,761 bytes to the origin; the origin 200 then replaces the hook's attempted 428, despite a deny event. | Concrete source disclosure and pre-denial egress defects. Native test-context HTTP enforcement must run at the request head and strip the control header before origin contact. That integration is still pending; empty snippets for source-streamed bodies are a separate compatibility requirement. |
+| D55 | With a request above 10 MiB, the source forwards the reserved test-context header before its late request hook removes it. A missing-context request sends all 10,485,761 bytes to the origin; the origin 200 then replaces the hook's attempted 428, despite a deny event. | Native test-context admission now rejects missing required context and strips the reserved field before origin contact. Completed streamed bodies retain the source's empty evidence snippet. The native HTTP regression separately checks blocking, stripping and complete payload forwarding. |
+| D56 | The inherited native HTTP/2 parser accepted pseudo-header trailers and dropped those fields before publishing successful completion. It also ignored the decoder's existing oversized-header marker for trailers, which can hide discarded pseudo fields. | Shared request/response trailer admission now rejects retained pseudo fields with connection PROTOCOL_ERROR and the existing oversized marker with ENHANCE_YOUR_CALM. Valid ordinary trailers still complete. Actual Python execution confirms ordinary versus pseudo-header behavior; the oversized source error path has static evidence only. Existing configured size limits are reused; exact-limit differential parity is unverified. |
 
 ## Deletion map and evidence still required
 
@@ -1045,12 +1046,37 @@ boundaries. The [native socket regression](../tests/proxy_migration/test_agent_a
 checks source reassignment, current TTL across a held POST, mutation audits and
 local containment. The shared decoder extraction also retains OAuth regressions.
 
-HTTP target enforcement, request/response provenance and FlowStore integration
-remain inactive. Header priority and warn/block outcomes still have standalone
-core comparisons. Canonical temporal target operands need a typed request seam;
-they must not be interpreted as their JSON storage forms. The inherited strict
-JSON string representation still cannot preserve lone surrogates. These are
-explicit development gaps, alongside the source streaming defects in D55.
+Native HTTP now selects test context after network and circuit admission and
+before origin contact. Explicit annotations take priority; malformed explicit
+context cannot borrow a declaration. Trusted listener identity supplies the
+evidence owner. Canonical target operands use the policy's typed view, including
+temporal values and reached source errors. A required-context block returns 428
+at the request head, correcting D55. Configured warnings still forward.
+
+The [request application owner](../proxy/src/http/request_context.rs) waits for
+the ingress parser's successful message completion. Small bodies are buffered
+before origin contact; larger bodies stream with bounded evidence retention.
+Neither a body stream ending nor a reset proves parser success. Request metadata
+is installed before content decoding. A decode error preserves forwarding and
+the metadata needed by a later response, while skipping the request event and
+allowed counter. Ordinary evidence write failures do not roll back counters.
+
+The existing connection driver applies request and response effects once.
+Before releasing outgoing request frames, it checks validated completion. An
+origin that waits for the full request therefore cannot overtake its request
+hook. An already-observed early response uses only metadata applied at that time.
+Parser response capture records accepted
+bytes even if the downstream body is unread. Aborts discard pending capture.
+The retained response-header decision honors global/domain SSE options; streamed
+content yields an empty snippet. Content decoding does not change forwarded bytes.
+
+[Native HTTP tests](../tests/proxy_migration/test_http_test_context.py) exercise
+the complete forwarding path. Parser and application tests cover resets,
+unread responses, body replay, counter ordering and evidence failures separately.
+These are implementation evidence. FlowStore and production audit persistence
+remain unconnected. Non-string YAML target keys and lone JSON surrogates remain
+frontend gaps. Late evidence failures cannot change headers already delivered.
+Independent acceptance and production cutover remain outstanding.
 
 The [network guard](../proxy/src/network_guard.rs) returns existing
 warn/block responses and approval/audit intents around the same native policy

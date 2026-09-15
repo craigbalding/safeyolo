@@ -30,7 +30,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::policy::{host_matches, python_whitespace};
+use crate::policy::{Policy, TimestampPaths, host_matches, python_whitespace};
 
 pub const HEADER: &str = "X-SafeYolo-Test-Context";
 pub const CANONICAL_KEYS: [&str; 9] = [
@@ -57,6 +57,8 @@ pub struct ContextError(pub String, ContextErrorKind);
 pub enum ContextErrorKind {
     Value,
     Overflow,
+    Type,
+    Attribute,
     Poisoned,
 }
 impl ContextError {
@@ -255,9 +257,10 @@ impl Default for Options {
         }
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Config {
     targets: Value,
+    target_timestamps: TimestampPaths,
     last_hash: Value,
     options: Options,
     inject: bool,
@@ -267,6 +270,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             targets: json!([]),
+            target_timestamps: TimestampPaths::default(),
             last_hash: json!(""),
             options: Options::default(),
             inject: false,
@@ -276,16 +280,31 @@ impl Default for Config {
 }
 // Keep only the operations this addon actually performs on target_hosts. No
 // eager item validation: a matching prefix prevents reaching later invalid items.
-fn target_count(targets: &Value) -> Result<usize> {
-    match targets {
+fn target_type(message: &'static str) -> ContextError {
+    ContextError(message.into(), ContextErrorKind::Type)
+}
+fn target_attribute() -> ContextError {
+    ContextError(
+        "target pattern has no string lower method".into(),
+        ContextErrorKind::Attribute,
+    )
+}
+fn target_count(config: &Config) -> Result<usize> {
+    if config.target_timestamps.value_at(&[]).is_some() {
+        return Err(target_type("target_hosts has no length"));
+    }
+    match &config.targets {
         Value::String(value) => Ok(value.chars().count()),
         Value::Array(values) => Ok(values.len()),
         Value::Object(values) => Ok(values.len()),
-        _ => Err(invalid("target_hosts has no length")),
+        _ => Err(target_type("target_hosts has no length")),
     }
 }
-fn target_truth(targets: &Value) -> bool {
-    match targets {
+fn target_truth(config: &Config) -> bool {
+    if config.target_timestamps.value_at(&[]).is_some() {
+        return true;
+    }
+    match &config.targets {
         Value::Null => false,
         Value::Bool(value) => *value,
         Value::Number(value) => value.as_f64() != Some(0.),
@@ -294,25 +313,59 @@ fn target_truth(targets: &Value) -> bool {
         Value::Object(values) => !values.is_empty(),
     }
 }
-fn target_matches(targets: &Value, host: &str) -> Result<bool> {
-    match targets {
+fn target_matches(config: &Config, host: &str) -> Result<bool> {
+    if config.target_timestamps.value_at(&[]).is_some() {
+        return Err(target_type("target_hosts is not iterable"));
+    }
+    match &config.targets {
         Value::String(value) => Ok(value
             .chars()
             .any(|pattern| host_matches(host, pattern.encode_utf8(&mut [0; 4])))),
-        Value::Object(values) => Ok(values.keys().any(|pattern| host_matches(host, pattern))),
-        Value::Array(values) => {
-            for pattern in values {
-                let pattern = pattern
-                    .as_str()
-                    .ok_or_else(|| invalid("target pattern has no string lower method"))?;
+        Value::Object(values) => {
+            for pattern in values.keys() {
+                if config.target_timestamps.key_at(&[pattern]).is_some() {
+                    return Err(target_attribute());
+                }
                 if host_matches(host, pattern) {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
-        _ => Err(invalid("target_hosts is not iterable")),
+        Value::Array(values) => {
+            for (index, pattern) in values.iter().enumerate() {
+                if config
+                    .target_timestamps
+                    .value_at(&[&index.to_string()])
+                    .is_some()
+                {
+                    return Err(target_attribute());
+                }
+                let pattern = pattern.as_str().ok_or_else(target_attribute)?;
+                if host_matches(host, pattern) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => Err(target_type("target_hosts is not iterable")),
     }
+}
+// Assignment and hash commit precede the source's diagnostic length access.
+// Failed diagnostics retain the new targets/hash; there is no rollback.
+fn install_targets(
+    config: &mut Config,
+    targets: Value,
+    timestamps: TimestampPaths,
+    hash: Value,
+) -> Result<()> {
+    config.targets = targets;
+    config.target_timestamps = timestamps;
+    config.last_hash = hash;
+    if target_truth(config) {
+        target_count(config)?;
+    }
+    Ok(())
 }
 fn configure_declarations(
     config: &mut Config,
@@ -499,6 +552,64 @@ pub struct Request<'a> {
 }
 pub type Header = (String, Vec<u8>);
 
+/// A selected head decision with no request counters applied yet. The result is
+/// available for immediate head blocking; other metadata must wait for begin at
+/// request EOM. Dropping this non-cloneable permit records no counters.
+#[must_use = "begin at request EOM, or discard on cancellation/early response"]
+pub struct PreparedRequest {
+    owner: TestContext,
+    result: Result<RequestOutcome>,
+    checked: bool,
+}
+impl PreparedRequest {
+    pub fn result(&self) -> &Result<RequestOutcome> {
+        &self.result
+    }
+    /// Enter the source request hook's check/application point. A selected
+    /// post-check error still increments checks; no metadata or audit is emitted
+    /// by this core. Head Block may begin immediately for the no-egress repair.
+    pub fn begin(self) -> Result<RequestApplication> {
+        if self.checked {
+            self.owner.lock()?.stats.checks_total += 1;
+        }
+        Ok(RequestApplication {
+            owner: self.owner,
+            result: self.result,
+        })
+    }
+}
+/// Begun request effects. Publish selected metadata before strict body decoding;
+/// finish only after the source audit submission point returns successfully.
+/// Dropping after decoding/an escaped callback error retains checks alone.
+#[must_use = "finish after successful request audit, or discard on failure"]
+pub struct RequestApplication {
+    owner: TestContext,
+    result: Result<RequestOutcome>,
+}
+impl RequestApplication {
+    pub fn result(&self) -> &Result<RequestOutcome> {
+        &self.result
+    }
+    /// Consume the sole terminal counter permit. Ordinary swallowed audit-sink
+    /// failure is still a successful submission boundary; callers retain their
+    /// evidence-failure signal separately. This never rereads policy/context.
+    pub fn finish(self) -> Result<RequestOutcome> {
+        match &self.result {
+            Ok(RequestOutcome::Applied { applied }) => {
+                let mut state = self.owner.lock()?;
+                state.stats.allowed_total += 1;
+                if applied.source == ContextSource::Declared {
+                    state.stats.declared_injections_total += 1;
+                }
+            }
+            Ok(RequestOutcome::Warn { .. }) => self.owner.lock()?.stats.warned_total += 1,
+            Ok(RequestOutcome::Block { .. }) => self.owner.lock()?.stats.blocked_total += 1,
+            _ => {}
+        }
+        self.result
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct TestContext {
     state: Arc<Mutex<State>>,
@@ -519,8 +630,8 @@ impl TestContext {
     /// source order, before the logging length check. A returned configuration
     /// error can therefore leave new state installed; it is not a rollback.
     /// JSON strings iterate characters, objects iterate keys, and arrays retain
-    /// invalid entries until matching reaches them. Typed non-JSON policy values
-    /// require a provenance-bearing caller seam before transport activation.
+    /// invalid entries until matching reaches them. Parser-owned temporal values
+    /// must use request_current; this JSON facade has no temporal provenance.
     pub fn configure(&self, sensor: Option<&Value>, options: Options) -> Result<()> {
         let mut state = self.lock()?;
         let config = &mut state.config;
@@ -538,14 +649,11 @@ impl TestContext {
                 if section.is_some_and(|section| !section.is_object()) {
                     return Err(invalid("test_context config must be an object"));
                 }
-                config.targets = section
+                let targets = section
                     .and_then(|section| section.get("target_hosts"))
                     .cloned()
                     .unwrap_or(json!([]));
-                config.last_hash = hash;
-                if target_truth(&config.targets) {
-                    target_count(&config.targets)?;
-                }
+                install_targets(config, targets, TimestampPaths::default(), hash)?;
             }
         }
         Ok(())
@@ -624,7 +732,7 @@ impl TestContext {
     }
     pub fn stats(&self, now: f64) -> Result<Stats> {
         let mut state = self.lock()?;
-        let target_hosts = target_count(&state.config.targets)?;
+        let target_hosts = target_count(&state.config)?;
         state.declarations.retain(|_, record| {
             !matches!(
                 now.partial_cmp(&record.expires_at),
@@ -637,22 +745,91 @@ impl TestContext {
         stats.declared_active = state.declarations.len();
         Ok(stats)
     }
-    /// Strip every reserved-header occurrence after target matching succeeds.
-    /// Prior-response bypasses and reached target errors leave headers untouched,
-    /// matching source hook ordering. Duplicate values
-    /// join with comma-space before parsing, matching mitmproxy Headers.get().
+    /// Synchronous successful-hook facade retained for core callers. Transport
+    /// uses prepare_request and begins/finishes at its actual effect boundaries.
     pub fn request(
         &self,
         request: Request<'_>,
         headers: &mut Vec<Header>,
         now: f64,
     ) -> Result<RequestOutcome> {
+        self.prepare_request(request, headers, now)?
+            .begin()?
+            .finish()
+    }
+    /// Synchronous current-policy facade; uses the same selection and phase
+    /// machinery as transport, without changing existing core callers.
+    pub fn request_current(
+        &self,
+        policy: Option<&Policy>,
+        request: Request<'_>,
+        headers: &mut Vec<Header>,
+        now: f64,
+    ) -> Result<RequestOutcome> {
+        self.prepare_request_current(policy, request, headers, now)?
+            .begin()?
+            .finish()
+    }
+    /// Select from already configured targets without incrementing counters.
+    /// Strip all reserved header occurrences after successful target matching;
+    /// prior-response bypass and reached target errors leave them untouched.
+    pub fn prepare_request(
+        &self,
+        request: Request<'_>,
+        headers: &mut Vec<Header>,
+        now: f64,
+    ) -> Result<PreparedRequest> {
         if request.prior_response {
-            return Ok(RequestOutcome::PriorResponse);
+            return Ok(self.prepared(false, Ok(RequestOutcome::PriorResponse)));
         }
         check_time(now)?;
+        self.prepare_inner(&mut *self.lock()?, request, headers, now)
+    }
+    /// Refresh canonical targets and select under the existing state lock. None
+    /// retains prior targets. Declaration defaults/expiries are not refreshed.
+    /// Existing lookup eviction still applies during head selection; the chosen
+    /// context/error is retained and never looked up again at begin or finish.
+    pub fn prepare_request_current(
+        &self,
+        policy: Option<&Policy>,
+        request: Request<'_>,
+        headers: &mut Vec<Header>,
+        now: f64,
+    ) -> Result<PreparedRequest> {
+        if request.prior_response {
+            return Ok(self.prepared(false, Ok(RequestOutcome::PriorResponse)));
+        }
         let mut state = self.lock()?;
-        let target = target_matches(&state.config.targets, request.host)?;
+        if let Some(policy) = policy {
+            let view = policy.test_context_targets();
+            let hash = Value::String(view.hash().to_owned());
+            if hash != state.config.last_hash {
+                install_targets(
+                    &mut state.config,
+                    view.value().cloned().unwrap_or(json!([])),
+                    view.projected_timestamps(),
+                    hash,
+                )?;
+            }
+        }
+        check_time(now)?;
+        self.prepare_inner(&mut state, request, headers, now)
+    }
+    fn prepared(&self, checked: bool, result: Result<RequestOutcome>) -> PreparedRequest {
+        PreparedRequest {
+            owner: self.clone(),
+            result,
+            checked,
+        }
+    }
+    fn prepare_inner(
+        &self,
+        state: &mut State,
+        request: Request<'_>,
+        headers: &mut Vec<Header>,
+        now: f64,
+    ) -> Result<PreparedRequest> {
+        let target = target_matches(&state.config, request.host)?;
         let mut value = Vec::new();
         let mut seen = false;
         for (_, part) in headers
@@ -667,10 +844,23 @@ impl TestContext {
         }
         headers.retain(|(name, _)| !name.eq_ignore_ascii_case(HEADER));
         if !target && value.is_empty() {
-            return Ok(RequestOutcome::NotTargetHost);
+            return Ok(self.prepared(false, Ok(RequestOutcome::NotTargetHost)));
         }
-        state.stats.checks_total += 1;
-        let context = std::str::from_utf8(&value)
+        // Keep errors reached after this boundary inside the permit: beginning
+        // application must still count the check (for example lookup Overflow).
+        Ok(self.prepared(
+            true,
+            Self::select_context(state, request, &value, target, now),
+        ))
+    }
+    fn select_context(
+        state: &mut State,
+        request: Request<'_>,
+        value: &[u8],
+        target: bool,
+        now: f64,
+    ) -> Result<RequestOutcome> {
+        let context = std::str::from_utf8(value)
             .ok()
             .and_then(|value| Context::parse(value).ok());
         let resolved_agent = (target && value.is_empty() && state.config.inject)
@@ -683,14 +873,13 @@ impl TestContext {
                 request.metadata_agent,
             ))
         } else if !target {
-            state.stats.warned_total += 1;
             return Ok(RequestOutcome::Warn {
                 reason: Reason::MalformedOptionalContext,
                 resolved_agent: None,
             });
         } else if value.is_empty() && state.config.inject {
             match request.identity {
-                Some(identity) => lookup(&mut state, identity, now)?.map(|record| {
+                Some(identity) => lookup(state, identity, now)?.map(|record| {
                     apply_context(
                         record.context,
                         ContextSource::Declared,
@@ -703,10 +892,6 @@ impl TestContext {
             None
         };
         if let Some(applied) = applied {
-            state.stats.allowed_total += 1;
-            if applied.source == ContextSource::Declared {
-                state.stats.declared_injections_total += 1;
-            }
             return Ok(RequestOutcome::Applied { applied });
         }
         let reason = if value.is_empty() {
@@ -715,7 +900,6 @@ impl TestContext {
             Reason::MalformedContext
         };
         if state.config.options.block {
-            state.stats.blocked_total += 1;
             let body = json!({"error":"Test context required","type":reason,"destination":request.host,"action":"add_header","header":HEADER,
                 "format":"run=<run_id>;agent=<agent_id>;test=<test_id>","example":format!("{HEADER}: run=sec1;agent=idor;test=IDOR-003"),
                 "reflection":format!("Add {HEADER} header to link this request to your test activity.")});
@@ -726,7 +910,6 @@ impl TestContext {
                 body,
             })
         } else {
-            state.stats.warned_total += 1;
             Ok(RequestOutcome::Warn {
                 reason,
                 resolved_agent,
@@ -987,3 +1170,11 @@ mod declaration_tests;
 #[cfg(test)]
 #[path = "test_context/settings_tests.rs"]
 mod settings_tests;
+
+#[cfg(test)]
+#[path = "test_context/typed_target_tests.rs"]
+mod typed_target_tests;
+
+#[cfg(test)]
+#[path = "test_context/phase_tests.rs"]
+mod phase_tests;

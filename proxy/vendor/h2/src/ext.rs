@@ -1,9 +1,15 @@
 //! Extensions specific to the HTTP/2 protocol.
 
 mod completion;
+mod request_completion;
+pub(crate) use request_completion::{register_request_completion, RequestCompletionProducer};
+pub use request_completion::{take_request_completion, RequestAborted, RequestCompletion};
 
 pub(crate) use completion::ResponseCompletionProducer;
-pub use completion::{on_response_complete, Aborted, ResponseCompletion};
+pub use completion::{
+    on_response_complete, on_response_complete_with_capture, Aborted, ResponseBodyCapture,
+    ResponseCompletion,
+};
 
 use crate::hpack::BytesStr;
 
