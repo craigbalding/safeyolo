@@ -75,7 +75,8 @@ def wait_ready(process, paths, log, *, readiness_file=None):
 
 @contextmanager
 def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=False, upstream_ca=None,
-                 ignore_hosts=(), eager_connect=False, inspection=None):
+                 ignore_hosts=(), eager_connect=False, inspection=None, native_policy=False,
+                 network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     directory.mkdir(parents=True, exist_ok=True)
     policy = directory / "policy.toml"
@@ -90,6 +91,11 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         }
         if inspection is not None:
             config["inspection"] = {"policy_file": str(policy), **inspection}
+        for name, value in (("network_guard_enabled", network_guard_enabled),
+                            ("network_guard_block", network_guard_block),
+                            ("network_guard_homoglyph", network_guard_homoglyph)):
+            if value is not None:
+                config[name] = value
         if upstream_ca:
             config["upstream_ca_file"] = str(upstream_ca)
         env = {**os.environ,
@@ -109,15 +115,18 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             command = [sys.executable, "-m", "tests.proxy_migration.old_proxy"]
         elif backend == "rust":
             config["ignore_hosts"] = list(ignore_hosts)
-            policy_socket = str(Path(sockets) / "policy.sock")
-            bridge_directory = directory / "policy-bridge"
-            bridge_directory.mkdir()
-            bridge = stack.enter_context(child_process(
-                [sys.executable, str(REPO / "tools/proxy_migration/temporary_policy.py"),
-                 "--socket", policy_socket, "--policy", str(policy)], bridge_directory, env,
-            ))
-            wait_ready(bridge, [Path(policy_socket)], bridge_directory / "process.log")
-            config["temporary_policy_socket"] = policy_socket
+            if native_policy:
+                config["policy_file"] = str(policy)
+            else:
+                policy_socket = str(Path(sockets) / "policy.sock")
+                bridge_directory = directory / "policy-bridge"
+                bridge_directory.mkdir()
+                bridge = stack.enter_context(child_process(
+                    [sys.executable, str(REPO / "tools/proxy_migration/temporary_policy.py"),
+                     "--socket", policy_socket, "--policy", str(policy)], bridge_directory, env,
+                ))
+                wait_ready(bridge, [Path(policy_socket)], bridge_directory / "process.log")
+                config["temporary_policy_socket"] = policy_socket
             if tls:
                 config["tls_ca_file"] = str(directory / "ca/mitmproxy-ca.pem")
             binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", str(REPO / "proxy/target/debug/safeyolo-proxy")))

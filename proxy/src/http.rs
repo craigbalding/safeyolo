@@ -101,8 +101,10 @@ struct PolicyDecision {
 #[derive(Clone)]
 pub(crate) struct Destination {
     host: String,
+    policy_host: String,
     port: u16,
     authority: String,
+    uri_authority: String,
     scheme: String,
     path: String,
 }
@@ -115,27 +117,37 @@ pub(crate) struct Tunnel {
 }
 
 impl Destination {
-    fn from_request(
-        request: &Request<Incoming>,
-        tunnel: Option<&Destination>,
-    ) -> Result<Self, Error> {
+    fn from_request<B>(request: &Request<B>, tunnel: Option<&Destination>) -> Result<Self, Error> {
         if request.headers().get_all(header::HOST).iter().count() > 1 {
             return Err("multiple Host headers are ambiguous".into());
         }
         let uri = request.uri();
-        let authority = if let Some(authority) = uri.authority() {
-            authority.clone()
+        let (authority, source_host, wire_authority) = if let Some(authority) = uri.authority() {
+            (
+                authority.clone(),
+                authority.host().trim_matches(['[', ']']).to_owned(),
+                authority.to_string(),
+            )
         } else {
-            request
+            let value = request
                 .headers()
                 .get(header::HOST)
-                .ok_or("missing request authority")?
-                .to_str()?
-                .parse::<hyper::http::uri::Authority>()?
+                .ok_or("missing request authority")?;
+            let (authority, host) = host_header_authority(value)?;
+            (
+                authority,
+                host,
+                std::str::from_utf8(value.as_bytes())?.to_owned(),
+            )
         };
         if authority.as_str().contains('@') {
             return Err("request authority cannot contain user information".into());
         }
+        let policy_host = policy_hostname(
+            &source_host,
+            uri.authority().is_some(),
+            request.version() != hyper::Version::HTTP_2 && uri.scheme().is_some(),
+        )?;
         let host = authority
             .host()
             .trim_matches(['[', ']'])
@@ -165,7 +177,8 @@ impl Destination {
         if request.version() == hyper::Version::HTTP_2
             && let Some(host) = request.headers().get(header::HOST)
         {
-            let host = host.to_str()?.parse::<hyper::http::uri::Authority>()?;
+            let (host, source_host) = host_header_authority(host)?;
+            validate_hostname(&source_host)?;
             let host_port =
                 crate::config::authority_port(&host, if scheme == "https" { 443 } else { 80 })?;
             if host.as_str().contains('@')
@@ -180,15 +193,77 @@ impl Destination {
         }
         Ok(Self {
             host,
+            policy_host,
             port,
-            authority: authority.to_string(),
+            authority: wire_authority,
+            uri_authority: authority.to_string(),
             scheme,
             path: uri.path_and_query().map_or("/", |p| p.as_str()).to_owned(),
         })
     }
 }
 
-/// Constructed only after the temporary production policy returns allow.
+/// Origin-form Host fields accept UTF-8 in the source stack. Keep their wire
+/// spelling while using IDNA bytes where the HTTP URI grammar requires ASCII.
+fn host_header_authority(
+    value: &header::HeaderValue,
+) -> Result<(hyper::http::uri::Authority, String), Error> {
+    let source = std::str::from_utf8(value.as_bytes())?;
+    if source.is_ascii() {
+        let authority = source.parse::<hyper::http::uri::Authority>()?;
+        let host = authority.host().trim_matches(['[', ']']).to_owned();
+        return Ok((authority, host));
+    }
+    // Unicode hostnames cannot be IPv6 literals. Hyper still validates the
+    // encoded authority and its port after the source hostname is checked.
+    let (host, suffix) = source
+        .split_once(':')
+        .map_or((source, ""), |(host, _)| (host, &source[host.len()..]));
+    validate_hostname(host)?;
+    let encoded = crate::host_names::encode_idna2003(host)?;
+    let authority = format!("{encoded}{suffix}").parse()?;
+    Ok((authority, host.to_owned()))
+}
+
+/// Match the source sensor's request-form distinction before routing folds case.
+fn policy_hostname(host: &str, byte_authority: bool, absolute_form: bool) -> Result<String, Error> {
+    let decoded = if byte_authority {
+        crate::host_names::decode_idna2003(host.as_bytes())?
+    } else {
+        host.to_owned()
+    };
+    validate_hostname(&decoded)?;
+    // Source absolute-URL parsing also validates urllib's lowercase hostname.
+    if absolute_form {
+        validate_hostname(&host.to_ascii_lowercase())?;
+    }
+    Ok(decoded)
+}
+
+fn validate_hostname(host: &str) -> Result<(), Error> {
+    let encoded = crate::host_names::encode_idna2003(host)?;
+    crate::host_names::decode_idna2003(encoded.as_bytes())?;
+    let labels = encoded.strip_suffix('.').unwrap_or(&encoded);
+    let dns = labels.split('.').all(|label| {
+        (1..=63).contains(&label.len())
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    });
+    let ip = encoded.parse::<std::net::IpAddr>().is_ok()
+        || encoded.split_once('%').is_some_and(|(address, scope)| {
+            !scope.is_empty()
+                && !scope.contains('%')
+                && address.parse::<std::net::Ipv6Addr>().is_ok()
+        });
+    if encoded.len() <= 255 && (dns || ip) {
+        Ok(())
+    } else {
+        Err("invalid request hostname".into())
+    }
+}
+
+/// Constructed only after the configured network guard permits this request.
 struct AllowedRequest<'a> {
     destination: &'a Destination,
     identity: &'a ConnectionIdentity,
@@ -345,11 +420,67 @@ async fn open_outbound(
 }
 
 async fn decide(runtime: &Runtime, request: &PolicyRequest<'_>) -> Result<PolicyDecision, Error> {
+    if let Some(policy) = &runtime.policy {
+        use crate::network_guard::{Identity, Options, OutcomeKind, Pdp, Request};
+
+        let outcome = runtime.network_guard.enforce(
+            Pdp::Ready(policy),
+            Request {
+                identity: Identity::Resolved(request.agent_id),
+                host: request.host,
+                decode_ace_for_inspection: true,
+                port: request.port,
+                method: request.method,
+                path: request.path,
+                scheme: request.scheme,
+                request_id: Some(request.request_id),
+                connection_id: request.connection_id,
+                prior_response: false,
+            },
+            Options {
+                enabled: runtime.config.network_guard_enabled,
+                block: runtime.config.network_guard_block,
+                homoglyph: runtime.config.network_guard_homoglyph,
+            },
+            crate::policy::current_time_ms(),
+        )?;
+        // Development guard evidence excludes the URL query and application
+        // bytes. Production audit persistence and approval consumption follow.
+        runtime.record(json!({
+            "event": "proxy.network_guard", "agent": request.agent_id,
+            "connection_id": request.connection_id, "request_id": request.request_id,
+            "host": request.host, "port": request.port,
+            "outcome": outcome.kind, "trace": outcome.trace,
+            "audit": outcome.audit, "metadata": outcome.metadata, "pdp": outcome.pdp,
+        }))?;
+        let allow = outcome.kind != OutcomeKind::Blocked;
+        let (status, headers, body) = match outcome.response {
+            Some(response) => {
+                let body = String::from_utf8(response.body_bytes())?;
+                (Some(response.status), response.headers, Some(body))
+            }
+            None => (None, Vec::new(), None),
+        };
+        return Ok(PolicyDecision {
+            allow,
+            decision: if allow { "allow" } else { "deny" }.into(),
+            status,
+            headers,
+            body,
+        });
+    }
     // The temporary adapter has one policy/state owner. Queue here instead of
     // overflowing its Unix accept queue or replaying a charged decision. The
     // lock is shared across reload snapshots and released on cancellation.
     let _policy_guard = runtime.temporary_policy_lock.lock().await;
-    let socket = UnixStream::connect(&runtime.config.temporary_policy_socket).await?;
+    let socket = UnixStream::connect(
+        runtime
+            .config
+            .temporary_policy_socket
+            .as_deref()
+            .ok_or("policy is not configured")?,
+    )
+    .await?;
     let (mut sender, connection) =
         hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;
     let _task = HttpTask(tokio::spawn(async move {
@@ -479,7 +610,7 @@ async fn forward(
             } else {
                 &destination.scheme
             },
-            host: &destination.host,
+            host: &destination.policy_host,
             port: destination.port,
             path: if request.method() == Method::CONNECT {
                 ""
@@ -496,7 +627,7 @@ async fn forward(
     )
     .await?;
     if decision.allow != (decision.decision == "allow") {
-        return Err("inconsistent temporary policy decision".into());
+        return Err("inconsistent policy decision".into());
     }
     if !decision.allow {
         let status = StatusCode::from_u16(decision.status.unwrap_or(403))?;
@@ -651,7 +782,7 @@ async fn forward(
     {
         format!(
             "{}://{}{}",
-            destination.scheme, destination.authority, destination.path
+            destination.scheme, destination.uri_authority, destination.path
         )
         .parse::<Uri>()?
     } else {
@@ -841,10 +972,14 @@ pub(crate) fn serve_request(
         if let Err(error) = runtime.record(json!({
             "event": "proxy.request", "agent": identity.agent_id,
             "connection_id": identity.connection_id, "request_id": request_id,
-            "host": destination.as_ref().ok().map(|d| &d.host),
+            "host": destination.as_ref().ok().map(|d| &d.policy_host),
             "port": destination.as_ref().ok().map(|d| d.port),
             "status": reply.status().as_u16(), "decision": decision,
-            "coverage": "temporary_network_policy_only",
+            "coverage": if runtime.policy.is_some() {
+                "native_network_guard_only"
+            } else {
+                "temporary_network_policy_only"
+            },
         })) {
             eprintln!("request evidence write failed: {error}");
             reply
@@ -856,4 +991,66 @@ pub(crate) fn serve_request(
             .insert("x-safeyolo-request-id", request_id.parse().unwrap());
         Ok(reply)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_hostnames_match_pinned_sensor_witnesses() {
+        let witnesses: serde_json::Value = serde_json::from_str(include_str!(
+            "../data/host_names/source-host-witnesses.json"
+        ))
+        .unwrap();
+        let rows = witnesses["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 155);
+        for row in rows {
+            let hex = row["input_authority_hex"].as_str().unwrap();
+            let bytes: Vec<_> = (0..hex.len())
+                .step_by(2)
+                .map(|offset| u8::from_str_radix(&hex[offset..offset + 2], 16).unwrap())
+                .collect();
+            let output = (|| -> Result<Destination, Error> {
+                let form = row["form"].as_str().unwrap();
+                let mut builder = Request::builder();
+                if form.starts_with("h2_") {
+                    builder = builder.version(hyper::Version::HTTP_2);
+                }
+                builder = match form {
+                    "absolute" | "h2_authority" => {
+                        builder.uri(format!("http://{}/p", std::str::from_utf8(&bytes)?))
+                    }
+                    "connect" => builder
+                        .method(Method::CONNECT)
+                        .uri(std::str::from_utf8(&bytes)?),
+                    "origin" | "h2_host_fallback" => builder
+                        .uri("/p")
+                        .header(header::HOST, header::HeaderValue::from_bytes(&bytes)?),
+                    _ => panic!("unknown witness form"),
+                };
+                Destination::from_request(&builder.body(())?, None)
+            })();
+            assert_eq!(
+                output.is_ok(),
+                row["source_validation_passed"].as_bool().unwrap(),
+                "{row}"
+            );
+            if let Ok(destination) = output {
+                assert_eq!(
+                    destination.policy_host,
+                    row["policy_host"].as_str().unwrap(),
+                    "{row}"
+                );
+                assert_eq!(
+                    destination.port,
+                    row["port"].as_u64().unwrap() as u16,
+                    "{row}"
+                );
+                assert_eq!(destination.authority.as_bytes(), bytes, "{row}");
+                assert!(destination.host.is_ascii());
+                assert!(destination.uri_authority.is_ascii());
+            }
+        }
+    }
 }

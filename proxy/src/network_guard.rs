@@ -1,4 +1,4 @@
-//! Inactive network guard presentation over the single native policy engine.
+//! Network guard presentation over the single native policy engine.
 //!
 //! The caller supplies request-boundary trusted identity and correlation IDs.
 //! This module never reads identity headers, connects upstream, emits audit
@@ -50,6 +50,9 @@ pub struct Request<'a> {
     /// Same decoded hostname supplied by the old HTTP sensor. No normalization
     /// happens here: transport must preserve its separate wire target.
     pub host: &'a str,
+    /// Decode DNS ACE labels consistently after configured bypass checks.
+    /// Policy matching and audit attribution keep the source host above.
+    pub decode_ace_for_inspection: bool,
     pub port: u16,
     pub method: &'a str,
     pub path: &'a str,
@@ -305,8 +308,8 @@ impl NetworkGuard {
             Some(Violation::Deny(
                 "Trusted agent identity sources disagree (fail-closed)".into(),
             ))
-        } else if options.homoglyph && dangerous_domain(request.host) {
-            Some(Violation::Homoglyph)
+        } else if let Some(violation) = hostname_violation(request, options.homoglyph) {
+            Some(violation)
         } else if matches!(pdp, Pdp::Unconfigured) {
             Some(Violation::Deny("PDP not configured (fail-closed)".into()))
         } else {
@@ -515,6 +518,37 @@ enum Violation {
     Homoglyph,
     Budget(String),
     Prompt,
+}
+
+fn hostname_violation(request: Request<'_>, enabled: bool) -> Option<Violation> {
+    if !enabled {
+        return None;
+    }
+    let mut decoded = String::new();
+    let domain = if request.decode_ace_for_inspection {
+        // ACE case and HTTP request form do not change the represented Unicode
+        // characters. This decoding never changes policy matching or routing.
+        for (index, label) in request.host.split('.').enumerate() {
+            if index != 0 {
+                decoded.push('.');
+            }
+            if label
+                .get(..4)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("xn--"))
+            {
+                match crate::host_names::decode_punycode_label(&label[4..]) {
+                    Ok(label) => decoded.push_str(&label),
+                    Err(_) => return Some(Violation::Deny("Hostname inspection failed".into())),
+                }
+            } else {
+                decoded.push_str(label);
+            }
+        }
+        decoded.as_str()
+    } else {
+        request.host
+    };
+    dangerous_domain(domain).then_some(Violation::Homoglyph)
 }
 
 fn evaluate_policy(policy: &Policy, request: Request<'_>, now_ms: f64) -> PdpDecision {

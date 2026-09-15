@@ -27,7 +27,14 @@ pub struct Inspection {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub listeners: Vec<AgentListener>,
-    pub temporary_policy_socket: PathBuf,
+    pub temporary_policy_socket: Option<PathBuf>,
+    pub policy_file: Option<PathBuf>,
+    #[serde(default = "enabled")]
+    pub network_guard_enabled: bool,
+    #[serde(default = "enabled")]
+    pub network_guard_block: bool,
+    #[serde(default = "enabled")]
+    pub network_guard_homoglyph: bool,
     pub readiness_file: PathBuf,
     pub event_log: PathBuf,
     pub parent_proxy: Option<String>,
@@ -38,6 +45,10 @@ pub struct Config {
     pub ignore_hosts: Vec<String>,
     pub via_token: Option<String>,
     pub inspection: Option<Inspection>,
+}
+
+fn enabled() -> bool {
+    true
 }
 
 #[derive(Clone)]
@@ -73,17 +84,20 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
+        if self.temporary_policy_socket.is_some() == self.policy_file.is_some() {
+            return Err("configure exactly one policy_file or temporary_policy_socket".into());
+        }
         let mut paths = HashSet::new();
         for listener in &self.listeners {
             if listener.agent_id.is_empty() || !paths.insert(&listener.socket_path) {
                 return Err("listeners need an agent identity and a unique socket path".into());
             }
         }
-        for path in [
-            &self.temporary_policy_socket,
-            &self.readiness_file,
-            &self.event_log,
-        ] {
+        for path in [&self.readiness_file, &self.event_log]
+            .into_iter()
+            .chain(self.temporary_policy_socket.iter())
+            .chain(self.policy_file.iter())
+        {
             if !paths.insert(path) {
                 return Err("listener, policy, readiness and event paths must be distinct".into());
             }

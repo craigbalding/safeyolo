@@ -1263,7 +1263,7 @@ pub(crate) fn python_whitespace(character: char) -> bool {
     character.is_whitespace() || matches!(character, '\u{1c}'..='\u{1f}')
 }
 
-fn current_time_ms() -> f64 {
+pub(crate) fn current_time_ms() -> f64 {
     time::OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1_000_000.0
 }
 

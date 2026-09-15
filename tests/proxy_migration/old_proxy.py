@@ -90,6 +90,9 @@ async def run(config):
         RequestIdGenerator(), AgentAPIRequestGuard(), NetworkGuard(),
         SSEStreaming(), ProbeSink(), TransportGuard(),
     )
+    master.options.update(**{name: config[name] for name in (
+        "network_guard_enabled", "network_guard_block", "network_guard_homoglyph",
+    ) if name in config})
     if inspection := config.get("inspection"):
         # The scanner obtains the real LocalPolicyClient sensor projection;
         # its policy source is the same one used by NetworkGuard in this seam.

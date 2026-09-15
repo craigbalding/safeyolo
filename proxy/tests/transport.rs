@@ -94,7 +94,11 @@ fn config(directory: &TempDir) -> Config {
                 socket_path: directory.path().join(format!("{agent}.sock")),
             })
             .collect(),
-        temporary_policy_socket: directory.path().join("policy.sock"),
+        temporary_policy_socket: Some(directory.path().join("policy.sock")),
+        policy_file: None,
+        network_guard_enabled: true,
+        network_guard_block: true,
+        network_guard_homoglyph: true,
         readiness_file: directory.path().join("ready.json"),
         event_log: directory.path().join("events.jsonl"),
         parent_proxy: None,
@@ -155,7 +159,7 @@ async fn opaque_connect_preserves_each_tcp_half_close() {
     for server_half_first in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let config = config(&directory);
-        let _policy = Policy::start(&config.temporary_policy_socket).await;
+        let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let authority = listener.local_addr().unwrap().to_string();
         let payload = vec![0; 1024 * 1024];
@@ -229,7 +233,7 @@ async fn opaque_connect_preserves_each_tcp_half_close() {
 async fn opaque_connect_uses_parent_tunnel_and_denial_never_dials() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     config.parent_proxy = Some(format!("http://{}", listener.local_addr().unwrap()));
     let contacts = Arc::new(AtomicUsize::new(0));
@@ -285,7 +289,7 @@ async fn opaque_disconnect_and_shutdown_release_the_destination() {
     for shutdown in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let config = config(&directory);
-        let _policy = Policy::start(&config.temporary_policy_socket).await;
+        let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let authority = listener.local_addr().unwrap().to_string();
         let origin = tokio::spawn(async move {
@@ -325,7 +329,7 @@ async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_soc
     {
         let directory = tempfile::tempdir().unwrap();
         let config = config(&directory);
-        let policy = Policy::start(&config.temporary_policy_socket).await;
+        let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let authority = listener.local_addr().unwrap().to_string();
         let origin = tokio::spawn(async move {
@@ -390,7 +394,7 @@ async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_soc
 async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let policy = Policy::start(&config.temporary_policy_socket).await;
+    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let proxy_ca = interception_ca(&directory, &mut config);
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -529,7 +533,7 @@ async fn origin() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
 async fn two_agents_cannot_spoof_identity_and_denied_requests_never_reach_egress() {
     let directory = tempfile::tempdir().unwrap();
     let config = config(&directory);
-    let policy = Policy::start(&config.temporary_policy_socket).await;
+    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let proxy = Proxy::start(config.clone()).await.unwrap();
     let (authority, contacts, origin) = origin().await;
     let target = format!("http://{authority}/signed?a=1&a=2&value=%2F");
@@ -622,7 +626,7 @@ async fn reserved_and_invalid_requests_stay_local_even_without_the_adapter() {
 async fn configured_parent_receives_absolute_target_without_origin_dns() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let parent = TcpListener::bind("127.0.0.1:0").await.unwrap();
     config.parent_proxy = Some(format!("http://{}", parent.local_addr().unwrap()));
     let parent_task = tokio::spawn(async move {
@@ -676,7 +680,7 @@ async fn configured_parent_receives_absolute_target_without_origin_dns() {
 async fn reserved_root_dot_aliases_never_expose_tokens_to_a_parent() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let policy = Policy::start(&config.temporary_policy_socket).await;
+    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let (parent_address, accepted, parent_task) = origin().await;
     config.parent_proxy = Some(format!("http://{parent_address}"));
     let proxy = Proxy::start(config.clone()).await.unwrap();
@@ -712,7 +716,7 @@ async fn reserved_root_dot_aliases_never_expose_tokens_to_a_parent() {
 async fn duplicate_host_headers_are_rejected_before_policy_or_parent_contact() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let policy = Policy::start(&config.temporary_policy_socket).await;
+    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let (parent_address, accepted, parent_task) = origin().await;
     config.parent_proxy = Some(format!("http://{parent_address}"));
     let proxy = Proxy::start(config.clone()).await.unwrap();
@@ -738,7 +742,7 @@ async fn duplicate_host_headers_are_rejected_before_policy_or_parent_contact() {
 async fn reload_adds_removes_and_reassigns_listeners_without_changing_inflight_identity() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let policy = Policy::start(&config.temporary_policy_socket).await;
+    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let mut proxy = Proxy::start(config.clone()).await.unwrap();
     let (authority, contacts, origin) = origin().await;
     let alice_path = config.listeners[0].socket_path.clone();
@@ -785,7 +789,7 @@ async fn reload_adds_removes_and_reassigns_listeners_without_changing_inflight_i
 async fn upstream_response_streams_early_and_disconnect_closes_the_upstream() {
     let directory = tempfile::tempdir().unwrap();
     let config = config(&directory);
-    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let authority = origin.local_addr().unwrap();
     let origin_task = tokio::spawn(async move {
@@ -850,7 +854,7 @@ async fn failed_start_preserves_existing_files_and_live_sockets() {
 async fn https_parent_case(certificate_host: &str, trust_certificate: bool, expected_status: u16) {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec![certificate_host.to_owned()]).unwrap();
     if trust_certificate {
@@ -1036,7 +1040,7 @@ impl Drop for PausedBody {
 async fn http2_stream_lifecycle(cancel_response: bool) {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let ca = interception_ca(&directory, &mut config);
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -1173,7 +1177,7 @@ async fn http2_shutdown_drains_a_paused_response() {
 async fn intercepted_https_pins_authority_and_checks_inner_policy_before_delivery() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let policy = Policy::start(&config.temporary_policy_socket).await;
+    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let ca = interception_ca(&directory, &mut config);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -1278,7 +1282,7 @@ async fn intercepted_https_origin_case(
 ) {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let ca = interception_ca(&directory, &mut config);
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec![cert_host.into()]).unwrap();
@@ -1384,7 +1388,7 @@ async fn intercepted_https_verifies_origin_and_parent_connect_without_fallback()
 async fn intercepted_https_drains_an_active_response_during_shutdown() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let ca = interception_ca(&directory, &mut config);
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -1468,7 +1472,7 @@ async fn intercepted_https_drains_an_active_response_during_shutdown() {
 async fn shutdown_cancels_an_idle_intercepted_connection() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let ca = interception_ca(&directory, &mut config);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let authority = format!("localhost:{}", listener.local_addr().unwrap().port());
@@ -1503,7 +1507,7 @@ async fn adapter_failure_closes_locally_without_outbound_contact() {
     )
     .await;
     assert!(reply.starts_with("HTTP/1.1 502"));
-    let _policy = Policy::start(&config.temporary_policy_socket).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let inconsistent = request(
         &config.listeners[0].socket_path,
         "http://must-not-resolve.invalid/inconsistent",

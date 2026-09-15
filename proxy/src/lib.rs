@@ -1,5 +1,6 @@
 //! Development proxy: trusted UDS ingress, HTTP/TLS and admitted CONNECT streams.
-//! The temporary Python network decision bridge is required; this is not production parity.
+//! Network policy runs natively or through an explicitly configured temporary
+//! Python bridge. The development pipeline does not yet have production parity.
 
 pub mod approvals;
 pub mod circuits;
@@ -9,6 +10,7 @@ pub mod credential_guard;
 pub mod credential_injection;
 pub mod credentials;
 pub mod grants;
+pub mod host_names;
 mod http;
 pub mod inspection;
 pub mod network_guard;
@@ -64,6 +66,8 @@ pub(crate) struct Runtime {
     certificate_authority: Option<Arc<tls::CertificateAuthority>>,
     passthrough: tunnels::Passthrough,
     scanner: inspection::Scanner,
+    policy: Option<policy::Policy>,
+    network_guard: network_guard::NetworkGuard,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -75,8 +79,22 @@ impl Runtime {
         config: Config,
         default_via: &str,
         temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
+        previous: Option<&Runtime>,
     ) -> Result<Self, Error> {
         config.validate()?;
+        let policy = config
+            .policy_file
+            .as_ref()
+            .map(
+                |path| match previous.and_then(|runtime| runtime.policy.as_ref()) {
+                    Some(policy) => policy.reload_from_path_at(path, policy::current_time_ms()),
+                    None => policy::Policy::from_path(path),
+                },
+            )
+            .transpose()?;
+        let network_guard = previous
+            .map(|runtime| runtime.network_guard.clone())
+            .unwrap_or_default();
         let scanner = inspection::Scanner::default();
         if let Some(inspection) = &config.inspection {
             let source = std::fs::read_to_string(&inspection.policy_file)?;
@@ -117,6 +135,8 @@ impl Runtime {
             certificate_authority,
             passthrough,
             scanner,
+            policy,
+            network_guard,
             via_token: config
                 .via_token
                 .clone()
@@ -345,6 +365,7 @@ impl Proxy {
             config.clone(),
             &default_via,
             temporary_policy_lock.clone(),
+            None,
         )?);
         let mut proxy = Self {
             runtime: Arc::new(RwLock::new(runtime)),
@@ -428,10 +449,16 @@ impl Proxy {
     }
 
     pub async fn reload(&mut self, config: Config) -> Result<(), Error> {
+        let previous = self
+            .runtime
+            .read()
+            .map_err(|_| "runtime read lock poisoned")?
+            .clone();
         let runtime = Arc::new(Runtime::new(
             config.clone(),
             &self.default_via,
             self.temporary_policy_lock.clone(),
+            Some(&previous),
         )?);
         // Once topology changes begin, readiness is re-published only after commit.
         clear_readiness(&self.readiness_file, &self.default_via);

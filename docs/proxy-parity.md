@@ -12,11 +12,11 @@ must identify the source commit, backend, platform, dependency versions, exact
 test selection and results. Future checks are marked **required**. No production
 deletion is authorized by the inventory alone. Acceptance applies only to the reviewed revision and scope.
 
-The initial Rust development slice covers trusted Unix domain socket (UDS)
-ingress and basic HTTP through a temporary Python network policy adapter.
-An optional CA file now enables a development HTTPS path. Native network,
-approval and service-contract modules are tested separately and remain inactive
-in the transport path while their remaining policy/state contracts are implemented.
+The Rust development slice covers trusted Unix domain socket (UDS) ingress,
+HTTP and explicitly selected native network policy. The temporary Python network
+policy adapter remains an explicit development option. An optional CA file enables
+a development HTTPS path. Approval and service-contract modules are tested
+separately and remain inactive in transport while their state contracts are implemented.
 Unsupported internal APIs return a local error. That response proves
 containment only; it does not establish API parity or a healthy inspection
 pipeline. The production Python proxy remains necessary until the retained
@@ -337,6 +337,7 @@ silently reduce accepted message sizes to a library default.
 | D37 | Concurrent Python OAuth refreshes can post the same refresh token twice and let the older response overwrite the newer result. A completed request can also overwrite an intervening credential edit. Expiry or save failure can leave the access token changed in memory before publication succeeds. | The inactive native refresh module shares one attempt per credential across coordinator clones. Vault-bound revisions reject superseded responses. Full response validation and encrypted write rollback retain the previous record on failure. Real Python protocol and concurrency oracles establish the source behavior; independent native recheck and transport integration remain required. |
 | D38 | A native rollback could mark stale memory as current: capture credential A, externally replace or remove it, then fail an unrelated local write's activation. Rollback restored the external file but associated its new file stamp with A. A later conditional publication could overwrite the external edit. | Rollback updates the active file stamp only when the restored bytes previously corresponded to the active snapshot. Otherwise it preserves the detectable stale state until reload. A regression reproduced the overwrite before repair and covers external edits/removals; ordinary rollback still preserves valid retry revisions. This is a native repair, without a cross-process locking guarantee. |
 | D39 | The Python gateway can render an additional HTTP header from a credential value containing CRLF. A controlled gateway/Vault case demonstrates the extra field on the resulting request. | Native injection validates the replacement header name and value before removing the gateway token. Invalid material returns a content-free error and leaves input headers intact. A regression exercises the actual source defect and the native rejection; this malformed-header behavior is not a compatibility requirement. |
+| D40 | The Python hostname sensor decodes lowercase ACE in absolute-form requests but preserves uppercase ACE and origin-form ACE. The same mixed-script DNS name therefore blocks in one spelling and reaches an owned parent in the other two. Uppercase ACE can also pass source validation when its decoded text fails IDNA2003 roundtrip checks. | Native network inspection decodes ACE consistently after configured bypass and identity checks. Policy matching and audit keep the source hostname. Raw-decodable mixed-script labels receive the existing homoglyph response; decoding failure receives the existing deny/warn response with a content-free inspection error. Explicit disable and configured bypass keep their order. The source's strict codec remains a separate tested primitive; this repair does not replace it with UTS46. |
 | D41 | Python 3.12's search prefilter uses Unicode negative categories for some scoped-ASCII patterns. For example, search for `(?a:\W)` misses `é`, while fullmatch and anchored search match it. The actual matching instruction uses the correct ASCII category. | Native inspection follows the configured ASCII rule. A regression blocks these matching messages, and the source prefilter defect remains a separate classification in the differential matrix. This correction changes inspection results without adding a policy rule. |
 
 ## Deletion map and evidence still required
@@ -450,10 +451,12 @@ uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
 uv run --frozen pytest -q tests/test_rust_temporary_policy.py
 ```
 
-The Rust fixture launches `safeyolo-proxy --config PATH` and a separately
-named [temporary network-policy adapter](../tools/proxy_migration/temporary_policy.py).
-The JSON configuration provides `listeners` with `agent_id` and `socket_path`,
-`temporary_policy_socket`, `readiness_file` and `event_log`. Optional
+The Rust fixture launches `safeyolo-proxy --config PATH`. The JSON configuration
+provides `listeners` with `agent_id` and `socket_path`, `readiness_file` and
+`event_log`. Select exactly one of `policy_file` for native network policy or
+`temporary_policy_socket` for the separately named
+[temporary network-policy adapter](../tools/proxy_migration/temporary_policy.py).
+The native-policy fixture starts no Python adapter. Optional
 `parent_proxy`, `upstream_ca_file` and `via_token` select upstream transport.
 `tls_ca_file` selects an existing combined CA PEM for the development HTTPS path.
 The listener configuration supplies identity; request headers cannot select it.
@@ -463,8 +466,34 @@ The adapter socket is private host state and must remain outside agent mounts.
 The adapter receives header names and request metadata, never header values or
 body bytes. It uses the existing Python policy decision point in blocking mode.
 It does not supply credential inspection, service operations or the complete
-NetworkGuard response and approval workflow. The Rust binary therefore remains
-a development slice; its Python dependency is explicit and temporary.
+NetworkGuard response and approval workflow.
+
+Native policy uses the existing Rust policy matcher and network guard once per
+request. The source options `network_guard_enabled`, `network_guard_block` and
+`network_guard_homoglyph` default to true. Valid reloads retain shared policy
+budgets and guard counters; invalid configuration keeps the previous runtime.
+Native guard responses preserve the source JSON bytes, status and headers.
+Development `proxy.network_guard` events contain guard intents without raw
+queries or application bytes. Approval persistence, APIs and the remaining
+production pipeline still require integration.
+
+Owner validation on Linux aarch64 passed all 36 native policy wire cases and
+104 WebSocket regressions against one frozen binary. The native policy cases
+verify the absence of an adapter process/socket, identity, bypasses, reloads,
+shared budgets, exact deny bytes and denied-request containment. Separate source
+selections passed 27 cases, recorded four strict historical D40 failures and
+skipped five explicitly native-only inspection-error cases. Nine codec tests
+include all Unicode scalar Nameprep outcomes and 155 source parser/sensor rows.
+The native request constructor also matches those 155 rows. All 22 existing
+Rust transport tests, strict all-target Clippy and selected hooks pass.
+These are owner results, without independent acceptance or macOS/guest evidence.
+
+The [host codec](../proxy/data/host_names/README.md) pins the source's IDNA2003
+and Unicode data. Request-form validation preserves the source policy hostname;
+the separate D40 inspection step decodes ACE consistently. UTF-8 origin-form
+Host fields retain their original bytes. Native plaintext parent forwarding
+uses an absolute URI with IDNA authority, while the source preserves origin-form
+in this case. Wire fixtures assert both exact forms and the unchanged path/query.
 
 The fixture checks decisions, delivered bytes, destination ports, generated
 IDs and trusted attribution. Its `proxy.request` and `proxy.egress` events are
@@ -553,15 +582,22 @@ priority and warn/block outcomes. They remain inactive in transport. Circuit
 numeric values that cannot be represented exactly by its current arithmetic
 still need resolution before activation.
 
-The inactive [network guard](../proxy/src/network_guard.rs) returns existing
+The [network guard](../proxy/src/network_guard.rs) returns existing
 warn/block responses and approval/audit intents around the same native policy
 matcher. Its generated [Unicode data](../proxy/data/network_guard/README.md)
 pins the shipped detector and Python 3.12 sanitizer, with an exhaustive scalar
 oracle. The [pattern scanner](../proxy/src/inspection.rs) preserves rule order,
 directional options, bounded URL inspection and complete-message decisions
 within its documented regex compatibility scope. The scanner runs in the
-development WS/WSS relay; HTTP inspection remains unwired. Neither module
-removes the temporary Python adapter or establishes production control parity.
+development WS/WSS relay; HTTP inspection remains unwired. The network guard runs
+when `policy_file` selects native policy. These paths do not establish complete
+production control parity; the temporary adapter remains explicitly selectable.
+
+The scoped-ASCII scanner repair has a finite compatibility boundary. A later
+source comparison found that a mixed-character capture such as `äa` does not
+match native ASCII-insensitive backreference text `äA`, although Python matches
+it. This remaining comparison gap joins the documented Unicode backreference
+differences and still requires repair.
 
 The inactive [credential guard](../proxy/src/credential_guard.rs) uses that same
 policy matcher and regex adapter. It preserves catalogue-first detection,

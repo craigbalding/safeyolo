@@ -11,6 +11,7 @@ fn request(host: &str) -> Request<'_> {
     Request {
         identity: Identity::Resolved("alice"),
         host,
+        decode_ace_for_inspection: false,
         port: 443,
         method: "GET",
         path: "/signed/%2F?X=a%2Bb&X=%252F",
@@ -18,6 +19,105 @@ fn request(host: &str) -> Request<'_> {
         request_id: Some("req-generated"),
         connection_id: "conn-generated",
         prior_response: false,
+    }
+}
+
+#[test]
+fn transport_ace_inspection_preserves_policy_host_and_precedes_budget() {
+    for host in [
+        "xn--pi-6kc.invalid",
+        "XN--pi-6kc.invalid",
+        "XN--pi-fia905a.invalid",
+        "XN--pi-6kc646z.invalid",
+    ] {
+        let policy = policy(
+            json!({"permissions":[{"action":"network:request","resource":"*","effect":"budget","budget":1}]}),
+        );
+        let guard = NetworkGuard::new();
+        let mut req = request(host);
+        req.decode_ace_for_inspection = true;
+        let outcome = guard
+            .enforce(Pdp::Ready(&policy), req, Options::default(), 1000.)
+            .unwrap();
+        assert_eq!(outcome.kind, OutcomeKind::Blocked, "{host}");
+        assert_eq!(
+            outcome.response.as_ref().unwrap().body["type"],
+            "homoglyph_attack"
+        );
+        assert_eq!(outcome.audit.as_ref().unwrap().host, host);
+        assert!(outcome.pdp.is_none());
+        assert_eq!(
+            guard
+                .enforce(
+                    Pdp::Ready(&policy),
+                    request(host),
+                    Options {
+                        homoglyph: false,
+                        ..Options::default()
+                    },
+                    1000.
+                )
+                .unwrap()
+                .kind,
+            OutcomeKind::Allowed
+        );
+    }
+}
+
+#[test]
+fn ace_inspection_errors_follow_configured_guard_modes_and_bypasses() {
+    let host = "XN--ib9b.invalid"; // Raw Punycode represents a lone surrogate.
+    for (options, bypass, expected) in [
+        (Options::default(), false, OutcomeKind::Blocked),
+        (
+            Options {
+                block: false,
+                ..Options::default()
+            },
+            false,
+            OutcomeKind::Warned,
+        ),
+        (
+            Options {
+                homoglyph: false,
+                ..Options::default()
+            },
+            false,
+            OutcomeKind::Allowed,
+        ),
+        (
+            Options {
+                enabled: false,
+                ..Options::default()
+            },
+            false,
+            OutcomeKind::Bypassed,
+        ),
+        (Options::default(), true, OutcomeKind::Bypassed),
+    ] {
+        let mut document =
+            json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]});
+        if bypass {
+            document["domains"] = json!({host:{"bypass":["network_guard"]}});
+        }
+        let policy = policy(document);
+        let guard = NetworkGuard::new();
+        let mut req = request(host);
+        req.decode_ace_for_inspection = true;
+        let outcome = guard
+            .enforce(Pdp::Ready(&policy), req, options, 1000.)
+            .unwrap();
+        assert_eq!(outcome.kind, expected);
+        if matches!(expected, OutcomeKind::Blocked | OutcomeKind::Warned) {
+            assert_eq!(
+                outcome.audit.unwrap().details["reason"],
+                "Hostname inspection failed"
+            );
+            assert!(outcome.pdp.is_none());
+        }
+        if expected == OutcomeKind::Bypassed {
+            assert_eq!(guard.stats().unwrap().checks, 0);
+        }
     }
 }
 
@@ -521,6 +621,7 @@ json.dump(outputs,sys.stdout)
             let req = Request {
                 identity,
                 host: r["host"].as_str().unwrap(),
+                decode_ace_for_inspection: false,
                 port: r["port"].as_u64().unwrap() as u16,
                 method: r["method"].as_str().unwrap(),
                 path: r["path"].as_str().unwrap(),
