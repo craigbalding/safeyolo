@@ -231,7 +231,7 @@ fn source_hash_reload_skips_bad_patterns_and_preserves_last_good_compatibility_c
     assert!(guard.maybe_reload(Some(&sensor())).unwrap().is_none());
     let mut candidate = sensor();
     candidate["policy_hash"] = json!("new");
-    candidate["credential_rules"][0]["patterns"] = json!(["(?a:word)"]);
+    candidate["credential_rules"][0]["patterns"] = json!([r"\N{LATIN SMALL LETTER A}"]);
     assert_eq!(
         guard.maybe_reload(Some(&candidate)).unwrap_err(),
         Error::RegexCompatibility
