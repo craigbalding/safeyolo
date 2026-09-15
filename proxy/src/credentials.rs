@@ -450,13 +450,25 @@ impl Vault {
             Ok(stamp) => stamp,
             Err(failure) => {
                 if failure.committed {
-                    restore(&self.path, &original, &mut state, &mut activate)?;
+                    restore(
+                        &self.path,
+                        &original,
+                        &original_stamp,
+                        &mut state,
+                        &mut activate,
+                    )?;
                 }
                 return Err(failure.error);
             }
         };
         if activate(&metadata(&candidate)).is_err() {
-            restore(&self.path, &original, &mut state, &mut activate)?;
+            restore(
+                &self.path,
+                &original,
+                &original_stamp,
+                &mut state,
+                &mut activate,
+            )?;
             return Err(error(ErrorKind::Activation));
         }
         state.revisions = revisions_for(&state, &candidate, invalidate);
@@ -813,9 +825,16 @@ fn save_atomic(path: &Path, bytes: &[u8]) -> std::result::Result<Stamp, SaveErro
 fn restore(
     path: &Path,
     original: &[u8],
+    original_stamp: &Stamp,
     state: &mut State,
     activate: &mut impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
 ) -> Result<()> {
-    state.stamp = save_atomic(path, original).map_err(|_| error(ErrorKind::Rollback))?;
+    let restored_stamp = save_atomic(path, original).map_err(|_| error(ErrorKind::Rollback))?;
+    // An external edit may already have made the active snapshot stale before
+    // this local write. Restoring those external bytes must not mark the old
+    // in-memory credential and its pending refresh revision as current.
+    if original_stamp == &state.stamp {
+        state.stamp = restored_stamp;
+    }
     activate(&metadata(&state.credentials)).map_err(|_| error(ErrorKind::Rollback))
 }

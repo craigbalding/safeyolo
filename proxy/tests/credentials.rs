@@ -505,6 +505,52 @@ fn unchanged_save_reload_and_unrelated_edits_preserve_pending_refresh() {
 }
 
 #[test]
+fn rollback_of_external_bytes_does_not_revalidate_a_stale_snapshot() {
+    for removed in [false, true] {
+        let (_directory, path, vault) = setup();
+        vault.store(credential("mail")).unwrap();
+        let snapshot = vault.snapshot("mail").unwrap().unwrap();
+        let external = Vault::unlock(&path, &password()).unwrap();
+        if removed {
+            assert!(external.remove("mail").unwrap());
+        } else {
+            let mut edited = credential("mail");
+            edited.value = Secret::new("synthetic-external-edit");
+            external.store(edited).unwrap();
+        }
+        let external_bytes = fs::read(&path).unwrap();
+        assert!(!vault.is_current(&snapshot).unwrap());
+
+        let mut calls = 0;
+        let failure = vault
+            .store_with_activation(credential("unrelated"), |_| {
+                calls += 1;
+                if calls == 1 { Err(()) } else { Ok(()) }
+            })
+            .unwrap_err();
+        assert_eq!(failure.kind, ErrorKind::Activation);
+        assert_eq!(calls, 2);
+        assert_eq!(fs::read(&path).unwrap(), external_bytes);
+        assert!(vault.get("unrelated").unwrap().is_none());
+
+        let appeared_current = vault.is_current(&snapshot).unwrap();
+        let replaced = vault
+            .replace_if_current(&snapshot, credential("mail"), |_| Ok(()))
+            .unwrap();
+        assert!(
+            !replaced,
+            "rollback permitted a stale publication over an external edit"
+        );
+        assert!(!appeared_current);
+        assert!(vault.has_changes().unwrap());
+        assert_eq!(fs::read(&path).unwrap(), external_bytes);
+        vault.reload().unwrap();
+        assert!(!vault.is_current(&snapshot).unwrap());
+        assert_eq!(vault.get("mail").unwrap().is_none(), removed);
+    }
+}
+
+#[test]
 fn failed_refresh_activation_restores_bytes_and_revision_for_retry() {
     let (_directory, path, vault) = setup();
     vault.store(credential("mail")).unwrap();
