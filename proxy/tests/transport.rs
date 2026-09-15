@@ -318,7 +318,10 @@ async fn opaque_disconnect_and_shutdown_release_the_destination() {
 
 #[tokio::test]
 async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_socket() {
-    for first in [1, 2, 3, 16] {
+    for (method, first) in ["GET", "SSH", "SSHGET", "SSH-EXT", "SSH-2.0-test"]
+        .into_iter()
+        .flat_map(|method| [1, 2, 3, 16].map(|first| (method, first)))
+    {
         let directory = tempfile::tempdir().unwrap();
         let config = config(&directory);
         let policy = Policy::start(&config.temporary_policy_socket).await;
@@ -335,8 +338,9 @@ async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_soc
         });
         let proxy = Proxy::start(config.clone()).await.unwrap();
         let mut client = connect_raw(&config.listeners[0].socket_path, &authority).await;
-        let request =
-            format!("GET /deny-inner HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+        let request = format!(
+            "{method} /deny-inner HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+        );
         client
             .write_all(&request.as_bytes()[..first])
             .await
@@ -362,7 +366,7 @@ async fn fragmented_plaintext_connect_keeps_inner_policy_and_reuses_admitted_soc
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|request| request["method"] == "GET")
+                .filter(|request| request["method"] == method)
                 .count(),
             1
         );

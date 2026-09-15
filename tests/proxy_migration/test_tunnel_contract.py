@@ -116,6 +116,52 @@ def test_fragmented_tls_keeps_the_inner_request_decision(proxy_backend, tmp_path
             assert origin.requests == []
 
 
+@pytest.mark.parametrize("method", ["SSH", "SSHGET", "SSH-EXT", "SSH-2.0-test"])
+@pytest.mark.parametrize("first", [0, 1, 3])
+def test_ssh_prefixed_http_methods_remain_inspected(proxy_backend, tmp_path, method, first, request):
+    if proxy_backend == "python":
+        request.node.add_marker(pytest.mark.xfail(strict=True, reason="Existing SSH-prefix classifier bypasses denied HTTP extension methods"))
+    observed = []
+    policy = INNER_DENY_POLICY.replace('method = "GET"', f'method = "{method}"')
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(5)
+        authority = f"127.0.0.1:{listener.getsockname()[1]}"
+
+        def origin():
+            stream, _ = listener.accept()
+            with stream:
+                stream.settimeout(5)
+                data = bytearray()
+                while b"\r\n\r\n" not in data:
+                    if not (part := stream.recv(8192)):
+                        break
+                    data.extend(part)
+                observed.append(bytes(data))
+                if data:
+                    stream.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+        thread = threading.Thread(target=origin)
+        thread.start()
+        try:
+            with launch_proxy(proxy_backend, tmp_path / proxy_backend, policy, eager_connect=True) as proxy:
+                with tunnel(proxy.paths["alice"], authority) as stream:
+                    message = f"{method} /forbidden HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n".encode()
+                    if first:
+                        stream.sendall(message[:first])
+                        time.sleep(0.025)
+                    stream.sendall(message[first:])
+                    response = bytearray()
+                    while data := stream.recv(8192):
+                        response.extend(data)
+                    assert response.startswith(b"HTTP/1.1 403"), bytes(response)
+            assert observed == [b""]
+        finally:
+            thread.join(timeout=6)
+            assert not thread.is_alive()
+
+
 @pytest.mark.parametrize("first", ["client", "server"])
 def test_connect_half_close_retains_the_opposite_direction(proxy_backend, tmp_path, first, request):
     if proxy_backend == "python":

@@ -141,13 +141,39 @@ fn protocol(prefix: &[u8]) -> Option<Protocol> {
             Protocol::Opaque
         });
     }
-    if prefix.starts_with(b"SSH") {
-        return Some(Protocol::Opaque);
-    }
     // An HTTP method is a token, including extension methods. Wait for its
     // delimiter instead of treating an incomplete method as opaque bytes.
     for (index, byte) in prefix.iter().enumerate() {
         if *byte == b' ' && index > 0 {
+            // SSH is also a valid HTTP method prefix. A complete identification
+            // line with a comment can share an HTTP method's first token, so
+            // keep it undecided until the line distinguishes the two. HTTP
+            // request-line syntax always takes precedence over a banner.
+            let mut identification = prefix[..index].splitn(3, |byte| *byte == b'-');
+            if identification.next() == Some(b"SSH")
+                && identification.next().is_some_and(|version| {
+                    version.contains(&b'.')
+                        && version
+                            .iter()
+                            .all(|byte| byte.is_ascii_digit() || *byte == b'.')
+                })
+                && identification
+                    .next()
+                    .is_some_and(|software| !software.is_empty())
+            {
+                let end = prefix.iter().position(|byte| *byte == b'\n')?;
+                let line = prefix[..end].strip_suffix(b"\r").unwrap_or(&prefix[..end]);
+                let version = line
+                    .rsplit(|byte| matches!(byte, b' ' | b'\t'))
+                    .find(|part| !part.is_empty());
+                return Some(
+                    if version.is_some_and(|value| value.starts_with(b"HTTP/")) {
+                        Protocol::Http
+                    } else {
+                        Protocol::Opaque
+                    },
+                );
+            }
             return Some(Protocol::Http);
         }
         if !byte.is_ascii_alphanumeric() && !b"!#$%&'*+-.^_`|~".contains(byte) {
@@ -346,6 +372,10 @@ mod tests {
             b"GET / HTTP/1.1\r\n".as_slice(),
             b"PATCH / HTTP/1.1\r\n",
             b"CUSTOM-METHOD / HTTP/1.1\r\n",
+            b"SSH / HTTP/1.1\r\n",
+            b"SSHGET / HTTP/1.1\r\n",
+            b"SSH-EXT / HTTP/1.1\r\n",
+            b"SSH-2.0-test / HTTP/1.1\r\n",
             b"\x16\x03\x01\0\xff",
         ] {
             for end in 0..=bytes.len() {
@@ -353,6 +383,11 @@ mod tests {
             }
         }
         assert_eq!(protocol(b"SSH-2.0-test\r\n"), Some(Protocol::Opaque));
+        let banner = b"SSH-2.0-test identification comment\r\n";
+        for end in 0..banner.len() {
+            assert_eq!(protocol(&banner[..end]), None);
+        }
+        assert_eq!(protocol(banner), Some(Protocol::Opaque));
         assert_eq!(protocol(b"\0\xffraw"), Some(Protocol::Opaque));
         assert_eq!(protocol(b"\r\nGET / HTTP/1.1\r\n"), Some(Protocol::Http));
     }
