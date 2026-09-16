@@ -2337,10 +2337,14 @@ future formatters; they do not enable original-IP curl export or HAR by themselv
 The [row tests](../proxy/src/traffic_view/tests.rs) cover phase separation,
 repeated callbacks, constructed address records and unavailable parent phases.
 The [egress test](../proxy/src/http/ignored_host_tests.rs) checks an actual owned
-direct IPv4 connection and transfers its owner through a tunnel slot. CONNECT
-classification, failure retention, IPv6 transport, parent routes and target TLS
-received static wiring review for this change; these tests do not establish
-their complete runtime capture equivalence. The [HAR source fixture](../proxy/tests/traffic_har_source.py)
+direct IPv4 connection and transfers its owner through a tunnel slot. The
+[HTTP runtime test](../proxy/src/traffic_view_runtime_tests.rs) holds the origin
+response while checking the observed peer, connection phases and absence of
+response phases. It then verifies preserved connection facts and reached response
+phases across reload. CONNECT classification, failure retention, IPv6 transport,
+parent routes and target TLS received static wiring review for these capture
+fields; the tests do not establish their complete runtime capture equivalence.
+The [HAR source fixture](../proxy/tests/traffic_har_source.py)
 records 20 selections and two archive formats, including missing request-end
 defaults and connection timing suppression within one archive. Byte-level
 controls cover UTF-8 sampling, header decoding and size, query/form components,
