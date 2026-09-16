@@ -99,6 +99,7 @@ async fn native_envelopes_and_committed_mutations_match_actual_source() {
         let tasks = Registry::default();
         let mut body = Full::new(Bytes::from_static(BODY));
         let controls = Controls {
+            discovery: None,
             audit: None,
             flows: None,
             circuits: None,

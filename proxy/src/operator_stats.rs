@@ -6,6 +6,14 @@ use serde_json::json;
 
 pub(crate) fn document(runtime: &Runtime) -> CircuitValue {
     let mut report = indexmap::IndexMap::from([("proxy".into(), json!("safeyolo").into())]);
+    let discovery = match runtime
+        .agent_discovery
+        .get_stats(&runtime.audit, crate::circuit_runtime::now)
+    {
+        Ok(report) => report,
+        Err(error) => discovery_failure(error.kind(), &error.to_string()),
+    };
+    report.insert("service-discovery".into(), discovery);
     report.insert(
         "policy-engine".into(),
         policy_stats(runtime.policy.as_ref(), &runtime.tasks),
@@ -69,6 +77,21 @@ pub(crate) fn document(runtime: &Runtime) -> CircuitValue {
     };
     report.insert("request-logger".into(), logger);
     CircuitValue::Object(report)
+}
+
+fn discovery_failure(kind: crate::agent_discovery::ErrorKind, message: &str) -> CircuitValue {
+    use crate::agent_discovery::ErrorKind;
+    let class = match kind {
+        ErrorKind::Attribute => "AttributeError",
+        ErrorKind::Type => "TypeError",
+        ErrorKind::UnicodeDecode => "UnicodeDecodeError",
+        ErrorKind::Value => "ValueError",
+        ErrorKind::Permission => "PermissionError",
+        ErrorKind::Io => "OSError",
+        ErrorKind::Audit(crate::audit::ErrorKind::Io) => "OSError",
+        ErrorKind::Audit(_) | ErrorKind::Compatibility | ErrorKind::Poisoned => "RuntimeError",
+    };
+    failure(class, message)
 }
 
 fn policy_stats(policy: Option<&Policy>, tasks: &Registry) -> CircuitValue {
@@ -162,7 +185,13 @@ mod tests {
                 .keys()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            ["proxy", "policy-engine", "flow-recorder", "request-logger"]
+            [
+                "proxy",
+                "service-discovery",
+                "policy-engine",
+                "flow-recorder",
+                "request-logger"
+            ]
         );
         assert!(!directory.path().join("audit.jsonl").exists());
         assert!(!directory.path().join("unused.sqlite3").exists());

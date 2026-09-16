@@ -829,6 +829,7 @@ async fn local_agent_api(
             &runtime.tasks,
             crate::policy::current_time_ms(),
             agent_api::Controls {
+                discovery: Some(&runtime.agent_discovery),
                 audit: Some(&runtime.audit),
                 flows: runtime.flow_recorder.store(),
                 circuits: runtime.policy.as_ref().map(|_| agent_api::CircuitContext {
@@ -1115,6 +1116,11 @@ async fn forward(
     destination: &Destination,
     tunnel: Option<&Tunnel>,
 ) -> Result<(Response<Body>, String), Error> {
+    // CONNECT has its own source hook before destination policy and no
+    // ordinary HTTP request body lifecycle. Observe each admission once.
+    if request.method() == Method::CONNECT {
+        runtime.observe_agent(&identity.agent_id, identity.source_id.as_deref());
+    }
     let traffic = (request.method() != Method::CONNECT)
         .then(|| traffic::Traffic::new(state.clone(), identity, request_id, &request, destination));
     if runtime

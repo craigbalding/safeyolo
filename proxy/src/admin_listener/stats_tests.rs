@@ -158,6 +158,7 @@ async fn authenticated_stats_share_counters_and_reached_read_effects_across_relo
             .collect::<Vec<_>>(),
         [
             "proxy",
+            "service-discovery",
             "policy-engine",
             "network-guard",
             "circuit-breaker",

@@ -87,6 +87,7 @@ impl Drop for Policy {
 
 fn config(directory: &TempDir) -> Config {
     Config {
+        agent_map_file: String::new(),
         listeners: ["alice", "bob"]
             .iter()
             .map(|agent| AgentListener {

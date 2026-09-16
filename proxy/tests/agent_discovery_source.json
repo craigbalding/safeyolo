@@ -1,0 +1,5810 @@
+{
+  "discovery_events": "unordered within each step (source set iteration)",
+  "rows": [
+    {
+      "input": {
+        "name": "unconfigured_and_missing",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {}, \"count\": 0}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"\", \"known_ips\": 0, \"agents\": {}, \"agents_seen\": 0}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {}, \"count\": 0}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"map.json\", \"known_ips\": 0, \"agents\": {}, \"agents_seen\": 0}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "zero_mtime_and_empty_map",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 0
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {},
+            "mtime": 2
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {}, \"count\": 0}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}}, \"count\": 1}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"map.json\", \"known_ips\": 0, \"agents\": {}, \"agents_seen\": 0}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 4,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "mtime_is_only_cache_key",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 2
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}}, \"count\": 1}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "bob"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"map.json\", \"known_ips\": 1, \"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}}, \"agents_seen\": 1}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 5,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent bob at 192.0.2.11",
+            "agent": "bob",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.11"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "duplicate_ip_and_no_ip_entries",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "first": {
+                "ip": "192.0.2.20"
+              },
+              "last": {
+                "ip": "192.0.2.20"
+              },
+              "absent": {
+                "started": "ignored"
+              },
+              "null": {
+                "ip": null
+              },
+              "empty": {
+                "ip": ""
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "lookup",
+            "now": 100.0,
+            "ip": "192.0.2.20"
+          },
+          {
+            "hook": "lookup",
+            "now": 100.0,
+            "ip": "192.0.2.99"
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "last"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "first": {
+                "ip": "192.0.2.20"
+              },
+              "last": {
+                "ip": "192.0.2.20"
+              },
+              "absent": {
+                "started": "ignored"
+              },
+              "null": {
+                "ip": null
+              },
+              "empty": {
+                "ip": ""
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.20",
+                "last"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "lookup",
+          "error_class": null,
+          "lookup": "last",
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "first": {
+                "ip": "192.0.2.20"
+              },
+              "last": {
+                "ip": "192.0.2.20"
+              },
+              "absent": {
+                "started": "ignored"
+              },
+              "null": {
+                "ip": null
+              },
+              "empty": {
+                "ip": ""
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.20",
+                "last"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "lookup",
+          "error_class": null,
+          "lookup": "unknown",
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "first": {
+                "ip": "192.0.2.20"
+              },
+              "last": {
+                "ip": "192.0.2.20"
+              },
+              "absent": {
+                "started": "ignored"
+              },
+              "null": {
+                "ip": null
+              },
+              "empty": {
+                "ip": ""
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.20",
+                "last"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"map.json\", \"known_ips\": 1, \"agents\": {\"first\": {\"ip\": \"192.0.2.20\"}, \"last\": {\"ip\": \"192.0.2.20\"}, \"absent\": {\"ip\": null}, \"null\": {\"ip\": null}, \"empty\": {\"ip\": \"\"}}, \"agents_seen\": 5}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "first": {
+                "ip": "192.0.2.20"
+              },
+              "last": {
+                "ip": "192.0.2.20"
+              },
+              "absent": {
+                "started": "ignored"
+              },
+              "null": {
+                "ip": null
+              },
+              "empty": {
+                "ip": ""
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.20",
+                "last"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent last at 192.0.2.20",
+            "agent": "last",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.20"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "first": {
+                "ip": "192.0.2.20"
+              },
+              "last": {
+                "ip": "192.0.2.20"
+              },
+              "absent": {
+                "started": "ignored"
+              },
+              "null": {
+                "ip": null
+              },
+              "empty": {
+                "ip": ""
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.20",
+                "last"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "last_seen_survives_removal_and_readdition",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "request",
+            "now": 90.0,
+            "agent": "alice"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "get_agents",
+            "now": 91.0
+          },
+          {
+            "hook": "request",
+            "now": 100.25,
+            "agent": "alice"
+          },
+          {
+            "hook": "get_agents",
+            "now": 99.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {},
+            "mtime": 2
+          },
+          {
+            "hook": "get_stats",
+            "now": 200.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 3
+          },
+          {
+            "hook": "get_agents",
+            "now": 300.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "request",
+          "error_class": null,
+          "identity": {
+            "agent": "alice",
+            "snapshot": [
+              "resolved",
+              "alice",
+              "uds",
+              "alice",
+              null,
+              null,
+              null
+            ]
+          },
+          "timeline": [
+            {
+              "time": 90.0
+            }
+          ],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {
+              "alice": 90.0
+            }
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {
+              "alice": 90.0
+            }
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 90.0
+            }
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\", \"last_seen\": 90.0, \"idle_seconds\": 1.0}}, \"count\": 1}",
+          "timeline": [
+            {
+              "time": 91.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 90.0
+            }
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "identity": {
+            "agent": "alice",
+            "snapshot": [
+              "resolved",
+              "alice",
+              "uds",
+              "alice",
+              "alice",
+              null,
+              null
+            ]
+          },
+          "timeline": [
+            {
+              "time": 100.25
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 100.25
+            }
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\", \"last_seen\": 100.25, \"idle_seconds\": -1.2}}, \"count\": 1}",
+          "timeline": [
+            {
+              "time": 99.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 100.25
+            }
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 100.25
+            }
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"map.json\", \"known_ips\": 0, \"agents\": {}, \"agents_seen\": 0}",
+          "timeline": [
+            {
+              "time": 200.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {
+              "alice": 100.25
+            }
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {
+              "alice": 100.25
+            }
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\", \"last_seen\": 100.25, \"idle_seconds\": 199.8}}, \"count\": 1}",
+          "timeline": [
+            {
+              "time": 300.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 3.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 100.25
+            }
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 90.0
+            }
+          }
+        },
+        {
+          "step": 9,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 3.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 100.25
+            }
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "missing_file_retains_and_empty_config_retains",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "delete_file",
+            "now": 100.0
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": ""
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "delete_file",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}}, \"count\": 1}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"\", \"known_ips\": 1, \"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}}, \"agents_seen\": 1}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "path_switch_same_mtime_retains",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 1,
+            "path": "other.json"
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "other.json"
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 2,
+            "path": "other.json"
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "other.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"other.json\", \"known_ips\": 1, \"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}}, \"agents_seen\": 1}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "other.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "other.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"other.json\", \"known_ips\": 2, \"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"agents_seen\": 2}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "bob"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "other.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 6,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent bob at 192.0.2.11",
+            "agent": "bob",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.11"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "other.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "malformed_json_retried_without_publication",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "text": "{",
+            "mtime": 2
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 2
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}}, \"count\": 1}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"map.json\", \"known_ips\": 1, \"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}}, \"agents_seen\": 1}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "bob"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 6,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent bob at 192.0.2.11",
+            "agent": "bob",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.11"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "shape_errors_precede_publication",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": [],
+            "mtime": 2
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "bad": 42
+            },
+            "mtime": 3
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "bad": {
+                "ip": [
+                  1
+                ]
+              }
+            },
+            "mtime": 4
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 5
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": "AttributeError",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": "AttributeError",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": "TypeError",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "bob"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 5.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 9,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent bob at 192.0.2.11",
+            "agent": "bob",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.11"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 5.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "read_errors_retain_old_snapshot",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 2
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0,
+            "read_error": true
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "hex": "ff",
+            "mtime": 3
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 4
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}}, \"count\": 1}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": "UnicodeDecodeError",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "bob"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 4.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 7,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent bob at 192.0.2.11",
+            "agent": "bob",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.11"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 4.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "audit_oserror_swallowed_after_publication",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 2
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0,
+            "audit_error": "OSError"
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "bob"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"map.json\", \"known_ips\": 2, \"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"agents_seen\": 2}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 3,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent bob at 192.0.2.11",
+            "agent": "bob",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.11"
+            }
+          },
+          "accepted": false,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "audit_runtimeerror_escapes_after_publication",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 2
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0,
+            "audit_error": "RuntimeError"
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": "RuntimeError",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "bob"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 3,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent bob at 192.0.2.11",
+            "agent": "bob",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.11"
+            }
+          },
+          "accepted": false,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "uds_identity_swallows_reload_audit_error",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 2
+          },
+          {
+            "hook": "request",
+            "now": 100.0,
+            "agent": "bob",
+            "ip": "192.0.2.11",
+            "audit_error": "RuntimeError"
+          },
+          {
+            "hook": "get_agents",
+            "now": 110.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "identity": {
+            "agent": "bob",
+            "snapshot": [
+              "resolved",
+              "bob",
+              "uds",
+              "bob",
+              null,
+              null,
+              null
+            ]
+          },
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "bob"
+              ]
+            },
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {
+              "bob": 100.0
+            }
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\", \"last_seen\": 100.0, \"idle_seconds\": 10.0}}, \"count\": 2}",
+          "timeline": [
+            {
+              "time": 110.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {
+              "bob": 100.0
+            }
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 3,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent bob at 192.0.2.11",
+            "agent": "bob",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.11"
+            }
+          },
+          "accepted": false,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "falsy_typed_ips_and_numeric_key_collision",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "list": {
+                "ip": []
+              },
+              "object": {
+                "ip": {}
+              },
+              "false": {
+                "ip": false
+              },
+              "zero": {
+                "ip": 0
+              },
+              "integer": {
+                "ip": 1
+              },
+              "boolean": {
+                "ip": true
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "get_stats",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "boolean"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "list": {
+                "ip": []
+              },
+              "object": {
+                "ip": {}
+              },
+              "false": {
+                "ip": false
+              },
+              "zero": {
+                "ip": 0
+              },
+              "integer": {
+                "ip": 1
+              },
+              "boolean": {
+                "ip": true
+              }
+            },
+            "ip_to_name": [
+              [
+                1,
+                "boolean"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_stats",
+          "error_class": null,
+          "result_json": "{\"map_file\": \"map.json\", \"known_ips\": 1, \"agents\": {\"list\": {\"ip\": []}, \"object\": {\"ip\": {}}, \"false\": {\"ip\": false}, \"zero\": {\"ip\": 0}, \"integer\": {\"ip\": 1}, \"boolean\": {\"ip\": true}}, \"agents_seen\": 6}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "list": {
+                "ip": []
+              },
+              "object": {
+                "ip": {}
+              },
+              "false": {
+                "ip": false
+              },
+              "zero": {
+                "ip": 0
+              },
+              "integer": {
+                "ip": 1
+              },
+              "boolean": {
+                "ip": true
+              }
+            },
+            "ip_to_name": [
+              [
+                1,
+                "boolean"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent boolean at 1",
+            "agent": "boolean",
+            "addon": "service-discovery",
+            "details": {
+              "ip": 1
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "list": {
+                "ip": []
+              },
+              "object": {
+                "ip": {}
+              },
+              "false": {
+                "ip": false
+              },
+              "zero": {
+                "ip": 0
+              },
+              "integer": {
+                "ip": 1
+              },
+              "boolean": {
+                "ip": true
+              }
+            },
+            "ip_to_name": [
+              [
+                1,
+                "boolean"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "nonfinite_and_large_scalar_ip",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "nan": {
+                "ip": NaN
+              },
+              "infinite": {
+                "ip": Infinity
+              },
+              "large": {
+                "ip": 1208925819614629174706176
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "api",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "infinite",
+                "large",
+                "nan"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "nan": {
+                "ip": NaN
+              },
+              "infinite": {
+                "ip": Infinity
+              },
+              "large": {
+                "ip": 1208925819614629174706176
+              }
+            },
+            "ip_to_name": [
+              [
+                NaN,
+                "nan"
+              ],
+              [
+                Infinity,
+                "infinite"
+              ],
+              [
+                1208925819614629174706176,
+                "large"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"nan\": {\"ip\": NaN}, \"infinite\": {\"ip\": Infinity}, \"large\": {\"ip\": 1208925819614629174706176}}, \"count\": 3}",
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "nan": {
+                "ip": NaN
+              },
+              "infinite": {
+                "ip": Infinity
+              },
+              "large": {
+                "ip": 1208925819614629174706176
+              }
+            },
+            "ip_to_name": [
+              [
+                NaN,
+                "nan"
+              ],
+              [
+                Infinity,
+                "infinite"
+              ],
+              [
+                1208925819614629174706176,
+                "large"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 200,
+            "body_text": "{\"agents\": {\"nan\": {\"ip\": NaN}, \"infinite\": {\"ip\": Infinity}, \"large\": {\"ip\": 1208925819614629174706176}}, \"count\": 3}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "118"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "nan": {
+                "ip": NaN
+              },
+              "infinite": {
+                "ip": Infinity
+              },
+              "large": {
+                "ip": 1208925819614629174706176
+              }
+            },
+            "ip_to_name": [
+              [
+                NaN,
+                "nan"
+              ],
+              [
+                Infinity,
+                "infinite"
+              ],
+              [
+                1208925819614629174706176,
+                "large"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent infinite at inf",
+            "agent": "infinite",
+            "addon": "service-discovery",
+            "details": {
+              "ip": null
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "nan": {
+                "ip": NaN
+              },
+              "infinite": {
+                "ip": Infinity
+              },
+              "large": {
+                "ip": 1208925819614629174706176
+              }
+            },
+            "ip_to_name": [
+              [
+                NaN,
+                "nan"
+              ],
+              [
+                Infinity,
+                "infinite"
+              ],
+              [
+                1208925819614629174706176,
+                "large"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent large at 1208925819614629174706176",
+            "agent": "large",
+            "addon": "service-discovery",
+            "details": {
+              "ip": 1208925819614629174706176
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "nan": {
+                "ip": NaN
+              },
+              "infinite": {
+                "ip": Infinity
+              },
+              "large": {
+                "ip": 1208925819614629174706176
+              }
+            },
+            "ip_to_name": [
+              [
+                NaN,
+                "nan"
+              ],
+              [
+                Infinity,
+                "infinite"
+              ],
+              [
+                1208925819614629174706176,
+                "large"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent nan at nan",
+            "agent": "nan",
+            "addon": "service-discovery",
+            "details": {
+              "ip": null
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "nan": {
+                "ip": NaN
+              },
+              "infinite": {
+                "ip": Infinity
+              },
+              "large": {
+                "ip": 1208925819614629174706176
+              }
+            },
+            "ip_to_name": [
+              [
+                NaN,
+                "nan"
+              ],
+              [
+                Infinity,
+                "infinite"
+              ],
+              [
+                1208925819614629174706176,
+                "large"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "global_api_ignores_caller_filter",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 2
+          },
+          {
+            "hook": "get_agents",
+            "now": 100.0
+          },
+          {
+            "hook": "api",
+            "now": 100.0,
+            "agent": "alice"
+          },
+          {
+            "hook": "api",
+            "now": 100.0,
+            "agent": "bob",
+            "ip": "192.0.2.11",
+            "path": "/agents/?agent=alice"
+          },
+          {
+            "hook": "api",
+            "now": 100.0,
+            "agent": null,
+            "ip": "192.0.2.99",
+            "path": "/agents?agent=bob",
+            "forged_agent": "alice"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "bob"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 200,
+            "body_text": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "84"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 200,
+            "body_text": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "84"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 200,
+            "body_text": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "84"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 3,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent bob at 192.0.2.11",
+            "agent": "bob",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.11"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 2.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "api_before_discovery_reports_previous_seen",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "request",
+            "now": 100.25,
+            "agent": "alice"
+          },
+          {
+            "hook": "api_then_request",
+            "now": 120.0,
+            "agent": "alice"
+          },
+          {
+            "hook": "get_agents",
+            "now": 121.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "request",
+          "error_class": null,
+          "identity": {
+            "agent": "alice",
+            "snapshot": [
+              "resolved",
+              "alice",
+              "uds",
+              "alice",
+              "alice",
+              null,
+              null
+            ]
+          },
+          "timeline": [
+            {
+              "time": 100.25
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 100.25
+            }
+          }
+        },
+        {
+          "hook": "api_then_request",
+          "error_class": null,
+          "api": {
+            "status": 200,
+            "body_text": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\", \"last_seen\": 100.25, \"idle_seconds\": 19.8}}, \"count\": 1}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "98"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "identity": {
+            "agent": "alice",
+            "snapshot": [
+              "resolved",
+              "alice",
+              "uds",
+              "alice",
+              "alice",
+              null,
+              null
+            ]
+          },
+          "timeline": [
+            {
+              "time": 120.0
+            },
+            "api_response_ready",
+            {
+              "time": 120.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 120.0
+            }
+          }
+        },
+        {
+          "hook": "get_agents",
+          "error_class": null,
+          "result_json": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\", \"last_seen\": 120.0, \"idle_seconds\": 1.0}}, \"count\": 1}",
+          "timeline": [
+            {
+              "time": 121.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {
+              "alice": 120.0
+            }
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "api_missing_dependency",
+        "dependency": false,
+        "steps": [
+          {
+            "hook": "api",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 503,
+            "body_text": "{\"error\": \"service-discovery addon not loaded\"}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "47"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "api_auth_and_method_order",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "api",
+            "now": 100.0,
+            "auth": "missing"
+          },
+          {
+            "hook": "api",
+            "now": 100.0,
+            "auth": "wrong"
+          },
+          {
+            "hook": "api",
+            "now": 100.0,
+            "auth": "missing",
+            "method": "POST"
+          },
+          {
+            "hook": "api",
+            "now": 100.0,
+            "auth": "missing",
+            "method": "PUT"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 401,
+            "body_text": "{\"error\": \"Authorization required\", \"hint\": \"Bearer <token>\"}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "61"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 401,
+            "body_text": "{\"error\": \"Invalid agent token\"}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "32"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [
+            "put_event:security.agent_auth_failed"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 405,
+            "body_text": "{\"error\": \"Method Not Allowed\", \"allowed\": [\"GET\"]}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "51"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 405,
+            "body_text": "{\"error\": \"Method Not Allowed\", \"allowed\": [\"GET\", \"POST\", \"DELETE\"]}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "69"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 3,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "security.agent_auth_failed",
+            "kind": "security",
+            "severity": "high",
+            "summary": "Agent API auth failed from 192.0.2.10",
+            "addon": "agent-api",
+            "decision": "deny",
+            "details": {
+              "client_ip": "192.0.2.10",
+              "path": "/agents"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "api_maps_reached_source_errors",
+        "dependency": true,
+        "steps": [
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "mtime": 1
+          },
+          {
+            "hook": "configure",
+            "now": 100.0,
+            "path": "map.json"
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": [],
+            "mtime": 2
+          },
+          {
+            "hook": "api",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "hex": "ff",
+            "mtime": 3
+          },
+          {
+            "hook": "api",
+            "now": 100.0
+          },
+          {
+            "hook": "write",
+            "now": 100.0,
+            "data": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "mtime": 4
+          },
+          {
+            "hook": "api",
+            "now": 100.0,
+            "audit_error": "RuntimeError"
+          },
+          {
+            "hook": "api",
+            "now": 100.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "",
+            "map_mtime": 0,
+            "agent_map": {},
+            "ip_to_name": [],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "configure",
+          "error_class": null,
+          "timeline": [
+            "read_map",
+            {
+              "discovered_unordered": [
+                "alice"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 500,
+            "body_text": "{\"error\": \"Internal error: AttributeError\"}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "43"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 500,
+            "body_text": "{\"error\": \"Internal error: UnicodeDecodeError\"}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "47"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map"
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "write",
+          "error_class": null,
+          "timeline": [],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 500,
+            "body_text": "{\"error\": \"Internal error: RuntimeError\"}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "41"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [
+            {
+              "time": 100.0
+            },
+            "read_map",
+            {
+              "discovered_unordered": [
+                "bob"
+              ]
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 4.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "hook": "api",
+          "error_class": null,
+          "api": {
+            "status": 200,
+            "body_text": "{\"agents\": {\"alice\": {\"ip\": \"192.0.2.10\"}, \"bob\": {\"ip\": \"192.0.2.11\"}}, \"count\": 2}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "84"
+              ]
+            ],
+            "blocked_by": "agent-api",
+            "api_response": true
+          },
+          "timeline": [
+            {
+              "time": 100.0
+            }
+          ],
+          "state_after": {
+            "map_path": "map.json",
+            "map_mtime": 4.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent alice at 192.0.2.10",
+            "agent": "alice",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.10"
+            }
+          },
+          "accepted": true,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 1.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ]
+            ],
+            "last_seen": {}
+          }
+        },
+        {
+          "step": 7,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "agent.discovered",
+            "kind": "agent",
+            "severity": "low",
+            "summary": "Discovered agent bob at 192.0.2.11",
+            "agent": "bob",
+            "addon": "service-discovery",
+            "details": {
+              "ip": "192.0.2.11"
+            }
+          },
+          "accepted": false,
+          "state_at_submit": {
+            "map_path": "map.json",
+            "map_mtime": 4.0,
+            "agent_map": {
+              "alice": {
+                "ip": "192.0.2.10",
+                "started": "synthetic-start"
+              },
+              "bob": {
+                "ip": "192.0.2.11"
+              }
+            },
+            "ip_to_name": [
+              [
+                "192.0.2.10",
+                "alice"
+              ],
+              [
+                "192.0.2.11",
+                "bob"
+              ]
+            ],
+            "last_seen": {}
+          }
+        }
+      ]
+    }
+  ],
+  "source_sha256": {
+    "cli/src/safeyolo/mitm_addons/service_discovery.py": "f7fdcfda35a9343dd41a5fe543ac72facb8f356c61793869801c5ce17cf1e2e8",
+    "cli/src/safeyolo/mitm_addons/agent_api.py": "ab52434f28e82c9cc5f7ce32bf0b69ff6dcd3158e5e5fd5a446e4a747942e378",
+    "cli/src/safeyolo/core/identity.py": "a5b9352db04c505f12a21c9cfac269d1ba27eb38cbf5989de723ad4ca3e42888",
+    "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
+    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/proxy_modes/unix_listener.py": "59f22518f7f6752cc857cf62ed196e8645e01cde3b8540cfb62739734099e3db",
+    "cli/src/safeyolo/core/flow_cache.py": "eb7f8c829e9e39b3234b7218ba4b0929251798fa58b0490d33e70aff284fe5cd",
+    "pdp/tokens.py": "0e9f55d14f411a6e71c2b234ca5072f4c65904da4d0c62aba3103a589152d1a5",
+    "tests/test_service_discovery_file.py": "8250d18575e6dcf5ea7fca9bc2f11d944bf3c1c5a8c6761ba3de3668643661cb",
+    "tests/test_agent_api.py": "6bb182f1260f2dbc3d0252cd3d9b56e4d1ecd852d89e9f6474ad57febdaa5aeb"
+  }
+}

@@ -28,6 +28,7 @@ pub(super) struct Traffic {
     parsed: Result<super::traffic_url::PrettyUrl, Error>,
     request_parsed: OnceLock<Result<super::traffic_url::PrettyUrl, Error>>,
     request_id: String,
+    agent: Zeroizing<String>,
     client: Option<Zeroizing<String>>,
 }
 
@@ -56,6 +57,7 @@ impl Traffic {
             parsed,
             request_parsed: OnceLock::new(),
             request_id: request_id.to_owned(),
+            agent: Zeroizing::new(identity.agent_id.clone()),
             client: identity.source_id.clone().map(Zeroizing::new),
         })
     }
@@ -71,9 +73,15 @@ impl Traffic {
     /// RequestId runs before later request consumers, including a failing one.
     pub(super) fn begin_request(&self) -> f64 {
         let mut hooks = self.hooks.lock().unwrap_or_else(|error| error.into_inner());
-        *hooks
-            .started
-            .get_or_insert_with(crate::circuit_runtime::now)
+        if let Some(started) = hooks.started {
+            return started;
+        }
+        let started = crate::circuit_runtime::now();
+        hooks.started = Some(started);
+        if let Ok(runtime) = self.state.read() {
+            runtime.observe_agent(&self.agent, self.client.as_deref().map(String::as_str));
+        }
+        started
     }
 
     pub(super) fn source_metadata_reached(&self) -> bool {

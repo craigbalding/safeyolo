@@ -95,6 +95,7 @@ impl Fixture {
             &Registry::default(),
             1000.,
             Controls {
+                discovery: None,
                 audit: None,
                 flows: row["available"].as_bool().unwrap().then_some(&self.store),
                 circuits: None,

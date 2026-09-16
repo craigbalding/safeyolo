@@ -363,6 +363,7 @@ silently reduce accepted message sizes to a library default.
 | D57 | A source flow-record tag failure can leave the inserted flow pending on its SQLite connection. A later successful operation commits that failed record. | Native recording rolls the row and provenance tags back together, while retaining separate best-effort body search indexing. The [storage comparison](../proxy/tests/flow_store.rs) preserves the source witness and checks that the failed record stays absent after another commit and reopen. |
 | D58 | Direct source flow reads fall back to legacy agent_id when a schema-v2 row has no authoritative evidence_owner. An explicitly quarantined owner-null row is therefore readable by that legacy agent although scoped search excludes it. | Native direct reads require exact evidence_owner, matching collection scope. Foreign, unresolved, quarantined and missing records share the existing 404. [API tests](../proxy/tests/agent_api_flows.rs) prove denial before loading or decompressing a body. Existing version-1 migration still assigns owners; reads do not reattribute quarantined version-2 evidence. |
 | D59 | If shutdown finds the source audit queue full, it removes and echoes queued events without releasing their pending reservations. After the active flush finishes, pending can remain permanently nonzero. | Native shutdown releases exactly the reservations for entries removed by this fallback. Pending then reaches zero after active work finishes. Echoed events are not claimed to have reached the file. The [writer tests](../proxy/src/audit/writer/tests.rs) preserve the held-flush/full-queue case and distinguish draining from persistence. |
+| D60 | Source service discovery reconciles trusted UDS identity with the agent map. A disagreement removes the evidence owner, skips last-seen accounting and emits a conflict event. | Native identity still comes only from the accepted listener. The discovery report reads map metadata and records that listener owner; it does not implement source map-conflict containment or its security events. This remains an unresolved identity-parity gap. Reporting tests do not establish equivalence for mismatched identities. |
 
 ## Deletion map and evidence still required
 
@@ -1198,9 +1199,9 @@ before decompression. The [runtime tests](../proxy/src/flow_runtime_tests.rs)
 exercise contextual HTTP forwarding through real Alice/Bob Unix sockets, stored
 body reads, cross-agent denial, a forged owner filter, authenticated operator
 `/stats`, reload, partial startup, shutdown and reopening. The current
-operator statistics expose the installed policy engine, network guard, circuit
-breaker, TestContext, recorder and request logger owners. Other source addon
-reports remain unfinished.
+operator statistics expose the installed discovery, policy engine, network
+guard, circuit breaker, TestContext, recorder and request logger owners. Other
+source addon reports remain unfinished.
 
 Authenticated `/stats` reads each installed owner in source order. It preserves
 an individual reporting error in that component's result and continues to later
@@ -1211,15 +1212,16 @@ per-request policy bypasses.
 
 Statistics are not free of side effects: circuit reads can advance stale states
 to half-open and submit unscoped canonical events; TestContext reads prune expired
-declarations. Authentication precedes those reads. Synchronous circuit submission
-failure preserves reached state and lets later component reports continue.
+declarations. Discovery reads can reload the map and emit discovery events.
+Authentication precedes those reads. Synchronous circuit submission failure
+preserves reached state and lets later component reports continue.
 The typed operator response retains circuit scalar values, including nonfinite
 numbers, through the existing Python-compatible JSON formatter. Shared owners
 retain counters across reloads. These reports do not establish statistics for
 inactive components or complete operator inspection.
 With the temporary Python policy adapter, the report keeps an empty
-`policy-engine` result and the recorder/logger results. It omits the inactive
-native network guard, circuit breaker and TestContext owners.
+`policy-engine` result and the discovery, recorder and logger results. It omits
+the inactive native network guard, circuit breaker and TestContext owners.
 
 [Source controls](../proxy/tests/admin_stats_source.py) establish exact aggregate
 rendering and error continuation. [Owned runtime tests](../proxy/src/admin_listener/stats_tests.rs)
@@ -1507,6 +1509,49 @@ Five focused native tests pass, including replay of 24 source workflows.
 Thirteen separate source sampler controls pass with in-memory readers. These
 checks establish component behavior; transport lifecycle and API integration
 remain unverified.
+
+### Agent discovery reports
+
+Authenticated `GET /agents` reads the [shared discovery owner](../proxy/src/agent_discovery.rs).
+It returns the complete configured map with last-seen and idle fields for observed
+entries. Query parameters and caller identity do not filter this report, matching
+the source endpoint. Agent API authentication still precedes the read. Operator
+`/stats` includes the same owner's `service-discovery` report before policy stats.
+
+The development `agent_map_file` option defaults to the empty string. It selects
+report metadata; trusted listener configuration continues to identify requests.
+The owner caches the source floating-point modification time, preserves map order
+and retains last-seen history across removal and reload. Clearing the configured
+path retains the previous report. A newly published map stays published if a
+later discovery-event submission fails. Malformed JSON and caught file errors
+retain the reached source state. A configuration-hook failure is reported without
+stopping the proxy; affected API reads retain their error response. No additional
+map limit, expiry or address restriction is introduced.
+
+Ordinary HTTP observations use the existing validated request-completion path.
+The local Agent API observes the caller after producing its response, so
+`/agents` reports the caller's previous last-seen value. CONNECT has a separate
+observation before destination policy. Completed local replies can also update
+last-seen. Early replies whose request never completes retain the existing native
+completion differences. Native network decisions occur at headers, so a later
+discovery refresh can follow their audit events even though source discovery
+precedes the network request hook. Exact cross-hook event ordering remains
+unverified. These hooks do not establish source map-conflict identity behavior;
+D60 remains unresolved. Operator error reports retain source exception classes
+with native content-free messages. The messages differ from Python error text.
+Existing lone-surrogate and extreme JSON-depth differences also apply to map
+reads. Filesystem fault and concurrent-reload equivalence remain bounded by the
+checks described below.
+
+The [source oracle](../proxy/tests/agent_discovery_source.py) uses owned maps,
+synthetic identities and explicit clocks. The [API tests](../proxy/tests/agent_api_discovery.rs)
+cover authentication, global reporting and unread bodies. The
+[runtime checks](../proxy/src/http/agent_audit_tests.rs) cover two-agent reports,
+local CONNECT containment, shared ownership, failed-reload recovery and caught
+audit-submission failures. Twenty source scenarios pass; five component tests
+include replay of fourteen applicable source workflows. The joined native
+selection passes 27 tests. These are implementation checks; full source identity
+reconciliation and independent acceptance remain pending.
 
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those

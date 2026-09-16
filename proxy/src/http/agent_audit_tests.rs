@@ -383,3 +383,295 @@ async fn explain_child(directory: &Path) {
             .any(|row| row["event"] == "proxy.egress")
     );
 }
+
+#[test]
+fn discovery_reports_prior_observations_and_survives_reload() {
+    const CHILD: &str = "SAFEYOLO_DISCOVERY_HTTP_FIXTURE";
+    if let Some(directory) = std::env::var_os(CHILD) {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(discovery_child(Path::new(&directory)));
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("agent_token"), TOKEN).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "http::agent_audit_tests::discovery_reports_prior_observations_and_survives_reload",
+            "--nocapture",
+        ])
+        .env(CHILD, directory.path())
+        .env("SAFEYOLO_DATA_DIR", directory.path())
+        .env(
+            "SAFEYOLO_LOG_PATH",
+            directory.path().join("unused-fallback.jsonl"),
+        )
+        .env_remove("SAFEYOLO_AUDIT_QUEUE_MAX")
+        .env_remove("SAFEYOLO_LOG_MAX_MB")
+        .env_remove("SAFEYOLO_LOG_BACKUPS")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for name in [
+        "alice.sock",
+        "bob.sock",
+        "ready",
+        "unused.sqlite3",
+        "unused-fallback.jsonl",
+    ] {
+        assert!(!directory.path().join(name).exists(), "{name}");
+    }
+}
+
+fn discovery_map(path: &Path, value: Value, seconds: u64) {
+    use std::fs::{File, FileTimes};
+    std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(
+            FileTimes::new().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(seconds)),
+        )
+        .unwrap();
+}
+
+fn discovery_document(runtime: &crate::Runtime) -> Value {
+    serde_json::from_str(
+        &runtime
+            .agent_discovery
+            .get_agents(&runtime.audit, crate::circuit_runtime::now)
+            .unwrap()
+            .render_json(false)
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+async fn discovered(directory: &Path, agent: &str) -> Value {
+    let reply = send_as(
+        directory,
+        agent,
+        "GET",
+        "/agents?agent=forged-identity",
+        Some(TOKEN),
+        b"",
+    )
+    .await;
+    assert!(reply.starts_with(b"HTTP/1.1 200"));
+    serde_json::from_slice(body(&reply)).unwrap()
+}
+
+async fn discovery_child(directory: &Path) {
+    let mut configuration = config(directory);
+    configuration.listeners.push(crate::config::AgentListener {
+        agent_id: "bob".into(),
+        socket_path: directory.join("bob.sock"),
+        source_id: Some("192.0.2.11".into()),
+    });
+    configuration.agent_map_file = directory
+        .join("agent-map.json")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    discovery_map(
+        Path::new(&configuration.agent_map_file),
+        json!({
+            "alice":{"ip":"192.0.2.10"}, "bob":{"ip":"192.0.2.11"}, "unseen":{}
+        }),
+        100,
+    );
+    let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let first = discovered(directory, "alice").await;
+    assert_eq!(
+        first,
+        json!({"agents":{"alice":{"ip":"192.0.2.10"},"bob":{"ip":"192.0.2.11"},"unseen":{"ip":null}},"count":3})
+    );
+    let after_alice = discovery_document(&runtime);
+    assert!(after_alice["agents"]["alice"]["last_seen"].is_number());
+    assert!(after_alice["agents"]["bob"].get("last_seen").is_none());
+    let from_bob = discovered(directory, "bob").await;
+    assert_eq!(
+        from_bob["agents"]["alice"]["last_seen"],
+        after_alice["agents"]["alice"]["last_seen"]
+    );
+    assert!(from_bob["agents"]["bob"].get("last_seen").is_none());
+    let both = discovery_document(&runtime);
+    assert!(both["agents"]["bob"]["last_seen"].is_number());
+    assert!(both["agents"].get("forged-identity").is_none());
+
+    // CONNECT admission has a separate observation even when containment
+    // responds locally. The reserved target cannot resolve or open a socket.
+    runtime
+        .agent_discovery
+        .observe_trusted("bob", || 1.)
+        .unwrap();
+    let mut stream = UnixStream::connect(directory.join("bob.sock"))
+        .await
+        .unwrap();
+    stream.write_all(b"CONNECT _safeyolo.proxy.internal:80 HTTP/1.1\r\nHost: _safeyolo.proxy.internal:80\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut denied = Vec::new();
+    timeout(LIMIT, stream.read_to_end(&mut denied))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(denied.starts_with(b"HTTP/1.1 403"));
+    assert!(
+        discovery_document(&runtime)["agents"]["bob"]["last_seen"]
+            .as_f64()
+            .unwrap()
+            > 1.
+    );
+
+    // A different configured file publishes new metadata but retains observed
+    // history and the shared owner used by the API and operator statistics.
+    configuration.agent_map_file = directory.join("next-map.json").to_str().unwrap().to_owned();
+    discovery_map(
+        Path::new(&configuration.agent_map_file),
+        json!({
+            "alice":{"ip":"192.0.2.10"}, "bob":{"ip":"192.0.2.11"}, "new-agent":{}
+        }),
+        200,
+    );
+    proxy.reload(configuration.clone()).await.unwrap();
+    let current = proxy.runtime.read().unwrap().clone();
+    assert!(std::sync::Arc::ptr_eq(
+        &runtime.agent_discovery,
+        &current.agent_discovery
+    ));
+    let after_reload = discovery_document(&current);
+    assert_eq!(
+        after_reload["agents"]["alice"]["last_seen"],
+        both["agents"]["alice"]["last_seen"]
+    );
+    assert!(after_reload["agents"].get("unseen").is_none());
+    assert_eq!(after_reload["agents"]["new-agent"], json!({"ip":null}));
+    let stats = crate::operator_stats::document(&current);
+    let stats: Value = serde_json::from_str(&stats.render_json(false).unwrap()).unwrap();
+    assert_eq!(
+        stats["service-discovery"]["map_file"],
+        configuration.agent_map_file
+    );
+    assert_eq!(stats["service-discovery"]["known_ips"], 2);
+    assert_eq!(stats["service-discovery"]["agents_seen"], 3);
+    assert_eq!(
+        stats["service-discovery"]["agents"]["bob"]["last_seen"],
+        after_reload["agents"]["bob"]["last_seen"]
+    );
+
+    let mut broken = configuration.clone();
+    broken.agent_map_file = directory
+        .join("broken-map.json")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    discovery_map(Path::new(&broken.agent_map_file), json!([]), 300);
+    proxy.reload(broken.clone()).await.unwrap();
+    assert!(
+        runtime
+            .agent_discovery
+            .matches_path(&broken.agent_map_file)
+            .unwrap()
+    );
+    let invalid_report = send(directory, "GET", "/agents", Some(TOKEN), b"").await;
+    assert!(invalid_report.starts_with(b"HTTP/1.1 500"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(body(&invalid_report)).unwrap()["error"],
+        "Internal error: AttributeError"
+    );
+    proxy.reload(configuration.clone()).await.unwrap();
+    assert!(
+        runtime
+            .agent_discovery
+            .matches_path(&configuration.agent_map_file)
+            .unwrap()
+    );
+
+    // A later listener-bind failure keeps the published config but can occur
+    // after discovery configured its shared path. Restoring the old config
+    // must compare the owner's actual path rather than the published config.
+    let occupied = directory.join("occupied.sock");
+    std::fs::write(&occupied, b"owned regular file must survive").unwrap();
+    broken.listeners.push(crate::config::AgentListener {
+        agent_id: "unused".into(),
+        socket_path: occupied.clone(),
+        source_id: None,
+    });
+    assert!(proxy.reload(broken.clone()).await.is_err());
+    assert!(
+        runtime
+            .agent_discovery
+            .matches_path(&broken.agent_map_file)
+            .unwrap()
+    );
+    proxy.reload(configuration.clone()).await.unwrap();
+    assert!(
+        runtime
+            .agent_discovery
+            .matches_path(&configuration.agent_map_file)
+            .unwrap()
+    );
+    assert_eq!(
+        std::fs::read(&occupied).unwrap(),
+        b"owned regular file must survive"
+    );
+
+    let records = drained(&proxy, directory);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["event"] == "agent.discovered")
+            .count(),
+        2
+    );
+    discovery_map(
+        Path::new(&configuration.agent_map_file),
+        json!({
+            "alice":{"ip":"192.0.2.10"}, "bob":{"ip":"192.0.2.11"}, "charlie":{"ip":"192.0.2.12"}
+        }),
+        400,
+    );
+    runtime
+        .agent_discovery
+        .observe_trusted("alice", || 1.)
+        .unwrap();
+    runtime.audit.poison_for_test();
+    let health = send(directory, "GET", "/health", Some(TOKEN), b"").await;
+    assert!(health.starts_with(b"HTTP/1.1 200"));
+    let after_failure = discovery_document(&runtime);
+    assert_eq!(after_failure["agents"]["charlie"]["ip"], "192.0.2.12");
+    assert!(
+        after_failure["agents"]["alice"]["last_seen"]
+            .as_f64()
+            .unwrap()
+            > 1.
+    );
+
+    configuration.agent_map_file.clear();
+    proxy.reload(configuration).await.unwrap();
+    assert_eq!(
+        discovery_document(&runtime)["agents"]["alice"]["last_seen"],
+        after_failure["agents"]["alice"]["last_seen"]
+    );
+    proxy.shutdown().await;
+    assert!(
+        !self::records(&directory.join("diagnostics.jsonl"))
+            .iter()
+            .any(|row| row["event"] == "proxy.egress")
+    );
+    assert!(
+        !std::fs::read_to_string(directory.join("audit.jsonl"))
+            .unwrap()
+            .contains(TOKEN)
+    );
+}

@@ -9,6 +9,7 @@ use crate::{circuits::CircuitValue, http_content, test_context};
 
 /// Native control owners share process state across request/reload snapshots.
 pub struct Controls<'a> {
+    pub discovery: Option<&'a std::sync::Arc<crate::agent_discovery::AgentDiscovery>>,
     pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
     pub flows: Option<&'a std::sync::Arc<crate::flow_store::FlowStore>>,
     pub circuits: Option<CircuitContext<'a>>,
@@ -82,6 +83,9 @@ where
     }
     if route(request) == "/explain" {
         return Ok(explain::respond(request, controls.audit).await);
+    }
+    if route(request) == "/agents" {
+        return Ok(discovery::respond(request, controls.discovery, controls.audit).await);
     }
     if let Some(route) = flows::recognize(request) {
         return flows::respond(route, request, controls.flows, body).await;

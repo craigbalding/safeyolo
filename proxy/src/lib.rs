@@ -6,6 +6,7 @@ pub mod admin_api;
 mod admin_listener;
 pub mod admin_shield;
 pub mod agent_api;
+pub mod agent_discovery;
 pub mod approvals;
 pub mod audit;
 mod circuit_runtime;
@@ -114,6 +115,7 @@ pub(crate) struct Runtime {
     flow_recorder: Arc<flow_recorder::FlowRecorder>,
     audit: Arc<audit::Writer>,
     request_logger: Arc<request_logger::RequestLogger>,
+    agent_discovery: Arc<agent_discovery::AgentDiscovery>,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -169,6 +171,9 @@ impl Runtime {
         let request_logger = previous
             .map(|runtime| runtime.request_logger.clone())
             .unwrap_or_default();
+        let agent_discovery = previous
+            .map(|runtime| runtime.agent_discovery.clone())
+            .unwrap_or_else(|| Arc::new(agent_discovery::AgentDiscovery::new()));
         let flow_recorder = match previous {
             Some(runtime) => runtime.flow_recorder.clone(),
             None => Arc::new(flow_recorder::FlowRecorder::start(
@@ -236,6 +241,7 @@ impl Runtime {
             flow_recorder,
             audit,
             request_logger,
+            agent_discovery,
             via_token: config
                 .via_token
                 .clone()
@@ -255,6 +261,20 @@ impl Runtime {
         if previous.is_none() {
             runtime.configure_declarations()?;
         }
+        if !runtime
+            .agent_discovery
+            .matches_path(&runtime.config.agent_map_file)?
+            && let Err(error) = runtime
+                .agent_discovery
+                .configure(&runtime.config.agent_map_file, &runtime.audit)
+        {
+            // The source addon dispatcher logs configuration exceptions and
+            // keeps running. Reporting metadata is not a startup requirement.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Agent discovery configuration failed: {error}"
+            );
+        }
         Ok(runtime)
     }
 
@@ -271,6 +291,29 @@ impl Runtime {
             None => self.test_context.configure_declarations(None, options)?,
         }
         Ok(())
+    }
+
+    fn observe_agent(&self, agent: &str, source: Option<&str>) {
+        // Source identity resolution catches lookup/reload failures before
+        // recording the already trusted UDS owner. Discovery metadata never
+        // supplies or replaces the native listener identity.
+        if source.is_some()
+            && let Err(error) = self.agent_discovery.reload(&self.audit)
+        {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Agent discovery refresh failed: {error}"
+            );
+        }
+        if let Err(error) = self
+            .agent_discovery
+            .observe_trusted(agent, circuit_runtime::now)
+        {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Agent discovery observation failed: {error}"
+            );
+        }
     }
 
     fn record(&self, event: Value) -> Result<(), Error> {

@@ -17,6 +17,7 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 mod declarations;
+mod discovery;
 mod explain;
 mod flows;
 pub use declarations::{
@@ -120,6 +121,7 @@ pub enum Failure {
     ContentDecoding(crate::http_content::ContentError),
     FlowReporting(FlowFailure),
     ExplainReporting(ExplainFailure),
+    DiscoveryReporting(crate::agent_discovery::ErrorKind),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

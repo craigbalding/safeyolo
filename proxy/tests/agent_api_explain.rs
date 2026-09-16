@@ -71,6 +71,7 @@ async fn call(
         &Registry::default(),
         0.,
         Controls {
+            discovery: None,
             audit: writer,
             flows: None,
             circuits: None,

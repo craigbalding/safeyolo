@@ -59,6 +59,9 @@ pub struct Inspection {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub listeners: Vec<AgentListener>,
+    /// Operator-supplied discovery metadata; listener configuration owns identity.
+    #[serde(default)]
+    pub agent_map_file: String,
     pub temporary_policy_socket: Option<PathBuf>,
     pub policy_file: Option<PathBuf>,
     #[serde(default = "enabled")]
