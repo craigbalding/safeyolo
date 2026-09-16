@@ -20,8 +20,9 @@ mod declarations;
 mod discovery;
 mod explain;
 mod flows;
+mod trace;
 pub use declarations::{
-    BodyObservation, Controls, DeclarationContext, RequestBody, respond_with_body,
+    BodyObservation, Controls, DeclarationContext, RequestBody, TraceContext, respond_with_body,
     respond_with_body_and_audit_id,
 };
 pub use explain::ExplainFailure;
@@ -122,6 +123,7 @@ pub enum Failure {
     FlowReporting(FlowFailure),
     ExplainReporting(ExplainFailure),
     DiscoveryReporting(crate::agent_discovery::ErrorKind),
+    TraceReporting(crate::trace::ErrorKind),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -461,7 +463,23 @@ pub async fn respond_read_with_circuits<'p>(
     if route(request) == "/explain" {
         return explain::respond(request, None).await;
     }
+    if route(request) == "/trace" {
+        return trace::respond(request, None);
+    }
     authenticated_read(request, policy, tasks, now_ms, circuits)
+}
+
+fn valid_request_id(value: &str) -> bool {
+    // Python's ^req-[a-f0-9]{32}$ accepts one terminal LF. Preserve it for
+    // the exact retained-record lookup after validation.
+    let value = value.strip_suffix('\n').unwrap_or(value);
+    let Some(digits) = value.strip_prefix("req-") else {
+        return false;
+    };
+    digits.len() == 32
+        && digits
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 async fn authorize(request: Request<'_>, token_path: &Path) -> Result<(), Outcome<'static>> {

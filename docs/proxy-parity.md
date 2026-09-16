@@ -364,6 +364,7 @@ silently reduce accepted message sizes to a library default.
 | D58 | Direct source flow reads fall back to legacy agent_id when a schema-v2 row has no authoritative evidence_owner. An explicitly quarantined owner-null row is therefore readable by that legacy agent although scoped search excludes it. | Native direct reads require exact evidence_owner, matching collection scope. Foreign, unresolved, quarantined and missing records share the existing 404. [API tests](../proxy/tests/agent_api_flows.rs) prove denial before loading or decompressing a body. Existing version-1 migration still assigns owners; reads do not reattribute quarantined version-2 evidence. |
 | D59 | If shutdown finds the source audit queue full, it removes and echoes queued events without releasing their pending reservations. After the active flush finishes, pending can remain permanently nonzero. | Native shutdown releases exactly the reservations for entries removed by this fallback. Pending then reaches zero after active work finishes. Echoed events are not claimed to have reached the file. The [writer tests](../proxy/src/audit/writer/tests.rs) preserve the held-flush/full-queue case and distinguish draining from persistence. |
 | D60 | Source service discovery reconciles trusted UDS identity with the agent map. A disagreement removes the evidence owner, skips last-seen accounting and emits a conflict event. | Native identity still comes only from the accepted listener. The discovery report reads map metadata and records that listener owner; it does not implement source map-conflict containment or its security events. This remains an unresolved identity-parity gap. Reporting tests do not establish equivalence for mismatched identities. |
+| D61 | TraceStore does not enforce the per-agent cap when an initially ownerless record later acquires an owner. A capped append moves a record to the end without updating its retained timestamp; expiry stops at the first live record and can retain a later stale record. | The native store preserves these source behaviors and their finite source witnesses. The global record and per-record step caps still apply. These retention discrepancies remain unresolved; the configured TTL and per-agent cap are not strict guarantees in these cases. |
 
 ## Deletion map and evidence still required
 
@@ -1446,8 +1447,8 @@ local [Hyper](../proxy/vendor/hyper/SAFEYOLO.md) and
 duplicate values with comma-space and preserves first name spelling. It removes
 internal, hop-by-hop and Connection-nominated fields before network checks, with
 the source WebSocket exception. Network development events retain the consumed
-trace opt-in as `trace_requested`; production trace storage is still
-unimplemented. The local Agent API releases captured bearer fields before
+trace opt-in as `trace_requested`. Native NetworkGuard steps also reach the
+shared trace store described below. The local Agent API releases captured bearer fields before
 its response handling.
 
 Header values remain raw bytes in a private wiping owner. The HTTP path releases
@@ -1473,6 +1474,63 @@ temporary Python adapter. Those checks found and verified the repair for a
 strict-schema rejection: `trace_requested` stays local to native events and is
 excluded from the adapter request. These checks are implementation evidence;
 independent acceptance and the remaining production migration work are pending.
+
+### Opt-in native network traces
+
+An ordinary HTTP request or CONNECT that reaches native NetworkGuard can opt in
+with a nonempty `X-SafeYolo-Trace` header. The proxy consumes the header and
+records the guard's reached steps. The originating agent can then read
+`GET /trace?request_id=<response-request-id>` with its Agent API bearer token.
+The [trace store](../proxy/src/trace.rs) stays in memory and survives runtime
+reload. The [API route](../proxy/src/agent_api/trace.rs) authenticates before
+validating the request ID, then checks trusted caller identity. Foreign and
+missing records return the same 404 response for the same queried ID. Header
+and query hints cannot choose an owner. The component's conflict-identity
+control does not resolve the separate runtime identity gap D60.
+
+The store uses the source defaults: 300-second TTL, 1,000 global records,
+200 records per agent, 128 steps per record and a 4,096-character serialized
+details limit. It samples the existing `SAFEYOLO_TRACE_*` integer environment
+settings at first runtime construction. Malformed values use the corresponding
+default; there is no new positivity clamp. The details limit uses the source's
+ASCII-escaped JSON length and applies when reading. Steps retain source order,
+optional-field omission, scalar detail projection and truncation markers.
+Reads do not refresh retention. D61 records the retained source exceptions to
+TTL and per-agent limits. Native reads return a snapshot under the store lock;
+they do not reproduce Python's mutable-record serialization races.
+
+[NetworkGuard observation](../proxy/src/http/network_trace.rs) runs only at a
+reached source step point. An allowed CONNECT records its allowance before
+submitting its audit event. A subsequent synchronous audit failure adds an
+error step. A denied request whose audit submission fails has no completed
+block step. Store failures produce categorical diagnostics and do not change
+the guard decision, counters, response or audit writes. Native guard failures
+use `reason: GuardError`; that native category does not claim the source
+Python exception class. Durations measure the native guard call. Native
+admission can precede source request-body completion, as documented for the
+existing HTTP pipeline.
+
+This first runtime join instruments NetworkGuard only. The source `not_loaded`
+field lists expected addon names absent from all retained steps; it is not a
+runtime installation inventory. CircuitBreaker and TestContext still lack
+trace instrumentation. HTTP service gateway, credential and pattern stages
+remain inactive. Later stages skipped by native early returns have no invented
+bypass steps. A stored CONNECT hook narrows the source expected set to
+NetworkGuard. Outer CONNECT and enclosed HTTP retain separate request IDs and
+share the transport connection ID. Reserved local replies and the temporary
+Python policy adapter do not fabricate native guard traces. The diagnostic
+probe pipeline and complete doctor trace workflow remain unimplemented.
+
+The [source corpus](../proxy/tests/trace_source.py) exercises actual trace
+storage and Agent API dispatch. [Native API tests](../proxy/tests/agent_api_trace.rs)
+compare exact source response bytes, query ordering, identity and errors.
+[Producer tests](../proxy/tests/network_trace.rs) verify reached trace/audit
+order and single policy charging. [HTTP controls](../proxy/src/http/trace_tests.rs)
+cover opt-in removal, agent scope, reload, CONNECT correlation and failed
+observation. Arbitrary Python objects, nonstring detail keys, lone-surrogate
+strings and nonfinite record-creation timestamps remain outside the native
+store representation. These checks are implementation evidence, not full
+pipeline parity or independent acceptance.
 
 ### Memory monitor component
 

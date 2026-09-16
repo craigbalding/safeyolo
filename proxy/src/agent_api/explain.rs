@@ -26,7 +26,7 @@ pub(super) async fn respond(
         return invalid_id();
     };
     let request_id = Zeroizing::new(request_id);
-    if !valid_id(&request_id) {
+    if !super::valid_request_id(&request_id) {
         return invalid_id();
     }
     let Some(agent) = agent(request.identity) else {
@@ -72,19 +72,6 @@ impl Drop for Document {
     fn drop(&mut self) {
         audit::wipe(&mut self.0);
     }
-}
-
-fn valid_id(value: &str) -> bool {
-    // Python's ^req-[a-f0-9]{32}$ accepts one terminal LF. Keep the original
-    // value for exact retained-event matching after this validation.
-    let value = value.strip_suffix('\n').unwrap_or(value);
-    let Some(digits) = value.strip_prefix("req-") else {
-        return false;
-    };
-    digits.len() == 32
-        && digits
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn invalid_id() -> Outcome<'static> {

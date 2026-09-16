@@ -77,6 +77,7 @@ impl Fixture {
             &Registry::default(),
             1000.,
             Controls {
+                traces: None,
                 discovery: None,
                 audit: None,
                 flows: available.then_some(&self.store),

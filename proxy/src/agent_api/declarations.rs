@@ -9,11 +9,18 @@ use crate::{circuits::CircuitValue, http_content, test_context};
 
 /// Native control owners share process state across request/reload snapshots.
 pub struct Controls<'a> {
+    pub traces: Option<TraceContext<'a>>,
     pub discovery: Option<&'a std::sync::Arc<crate::agent_discovery::AgentDiscovery>>,
     pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
     pub flows: Option<&'a std::sync::Arc<crate::flow_store::FlowStore>>,
     pub circuits: Option<CircuitContext<'a>>,
     pub declarations: Option<DeclarationContext<'a>>,
+}
+
+/// Trace expiry samples wall time only when an authorized lookup is reached.
+pub struct TraceContext<'a> {
+    pub store: &'a crate::trace::TraceStore,
+    pub now: &'a (dyn Fn() -> f64 + Sync),
 }
 
 /// Sample monotonic time after a POST body arrives, at the declaration operation.
@@ -83,6 +90,9 @@ where
     }
     if route(request) == "/explain" {
         return Ok(explain::respond(request, controls.audit).await);
+    }
+    if route(request) == "/trace" {
+        return Ok(trace::respond(request, controls.traces));
     }
     if route(request) == "/agents" {
         return Ok(discovery::respond(request, controls.discovery, controls.audit).await);

@@ -33,9 +33,12 @@ mod flow_recording;
 mod ignored_host;
 #[cfg(test)]
 mod ignored_host_tests;
+mod network_trace;
 mod request_body;
 mod request_context;
 mod test_context;
+#[cfg(test)]
+mod trace_tests;
 mod traffic;
 mod traffic_url;
 
@@ -613,7 +616,8 @@ async fn decide(
     if let Some(policy) = &runtime.policy {
         use crate::network_guard::{Identity, Options, OutcomeKind, Pdp, Request};
 
-        let outcome = runtime.network_guard.enforce_with_audit(
+        let started = request.trace_requested.then(std::time::Instant::now);
+        let result = runtime.network_guard.enforce_with_audit_and_trace(
             Pdp::Ready(policy),
             Request {
                 identity: Identity::Resolved(request.agent_id),
@@ -640,7 +644,12 @@ async fn decide(
                     .map(|_| ())
                     .map_err(|error| crate::network_guard::GuardError(error.to_string()))
             },
-        )?;
+            |intent| network_trace::observe(runtime, request, started, intent),
+        );
+        if result.is_err() {
+            network_trace::failed(runtime, request, started);
+        }
+        let outcome = result?;
         // Development guard evidence excludes the URL query and application
         // bytes. Canonical security audit has its own process-owned writer.
         runtime.record(json!({
@@ -857,6 +866,10 @@ async fn local_agent_api(
             &runtime.tasks,
             crate::policy::current_time_ms(),
             agent_api::Controls {
+                traces: Some(agent_api::TraceContext {
+                    store: &runtime.traces,
+                    now: &crate::circuit_runtime::now,
+                }),
                 discovery: Some(&runtime.agent_discovery),
                 audit: Some(&runtime.audit),
                 flows: runtime.flow_recorder.store(),

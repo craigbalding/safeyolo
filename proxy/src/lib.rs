@@ -41,6 +41,7 @@ pub mod services;
 pub mod tasks;
 pub mod test_context;
 pub mod tls;
+pub mod trace;
 mod tunnels;
 pub mod websocket;
 mod websocket_relay;
@@ -119,6 +120,7 @@ pub(crate) struct Runtime {
     request_logger: Arc<request_logger::RequestLogger>,
     agent_discovery: Arc<agent_discovery::AgentDiscovery>,
     metrics: Arc<metrics::Metrics>,
+    traces: Arc<trace::TraceStore>,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -180,6 +182,9 @@ impl Runtime {
         let metrics = previous
             .map(|runtime| runtime.metrics.clone())
             .unwrap_or_else(|| Arc::new(metrics::Metrics::new(circuit_runtime::now)));
+        let traces = previous
+            .map(|runtime| runtime.traces.clone())
+            .unwrap_or_else(|| Arc::new(trace::TraceStore::new(trace::Settings::from_env())));
         let flow_recorder = match previous {
             Some(runtime) => runtime.flow_recorder.clone(),
             None => Arc::new(flow_recorder::FlowRecorder::start(
@@ -249,6 +254,7 @@ impl Runtime {
             request_logger,
             agent_discovery,
             metrics,
+            traces,
             via_token: config
                 .via_token
                 .clone()

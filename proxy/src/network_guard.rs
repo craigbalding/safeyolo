@@ -310,16 +310,33 @@ impl NetworkGuard {
         self.enforce_with_audit(pdp, request, options, now_ms, |_| Ok(()))
     }
 
-    /// Submit before the source's later counters, metadata and response effects.
-    /// A synchronous submission exception stops those effects. A reported queue
-    /// drop or asynchronous sink failure does not fail this boundary.
+    /// Submit at the source's audit point. A synchronous submission exception
+    /// stops the later effects; preceding counters remain applied. A reported
+    /// queue drop or asynchronous sink failure does not fail this boundary.
     pub fn enforce_with_audit(
         &self,
         pdp: Pdp<'_>,
         request: Request<'_>,
         options: Options,
         now_ms: f64,
+        submit: impl FnMut(&AuditIntent) -> Result<()>,
+    ) -> Result<Outcome> {
+        self.enforce_with_audit_and_trace(pdp, request, options, now_ms, submit, |_| {})
+    }
+
+    /// Observe only reached normal trace steps. The caller owns opt-in, timing,
+    /// best-effort storage and any terminal error step. In particular, an allowed
+    /// CONNECT is observed before its audit submission, which may still fail.
+    /// The observer has no error result; no policy evaluation is repeated to
+    /// construct the observation.
+    pub fn enforce_with_audit_and_trace(
+        &self,
+        pdp: Pdp<'_>,
+        request: Request<'_>,
+        options: Options,
+        now_ms: f64,
         mut submit: impl FnMut(&AuditIntent) -> Result<()>,
+        mut observe: impl FnMut(&TraceIntent),
     ) -> Result<Outcome> {
         let mut output = Outcome {
             kind: OutcomeKind::Bypassed,
@@ -355,6 +372,7 @@ impl NetworkGuard {
         };
         if let Some(reason) = bypass {
             output.trace.reason = Some(reason);
+            observe(&output.trace);
             return Ok(output);
         }
         self.count(|stats| stats.checks += 1)?;
@@ -404,6 +422,10 @@ impl NetworkGuard {
         };
         if let Some(violation) = violation {
             self.violation(request, options.block, violation, &mut output, &mut submit)?;
+            output.trace.state = "evaluated";
+            output.trace.outcome = Some(output.kind);
+            output.trace.status = output.response.as_ref().map(|response| response.status);
+            observe(&output.trace);
         } else {
             self.count(|stats| stats.allowed += 1)?;
             output.kind = OutcomeKind::Allowed;
@@ -414,6 +436,9 @@ impl NetworkGuard {
             {
                 output.metadata["ratelimit_remaining"] = json!(remaining);
             }
+            output.trace.state = "evaluated";
+            output.trace.outcome = Some(output.kind);
+            observe(&output.trace);
             if request.method == "CONNECT" {
                 let intent = audit(
                     request,
@@ -431,9 +456,6 @@ impl NetworkGuard {
                 output.audit = Some(intent);
             }
         }
-        output.trace.state = "evaluated";
-        output.trace.outcome = Some(output.kind);
-        output.trace.status = output.response.as_ref().map(|response| response.status);
         Ok(output)
     }
 
