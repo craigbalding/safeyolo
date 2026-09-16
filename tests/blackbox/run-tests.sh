@@ -17,6 +17,10 @@
 #   ./run-tests.sh --proxy      # Proxy functional tests only
 #   ./run-tests.sh --isolation  # VM isolation tests only
 #   ./run-tests.sh --expect-platform systrap|kvm|vz
+#   ./run-tests.sh --proxy --proxy-impl python|rust|both
+#   ./run-tests.sh --proxy --proxy-impl rust --rust-bin PATH
+#   ./run-tests.sh --proxy --proxy-impl python --python-source PATH
+#   ./run-tests.sh --proxy -- --collect-only
 #   ./run-tests.sh --verbose    # Verbose pytest output
 #
 # Exit codes:
@@ -27,6 +31,7 @@
 
 set -euo pipefail
 
+CALLER_DIR="$(pwd -P)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$SCRIPT_DIR"
@@ -69,6 +74,11 @@ RUN_ISOLATION=true
 VERBOSE=""
 AGENT_NAME="${SAFEYOLO_TEST_AGENT:-bbtest}"
 EXPECTED_PLATFORM=""
+PROXY_IMPL="python"
+PROXY_IMPL_SELECTED=false
+PYTHON_SOURCE=""
+RUST_BIN=""
+PYTEST_FORWARD_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -99,13 +109,136 @@ while [[ $# -gt 0 ]]; do
             esac
             shift 2
             ;;
+        --proxy-impl)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: --proxy-impl requires python, rust, or both" >&2
+                exit 2
+            fi
+            PROXY_IMPL="$2"
+            case "$PROXY_IMPL" in
+                python|rust|both) ;;
+                *)
+                    echo "ERROR: unsupported proxy implementation '$PROXY_IMPL'" >&2
+                    exit 2
+                    ;;
+            esac
+            PROXY_IMPL_SELECTED=true
+            shift 2
+            ;;
+        --python-source)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: --python-source requires a checkout path" >&2
+                exit 2
+            fi
+            PYTHON_SOURCE="$2"
+            shift 2
+            ;;
+        --rust-bin)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: --rust-bin requires an executable path" >&2
+                exit 2
+            fi
+            RUST_BIN="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            PYTEST_FORWARD_ARGS=("$@")
+            break
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: ./run-tests.sh [--proxy|--isolation] [--expect-platform PLATFORM] [--verbose]"
+            echo "Usage: ./run-tests.sh [--proxy|--isolation] [--proxy-impl python|rust|both] [--expect-platform PLATFORM] [--verbose] [-- PYTEST_ARGS...]"
             exit 2
             ;;
     esac
 done
+
+# Command-line paths are interpreted relative to the caller's directory even
+# though the legacy runner changes into tests/blackbox for its setup.
+if [ -n "$PYTHON_SOURCE" ] && [[ "$PYTHON_SOURCE" != /* ]] && [[ "$PYTHON_SOURCE" != "~/"* ]]; then
+    PYTHON_SOURCE="$CALLER_DIR/$PYTHON_SOURCE"
+fi
+if [ -n "$RUST_BIN" ] && [[ "$RUST_BIN" != /* ]] && [[ "$RUST_BIN" != "~/"* ]]; then
+    RUST_BIN="$CALLER_DIR/$RUST_BIN"
+fi
+
+# The focused migration harness owns explicit backend runs.  It launches each
+# selected process in disposable state and already has the shared assertions,
+# independent origins, readiness ownership and cleanup checks.  Keep the
+# prepared-host Python route below as the compatibility default.  Isolation
+# acceptance cannot be attributed to Rust until the native backend is wired
+# into the real VM lifecycle, so refuse that combination rather than running
+# the Python backend under a Rust label.
+if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
+   { [ "$PROXY_IMPL_SELECTED" = true ] || [ -n "$PYTHON_SOURCE" ] || [ -n "$RUST_BIN" ]; }; then
+    if ! command -v pytest &>/dev/null; then
+        echo "ERROR: pytest is required for selected proxy backend tests" >&2
+        exit 2
+    fi
+    ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts}"
+    mkdir -p "$ARTIFACTS_DIR"
+    SELECTED_BACKENDS=()
+    case "$PROXY_IMPL" in
+        python|rust) SELECTED_BACKENDS=("$PROXY_IMPL") ;;
+        both) SELECTED_BACKENDS=(python rust) ;;
+    esac
+    SELECTOR_ARGS=(--test-suite-root "$REPO_ROOT")
+    if [ -n "$PYTHON_SOURCE" ]; then
+        SELECTOR_ARGS+=(--python-source "$PYTHON_SOURCE")
+    fi
+    if [ -n "$RUST_BIN" ]; then
+        SELECTOR_ARGS+=(--rust-bin "$RUST_BIN")
+    fi
+    for backend in "${SELECTED_BACKENDS[@]}"; do
+        evidence="$ARTIFACTS_DIR/proxy-${backend}-runtime.json"
+        if ! python3 "$SCRIPT_DIR/proxy_backend.py" --backend "$backend" \
+            "${SELECTOR_ARGS[@]}" --output "$evidence"; then
+            exit 2
+        fi
+    done
+    if [ -n "$EXPECTED_PLATFORM" ]; then
+        echo "ERROR: --expect-platform cannot be combined with the proxy-only backend selector" >&2
+        exit 2
+    fi
+    if [ -n "$PYTHON_SOURCE" ]; then
+        PYTHON_SOURCE_REAL="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$PYTHON_SOURCE")"
+        export SAFEYOLO_PYTHON_SOURCE="$PYTHON_SOURCE_REAL"
+    else
+        unset SAFEYOLO_PYTHON_SOURCE || true
+    fi
+    if [ -n "$RUST_BIN" ]; then
+        RUST_BIN_REAL="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$RUST_BIN")"
+        export SAFEYOLO_RUST_PROXY="$RUST_BIN_REAL"
+    fi
+    PYTEST_ARGS=(--tb=short --timeout=120)
+    if [ "$VERBOSE" = "-v" ]; then
+        PYTEST_ARGS+=("-v")
+    fi
+    if [ "${#PYTEST_FORWARD_ARGS[@]}" -gt 0 ]; then
+        PYTEST_ARGS+=("${PYTEST_FORWARD_ARGS[@]}")
+    fi
+    selected_result=0
+    for backend in "${SELECTED_BACKENDS[@]}"; do
+        echo "=== Selected proxy backend: $backend ==="
+        echo "  Runtime evidence: $ARTIFACTS_DIR/proxy-${backend}-runtime.json"
+        set +e
+        pytest "${PYTEST_ARGS[@]}" \
+            --junitxml="$ARTIFACTS_DIR/proxy-${backend}-junit.xml" \
+            "$REPO_ROOT/tests/proxy_migration" --proxy-backend "$backend"
+        backend_result=$?
+        set -e
+        if [ "$backend_result" -ne 0 ]; then
+            selected_result="$backend_result"
+        fi
+    done
+    exit "$selected_result"
+fi
+
+if [ "$PROXY_IMPL" != "python" ] || [ -n "$PYTHON_SOURCE" ] || [ -n "$RUST_BIN" ]; then
+    echo "ERROR: explicit Rust/backend selection requires --proxy; VM isolation is not yet a Rust acceptance lane" >&2
+    exit 2
+fi
 
 echo "=== SafeYolo Blackbox Tests ==="
 echo "  Instance: $SAFEYOLO_CONFIG_DIR"
@@ -400,14 +533,14 @@ if [ "$RUN_PROXY" = true ]; then
     # Directory-based invocation: any test file dropped into proxy/
     # runs automatically. Avoids the silent-skip failure mode where a
     # new test file was forgotten from a filename allowlist.
-    pytest $VERBOSE --tb=short --timeout=60 proxy/
+    pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE --tb=short --timeout=60 proxy/
     PROXY_RESULT=$?
 
     # Process security tests (host-side)
     echo ""
     echo "=== Process Security Tests (host-side) ==="
     echo ""
-    pytest $VERBOSE --tb=short --timeout=60 security/
+    pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE --tb=short --timeout=60 security/
     FIREWALL_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -422,7 +555,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest $VERBOSE --tb=short --timeout=30 identity/
+    pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE --tb=short --timeout=30 identity/
     IDENTITY_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -456,7 +589,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest $VERBOSE -rs --tb=short --timeout=120 lifecycle/
+    pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE -rs --tb=short --timeout=120 lifecycle/
     LIFECYCLE_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"

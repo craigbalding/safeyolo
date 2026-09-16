@@ -230,6 +230,43 @@ the test and source config paths resolve to the same directory.
 Do not use `run-lane.sh` for this case: acceptance lanes deliberately exercise
 `install.sh`, bootstrap, and (for VZ) host-helper installation.
 
+### Selecting a proxy backend
+
+The prepared-host runner keeps Python as its default.  Explicit proxy runs use
+the existing `tests/proxy_migration` process harness, which starts a fresh
+selected process and its owned UDS/origin fixtures for every test.  Assertions
+stay shared between implementations:
+
+```bash
+# Run the focused acceptance against the selected source checkout.
+./run-tests.sh --proxy --proxy-impl python \
+  --python-source /path/to/python-checkout --verbose
+
+# Run it against an explicitly built native executable.
+./run-tests.sh --proxy --proxy-impl rust \
+  --rust-bin /path/to/rust-checkout/target/debug/safeyolo-proxy --verbose
+
+# Execute independent Python and Rust runs, retaining separate artifacts.
+./run-tests.sh --proxy --proxy-impl both \
+  --python-source /path/to/python-checkout \
+  --rust-bin /path/to/rust-checkout/target/debug/safeyolo-proxy --verbose
+
+# Forward focused pytest arguments after `--`.
+./run-tests.sh --proxy --proxy-impl rust -- \
+  tests/proxy_migration/test_http_contract.py -k attribution
+```
+
+The selector validates the requested checkout or executable before starting
+pytest.  Rust selection runs its `--version` command and records the binary
+SHA-256; each backend artifact also records the interpreter, selected Python
+package path, source and test-suite revision/dirty state, platform and machine.
+Missing binaries, failed readiness, or a failed selected backend are errors.
+`both` still starts the second backend after a first-run failure and returns a
+nonzero result if either run fails.  `--proxy-impl rust|both` is currently
+proxy-only; combining it with VM isolation is rejected so an isolation pass
+cannot be attributed to the wrong process.  The full `systrap`, `kvm`, and `vz`
+lanes remain available for the default Python installation path.
+
 ## Adding Tests
 
 When adding a new test, ask: *"What would a malicious agent try?"*

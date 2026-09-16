@@ -6,6 +6,10 @@
 #   ./tests/blackbox/run-lane.sh kvm     [run-tests.sh options]
 #   ./tests/blackbox/run-lane.sh vz      [run-tests.sh options]
 #   ./tests/blackbox/run-lane.sh proxy   [run-tests.sh options]
+#
+# Backend selection is forwarded to run-tests.sh.  The native selector is
+# proxy-only until Rust is wired into the VM lifecycle:
+#   ./tests/blackbox/run-lane.sh proxy --proxy-impl rust --rust-bin PATH
 
 set -euo pipefail
 

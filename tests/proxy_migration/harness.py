@@ -113,8 +113,13 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         if circuit_breaker_enabled is not None or circuit_state_file is not None:
             config["circuit_breaker_enabled"] = True if circuit_breaker_enabled is None else circuit_breaker_enabled
             config["circuit_state_file"] = str(directory / "circuit-state.json") if circuit_state_file is None else str(circuit_state_file)
+        # An explicit source checkout is part of backend identity.  Keep the
+        # test modules from this checkout on the inherited path while making
+        # the launched Python proxy import the caller-selected package.
+        python_source = os.environ.get("SAFEYOLO_PYTHON_SOURCE")
+        source_root = Path(python_source).expanduser().resolve() if python_source else REPO
         env = {**os.environ,
-               "PYTHONPATH": os.pathsep.join([str(REPO / "cli/src"), str(REPO)]),
+               "PYTHONPATH": os.pathsep.join([str(source_root / "cli/src"), str(source_root), str(REPO)]),
                "SAFEYOLO_LOG_PATH": str(directory / "audit.jsonl")}
         if agent_api:
             api_data = directory / "api-data"
