@@ -352,7 +352,7 @@ async fn graceful_shutdown_closes_live_transport_then_emits_end() {
 
 #[tokio::test]
 async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transport() {
-    use super::{AllowedRequest, Destination, open_egress};
+    use super::{AllowedRequest, Destination, open_egress_for_flow};
     use crate::{ConnectionIdentity, ignored_host_logger::SelectedDestination};
 
     // This calls the already-admitted egress seam deliberately. Poisoning the
@@ -381,16 +381,18 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
         // be appended after poisoning, including a tunnel lifecycle event.
         assert!(runtime.audit.wait_for_drain(LIMIT).unwrap());
         let before = records(directory.path(), "audit.jsonl");
-        assert_eq!(before.len(), 1);
-        assert_eq!(before[0]["addon"], "memory-monitor");
-        assert_eq!(before[0]["event"], "ops.startup");
+        assert_eq!(before.len(), 2);
+        assert_eq!(before[0]["addon"], "policy-loader");
+        assert_eq!(before[0]["event"], "ops.policy_reload");
+        assert_eq!(before[1]["addon"], "memory-monitor");
+        assert_eq!(before[1]["event"], "ops.startup");
         if poisoned {
             runtime.audit.poison_for_test();
         }
         let started = Instant::now();
         let connected = timeout(
             LIMIT,
-            open_egress(
+            open_egress_for_flow(
                 &runtime,
                 &AllowedRequest {
                     tasks: &crate::connection_tasks::ConnectionTasks::new(
@@ -402,11 +404,29 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
                 },
                 true,
                 Some(SelectedDestination { host: HOST, port }),
+                None,
             ),
         )
         .await
         .unwrap()
         .unwrap();
+        assert_eq!(connected.peer, Some(HOST.parse().unwrap()));
+        assert_eq!(
+            connected.observation.route,
+            crate::traffic_view::UpstreamRoute::Direct
+        );
+        assert_eq!(
+            connected.observation.peer,
+            Some(origin.local_addr().unwrap())
+        );
+        assert!(connected.observation.started.is_some());
+        assert!(connected.observation.tcp_setup.is_some());
+        assert!(connected.observation.tls_setup.is_none());
+        let tunnel = super::Tunnel {
+            destination: destination.clone(),
+            upstream: tokio::sync::Mutex::new(Some(connected)),
+        };
+        let connected = tunnel.upstream.lock().await.take().unwrap();
         let mut peer = accept(&origin).await;
         if poisoned {
             let (mut client, proxy_side) = UnixStream::pair().unwrap();

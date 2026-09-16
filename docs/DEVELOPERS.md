@@ -552,6 +552,12 @@ first observed response-head time. A successful response transport can have a
 completion timestamp even when its body is unavailable for inspection. The
 exchange's `ended` field does not supply missing phase timestamps.
 
+The optional `upstream` record identifies the opened upstream connection
+separately from the ingress connection. It retains the direct peer's IP address
+and port and the observed connection phases. Parent routes leave the origin
+peer and TCP phases unavailable; parent connection facts do not stand in for
+origin facts. Target TLS completion is retained only after its handshake succeeds.
+
 WebSocket transcripts retain complete decompressed and unmasked text or binary
 messages, including messages dropped by inspection. Ping, pong and close frames
 are not transcript messages. The flow remains open until the session ends.

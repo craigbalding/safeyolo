@@ -3,6 +3,7 @@
 
 use std::{
     collections::BTreeMap,
+    net::SocketAddr,
     sync::{Arc, Mutex, MutexGuard, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -92,10 +93,54 @@ struct Row {
     response_head_observed: Option<f64>,
     response_body: Body,
     response_completed: Option<f64>,
+    upstream: Option<UpstreamConnectionObservation>,
     state: &'static str,
     ended: Option<f64>,
     error: Option<Zeroizing<String>>,
     websocket: Option<websocket::Session>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UpstreamRoute {
+    Direct,
+    Parent,
+}
+
+#[derive(Clone)]
+pub(crate) struct UpstreamConnectionObservation {
+    pub(crate) id: Zeroizing<String>,
+    pub(crate) route: UpstreamRoute,
+    pub(crate) peer: Option<SocketAddr>,
+    pub(crate) started: Option<f64>,
+    pub(crate) tcp_setup: Option<f64>,
+    pub(crate) tls_setup: Option<f64>,
+}
+
+impl UpstreamConnectionObservation {
+    pub(crate) fn new(id: String, route: UpstreamRoute, started: Option<f64>) -> Self {
+        Self {
+            id: Zeroizing::new(id),
+            route,
+            peer: None,
+            started,
+            tcp_setup: None,
+            tls_setup: None,
+        }
+    }
+
+    fn snapshot(&self) -> Value {
+        json!({
+            "id": self.id.as_str(),
+            "route": match self.route {
+                UpstreamRoute::Direct => "direct",
+                UpstreamRoute::Parent => "parent",
+            },
+            "peer": self.peer.map(|peer| peer.to_string()),
+            "started": self.started,
+            "tcp_setup": self.tcp_setup,
+            "tls_setup": self.tls_setup,
+        })
+    }
 }
 
 enum Body {
@@ -209,6 +254,7 @@ impl TrafficView {
                 response_head_observed: None,
                 response_body: Body::Pending,
                 response_completed: None,
+                upstream: None,
                 state: "pending",
                 ended: None,
                 error: None,
@@ -508,6 +554,20 @@ impl Exchange {
         self.response_body_complete_at(bytes, now());
     }
 
+    pub(crate) fn upstream_connection(&self, observation: UpstreamConnectionObservation) {
+        self.update(|row| row.upstream = Some(observation));
+    }
+
+    pub(crate) fn upstream_tls(&self, completed: f64) {
+        self.update(|row| {
+            if let Some(upstream) = &mut row.upstream
+                && upstream.tls_setup.is_none()
+            {
+                upstream.tls_setup = Some(completed);
+            }
+        });
+    }
+
     fn response_body_complete_at(&self, bytes: Option<&[u8]>, completed: f64) {
         self.update(|row| {
             row.response_body = Body::observe(bytes);
@@ -583,6 +643,7 @@ impl Row {
             "request_completed": self.request_completed,
             "response_head_observed": self.response_head_observed,
             "response_completed": self.response_completed,
+            "upstream": self.upstream.as_ref().map(UpstreamConnectionObservation::snapshot),
             "ended": self.websocket.as_ref().map_or(self.ended, |websocket| websocket.ended),
             "error": self.websocket.as_ref().and_then(|websocket| websocket.error.as_ref()).or(self.error.as_ref()).map(|s| s.as_str()),
             "websocket": self.websocket.as_ref().map(websocket::Session::snapshot),

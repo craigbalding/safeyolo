@@ -215,7 +215,7 @@ pub(crate) struct Destination {
 /// Inner requests may consume that connection only after their own checks pass.
 pub(crate) struct Tunnel {
     destination: Destination,
-    upstream: tokio::sync::Mutex<Option<BoxStream>>,
+    upstream: tokio::sync::Mutex<Option<Connected>>,
 }
 
 impl Destination {
@@ -381,6 +381,7 @@ struct Outbound {
 struct Connected {
     stream: BoxStream,
     peer: Option<std::net::Ipv4Addr>,
+    observation: crate::traffic_view::UpstreamConnectionObservation,
 }
 
 pub(crate) fn parent_tls(config: &crate::Config) -> Result<Arc<ClientConfig>, Error> {
@@ -432,11 +433,12 @@ fn admin_rejection() -> Response<Body> {
 }
 
 /// The only outbound DNS/socket path. Both routing modes enforce local containment.
-async fn open_egress(
+async fn open_egress_for_flow(
     runtime: &Runtime,
     allowed: &AllowedRequest<'_>,
     tunnel: bool,
     ignored: Option<crate::ignored_host_logger::SelectedDestination<'_>>,
+    live: Option<&crate::traffic_view::Exchange>,
 ) -> Result<Connected, Error> {
     let destination = allowed.destination;
     if probe::is_host(&destination.host) {
@@ -449,7 +451,7 @@ async fn open_egress(
     if is_reserved(&destination.host) {
         return Err("reserved destination cannot egress".into());
     }
-    let (host, port, tls, route) = match &runtime.parent {
+    let (host, port, tls, route_name) = match &runtime.parent {
         Some(parent) => (parent.host.as_str(), parent.port, parent.tls, "parent"),
         None => (destination.host.as_str(), destination.port, false, "direct"),
     };
@@ -463,11 +465,26 @@ async fn open_egress(
     {
         return Err(AdminPortAccess.into());
     }
+    let direct = runtime.parent.is_none();
+    let route = if direct {
+        crate::traffic_view::UpstreamRoute::Direct
+    } else {
+        crate::traffic_view::UpstreamRoute::Parent
+    };
+    let started = direct.then(crate::circuit_runtime::now);
+    let mut observation = crate::traffic_view::UpstreamConnectionObservation::new(
+        format!("upstream-{}", uuid::Uuid::new_v4().simple()),
+        route,
+        started,
+    );
+    if let Some(live) = live {
+        live.upstream_connection(observation.clone());
+    }
     let record_egress = || {
         runtime.record(json!({
             "event": "proxy.egress", "agent": allowed.identity.agent_id,
             "connection_id": allowed.identity.connection_id, "request_id": allowed.request_id,
-            "host": destination.host, "port": destination.port, "route": route,
+            "host": destination.host, "port": destination.port, "route": route_name,
         }))
     };
     let mut connection_audit = ignored.map(|selected| {
@@ -542,8 +559,15 @@ async fn open_egress(
     if let Some(observation) = &mut connection_audit {
         observation.connected();
     }
-    let peer = if runtime.parent.is_none() {
-        match socket.peer_addr()?.ip() {
+    let peer = if direct {
+        let setup = crate::circuit_runtime::now();
+        observation.tcp_setup = Some(setup);
+        if let Some(live) = live {
+            live.upstream_connection(observation.clone());
+        }
+        let address = socket.peer_addr()?;
+        observation.peer = Some(address);
+        match address.ip() {
             std::net::IpAddr::V4(address) => Some(address),
             _ => None,
         }
@@ -554,6 +578,9 @@ async fn open_egress(
         Some(observation) => ignored_host::observe(socket, observation),
         None => Box::new(socket),
     };
+    if let Some(live) = live {
+        live.upstream_connection(observation.clone());
+    }
     let mut stream: BoxStream = if tls {
         let name = ServerName::try_from(host.to_owned())?;
         let tls = runtime
@@ -589,7 +616,11 @@ async fn open_egress(
         drop(task);
         stream = Box::new(TokioIo::new(upgraded));
     }
-    Ok(Connected { stream, peer })
+    Ok(Connected {
+        stream,
+        peer,
+        observation,
+    })
 }
 
 async fn open_outbound(
@@ -597,6 +628,7 @@ async fn open_outbound(
     allowed: &AllowedRequest<'_>,
     offer_http2: bool,
     tunnel: Option<&Tunnel>,
+    live: Option<&crate::traffic_view::Exchange>,
 ) -> Result<Outbound, Error> {
     let destination = allowed.destination;
     let existing = if let Some(tunnel) = tunnel {
@@ -604,19 +636,23 @@ async fn open_outbound(
     } else {
         None
     };
-    let mut stream = match existing {
-        Some(stream) => stream,
+    let connection = match existing {
+        Some(connection) => connection,
         None => {
-            open_egress(
+            open_egress_for_flow(
                 runtime,
                 allowed,
                 tunnel.is_some() || destination.scheme == "https",
                 None,
+                live,
             )
             .await?
-            .stream
         }
     };
+    if let Some(live) = live {
+        live.upstream_connection(connection.observation.clone());
+    }
+    let mut stream = connection.stream;
     let mut http2 = false;
     if destination.scheme == "https" {
         let config = runtime
@@ -633,6 +669,9 @@ async fn open_outbound(
             .await?;
         http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
         stream = Box::new(tls);
+        if let Some(live) = live {
+            live.upstream_tls(crate::circuit_runtime::now());
+        }
     }
     Ok(Outbound { stream, http2 })
 }
@@ -1437,7 +1476,7 @@ async fn forward(
             host: &destination.host,
             port: destination.port,
         });
-        let connected = open_egress(
+        let connected = open_egress_for_flow(
             &runtime,
             &AllowedRequest {
                 tasks: &upgrades,
@@ -1447,12 +1486,17 @@ async fn forward(
             },
             true,
             ignored,
+            live.as_deref(),
         )
         .await?;
-        let passthrough =
-            runtime
-                .passthrough
-                .matches(&destination.host, destination.port, connected.peer);
+        let Connected {
+            stream,
+            peer,
+            observation,
+        } = connected;
+        let passthrough = runtime
+            .passthrough
+            .matches(&destination.host, destination.port, peer);
         let upgrade = hyper::upgrade::on(&mut request);
         let identity = identity.clone();
         let destination = destination.clone();
@@ -1472,9 +1516,9 @@ async fn forward(
                     result = upgrade => Box::new(TokioIo::new(result?)),
                 };
                 let (protocol, client, server) = if passthrough {
-                    (Protocol::Opaque, client, connected.stream)
+                    (Protocol::Opaque, client, stream)
                 } else {
-                    tunnels::classify(client, connected.stream, &mut stop).await?
+                    tunnels::classify(client, stream, &mut stop).await?
                 };
                 if protocol == Protocol::Opaque {
                     let started = std::time::Instant::now();
@@ -1509,7 +1553,11 @@ async fn forward(
                 destination.scheme = scheme.into();
                 let tunnel = Arc::new(Tunnel {
                     destination,
-                    upstream: tokio::sync::Mutex::new(Some(server)),
+                    upstream: tokio::sync::Mutex::new(Some(Connected {
+                        stream: server,
+                        peer,
+                        observation,
+                    })),
                 });
                 serve_tunnel_http(state, identity, tunnel, client, http2, stop, descendants).await
             }
@@ -1683,6 +1731,7 @@ async fn forward(
         },
         request.version() == hyper::Version::HTTP_2,
         tunnel,
+        live.as_deref(),
     )
     .await?;
     *request.uri_mut() = if outbound.http2

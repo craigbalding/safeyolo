@@ -171,6 +171,59 @@ fn http_phase_timestamps_keep_body_boundaries_separate_from_exchange_end() {
 }
 
 #[test]
+fn upstream_connection_observations_keep_direct_peer_and_unavailable_parent_phases() {
+    let view = view(10, 1024);
+    let direct_v4 = begin(&view, "upstream-v4", None, 40.0);
+    let mut v4 = UpstreamConnectionObservation::new(
+        "upstream-direct-v4".into(),
+        UpstreamRoute::Direct,
+        Some(41.0),
+    );
+    v4.peer = Some("192.0.2.10:8443".parse().unwrap());
+    v4.tcp_setup = Some(42.0);
+    direct_v4.upstream_connection(v4);
+    direct_v4.upstream_tls(43.0);
+    direct_v4.upstream_tls(44.0);
+    assert_eq!(
+        view.detail("upstream-v4").unwrap()["upstream"],
+        json!({
+            "id":"upstream-direct-v4", "route":"direct", "peer":"192.0.2.10:8443",
+            "started":41.0, "tcp_setup":42.0, "tls_setup":43.0
+        })
+    );
+
+    let direct_v6 = begin(&view, "upstream-v6", None, 50.0);
+    let mut v6 = UpstreamConnectionObservation::new(
+        "upstream-direct-v6".into(),
+        UpstreamRoute::Direct,
+        Some(51.0),
+    );
+    v6.peer = Some("[2001:db8::10]:9443".parse().unwrap());
+    v6.tcp_setup = Some(52.0);
+    direct_v6.upstream_connection(v6);
+    assert_eq!(
+        view.detail("upstream-v6").unwrap()["upstream"]["peer"],
+        "[2001:db8::10]:9443"
+    );
+
+    let parent = begin(&view, "upstream-parent", None, 60.0);
+    let parent_observation = UpstreamConnectionObservation::new(
+        "upstream-parent-route".into(),
+        UpstreamRoute::Parent,
+        None,
+    );
+    parent.upstream_connection(parent_observation);
+    parent.upstream_tls(61.0);
+    assert_eq!(
+        view.detail("upstream-parent").unwrap()["upstream"],
+        json!({
+            "id":"upstream-parent-route", "route":"parent", "peer":null,
+            "started":null, "tcp_setup":null, "tls_setup":61.0
+        })
+    );
+}
+
+#[test]
 fn last_handle_cancellation_error_and_replaced_id_do_not_resurrect_rows() {
     let view = view(10, 1024);
     let first = begin(&view, "same", Some("alice"), 1.0);
