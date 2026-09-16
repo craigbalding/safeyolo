@@ -89,7 +89,7 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
                 let Some(format) = export_format(request.uri().query()) else {
                     return Ok(response(
                         StatusCode::BAD_REQUEST,
-                        json!({"error":"format must be raw, raw_request, raw_response, curl, or httpie"}),
+                        json!({"error":"format must be raw, raw_request, raw_response, curl, httpie, har, or zhar"}),
                     ));
                 };
                 let view = view.clone();
@@ -278,3 +278,6 @@ fn not_found() -> Outcome {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod har_tests;

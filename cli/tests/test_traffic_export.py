@@ -6,7 +6,7 @@ import stat
 import tempfile
 import threading
 from pathlib import Path
-from unittest.mock import create_autospec, patch
+from unittest.mock import ANY, create_autospec, patch
 
 import httpx
 import pytest
@@ -507,6 +507,26 @@ def test_export_ui_freezes_flow_and_uses_local_path_while_websocket_mode(tmp_pat
     api.traffic_export.assert_called_once()
     assert api.traffic_export.call_args.args[:2] == ("one", "raw")
     assert api.traffic_export.call_args.args[2] == Path(tmp_path / "captured.bin")
+
+
+@pytest.mark.parametrize("format_name", ["har", "zhar"])
+def test_export_ui_accepts_har_archive_formats(tmp_path, format_name):
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
+    api.traffic_export.return_value = TrafficExportResult(
+        status_code=200,
+        content_type="application/octet-stream",
+        bytes_written=3,
+    )
+    view = TrafficInspector(api)
+    destination = tmp_path / f"captured.{format_name}"
+
+    view.queue_export("one", format_name, str(destination))
+    assert view.pending_export == ("one", format_name, destination)
+    asyncio.run(view._run_export(("one", format_name, destination)))
+
+    api.traffic_export.assert_called_once_with(
+        "one", format_name, destination, cancel_event=ANY
+    )
 
 
 def test_export_failure_notice_is_categorical_and_survives_one_poll(tmp_path):

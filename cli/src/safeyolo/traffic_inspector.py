@@ -22,7 +22,7 @@ from .api import AdminAPI, APIError, ExportCancelled, ExportPublicationState, Tr
 # Rendering limits leave the proxy's retained model and body response unchanged.
 BODY_PREVIEW_BYTES = 64 * 1024
 DETAIL_PREVIEW_CHARS = 128 * 1024
-EXPORT_FORMATS = ("raw", "raw_request", "raw_response", "curl", "httpie")
+EXPORT_FORMATS = ("raw", "raw_request", "raw_response", "curl", "httpie", "har", "zhar")
 
 
 def plain_text(value: object, *, multiline: bool = False) -> str:
@@ -445,7 +445,7 @@ class TrafficInspector:
         format_name = buffer.text.strip()
         flow_id = export_flow.pop()
         if format_name not in EXPORT_FORMATS:
-            self._hold_notice("Export format must be raw, raw_request, raw_response, curl, or httpie")
+            self._hold_notice("Export format must be raw, raw_request, raw_response, curl, httpie, har, or zhar")
             get_app().layout.focus(rows)
             prompt.text, prompt.prompt = "", ""
             return False
@@ -475,7 +475,7 @@ class TrafficInspector:
             prompt_field.append("export_format")
             prompt.text = ""
             prompt.buffer.cursor_position = 0
-            prompt.prompt = "Format [raw/raw_request/raw_response/curl/httpie] (Escape cancels): "
+            prompt.prompt = "Format [raw/raw_request/raw_response/curl/httpie/har/zhar] (Escape cancels): "
             event.app.layout.focus(prompt)
 
     def _bindings(self, rows: TextArea, detail: TextArea, prompt: TextArea) -> KeyBindings:

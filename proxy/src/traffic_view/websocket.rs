@@ -34,7 +34,26 @@ struct Message {
     content: Arc<MessageContent>,
 }
 
+pub(super) struct ExportMessage {
+    pub(super) kind: MessageType,
+    pub(super) from_client: bool,
+    pub(super) timestamp: f64,
+    pub(super) content: Arc<MessageContent>,
+}
+
 impl Session {
+    pub(super) fn export_messages(&self) -> Vec<ExportMessage> {
+        self.messages
+            .iter()
+            .map(|message| ExportMessage {
+                kind: message.kind,
+                from_client: message.from_client,
+                timestamp: message.timestamp,
+                content: Arc::clone(&message.content),
+            })
+            .collect()
+    }
+
     pub(super) fn filter_messages(&self) -> Vec<(bool, Arc<MessageContent>)> {
         self.messages
             .iter()

@@ -2283,7 +2283,7 @@ filter parity or independent acceptance.
 ### Selected-flow file export
 
 The terminal inspector's `x` action selects `raw`, `raw_request`, `raw_response`,
-`curl` or `httpie` and saves the selected flow to a local path. The authenticated
+`curl`, `httpie`, `har` or `zhar` and saves the selected flow to a local path. The authenticated
 operator route receives the flow ID and format. The destination path stays with
 the client. Command formats produce text and do not execute it.
 
@@ -2356,7 +2356,7 @@ first response-head observation and successful response completion separately
 from exchange end. Missing observations remain null. It also retains upstream
 connection identity, direct IPv4/IPv6 peer address and reached connection phases.
 Parent connection facts do not become origin facts. These observations support
-future formatters; they do not enable original-IP curl export or HAR by themselves.
+export formatting; original-IP curl export remains unimplemented.
 
 The [row tests](../proxy/src/traffic_view/tests.rs) cover phase separation,
 repeated callbacks, constructed address records and unavailable parent phases.
@@ -2380,8 +2380,23 @@ WebSocket text. The generator also writes 28 deterministic
 [input recipes](../proxy/tests/traffic_har_inputs.json) with original bytes,
 body availability, phase observations and shared connection identity. These
 inputs let native tests reconstruct the owned flows without deriving observations
-from expected HAR output. These source observations do not establish native HAR
-availability.
+from expected HAR output. These source observations alone do not establish native formatter parity.
+
+Selected-flow HAR export now renders retained HTTP and WebSocket observations.
+ZHAR streams the same archive through a level-9 zlib container. The HTTP response
+remains an octet-stream attachment without Content-Encoding. Native creator
+metadata identifies SafeYolo. Unknown charset failures follow the source text
+fallback, while registered unimplemented codecs remain explicit errors. Big5
+content uses the reviewed decoder and exports successfully.
+
+The [HAR replay check](../proxy/tests/traffic_har_replay.md) compares complete
+entries from all 27 owned HTTP recipes, including byte-aware surrogate escapes,
+charset/form/encoding edges and standalone reused-connection timing. Its Python
+command runs the Rust replay and performs the comparison; Cargo alone emits the
+records without asserting full-entry equality. Focused tests also exercise large
+file-backed text and binary WebSocket payloads in HAR and ZHAR, storage failures
+in both formats, and retained-owner release after pruning. These are formatter
+and ownership checks, not full production capture or archive-selection proof.
 
 The [flow-dump source fixture](../proxy/tests/traffic_dump_source.py) records six
 owned HTTP, WebSocket and TCP flows through the installed format-21 writer and
@@ -2406,8 +2421,8 @@ time; repeated reads must still produce fresh IDs. These checks do not establish
 native dump or HAR import, historical-version migration, UDP/DNS import, startup
 or addon lifecycle behavior, continuous save/rotation, or web import.
 
-HAR, flow-dump export and import, web inspection and the exposed edit/replay
-workflows remain migration work. The Python proxy has not been removed or cut
+All-flow HAR archives and lifecycle behavior, flow-dump export and import, web
+inspection and the exposed edit/replay workflows remain migration work. The Python proxy has not been removed or cut
 over.
 
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native

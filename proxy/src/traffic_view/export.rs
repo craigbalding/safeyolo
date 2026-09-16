@@ -11,6 +11,8 @@ use zeroize::{Zeroize, Zeroizing};
 use super::codec_tables::{big5_correction, python_codec_is_registered};
 use super::{Body, Row};
 
+mod har;
+
 const EXPORT_CHUNK: usize = 16 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,6 +22,8 @@ pub(crate) enum ExportFormat {
     RawResponse,
     Curl,
     Httpie,
+    Har,
+    Zhar,
 }
 
 impl ExportFormat {
@@ -30,6 +34,8 @@ impl ExportFormat {
             "raw_response" => Self::RawResponse,
             "curl" => Self::Curl,
             "httpie" => Self::Httpie,
+            "har" => Self::Har,
+            "zhar" => Self::Zhar,
             _ => return None,
         })
     }
@@ -41,6 +47,8 @@ impl ExportFormat {
             Self::RawResponse => "raw_response",
             Self::Curl => "curl",
             Self::Httpie => "httpie",
+            Self::Har => "har",
+            Self::Zhar => "zhar",
         }
     }
 }
@@ -85,13 +93,26 @@ struct ExportHttp {
 }
 
 struct ExportWebsocket {
-    messages: Vec<(bool, Arc<crate::websocket::MessageContent>)>,
+    messages: Vec<ExportWebsocketMessage>,
+}
+
+struct ExportWebsocketMessage {
+    kind: crate::websocket::MessageType,
+    from_client: bool,
+    timestamp: f64,
+    content: Arc<crate::websocket::MessageContent>,
 }
 
 pub(super) struct ExportSnapshot {
     request: ExportHttp,
     response: Option<ExportHttp>,
     websocket: Option<ExportWebsocket>,
+    started: f64,
+    request_completed: Option<f64>,
+    response_head_observed: Option<f64>,
+    response_completed: Option<f64>,
+    upstream: Option<super::UpstreamConnectionObservation>,
+    error: Option<Zeroizing<String>>,
 }
 
 enum ExportPart {
@@ -103,6 +124,15 @@ enum ExportPart {
         content: Arc<crate::websocket::MessageContent>,
         offset: u64,
     },
+    HarMessage(har::MessagePart),
+}
+
+struct ZlibState {
+    encoder: flate2::Compress,
+    input: Zeroizing<Vec<u8>>,
+    offset: usize,
+    input_done: bool,
+    stream_done: bool,
 }
 
 /// A preflighted source-shaped export. Parts retain immutable content owners;
@@ -111,6 +141,7 @@ pub(crate) struct ExportPlan {
     format: ExportFormat,
     parts: Vec<ExportPart>,
     position: usize,
+    zlib: Option<ZlibState>,
 }
 
 impl ExportPlan {
@@ -122,6 +153,13 @@ impl ExportPlan {
     /// have been sent becomes a body error, so the response cannot claim a
     /// successfully completed artifact.
     pub(crate) fn next_chunk(&mut self) -> Result<Option<Zeroizing<Vec<u8>>>, ExportError> {
+        if self.zlib.is_some() {
+            return self.next_compressed_chunk();
+        }
+        self.next_raw_chunk()
+    }
+
+    fn next_raw_chunk(&mut self) -> Result<Option<Zeroizing<Vec<u8>>>, ExportError> {
         loop {
             let Some(part) = self.parts.get_mut(self.position) else {
                 return Ok(None);
@@ -162,7 +200,86 @@ impl ExportPlan {
                     *offset = offset.saturating_add(chunk.len() as u64);
                     return Ok(Some(chunk));
                 }
+                ExportPart::HarMessage(message) => match har::message_chunk(message)? {
+                    Some(chunk) => return Ok(Some(chunk)),
+                    None => {
+                        self.position += 1;
+                    }
+                },
             }
+        }
+    }
+
+    fn next_compressed_chunk(&mut self) -> Result<Option<Zeroizing<Vec<u8>>>, ExportError> {
+        const CHUNK: usize = 16 * 1024;
+        loop {
+            let need_input = {
+                let zlib = self.zlib.as_ref().expect("compression state");
+                !zlib.input_done && zlib.offset >= zlib.input.len()
+            };
+            if need_input {
+                let input = self.next_raw_chunk()?;
+                let zlib = self.zlib.as_mut().expect("compression state");
+                match input {
+                    Some(input) => {
+                        zlib.input = input;
+                        zlib.offset = 0;
+                    }
+                    None => zlib.input_done = true,
+                }
+            }
+            let has_input = {
+                let zlib = self.zlib.as_ref().expect("compression state");
+                zlib.offset < zlib.input.len()
+            };
+            if has_input {
+                let zlib = self.zlib.as_mut().expect("compression state");
+                let before_in = zlib.encoder.total_in();
+                let before_out = zlib.encoder.total_out();
+                let mut output = Zeroizing::new([0u8; CHUNK]);
+                zlib.encoder
+                    .compress(
+                        &zlib.input[zlib.offset..],
+                        &mut *output,
+                        flate2::FlushCompress::None,
+                    )
+                    .map_err(|_| ExportError::Unsupported)?;
+                let consumed = (zlib.encoder.total_in() - before_in) as usize;
+                let written = (zlib.encoder.total_out() - before_out) as usize;
+                zlib.offset = zlib.offset.saturating_add(consumed);
+                if consumed == 0 && written == 0 {
+                    return Err(ExportError::Unsupported);
+                }
+                if written != 0 {
+                    return Ok(Some(copy_bytes(&output[..written])));
+                }
+                continue;
+            }
+            let should_finish = {
+                let zlib = self.zlib.as_ref().expect("compression state");
+                zlib.input_done && !zlib.stream_done
+            };
+            if !should_finish {
+                return Ok(None);
+            }
+            let zlib = self.zlib.as_mut().expect("compression state");
+            let before = zlib.encoder.total_out();
+            let mut output = Zeroizing::new([0u8; CHUNK]);
+            let status = zlib
+                .encoder
+                .compress(&[], &mut *output, flate2::FlushCompress::Finish)
+                .map_err(|_| ExportError::Unsupported)?;
+            let written = (zlib.encoder.total_out() - before) as usize;
+            if status == flate2::Status::StreamEnd {
+                zlib.stream_done = true;
+            }
+            if written != 0 {
+                return Ok(Some(copy_bytes(&output[..written])));
+            }
+            if !zlib.stream_done {
+                return Err(ExportError::Unsupported);
+            }
+            return Ok(None);
         }
     }
 
@@ -240,11 +357,21 @@ impl ExportPlan {
                     add_websocket(&mut parts, websocket);
                 }
             }
+            ExportFormat::Har | ExportFormat::Zhar => {
+                parts = har::build(snapshot)?;
+            }
         }
         Ok(Self {
             format,
             parts,
             position: 0,
+            zlib: (format == ExportFormat::Zhar).then(|| ZlibState {
+                encoder: flate2::Compress::new(flate2::Compression::best(), true),
+                input: Zeroizing::new(Vec::new()),
+                offset: 0,
+                input_done: false,
+                stream_done: false,
+            }),
         })
     }
 }
@@ -279,8 +406,23 @@ impl Row {
             // Keep them distinct from response trailers for raw request and
             // combined raw framing.
             websocket: self.websocket.as_ref().map(|session| ExportWebsocket {
-                messages: session.filter_messages(),
+                messages: session
+                    .export_messages()
+                    .into_iter()
+                    .map(|message| ExportWebsocketMessage {
+                        kind: message.kind,
+                        from_client: message.from_client,
+                        timestamp: message.timestamp,
+                        content: message.content,
+                    })
+                    .collect(),
             }),
+            started: self.request.started,
+            request_completed: self.request_completed,
+            response_head_observed: self.response_head_observed,
+            response_completed: self.response_completed,
+            upstream: self.upstream.clone(),
+            error: self.error.clone(),
         }
     }
 }
@@ -414,19 +556,22 @@ fn add_body(
 }
 
 fn add_websocket(parts: &mut Vec<ExportPart>, websocket: ExportWebsocket) {
-    for (position, (from_client, content)) in websocket.messages.into_iter().enumerate() {
+    for (position, message) in websocket.messages.into_iter().enumerate() {
         if position != 0 {
             push_static(parts, b"\n");
         }
         push_static(
             parts,
-            if from_client {
+            if message.from_client {
                 b"[OUTGOING] "
             } else {
                 b"[INCOMING] "
             },
         );
-        parts.push(ExportPart::Message { content, offset: 0 });
+        parts.push(ExportPart::Message {
+            content: message.content,
+            offset: 0,
+        });
     }
 }
 
@@ -435,6 +580,12 @@ fn push_static(parts: &mut Vec<ExportPart>, bytes: &'static [u8]) {
         data: Zeroizing::new(bytes.to_vec()),
         offset: 0,
     });
+}
+
+fn copy_bytes(bytes: &[u8]) -> Zeroizing<Vec<u8>> {
+    let mut copy = Zeroizing::new(Vec::with_capacity(bytes.len()));
+    copy.extend_from_slice(bytes);
+    copy
 }
 
 fn append_latin1(output: &mut Vec<u8>, value: &str) -> Result<(), ExportError> {
@@ -605,6 +756,9 @@ fn request_content_for_console(
     }
     Ok(output)
 }
+
+#[cfg(test)]
+mod har_tests;
 
 pub(super) fn decode_text(
     body: &[u8],
