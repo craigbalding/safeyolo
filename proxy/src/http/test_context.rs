@@ -86,6 +86,7 @@ pub(super) struct Provenance {
     path: String,
     applied: Mutex<Option<Applied>>,
     recording: Mutex<Option<Arc<super::flow_recording::Recording>>>,
+    live: Mutex<Option<Arc<crate::traffic_view::Exchange>>>,
 }
 
 impl Provenance {
@@ -106,11 +107,16 @@ impl Provenance {
             path,
             applied: Mutex::new(None),
             recording: Mutex::new(None),
+            live: Mutex::new(None),
         }
     }
 
     pub(super) fn attach_recording(&self, recording: Arc<super::flow_recording::Recording>) {
         *self.recording.lock().unwrap_or_else(|e| e.into_inner()) = Some(recording);
+    }
+
+    pub(super) fn attach_live(&self, live: Option<Arc<crate::traffic_view::Exchange>>) {
+        *self.live.lock().unwrap_or_else(|e| e.into_inner()) = live;
     }
 
     fn recording(&self) -> Option<Arc<super::flow_recording::Recording>> {
@@ -135,6 +141,9 @@ impl Provenance {
             context: context.clone(),
             started,
         });
+        if let Some(live) = self.live.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            live.metadata(&context.live_metadata);
+        }
         if let Some(recording) = self.recording() {
             recording.applied(&context, content, encoding, started);
         }
@@ -364,6 +373,7 @@ pub(super) struct ResponseCapture {
     method: String,
     host: String,
     trace: Option<Arc<RequestTrace>>,
+    live: Option<Arc<crate::traffic_view::Exchange>>,
 }
 
 impl ResponseCapture {
@@ -402,6 +412,42 @@ impl ResponseCapture {
             method,
             host,
             trace,
+            live: None,
+        }
+    }
+
+    pub(super) fn attach_live(&mut self, live: Option<Arc<crate::traffic_view::Exchange>>) {
+        self.live = live;
+    }
+
+    /// Observe the validated transport result before later addon hooks can
+    /// discard their evidence buffer. This does not execute those hooks.
+    pub(super) fn finish_live(&self, success: bool, error: Option<&str>) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let capture = self.capture.lock().unwrap_or_else(|e| e.into_inner());
+        let content = capture
+            .as_ref()
+            .filter(|capture| success && !capture.failed)
+            .and_then(|capture| capture.body.content());
+        live.response_body(content);
+        live.finish((!success).then_some(error.unwrap_or("upstream response incomplete")));
+    }
+
+    fn live_head<'a>(
+        &self,
+        status: StatusCode,
+        headers: &HeaderMap,
+        fields: Option<impl Iterator<Item = (&'a [u8], &'a [u8])>>,
+    ) {
+        if let Some(live) = &self.live {
+            live.response_head(
+                status.as_u16(),
+                fields
+                    .map(super::live_view::pairs)
+                    .unwrap_or_else(|| super::live_view::header_map(headers)),
+            );
         }
     }
 
@@ -673,6 +719,7 @@ impl hyper::ext::ResponseBodyCapture for ResponseCapture {
         reason: Option<&[u8]>,
     ) {
         Self::head(self, status, headers, end_stream_at_head);
+        self.live_head(status, headers, fields.map(|fields| fields.iter()));
         if let Some(recording) = self.recording() {
             recording.head(status, fields.map(|fields| fields.iter()), reason);
         }
@@ -680,6 +727,7 @@ impl hyper::ext::ResponseBodyCapture for ResponseCapture {
 
     fn head(&self, status: StatusCode, headers: &HeaderMap, end_stream_at_head: bool) {
         Self::head(self, status, headers, end_stream_at_head);
+        self.live_head(status, headers, None::<std::iter::Empty<(&[u8], &[u8])>>);
     }
 
     fn data(&self, payload: &[u8]) {
@@ -697,6 +745,7 @@ impl h2::ext::ResponseBodyCapture for ResponseCapture {
         reason: Option<&[u8]>,
     ) {
         Self::head(self, status, headers, end_stream_at_head);
+        self.live_head(status, headers, fields.map(|fields| fields.iter()));
         if let Some(recording) = self.recording() {
             recording.head(status, fields.map(|fields| fields.iter()), reason);
         }
@@ -704,6 +753,7 @@ impl h2::ext::ResponseBodyCapture for ResponseCapture {
 
     fn head(&self, status: StatusCode, headers: &HeaderMap, end_stream_at_head: bool) {
         Self::head(self, status, headers, end_stream_at_head);
+        self.live_head(status, headers, None::<std::iter::Empty<(&[u8], &[u8])>>);
     }
 
     fn data(&self, payload: &[u8]) {

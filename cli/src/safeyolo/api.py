@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -160,6 +161,25 @@ class AdminAPI:
 
     def get_traffic_scope(self) -> dict[str, Any]:
         return self._request("GET", "/admin/traffic/scope")
+
+    @property
+    def is_native(self) -> bool:
+        """Whether the default client selected a recorded Rust process."""
+        return self._rust_process is not None
+
+    def traffic_flows(self) -> dict[str, Any]:
+        return self._request("GET", "/admin/traffic/flows")
+
+    def traffic_flow(self, flow_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}")
+
+    def traffic_body(self, flow_id: str, side: str) -> dict[str, Any]:
+        if side not in {"request", "response"}:
+            raise ValueError("body side must be request or response")
+        return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}/body?side={side}")
+
+    def traffic_facets(self) -> dict[str, Any]:
+        return self._request("GET", "/admin/traffic/facets")
 
     def set_traffic_scope(self, **scope: Any) -> dict[str, Any]:
         return self._request("PUT", "/admin/traffic/scope", json=scope)

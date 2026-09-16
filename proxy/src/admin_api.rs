@@ -1,4 +1,4 @@
-//! Operator task registration and live budgets on the management listener.
+//! Authenticated operator operations on the management listener.
 //!
 //! The caller owns loopback binding, startup token loading, transport framing,
 //! audit persistence and shutdown. This facade neither activates tasks nor
@@ -21,6 +21,7 @@ use crate::policy::{BudgetStatsError, Policy};
 use crate::tasks::{self, Registry};
 
 mod audit_events;
+mod traffic;
 
 /// These errors terminate the connection without a fabricated HTTP response.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,10 +61,22 @@ pub enum Audit {
     AuthenticationFailed,
     BudgetsReset(BudgetResetAudit),
     CircuitReset(CircuitResetAudit),
+    TrafficScopeUpdated(TrafficScopeAudit),
     TaskUpdated {
         task_id: String,
         permission_count: usize,
     },
+}
+
+/// The raw scope request is retained only for its canonical audit event.
+pub struct TrafficScopeAudit {
+    fields: Value,
+}
+
+impl Drop for TrafficScopeAudit {
+    fn drop(&mut self) {
+        crate::credentials::wipe_json(&mut self.fields);
+    }
 }
 
 /// A committed reset; evidence failure does not roll it back. No Debug or
@@ -500,6 +513,31 @@ pub(crate) async fn respond_with_stats<B>(
 where
     B: Body<Data = Bytes>,
 {
+    respond_with_view(
+        request,
+        expected_token,
+        registry,
+        policy,
+        circuits,
+        stats,
+        None,
+    )
+    .await
+}
+
+/// The shared view uses the same operator authentication as other private reads.
+pub(crate) async fn respond_with_view<B>(
+    request: Request<B>,
+    expected_token: &str,
+    registry: &Registry,
+    policy: Option<&Policy>,
+    circuits: Option<&crate::circuits::CircuitBreaker>,
+    stats: Option<&(dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
+    view: Option<&crate::traffic_view::TrafficView>,
+) -> Result<Outcome, Error>
+where
+    B: Body<Data = Bytes>,
+{
     let method = request.method();
     if !matches!(
         *method,
@@ -521,6 +559,10 @@ where
         );
         outcome.audit = Some(Audit::AuthenticationFailed);
         return Ok(outcome);
+    }
+    if path.starts_with("/admin/traffic/") {
+        let path = path.to_owned();
+        return traffic::respond(request, &path, view).await;
     }
     if method == Method::GET
         && path == "/stats"

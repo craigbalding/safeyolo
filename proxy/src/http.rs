@@ -35,6 +35,7 @@ mod flow_recording;
 mod ignored_host;
 #[cfg(test)]
 mod ignored_host_tests;
+mod live_view;
 #[cfg(test)]
 mod memory_tests;
 mod network_trace;
@@ -1225,6 +1226,7 @@ async fn forward(
     request_id: &str,
     mut request: Request<Incoming>,
     recording: Arc<flow_recording::Recording>,
+    live: Option<Arc<crate::traffic_view::Exchange>>,
     destination: &Destination,
     tunnel: Option<&Tunnel>,
     trace: Option<Arc<RequestTrace>>,
@@ -1340,6 +1342,9 @@ async fn forward(
             .is_some_and(|value| value != "0");
     let mut ordered_headers = crate::request_headers::RequestHeaders::take(&mut request)?;
     let hygiene = ordered_headers.apply_hygiene(request.headers_mut());
+    if let Some(live) = &live {
+        live.request_headers(live_view::pairs(ordered_headers.recording_pairs()));
+    }
     if let Some(trace) = &trace {
         trace.enable(hygiene.trace_requested);
     }
@@ -1539,6 +1544,15 @@ async fn forward(
             trace.clone(),
         )?
     };
+    if let Some(live) = &live {
+        let context_header_present = request.headers().contains_key(crate::test_context::HEADER);
+        live.request_headers(live_view::pairs(ordered_headers.recording_pairs().filter(
+            |(name, _)| {
+                context_header_present
+                    || !name.eq_ignore_ascii_case(crate::test_context::HEADER.as_bytes())
+            },
+        )));
+    }
     let mut context = match admission {
         request_context::Admission::Inactive => {
             request_context::RequestContext::traffic_only(&mut request, false, trace.clone())?
@@ -1564,6 +1578,7 @@ async fn forward(
     let traffic = traffic.expect("CONNECT returned before ordinary HTTP hooks");
     traffic.request_headers(&request, destination);
     context.attach_traffic(traffic);
+    context.attach_live(live.clone());
     if let Some(provenance) = context.response_provenance() {
         recording.request(
             &request,
@@ -1732,6 +1747,7 @@ async fn forward(
         let negotiated = handshake.response(&upstream)?;
         let server_upgrade = hyper::upgrade::on(&mut upstream);
         let (mut parts, _) = upstream.into_parts();
+        parts.extensions.insert(live_view::Upstream);
         strip_hop_headers(&mut parts.headers);
         parts.headers.insert(header::CONNECTION, "Upgrade".parse()?);
         parts.headers.insert(header::UPGRADE, "websocket".parse()?);
@@ -1776,6 +1792,7 @@ async fn forward(
         ));
     }
     let (mut parts, body) = upstream.into_parts();
+    parts.extensions.insert(live_view::Upstream);
     strip_hop_headers(&mut parts.headers);
     Ok((
         Response::from_parts(
@@ -1866,6 +1883,9 @@ pub(crate) fn serve_request(
         let _pending_recording = recording.pending();
         let destination =
             Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination));
+        let live = destination.as_ref().ok().and_then(|destination| {
+            live_view::begin(&runtime, &identity, &request_id, &request, destination)
+        });
         if destination
             .as_ref()
             .is_ok_and(|destination| probe::is_host(&destination.host))
@@ -1899,6 +1919,7 @@ pub(crate) fn serve_request(
                     &request_id,
                     request,
                     recording.clone(),
+                    live.clone(),
                     destination,
                     tunnel.as_deref(),
                     trace.clone(),
@@ -1911,6 +1932,9 @@ pub(crate) fn serve_request(
             )),
         };
         if let Err(error) = &result {
+            if let Some(live) = &live {
+                live.finish(Some(&error.to_string()));
+            }
             if error.is::<probe::TransportRefused>()
                 && let Some(hook) = trace
                     .as_ref()
@@ -1924,6 +1948,9 @@ pub(crate) fn serve_request(
             recording.producer_error(error);
             recording.finish(false, None, false);
         }
+        let local_live_response = result
+            .as_ref()
+            .is_ok_and(|(reply, _)| reply.extensions().get::<live_view::Upstream>().is_none());
         let (mut reply, decision) = result.unwrap_or_else(|error| {
             if error.is::<AdminPortAccess>() {
                 return (admin_rejection(), "admin_port_access".into());
@@ -2071,6 +2098,9 @@ pub(crate) fn serve_request(
         reply
             .headers_mut()
             .insert("x-safeyolo-request-id", request_id.parse().unwrap());
+        if local_live_response && let Some(live) = &live {
+            live_view::local_response(live, &reply);
+        }
         Ok(reply)
     })
 }

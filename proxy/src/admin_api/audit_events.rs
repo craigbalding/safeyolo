@@ -18,6 +18,26 @@ impl Audit {
     /// These source call sites supply no agent attribution, decision or approval.
     pub fn canonical_events(&self, client_ip: &str, target: &str) -> Vec<Event> {
         match self {
+            Self::TrafficScopeUpdated(scope) => {
+                let mut event = event(
+                    "admin.traffic_scope_update",
+                    Kind::Admin,
+                    Severity::Low,
+                    "Shared traffic scope updated".into(),
+                    "admin-api",
+                );
+                let mut details = serde_json::Map::new();
+                details.insert("client_ip".into(), json!(client_ip));
+                details.extend(
+                    scope
+                        .fields
+                        .as_object()
+                        .expect("validated scope object")
+                        .clone(),
+                );
+                event.details = serde_json::Value::Object(details).into();
+                vec![event]
+            }
             Self::AuthenticationFailed => {
                 let mut event = event(
                     "admin.auth_failure",

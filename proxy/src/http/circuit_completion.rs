@@ -39,6 +39,7 @@ struct Observation {
     applied: Option<bool>,
     request: Option<RequestContext>,
     request_failed: bool,
+    live_error: Option<zeroize::Zeroizing<String>>,
 }
 
 /// Trusted request context and cached application outcomes. Selected response
@@ -77,13 +78,15 @@ impl Completion {
             let provenance = context.response_provenance();
             let traffic = context.traffic();
             (provenance.is_some() || traffic.is_some()).then(|| {
-                Arc::new(ResponseCapture::new(
+                let mut capture = ResponseCapture::new(
                     state.clone(),
                     provenance,
                     traffic,
                     recording.clone(),
                     trace.clone(),
-                ))
+                );
+                capture.attach_live(context.live());
+                Arc::new(capture)
             })
         });
         let protocol = match (http2, &capture) {
@@ -103,6 +106,7 @@ impl Completion {
                 applied: None,
                 request: context,
                 request_failed,
+                live_error: None,
             }),
             state,
             identity,
@@ -132,6 +136,10 @@ impl Completion {
         {
             capture.apply_head();
             capture.memory_response();
+        }
+        if let Some(capture) = &self.capture {
+            let error = observation.live_error.take();
+            capture.finish_live(result.is_ok(), error.as_deref().map(String::as_str));
         }
         let circuit = match result {
             Ok(status) => crate::circuit_runtime::completed_response(
@@ -285,10 +293,14 @@ where
             .expect("connection driver polled after completion")
             .as_mut()
             .poll(cx);
-        if let Poll::Ready(Err(error)) = &result
-            && let Some(recording) = &this.completion.recording
-        {
-            recording.producer_error(error);
+        if let Poll::Ready(Err(error)) = &result {
+            if let Some(recording) = &this.completion.recording {
+                recording.producer_error(error);
+            }
+            let mut observation = this.completion.lock();
+            if observation.applied.is_none() {
+                observation.live_error = Some(zeroize::Zeroizing::new(error.to_string()));
+            }
         }
         let _ = this.completion.poll(cx);
         if result.is_ready() {
@@ -475,6 +487,7 @@ mod tests {
             let completion = Arc::new(Completion {
                 observation: Mutex::new(Observation {
                     protocol: Some(protocol), applied: None, request: None, request_failed: false,
+                    live_error: None,
                 }),
                 state: fixture.state.clone(), identity, request_id: "owned-request".into(),
                 host: "owned.invalid".into(), capture: Some(capture), recording: None,

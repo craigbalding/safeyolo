@@ -195,13 +195,14 @@ async fn serve_connection(
                 let runtime = runtime.clone();
                 tokio::task::spawn_blocking(move || crate::operator_stats::document(&runtime))
             };
-            let outcome = admin_api::respond_with_stats(
+            let outcome = admin_api::respond_with_view(
                 request,
                 token.trim_matches(python_whitespace),
                 &runtime.tasks,
                 runtime.policy.as_ref(),
                 runtime.policy.as_ref().map(|_| &runtime.circuits),
                 Some(&stats),
+                Some(&runtime.traffic_view),
             )
             .await?
             .submit_audit(&runtime.audit, &client_ip, &path)?;
@@ -220,6 +221,10 @@ async fn serve_connection(
                     "permission_count":permission_count,
                 })],
                 admin_api::Audit::CircuitReset(reset) => reset.events(&client_ip).into(),
+                admin_api::Audit::TrafficScopeUpdated(_) => vec![json!({
+                    "event":"proxy.admin_api", "audit_intent":"admin.traffic_scope_update",
+                    "client_ip":client_ip,
+                })],
                 admin_api::Audit::BudgetsReset(reset) => {
                     let safe_resource = reset.safe_resource();
                     let engine_resource = if reset.resets_all() {

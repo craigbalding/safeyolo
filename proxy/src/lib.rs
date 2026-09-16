@@ -48,6 +48,9 @@ pub mod tasks;
 pub mod test_context;
 pub mod tls;
 pub mod trace;
+pub(crate) mod traffic_view;
+#[cfg(test)]
+mod traffic_view_runtime_tests;
 mod tunnels;
 pub mod websocket;
 mod websocket_relay;
@@ -118,6 +121,7 @@ pub(crate) struct Runtime {
     circuits: circuits::CircuitBreaker,
     test_context: test_context::TestContext,
     flow_recorder: Arc<flow_recorder::FlowRecorder>,
+    traffic_view: Arc<traffic_view::TrafficView>,
     audit: Arc<audit::Writer>,
     request_logger: Arc<request_logger::RequestLogger>,
     agent_discovery: Arc<agent_discovery::AgentDiscovery>,
@@ -222,6 +226,14 @@ impl Runtime {
                     policy.as_ref(),
                 )),
             };
+            let traffic_view = previous
+                .map(|runtime| runtime.traffic_view.clone())
+                .unwrap_or_else(|| {
+                    Arc::new(traffic_view::TrafficView::new(
+                        config.flow_pruner_max,
+                        config.flow_pruner_max_body_bytes,
+                    ))
+                });
             let scanner = inspection::Scanner::default();
             if let Some(inspection) = &config.inspection {
                 let source = std::fs::read_to_string(&inspection.policy_file)?;
@@ -279,6 +291,7 @@ impl Runtime {
                 circuits,
                 test_context,
                 flow_recorder,
+                traffic_view,
                 audit: audit.clone(),
                 request_logger,
                 agent_discovery,
@@ -1023,6 +1036,9 @@ impl Proxy {
             // existing declarations retain their original expiry and context.
             runtime.configure_declarations()?;
             runtime.flow_recorder.set_enabled(config.flow_store_enabled);
+            runtime
+                .traffic_view
+                .configure(config.flow_pruner_max, config.flow_pruner_max_body_bytes);
             // No fallible preparation remains before topology/runtime publication.
             clear_readiness(&self.readiness_file, &self.default_via);
             self.commit_listeners(&config, additions);

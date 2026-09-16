@@ -76,6 +76,7 @@ pub(super) struct RequestContext {
     terminal: Option<bool>,
     provenance: Option<Arc<Provenance>>,
     traffic: Option<Arc<super::traffic::Traffic>>,
+    live: Option<Arc<crate::traffic_view::Exchange>>,
     skip_logger: bool,
     port: u16,
     valid_context: bool,
@@ -185,6 +186,7 @@ pub(super) fn prepare<B>(
         terminal: None,
         provenance: Some(provenance),
         traffic: None,
+        live: None,
         skip_logger: false,
         port: destination.port,
         valid_context,
@@ -208,6 +210,7 @@ impl RequestContext {
             terminal: None,
             provenance: None,
             traffic: None,
+            live: None,
             skip_logger,
             port: 0,
             valid_context: false,
@@ -217,6 +220,17 @@ impl RequestContext {
 
     pub(super) fn attach_traffic(&mut self, traffic: Arc<super::traffic::Traffic>) {
         self.traffic = Some(traffic);
+    }
+
+    pub(super) fn attach_live(&mut self, live: Option<Arc<crate::traffic_view::Exchange>>) {
+        if let Some(provenance) = &self.provenance {
+            provenance.attach_live(live.clone());
+        }
+        self.live = live;
+    }
+
+    pub(super) fn live(&self) -> Option<Arc<crate::traffic_view::Exchange>> {
+        self.live.clone()
     }
 
     pub(super) fn traffic(&self) -> Option<Arc<super::traffic::Traffic>> {
@@ -325,6 +339,11 @@ impl RequestContext {
 
     fn apply(&mut self, pending: Pending, content: Option<&[u8]>) {
         self.terminal = Some(false);
+        if let Some(live) = &self.live {
+            // This method is reached only after the existing parser barrier.
+            // Retain encoded source-buffered bytes without another decode.
+            live.request_body(content);
+        }
         if let Some(traffic) = &self.traffic {
             // Memory failures retain partial accounting but must not abandon
             // existing security hooks, as source container exceptions can.

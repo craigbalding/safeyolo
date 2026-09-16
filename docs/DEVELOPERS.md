@@ -443,7 +443,56 @@ diagnostics while the process is alive even if its readiness marker is absent.
 The native listener loads its token at startup, so token-file changes require
 a proxy restart. This client integration reaches the native APIs already
 implemented, including budget and circuit resets used by `safeyolo watch`.
-Agent service authorization and traffic scope remain unimplemented native routes.
+Agent service authorization remains an unimplemented native route.
+
+For a running Rust development proxy with its admin listener enabled, run
+`safeyolo traffic` on the host to open the terminal inspector. The inspector
+reads the proxy's shared in-memory HTTP view. It includes ordinary requests
+without TestContext, pending requests, and terminal responses or errors.
+The existing scope options, such as `--agent alice --test CASE-1`, update the
+shared view before attaching. `--no-attach` changes only the scope.
+Scope changes affect all inspectors and do not change forwarding policy.
+Detaching leaves the proxy and its retained view running.
+Use Up/Down to select a flow, Tab to change panes, and Page Up/Page Down to
+scroll. `r` and `s` fetch request and response body snapshots. `a` and `t`
+change the shared agent and test scope; `c` clears it. `q` detaches.
+
+The live view is separate from the durable TestContext evidence store.
+Native JSON settings `flow_pruner_max` (default 5000 flows) and
+`flow_pruner_max_body_bytes` (default 1 GiB) set positive retention targets.
+The proxy evicts the oldest finished flows across all scopes. Active exchanges
+remain retained even above these targets. Accepted reloads keep the view and
+scope, and apply updated targets; failed reloads leave the targets unchanged.
+Native pruning occurs when exchanges are released or settings change. The
+Python view uses its existing hook and interval schedule.
+
+The inspector shows retained encoded body bytes, including a distinct empty
+body. Streamed bodies, unavailable local response bodies, and bodies whose
+capture failed are labelled unavailable. The view does not drain a stream to
+make a body inspectable. A completed row and its end time describe the observed
+response; a slower request body can remain pending until its parser completes.
+This increment does not provide WebSocket transcripts,
+the mitmproxy user-filter language, editing, replay, interception, import/export,
+or a web inspector. Those remain migration work.
+An upgraded WebSocket appears only as its completed HTTP handshake. Its row
+does not record the WebSocket close time. Retention throughout an open
+WebSocket session still needs a runtime check.
+
+The native view excludes CONNECT, reserved internal hosts, and requests whose
+destination cannot be parsed. URLs use the admitted scheme and authority with
+the original path and query; headers retain the observed Host field. This is
+not the Python view's `pretty_url` projection. Native scope matching uses
+case-insensitive literal metadata text with multiline anchors. The Python
+filter lexer can change escaped punctuation and reject newlines; its optional
+case-sensitive mode and Unicode regex folding also differ. Native scope
+updates validate before publication. Python can publish scope fields before
+its generated filter fails. These are explicit compatibility gaps.
+
+Request headers reflect the last reached hygiene/context stage; an earlier
+local reply can retain the ingress headers. Upstream response headers come
+from the parser before downstream header rewriting. Known local replies show
+their returned headers. The inspector preserves repeated fields and available
+original order, but does not claim the Python view's final mutable header state.
 
 At startup and after agent-map changes, the CLI derives managed listener paths
 with the existing `<ip>_<agent>/proxy.sock` convention under its data directory.

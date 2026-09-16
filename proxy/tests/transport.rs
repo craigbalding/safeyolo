@@ -113,6 +113,8 @@ fn config(directory: &TempDir) -> Config {
         sse_stream_json: false,
         flow_store_enabled: false,
         flow_store_db_path: directory.path().join("flows.sqlite3"),
+        flow_pruner_max: 5000,
+        flow_pruner_max_body_bytes: 1024 * 1024 * 1024,
         admin_port: None,
         admin_api_token_file: None,
         admin_shield_extra_ports: String::new(),

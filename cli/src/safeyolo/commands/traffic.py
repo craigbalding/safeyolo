@@ -3,6 +3,7 @@
 import typer
 from rich.console import Console
 
+from ..traffic_inspector import inspect_traffic, plain_text
 from ..traffic_session import attach_session, session_exists
 
 console = Console()
@@ -22,16 +23,17 @@ def traffic(
     role: str | None = typer.Option(None, "--role", help="Test role scope"),
     expect: str | None = typer.Option(None, "--expect", help="Expected-result scope"),
     unattributed: bool = typer.Option(False, "--unattributed", help="Show only unattributed traffic"),
-    attach: bool = typer.Option(True, "--attach/--no-attach", help="Attach the native console after updating scope"),
+    attach: bool = typer.Option(True, "--attach/--no-attach", help="Open the traffic inspector after updating scope"),
 ) -> None:
-    """Scope and attach the existing shared traffic console."""
+    """Scope traffic and open the running backend's inspector."""
     from ..api import APIError
 
     if agent is not None and unattributed:
         console.print("[red]--agent and --unattributed are mutually exclusive.[/red]")
         raise typer.Exit(2)
     try:
-        result = get_api().set_traffic_scope(
+        api = get_api()
+        result = api.set_traffic_scope(
             agent=agent,
             unattributed=unattributed,
             test_id=test_id,
@@ -40,12 +42,19 @@ def traffic(
             expect=expect,
         )
     except APIError as exc:
-        console.print(f"[red]Cannot update traffic scope:[/red] {exc}")
+        console.print(f"Cannot update traffic scope: {plain_text(str(exc))}", markup=False)
         raise typer.Exit(1) from exc
 
     scope = result.get("effective_filter") or "all traffic"
-    console.print(f"[dim]Traffic scope: {scope}[/dim]")
+    console.print(f"Traffic scope: {plain_text(scope)}", markup=False)
     if not attach:
+        return
+    if api.is_native:
+        try:
+            inspect_traffic(api)
+        except RuntimeError as exc:
+            console.print(plain_text(str(exc)), markup=False)
+            raise typer.Exit(1) from exc
         return
     if not session_exists():
         console.print("[red]Shared traffic console is not running.[/red]")

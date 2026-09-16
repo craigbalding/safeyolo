@@ -94,6 +94,11 @@ pub struct Config {
     pub flow_store_enabled: bool,
     #[serde(default = "flow_store_path")]
     pub flow_store_db_path: PathBuf,
+    /// Soft targets for the shared operator view. Active flows remain retained.
+    #[serde(default = "flow_pruner_max")]
+    pub flow_pruner_max: usize,
+    #[serde(default = "flow_pruner_max_body_bytes")]
+    pub flow_pruner_max_body_bytes: usize,
     /// Development opt-in for the existing separate IPv4-loopback operator API.
     /// Listener and token settings are read at process startup.
     pub admin_port: Option<u16>,
@@ -131,6 +136,14 @@ fn flow_store_path() -> PathBuf {
     "/app/logs/flows.sqlite3".into()
 }
 
+fn flow_pruner_max() -> usize {
+    5000
+}
+
+fn flow_pruner_max_body_bytes() -> usize {
+    1024 * 1024 * 1024
+}
+
 #[derive(Clone)]
 pub(crate) struct ParentProxy {
     pub host: String,
@@ -164,6 +177,9 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
+        if self.flow_pruner_max == 0 || self.flow_pruner_max_body_bytes == 0 {
+            return Err("flow_pruner_max and flow_pruner_max_body_bytes must be positive".into());
+        }
         if self.temporary_policy_socket.is_some() == self.policy_file.is_some() {
             return Err("configure exactly one policy_file or temporary_policy_socket".into());
         }
