@@ -2345,6 +2345,18 @@ records 12 selections and two archive formats, including missing request-end
 defaults and connection timing suppression within one archive. It does not
 establish native HAR availability.
 
+The [flow-dump source fixture](../proxy/tests/traffic_dump_source.py) records six
+owned HTTP, WebSocket and TCP flows through the installed format-21 writer and
+reader. It preserves binary fields, missing versus empty bodies, edit backups,
+errors and WebSocket dropped/injected flags. Nine scalar controls distinguish
+the typed-netstring byte and Unicode tags. Six reader controls include future
+versions, unknown flow types and a valid record followed by corruption.
+Temporary-file checks exercise overwrite, append, missing-parent failure and
+the dump output produced even with a `.har` suffix. Console load adds fresh IDs
+and retains records loaded before an error. These checks do not establish native
+dump support, historical-version migration, UDP/DNS import, startup or addon
+lifecycle behavior, continuous save/rotation, or web import.
+
 HAR, flow-dump export and import, web inspection and the exposed edit/replay
 workflows remain migration work. The Python proxy has not been removed or cut
 over.
