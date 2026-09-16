@@ -467,7 +467,7 @@ Message rows show direction, type, size, time and the reached inspection drop
 decision. That decision does not establish delivery to the peer.
 
 To export a selected flow, press `x`, enter `raw`, `raw_request`, `raw_response`,
-`curl` or `httpie`, then enter a local file path. Escape cancels either prompt.
+`curl`, `httpie`, `har` or `zhar`, then enter a local file path. Escape cancels either prompt.
 The selection is fixed when the format prompt opens. Export also works while
 viewing that flow's WebSocket transcript. The destination belongs to the host
 running the inspector; the proxy receives only the flow ID and format.
@@ -484,9 +484,13 @@ messages. That format does not record message type or drop status. Use the
 inspector for those facts. `curl` and `httpie` produce command text; export does
 not execute it. If a format requires unavailable content or protocol facts,
 the export reports a failure.
-Command body decoding currently supports ASCII, Latin-1 and UTF-8/16/32.
-Other charset labels report an unsupported representation; broader codec
-compatibility remains migration work.
+HAR writes a JSON archive for the selected flow. ZHAR compresses that archive
+with zlib. The selected format determines the output; the file suffix does not.
+The shared text decoder supports the codec families listed under
+[selected-flow file export](proxy-parity.md#selected-flow-file-export).
+Registered codecs without a native implementation report an unsupported
+representation. Unknown charset labels follow the selected format's decoding
+error behavior. Broader codec compatibility remains migration work.
 HTTP decoding and command formatting materialize complete decoded HTTP bodies
 in memory. WebSocket export reads retained payloads in bounded chunks.
 
@@ -571,8 +575,9 @@ If native validation rejects an upstream 101 upgrade response, the HTTP view
 keeps that observed response and shows the rejection error. No WebSocket
 session is created for that response.
 
-Remaining filter compatibility, flow editing, replay, interception, HAR and
-flow-dump export, import and a web inspector remain migration work.
+Remaining filter compatibility, flow editing, replay, interception, all-flow
+HAR archives and lifecycle behavior, flow-dump export, import and a web inspector
+remain migration work.
 
 The native view excludes CONNECT, reserved internal hosts, and requests whose
 destination cannot be parsed. URLs use the admitted scheme and authority with
