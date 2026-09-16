@@ -7,6 +7,7 @@ use std::{
     task::{Context, Poll},
 };
 
+use crate::connection_tasks::Executor;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
 use hyper::{
@@ -14,7 +15,7 @@ use hyper::{
     body::{Body as HttpBody, Frame, Incoming, SizeHint},
     header,
 };
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::TokioIo;
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -47,14 +48,15 @@ mod traffic_url;
 
 pub(crate) type Body = BoxBody<Bytes, Error>;
 
-/// The HTTP driver exists exactly as long as its request or response body owner.
+/// The request or body owner requests cancellation when dropped. The accepted
+/// connection retains the actual driver until its task is joined.
 struct HttpTask {
-    task: tokio::task::JoinHandle<()>,
+    task: tokio::task::AbortHandle,
     completion: Option<Arc<circuit_completion::Completion>>,
 }
 
 impl HttpTask {
-    fn unobserved(task: tokio::task::JoinHandle<()>) -> Self {
+    fn unobserved(task: tokio::task::AbortHandle) -> Self {
         Self {
             task,
             completion: None,
@@ -349,6 +351,7 @@ fn validate_hostname(host: &str) -> Result<(), Error> {
 
 /// Constructed only after the configured network guard permits this request.
 struct AllowedRequest<'a> {
+    tasks: &'a UpgradeTasks,
     destination: &'a Destination,
     identity: &'a ConnectionIdentity,
     request_id: &'a str,
@@ -541,7 +544,7 @@ async fn open_egress(
     if tunnel && runtime.parent.is_some() {
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
-        let task = HttpTask::unobserved(tokio::spawn(async move {
+        let task = HttpTask::unobserved(allowed.tasks.spawn(async move {
             let _ = connection.with_upgrades().await;
         }));
         let target = if destination.host.contains(':') {
@@ -616,6 +619,7 @@ async fn decide(
     identity: &ConnectionIdentity,
     request: &PolicyRequest<'_>,
     trace: Option<&Arc<RequestTrace>>,
+    tasks: &UpgradeTasks,
 ) -> Result<PolicyDecision, Error> {
     if let Some(policy) = &runtime.policy {
         use crate::network_guard::{Identity, Options, OutcomeKind, Pdp, Request};
@@ -709,7 +713,7 @@ async fn decide(
     .await?;
     let (mut sender, connection) =
         hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;
-    let _task = HttpTask::unobserved(tokio::spawn(async move {
+    let _task = HttpTask::unobserved(tasks.spawn(async move {
         let _ = connection.await;
     }));
     let request = Request::builder()
@@ -1200,7 +1204,8 @@ fn circuit_admission(
 async fn forward(
     runtime: Arc<Runtime>,
     state: RuntimeState,
-    upgrades: Option<UpgradeTasks>,
+    upgrades: UpgradeTasks,
+    allow_upgrades: bool,
     identity: &ConnectionIdentity,
     request_id: &str,
     mut request: Request<Incoming>,
@@ -1272,7 +1277,7 @@ async fn forward(
             "local".into(),
         ));
     }
-    if (request.method() == Method::CONNECT && (upgrades.is_none() || tunnel.is_some()))
+    if (request.method() == Method::CONNECT && (!allow_upgrades || tunnel.is_some()))
         || !matches!(destination.scheme.as_str(), "http" | "https")
         || (destination.scheme == "https" && runtime.certificate_authority.is_none())
     {
@@ -1348,6 +1353,7 @@ async fn forward(
             trace_requested: hygiene.trace_requested,
         },
         trace.as_ref(),
+        &upgrades,
     )
     .await?;
     if decision.allow != (decision.decision == "allow") {
@@ -1395,6 +1401,7 @@ async fn forward(
         let connected = open_egress(
             &runtime,
             &AllowedRequest {
+                tasks: &upgrades,
                 destination,
                 identity,
                 request_id,
@@ -1411,9 +1418,12 @@ async fn forward(
         let identity = identity.clone();
         let destination = destination.clone();
         let request_id = request_id.to_owned();
-        let upgrades = upgrades.ok_or("nested CONNECT is unsupported")?;
+        if !allow_upgrades {
+            return Err("nested CONNECT is unsupported".into());
+        }
         let mut stop = upgrades.stop.clone();
-        upgrades.tasks.lock().await.spawn(async move {
+        let descendants = upgrades.clone();
+        upgrades.spawn_upgrade(async move {
             let result: Result<(), Error> = async {
                 if *stop.borrow() {
                     return Ok(());
@@ -1462,12 +1472,14 @@ async fn forward(
                     destination,
                     upstream: tokio::sync::Mutex::new(Some(server)),
                 });
-                serve_tunnel_http(state, identity, tunnel, client, http2, stop).await
+                serve_tunnel_http(state, identity, tunnel, client, http2, stop, descendants).await
             }
             .await;
             if let Err(error) = result {
                 eprintln!("CONNECT {request_id} ended: {error}");
+                return Err(error);
             }
+            Ok(())
         });
         return Ok((Response::new(full(Bytes::new())), decision.decision));
     }
@@ -1548,7 +1560,7 @@ async fn forward(
     // including framing fields removed by header hygiene. It never proves EOM.
     let content_length = request.body().size_hint().exact();
     let websocket = if hygiene.websocket {
-        if upgrades.is_none() {
+        if !allow_upgrades {
             return Ok((
                 response(
                     StatusCode::NOT_IMPLEMENTED,
@@ -1595,6 +1607,7 @@ async fn forward(
     let outbound = open_outbound(
         &runtime,
         &AllowedRequest {
+            tasks: &upgrades,
             destination,
             identity,
             request_id,
@@ -1634,13 +1647,13 @@ async fn forward(
         request.headers_mut().remove(header::HOST);
         *request.version_mut() = hyper::Version::HTTP_2;
         let (mut sender, connection) = hyper::client::conn::http2::handshake(
-            TokioExecutor::new(),
+            Executor(upgrades.clone()),
             TokioIo::new(outbound.stream),
         )
         .await?;
         let driver = completion.clone().drive(connection);
         let connection = HttpTask {
-            task: tokio::spawn(async move {
+            task: upgrades.spawn(async move {
                 if let Err(error) = driver.await {
                     eprintln!("upstream HTTP/2 connection: {error}");
                 }
@@ -1656,7 +1669,7 @@ async fn forward(
             .await?;
         let driver = completion.clone().drive(connection.with_upgrades());
         let connection = HttpTask {
-            task: tokio::spawn(async move {
+            task: upgrades.spawn(async move {
                 if let Err(error) = driver.await {
                     eprintln!("upstream HTTP connection: {error}");
                 }
@@ -1682,7 +1695,9 @@ async fn forward(
         strip_hop_headers(&mut parts.headers);
         parts.headers.insert(header::CONNECTION, "Upgrade".parse()?);
         parts.headers.insert(header::UPGRADE, "websocket".parse()?);
-        let upgrades = upgrades.ok_or("WebSocket upgrade owner unavailable")?;
+        if !allow_upgrades {
+            return Err("WebSocket upgrade owner unavailable".into());
+        }
         let mut stop = upgrades.stop.clone();
         let session = crate::websocket_relay::Session {
             state,
@@ -1692,7 +1707,8 @@ async fn forward(
             port: destination.port,
         };
         let memory_host = destination.policy_host.clone();
-        upgrades.tasks.lock().await.spawn(async move {
+        let descendants = upgrades.clone();
+        upgrades.spawn(async move {
             let _connection = connection;
             let result: Result<(), Error> = async {
                 if *stop.borrow() { return Ok(()); }
@@ -1710,7 +1726,7 @@ async fn forward(
                     "subprotocol": negotiated.subprotocol,
                     "compressed_client": negotiated.client.is_some(), "compressed_server": negotiated.server.is_some(),
                 }))?;
-                crate::websocket_relay::relay(Box::new(TokioIo::new(client)), Box::new(TokioIo::new(server)), negotiated, session, stop, memory).await
+                crate::websocket_relay::relay(Box::new(TokioIo::new(client)), Box::new(TokioIo::new(server)), negotiated, session, stop, memory, descendants).await
             }.await;
             if result.is_err() { eprintln!("WebSocket connection ended with an error"); }
         });
@@ -1741,11 +1757,8 @@ async fn serve_tunnel_http(
     client: BoxStream,
     http2: bool,
     mut stop: tokio::sync::watch::Receiver<bool>,
+    upgrades: UpgradeTasks,
 ) -> Result<(), Error> {
-    let upgrades: UpgradeTasks = Arc::new(crate::UpgradeState {
-        tasks: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
-        stop: stop.clone(),
-    });
     let request_upgrades = upgrades.clone();
     let service = hyper::service::service_fn(move |request| {
         serve_request(
@@ -1753,11 +1766,12 @@ async fn serve_tunnel_http(
             identity.clone(),
             request,
             Some(tunnel.clone()),
-            (!http2).then(|| request_upgrades.clone()),
+            request_upgrades.clone(),
+            !http2,
         )
     });
     if http2 {
-        let connection = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+        let connection = hyper::server::conn::http2::Builder::new(Executor(upgrades.clone()))
             .serve_connection(TokioIo::new(client), service);
         tokio::pin!(connection);
         if *stop.borrow() {
@@ -1787,8 +1801,7 @@ async fn serve_tunnel_http(
             }
         }
     }
-    let mut tasks = upgrades.tasks.lock().await;
-    while tasks.join_next().await.is_some() {}
+    // The accepted connection is the sole drainer, including nested upgrades.
     Ok(())
 }
 
@@ -1797,7 +1810,8 @@ pub(crate) fn serve_request(
     identity: ConnectionIdentity,
     request: Request<Incoming>,
     tunnel: Option<Arc<Tunnel>>,
-    upgrades: Option<UpgradeTasks>,
+    upgrades: UpgradeTasks,
+    allow_upgrades: bool,
 ) -> Pin<Box<dyn Future<Output = Result<Response<Body>, Infallible>> + Send>> {
     Box::pin(async move {
         let runtime = state.read().expect("runtime read lock").clone();
@@ -1834,6 +1848,7 @@ pub(crate) fn serve_request(
                     runtime.clone(),
                     state.clone(),
                     upgrades,
+                    allow_upgrades,
                     &identity,
                     &request_id,
                     request,

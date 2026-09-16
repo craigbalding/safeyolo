@@ -423,9 +423,17 @@ async fn failed_network_audit_retains_only_reached_trace_steps() {
         ));
         trace.enable(true);
         assert!(
-            decide(&runtime, &identity, &request, Some(&trace))
-                .await
-                .is_err()
+            decide(
+                &runtime,
+                &identity,
+                &request,
+                Some(&trace),
+                &crate::connection_tasks::ConnectionTasks::new(
+                    tokio::sync::watch::channel(false).1
+                )
+            )
+            .await
+            .is_err()
         );
         let report = runtime
             .traces
@@ -496,9 +504,15 @@ async fn trace_store_failure_does_not_change_guard_decision_or_counts() {
             request.port,
         ));
         trace.enable(true);
-        let outcome = decide(&runtime, &identity, &request, Some(&trace))
-            .await
-            .unwrap();
+        let outcome = decide(
+            &runtime,
+            &identity,
+            &request,
+            Some(&trace),
+            &crate::connection_tasks::ConnectionTasks::new(tokio::sync::watch::channel(false).1),
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.allow, effect == "allow");
         assert_eq!(outcome.status, (effect == "deny").then_some(403));
         assert_eq!(runtime.network_guard.stats().unwrap().checks, 1);

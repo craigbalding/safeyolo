@@ -320,7 +320,7 @@ silently reduce accepted message sizes to a library default.
 | D16 | Contract enforcement compares raw query keys before decoding. `name=chosen&%6Eame=forbidden` passes a binding to `chosen`, while an origin receives both decoded values and can select `forbidden`. | Native contract enforcement rejects duplicate decoded keys as ambiguous encoding. A controlled origin proves the old bypass; differential tests identify the intentional rejection. Requests outside service contracts retain their query behavior. |
 | D17 | Rust CONNECT metadata used the routing defaults `http` and `/`; production supplies an empty scheme and path. Slash-path conditions could therefore reverse CONNECT allow/deny decisions. | Repair `8413219` preserves authority-form metadata. Paired live tests prove both conditional allow and deny outcomes; the adapter validates the target form. After restoring production's eager CONNECT behavior, admission permits one target TCP contact and denial still permits none. |
 | D18 | The initial native service YAML loader silently dropped merged binding constraints, allowing a forbidden value or an unbound operation. | Services now use the shared structural YAML frontend, including merge-list and explicit-key precedence. Native route-selection tests reject mismatched and unresolved values. Independent review confirmed the repair at `cc859353`. |
-| D19 | The initial Rust HTTPS path canceled upgraded connections immediately at shutdown, truncating an active response that plain HTTP would drain. | Inner HTTP receives the listener shutdown signal and drains active responses under the existing ten-second listener deadline. Idle TLS handshakes cancel promptly. Independent review at `cc859353` confirmed that a paused TLS response delivers its final bytes after shutdown begins. |
+| D19 | The initial Rust HTTPS path canceled upgraded connections immediately at shutdown, truncating an active response that plain HTTP would drain. | Inner HTTP receives the listener shutdown signal and drains active responses under the ten-second transport shutdown grace. Idle TLS handshakes cancel promptly. Independent review at `cc859353` confirmed that a paused TLS response delivers its final bytes after shutdown begins. |
 | D20 | Native JSON parsing rounded integers larger than `u64` to floating point. Different integer IDs could falsely satisfy a service `equals_var` binding. | JSON integers retain their exact decimal values; integer/float comparison uses the float's represented value. Strict body parsing also keeps authored private-number-marker objects as objects. The expanded contract oracle covers 2,218 outcomes, with only D16's 16 expected differences. Independent numeric and contract rechecks passed at `cc859353`. |
 | D21 | Python can admit two risky requests using the same once grant before either receives a response. | Native grants reserve one request at a time, release on failure/cancellation, and consume after a successful response. A controlled Python oracle proves the old reuse; native concurrency and stale-lease tests enforce one reservation. Reservations remain process-local, without an exactly-once side-effect claim across persistence failure and restart. |
 | D22 | Python tomlkit persists integers beyond TOML's signed 64-bit range exactly; the native TOML library rejects them. | JSON/YAML preserve large integers, but native TOML binding persistence and reload still reject out-of-range integers before publication. Previous state remains intact. This is an unresolved retained-workflow gap before activation, not a deliberate removal. |
@@ -366,6 +366,7 @@ silently reduce accepted message sizes to a library default.
 | D60 | Source service discovery reconciles trusted UDS identity with the agent map. A disagreement removes the evidence owner, skips last-seen accounting and emits a conflict event. | Native identity still comes only from the accepted listener. The discovery report reads map metadata and records that listener owner; it does not implement source map-conflict containment or its security events. This remains an unresolved identity-parity gap. Reporting tests do not establish equivalence for mismatched identities. |
 | D61 | TraceStore does not enforce the per-agent cap when an initially ownerless record later acquires an owner. A capped append moves a record to the end without updating its retained timestamp; expiry stops at the first live record and can retain a later stale record. | The native store preserves these source behaviors and their finite source witnesses. The global record and per-record step caps still apply. These retention discrepancies remain unresolved; the configured TTL and per-agent cap are not strict guarantees in these cases. |
 | D62 | A source MemoryMonitor request decode error retains earlier counters, then escapes the shared production addon container. Later request security hooks can be skipped while the HTTP layer resumes forwarding. The retained decoder fixture proves the child failure; the wider bypass path is established by static dispatcher/HTTP control flow, not a new full-chain execution. | Native memory observation errors retain partial state and produce categorical diagnostics, while existing security decisions continue. They do not skip inspection or introduce a new rejection rule. Focused HTTP and WebSocket failure controls verify that later native context/scanner decisions still run. |
+| D63 | Earlier native forced shutdown aborted outer connection tasks and dropped nested JoinSets or driver handles without joining their descendants. WebSocket close events and driver cleanup could then follow client removal or audit shutdown. | One accepted-connection task owner now retains explicit HTTP drivers, CONNECT/WS work, Hyper transport-executor jobs and actual WS scanner jobs through cancellation. Tasks registered after cancellation are dropped before their work runs. The client guard ends after that owner drains. Finite owner and owned H1/WS tests establish this transport scope; standalone API workers, anonymous spill-file jobs and ordinary process Drop remain outside the guarantee. |
 
 ## Deletion map and evidence still required
 
@@ -1587,14 +1588,32 @@ HTTP and WebSocket traffic retain that connection ID. Cleanup removes the entry
 when its existing task finishes or is cancelled, including an unpolled task.
 The native owner spans the existing upgrade drain; this does not reproduce the
 source's exact disconnect timing relative to residual transport cleanup.
-Ordinary `Proxy::drop` still starts shutdown without guaranteeing that tasks or
-audit writes have drained. Explicit shutdown awaits normal connection and
-upgrade completion. If the existing ten-second grace aborts an outer task,
-nested upgrade tasks are aborted without being joined. An inner WebSocket
-cleanup can then follow connection removal or audit shutdown. Early tunnel-task
-errors can also skip the nested join. That existing ownership gap remains
-unresolved; isolated guard-cancellation tests do not prove recursive shutdown
-drainage.
+The [accepted-connection owner](../proxy/src/connection_tasks.rs) retains the
+actual HTTP drivers, CONNECT/WS tasks, Hyper transport-executor jobs and blocking
+WebSocket scanner jobs. One supervisor joins those tasks without holding the
+registration mutex across an await. Normal CONNECT/101 completion retains the
+adopted session. A failed main driver or CONNECT task cancels its descendants;
+late registration drops captured work without starting it. Client removal
+follows the final transport-task drain, before the proxy stops the audit writer.
+D63 records the earlier forced-cancellation gap.
+
+Each connection observes shutdown and allows ten seconds of transport grace.
+After that grace, the supervisor cancels asynchronous or queued work and joins
+actual task completion. An already-running blocking scanner, synchronous I/O or
+a delayed task poll can extend cleanup beyond the grace period. The grace does
+not impose a new message, CPU or connection-duration limit. Listener stop before
+its first poll and direct listener drop retain their shutdown signals.
+Standalone API authentication/report workers and anonymous WebSocket spill-file
+creation and I/O still have separate task lifetimes. Their completion is outside
+this transport drain. Ordinary `Proxy::drop` still starts shutdown without
+awaiting tasks or audit drainage.
+
+Finite owner tests cover forced cancellation, late registration, task failure,
+running blocking work and the Hyper executor. Owned HTTP/1 tests cover direct
+and CONNECT-nested WebSocket shutdown across reload, ordered memory close
+records, an active response completing during shutdown, immediate listener stop
+and direct listener drop. Those wire tests preserve normal behavior;
+they do not execute forced wire shutdown or establish HTTP/2 protocol parity.
 
 Reached request hooks count flows and retained decoded body bytes. The monitor
 captures the original content encoding before header hygiene. Completed

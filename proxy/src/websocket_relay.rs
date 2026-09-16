@@ -3,10 +3,13 @@
 //! close stops admission; writers finish an active frame before sending close.
 
 use std::{
+    future::{Future, poll_fn},
+    pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    task::Poll,
     time::Duration,
 };
 
@@ -14,12 +17,13 @@ use serde_json::json;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::{mpsc, watch},
-    task::JoinSet,
 };
 use tungstenite::protocol::frame::coding::Control;
 
 use crate::{
-    ConnectionIdentity, Error, RuntimeState, inspection,
+    ConnectionIdentity, Error, RuntimeState, UpgradeTasks,
+    connection_tasks::Task,
+    inspection,
     memory_monitor::MemoryMonitor,
     memory_runtime,
     tunnels::BoxStream,
@@ -74,6 +78,7 @@ enum Finished {
     Stopped,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn read_messages<R: AsyncRead + Unpin>(
     mut reader: Reader<R>,
     from_client: bool,
@@ -82,6 +87,7 @@ async fn read_messages<R: AsyncRead + Unpin>(
     session: Arc<Session>,
     inspection_lifetime: Arc<InspectionLifetime>,
     memory: Arc<MemoryMonitor>,
+    tasks: UpgradeTasks,
 ) -> Finished {
     loop {
         let event = tokio::select! {
@@ -119,7 +125,7 @@ async fn read_messages<R: AsyncRead + Unpin>(
                 let lifetime = inspection_lifetime.clone();
                 // Complete-message decoding, matching and synchronous evidence
                 // writes run outside the asynchronous connection executor.
-                let mut inspecting = tokio::task::spawn_blocking(move || -> Result<_, Error> {
+                let mut inspecting = tasks.spawn_blocking(move || -> Result<_, Error> {
                     if lifetime.cancelled.load(Ordering::Acquire) {
                         return Ok((message, true));
                     }
@@ -252,6 +258,41 @@ async fn write_event<W: AsyncWrite + Unpin>(
     }
 }
 
+// Receivers preserve relay-specific completion/error handling. Their actual
+// async tasks and blocking scanners are joined by the accepted connection.
+struct RelayTasks {
+    owner: UpgradeTasks,
+    pending: Vec<Task<Finished>>,
+}
+impl RelayTasks {
+    fn spawn(&mut self, future: impl Future<Output = Finished> + Send + 'static) {
+        self.pending.push(self.owner.spawn_result(future));
+    }
+    async fn join_next(
+        &mut self,
+    ) -> Option<Result<Finished, tokio::sync::oneshot::error::RecvError>> {
+        poll_fn(|cx| {
+            for index in 0..self.pending.len() {
+                if let Poll::Ready(result) = Pin::new(&mut self.pending[index]).poll(cx) {
+                    drop(self.pending.swap_remove(index));
+                    return Poll::Ready(Some(result));
+                }
+            }
+            if self.pending.is_empty() {
+                Poll::Ready(None)
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
+    fn abort_all(&self) {
+        for task in &self.pending {
+            task.abort();
+        }
+    }
+}
+
 pub(crate) async fn relay(
     client: BoxStream,
     server: BoxStream,
@@ -259,6 +300,7 @@ pub(crate) async fn relay(
     session: Session,
     mut stop: watch::Receiver<bool>,
     memory: memory_runtime::WebSocket,
+    owner: UpgradeTasks,
 ) -> Result<(), Error> {
     let monitor = memory.monitor();
     let _memory = memory;
@@ -267,8 +309,8 @@ pub(crate) async fn relay(
         cancelled: AtomicBool::new(false),
         publication: Mutex::new(()),
     });
-    // Listener task abortion also cancels an inspection worker. Dropping its
-    // JoinHandle alone cannot stop spawn_blocking work that already started.
+    // Relay cancellation also signals its inspection worker. Aborting the
+    // reader cannot stop spawn_blocking work that already started.
     let _cancel_inspection = CancelInspectionOnDrop(inspection_lifetime.clone());
     let started = std::time::Instant::now();
     let (client_read, client_write) = tokio::io::split(client);
@@ -276,7 +318,10 @@ pub(crate) async fn relay(
     let (to_server, server_messages) = mpsc::channel(1);
     let (to_client, client_messages) = mpsc::channel(1);
     let (closing, close) = watch::channel(None);
-    let mut tasks = JoinSet::new();
+    let mut tasks = RelayTasks {
+        owner: owner.clone(),
+        pending: Vec::new(),
+    };
     tasks.spawn(read_messages(
         Reader::new(client_read, true, negotiated.client),
         true,
@@ -285,6 +330,7 @@ pub(crate) async fn relay(
         session.clone(),
         inspection_lifetime.clone(),
         monitor.clone(),
+        owner.clone(),
     ));
     tasks.spawn(read_messages(
         Reader::new(server_read, false, negotiated.server),
@@ -294,6 +340,7 @@ pub(crate) async fn relay(
         session.clone(),
         inspection_lifetime.clone(),
         monitor,
+        owner,
     ));
     let client_close = close.clone();
     tasks.spawn(async move {

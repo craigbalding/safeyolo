@@ -12,6 +12,7 @@ pub mod audit;
 mod circuit_runtime;
 pub mod circuits;
 mod config;
+mod connection_tasks;
 pub mod contracts;
 pub mod credential_guard;
 pub mod credential_injection;
@@ -71,12 +72,7 @@ use tokio::{
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) type RuntimeState = Arc<RwLock<Arc<Runtime>>>;
-pub(crate) type UpgradeTasks = Arc<UpgradeState>;
-
-pub(crate) struct UpgradeState {
-    tasks: tokio::sync::Mutex<JoinSet<()>>,
-    stop: watch::Receiver<bool>,
-}
+pub(crate) type UpgradeTasks = Arc<connection_tasks::ConnectionTasks>;
 
 #[derive(Clone)]
 pub(crate) struct ConnectionIdentity {
@@ -425,7 +421,7 @@ impl Drop for SocketPath {
 struct RunningListener {
     agent_id: String,
     source_id: Option<String>,
-    stop: watch::Sender<bool>,
+    stop: Arc<watch::Sender<bool>>,
     task: JoinHandle<()>,
     socket: SocketPath,
 }
@@ -439,11 +435,13 @@ impl RunningListener {
         runtime: Arc<RwLock<Arc<Runtime>>>,
     ) -> Self {
         let (stop, receiver) = watch::channel(false);
+        let stop = Arc::new(stop);
         let task = tokio::spawn(accept_agents(
             listener,
             agent_id.clone(),
             source_id.clone(),
             runtime,
+            Arc::downgrade(&stop),
             receiver,
         ));
         Self {
@@ -467,6 +465,7 @@ async fn accept_agents(
     agent_id: String,
     source_id: Option<String>,
     runtime: Arc<RwLock<Arc<Runtime>>>,
+    stop_signal: std::sync::Weak<watch::Sender<bool>>,
     mut stop: watch::Receiver<bool>,
 ) {
     let mut connections = JoinSet::new();
@@ -494,7 +493,9 @@ async fn accept_agents(
                     let connection_stop = stop.clone();
                     connections.spawn(async move {
                         let _memory = memory;
-                        serve_connection(socket, identity, connection_runtime, connection_stop).await;
+                        let tasks = connection_tasks::ConnectionTasks::new(connection_stop.clone());
+                        let driver_tasks = tasks.clone();
+                        tasks.run(serve_connection(socket, identity, connection_runtime, connection_stop, driver_tasks)).await;
                     });
                 }
                 Err(error) => {
@@ -512,16 +513,12 @@ async fn accept_agents(
         }
     }
     drop(listener);
-    // Stop keep-alive admission but allow in-flight requests/streams to complete.
-    if tokio::time::timeout(Duration::from_secs(10), async {
-        while connections.join_next().await.is_some() {}
-    })
-    .await
-    .is_err()
-    {
-        connections.abort_all();
-        while connections.join_next().await.is_some() {}
+    // Cleanup supervisors are never aborted: they cancel transport tasks after
+    // the existing grace and join tracked transport tasks before dropping the client.
+    if let Some(stop_signal) = stop_signal.upgrade() {
+        stop_signal.send_replace(true);
     }
+    while connections.join_next().await.is_some() {}
 }
 
 async fn serve_connection(
@@ -529,11 +526,8 @@ async fn serve_connection(
     identity: ConnectionIdentity,
     runtime: Arc<RwLock<Arc<Runtime>>>,
     mut stop: watch::Receiver<bool>,
-) {
-    let upgrades: UpgradeTasks = Arc::new(UpgradeState {
-        tasks: tokio::sync::Mutex::new(JoinSet::new()),
-        stop: stop.clone(),
-    });
+    upgrades: UpgradeTasks,
+) -> Result<(), Error> {
     let request_upgrades = upgrades.clone();
     let service = service_fn(move |request| {
         http::serve_request(
@@ -541,7 +535,8 @@ async fn serve_connection(
             identity.clone(),
             request,
             None,
-            Some(request_upgrades.clone()),
+            request_upgrades.clone(),
+            true,
         )
     });
     let connection = hyper::server::conn::http1::Builder::new()
@@ -549,18 +544,20 @@ async fn serve_connection(
         .serve_connection(TokioIo::new(socket), service)
         .with_upgrades();
     tokio::pin!(connection);
-    tokio::select! {
-        result = &mut connection => if let Err(error) = result { eprintln!("agent HTTP connection: {error}"); },
+    if *stop.borrow() {
+        connection.as_mut().graceful_shutdown();
+    }
+    let result = tokio::select! {
+        result = &mut connection => result,
         _ = stop.changed() => {
             connection.as_mut().graceful_shutdown();
-            if let Err(error) = connection.await { eprintln!("agent HTTP shutdown: {error}"); }
+            connection.await
         }
+    };
+    if let Err(error) = &result {
+        eprintln!("agent HTTP connection: {error}");
     }
-    // Upgrades receive the same shutdown signal as plain HTTP. Their own
-    // protocol driver drains active responses; the listener's existing timeout
-    // still bounds the lifetime of this connection and its owned tasks.
-    let mut upgrades = upgrades.tasks.lock().await;
-    while upgrades.join_next().await.is_some() {}
+    result.map_err(Into::into)
 }
 
 /// Owns listening sockets. Identity is fixed at accept, never taken from client bytes.

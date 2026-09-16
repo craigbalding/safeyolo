@@ -377,6 +377,13 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
             .body(())
             .unwrap();
         let destination = Destination::from_request(&request, None).unwrap();
+        // Startup precedes the synthetic writer failure. No later event may
+        // be appended after poisoning, including a tunnel lifecycle event.
+        assert!(runtime.audit.wait_for_drain(LIMIT).unwrap());
+        let before = records(directory.path(), "audit.jsonl");
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0]["addon"], "memory-monitor");
+        assert_eq!(before[0]["event"], "ops.startup");
         if poisoned {
             runtime.audit.poison_for_test();
         }
@@ -386,6 +393,9 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
             open_egress(
                 &runtime,
                 &AllowedRequest {
+                    tasks: &crate::connection_tasks::ConnectionTasks::new(
+                        tokio::sync::watch::channel(false).1,
+                    ),
                     destination: &destination,
                     identity: &identity,
                     request_id: "req-11111111111111111111111111111111",
@@ -419,7 +429,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
                 runtime.audit.shutdown(LIMIT).unwrap_err().kind(),
                 crate::audit::ErrorKind::Poisoned
             );
-            assert!(records(directory.path(), "audit.jsonl").is_empty());
+            assert_eq!(records(directory.path(), "audit.jsonl"), before);
         } else {
             let start = wait_lifecycle(&runtime, directory.path(), 1).await;
             check(&start[0], "start", port, started.elapsed());

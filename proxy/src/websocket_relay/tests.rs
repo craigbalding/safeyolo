@@ -9,7 +9,9 @@ use tungstenite::protocol::frame::{
 };
 
 use super::*;
+use crate::connection_tasks::ConnectionTasks;
 use crate::{Config, Runtime, audit, memory_runtime};
+use tokio::task::JoinSet;
 
 const ID: &str = "owned-client";
 const HOST: &str = "Owned.invalid";
@@ -211,6 +213,7 @@ async fn complete_messages_count_before_drop_and_monitor_error_preserves_scanner
             ));
             let (sender, mut messages) = mpsc::channel(4);
             let (_closing, close) = watch::channel(None);
+            let owner = ConnectionTasks::new(watch::channel(false).1);
             let result = read_messages(
                 Reader::new(Cursor::new(wire), from_client, None),
                 from_client,
@@ -222,8 +225,10 @@ async fn complete_messages_count_before_drop_and_monitor_error_preserves_scanner
                     publication: Mutex::new(()),
                 }),
                 memory.monitor(),
+                owner.clone(),
             )
             .await;
+            owner.run(async { Ok(()) }).await;
             assert!(matches!(
                 result,
                 Finished::Reader(Closing {
@@ -277,6 +282,7 @@ async fn relay_diagnostic_error_still_ends_the_session() {
     let (client, _client_peer) = tokio::io::duplex(1024);
     let (server, _server_peer) = tokio::io::duplex(1024);
     let (_stop, stop) = watch::channel(true);
+    let owner = ConnectionTasks::new(stop.clone());
     let result = tokio::time::timeout(
         Duration::from_secs(1),
         relay(
@@ -290,10 +296,12 @@ async fn relay_diagnostic_error_still_ends_the_session() {
             session(&runtime),
             stop,
             memory,
+            owner.clone(),
         ),
     )
     .await
     .unwrap();
+    owner.run(async { Ok(()) }).await;
     assert!(
         result.is_err(),
         "owned read-only diagnostic file cannot be written"
@@ -312,6 +320,7 @@ async fn canceled_relay_cleans_session_without_waiting_for_messages() {
     let (client, _client_peer) = tokio::io::duplex(1024);
     let (server, _server_peer) = tokio::io::duplex(1024);
     let (_stop, stop) = watch::channel(false);
+    let owner = ConnectionTasks::new(stop.clone());
     let mut tasks = JoinSet::new();
     tasks.spawn(relay(
         Box::new(client),
@@ -324,10 +333,13 @@ async fn canceled_relay_cleans_session_without_waiting_for_messages() {
         session(&runtime),
         stop,
         memory,
+        owner.clone(),
     ));
     tokio::task::yield_now().await;
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
+    owner.abort_all();
+    owner.run(async { Ok(()) }).await;
     assert_eq!(stats(&runtime.memory_monitor)["active_websockets"], 0);
     let events = records(&runtime, directory.path());
     assert_eq!(events.len(), 1);
