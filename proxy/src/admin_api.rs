@@ -24,6 +24,7 @@ use crate::policy::{BudgetStatsError, Policy};
 use crate::tasks::{self, Registry};
 
 mod audit_events;
+mod services;
 mod traffic;
 
 /// These errors terminate the connection without a fabricated HTTP response.
@@ -36,6 +37,8 @@ pub enum Error {
     RegistryUnavailable,
     StatsReporting,
     TrafficReporting,
+    ServiceMutation,
+    ServiceRepresentation,
     BudgetReporting(BudgetStatsError),
     CircuitOperation(crate::circuits::ErrorKind),
     Audit(crate::audit::ErrorKind),
@@ -51,6 +54,8 @@ impl fmt::Display for Error {
             Self::RegistryUnavailable => "Task registry unavailable",
             Self::StatsReporting => "Operator stats task failed",
             Self::TrafficReporting => "Operator traffic read failed",
+            Self::ServiceMutation => "Operator service policy update failed",
+            Self::ServiceRepresentation => "Operator service value is not representable",
             Self::BudgetReporting(_) => "Operator budget report unavailable",
             Self::CircuitOperation(_) => "Operator circuit operation failed",
             Self::Audit(_) => "Operator audit submission failed",
@@ -67,6 +72,7 @@ pub enum Audit {
     BudgetsReset(BudgetResetAudit),
     CircuitReset(CircuitResetAudit),
     TrafficScopeUpdated(TrafficScopeAudit),
+    ServiceAuthorized(services::Authorization),
     TaskUpdated {
         task_id: String,
         permission_count: usize,
@@ -642,6 +648,26 @@ where
     .await
 }
 
+/// Accepted writer and request attribution copied into the service worker.
+pub(crate) struct ServiceAudit<'a> {
+    pub writer: &'a std::sync::Arc<crate::audit::Writer>,
+    pub client_ip: &'a str,
+    pub target: &'a str,
+}
+
+/// Borrowed owners from one accepted runtime snapshot. Disk policy updates
+/// persist configuration; the existing runtime watcher owns later activation.
+pub(crate) struct OperatorContext<'a> {
+    pub tasks: &'a Registry,
+    pub policy: Option<&'a Policy>,
+    pub circuits: Option<&'a crate::circuits::CircuitBreaker>,
+    pub stats:
+        Option<&'a (dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
+    pub view: Option<&'a std::sync::Arc<crate::traffic_view::TrafficView>>,
+    pub policy_path: Option<&'a std::path::Path>,
+    pub service_audit: Option<ServiceAudit<'a>>,
+}
+
 /// The shared view uses the same operator authentication as other private reads.
 pub(crate) async fn respond_with_view<B>(
     request: Request<B>,
@@ -655,6 +681,36 @@ pub(crate) async fn respond_with_view<B>(
 where
     B: Body<Data = Bytes>,
 {
+    respond_with_context(
+        request,
+        expected_token,
+        OperatorContext {
+            tasks: registry,
+            policy,
+            circuits,
+            stats,
+            view,
+            policy_path: None,
+            service_audit: None,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
+    request: Request<B>,
+    expected_token: &str,
+    context: OperatorContext<'_>,
+) -> Result<Outcome, Error> {
+    let OperatorContext {
+        tasks: registry,
+        policy,
+        circuits,
+        stats,
+        view,
+        policy_path,
+        service_audit,
+    } = context;
     let method = request.method();
     if !matches!(
         *method,
@@ -676,6 +732,12 @@ where
         );
         outcome.audit = Some(Audit::AuthenticationFailed);
         return Ok(outcome);
+    }
+    if method == Method::POST
+        && let Some(agent) = services::agent_path(path)
+    {
+        let agent = agent.to_owned();
+        return services::authorize(request, agent, policy, policy_path, service_audit).await;
     }
     if path.starts_with("/admin/traffic/") {
         let path = path.to_owned();

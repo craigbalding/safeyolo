@@ -18,6 +18,25 @@ impl Audit {
     /// These source call sites supply no agent attribution, decision or approval.
     pub fn canonical_events(&self, client_ip: &str, target: &str) -> Vec<Event> {
         match self {
+            Self::ServiceAuthorized(authorization) => {
+                let mut event = event(
+                    "admin.agent_service_authorized",
+                    Kind::Admin,
+                    Severity::Medium,
+                    format!(
+                        "Agent service authorized: {} -> {}",
+                        sanitize(&authorization.agent),
+                        sanitize(&authorization.service)
+                    ),
+                    "admin-api",
+                );
+                event.details = json!({
+                    "client_ip":client_ip, "agent":authorization.agent.as_str(),
+                    "service":authorization.service.as_str(), "capability":authorization.capability.as_str(),
+                    "credential":authorization.credential.as_str(),
+                }).into();
+                vec![event]
+            }
             Self::TrafficScopeUpdated(scope) => {
                 let mut event = event(
                     "admin.traffic_scope_update",

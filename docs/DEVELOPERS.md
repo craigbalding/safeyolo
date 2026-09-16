@@ -443,7 +443,13 @@ diagnostics while the process is alive even if its readiness marker is absent.
 The native listener loads its token at startup, so token-file changes require
 a proxy restart. This client integration reaches the native APIs already
 implemented, including budget and circuit resets used by `safeyolo watch`.
-Agent service authorization remains an unimplemented native route.
+With native TOML policy and a loaded service catalog, the operator API can
+persist an agent's service binding through `POST /admin/agents/{agent}/services`.
+It validates the accepted service and capability, requires an existing agent,
+and saves the selected vault credential name. It does not read the vault.
+The existing policy watcher activates accepted changes after the save; the
+response does not promise immediate service access. Gateway forwarding and
+credential injection remain unfinished.
 
 For a running Rust development proxy with its admin listener enabled, run
 `safeyolo traffic` on the host to open the terminal inspector. The inspector

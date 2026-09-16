@@ -195,14 +195,22 @@ async fn serve_connection(
                 let runtime = runtime.clone();
                 tokio::task::spawn_blocking(move || crate::operator_stats::document(&runtime))
             };
-            let outcome = admin_api::respond_with_view(
+            let outcome = admin_api::respond_with_context(
                 request,
                 token.trim_matches(python_whitespace),
-                &runtime.tasks,
-                runtime.policy.as_ref(),
-                runtime.policy.as_ref().map(|_| &runtime.circuits),
-                Some(&stats),
-                Some(&runtime.traffic_view),
+                admin_api::OperatorContext {
+                    tasks: &runtime.tasks,
+                    policy: runtime.policy.as_ref(),
+                    circuits: runtime.policy.as_ref().map(|_| &runtime.circuits),
+                    stats: Some(&stats),
+                    view: Some(&runtime.traffic_view),
+                    policy_path: runtime.config.policy_file.as_deref(),
+                    service_audit: Some(admin_api::ServiceAudit {
+                        writer: &runtime.audit,
+                        client_ip: &client_ip,
+                        target: &path,
+                    }),
+                },
             )
             .await?
             .submit_audit(&runtime.audit, &client_ip, &path)?;
@@ -221,6 +229,10 @@ async fn serve_connection(
                     "permission_count":permission_count,
                 })],
                 admin_api::Audit::CircuitReset(reset) => reset.events(&client_ip).into(),
+                admin_api::Audit::ServiceAuthorized(_) => vec![json!({
+                    "event":"proxy.admin_api", "audit_intent":"admin.agent_service_authorized",
+                    "client_ip":client_ip,
+                })],
                 admin_api::Audit::TrafficScopeUpdated(_) => vec![json!({
                     "event":"proxy.admin_api", "audit_intent":"admin.traffic_scope_update",
                     "client_ip":client_ip,

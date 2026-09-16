@@ -2454,3 +2454,36 @@ not been removed or cut over.
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those
 jobs, the macOS VM relay or the Linux guest mount have passed.
+
+
+### Operator service authorization
+
+The authenticated native operator route `POST /admin/agents/{agent}/services`
+accepts the existing CLI's service, capability and vault credential names. It
+validates against the service catalog in the accepted policy snapshot, then
+updates the existing agent in the latest locked TOML file. Other policy fields
+and service bindings remain intact. No vault lookup or immediate policy reload
+occurs in the handler. The existing watcher owns later activation.
+
+A blocking worker owns both persistence and the subsequent canonical
+`admin.agent_service_authorized` audit attempt. Canceling the request does not
+cancel that worker or discard its audit responsibility. The listener does not
+resubmit that event. A failure to submit evidence after persistence does not
+undo the saved binding; an audit attempt is not a durability guarantee.
+
+The [operator route tests](../proxy/src/admin_api/services/tests.rs) cover
+authentication before body/file access, validation order, absent runtime owners,
+replacement and preservation, inline agent tables, changes made after the
+accepted snapshot, lock failure, and audit failure after persistence. A held
+file-lock control cancels the actual request future, then releases the worker
+and observes the binding and exactly one event. A later loader invocation
+checks the saved binding; this does not prove a running watcher or the complete
+service authorization and forwarding workflow.
+
+Persistence uses the existing TOML transaction helper and its durability-failure
+rollback behavior. Truthy non-string request fields remain native representation
+errors; arbitrary source JSON values and non-TOML mutation parity are unproved.
+The [request-access source fixture](../proxy/tests/gateway_access_source.py)
+separately records ten owned source dispatcher cases, including contract
+challenges and audit-before-pending response ordering. It does not establish
+native request-access behavior, identity-forgery rejection or durable auditing.
