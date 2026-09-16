@@ -26,6 +26,7 @@ use crate::{
     inspection,
     memory_monitor::MemoryMonitor,
     memory_runtime,
+    traffic_view::Exchange,
     tunnels::BoxStream,
     websocket::{Event, MessageType, Negotiated, Reader, ReceiveError, Writer},
 };
@@ -36,6 +37,28 @@ pub(crate) struct Session {
     pub request_id: String,
     pub host: String,
     pub port: u16,
+    pub live: Option<Arc<Exchange>>,
+}
+
+/// Held by the upgrade future separately from the readers and blocking workers.
+/// Even an unpolled or canceled upgrade ends its view session on release.
+pub(crate) struct LiveSession(Option<Arc<Exchange>>);
+
+impl Session {
+    pub(crate) fn start_live(&self) -> LiveSession {
+        if let Some(live) = &self.live {
+            live.websocket_start(crate::circuit_runtime::now());
+        }
+        LiveSession(self.live.clone())
+    }
+}
+
+impl Drop for LiveSession {
+    fn drop(&mut self) {
+        if let Some(live) = &self.0 {
+            live.websocket_cancel(crate::circuit_runtime::now());
+        }
+    }
 }
 
 struct InspectionLifetime {
@@ -117,6 +140,17 @@ async fn read_messages<R: AsyncRead + Unpin>(
                 });
             }
             Event::Message(message) => {
+                // Source appends complete unmasked/decompressed content before
+                // invoking hooks. Observe before either direction awaits its
+                // scanner, so diagnostic failure cannot erase received bytes.
+                let observed = session.live.as_ref().and_then(|live| {
+                    live.websocket_message(
+                        message.kind,
+                        from_client,
+                        crate::circuit_runtime::now(),
+                        message.content(),
+                    )
+                });
                 // The source counts every complete data message before later
                 // scanner decisions, including messages the scanner drops.
                 // Observation failure must not skip that security decision.
@@ -165,6 +199,11 @@ async fn read_messages<R: AsyncRead + Unpin>(
                         Ok(Err(_)) => (true, None, Some("inspection_state")),
                         Err(_) => (true, None, Some("inspection_storage")),
                     };
+                    // A reached scanner drop precedes evidence publication.
+                    // The observation is retained even if that write fails.
+                    if let (Some(live), Some(id)) = (&state.live, observed) {
+                        live.websocket_message_dropped(id, drop_message);
+                    }
                     let _publication = lifetime
                         .publication
                         .lock()
@@ -379,6 +418,18 @@ pub(crate) async fn relay(
             }
         }
     };
+    if let Some(live) = &session.live {
+        let reason = (end.outcome == "peer_close")
+            .then(|| std::str::from_utf8(end.payload.get(2..).unwrap_or_default()).ok())
+            .flatten();
+        live.websocket_end(
+            crate::circuit_runtime::now(),
+            end.from_client,
+            Some(end.code),
+            reason,
+            (!matches!(end.outcome, "peer_close" | "shutdown")).then_some(end.outcome),
+        );
+    }
     {
         let _publication = inspection_lifetime
             .publication

@@ -32,6 +32,7 @@ pub enum Error {
     BodyRead,
     RegistryUnavailable,
     StatsReporting,
+    TrafficReporting,
     BudgetReporting(BudgetStatsError),
     CircuitOperation(crate::circuits::ErrorKind),
     Audit(crate::audit::ErrorKind),
@@ -46,6 +47,7 @@ impl fmt::Display for Error {
             Self::BodyRead => "Operator request body read failed",
             Self::RegistryUnavailable => "Task registry unavailable",
             Self::StatsReporting => "Operator stats task failed",
+            Self::TrafficReporting => "Operator traffic read failed",
             Self::BudgetReporting(_) => "Operator budget report unavailable",
             Self::CircuitOperation(_) => "Operator circuit operation failed",
             Self::Audit(_) => "Operator audit submission failed",
@@ -533,7 +535,7 @@ pub(crate) async fn respond_with_view<B>(
     policy: Option<&Policy>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
     stats: Option<&(dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
-    view: Option<&crate::traffic_view::TrafficView>,
+    view: Option<&std::sync::Arc<crate::traffic_view::TrafficView>>,
 ) -> Result<Outcome, Error>
 where
     B: Body<Data = Bytes>,

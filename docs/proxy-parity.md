@@ -2198,6 +2198,49 @@ control, not a live cancellation equivalence test. The joined selection passes
 implementation checks; full addon parity and independent acceptance remain
 pending.
 
+### Live operator HTTP and WebSocket inspection
+
+The native [live view](../proxy/src/traffic_view.rs) retains ordinary HTTP
+observations independently of the durable TestContext store. The authenticated
+operator API exposes scope, flow lists, details, body snapshots and facets.
+The existing `safeyolo traffic` command opens the native terminal inspector when
+its admin client selects a verified Rust process. See the
+[development workflow](DEVELOPERS.md#rust-proxy-development-backend) for controls and
+the remaining scope/header projection differences.
+
+A validated WebSocket upgrade promotes its HTTP row into an open session.
+The [relay](../proxy/src/websocket_relay.rs) appends complete decoded data
+messages before inspection and updates reached drop decisions before diagnostic
+publication. The view retains dropped payloads. Control frames remain separate
+from transcript messages. First-close facts are recorded before relay drain;
+an unfinished upgrade or canceled relay becomes incomplete even while other
+observers remain. Native failure categories do not claim a peer close reason.
+The transcript uses the relay's immutable payload storage. Positional page reads
+do not change the forwarding reader's offset. The private body endpoint returns
+at most 64 KiB per page; offsets expose every retained byte without a new message
+admission limit. An abandoned API read still releases its wiping response owner.
+
+Retention counts HTTP bodies and complete WebSocket payloads globally, including
+scope-hidden and dropped messages. It evicts eligible finished flows first,
+using WebSocket end time where present. Remaining byte pressure removes older
+nonempty messages from open sessions, preserving each latest message. The
+[source fixture](../proxy/tests/traffic_websocket_source.py) and
+[native replay](../proxy/src/traffic_view/tests.rs) compare six source pruning
+cases. Native eager pruning still differs from the source hook/interval cadence.
+The [owned duplex tests](../proxy/src/websocket_relay/tests/live_view.rs) verify
+forwarding, dropped/spooled transcript content, open retention, close facts,
+diagnostic failure and cancellation. Private API tests verify authentication,
+paging and missing/trimmed results. Headless terminal tests cover selection,
+page navigation, safe rendering and detach. These are implementation-team
+checks; they do not establish independent acceptance or full M6 completion.
+
+The view still records an upstream 101 as complete if later native handshake
+validation rejects that response. No WebSocket session starts in that case,
+but the later rejection error is absent from the retained HTTP row. This is a
+known display omission, not proof of equivalent Python invalid-handshake behavior.
+Required filtering/export and the inventory of exposed edit/replay workflows
+remain migration work. The Python proxy has not been removed or cut over.
+
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those
 jobs, the macOS VM relay or the Linux guest mount have passed.

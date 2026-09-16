@@ -1,12 +1,13 @@
 use super::*;
 use crate::{admin_api, tasks::Registry, traffic_view::RequestInfo};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use http_body_util::{BodyExt, Full};
 use std::sync::Arc;
 
 const TOKEN: &str = "owned-traffic-view-fixture";
 
 async fn call(
-    view: Option<&TrafficView>,
+    view: Option<&Arc<TrafficView>>,
     method: &str,
     target: &str,
     body: &str,
@@ -49,12 +50,18 @@ async fn document(outcome: Outcome) -> Value {
 
 #[tokio::test]
 async fn authentication_precedes_scope_mutation_and_private_reads() {
-    let view = TrafficView::new(5000, 1024);
+    let view = Arc::new(TrafficView::new(5000, 1024));
     for (method, target, body) in [
         ("PUT", "/admin/traffic/scope", r#"{"agent":"alice"}"#),
         ("PUT", "/admin/traffic/scope", "malformed"),
         ("GET", "/admin/traffic/flows", ""),
         ("GET", "/admin/traffic/flows/owned/body?side=request", ""),
+        ("GET", "/admin/traffic/flows/owned/websocket/messages", ""),
+        (
+            "GET",
+            "/admin/traffic/flows/owned/websocket/messages/0/body?offset=invalid",
+            "",
+        ),
         ("GET", "/admin/traffic/facets", ""),
     ] {
         let outcome = call(Some(&view), method, target, body, false).await;
@@ -72,7 +79,7 @@ async fn authentication_precedes_scope_mutation_and_private_reads() {
 
 #[tokio::test]
 async fn shared_scope_validates_before_commit_and_audits_raw_request() {
-    let view = TrafficView::new(5000, 1024);
+    let view = Arc::new(TrafficView::new(5000, 1024));
     let outcome = call(
         Some(&view),
         "PUT",
@@ -120,7 +127,7 @@ async fn shared_scope_validates_before_commit_and_audits_raw_request() {
 
 #[tokio::test]
 async fn audit_enqueue_failure_does_not_undo_committed_scope() {
-    let view = TrafficView::new(5000, 1024);
+    let view = Arc::new(TrafficView::new(5000, 1024));
     let outcome = call(
         Some(&view),
         "PUT",
@@ -216,4 +223,164 @@ async fn live_reads_preserve_ordered_headers_and_empty_versus_absent_body() {
         );
     }
     assert_eq!(view.detail("owned/id").unwrap()["state"], "complete");
+}
+
+fn websocket_exchange(view: &Arc<TrafficView>) -> Arc<crate::traffic_view::Exchange> {
+    let exchange = view.begin(RequestInfo {
+        id: "owned/id".into(),
+        connection_id: "connection".into(),
+        agent: Some("alice".into()),
+        method: "GET".into(),
+        url: "http://owned.invalid/socket".into(),
+        headers: vec![],
+        started: 1.,
+    });
+    exchange.response_head(101, vec![]);
+    exchange.finish(None);
+    exchange.websocket_start(2.);
+    exchange
+}
+
+#[tokio::test]
+async fn websocket_pages_reconstruct_all_retained_bytes_without_changing_scope() {
+    use crate::websocket::{MessageContent, MessageType};
+
+    let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+    let exchange = websocket_exchange(&view);
+    let payload: Vec<u8> = (0..(MESSAGE_PAGE_BYTES * 2 + 7))
+        .map(|index| (index % 256) as u8)
+        .collect();
+    let message = exchange
+        .websocket_message(
+            MessageType::Binary,
+            true,
+            3.,
+            Arc::new(MessageContent::from_bytes_for_test(payload.clone())),
+        )
+        .unwrap();
+    exchange.websocket_message_dropped(message, true);
+    let empty = exchange
+        .websocket_message(
+            MessageType::Text,
+            false,
+            4.,
+            Arc::new(MessageContent::from_bytes_for_test(vec![])),
+        )
+        .unwrap();
+    // Scope selects the shared list, not access to retained operator evidence.
+    view.set_scope(&json!({"agent":"bob"})).unwrap();
+    assert_eq!(view.flows()["flows"], json!([]));
+    let base = "/admin/traffic/flows/owned%2Fid/websocket/messages";
+    let transcript = document(call(Some(&view), "GET", base, "", true).await).await;
+    assert_eq!(transcript["websocket"]["state"], "open");
+    assert_eq!(transcript["websocket"]["messages_meta"]["count"], 2);
+    assert_eq!(transcript["messages"][0]["type"], "binary");
+    assert_eq!(transcript["messages"][0]["from_client"], true);
+    assert_eq!(transcript["messages"][0]["dropped"], true);
+    assert!(
+        transcript["messages"][0]["body"]
+            .get("data_base64")
+            .is_none()
+    );
+    let mut reconstructed = vec![];
+    for offset in [0, MESSAGE_PAGE_BYTES, MESSAGE_PAGE_BYTES * 2] {
+        let target = format!("{base}/{message}/body?offset={offset}");
+        let page = document(call(Some(&view), "GET", &target, "", true).await).await;
+        assert_eq!(page["available"], true);
+        assert_eq!(page["offset"], offset);
+        assert_eq!(page["total_size"], payload.len());
+        let data = STANDARD
+            .decode(page["data_base64"].as_str().unwrap())
+            .unwrap();
+        assert!(data.len() <= MESSAGE_PAGE_BYTES);
+        assert_eq!(page["size"], data.len());
+        assert_eq!(page["end"], offset + data.len() == payload.len());
+        reconstructed.extend(data);
+    }
+    assert_eq!(reconstructed, payload);
+    for (id, offset, total) in [(empty, 0, 0), (message, payload.len() + 99, payload.len())] {
+        let target = format!("{base}/{id}/body?offset={offset}");
+        let page = document(call(Some(&view), "GET", &target, "", true).await).await;
+        assert_eq!(page["available"], true);
+        assert_eq!(page["offset"], total);
+        assert_eq!(page["size"], 0);
+        assert_eq!(page["data_base64"], "");
+        assert_eq!(page["end"], true);
+    }
+    assert_eq!(view.scope()["agent"], "bob");
+}
+
+#[tokio::test]
+async fn websocket_reads_distinguish_invalid_queries_and_trimmed_messages() {
+    use crate::websocket::{MessageContent, MessageType};
+
+    let view = Arc::new(TrafficView::new(5000, 4));
+    let exchange = websocket_exchange(&view);
+    let first = exchange
+        .websocket_message(
+            MessageType::Text,
+            true,
+            3.,
+            Arc::new(MessageContent::from_bytes_for_test(b"first".to_vec())),
+        )
+        .unwrap();
+    let last = exchange
+        .websocket_message(
+            MessageType::Text,
+            true,
+            4.,
+            Arc::new(MessageContent::from_bytes_for_test(b"last".to_vec())),
+        )
+        .unwrap();
+    let base = "/admin/traffic/flows/owned%2Fid/websocket/messages";
+    let trimmed = format!("{base}/{first}/body");
+    for (target, status) in [
+        (trimmed.as_str(), StatusCode::NOT_FOUND),
+        (
+            "/admin/traffic/flows/missing/websocket/messages",
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/admin/traffic/flows/%FF/websocket/messages",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/admin/traffic/flows/owned%2Fid/websocket/messages/no-id/body",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/admin/traffic/flows/owned%2Fid/websocket/messages/1/body?offset=-1",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/admin/traffic/flows/owned%2Fid/websocket/messages/1/body?offset=%FF",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/admin/traffic/flows/owned%2Fid/websocket/messages/1/body?offset=18446744073709551616",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/admin/traffic/flows/owned%2Fid/websocket/messages/1/unknown",
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        assert_eq!(
+            call(Some(&view), "GET", target, "", true).await.status(),
+            status,
+            "{target}"
+        );
+    }
+    let transcript = document(call(Some(&view), "GET", base, "", true).await).await;
+    assert_eq!(transcript["websocket"]["trimmed_messages"], 1);
+    assert_eq!(transcript["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(transcript["messages"][0]["id"], last);
+    let page =
+        document(call(Some(&view), "GET", &format!("{base}/{last}/body"), "", true).await).await;
+    assert_eq!(
+        STANDARD
+            .decode(page["data_base64"].as_str().unwrap())
+            .unwrap(),
+        b"last"
+    );
 }

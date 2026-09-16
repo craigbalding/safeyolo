@@ -6,11 +6,15 @@ use bytes::Bytes;
 use hyper::{Method, Request, StatusCode, body::Body};
 use percent_encoding::percent_decode_str;
 use serde_json::{Value, json};
+use std::sync::Arc;
+
+// Pagination bounds one JSON response, without limiting retained messages.
+const MESSAGE_PAGE_BYTES: usize = 64 * 1024;
 
 pub(super) async fn respond<B: Body<Data = Bytes>>(
     request: Request<B>,
     path: &str,
-    view: Option<&TrafficView>,
+    view: Option<&Arc<TrafficView>>,
 ) -> Result<Outcome, Error> {
     let Some(view) = view else {
         return Ok(response(
@@ -55,14 +59,23 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             let Some(tail) = path.strip_prefix("/admin/traffic/flows/") else {
                 return Ok(not_found());
             };
+            if let Some((id, message)) = tail.rsplit_once("/websocket/messages/") {
+                let Some(message) = message.strip_suffix("/body") else {
+                    return Ok(not_found());
+                };
+                return websocket_body(view.clone(), id, message, request.uri().query()).await;
+            }
+            if let Some(id) = tail.strip_suffix("/websocket/messages") {
+                let Ok(id) = percent_decode_str(id).decode_utf8() else {
+                    return Ok(invalid_flow_id());
+                };
+                return Ok(optional_response(view.websocket_messages(&id)));
+            }
             let (id, body) = tail
                 .strip_suffix("/body")
                 .map_or((tail, false), |id| (id, true));
             let Ok(id) = percent_decode_str(id).decode_utf8() else {
-                return Ok(response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error":"invalid flow id encoding"}),
-                ));
+                return Ok(invalid_flow_id());
             };
             if body {
                 let side = request
@@ -87,7 +100,59 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             }
         }
     };
-    Ok(value.map_or_else(not_found, |value| response(StatusCode::OK, value)))
+    Ok(optional_response(value))
+}
+
+async fn websocket_body(
+    view: Arc<TrafficView>,
+    id: &str,
+    message: &str,
+    query: Option<&str>,
+) -> Result<Outcome, Error> {
+    let Ok(id) = percent_decode_str(id).decode_utf8() else {
+        return Ok(invalid_flow_id());
+    };
+    let id = id.into_owned();
+    let Ok(message) = message.parse::<u64>() else {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"invalid message id"}),
+        ));
+    };
+    let offset = query
+        .unwrap_or("")
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("offset="))
+        .unwrap_or("0");
+    let Some(offset) = percent_decode_str(offset)
+        .decode_utf8()
+        .ok()
+        .and_then(|offset| offset.parse::<u64>().ok())
+    else {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"offset must be a non-negative integer"}),
+        ));
+    };
+    // A message may use an anonymous file. Read its page outside the async
+    // connection executor; the core releases its view lock before file I/O.
+    // Return the wiping response owner even if the awaiting request is canceled.
+    tokio::task::spawn_blocking(move || {
+        optional_response(view.websocket_message_body(&id, message, offset, MESSAGE_PAGE_BYTES))
+    })
+    .await
+    .map_err(|_| Error::TrafficReporting)
+}
+
+fn invalid_flow_id() -> Outcome {
+    response(
+        StatusCode::BAD_REQUEST,
+        json!({"error":"invalid flow id encoding"}),
+    )
+}
+
+fn optional_response(value: Option<Value>) -> Outcome {
+    value.map_or_else(not_found, |value| response(StatusCode::OK, value))
 }
 
 fn not_found() -> Outcome {

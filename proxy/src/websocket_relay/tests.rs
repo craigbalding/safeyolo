@@ -13,6 +13,8 @@ use crate::connection_tasks::ConnectionTasks;
 use crate::{Config, Runtime, audit, memory_runtime};
 use tokio::task::JoinSet;
 
+mod live_view;
+
 const ID: &str = "owned-client";
 const HOST: &str = "Owned.invalid";
 
@@ -67,6 +69,7 @@ fn session(runtime: &Arc<Runtime>) -> Session {
         request_id: "req-owned".into(),
         host: "owned.invalid".into(),
         port: 443,
+        live: None,
     }
 }
 
@@ -322,25 +325,48 @@ async fn canceled_relay_cleans_session_without_waiting_for_messages() {
     let (server, _server_peer) = tokio::io::duplex(1024);
     let (_stop, stop) = watch::channel(false);
     let owner = ConnectionTasks::new(stop.clone());
+    let (session, live_guard) = live_view::live_session(&runtime);
+    // Simulate the HTTP Completion retaining its own observer while the relay
+    // task is canceled. Terminal observation must not wait for that reference.
+    let late = session.live.as_ref().unwrap().clone();
     let mut tasks = JoinSet::new();
-    tasks.spawn(relay(
-        Box::new(client),
-        Box::new(server),
-        Negotiated {
-            client: None,
-            server: None,
-            subprotocol: None,
-        },
-        session(&runtime),
-        stop,
-        memory,
-        owner.clone(),
-    ));
+    let task_owner = owner.clone();
+    tasks.spawn(async move {
+        let _live_guard = live_guard;
+        relay(
+            Box::new(client),
+            Box::new(server),
+            Negotiated {
+                client: None,
+                server: None,
+                subprotocol: None,
+            },
+            session,
+            stop,
+            memory,
+            task_owner,
+        )
+        .await
+    });
     tokio::task::yield_now().await;
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
+    let ended = runtime
+        .traffic_view
+        .websocket_messages("req-owned")
+        .unwrap();
+    assert_eq!(ended["websocket"]["state"], "incomplete");
+    assert!(ended["websocket"]["timestamp_end"].is_number());
     owner.abort_all();
     owner.run(async { Ok(()) }).await;
+    drop(late);
+    assert_eq!(
+        runtime
+            .traffic_view
+            .websocket_messages("req-owned")
+            .unwrap(),
+        ended
+    );
     assert_eq!(stats(&runtime.memory_monitor)["active_websockets"], 0);
     let events = records(&runtime, directory.path());
     assert_eq!(events.len(), 1);

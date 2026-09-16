@@ -178,6 +178,17 @@ class AdminAPI:
             raise ValueError("body side must be request or response")
         return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}/body?side={side}")
 
+    def traffic_websocket_messages(self, flow_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}/websocket/messages")
+
+    def traffic_websocket_message_body(self, flow_id: str, message_id: int, offset: int = 0) -> dict[str, Any]:
+        if type(offset) is not int or offset < 0:
+            raise ValueError("message body offset must be a nonnegative integer")
+        message = quote(str(message_id), safe="")
+        return self._request(
+            "GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}/websocket/messages/{message}/body?offset={offset}",
+        )
+
     def traffic_facets(self) -> dict[str, Any]:
         return self._request("GET", "/admin/traffic/facets")
 

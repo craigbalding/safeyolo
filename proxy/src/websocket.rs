@@ -7,7 +7,7 @@
 //! Callers inspect a complete message before giving it to `Writer::message`.
 //! Reads/writes may be canceled only when the whole connection is discarded.
 
-use std::{fs::File, io::Cursor};
+use std::{fs::File, io::Cursor, os::unix::fs::FileExt, sync::Arc};
 
 use flate2::{Compress, Decompress, FlushCompress, FlushDecompress};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
@@ -15,6 +15,7 @@ use tungstenite::protocol::frame::{
     FrameHeader,
     coding::{CloseCode, Control, Data, OpCode},
 };
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::Error;
 
@@ -412,9 +413,72 @@ pub enum MessageType {
 
 pub struct Message {
     pub kind: MessageType,
-    body: StoredBytes,
+    body: Arc<MessageContent>,
     fragments: StoredBytes,
 }
+
+/// Complete decoded payload shared by forwarding and retained observation.
+/// The anonymous spill file remains immutable; range reads never move the
+/// forwarding reader's file offset. Contents have no Debug/serialization form.
+pub(crate) struct MessageContent {
+    bytes: StoredBytes,
+}
+
+impl MessageContent {
+    pub(crate) fn len(&self) -> u64 {
+        self.bytes.len()
+    }
+
+    /// Call on a blocking worker. Allocation is bounded by the requested range
+    /// and actual remaining bytes; no complete spilled payload is materialized.
+    pub(crate) fn read_range(
+        &self,
+        offset: u64,
+        length: usize,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        let count = self.len().saturating_sub(offset).min(length as u64) as usize;
+        let mut bytes = Zeroizing::new(vec![0; count]);
+        match &self.bytes {
+            StoredBytes::Memory(content) => {
+                if count != 0 {
+                    bytes.copy_from_slice(&content[offset as usize..offset as usize + count]);
+                }
+            }
+            StoredBytes::File { file, .. } => {
+                let mut read = 0;
+                while read < count {
+                    match file.read_at(&mut bytes[read..], offset + read as u64) {
+                        Ok(0) => {
+                            return Err(
+                                std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into()
+                            );
+                        }
+                        Ok(count) => read += count,
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => (),
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            }
+        }
+        Ok(bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_bytes_for_test(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes: StoredBytes::Memory(bytes),
+        }
+    }
+}
+
+impl Drop for MessageContent {
+    fn drop(&mut self) {
+        if let StoredBytes::Memory(bytes) = &mut self.bytes {
+            bytes.zeroize();
+        }
+    }
+}
+
 impl Message {
     pub fn len(&self) -> u64 {
         self.body.len()
@@ -426,14 +490,17 @@ impl Message {
         self.fragments.len() / 8
     }
     pub fn spilled(&self) -> bool {
-        matches!(self.body, StoredBytes::File { .. })
+        matches!(self.body.bytes, StoredBytes::File { .. })
             || matches!(self.fragments, StoredBytes::File { .. })
+    }
+    pub(crate) fn content(&self) -> Arc<MessageContent> {
+        self.body.clone()
     }
     /// Execute on a blocking worker. Text is already valid UTF-8; binary uses
     /// the scanner's Latin-1 interpretation. Conversion also uses private disk
     /// storage, without changing the bytes subsequently delivered to the peer.
     pub fn with_text<T>(&self, inspect: impl FnOnce(&str) -> T) -> Result<T, Error> {
-        self.body.with_bytes(|bytes| -> Result<T, Error> {
+        self.body.bytes.with_bytes(|bytes| -> Result<T, Error> {
             if self.kind == MessageType::Text || bytes.is_ascii() {
                 return Ok(inspect(std::str::from_utf8(bytes)?));
             }
@@ -519,7 +586,9 @@ impl PendingMessage {
         }
         Ok(Message {
             kind: self.kind,
-            body: self.body.finish().await?,
+            body: Arc::new(MessageContent {
+                bytes: self.body.finish().await?,
+            }),
             fragments: self.fragments.finish().await?,
         })
     }
@@ -768,7 +837,7 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
     /// Sending only allowed messages keeps the outgoing dictionary independent
     /// from received/dropped messages, including context-takeover connections.
     pub async fn message(&mut self, message: Message) -> Result<(), Error> {
-        let mut body = message.body.reader().await?;
+        let mut body = message.body.bytes.reader().await?;
         let mut fragments = message.fragments.reader().await?;
         let count = message.fragment_count();
         let mut consumed = 0;

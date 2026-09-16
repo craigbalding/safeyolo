@@ -1,4 +1,4 @@
-//! Process-owned live HTTP observations. This store has no transport ownership.
+//! Process-owned live HTTP and WebSocket observations, without transport ownership.
 //! Retention targets are soft while observation handles remain alive.
 
 use std::{
@@ -11,6 +11,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use indexmap::IndexMap;
 use serde_json::{Map, Value, json};
 use zeroize::{Zeroize, Zeroizing};
+
+mod websocket;
 
 const SELECTORS: [(&str, &str); 5] = [
     ("agent", "agent"),
@@ -78,6 +80,7 @@ struct Row {
     state: &'static str,
     ended: Option<f64>,
     error: Option<Zeroizing<String>>,
+    websocket: Option<websocket::Session>,
 }
 
 enum Body {
@@ -173,6 +176,7 @@ impl TrafficView {
                 state: "pending",
                 ended: None,
                 error: None,
+                websocket: None,
             },
         );
         state.prune();
@@ -369,6 +373,9 @@ impl Drop for Exchange {
                     row.error = Some(Zeroizing::new("cancelled".into()));
                 }
                 row.finalize_bodies();
+                if let Some(websocket) = &mut row.websocket {
+                    websocket.cancel(now());
+                }
             }
             state.prune();
         }
@@ -393,10 +400,11 @@ impl Row {
             "method": self.request.method,
             "url": self.request.url,
             "status": self.status,
-            "state": self.state,
+            "state": self.websocket.as_ref().map_or(self.state, websocket::Session::flow_state),
             "started": self.request.started,
-            "ended": self.ended,
-            "error": self.error.as_ref().map(|s| s.as_str()),
+            "ended": self.websocket.as_ref().map_or(self.ended, |websocket| websocket.ended),
+            "error": self.websocket.as_ref().and_then(|websocket| websocket.error.as_ref()).or(self.error.as_ref()).map(|s| s.as_str()),
+            "websocket": self.websocket.as_ref().map(websocket::Session::snapshot),
             "request_body": self.request_body.facts(),
             "response_body": self.response_body.facts(),
         })
@@ -412,37 +420,32 @@ impl Drop for Row {
 
 impl State {
     fn prune(&mut self) {
-        let mut bytes: usize = self
-            .rows
-            .values()
-            .map(|row| row.request_body.size() + row.response_body.size())
-            .sum();
-        if self.rows.len() <= self.max_flows && bytes <= self.max_body_bytes {
+        let mut bytes: u64 = self.rows.values().map(Row::retained_bytes).sum();
+        let max_bytes = self.max_body_bytes as u64;
+        if self.rows.len() <= self.max_flows && bytes <= max_bytes {
             return;
         }
         let mut terminal: Vec<_> = self
             .rows
             .iter()
-            .filter(|(_, row)| row.ended.is_some() && row.handle.strong_count() == 0)
-            .map(|(id, row)| {
-                (
-                    row.ended.unwrap_or(row.request.started),
-                    Zeroizing::new(id.clone()),
-                )
-            })
+            .filter(|(_, row)| row.terminal() && row.handle.strong_count() == 0)
+            .map(|(id, row)| (row.completion_time(), Zeroizing::new(id.clone())))
             .collect();
         terminal.sort_by(|a, b| {
             a.0.total_cmp(&b.0)
                 .then_with(|| a.1.as_str().cmp(b.1.as_str()))
         });
         for (_, id) in terminal {
-            if self.rows.len() <= self.max_flows && bytes <= self.max_body_bytes {
+            if self.rows.len() <= self.max_flows && bytes <= max_bytes {
                 break;
             }
             if let Some((mut key, row)) = self.rows.shift_remove_entry(id.as_str()) {
                 key.zeroize();
-                bytes -= row.request_body.size() + row.response_body.size();
+                bytes -= row.retained_bytes();
             }
+        }
+        if bytes > max_bytes {
+            self.trim_websocket_messages(bytes, max_bytes);
         }
     }
 }

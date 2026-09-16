@@ -386,3 +386,322 @@ fn native_literal_selector_behavior_is_explicitly_distinct_from_source_lexer() {
     view.set_scope(&json!({"test_id":"a\nb"})).unwrap(); // Source OptionsError.
     assert_eq!(ids(&view), vec!["literal"]);
 }
+
+fn ws_content(bytes: &[u8]) -> Arc<crate::websocket::MessageContent> {
+    Arc::new(crate::websocket::MessageContent::from_bytes_for_test(
+        bytes.to_vec(),
+    ))
+}
+
+fn ws_ids(view: &TrafficView, id: &str) -> Vec<u64> {
+    view.websocket_messages(id).unwrap()["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["id"].as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn websocket_session_promotes_handshake_keeps_pages_and_preserves_first_close() {
+    use crate::websocket::MessageType;
+    let view = view(10, 1 << 20);
+    let exchange = begin(&view, "socket", Some("alice"), 1.0);
+    exchange.response_head(101, vec![("Upgrade".into(), "websocket".into())]);
+    exchange.finish_at(None, 2.0);
+    exchange.websocket_start(3.0);
+    assert_eq!(view.detail("socket").unwrap()["state"], "websocket_open");
+    assert_eq!(view.detail("socket").unwrap()["ended"], Value::Null);
+    assert_eq!(view.lock().rows["socket"].ended, Some(2.0));
+    let first = exchange
+        .websocket_message(MessageType::Text, true, 4.0, ws_content(b"hello"))
+        .unwrap();
+    let second = exchange
+        .websocket_message(
+            MessageType::Binary,
+            false,
+            5.0,
+            ws_content(&[0, 255, 128, 1]),
+        )
+        .unwrap();
+    assert_eq!((first, second), (0, 1));
+    // This is a scanner disposition, not a successful wire-delivery assertion.
+    exchange.websocket_message_dropped(first, true);
+    exchange.websocket_start(99.0);
+    let transcript = view.websocket_messages("socket").unwrap();
+    assert_eq!(transcript["websocket"]["started"], 3.0);
+    assert_eq!(
+        transcript["websocket"]["messages_meta"],
+        json!({"count":2,"contentLength":9,"timestamp_last":5.0})
+    );
+    assert_eq!(
+        transcript["messages"],
+        json!([
+            {"id":0,"type":"text","from_client":true,"timestamp":4.0,"dropped":true,"injected":false,"body":{"available":true,"size":5,"reason":null}},
+            {"id":1,"type":"binary","from_client":false,"timestamp":5.0,"dropped":false,"injected":false,"body":{"available":true,"size":4,"reason":null}}
+        ])
+    );
+    assert_eq!(
+        view.websocket_message_body("socket", second, 1, 2).unwrap(),
+        json!({"available":true,"offset":1,"total_size":4,"size":2,"data_base64":"/4A=","end":false,"reason":null})
+    );
+    assert_eq!(
+        view.websocket_message_body("socket", second, 3, 99)
+            .unwrap(),
+        json!({"available":true,"offset":3,"total_size":4,"size":1,"data_base64":"AQ==","end":true,"reason":null})
+    );
+    assert_eq!(
+        view.websocket_message_body("socket", second, 99, 99)
+            .unwrap(),
+        json!({"available":true,"offset":4,"total_size":4,"size":0,"data_base64":"","end":true,"reason":null})
+    );
+    assert_eq!(
+        view.websocket_message_body("socket", second, 0, 0).unwrap()["end"],
+        false
+    );
+    exchange.websocket_end(7.0, Some(false), Some(1000), Some("peer reason"), None);
+    exchange.websocket_cancel(8.0);
+    exchange.websocket_end(9.0, None, Some(1011), None, Some("late failure"));
+    exchange.websocket_message_dropped(second, true); // in-flight worker after close
+    assert!(
+        exchange
+            .websocket_message(MessageType::Text, true, 10.0, ws_content(b"late"))
+            .is_none()
+    );
+    let detail = view.detail("socket").unwrap();
+    assert_eq!(detail["state"], "complete");
+    assert_eq!(detail["ended"], 7.0);
+    assert_eq!(detail["websocket"]["closed_by_client"], false);
+    assert_eq!(detail["websocket"]["close_code"], 1000);
+    assert_eq!(detail["websocket"]["close_reason"], "peer reason");
+    assert_eq!(
+        view.websocket_messages("socket").unwrap()["messages"][1]["dropped"],
+        true
+    );
+    drop(exchange);
+    assert_eq!(view.detail("socket").unwrap()["state"], "complete");
+}
+
+#[test]
+fn websocket_cancel_is_immediate_with_late_handles_and_drop_is_fallback_only() {
+    use crate::websocket::MessageType;
+    let view = view(10, 100);
+    let exchange = begin(&view, "cancel", None, 1.0);
+    exchange.finish_at(None, 2.0);
+    exchange.websocket_start(3.0);
+    let worker = exchange.clone();
+    let message = exchange
+        .websocket_message(MessageType::Text, true, 4.0, ws_content(b"observed"))
+        .unwrap();
+    exchange.websocket_cancel(5.0);
+    drop(exchange);
+    assert_eq!(view.detail("cancel").unwrap()["state"], "incomplete");
+    assert_eq!(view.detail("cancel").unwrap()["ended"], 5.0);
+    worker.websocket_message_dropped(message, true);
+    assert_eq!(
+        view.websocket_messages("cancel").unwrap()["messages"][0]["dropped"],
+        true
+    );
+    assert!(
+        worker
+            .websocket_message(MessageType::Text, true, 6.0, ws_content(b"late"))
+            .is_none()
+    );
+    worker.websocket_end(7.0, Some(true), Some(1000), Some("late close"), None);
+    drop(worker);
+    assert_eq!(view.detail("cancel").unwrap()["ended"], 5.0);
+    assert_eq!(
+        view.detail("cancel").unwrap()["websocket"]["close_code"],
+        Value::Null
+    );
+    let unclosed = begin(&view, "fallback", None, 8.0);
+    unclosed.finish_at(None, 9.0);
+    unclosed.websocket_start(10.0);
+    drop(unclosed);
+    assert_eq!(view.detail("fallback").unwrap()["state"], "incomplete");
+    assert_eq!(
+        view.detail("fallback").unwrap()["websocket"]["state"],
+        "incomplete"
+    );
+}
+
+#[test]
+fn websocket_pressure_is_global_and_uses_timestamp_flow_id_then_position() {
+    use crate::websocket::MessageType;
+    let view = view(10, 1000);
+    let a = begin(&view, "a", Some("hidden"), 1.0);
+    let b = begin(&view, "b", Some("visible"), 2.0);
+    for exchange in [&a, &b] {
+        exchange.finish_at(None, 3.0);
+        exchange.websocket_start(4.0);
+    }
+    for time in [5.0, 5.0, 9.0] {
+        a.websocket_message(MessageType::Text, true, time, ws_content(b"aaaa"))
+            .unwrap();
+    }
+    for time in [1.0, 5.0, 8.0] {
+        b.websocket_message(MessageType::Binary, false, time, ws_content(b"bbbb"))
+            .unwrap();
+    }
+    a.websocket_message_dropped(0, true);
+    view.set_scope(&json!({"agent":"visible"})).unwrap();
+    view.configure(1, 12);
+    assert_eq!(ids(&view), vec!["b"]);
+    assert!(view.detail("a").is_some()); // count target cannot evict open sessions
+    assert_eq!(ws_ids(&view, "a"), vec![2]);
+    assert_eq!(ws_ids(&view, "b"), vec![1, 2]);
+    assert_eq!(
+        view.websocket_messages("a").unwrap()["websocket"]["trimmed_messages"],
+        2
+    );
+    assert_eq!(
+        view.websocket_messages("b").unwrap()["websocket"]["trimmed_messages"],
+        1
+    );
+    assert!(view.websocket_message_body("a", 0, 0, 4).is_none());
+    assert_eq!(
+        a.websocket_message(MessageType::Text, true, 10.0, ws_content(b"cccc")),
+        Some(3)
+    );
+    assert_eq!(ws_ids(&view, "a"), vec![2, 3]);
+    assert_eq!(ws_ids(&view, "b"), vec![2]);
+}
+
+#[test]
+fn websocket_terminal_flows_precede_trimming_and_latest_empty_or_oversized_survives() {
+    use crate::websocket::MessageType;
+    let view = view(20, 1000);
+    let open = begin(&view, "open", None, 1.0);
+    open.websocket_start(2.0);
+    let old = ws_content(b"old-body");
+    let weak = Arc::downgrade(&old);
+    open.websocket_message(MessageType::Text, true, 3.0, old)
+        .unwrap();
+    open.websocket_message(MessageType::Binary, false, 4.0, ws_content(b"new-body"))
+        .unwrap();
+    let terminal = begin(&view, "terminal", None, 5.0);
+    terminal.response_body(Some(b"terminal"));
+    terminal.finish_at(None, 6.0);
+    drop(terminal);
+    view.configure(20, 16);
+    assert!(view.detail("terminal").is_none());
+    assert_eq!(ws_ids(&view, "open"), vec![0, 1]); // terminal bytes paid target first
+    assert!(weak.upgrade().is_some());
+    view.configure(20, 8);
+    assert_eq!(ws_ids(&view, "open"), vec![1]);
+    assert!(weak.upgrade().is_none()); // view released the immutable content owner
+    open.websocket_message(MessageType::Text, true, 7.0, ws_content(b""))
+        .unwrap();
+    open.websocket_message(MessageType::Text, true, 8.0, ws_content(b"large-newest"))
+        .unwrap();
+    view.configure(20, 1);
+    assert_eq!(ws_ids(&view, "open"), vec![2, 3]); // empty older and final oversized both remain
+    open.websocket_message(MessageType::Text, true, 9.0, ws_content(b""))
+        .unwrap();
+    assert_eq!(ws_ids(&view, "open"), vec![2, 4]); // final empty protects itself, frees former latest
+    assert_eq!(
+        view.websocket_messages("open").unwrap()["websocket"]["messages_meta"]["contentLength"],
+        0
+    );
+}
+
+#[test]
+fn websocket_close_time_controls_whole_flow_eviction_and_retains_closed_messages() {
+    use crate::websocket::MessageType;
+    let view = view(10, 1000);
+    let later_ws = begin(&view, "later-ws", None, 1.0);
+    later_ws.finish_at(None, 2.0);
+    later_ws.websocket_start(3.0);
+    later_ws
+        .websocket_message(MessageType::Text, true, 4.0, ws_content(b"one"))
+        .unwrap();
+    later_ws
+        .websocket_message(MessageType::Text, true, 5.0, ws_content(b"two"))
+        .unwrap();
+    later_ws.websocket_end(30.0, None, Some(1006), None, Some("transport_error"));
+    let earlier_http = begin(&view, "earlier-http", None, 10.0);
+    earlier_http.finish_at(None, 20.0);
+    drop((later_ws, earlier_http));
+    view.configure(1, 1000);
+    assert!(view.detail("earlier-http").is_none());
+    assert_eq!(ws_ids(&view, "later-ws"), vec![0, 1]);
+    assert_eq!(view.detail("later-ws").unwrap()["state"], "error");
+    assert_eq!(view.detail("later-ws").unwrap()["error"], "transport_error");
+    assert_eq!(
+        view.detail("later-ws").unwrap()["websocket"]["close_reason"],
+        Value::Null
+    );
+    view.configure(1, 1);
+    assert!(view.detail("later-ws").is_none()); // closed transcript is evicted as a whole
+}
+
+// Regenerate with proxy/tests/traffic_websocket_source.py. These comparisons
+// cover pruning selection, independently of the native observation schedule.
+#[test]
+fn six_actual_source_websocket_retention_controls() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/traffic_websocket_source.json")).unwrap();
+    let rows = &fixture["rows"];
+    use crate::websocket::MessageType;
+    fn bytes(hex: &str) -> Vec<u8> {
+        hex.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+    assert_eq!(rows.as_array().unwrap().len(), 6);
+    for row in rows.as_array().unwrap() {
+        let input = &row["input"];
+        let view = view(100, 1 << 20);
+        let mut open = Vec::new();
+        for flow in input["flows"].as_array().unwrap() {
+            let exchange = begin(&view, flow["id"].as_str().unwrap(), None, 1.0);
+            if let Some(body) = flow.get("response").and_then(Value::as_str) {
+                exchange.response_body(Some(&bytes(body)));
+            }
+            exchange.finish_at(None, flow["http_end"].as_f64().unwrap());
+            if let Some(messages) = flow.get("messages").and_then(Value::as_array) {
+                exchange.websocket_start(1.0);
+                for message in messages {
+                    let id = exchange
+                        .websocket_message(
+                            MessageType::Text,
+                            true,
+                            message["timestamp"].as_f64().unwrap(),
+                            ws_content(&bytes(message["hex"].as_str().unwrap())),
+                        )
+                        .unwrap();
+                    exchange.websocket_message_dropped(id, message["dropped"].as_bool().unwrap());
+                }
+                if let Some(ended) = flow["ws_end"].as_f64() {
+                    exchange.websocket_end(ended, Some(true), Some(1000), Some(""), None);
+                } else {
+                    open.push(exchange);
+                }
+            }
+        }
+        view.configure(
+            input["max_flows"].as_u64().unwrap() as usize,
+            input["max_bytes"].as_u64().unwrap() as usize,
+        );
+        let retained: Vec<_> = view.lock().rows.keys().cloned().collect();
+        let mut messages = Map::new();
+        let mut trimmed = 0;
+        for id in &retained {
+            if let Some(transcript) = view.websocket_messages(id) {
+                messages.insert(id.clone(), json!(ws_ids(&view, id)));
+                trimmed += transcript["websocket"]["trimmed_messages"]
+                    .as_u64()
+                    .unwrap();
+            }
+        }
+        let retained_bytes: u64 = view.lock().rows.values().map(Row::retained_bytes).sum();
+        let pruned = input["flows"].as_array().unwrap().len() - retained.len();
+        assert_eq!(
+            json!({"retained":retained,"messages":messages,"retained_bytes":retained_bytes,"pruned":pruned,"trimmed":trimmed}),
+            row["result"],
+            "{}",
+            input["name"]
+        );
+    }
+}

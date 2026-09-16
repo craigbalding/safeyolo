@@ -447,8 +447,8 @@ Agent service authorization remains an unimplemented native route.
 
 For a running Rust development proxy with its admin listener enabled, run
 `safeyolo traffic` on the host to open the terminal inspector. The inspector
-reads the proxy's shared in-memory HTTP view. It includes ordinary requests
-without TestContext, pending requests, and terminal responses or errors.
+reads the proxy's shared live HTTP and WebSocket view. It includes ordinary
+requests without TestContext, pending requests, and terminal responses or errors.
 The existing scope options, such as `--agent alice --test CASE-1`, update the
 shared view before attaching. `--no-attach` changes only the scope.
 Scope changes affect all inspectors and do not change forwarding policy.
@@ -456,27 +456,46 @@ Detaching leaves the proxy and its retained view running.
 Use Up/Down to select a flow, Tab to change panes, and Page Up/Page Down to
 scroll. `r` and `s` fetch request and response body snapshots. `a` and `t`
 change the shared agent and test scope; `c` clears it. `q` detaches.
+For an upgraded WebSocket, `w` opens its retained message transcript and returns
+to HTTP. Up/Down selects a message; `[` and `]` navigate its 64 KiB body pages.
+Every retained byte is reachable through these pages. The inspector fetches a
+page when selected or requested, rather than fetching the payload on every poll.
+Message rows show direction, type, size, time and the reached inspection drop
+decision. That decision does not establish delivery to the peer.
 
 The live view is separate from the durable TestContext evidence store.
 Native JSON settings `flow_pruner_max` (default 5000 flows) and
 `flow_pruner_max_body_bytes` (default 1 GiB) set positive retention targets.
-The proxy evicts the oldest finished flows across all scopes. Active exchanges
-remain retained even above these targets. Accepted reloads keep the view and
-scope, and apply updated targets; failed reloads leave the targets unchanged.
-Native pruning occurs when exchanges are released or settings change. The
-Python view uses its existing hook and interval schedule.
+The proxy evicts the oldest finished flows across all scopes. Open WebSockets
+and active HTTP exchanges remain retained even above these targets. If retained
+bodies still exceed the byte target, the proxy removes older nonempty messages
+from open WebSockets in global timestamp order. It preserves each session's
+latest message, even when that message alone exceeds the target. The inspector
+shows how many messages have been trimmed from each session. Closed sessions
+keep their remaining transcript until the whole flow is evicted. These targets
+do not limit forwarded message size. Large messages share the relay's anonymous
+file storage; inspecting a page does not load the whole message into memory.
+Accepted reloads keep the view and scope, and apply updated targets; failed
+reloads leave the targets unchanged. Native pruning occurs on observation,
+exchange release or settings changes. Python uses its hook and interval schedule.
 
-The inspector shows retained encoded body bytes, including a distinct empty
-body. Streamed bodies, unavailable local response bodies, and bodies whose
+For HTTP, the inspector shows retained encoded body bytes, including a distinct
+empty body. Streamed bodies, unavailable local response bodies, and bodies whose
 capture failed are labelled unavailable. The view does not drain a stream to
 make a body inspectable. A completed row and its end time describe the observed
 response; a slower request body can remain pending until its parser completes.
-This increment does not provide WebSocket transcripts,
-the mitmproxy user-filter language, editing, replay, interception, import/export,
-or a web inspector. Those remain migration work.
-An upgraded WebSocket appears only as its completed HTTP handshake. Its row
-does not record the WebSocket close time. Retention throughout an open
-WebSocket session still needs a runtime check.
+WebSocket transcripts retain complete decompressed and unmasked text or binary
+messages, including messages dropped by inspection. Ping, pong and close frames
+are not transcript messages. The flow remains open until the session ends.
+The inspector shows the session end time, direction, code and reason when
+available. A code can describe a peer close or the native relay's local close
+decision. Native transport failures have categorical errors; they do not invent
+a peer reason. Cancellation marks the session incomplete. A message page can
+report a storage error independently of forwarding. Terminal control bytes in
+payloads and close reasons are escaped for display.
+
+The mitmproxy user-filter language, editing, replay, interception, import/export
+and a web inspector remain migration work.
 
 The native view excludes CONNECT, reserved internal hosts, and requests whose
 destination cannot be parsed. URLs use the admitted scheme and authority with

@@ -1761,10 +1761,13 @@ async fn forward(
             request_id: request_id.to_owned(),
             host: destination.host.clone(),
             port: destination.port,
+            live: live.clone(),
         };
+        let live_session = session.start_live();
         let memory_host = destination.policy_host.clone();
         let descendants = upgrades.clone();
         upgrades.spawn(async move {
+            let _live_session = live_session;
             let _connection = connection;
             let result: Result<(), Error> = async {
                 if *stop.borrow() { return Ok(()); }
