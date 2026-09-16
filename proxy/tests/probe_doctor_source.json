@@ -1,0 +1,2764 @@
+{
+  "expected_addons": [
+    "service-gateway",
+    "network-guard",
+    "circuit-breaker",
+    "credential-guard",
+    "pattern-scanner",
+    "test-context"
+  ],
+  "matcher": [
+    {
+      "host": null,
+      "matches": false
+    },
+    {
+      "host": "",
+      "matches": false
+    },
+    {
+      "host": "_safeyolo.probe.internal",
+      "matches": true
+    },
+    {
+      "host": "_SAFEYOLO.PROBE.INTERNAL",
+      "matches": true
+    },
+    {
+      "host": "_safeyolo.probe.internal.",
+      "matches": false
+    },
+    {
+      "host": "prefix._safeyolo.probe.internal",
+      "matches": false
+    },
+    {
+      "host": "_safeyolo.probe.internal.owned.invalid",
+      "matches": false
+    },
+    {
+      "host": "owned.invalid",
+      "matches": false
+    }
+  ],
+  "sink_rows": [
+    {
+      "input": {
+        "name": "canonical"
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "safeyolo_probe": true
+        },
+        "response": null
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "safeyolo_probe": true
+      },
+      "response": {
+        "status": 200,
+        "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": \"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Request-Id",
+            "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          [
+            "content-length",
+            "108"
+          ]
+        ]
+      },
+      "prior_response_retained": false,
+      "trace": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated",
+            "duration_us": "<measured>",
+            "details": {
+              "host": "_safeyolo.probe.internal"
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal",
+            "port": 80
+          }
+        ],
+        "not_loaded": [
+          {
+            "addon": "service-gateway",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "network-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "credential-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "test-context",
+            "state": "not_loaded"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "kind": "trace",
+          "step": {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated",
+            "reason": null,
+            "duration_us": "<measured>",
+            "details": {
+              "host": "_safeyolo.probe.internal"
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal",
+            "port": 80
+          },
+          "accepted": true,
+          "response": {
+            "status": 200,
+            "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": \"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Request-Id",
+                "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              ],
+              [
+                "content-length",
+                "108"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "mixed_case_other_method_path_port",
+        "host": "_SAFEYOLO.PROBE.INTERNAL",
+        "method": "POST",
+        "path": "/elsewhere?q=1",
+        "port": 8123
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "safeyolo_probe": true
+        },
+        "response": null
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "safeyolo_probe": true
+      },
+      "response": {
+        "status": 200,
+        "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": \"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Request-Id",
+            "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          [
+            "content-length",
+            "108"
+          ]
+        ]
+      },
+      "prior_response_retained": false,
+      "trace": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated",
+            "duration_us": "<measured>",
+            "details": {
+              "host": "_safeyolo.probe.internal"
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "POST",
+            "host": "_SAFEYOLO.PROBE.INTERNAL",
+            "port": 8123
+          }
+        ],
+        "not_loaded": [
+          {
+            "addon": "service-gateway",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "network-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "credential-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "test-context",
+            "state": "not_loaded"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "kind": "trace",
+          "step": {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated",
+            "reason": null,
+            "duration_us": "<measured>",
+            "details": {
+              "host": "_safeyolo.probe.internal"
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "POST",
+            "host": "_SAFEYOLO.PROBE.INTERNAL",
+            "port": 8123
+          },
+          "accepted": true,
+          "response": {
+            "status": 200,
+            "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": \"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Request-Id",
+                "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              ],
+              [
+                "content-length",
+                "108"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "trailing_dot_inert",
+        "host": "_safeyolo.probe.internal."
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "response": null
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "response": null,
+      "prior_response_retained": false,
+      "trace": null,
+      "timeline": []
+    },
+    {
+      "input": {
+        "name": "other_host_inert",
+        "host": "owned.invalid"
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "response": null
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "response": null,
+      "prior_response_retained": false,
+      "trace": null,
+      "timeline": []
+    },
+    {
+      "input": {
+        "name": "headers_hook_not_reached",
+        "requestheaders": false
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "response": null
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "response": null,
+      "prior_response_retained": false,
+      "trace": null,
+      "timeline": []
+    },
+    {
+      "input": {
+        "name": "request_id_absent",
+        "request_id": null
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "safeyolo_probe": true
+        },
+        "response": null
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "safeyolo_probe": true
+      },
+      "response": {
+        "status": 200,
+        "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": null}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "content-length",
+            "74"
+          ]
+        ]
+      },
+      "prior_response_retained": false,
+      "trace": null,
+      "timeline": []
+    },
+    {
+      "input": {
+        "name": "request_id_empty",
+        "request_id": ""
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "",
+          "safeyolo_probe": true
+        },
+        "response": null
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "",
+        "safeyolo_probe": true
+      },
+      "response": {
+        "status": 200,
+        "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": \"\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "content-length",
+            "72"
+          ]
+        ]
+      },
+      "prior_response_retained": false,
+      "trace": null,
+      "timeline": []
+    },
+    {
+      "input": {
+        "name": "untraced_success",
+        "traced": false
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": false,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "safeyolo_probe": true
+        },
+        "response": null
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": false,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "safeyolo_probe": true
+      },
+      "response": {
+        "status": 200,
+        "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": \"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Request-Id",
+            "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          [
+            "content-length",
+            "108"
+          ]
+        ]
+      },
+      "prior_response_retained": false,
+      "trace": null,
+      "timeline": []
+    },
+    {
+      "input": {
+        "name": "preempted_block",
+        "prior_status": 403,
+        "blocked_by": "owned-guard"
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "blocked_by": "owned-guard",
+          "safeyolo_probe": true
+        },
+        "response": {
+          "status": 403,
+          "body_text": "owned prior response",
+          "headers": [
+            [
+              "X-Owned",
+              "prior"
+            ],
+            [
+              "content-length",
+              "20"
+            ]
+          ]
+        }
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "blocked_by": "owned-guard",
+        "safeyolo_probe": true
+      },
+      "response": {
+        "status": 403,
+        "body_text": "owned prior response",
+        "headers": [
+          [
+            "X-Owned",
+            "prior"
+          ],
+          [
+            "content-length",
+            "20"
+          ]
+        ]
+      },
+      "prior_response_retained": true,
+      "trace": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_preempted",
+            "duration_us": "<measured>",
+            "details": {
+              "preempted_by": "owned-guard"
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal",
+            "port": 80
+          }
+        ],
+        "not_loaded": [
+          {
+            "addon": "service-gateway",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "network-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "credential-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "test-context",
+            "state": "not_loaded"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "kind": "trace",
+          "step": {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_preempted",
+            "reason": null,
+            "duration_us": "<measured>",
+            "details": {
+              "preempted_by": "owned-guard"
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal",
+            "port": 80
+          },
+          "accepted": true,
+          "response": {
+            "status": 403,
+            "body_text": "owned prior response",
+            "headers": [
+              [
+                "X-Owned",
+                "prior"
+              ],
+              [
+                "content-length",
+                "20"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "preempted_success_without_blocker",
+        "prior_status": 200
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "safeyolo_probe": true
+        },
+        "response": {
+          "status": 200,
+          "body_text": "owned prior response",
+          "headers": [
+            [
+              "X-Owned",
+              "prior"
+            ],
+            [
+              "content-length",
+              "20"
+            ]
+          ]
+        }
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "safeyolo_probe": true
+      },
+      "response": {
+        "status": 200,
+        "body_text": "owned prior response",
+        "headers": [
+          [
+            "X-Owned",
+            "prior"
+          ],
+          [
+            "content-length",
+            "20"
+          ]
+        ]
+      },
+      "prior_response_retained": true,
+      "trace": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_preempted",
+            "duration_us": "<measured>",
+            "details": {
+              "preempted_by": null
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal",
+            "port": 80
+          }
+        ],
+        "not_loaded": [
+          {
+            "addon": "service-gateway",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "network-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "credential-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "test-context",
+            "state": "not_loaded"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "kind": "trace",
+          "step": {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_preempted",
+            "reason": null,
+            "duration_us": "<measured>",
+            "details": {
+              "preempted_by": null
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal",
+            "port": 80
+          },
+          "accepted": true,
+          "response": {
+            "status": 200,
+            "body_text": "owned prior response",
+            "headers": [
+              [
+                "X-Owned",
+                "prior"
+              ],
+              [
+                "content-length",
+                "20"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "trace_append_failure",
+        "record_error": true
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "safeyolo_probe": true
+        },
+        "response": null
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "safeyolo_probe": true
+      },
+      "response": {
+        "status": 200,
+        "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": \"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Request-Id",
+            "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          [
+            "content-length",
+            "108"
+          ]
+        ]
+      },
+      "prior_response_retained": false,
+      "trace": null,
+      "timeline": [
+        {
+          "kind": "trace",
+          "step": {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated",
+            "reason": null,
+            "duration_us": "<measured>",
+            "details": {
+              "host": "_safeyolo.probe.internal"
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal",
+            "port": 80
+          },
+          "accepted": false,
+          "response": {
+            "status": 200,
+            "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": \"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Request-Id",
+                "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              ],
+              [
+                "content-length",
+                "108"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "response_construction_failure",
+        "response_error": true
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "safeyolo_probe": true
+        },
+        "response": null
+      },
+      "error_class": "ValueError",
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "safeyolo_probe": true
+      },
+      "response": null,
+      "prior_response_retained": false,
+      "trace": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "error",
+            "reason": "ValueError",
+            "duration_us": "<measured>",
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal",
+            "port": 80
+          }
+        ],
+        "not_loaded": [
+          {
+            "addon": "service-gateway",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "network-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "credential-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "test-context",
+            "state": "not_loaded"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "kind": "trace",
+          "step": {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "error",
+            "outcome": null,
+            "reason": "ValueError",
+            "duration_us": "<measured>",
+            "details": null,
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal",
+            "port": 80
+          },
+          "accepted": true,
+          "response": null
+        }
+      ]
+    }
+  ],
+  "doctor_rows": [
+    {
+      "input": {
+        "name": "all_six_and_sink",
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "pass",
+        "findings": [],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "native_active_three_missing_producers",
+        "steps": [
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ],
+        "not_loaded": [
+          {
+            "addon": "service-gateway",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "credential-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "not_loaded"
+          }
+        ]
+      },
+      "result": {
+        "verdict": "fail",
+        "findings": [
+          "service-gateway: not_loaded \u2014 expected addon did not run",
+          "credential-guard: not_loaded \u2014 expected addon did not run",
+          "pattern-scanner: not_loaded \u2014 expected addon did not run",
+          "expected-addon ordering differs from manifest: observed=['network-guard', 'circuit-breaker', 'test-context'] manifest=['service-gateway', 'network-guard', 'circuit-breaker', 'credential-guard', 'pattern-scanner', 'test-context']"
+        ],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "not_loaded",
+            "verdict": "fail"
+          },
+          {
+            "addon": "network-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "credential-guard",
+            "state": "not_loaded",
+            "verdict": "fail"
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "not_loaded",
+            "verdict": "fail"
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "loaded_explicitly_disabled",
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "bypassed",
+            "outcome": null,
+            "reason": "addon_disabled"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "bypassed",
+            "outcome": null,
+            "reason": "policy_disabled"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "bypassed",
+            "reason": "addon_disabled"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "bypassed",
+            "reason": "policy_disabled"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "pass",
+        "findings": [
+          "network-guard: bypassed/addon_disabled \u2014 loaded but off",
+          "circuit-breaker: bypassed/policy_disabled \u2014 PDP said no for this scope"
+        ],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "bypassed",
+            "outcome": null,
+            "reason": "addon_disabled",
+            "verdict": "pass_reported"
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "bypassed",
+            "outcome": null,
+            "reason": "policy_disabled",
+            "verdict": "pass_reported"
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "response_only_is_not_request_evidence",
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "response",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "response",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "fail",
+        "findings": [
+          "network-guard: missing from trace (neither observed nor not_loaded)",
+          "expected-addon ordering differs from manifest: observed=['service-gateway', 'circuit-breaker', 'credential-guard', 'pattern-scanner', 'test-context'] manifest=['service-gateway', 'network-guard', 'circuit-breaker', 'credential-guard', 'pattern-scanner', 'test-context']"
+        ],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "missing_from_trace",
+            "verdict": "fail"
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "truncated_after_complete_manifest",
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          },
+          {
+            "addon": "owned-extra",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          }
+        ],
+        "steps_max": 7
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": true,
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "fail",
+        "findings": [
+          "trace was truncated (steps > STEPS_MAX); doctor probe should never need that many"
+        ],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "prior_response_warns",
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "bypassed",
+            "outcome": null,
+            "reason": "prior_response"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_preempted"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "bypassed",
+            "reason": "prior_response"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_preempted"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "warn",
+        "findings": [
+          "network-guard: bypassed/prior_response \u2014 earlier addon responded first (see unknown)",
+          "probe-sink: no `evaluated/probe_terminated` step \u2014 the canonical sink evidence is missing; probe may have been preempted or the sink hook did not run"
+        ],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "bypassed",
+            "outcome": null,
+            "reason": "prior_response",
+            "verdict": "warn"
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "wrong_manifest_order",
+        "steps": [
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "warn",
+        "findings": [
+          "expected-addon ordering differs from manifest: observed=['network-guard', 'service-gateway', 'circuit-breaker', 'credential-guard', 'pattern-scanner', 'test-context'] manifest=['service-gateway', 'network-guard', 'circuit-breaker', 'credential-guard', 'pattern-scanner', 'test-context']"
+        ],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "missing_sink_warns",
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "warn",
+        "findings": [
+          "probe-sink: no `evaluated/probe_terminated` step \u2014 the canonical sink evidence is missing; probe may have been preempted or the sink hook did not run"
+        ],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "preempted_sink_warns",
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_preempted"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_preempted"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "warn",
+        "findings": [
+          "probe-sink: no `evaluated/probe_terminated` step \u2014 the canonical sink evidence is missing; probe may have been preempted or the sink hook did not run"
+        ],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "expected_first_error_fails",
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "error",
+            "outcome": null,
+            "reason": "ValueError"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "error",
+            "reason": "ValueError"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "fail",
+        "findings": [
+          "circuit-breaker: error (ValueError) \u2014 hook raised"
+        ],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "error",
+            "outcome": null,
+            "reason": "ValueError",
+            "verdict": "fail"
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "expected_error_after_success_is_not_graded",
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "error",
+            "outcome": null,
+            "reason": "ValueError"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "error",
+            "reason": "ValueError"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "pass",
+        "findings": [],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "name": "extra_error_after_success_fails",
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "transport-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "transport-guard",
+            "hook": "request",
+            "state": "error",
+            "outcome": null,
+            "reason": "probe_reached_upstream"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ]
+      },
+      "trace_payload": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "service-gateway",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "network-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "circuit-breaker",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "credential-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "pattern-scanner",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "test-context",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "transport-guard",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "owned_evaluation"
+          },
+          {
+            "addon": "transport-guard",
+            "hook": "request",
+            "state": "error",
+            "reason": "probe_reached_upstream"
+          },
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated"
+          }
+        ],
+        "not_loaded": []
+      },
+      "result": {
+        "verdict": "fail",
+        "findings": [
+          "transport-guard (non-manifest): error (probe_reached_upstream) \u2014 hook raised"
+        ],
+        "detail": [
+          {
+            "addon": "service-gateway",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "network-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "credential-guard",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "addon": "test-context",
+            "state": "evaluated",
+            "outcome": "owned_evaluation",
+            "reason": null
+          },
+          {
+            "extras": [
+              "transport-guard",
+              "probe-sink"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "canonical_audit_attempts": 0,
+  "scope": "selected actual sink hooks and actual classifier over synthetic store reports; no full pipeline, fallback, transport or acceptance claim",
+  "normalization": "non-null duration_us -> <measured>; fixed trace wall clock/default factories; synthetic connection ID",
+  "source_sha256": {
+    "cli/src/safeyolo/core/probe.py": "cf33ff4dbd252b174278e3d72062f59d8d05643bfeb8a5c899c6e3c9fe1ebd67",
+    "cli/src/safeyolo/core/trace.py": "7574231ab6c7d597b24c28c84bbd75dd9fdf1e9596e7d9350dee196fb00ef1ff",
+    "cli/src/safeyolo/mitm_addons/probe_sink.py": "5a26b667bf5050e3a9727e16654cc6301fb4bcfe29fe7d4fc1f36c85b3604c2e",
+    "cli/src/safeyolo/mitm_addons/__init__.py": "d241944dd66ae8dfe6df2b460a11230afc04b1a0174ec0e024cea95f67403a00",
+    "cli/src/safeyolo/commands/doctor.py": "a21f9f78e1c898c6b3e31543c390122e7c40315400e9419b85d4aaf65c43851f",
+    "tests/test_probe_sink.py": "e89d2975934c139ee427c8295a93c96ced2c2e737d377c3dec3f2b28c44b4cb0",
+    "cli/tests/test_doctor_traced_probe.py": "8949d69ad51174c8fedc6bbed7b8f21d549d74e104929e849bebe5535a7135ef"
+  },
+  "dependency_sha256": {
+    "mitmproxy.http": "f8ff6ff9e8f095eccce799eb04ec172227e56953b32d13775e556f65b2dd4fc9",
+    "mitmproxy.test.tflow": "cd26e146c6b4e3b8d41cbd30787700c3f18b207c5a9b91a267aa21cfae8bad73"
+  }
+}

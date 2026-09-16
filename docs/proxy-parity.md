@@ -367,6 +367,7 @@ silently reduce accepted message sizes to a library default.
 | D61 | TraceStore does not enforce the per-agent cap when an initially ownerless record later acquires an owner. A capped append moves a record to the end without updating its retained timestamp; expiry stops at the first live record and can retain a later stale record. | The native store preserves these source behaviors and their finite source witnesses. The global record and per-record step caps still apply. These retention discrepancies remain unresolved; the configured TTL and per-agent cap are not strict guarantees in these cases. |
 | D62 | A source MemoryMonitor request decode error retains earlier counters, then escapes the shared production addon container. Later request security hooks can be skipped while the HTTP layer resumes forwarding. The retained decoder fixture proves the child failure; the wider bypass path is established by static dispatcher/HTTP control flow, not a new full-chain execution. | Native memory observation errors retain partial state and produce categorical diagnostics, while existing security decisions continue. They do not skip inspection or introduce a new rejection rule. Focused HTTP and WebSocket failure controls verify that later native context/scanner decisions still run. |
 | D63 | Earlier native forced shutdown aborted outer connection tasks and dropped nested JoinSets or driver handles without joining their descendants. WebSocket close events and driver cleanup could then follow client removal or audit shutdown. | One accepted-connection task owner now retains explicit HTTP drivers, CONNECT/WS work, Hyper transport-executor jobs and actual WS scanner jobs through cancellation. Tasks registered after cancellation are dropped before their work runs. The client guard ends after that owner drains. Finite owner and owned H1/WS tests establish this transport scope; standalone API workers, anonymous spill-file jobs and ordinary process Drop remain outside the guarantee. |
+| D64 | Source probes that cross the existing streaming threshold attempt transport before the request sink, even when that sink is installed. The transport guard refuses locally. Source HTTP/1 returns HTML 502 without a request-ID header; its error hook records `error_type: Error`. | Native preserves the buffered/streamed distinction and refuses streamed probes without draining the remaining upload or publishing sink success. Its existing error response is correlated JSON 502, with the native trace category `NativeProbeTransportRefused`. Earlier native network/circuit admission still has the request-head timing described for the HTTP pipeline. Source lifecycle evidence is static; owned native HTTP/1 controls verify the local behavior. |
 
 ## Deletion map and evidence still required
 
@@ -703,8 +704,8 @@ the development audit-path override. Reload keeps the same writer and reader
 source. File reads and the bounded drain run off async workers. Malformed JSON
 lines are skipped; unreadable retained files mark the result as `error` while
 other files can still contribute events. Exceptions from valid non-object JSON
-or undecodable text remain handler failures. This route does not activate
-`/trace` or the diagnostic probe pipeline.
+or undecodable text remain handler failures. The trace and diagnostic probe
+implementations are described separately below.
 
 The [source controls](../proxy/tests/agent_api_explain_source.py) capture actual
 handler, scanner and serializer results. The [reader tests](../proxy/src/audit/explain/tests.rs)
@@ -931,8 +932,10 @@ The fixture checks decisions, delivered bytes, destination ports, generated
 IDs and trusted attribution. Its `proxy.request` and `proxy.egress` events are
 migration evidence, not replacements for production JSONL or traffic APIs.
 Both reserved local destinations remain local. The Agent API implements the
-bounded reads above; its other workflows and the diagnostic probe still need
-integration. An allowed CONNECT now opens its authorized destination before
+bounded reads above. The diagnostic probe now runs the installed native request
+checks; unimplemented producer stages remain visible as missing. Other Agent API
+workflows still need integration. An allowed CONNECT now opens its authorized
+destination before
 protocol selection, matching production
 and allowing a server greeting. Denied CONNECT still opens no destination.
 The first allowed inner request reuses that connection. Its policy check
@@ -1175,7 +1178,9 @@ a later valid response hook. Direct recorder comparisons do not establish this
 container ordering; the [actual source dispatcher comparison](../proxy/tests/production_dispatch.py)
 and H1/H2 regressions cover it.
 Parser aborts that erase their diagnostic cause can still produce a null reason.
-Inactive service-gateway, probe and replay producers remain outside this slice.
+Inactive service-gateway and replay producers remain outside this slice.
+Reserved probes are excluded before capture and record building; reached
+response/error recording still increments the skipped counter once.
 
 [HTTP recording tests](../proxy/src/http/flow_recording/tests.rs) compare source
 metadata and stored rows, then exercise real UDS forwarding, compressed content,
@@ -1532,7 +1537,7 @@ metadata for a separately reached response. An aborted response has no response
 step. A response that completes before request application can record
 `not_applicable` without inventing a completed request hook.
 
-Completed local replies carrying the existing traffic marker reach TestContext's
+Completed local denial/API replies carrying the existing traffic marker reach TestContext's
 `not_applicable` response observation after circuit response succeeds and before
 local recording and logging. Early local request returns still omit the native
 request hooks they skip; they do not reproduce the source's later
@@ -1548,8 +1553,66 @@ credential and pattern stages remain inactive. A stored CONNECT hook narrows
 the source expected set to NetworkGuard. Outer CONNECT and enclosed HTTP retain
 separate request IDs and share the transport connection ID. Reserved local
 replies and the temporary Python policy adapter do not fabricate native guard
-traces. The diagnostic probe pipeline and complete doctor trace workflow remain
-unimplemented.
+traces. The diagnostic probe uses the real native producers described below.
+
+### Reserved probe and doctor diagnostics
+
+The [probe route](../proxy/src/http/probe.rs) recognizes the exact
+`_safeyolo.probe.internal` host without regard to ASCII case. Method, path and
+port do not select the sink. Reserved CONNECT remains refused; a trailing-dot
+spelling remains contained under the existing native rule and is not a positive
+probe. Host-derived private state excludes probe records from FlowStore without
+excluding their audit events, traces, logger, metrics or memory observations.
+
+Buffered requests use the existing request-body preparation and independent
+parser completion observer. The sink runs after the actual installed request
+hooks complete. It constructs status 200 with the source JSON body and request
+ID, then records `probe-sink / evaluated / probe_terminated`. No inactive
+producer is reported as evaluated or disabled. A prior local reply whose empty
+request and logger/metrics hooks completed retains its status and records
+`probe_preempted`. Body-bearing early replies without that completion marker
+still return before the sink. Neither path fabricates the later source security
+request-hook observations skipped by native early returns.
+
+The generated response uses the same memory, circuit, TestContext, recorder and
+logger operations as a completed HTTP response. Applied context produces a real
+response audit and `response_recorded` trace. A successful probe is not a prior
+policy block: the circuit response reports its actual excluded-domain or
+disabled decision. If JSON streaming is configured, source memory accounting
+skips the response while provenance and logging retain its already constructed
+body. The probe does not repeat request application or invent an upstream
+response.
+
+Unknown-length requests remain buffered until completion or the existing
+encoded-body threshold is exceeded. Exactly 10 MiB remains buffered. When
+preparation selects streaming, the native route refuses transport without
+draining the rest, applying deferred context, or reporting probe success. The
+independent outbound guard also refuses the probe before DNS or socket creation.
+Canonical refusal evidence remains scoped to the trusted agent and contains no
+invented request attribution. Diagnostic write failure cannot permit egress.
+D64 records source/native failure-response differences; these tests do not
+establish HTTP/2 probe behavior.
+
+The [source oracle](../proxy/tests/probe_doctor_source.py) retains eight host
+inputs, twelve actual selected sink-hook cases and twelve actual doctor
+classifier cases. Classifier inputs are synthetic steps, not producer receipts.
+The native [probe tests](../proxy/src/http/probe/tests.rs) compare source sink
+bytes and steps and exercise owned HTTP/1 requests, context response evidence,
+memory accounting and flow exclusion. [Upload controls](../proxy/src/http/probe/tests/body.rs)
+cover held chunked input, threshold crossing, truncated requests and request-hook
+errors. The opt-in [doctor/API test](../proxy/src/http/probe/tests/doctor_api.rs)
+uses synthetic tokens and owned UDS listeners, fetches the actual native trace,
+rejects a foreign agent's read, and feeds the fetched response to the source
+doctor classifier. It requires the retained Python source environment; ordinary
+probe tests use the pinned corpus without running Python.
+
+The production six-name doctor manifest
+remains unchanged. A native 200 with network, circuit and context receipts still
+fails doctor while service-gateway, credential-guard and pattern-scanner are
+missing. The source classifier inspects only the first request step for each
+expected producer; a later error from the same producer can remain hidden from
+its verdict. This consumer limitation is preserved in the oracle and does not
+justify fabricating a passing pipeline.
 
 The [source corpus](../proxy/tests/trace_source.py) exercises actual trace
 storage and Agent API dispatch. [Native API tests](../proxy/tests/agent_api_trace.rs)

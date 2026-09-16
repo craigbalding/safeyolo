@@ -114,8 +114,8 @@ impl ResponseOutcome {
     }
 }
 
-/// The parser has completed the upstream message. Resolve current configuration
-/// here, independently of the runtime that originally admitted the request.
+/// An upstream parser completed, or a local probe response was constructed.
+/// Resolve current configuration independently of the admission snapshot.
 pub(crate) fn completed_response(
     state: &RuntimeState,
     identity: &ConnectionIdentity,

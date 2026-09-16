@@ -212,6 +212,16 @@ impl Traffic {
         }
     }
 
+    /// The metrics start is installed only after the request logger and
+    /// metrics hooks return normally. An evidence-error flag is not this proof.
+    pub(super) fn request_hooks_completed(&self) -> bool {
+        self.hooks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .metrics_start
+            .is_some()
+    }
+
     pub(super) fn response(
         &self,
         status: u16,

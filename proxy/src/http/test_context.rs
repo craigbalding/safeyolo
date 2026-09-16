@@ -347,6 +347,7 @@ pub(super) fn combined(
 struct Capture {
     head: Option<Head>,
     body: BufferedContent,
+    memory_streamed: bool,
     classified: bool,
     failed: bool,
 }
@@ -390,6 +391,7 @@ impl ResponseCapture {
             capture: Mutex::new(Some(Capture {
                 head: None,
                 body: BufferedContent::new(None, false),
+                memory_streamed: false,
                 classified: false,
                 failed: false,
             })),
@@ -405,6 +407,33 @@ impl ResponseCapture {
 
     fn recording(&self) -> Option<Arc<super::flow_recording::Recording>> {
         self.recording.clone()
+    }
+
+    /// Supply a response that the local probe sink has constructed in full.
+    /// No upstream parser observation is inferred. Source SSE selection skips
+    /// memory accounting but retains an inline local body's provenance/logging.
+    pub(super) fn local_probe(&self, status: StatusCode, headers: &HeaderMap, body: &[u8]) {
+        self.head(status, headers, false);
+        self.data(body);
+        let content_type = headers
+            .get(header::CONTENT_TYPE)
+            .map_or(&b""[..], |value| value.as_bytes());
+        let streamed = self
+            .state
+            .read()
+            .map(|runtime| source_streamed(&runtime, &self.host, content_type));
+        if let Some(capture) = self
+            .capture
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_mut()
+        {
+            capture.classified = true;
+            match streamed {
+                Ok(streamed) => capture.memory_streamed = streamed,
+                Err(_) => capture.failed = true,
+            }
+        }
     }
 
     fn head(&self, status: StatusCode, headers: &HeaderMap, end_stream_at_head: bool) {
@@ -501,7 +530,7 @@ impl ResponseCapture {
         }
     }
 
-    /// Called only by the serialized, once-only successful Completion apply,
+    /// Called once after successful upstream completion or local construction,
     /// before CircuitBreaker. Preserve this same buffer for later consumers.
     pub(super) fn memory_response(&self) {
         let Some(traffic) = &self.traffic else {
@@ -516,6 +545,7 @@ impl ResponseCapture {
             return;
         };
         if !capture.failed
+            && !capture.memory_streamed
             && !capture.body.is_streamed()
             && let Some(head) = &capture.head
         {
@@ -543,7 +573,7 @@ impl ResponseCapture {
         }
     }
 
-    /// The sole terminal authority is the existing protocol completion result.
+    /// Called after protocol completion or construction of a complete local probe.
     /// Take and release the buffer mutex before decoding or evidence writes.
     pub(super) fn finish(&self, success: bool) -> bool {
         if success {

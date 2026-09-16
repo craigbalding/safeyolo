@@ -38,6 +38,7 @@ mod ignored_host_tests;
 #[cfg(test)]
 mod memory_tests;
 mod network_trace;
+mod probe;
 mod request_body;
 mod request_context;
 mod test_context;
@@ -423,6 +424,13 @@ async fn open_egress(
     ignored: Option<crate::ignored_host_logger::SelectedDestination<'_>>,
 ) -> Result<Connected, Error> {
     let destination = allowed.destination;
+    if probe::is_host(&destination.host) {
+        return Err(probe::refuse_transport(
+            runtime,
+            allowed.identity,
+            destination,
+        ));
+    }
     if is_reserved(&destination.host) {
         return Err("reserved destination cannot egress".into());
     }
@@ -1214,6 +1222,7 @@ async fn forward(
     tunnel: Option<&Tunnel>,
     trace: Option<Arc<RequestTrace>>,
 ) -> Result<(Response<Body>, String), Error> {
+    let pipeline_probe = probe::is_host(&destination.host);
     // CONNECT has its own source hook before destination policy and no
     // ordinary HTTP request body lifecycle. Observe each admission once.
     if request.method() == Method::CONNECT {
@@ -1269,17 +1278,21 @@ async fn forward(
             .await?;
             return Ok((prior_block(reply), "local".into()));
         }
-        return Ok((
-            response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Local endpoint is not implemented in the development proxy",
-            ),
-            "local".into(),
-        ));
+        if !pipeline_probe {
+            return Ok((
+                response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Local endpoint is not implemented in the development proxy",
+                ),
+                "local".into(),
+            ));
+        }
     }
     if (request.method() == Method::CONNECT && (!allow_upgrades || tunnel.is_some()))
         || !matches!(destination.scheme.as_str(), "http" | "https")
-        || (destination.scheme == "https" && runtime.certificate_authority.is_none())
+        || (!pipeline_probe
+            && destination.scheme == "https"
+            && runtime.certificate_authority.is_none())
     {
         return Ok((
             response(
@@ -1559,6 +1572,26 @@ async fn forward(
     // The parser's initial size hint supplies source buffering classification,
     // including framing fields removed by header hygiene. It never proves EOM.
     let content_length = request.body().size_hint().exact();
+    if pipeline_probe {
+        let Some(mut context) = context
+            .buffer_probe(request.into_body(), content_length)
+            .await?
+        else {
+            return Err(probe::refuse_transport(&runtime, identity, destination));
+        };
+        // A source request-hook exception skips the later sink. Preserve that
+        // failure boundary instead of publishing a successful probe receipt.
+        if !context.request_hooks_completed() {
+            return Err(probe::refuse_transport(&runtime, identity, destination));
+        }
+        let mut reply = probe::response(state, &context, recording, request_id)?;
+        if circuit_evidence_failed || context.try_finish().unwrap_or(false) {
+            reply
+                .headers_mut()
+                .insert("x-safeyolo-evidence-error", "true".parse()?);
+        }
+        return Ok((reply, decision.decision));
+    }
     let websocket = if hygiene.websocket {
         if !allow_upgrades {
             return Ok((
@@ -1826,6 +1859,12 @@ pub(crate) fn serve_request(
         let _pending_recording = recording.pending();
         let destination =
             Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination));
+        if destination
+            .as_ref()
+            .is_ok_and(|destination| probe::is_host(&destination.host))
+        {
+            recording.mark_probe();
+        }
         // Presence allocates an inert carrier; the existing ordered header
         // hygiene decides whether the opt-in is nonempty and actually reached.
         let trace = destination
@@ -1865,6 +1904,16 @@ pub(crate) fn serve_request(
             )),
         };
         if let Err(error) = &result {
+            if error.is::<probe::TransportRefused>()
+                && let Some(hook) = trace
+                    .as_ref()
+                    .and_then(|trace| trace.hook("transport-guard", "request"))
+            {
+                hook.untimed_error(
+                    "probe_reached_upstream",
+                    Some(json!({"error_type":"NativeProbeTransportRefused"}).into()),
+                );
+            }
             recording.producer_error(error);
             recording.finish(false, None, false);
         }
@@ -1879,6 +1928,14 @@ pub(crate) fn serve_request(
                 "error".into(),
             )
         });
+        if destination
+            .as_ref()
+            .is_ok_and(|destination| probe::is_host(&destination.host))
+            && let Some(local) = reply.extensions().get::<traffic::LocalResponse>()
+            && local.traffic.request_hooks_completed()
+        {
+            probe::preempted(trace.as_ref(), local.blocked_by.as_ref());
+        }
         // Memory observes a completed local response before circuit and later
         // recording hooks. An arbitrary returned status does not prove that
         // this existing local completion marker was reached.
@@ -1905,7 +1962,22 @@ pub(crate) fn serve_request(
                 }
             }
         }
-        let circuit = if !connect
+        let completed_probe = reply.extensions_mut().remove::<probe::Completed>();
+        let circuit = if let Some(probe) = &completed_probe {
+            probe.capture.memory_response();
+            crate::circuit_runtime::completed_response(
+                &state,
+                &identity,
+                &request_id,
+                probe.source_metadata_reached,
+                &destination
+                    .as_ref()
+                    .expect("completed probe has a destination")
+                    .policy_host,
+                reply.status().as_u16(),
+                trace.as_ref(),
+            )
+        } else if !connect
             && reply
                 .extensions_mut()
                 .remove::<CircuitPriorBlock>()
@@ -1927,7 +1999,13 @@ pub(crate) fn serve_request(
             circuit,
             crate::circuit_runtime::ResponseOutcome::Exception { .. }
         ) {
-            recording.skip_response();
+            if let Some(probe) = &completed_probe {
+                probe.capture.skip_response();
+            } else {
+                recording.skip_response();
+            }
+        } else if let Some(probe) = completed_probe {
+            local_evidence_failed |= probe.capture.finish(true);
         } else {
             // Upstream/deferred recording stays with Completion. Local response
             // recording follows the same earlier circuit exception boundary.

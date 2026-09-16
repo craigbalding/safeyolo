@@ -32,6 +32,7 @@ struct Head {
 
 #[derive(Default)]
 struct Record {
+    probe: bool,
     metadata: Map<String, Value>,
     applied: bool,
     started: f64,
@@ -93,6 +94,20 @@ impl Recording {
         })
     }
 
+    /// The HTTP owner calls this before capture for a recognized probe host.
+    /// This is internal routing state, never a caller-controlled header claim.
+    pub(super) fn mark_probe(&self) {
+        if let Some(record) = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record
+            .as_mut()
+        {
+            record.probe = true;
+        }
+    }
+
     pub(super) fn pending(self: &Arc<Self>) -> PendingRecording {
         PendingRecording(self.clone())
     }
@@ -109,9 +124,11 @@ impl Recording {
             return;
         };
         // A native application cancellation, not a protocol/Python diagnostic.
-        record.error = Some(Zeroizing::new(
-            "native request cancelled before upstream driver".into(),
-        ));
+        if !record.probe {
+            record.error = Some(Zeroizing::new(
+                "native request cancelled before upstream driver".into(),
+            ));
+        }
         self.submit(record, false, None, false, crate::circuit_runtime::now());
     }
 
@@ -129,7 +146,7 @@ impl Recording {
             return;
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(record) = state.record.as_mut() else {
+        let Some(record) = state.record.as_mut().filter(|record| !record.probe) else {
             return;
         };
         let pairs: Pairs = fields
@@ -196,7 +213,7 @@ impl Recording {
             return;
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(record) = state.record.as_mut() else {
+        let Some(record) = state.record.as_mut().filter(|record| !record.probe) else {
             return;
         };
         record.applied = true;
@@ -248,7 +265,11 @@ impl Recording {
             return;
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(record) = state.record.as_mut().filter(|record| record.head.is_none()) else {
+        let Some(record) = state
+            .record
+            .as_mut()
+            .filter(|record| !record.probe && record.head.is_none())
+        else {
             return;
         };
         let Some(fields) = fields else {
@@ -285,6 +306,7 @@ impl Recording {
             .unwrap_or_else(|e| e.into_inner())
             .record
             .as_mut()
+            .filter(|record| !record.probe)
         {
             record.error = Some(Zeroizing::new(error.to_string()));
         }
@@ -361,7 +383,9 @@ impl Recording {
         capture_failed: bool,
         now: f64,
     ) -> Result<Option<QueuedRecord>, ContentError> {
-        if !record.applied || record.metadata.is_empty() {
+        // Source probe exclusion precedes context, identity and body access.
+        // Keep submission through FlowRecorder so the reached hook is skipped.
+        if record.probe || !record.applied || record.metadata.is_empty() {
             return Ok(None);
         }
         if let Some(error) = record.failure {

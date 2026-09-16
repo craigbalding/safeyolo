@@ -947,3 +947,168 @@ async fn circuit_response_exception_stops_later_hooks_but_keeps_wire_and_committ
         );
     }
 }
+
+#[test]
+fn probe_reached_terminals_skip_once_without_capturing_evidence() {
+    struct UnreadError;
+    impl std::fmt::Display for UnreadError {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            panic!("probe error text must not be copied")
+        }
+    }
+    for terminal in ["success", "error", "cancel"] {
+        let directory = tempfile::tempdir().unwrap();
+        let recorder = Arc::new(FlowRecorder::start(
+            true,
+            &directory.path().join("flows.sqlite3"),
+            None,
+        ));
+        let recording = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
+        recording.mark_probe();
+        let pending = recording.pending();
+        let request = Request::builder().method("POST").body(()).unwrap();
+        let fields = || {
+            request_pairs().into_iter().inspect(|_| {
+                panic!("probe headers must not be copied");
+            })
+        };
+        recording.request(&request, &destination("/probe", 80), fields(), false);
+        recording.applied(
+            &context(),
+            Some(b"invalid gzip"),
+            Err(ContentError::Allocation),
+            1000.5,
+        );
+        recording.head(StatusCode::OK, Some(fields()), Some(b"owned reason"));
+        recording.producer_error(&UnreadError);
+        {
+            let state = recording.state.lock().unwrap();
+            let record = state.record.as_ref().unwrap();
+            assert!(record.probe);
+            assert!(record.metadata.is_empty());
+            assert!(!record.applied);
+            assert!(record.body.is_none());
+            assert!(record.encoding.is_empty());
+            assert!(record.head.is_none());
+            assert!(record.failure.is_none());
+            assert!(record.error.is_none());
+        }
+        if terminal != "cancel" {
+            recording.finish_at(terminal == "success", Some(b"invalid gzip"), true, 1001.25);
+        }
+        drop(pending);
+        recording.finish_at(true, Some(b"must not retry"), true, 1002.0);
+        recording.local_terminal(true);
+        assert!(recorder.shutdown());
+        assert!(recorder.store().unwrap().get_flow(1).unwrap().is_none());
+        assert_eq!(
+            recorder.stats(),
+            json!({"recorded":0,"errors":0,"skipped":1,"queue_dropped":0,"write_errors":0}),
+            "{terminal}"
+        );
+    }
+}
+
+#[test]
+fn probe_build_exclusion_precedes_poison_and_unreached_response_stays_uncounted() {
+    let directory = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(FlowRecorder::start(
+        true,
+        &directory.path().join("flows.sqlite3"),
+        None,
+    ));
+    for poison in ["decode", "stored_failure", "capture_failure"] {
+        let recording = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
+        recording.mark_probe();
+        {
+            // Independently prove the final gate, even if a prior producer
+            // retained metadata or failed capture before this terminal.
+            let mut state = recording.state.lock().unwrap();
+            let record = state.record.as_mut().unwrap();
+            record.applied = true;
+            record.metadata.insert("run".into(), "owned".into());
+            record.metadata_encoding_error = true;
+            if poison == "stored_failure" {
+                record.failure = Some(ContentError::Allocation);
+            }
+            record.body = Some(Zeroizing::new(b"invalid gzip".to_vec()));
+            record.encoding = Zeroizing::new(b"gzip".to_vec());
+        }
+        recording.finish_at(
+            true,
+            Some(b"invalid gzip"),
+            poison == "capture_failure",
+            1001.25,
+        );
+    }
+    assert_eq!(recorder.stats()["skipped"], 3);
+    assert_eq!(recorder.stats()["errors"], 0);
+
+    let unreached = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
+    unreached.mark_probe();
+    let pending = unreached.pending();
+    unreached.skip_response();
+    unreached.finish_at(false, None, false, 1001.25);
+    drop(pending);
+    assert!(recorder.shutdown());
+    assert!(recorder.store().unwrap().get_flow(1).unwrap().is_none());
+    assert_eq!(
+        recorder.stats(),
+        json!({"recorded":0,"errors":0,"skipped":3,"queue_dropped":0,"write_errors":0})
+    );
+}
+
+#[test]
+fn probe_marker_keeps_connect_inactive_and_ordinary_context_recording_active() {
+    let directory = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(FlowRecorder::start(
+        true,
+        &directory.path().join("flows.sqlite3"),
+        None,
+    ));
+    let connect = Recording::new(recorder.clone(), identity("alice"), ID.into(), false);
+    connect.mark_probe();
+    connect.finish_at(false, None, true, 1001.25);
+    assert_eq!(recorder.stats()["skipped"], 0);
+
+    let ordinary = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
+    let request = Request::builder()
+        .method("POST")
+        .header("safeyolo_probe", "true") // Caller bytes never set the private marker.
+        .body(())
+        .unwrap();
+    let mut ordinary_fields = request_pairs();
+    ordinary_fields.push((b"safeyolo_probe", b"true"));
+    ordinary.request(
+        &request,
+        &destination("/ordinary", 80),
+        ordinary_fields.into_iter(),
+        false,
+    );
+    ordinary.applied(&context(), Some(b"request body"), Ok(b""), 1000.5);
+    ordinary.head(
+        StatusCode::OK,
+        Some(response_pairs().into_iter()),
+        Some(b"OK"),
+    );
+    ordinary.finish_at(true, Some(b"response body"), false, 1001.25);
+    let malformed = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
+    malformed.request(
+        &request,
+        &destination("/malformed", 80),
+        request_pairs().into_iter(),
+        false,
+    );
+    malformed.applied(&context(), Some(b"invalid gzip"), Ok(b"gzip"), 1000.5);
+    malformed.finish_at(true, Some(b"response body"), false, 1001.25);
+    assert!(recorder.shutdown());
+    let row = recorder.store().unwrap().get_flow(1).unwrap().unwrap();
+    assert_eq!(row["evidence_owner"], "alice");
+    assert_eq!(row["run"], "owned-run");
+    assert_eq!(row["path"], "/ordinary");
+    assert!(recorder.store().unwrap().get_flow(2).unwrap().is_none());
+    assert_eq!(
+        recorder.stats(),
+        json!({"recorded":1,"errors":1,"skipped":0,"queue_dropped":0,"write_errors":0})
+    );
+}

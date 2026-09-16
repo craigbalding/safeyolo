@@ -236,12 +236,7 @@ impl RequestContext {
     ) -> Result<(super::Body, Self), Error> {
         let prepared = super::request_body::prepare(body, content_length, false).await?;
         if let Some(content) = prepared.unvalidated_content {
-            if let Some(mut pending) = self.pending.take() {
-                if (&mut pending.observer).await.is_err() {
-                    return Err("request completion aborted".into());
-                }
-                self.apply(pending, Some(&content));
-            }
+            self.apply_buffered(&content).await?;
         } else {
             self.try_finish();
         }
@@ -252,6 +247,41 @@ impl RequestContext {
                 .boxed(),
             self,
         ))
+    }
+
+    /// A local probe can reach its sink only through the source-buffered path.
+    /// Streaming selects transport before the source request hook, so return
+    /// None without applying context or consuming the remaining upload.
+    pub(super) async fn buffer_probe(
+        mut self,
+        body: Incoming,
+        content_length: Option<u64>,
+    ) -> Result<Option<Self>, Error> {
+        let prepared = super::request_body::prepare(body, content_length, false).await?;
+        let Some(content) = prepared.unvalidated_content else {
+            return Ok(None);
+        };
+        self.apply_buffered(&content).await?;
+        Ok(Some(self))
+    }
+
+    async fn apply_buffered(&mut self, content: &[u8]) -> Result<(), Error> {
+        if let Some(mut pending) = self.pending.take() {
+            if (&mut pending.observer).await.is_err() {
+                return Err("request completion aborted".into());
+            }
+            self.apply(pending, Some(content));
+        }
+        Ok(())
+    }
+
+    pub(super) fn request_hooks_completed(&self) -> bool {
+        self.terminal.is_some()
+            && !self.skip_logger
+            && self
+                .traffic
+                .as_ref()
+                .is_some_and(|traffic| traffic.request_hooks_completed())
     }
 
     /// None is pending without registering/replacing the parser-driver waker.
@@ -331,6 +361,7 @@ impl RequestContext {
             _ => Ok(false),
         };
         let mut failed = outcome.unwrap_or_else(|failed| failed);
+        self.skip_logger |= outcome.is_err();
         if outcome.is_ok()
             && !self.skip_logger
             && let Some(traffic) = &self.traffic

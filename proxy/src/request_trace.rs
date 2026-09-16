@@ -95,6 +95,10 @@ impl TraceHook {
         self.append("error", None, Some(reason), None, true);
     }
 
+    pub(crate) fn untimed_error(&self, reason: &str, details: Option<CircuitValue>) {
+        self.append("error", None, Some(reason), details, false);
+    }
+
     fn append(
         &self,
         state: &str,
