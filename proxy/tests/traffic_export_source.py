@@ -179,10 +179,19 @@ WORKFLOWS = [
         {
             "method": "POST",
             "url": "http://source.fixture.invalid/empty",
-            "headers": [],
+            "headers": [["Content-Encoding", "gzip"], ["Content-Length", "7"]],
             "body": {"text": ""},
         },
         response={"status": 201, "headers": [], "body": {"text": "created"}},
+    ),
+    workflow(
+        "get_absent_encoded_body",
+        {
+            "method": "GET",
+            "url": "http://source.fixture.invalid/absent-encoded",
+            "headers": [["Content-Encoding", "gzip"], ["Content-Length", "0"]],
+            "body": None,
+        },
     ),
     workflow(
         "get_nonempty_body",
@@ -201,6 +210,16 @@ WORKFLOWS = [
         "response_only_raw_body",
         {**BASE_REQUEST, "body": None},
         response={"status": 202, "headers": [["X-Only", "response"]], "body": {"text": "only-response"}},
+    ),
+    workflow(
+        "existing_response_body_absent_raw_fallback",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/response-absent",
+            "headers": [],
+            "body": {"text": "request-only"},
+        },
+        response={"status": 204, "headers": [["X-Response", "body-absent"]], "body": None},
     ),
     workflow(
         "decoded_gzip_request_response",
@@ -434,16 +453,84 @@ def assert_error(rows, name, format_name, error_type):
     assert value["message"], (name, format_name, value)
 
 
-def assert_contract(rows):
-    """Independent checks for source behavior used by native replay."""
+def assert_encoded_content_controls(rows):
     curl = text_value(rows, "duplicate_headers_host_removal_accept_encoding", "curl")
-    assert "Host:" not in curl and "content-length:" not in curl
+    assert "host:" not in curl.lower() and "content-length:" not in curl.lower()
     assert curl.count("-H 'X-Dup: one'") == 1 and "-H 'x-dup: two'" in curl
     assert "--compressed" in curl
 
     httpie = text_value(rows, "duplicate_headers_host_removal_accept_encoding", "httpie")
-    assert "Host:" not in httpie and "X-Dup: one" in httpie and "x-dup: two" in httpie
+    assert "host:" not in httpie.lower() and "content-length:" not in httpie.lower()
+    assert "X-Dup: one" in httpie and "x-dup: two" in httpie
 
+    present_empty = text_value(rows, "post_present_empty_body", "httpie")
+    assert "'Content-Encoding: gzip'" in present_empty
+    assert "content-length:" not in present_empty.lower()
+    present_empty_raw = bytes_value(rows, "post_present_empty_body", "raw_request")
+    assert b"Content-Encoding: gzip\r\nContent-Length: 7\r\n" in present_empty_raw
+
+    absent_encoded = text_value(rows, "get_absent_encoded_body", "curl")
+    assert absent_encoded == (
+        "curl -H 'Content-Encoding: gzip' http://source.fixture.invalid/absent-encoded"
+    )
+    assert "content-length:" not in absent_encoded.lower()
+    assert_error(rows, "get_absent_encoded_body", "raw_request", "CommandError")
+
+
+def assert_command_quoting(rows):
+    control = text_value(rows, "shell_control_text_body", "curl")
+    assert '"$(printf ' in control and "\\x01" in control
+    quote = text_value(rows, "shell_quote_text_body", "curl")
+    assert quote == (
+        "curl -H 'X-Quote: a'\"'\"'b $HOME `tick`' -H 'X-Space: two words' "
+        "-X PATCH 'http://source.fixture.invalid/quote?x=a%20b&y=$HOME' "
+        "-d 'it'\"'\"'s $HOME `tick` \"quoted\" \\ slash'"
+    )
+
+
+def assert_websocket_contract(rows):
+    combined = bytes_value(rows, "combined_websocket_direction_type_drop", "raw")
+    expected_combined = (
+        b"GET /ws HTTP/1.1\r\n"
+        b"Connection: Upgrade\r\n"
+        b"Upgrade: websocket\r\n\r\n"
+        b"\r\n\r\n"
+        b"HTTP/1.1 101 \r\n"
+        b"Upgrade: websocket\r\n\r\n"
+        b"\r\n\r\n"
+        b"[OUTGOING] outgoing\n"
+        b"[INCOMING] \xff\x00\n"
+        b"[INCOMING] incoming"
+    )
+    assert combined == expected_combined
+    assert_error(rows, "request_and_response_bodies_absent", "raw", "CommandError")
+    assert bytes_value(rows, "response_only_raw_body", "raw").startswith(b"HTTP/1.1 202")
+
+    response_absent = "existing_response_body_absent_raw_fallback"
+    assert_error(rows, response_absent, "raw_response", "CommandError")
+    assert result(rows, response_absent, "raw_response")["message"] == "Response content missing."
+    assert bytes_value(rows, response_absent, "raw") == bytes_value(rows, response_absent, "raw_request")
+
+    large = result(rows, "combined_websocket_beyond_64k", "raw")
+    expected_large = (
+        b"GET /ws-large HTTP/1.1\r\n\r\n"
+        + b"\r\n\r\n"
+        + b"HTTP/1.1 101 \r\n\r\n"
+        + b"\r\n\r\n"
+        + b"[INCOMING] "
+        + b"x" * 65534
+        + b"NEEDLE"
+    )
+    assert large["output"]["kind"] == "bytes"
+    assert large["output"]["length"] == len(expected_large)
+    assert large["output"]["sha256"] == hashlib.sha256(expected_large).hexdigest()
+    assert large["output"]["prefix_hex"] == expected_large[:128].hex()
+    assert large["output"]["suffix_hex"] == expected_large[-128:].hex()
+
+
+def assert_contract(rows):
+    """Independent checks for source behavior used by native replay."""
+    assert_encoded_content_controls(rows)
     request = bytes_value(rows, "http_versions_custom_reason_absolute_target", "raw_request")
     assert request.startswith(b"POST https://authority.fixture.invalid:8443/absolute HTTP/2.0\r\n")
     response = bytes_value(rows, "http_versions_custom_reason_absolute_target", "raw_response")
@@ -458,25 +545,13 @@ def assert_contract(rows):
     assert bytes_value(rows, "binary_body_command_text_error_raw_available", "raw_request").endswith(b"\xff\x00\x01a")
     assert_error(rows, "charset_decode_error_raw_available", "httpie", "CommandError")
 
-    control = text_value(rows, "shell_control_text_body", "curl")
-    assert '"$(printf ' in control and "\\x01" in control
-    quote = text_value(rows, "shell_quote_text_body", "curl")
-    assert "\\$HOME" not in quote
+    assert_command_quoting(rows)
 
     chunked = bytes_value(rows, "finite_chunked_trailers", "raw_request")
     assert b"a\r\nchunk-body\r\n0\r\nX-Req-Trailer: request-final\r\n\r\n" in chunked
     assert_error(rows, "trailers_without_chunked_raw_value_error", "raw_request", "ValueError")
 
-    combined = bytes_value(rows, "combined_websocket_direction_type_drop", "raw")
-    assert b"[OUTGOING] outgoing" in combined
-    assert b"[INCOMING] \xff\x00" in combined
-    assert b"[INCOMING] incoming" in combined
-    assert_error(rows, "request_and_response_bodies_absent", "raw", "CommandError")
-    assert bytes_value(rows, "response_only_raw_body", "raw").startswith(b"HTTP/1.1 202")
-
-    large = result(rows, "combined_websocket_beyond_64k", "raw")
-    assert large["output"]["kind"] == "bytes" and large["output"]["length"] > 65536
-    assert large["output"]["length"] == 65602
+    assert_websocket_contract(rows)
 
     resolved = text_value(rows, "preserve_original_ip_true_source_control", "curl")
     assert "--resolve 'source.fixture.invalid:443:[192.0.2.44]'" in resolved
@@ -505,7 +580,7 @@ REPRESENTATION_DIFFERENCES = [
     },
     {
         "name": "decoded_bodies",
-        "source": "cleanup_request/cleanup_response copy each message, decode content with strict=False, and remove Content-Encoding",
+        "source": "cleanup_request/cleanup_response copy each message; nonempty content decodes with strict=False and removes Content-Encoding, while missing or empty content leaves existing headers unchanged",
         "native": "native exports need an explicit decoded-versus-raw body rule; missing and empty bodies remain distinct",
     },
     {
@@ -535,7 +610,7 @@ def document():
     rows = [observe(spec) for spec in WORKFLOWS]
     assert_contract(rows)
     return {
-        "schema": 1,
+        "schema": 2,
         "source": "installed_mitmproxy_export_functions",
         "versions": {
             "python": sys.version.split()[0],
