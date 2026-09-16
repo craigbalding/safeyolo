@@ -1,0 +1,450 @@
+{
+  "schema_version": 1,
+  "source": "installed_agent_api_gateway_request_access",
+  "base_commit": "eaf70cf54cd47d501b403132971ccf3c3c7b297a",
+  "versions": {
+    "python": "3.12.14",
+    "mitmproxy": "12.2.3"
+  },
+  "source_sha256": {
+    "agent_api.py": "ab52434f28e82c9cc5f7ce32bf0b69ff6dcd3158e5e5fd5a446e4a747942e378",
+    "identity.py": "a5b9352db04c505f12a21c9cfac269d1ba27eb38cbf5989de723ad4ca3e42888",
+    "service_loader.py": "a5def870f8e3e6896db8aaed4a1cdd2aecb0a6cb5537d942923ca5f610e445e8",
+    "audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
+    "utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "unix_listener.py": "59f22518f7f6752cc857cf62ed196e8645e01cde3b8540cfb62739734099e3db",
+    "tokens.py": "0e9f55d14f411a6e71c2b234ca5072f4c65904da4d0c62aba3103a589152d1a5"
+  },
+  "route": {
+    "method": "POST",
+    "path": "/gateway/request-access",
+    "body": "JSON object with service, capability, and optional reason",
+    "identity": "trusted UDS proxy-mode agent; metadata alone is not trusted",
+    "catalog": "owned ServiceRegistry with one service and three capabilities"
+  },
+  "cases": [
+    {
+      "name": "ordinary_no_contract_approval",
+      "input": {
+        "name": "ordinary_no_contract_approval",
+        "body": {
+          "service": "owned-mail",
+          "capability": "read",
+          "reason": "owned inbox review"
+        }
+      },
+      "status": 202,
+      "body": {
+        "status": "pending",
+        "agent": "owned-agent",
+        "service": "owned-mail",
+        "capability": "read",
+        "reason": "owned inbox review",
+        "message": "Access request submitted. Operator will review in watch."
+      },
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "X-SafeYolo-Agent-API",
+          "true"
+        ],
+        [
+          "content-length",
+          "195"
+        ]
+      ],
+      "audit": [
+        {
+          "event": "gateway.request_access",
+          "kind": "gateway",
+          "severity": "critical",
+          "summary": "owned-agent requests owned-mail/read: owned inbox review",
+          "decision": "require_approval",
+          "host": "mail.owned.invalid",
+          "agent": "owned-agent",
+          "addon": "agent-api",
+          "approval": {
+            "required": true,
+            "approval_type": "service",
+            "key": "owned-agent:owned-mail",
+            "target": "owned-mail",
+            "scope_hint": {
+              "service": "owned-mail",
+              "capability": "read",
+              "description": "Owned source contract mail service",
+              "capability_description": "Read the owned mailbox",
+              "reason": "owned inbox review",
+              "proposed_lifetime": "session"
+            }
+          }
+        }
+      ],
+      "identity": {
+        "agent": "owned-agent",
+        "status": "resolved",
+        "source": "uds"
+      }
+    },
+    {
+      "name": "enforceable_binding_challenge",
+      "input": {
+        "name": "enforceable_binding_challenge",
+        "body": {
+          "service": "owned-mail",
+          "capability": "bound",
+          "reason": "owned folder"
+        }
+      },
+      "status": 200,
+      "body": {
+        "decision": "needs_contract_binding",
+        "service": "owned-mail",
+        "capability": "bound",
+        "template": "owned-mail-read-v1",
+        "bindings": {
+          "folder": {
+            "source": "agent",
+            "type": "enum",
+            "visible_to_operator": true,
+            "options": [
+              "inbox",
+              "sent"
+            ]
+          }
+        },
+        "grantable_operations": [
+          {
+            "name": "read_messages",
+            "method": "GET",
+            "path": "/v1/messages"
+          }
+        ]
+      },
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "X-SafeYolo-Agent-API",
+          "true"
+        ],
+        [
+          "content-length",
+          "334"
+        ]
+      ],
+      "audit": [],
+      "identity": {
+        "agent": "owned-agent",
+        "status": "resolved",
+        "source": "uds"
+      }
+    },
+    {
+      "name": "unenforceable_contract_response",
+      "input": {
+        "name": "unenforceable_contract_response",
+        "body": {
+          "service": "owned-mail",
+          "capability": "blocked"
+        }
+      },
+      "status": 200,
+      "body": {
+        "decision": "contract_not_enforceable",
+        "service": "owned-mail",
+        "capability": "blocked",
+        "missing_tiers": [
+          "response_validators"
+        ]
+      },
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "X-SafeYolo-Agent-API",
+          "true"
+        ],
+        [
+          "content-length",
+          "132"
+        ]
+      ],
+      "audit": [],
+      "identity": {
+        "agent": "owned-agent",
+        "status": "resolved",
+        "source": "uds"
+      }
+    },
+    {
+      "name": "absent_trusted_identity",
+      "input": {
+        "name": "absent_trusted_identity",
+        "identity": "absent",
+        "body": {
+          "service": "owned-mail",
+          "capability": "read",
+          "reason": "owned inbox review"
+        }
+      },
+      "status": 403,
+      "body": {
+        "error": "Could not identify agent"
+      },
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "X-SafeYolo-Agent-API",
+          "true"
+        ],
+        [
+          "content-length",
+          "37"
+        ]
+      ],
+      "audit": [],
+      "identity": {
+        "agent": null,
+        "status": "unavailable",
+        "source": null
+      }
+    },
+    {
+      "name": "absent_service_registry",
+      "input": {
+        "name": "absent_service_registry",
+        "registry": "absent",
+        "body": {
+          "service": "owned-mail",
+          "capability": "read",
+          "reason": "owned inbox review"
+        }
+      },
+      "status": 503,
+      "body": {
+        "error": "Service registry not available"
+      },
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "X-SafeYolo-Agent-API",
+          "true"
+        ],
+        [
+          "content-length",
+          "43"
+        ]
+      ],
+      "audit": [],
+      "identity": {
+        "agent": "owned-agent",
+        "status": "resolved",
+        "source": "uds"
+      }
+    },
+    {
+      "name": "absent_service",
+      "input": {
+        "name": "absent_service",
+        "body": {
+          "service": "missing-service",
+          "capability": "read"
+        }
+      },
+      "status": 404,
+      "body": {
+        "error": "Service 'missing-service' not found"
+      },
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "X-SafeYolo-Agent-API",
+          "true"
+        ],
+        [
+          "content-length",
+          "48"
+        ]
+      ],
+      "audit": [],
+      "identity": {
+        "agent": "owned-agent",
+        "status": "resolved",
+        "source": "uds"
+      }
+    },
+    {
+      "name": "absent_capability",
+      "input": {
+        "name": "absent_capability",
+        "body": {
+          "service": "owned-mail",
+          "capability": "missing-capability"
+        }
+      },
+      "status": 404,
+      "body": {
+        "error": "Capability 'missing-capability' not found in service 'owned-mail'"
+      },
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "X-SafeYolo-Agent-API",
+          "true"
+        ],
+        [
+          "content-length",
+          "78"
+        ]
+      ],
+      "audit": [],
+      "identity": {
+        "agent": "owned-agent",
+        "status": "resolved",
+        "source": "uds"
+      }
+    },
+    {
+      "name": "malformed_body",
+      "input": {
+        "name": "malformed_body",
+        "body_hex": "7b6e6f742d6a736f6e"
+      },
+      "status": 400,
+      "body": {
+        "error": "Invalid JSON body"
+      },
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "X-SafeYolo-Agent-API",
+          "true"
+        ],
+        [
+          "content-length",
+          "30"
+        ]
+      ],
+      "audit": [],
+      "identity": {
+        "agent": null,
+        "status": null,
+        "source": null
+      }
+    },
+    {
+      "name": "missing_body",
+      "input": {
+        "name": "missing_body",
+        "body_hex": ""
+      },
+      "status": 400,
+      "body": {
+        "error": "service and capability are required"
+      },
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "X-SafeYolo-Agent-API",
+          "true"
+        ],
+        [
+          "content-length",
+          "48"
+        ]
+      ],
+      "audit": [],
+      "identity": {
+        "agent": null,
+        "status": null,
+        "source": null
+      }
+    },
+    {
+      "name": "audit_failure_after_validation",
+      "input": {
+        "name": "audit_failure_after_validation",
+        "audit_failure": true,
+        "body": {
+          "service": "owned-mail",
+          "capability": "read",
+          "reason": "owned inbox review"
+        }
+      },
+      "status": 500,
+      "body": {
+        "error": "Internal error: RuntimeError"
+      },
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ],
+        [
+          "X-SafeYolo-Agent-API",
+          "true"
+        ],
+        [
+          "content-length",
+          "41"
+        ]
+      ],
+      "audit": [
+        {
+          "event": "gateway.request_access",
+          "kind": "gateway",
+          "severity": "critical",
+          "summary": "owned-agent requests owned-mail/read: owned inbox review",
+          "decision": "require_approval",
+          "host": "mail.owned.invalid",
+          "agent": "owned-agent",
+          "addon": "agent-api",
+          "approval": {
+            "required": true,
+            "approval_type": "service",
+            "key": "owned-agent:owned-mail",
+            "target": "owned-mail",
+            "scope_hint": {
+              "service": "owned-mail",
+              "capability": "read",
+              "description": "Owned source contract mail service",
+              "capability_description": "Read the owned mailbox",
+              "reason": "owned inbox review",
+              "proposed_lifetime": "session"
+            }
+          }
+        }
+      ],
+      "identity": {
+        "agent": "owned-agent",
+        "status": "resolved",
+        "source": "uds"
+      }
+    }
+  ]
+}
