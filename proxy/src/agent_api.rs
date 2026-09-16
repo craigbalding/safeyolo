@@ -20,8 +20,10 @@ mod declarations;
 mod discovery;
 mod explain;
 mod flows;
+mod gateway;
 mod memory;
 mod trace;
+pub use gateway::GatewayContext;
 pub use memory::MemoryContext;
 
 pub use declarations::{
@@ -128,6 +130,7 @@ pub enum Failure {
     DiscoveryReporting(crate::agent_discovery::ErrorKind),
     MemoryReporting(crate::memory_monitor::ErrorKind),
     TraceReporting(crate::trace::ErrorKind),
+    GatewayReporting(crate::services::ServiceViewError),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -469,6 +472,9 @@ pub async fn respond_read_with_circuits<'p>(
     }
     if route(request) == "/trace" {
         return trace::respond(request, None);
+    }
+    if route(request) == "/gateway/services" {
+        return gateway::respond(request, None);
     }
     authenticated_read(request, policy, tasks, now_ms, circuits)
 }

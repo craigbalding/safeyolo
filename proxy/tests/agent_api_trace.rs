@@ -81,6 +81,7 @@ async fn call_with_clock(
         &Registry::default(),
         admission_ms,
         Controls {
+            gateway: None,
             memory: None,
             traces: store.map(|store| TraceContext { store, now }),
             discovery: None,

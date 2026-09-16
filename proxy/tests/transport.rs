@@ -98,6 +98,8 @@ fn config(directory: &TempDir) -> Config {
             .collect(),
         temporary_policy_socket: Some(directory.path().join("policy.sock")),
         policy_file: None,
+        gateway_builtin_services_dir: None,
+        gateway_services_dir: None,
         network_guard_enabled: true,
         network_guard_block: true,
         network_guard_homoglyph: true,

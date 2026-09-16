@@ -71,6 +71,7 @@ async fn call(
         &Registry::default(),
         0.,
         Controls {
+            gateway: None,
             memory: None,
             traces: None,
             discovery: None,

@@ -40,6 +40,8 @@ mod python_text;
 mod request_headers;
 mod request_logger;
 mod request_trace;
+#[cfg(test)]
+mod service_catalog_tests;
 pub mod services;
 pub mod tasks;
 pub mod test_context;
@@ -142,13 +144,30 @@ impl Runtime {
         let tasks = previous
             .map(|runtime| runtime.tasks.clone())
             .unwrap_or_default();
+        let registry = match (
+            &config.gateway_builtin_services_dir,
+            &config.gateway_services_dir,
+        ) {
+            (Some(builtin), Some(user)) => Some(Arc::new(services::Registry::from_directories(
+                builtin, user,
+            )?)),
+            _ => None,
+        };
         let policy = config
             .policy_file
             .as_ref()
             .map(
                 |path| match previous.and_then(|runtime| runtime.policy.as_ref()) {
-                    Some(policy) => policy.reload_from_path_at(path, policy::current_time_ms()),
-                    None => policy::Policy::from_path(path),
+                    Some(policy) => policy.reload_from_path_with_registry_at(
+                        path,
+                        registry,
+                        policy::current_time_ms(),
+                    ),
+                    None => policy::Policy::from_path_with_registry_at(
+                        path,
+                        registry,
+                        policy::current_time_ms(),
+                    ),
                 },
             )
             .transpose()?;

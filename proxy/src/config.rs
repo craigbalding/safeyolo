@@ -64,6 +64,10 @@ pub struct Config {
     pub agent_map_file: String,
     pub temporary_policy_socket: Option<PathBuf>,
     pub policy_file: Option<PathBuf>,
+    /// Explicit development catalog sources, published with native policy.
+    /// Both paths are required together; this does not enable HTTP injection.
+    pub gateway_builtin_services_dir: Option<PathBuf>,
+    pub gateway_services_dir: Option<PathBuf>,
     #[serde(default = "enabled")]
     pub network_guard_enabled: bool,
     #[serde(default = "enabled")]
@@ -159,6 +163,14 @@ impl Config {
     pub fn validate(&self) -> Result<(), Error> {
         if self.temporary_policy_socket.is_some() == self.policy_file.is_some() {
             return Err("configure exactly one policy_file or temporary_policy_socket".into());
+        }
+        if self.gateway_builtin_services_dir.is_some() != self.gateway_services_dir.is_some() {
+            return Err(
+                "configure both gateway_builtin_services_dir and gateway_services_dir".into(),
+            );
+        }
+        if self.gateway_builtin_services_dir.is_some() && self.policy_file.is_none() {
+            return Err("service catalog requires native policy_file".into());
         }
         let mut paths = HashSet::new();
         for listener in &self.listeners {

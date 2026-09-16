@@ -864,6 +864,71 @@ routes and canonical values; source-admitted grants mint tokens even when no
 service registry is initialized. Runtime gateway selection and credential
 injection still require HTTP integration.
 
+### Service catalog and agent service discovery
+
+The native development configuration accepts `gateway_builtin_services_dir`
+and `gateway_services_dir` together with `policy_file`. Both directory options
+must be present or absent. These are explicit native filesystem paths, relative
+to the process working directory when not absolute; they do not apply Python's
+`expanduser().resolve()` normalization. The builtin directory must exist. A
+missing user directory contributes no definitions. This configuration publishes
+the catalog for service discovery; it does not enable HTTP credential injection.
+
+The [catalog loader](../proxy/src/services.rs) reads top-level `*.yaml` entries
+in filename order, including dotfiles. It ignores `.yml`, `.YAML` and nested
+files. Duplicate service names within one directory reject the candidate. User
+definitions replace builtin definitions without moving their catalog position.
+Malformed or unreadable matched definitions also reject the candidate. As in
+the source glob, directory-enumeration errors contribute no matched entries;
+they are distinct from errors reading an already matched definition.
+
+Startup and explicit reload pass one accepted registry to the existing native
+policy compiler. The runtime publishes the catalog, service routes, contracts
+and token views in that same policy snapshot. A failed catalog, policy or later
+runtime construction retains the prior published snapshot. Reads do not load
+files, mint tokens, evaluate policy or consume budgets. Automatic service-file
+watching and native packaging of builtin definitions remain unimplemented.
+
+The authenticated [services endpoint](../proxy/src/agent_api/gateway.rs) resolves
+the trusted calling agent before reading bindings. It returns `agent`,
+`authorized` and `available`. Authorized entries contain that agent's host,
+token, capability and account; the available catalog excludes those service
+names and preserves service and capability order and description values.
+Repeated bindings keep the first service position and the final binding's fields.
+Caller-supplied query or identity headers cannot select another agent. Source
+GET, POST and DELETE behavior is retained: each reads the same view without
+consuming the request body. Projection errors from source-unhashable binding
+keys or non-JSON binding timestamps return the source TypeError response.
+Existing native representation gaps use the local unavailable-handler response.
+
+An unconfigured native catalog returns empty authorized and available views,
+including with the temporary policy adapter. Canonical policy tokens alone do
+not establish an active catalog view. Removing both directory options on reload
+removes that view. This is native catalog configuration, not the source
+`gateway_enabled` switch: disabling the source addon retains its previous
+catalog/bindings, and an already registered policy callback can still update
+them. The source's empty-token retention defect remains D43; native removal
+continues to replace the complete binding collection.
+
+The [source oracle](../proxy/tests/service_catalog_source.py) records strict
+loader, actual AgentAPI dispatch and selected configure/read behavior using
+owned synthetic data. Its disclosed lifecycle client and watcher seams do not
+prove full startup. [API comparisons](../proxy/src/agent_api/gateway/tests.rs)
+replay the response cases without polling a request body. Runtime and HTTP/1
+controls exercise scoped reads and coherent publication through owned listeners.
+Only the read owner is installed; this work emits no service-gateway request
+trace and does not change doctor's missing-producer verdict.
+
+The existing service-definition YAML frontend still has temporal-value,
+non-string-key and numeric representation gaps. Source filenames that require
+Python surrogateescape are not representable in the current native string
+provenance. Native construction returns categorical errors; source per-file
+diagnostics and `ops.config_error` events are not yet published by this loader.
+These limits, the installed builtin-path resolver, automatic reload, and HTTP
+selection/injection remain required migration work.
+
+### Gateway representation and response encoding
+
 Gateway primitives still have explicit compatibility gaps for partially loaded
 source token maps, unhashable binding lookup keys, non-string vault/account
 values, and structured temporal path values. A non-mapping contract value fails

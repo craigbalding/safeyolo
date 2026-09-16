@@ -1,0 +1,1911 @@
+{
+  "api_defaults": {
+    "method": "GET",
+    "path": "/gateway/services",
+    "agent": "alice",
+    "auth": "valid",
+    "gateway": true,
+    "registry": "normal",
+    "query": "",
+    "payload": "",
+    "hosts": {
+      "first.owned.invalid": "zeta",
+      "alpha.owned.invalid": "alpha",
+      "last.owned.invalid": "zeta"
+    },
+    "bindings": [
+      {
+        "token": "owned-alice-z-first",
+        "agent": "alice",
+        "service": "zeta",
+        "capability": "early"
+      },
+      {
+        "token": "owned-bob-middle",
+        "agent": "bob",
+        "service": "middle",
+        "capability": "reader"
+      },
+      {
+        "token": "owned-alice-alpha",
+        "agent": "alice",
+        "service": "alpha",
+        "capability": "first"
+      },
+      {
+        "token": "owned-alice-z-last",
+        "agent": "alice",
+        "service": "zeta",
+        "capability": "late",
+        "account": "team"
+      }
+    ],
+    "registries": {
+      "normal": {
+        "files": {
+          "builtin/10-z.yaml": {
+            "schema_version": 1,
+            "name": "zeta",
+            "description": "Builtin Z",
+            "capabilities": {
+              "write": {
+                "description": "Write"
+              },
+              "read": {
+                "description": "Read"
+              }
+            }
+          },
+          "builtin/20-a.yaml": {
+            "schema_version": 1,
+            "name": "alpha",
+            "description": "Alpha",
+            "capabilities": {
+              "second": {
+                "description": "Second"
+              },
+              "first": {
+                "description": "First"
+              }
+            }
+          },
+          "user/10-z.yaml": {
+            "schema_version": 1,
+            "name": "zeta",
+            "description": "Owned override",
+            "capabilities": {
+              "late": {
+                "description": "Late"
+              },
+              "early": {
+                "description": "Early"
+              }
+            }
+          },
+          "user/20-m.yaml": {
+            "schema_version": 1,
+            "name": "middle",
+            "description": "Middle",
+            "capabilities": {}
+          }
+        },
+        "dirs": [
+          "builtin"
+        ]
+      },
+      "empty": {
+        "files": {},
+        "dirs": [
+          "builtin"
+        ]
+      },
+      "typed": {
+        "files": {
+          "builtin/typed.yaml": {
+            "schema_version": 1,
+            "name": "typed",
+            "description": null,
+            "capabilities": {
+              "boolean": {
+                "description": false
+              },
+              "object": {
+                "description": {
+                  "owned": 2
+                }
+              }
+            }
+          }
+        },
+        "dirs": [
+          "builtin"
+        ]
+      }
+    }
+  },
+  "loader_rows": [
+    {
+      "input": {
+        "name": "missing_required_builtin",
+        "steps": [
+          {}
+        ]
+      },
+      "steps": [
+        {
+          "step": 0,
+          "error": {
+            "class": "ServiceRegistryError",
+            "message": "service definitions are invalid: <owned>/builtin: FileNotFoundError: packaged builtin service directory is missing"
+          },
+          "changed": null,
+          "services": [],
+          "last_errors": [
+            {
+              "path": "<owned>/builtin",
+              "error_type": "FileNotFoundError",
+              "message": "packaged builtin service directory is missing"
+            }
+          ],
+          "callbacks": [],
+          "audit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "empty_builtin_optional_user_missing",
+        "steps": [
+          {
+            "dirs": [
+              "builtin"
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "step": 0,
+          "error": null,
+          "changed": null,
+          "services": [],
+          "last_errors": [],
+          "callbacks": [],
+          "audit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "both_sources_are_files",
+        "steps": [
+          {
+            "files": {
+              "builtin": "owned",
+              "user": "owned"
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "step": 0,
+          "error": {
+            "class": "ServiceRegistryError",
+            "message": "service definitions are invalid: <owned>/builtin: FileNotFoundError: packaged builtin service directory is missing; <owned>/builtin: NotADirectoryError: service source is not a directory; <owned>/user: NotADirectoryError: service source is not a directory"
+          },
+          "changed": null,
+          "services": [],
+          "last_errors": [
+            {
+              "path": "<owned>/builtin",
+              "error_type": "FileNotFoundError",
+              "message": "packaged builtin service directory is missing"
+            },
+            {
+              "path": "<owned>/builtin",
+              "error_type": "NotADirectoryError",
+              "message": "service source is not a directory"
+            },
+            {
+              "path": "<owned>/user",
+              "error_type": "NotADirectoryError",
+              "message": "service source is not a directory"
+            }
+          ],
+          "callbacks": [],
+          "audit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "yaml_selection_and_filename_order",
+        "steps": [
+          {
+            "files": {
+              "builtin/.hidden.yaml": {
+                "schema_version": 1,
+                "name": "z-hidden",
+                "description": "",
+                "capabilities": {}
+              },
+              "builtin/20-a.yaml": {
+                "schema_version": 1,
+                "name": "a-last",
+                "description": "",
+                "capabilities": {}
+              },
+              "builtin/ignored.yml": "[invalid",
+              "builtin/ignored.YAML": "[invalid",
+              "builtin/nested/ignored.yaml": "[invalid"
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "step": 0,
+          "error": null,
+          "changed": null,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "z-hidden",
+              "description": "",
+              "capabilities": {}
+            },
+            {
+              "schema_version": 1,
+              "name": "a-last",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [],
+          "callbacks": [],
+          "audit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "user_override_retains_position",
+        "steps": [
+          {
+            "files": {
+              "builtin/10-z.yaml": {
+                "schema_version": 1,
+                "name": "zeta",
+                "description": "Builtin Z",
+                "capabilities": {
+                  "write": {
+                    "description": "Write"
+                  },
+                  "read": {
+                    "description": "Read"
+                  }
+                }
+              },
+              "builtin/20-a.yaml": {
+                "schema_version": 1,
+                "name": "alpha",
+                "description": "Alpha",
+                "capabilities": {
+                  "second": {
+                    "description": "Second"
+                  },
+                  "first": {
+                    "description": "First"
+                  }
+                }
+              },
+              "user/10-z.yaml": {
+                "schema_version": 1,
+                "name": "zeta",
+                "description": "Owned override",
+                "capabilities": {
+                  "late": {
+                    "description": "Late"
+                  },
+                  "early": {
+                    "description": "Early"
+                  }
+                }
+              },
+              "user/20-m.yaml": {
+                "schema_version": 1,
+                "name": "middle",
+                "description": "Middle",
+                "capabilities": {}
+              }
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "step": 0,
+          "error": null,
+          "changed": null,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "zeta",
+              "description": "Owned override",
+              "capabilities": {
+                "late": {
+                  "description": "Late"
+                },
+                "early": {
+                  "description": "Early"
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "name": "alpha",
+              "description": "Alpha",
+              "capabilities": {
+                "second": {
+                  "description": "Second"
+                },
+                "first": {
+                  "description": "First"
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "name": "middle",
+              "description": "Middle",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [],
+          "callbacks": [],
+          "audit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "duplicate_rejects_prefix_then_recovery",
+        "steps": [
+          {
+            "files": {
+              "builtin/10.yaml": {
+                "schema_version": 1,
+                "name": "old",
+                "description": "",
+                "capabilities": {}
+              }
+            }
+          },
+          {
+            "files": {
+              "builtin/10.yaml": {
+                "schema_version": 1,
+                "name": "new",
+                "description": "",
+                "capabilities": {}
+              },
+              "builtin/20.yaml": {
+                "schema_version": 1,
+                "name": "new",
+                "description": "",
+                "capabilities": {}
+              }
+            }
+          },
+          {
+            "remove": [
+              "builtin/20.yaml"
+            ],
+            "files": {
+              "builtin/10.yaml": {
+                "schema_version": 1,
+                "name": "recovered",
+                "description": "",
+                "capabilities": {}
+              }
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "step": 0,
+          "error": null,
+          "changed": null,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "old",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [],
+          "callbacks": [],
+          "audit": []
+        },
+        {
+          "step": 1,
+          "error": {
+            "class": "ServiceRegistryError",
+            "message": "service definitions are invalid: <owned>/builtin/20.yaml: ValueError: duplicate service name 'new' in 10.yaml and 20.yaml"
+          },
+          "changed": null,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "old",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [
+            {
+              "path": "<owned>/builtin/20.yaml",
+              "error_type": "ValueError",
+              "message": "duplicate service name 'new' in 10.yaml and 20.yaml"
+            }
+          ],
+          "callbacks": [],
+          "audit": [
+            {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.config_error",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Service definition 20.yaml failed to load",
+              "addon": "service-loader",
+              "details": {
+                "file": "20.yaml",
+                "error_type": "ValueError",
+                "error": "duplicate service name 'new' in 10.yaml and 20.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "step": 2,
+          "error": null,
+          "changed": null,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "recovered",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [],
+          "callbacks": [],
+          "audit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "malformed_candidate_retains_previous",
+        "steps": [
+          {
+            "files": {
+              "builtin/00.yaml": {
+                "schema_version": 1,
+                "name": "old",
+                "description": "",
+                "capabilities": {}
+              }
+            }
+          },
+          {
+            "files": {
+              "builtin/00.yaml": {
+                "schema_version": 1,
+                "name": "candidate",
+                "description": "",
+                "capabilities": {}
+              },
+              "user/10-empty.yaml": "",
+              "user/20-scalar.yaml": "42\n",
+              "user/30-version.yaml": {
+                "name": "bad"
+              },
+              "user/40-parse.yaml": "[invalid"
+            },
+            "dirs": [
+              "user/50-directory.yaml"
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "step": 0,
+          "error": null,
+          "changed": null,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "old",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [],
+          "callbacks": [],
+          "audit": []
+        },
+        {
+          "step": 1,
+          "error": {
+            "class": "ServiceRegistryError",
+            "message": "service definitions are invalid: <owned>/user/10-empty.yaml: ValueError: service definition is empty; <owned>/user/20-scalar.yaml: TypeError: service definition must be a YAML mapping; <owned>/user/30-version.yaml: ValueError: Unsupported schema_version: None (expected 1); <owned>/user/40-parse.yaml: ParserError: while parsing a flow sequence\n  in \"<unicode string>\", line 1, column 1:\n    [invalid\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 1, column 9:\n    [invalid\n            ^; <owned>/user/50-directory.yaml: IsADirectoryError: [Errno 21] Is a directory: '<owned>/user/50-directory.yaml'"
+          },
+          "changed": null,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "old",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [
+            {
+              "path": "<owned>/user/10-empty.yaml",
+              "error_type": "ValueError",
+              "message": "service definition is empty"
+            },
+            {
+              "path": "<owned>/user/20-scalar.yaml",
+              "error_type": "TypeError",
+              "message": "service definition must be a YAML mapping"
+            },
+            {
+              "path": "<owned>/user/30-version.yaml",
+              "error_type": "ValueError",
+              "message": "Unsupported schema_version: None (expected 1)"
+            },
+            {
+              "path": "<owned>/user/40-parse.yaml",
+              "error_type": "ParserError",
+              "message": "while parsing a flow sequence\n  in \"<unicode string>\", line 1, column 1:\n    [invalid\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 1, column 9:\n    [invalid\n            ^"
+            },
+            {
+              "path": "<owned>/user/50-directory.yaml",
+              "error_type": "IsADirectoryError",
+              "message": "[Errno 21] Is a directory: '<owned>/user/50-directory.yaml'"
+            }
+          ],
+          "callbacks": [],
+          "audit": [
+            {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.config_error",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Service definition 10-empty.yaml failed to load",
+              "addon": "service-loader",
+              "details": {
+                "file": "10-empty.yaml",
+                "error_type": "ValueError",
+                "error": "service definition is empty"
+              }
+            },
+            {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.config_error",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Service definition 20-scalar.yaml failed to load",
+              "addon": "service-loader",
+              "details": {
+                "file": "20-scalar.yaml",
+                "error_type": "TypeError",
+                "error": "service definition must be a YAML mapping"
+              }
+            },
+            {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.config_error",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Service definition 30-version.yaml failed to load",
+              "addon": "service-loader",
+              "details": {
+                "file": "30-version.yaml",
+                "error_type": "ValueError",
+                "error": "Unsupported schema_version: None (expected 1)"
+              }
+            },
+            {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.config_error",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Service definition 40-parse.yaml failed to load",
+              "addon": "service-loader",
+              "details": {
+                "file": "40-parse.yaml",
+                "error_type": "ParserError",
+                "error": "while parsing a flow sequence?  in \"<unicode string>\", line 1, column 1:?    [invalid?    ^?expected ',' or ']', but got '<stream end>'?  in \"<unicode string>\", line 1, column 9:?    [invalid?        ..."
+              }
+            },
+            {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.config_error",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Service definition 50-directory.yaml failed to load",
+              "addon": "service-loader",
+              "details": {
+                "file": "50-directory.yaml",
+                "error_type": "IsADirectoryError",
+                "error": "[Errno 21] Is a directory: '<owned>/user/50-directory.yaml'"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "consumer_rollback_and_no_unchanged_retry",
+        "steps": [
+          {
+            "files": {
+              "builtin/00.yaml": {
+                "schema_version": 1,
+                "name": "old",
+                "description": "",
+                "capabilities": {}
+              }
+            }
+          },
+          {
+            "op": "reload",
+            "files": {
+              "builtin/00.yaml": {
+                "schema_version": 1,
+                "name": "rejected-long-name",
+                "description": "",
+                "capabilities": {}
+              }
+            },
+            "consumer_error": true
+          },
+          {
+            "op": "reload"
+          },
+          {
+            "op": "reload",
+            "files": {
+              "builtin/00.yaml": {
+                "schema_version": 1,
+                "name": "recovered",
+                "description": "",
+                "capabilities": {}
+              }
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "step": 0,
+          "error": null,
+          "changed": null,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "old",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [],
+          "callbacks": [],
+          "audit": []
+        },
+        {
+          "step": 1,
+          "error": {
+            "class": "RuntimeError",
+            "message": "owned consumer rejected candidate"
+          },
+          "changed": null,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "old",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [],
+          "callbacks": [
+            [
+              "rejected-long-name"
+            ],
+            [
+              "old"
+            ]
+          ],
+          "audit": []
+        },
+        {
+          "step": 2,
+          "error": null,
+          "changed": false,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "old",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [],
+          "callbacks": [],
+          "audit": []
+        },
+        {
+          "step": 3,
+          "error": null,
+          "changed": true,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "recovered",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors": [],
+          "callbacks": [
+            [
+              "recovered"
+            ]
+          ],
+          "audit": []
+        }
+      ]
+    }
+  ],
+  "api_rows": [
+    {
+      "input": {
+        "name": "alice_last_host_and_binding",
+        "agent": "alice"
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"alice\", \"authorized\": {\"zeta\": {\"host\": \"last.owned.invalid\", \"token\": \"owned-alice-z-last\", \"capability\": \"late\", \"account\": \"team\"}, \"alpha\": {\"host\": \"alpha.owned.invalid\", \"token\": \"owned-alice-alpha\", \"capability\": \"first\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "341"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "bob_scope_available_order",
+        "agent": "bob"
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"bob\", \"authorized\": {\"middle\": {\"host\": \"\", \"token\": \"owned-bob-middle\", \"capability\": \"reader\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"zeta\", \"description\": \"Owned override\", \"capabilities\": [{\"name\": \"late\", \"description\": \"Late\"}, {\"name\": \"early\", \"description\": \"Early\"}]}, {\"name\": \"alpha\", \"description\": \"Alpha\", \"capabilities\": [{\"name\": \"second\", \"description\": \"Second\"}, {\"name\": \"first\", \"description\": \"First\"}]}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "446"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "unbound_agent_available_order",
+        "agent": "carol"
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"carol\", \"authorized\": {}, \"available\": [{\"name\": \"zeta\", \"description\": \"Owned override\", \"capabilities\": [{\"name\": \"late\", \"description\": \"Late\"}, {\"name\": \"early\", \"description\": \"Early\"}]}, {\"name\": \"alpha\", \"description\": \"Alpha\", \"capabilities\": [{\"name\": \"second\", \"description\": \"Second\"}, {\"name\": \"first\", \"description\": \"First\"}]}, {\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "418"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "query_and_header_cannot_select_bob",
+        "agent": "alice",
+        "query": "agent=bob&agent=carol&unused=%FF",
+        "header_agent": "bob"
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"alice\", \"authorized\": {\"zeta\": {\"host\": \"last.owned.invalid\", \"token\": \"owned-alice-z-last\", \"capability\": \"late\", \"account\": \"team\"}, \"alpha\": {\"host\": \"alpha.owned.invalid\", \"token\": \"owned-alice-alpha\", \"capability\": \"first\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "341"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "post_body_ignored",
+        "method": "POST",
+        "payload": "not JSON",
+        "encoding": "gzip"
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"alice\", \"authorized\": {\"zeta\": {\"host\": \"last.owned.invalid\", \"token\": \"owned-alice-z-last\", \"capability\": \"late\", \"account\": \"team\"}, \"alpha\": {\"host\": \"alpha.owned.invalid\", \"token\": \"owned-alice-alpha\", \"capability\": \"first\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "341"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "delete_and_trailing_slashes",
+        "method": "DELETE",
+        "path": "/gateway/services///"
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"alice\", \"authorized\": {\"zeta\": {\"host\": \"last.owned.invalid\", \"token\": \"owned-alice-z-last\", \"capability\": \"late\", \"account\": \"team\"}, \"alpha\": {\"host\": \"alpha.owned.invalid\", \"token\": \"owned-alice-alpha\", \"capability\": \"first\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "341"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "method_before_auth",
+        "method": "PUT",
+        "auth": "missing",
+        "agent": null
+      },
+      "result": {
+        "status": 405,
+        "body_text": "{\"error\": \"Method Not Allowed\", \"allowed\": [\"GET\", \"POST\", \"DELETE\"]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "69"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "missing_auth_before_identity",
+        "auth": "missing",
+        "agent": null,
+        "gateway": false
+      },
+      "result": {
+        "status": 401,
+        "body_text": "{\"error\": \"Authorization required\", \"hint\": \"Bearer <token>\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "61"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "bad_auth_before_identity",
+        "auth": "wrong",
+        "agent": null
+      },
+      "result": {
+        "status": 401,
+        "body_text": "{\"error\": \"Invalid agent token\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "32"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [],
+      "audit": [
+        {
+          "schema_version": 1,
+          "ts": "<canonical timestamp>",
+          "event": "security.agent_auth_failed",
+          "kind": "security",
+          "severity": "high",
+          "summary": "Agent API auth failed from 192.0.2.10",
+          "addon": "agent-api",
+          "decision": "deny",
+          "details": {
+            "client_ip": "192.0.2.10",
+            "path": "/gateway/services"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "identity_before_owner",
+        "agent": null,
+        "gateway": false,
+        "header_agent": "alice"
+      },
+      "result": {
+        "status": 403,
+        "body_text": "{\"error\": \"Could not identify agent\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "37"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "trusted_metadata_conflict",
+        "metadata_agent": "bob"
+      },
+      "result": {
+        "status": 403,
+        "body_text": "{\"error\": \"Could not identify agent\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "37"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "missing_gateway_owner",
+        "gateway": false
+      },
+      "result": {
+        "status": 503,
+        "body_text": "{\"error\": \"service-gateway addon not loaded\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "45"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "absent_registry_retains_authorized",
+        "registry": "absent"
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"alice\", \"authorized\": {\"zeta\": {\"host\": \"last.owned.invalid\", \"token\": \"owned-alice-z-last\", \"capability\": \"late\", \"account\": \"team\"}, \"alpha\": {\"host\": \"alpha.owned.invalid\", \"token\": \"owned-alice-alpha\", \"capability\": \"first\", \"account\": \"agent\"}}, \"available\": []}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "278"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "empty_registry_retains_authorized",
+        "registry": "empty"
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"alice\", \"authorized\": {\"zeta\": {\"host\": \"last.owned.invalid\", \"token\": \"owned-alice-z-last\", \"capability\": \"late\", \"account\": \"team\"}, \"alpha\": {\"host\": \"alpha.owned.invalid\", \"token\": \"owned-alice-alpha\", \"capability\": \"first\", \"account\": \"agent\"}}, \"available\": []}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "278"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "no_bindings_and_no_registry",
+        "bindings": [],
+        "registry": "absent"
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"alice\", \"authorized\": {}, \"available\": []}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "53"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "missing_host_defaults_empty",
+        "hosts": {}
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"alice\", \"authorized\": {\"zeta\": {\"host\": \"\", \"token\": \"owned-alice-z-last\", \"capability\": \"late\", \"account\": \"team\"}, \"alpha\": {\"host\": \"\", \"token\": \"owned-alice-alpha\", \"capability\": \"first\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "304"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "malformed_sibling_service_unhashable",
+        "extra_binding": {
+          "token": "owned-bad",
+          "agent": "bob",
+          "service": [
+            "zeta"
+          ],
+          "capability": "reader"
+        }
+      },
+      "result": {
+        "status": 500,
+        "body_text": "{\"error\": \"Internal error: TypeError\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "38"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "typed_available_descriptions",
+        "agent": "carol",
+        "registry": "typed"
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"carol\", \"authorized\": {}, \"available\": [{\"name\": \"typed\", \"description\": null, \"capabilities\": [{\"name\": \"boolean\", \"description\": false}, {\"name\": \"object\", \"description\": {\"owned\": 2}}]}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "201"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "caller_timestamp_account_serialization",
+        "extra_binding": {
+          "token": "owned-time",
+          "agent": "alice",
+          "service": "zeta",
+          "capability": "reader",
+          "account_datetime": "2026-01-02T03:04:05"
+        }
+      },
+      "result": {
+        "status": 500,
+        "body_text": "{\"error\": \"Internal error: TypeError\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "38"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    },
+    {
+      "input": {
+        "name": "overwritten_timestamp_binding_not_serialized",
+        "bindings": [
+          {
+            "token": "owned-alice-z-first",
+            "agent": "alice",
+            "service": "zeta",
+            "capability": "early",
+            "account_datetime": "2026-01-02T03:04:05",
+            "capability_datetime": "2026-01-02T03:04:05"
+          },
+          {
+            "token": "owned-bob-middle",
+            "agent": "bob",
+            "service": "middle",
+            "capability": "reader"
+          },
+          {
+            "token": "owned-alice-alpha",
+            "agent": "alice",
+            "service": "alpha",
+            "capability": "first"
+          },
+          {
+            "token": "owned-alice-z-last",
+            "agent": "alice",
+            "service": "zeta",
+            "capability": "late",
+            "account": "team"
+          }
+        ]
+      },
+      "result": {
+        "status": 200,
+        "body_text": "{\"agent\": \"alice\", \"authorized\": {\"zeta\": {\"host\": \"last.owned.invalid\", \"token\": \"owned-alice-z-last\", \"capability\": \"late\", \"account\": \"team\"}, \"alpha\": {\"host\": \"alpha.owned.invalid\", \"token\": \"owned-alice-alpha\", \"capability\": \"first\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Agent-API",
+            "true"
+          ],
+          [
+            "content-length",
+            "341"
+          ]
+        ],
+        "api_response": true,
+        "blocked_by": "agent-api"
+      },
+      "timeline": [
+        "lookup:service-discovery",
+        "lookup:service-gateway",
+        "get_agent_services",
+        "list_services"
+      ],
+      "audit": []
+    }
+  ],
+  "lifecycle_rows": [
+    {
+      "input": {
+        "name": "selected_configure_disable_and_callback",
+        "files": {
+          "builtin/10-z.yaml": {
+            "schema_version": 1,
+            "name": "zeta",
+            "description": "Builtin Z",
+            "capabilities": {
+              "write": {
+                "description": "Write"
+              },
+              "read": {
+                "description": "Read"
+              }
+            }
+          },
+          "builtin/20-a.yaml": {
+            "schema_version": 1,
+            "name": "alpha",
+            "description": "Alpha",
+            "capabilities": {
+              "second": {
+                "description": "Second"
+              },
+              "first": {
+                "description": "First"
+              }
+            }
+          },
+          "user/10-z.yaml": {
+            "schema_version": 1,
+            "name": "zeta",
+            "description": "Owned override",
+            "capabilities": {
+              "late": {
+                "description": "Late"
+              },
+              "early": {
+                "description": "Early"
+              }
+            }
+          },
+          "user/20-m.yaml": {
+            "schema_version": 1,
+            "name": "middle",
+            "description": "Middle",
+            "capabilities": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "name": "initial_disabled",
+          "enabled": false,
+          "configure_timeline": [],
+          "registered_callbacks": 0,
+          "services": null,
+          "projection": {},
+          "tokens_registered": 0,
+          "result": {
+            "status": 200,
+            "body_text": "{\"agent\": \"alice\", \"authorized\": {}, \"available\": []}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "53"
+              ]
+            ],
+            "api_response": true,
+            "blocked_by": "agent-api"
+          },
+          "timeline": [
+            "lookup:service-discovery",
+            "lookup:service-gateway",
+            "get_agent_services"
+          ]
+        },
+        {
+          "name": "loaded_enabled",
+          "enabled": true,
+          "configure_timeline": [
+            "policy.reload",
+            "watcher.start.suppressed",
+            "policy.get_gateway_config",
+            "policy.add_reload_callback"
+          ],
+          "registered_callbacks": 1,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "zeta",
+              "description": "Owned override",
+              "capabilities": {
+                "late": {
+                  "description": "Late"
+                },
+                "early": {
+                  "description": "Early"
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "name": "alpha",
+              "description": "Alpha",
+              "capabilities": {
+                "second": {
+                  "description": "Second"
+                },
+                "first": {
+                  "description": "First"
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "name": "middle",
+              "description": "Middle",
+              "capabilities": {}
+            }
+          ],
+          "projection": {
+            "alice": {
+              "zeta": {
+                "host": "first.owned.invalid",
+                "token": "owned-before",
+                "capability": "early",
+                "account": "agent"
+              }
+            }
+          },
+          "tokens_registered": 1,
+          "result": {
+            "status": 200,
+            "body_text": "{\"agent\": \"alice\", \"authorized\": {\"zeta\": {\"host\": \"first.owned.invalid\", \"token\": \"owned-before\", \"capability\": \"early\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"alpha\", \"description\": \"Alpha\", \"capabilities\": [{\"name\": \"second\", \"description\": \"Second\"}, {\"name\": \"first\", \"description\": \"First\"}]}, {\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "372"
+              ]
+            ],
+            "api_response": true,
+            "blocked_by": "agent-api"
+          },
+          "timeline": [
+            "lookup:service-discovery",
+            "lookup:service-gateway",
+            "get_agent_services",
+            "list_services"
+          ]
+        },
+        {
+          "name": "loaded_then_disabled",
+          "enabled": false,
+          "configure_timeline": [],
+          "registered_callbacks": 1,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "zeta",
+              "description": "Owned override",
+              "capabilities": {
+                "late": {
+                  "description": "Late"
+                },
+                "early": {
+                  "description": "Early"
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "name": "alpha",
+              "description": "Alpha",
+              "capabilities": {
+                "second": {
+                  "description": "Second"
+                },
+                "first": {
+                  "description": "First"
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "name": "middle",
+              "description": "Middle",
+              "capabilities": {}
+            }
+          ],
+          "projection": {
+            "alice": {
+              "zeta": {
+                "host": "first.owned.invalid",
+                "token": "owned-before",
+                "capability": "early",
+                "account": "agent"
+              }
+            }
+          },
+          "tokens_registered": 1,
+          "result": {
+            "status": 200,
+            "body_text": "{\"agent\": \"alice\", \"authorized\": {\"zeta\": {\"host\": \"first.owned.invalid\", \"token\": \"owned-before\", \"capability\": \"early\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"alpha\", \"description\": \"Alpha\", \"capabilities\": [{\"name\": \"second\", \"description\": \"Second\"}, {\"name\": \"first\", \"description\": \"First\"}]}, {\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "372"
+              ]
+            ],
+            "api_response": true,
+            "blocked_by": "agent-api"
+          },
+          "timeline": [
+            "lookup:service-discovery",
+            "lookup:service-gateway",
+            "get_agent_services",
+            "list_services"
+          ]
+        },
+        {
+          "name": "callback_refresh_while_disabled",
+          "enabled": false,
+          "configure_timeline": [
+            "policy.get_gateway_config"
+          ],
+          "registered_callbacks": 1,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "zeta",
+              "description": "Owned override",
+              "capabilities": {
+                "late": {
+                  "description": "Late"
+                },
+                "early": {
+                  "description": "Early"
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "name": "alpha",
+              "description": "Alpha",
+              "capabilities": {
+                "second": {
+                  "description": "Second"
+                },
+                "first": {
+                  "description": "First"
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "name": "middle",
+              "description": "Middle",
+              "capabilities": {}
+            }
+          ],
+          "projection": {
+            "alice": {
+              "alpha": {
+                "host": "new.owned.invalid",
+                "token": "owned-after",
+                "capability": "first",
+                "account": "agent"
+              }
+            }
+          },
+          "tokens_registered": 1,
+          "result": {
+            "status": 200,
+            "body_text": "{\"agent\": \"alice\", \"authorized\": {\"alpha\": {\"host\": \"new.owned.invalid\", \"token\": \"owned-after\", \"capability\": \"first\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"zeta\", \"description\": \"Owned override\", \"capabilities\": [{\"name\": \"late\", \"description\": \"Late\"}, {\"name\": \"early\", \"description\": \"Early\"}]}, {\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "374"
+              ]
+            ],
+            "api_response": true,
+            "blocked_by": "agent-api"
+          },
+          "timeline": [
+            "lookup:service-discovery",
+            "lookup:service-gateway",
+            "get_agent_services",
+            "list_services"
+          ]
+        },
+        {
+          "name": "empty_token_source_retention_D43",
+          "enabled": false,
+          "configure_timeline": [
+            "policy.get_gateway_config"
+          ],
+          "registered_callbacks": 1,
+          "services": [
+            {
+              "schema_version": 1,
+              "name": "zeta",
+              "description": "Owned override",
+              "capabilities": {
+                "late": {
+                  "description": "Late"
+                },
+                "early": {
+                  "description": "Early"
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "name": "alpha",
+              "description": "Alpha",
+              "capabilities": {
+                "second": {
+                  "description": "Second"
+                },
+                "first": {
+                  "description": "First"
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "name": "middle",
+              "description": "Middle",
+              "capabilities": {}
+            }
+          ],
+          "projection": {
+            "alice": {
+              "alpha": {
+                "host": "",
+                "token": "owned-after",
+                "capability": "first",
+                "account": "agent"
+              }
+            }
+          },
+          "tokens_registered": 1,
+          "result": {
+            "status": 200,
+            "body_text": "{\"agent\": \"alice\", \"authorized\": {\"alpha\": {\"host\": \"\", \"token\": \"owned-after\", \"capability\": \"first\", \"account\": \"agent\"}}, \"available\": [{\"name\": \"zeta\", \"description\": \"Owned override\", \"capabilities\": [{\"name\": \"late\", \"description\": \"Late\"}, {\"name\": \"early\", \"description\": \"Early\"}]}, {\"name\": \"middle\", \"description\": \"Middle\", \"capabilities\": []}]}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Agent-API",
+                "true"
+              ],
+              [
+                "content-length",
+                "357"
+              ]
+            ],
+            "api_response": true,
+            "blocked_by": "agent-api"
+          },
+          "timeline": [
+            "lookup:service-discovery",
+            "lookup:service-gateway",
+            "get_agent_services",
+            "list_services"
+          ]
+        }
+      ]
+    }
+  ],
+  "source_sha256": {
+    "cli/src/safeyolo/core/service_loader.py": "a5def870f8e3e6896db8aaed4a1cdd2aecb0a6cb5537d942923ca5f610e445e8",
+    "cli/src/safeyolo/core/service_paths.py": "3034156cad21b7a535bb26e8025d8841562c76aa96edaeb38b36009f2fa2fa6a",
+    "cli/src/safeyolo/mitm_addons/service_gateway.py": "b11b8fedcc1413ee879e4a7c71d05e41180295e235682e22d2210d9b01c9ec65",
+    "cli/src/safeyolo/mitm_addons/agent_api.py": "ab52434f28e82c9cc5f7ce32bf0b69ff6dcd3158e5e5fd5a446e4a747942e378",
+    "cli/src/safeyolo/core/identity.py": "a5b9352db04c505f12a21c9cfac269d1ba27eb38cbf5989de723ad4ca3e42888",
+    "cli/src/safeyolo/core/flow_cache.py": "eb7f8c829e9e39b3234b7218ba4b0929251798fa58b0490d33e70aff284fe5cd",
+    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
+    "cli/src/safeyolo/proxy_modes/unix_listener.py": "59f22518f7f6752cc857cf62ed196e8645e01cde3b8540cfb62739734099e3db",
+    "cli/src/safeyolo/policy/toml_roundtrip.py": "4f0c5df6189751e0f486283043c0da91d8fe99dda2b84a2354aba6b9bc0c563e",
+    "pdp/tokens.py": "0e9f55d14f411a6e71c2b234ca5072f4c65904da4d0c62aba3103a589152d1a5"
+  }
+}

@@ -120,6 +120,7 @@ async fn discovery_auth_precedes_global_reporting_without_body_reads() {
             &Registry::default(),
             0.,
             Controls {
+                gateway: None,
                 memory: None,
                 traces: None,
                 discovery: installed.then_some(&discovery),

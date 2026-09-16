@@ -2,6 +2,7 @@
 //! not authorization to dial: risky-route policy and credential lifecycle still follow.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::sync::Arc;
 
 use ring::rand::{SecureRandom, SystemRandom};
@@ -225,8 +226,64 @@ fn risky_route(
 pub struct Registry {
     pub services: BTreeMap<String, ServiceDefinition>,
     pub source_by_service: BTreeMap<String, String>,
+    order: Vec<String>,
 }
 impl Registry {
+    /// Construct one strict catalog candidate. Only top-level `*.yaml`
+    /// entries participate; user definitions replace builtin definitions.
+    pub fn from_directories(builtin: &Path, user: &Path) -> Result<Self, Error> {
+        Self::from_sources(
+            &directory_sources(builtin, true)?,
+            &directory_sources(user, false)?,
+        )
+    }
+
+    /// The agent-visible catalog contains description fields only. Authorized
+    /// service names are borrowed separately from any secret-bearing bindings.
+    pub fn available_services(&self, authorized: &BTreeSet<&str>) -> Value {
+        Value::Array(
+            self.order
+                .iter()
+                .filter(|name| !authorized.contains(name.as_str()))
+                .filter_map(|name| {
+                    let service = self.services.get(name)?;
+                    let capabilities = service
+                        .raw
+                        .get("capabilities")
+                        .and_then(Value::as_object)
+                        .map(|caps| {
+                            caps.iter()
+                                .map(|(name, cap)| {
+                                    let mut value = Map::new();
+                                    value.insert("name".into(), name.clone().into());
+                                    value.insert(
+                                        "description".into(),
+                                        cap.get("description")
+                                            .cloned()
+                                            .unwrap_or_else(|| "".into()),
+                                    );
+                                    Value::Object(value)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let mut value = Map::new();
+                    value.insert("name".into(), service.name.clone().into());
+                    value.insert(
+                        "description".into(),
+                        service
+                            .raw
+                            .get("description")
+                            .cloned()
+                            .unwrap_or_else(|| "".into()),
+                    );
+                    value.insert("capabilities".into(), Value::Array(capabilities));
+                    Some(Value::Object(value))
+                })
+                .collect(),
+        )
+    }
+
     /// Inputs identify source filenames and YAML contents. Duplicate service names
     /// within one source reject the candidate. A user definition overrides a builtin.
     pub fn from_sources(
@@ -248,12 +305,72 @@ impl Registry {
                 registry
                     .source_by_service
                     .insert(service.name.clone(), filename.clone());
+                if !registry.services.contains_key(&service.name) {
+                    registry.order.push(service.name.clone());
+                }
                 registry.services.insert(service.name.clone(), service);
             }
         }
         Ok(registry)
     }
 }
+
+fn directory_sources(directory: &Path, required: bool) -> Result<Vec<(String, String)>, Error> {
+    match std::fs::metadata(directory) {
+        Ok(metadata) if metadata.is_dir() => (),
+        Ok(_) => return Err("service source is not a directory".into()),
+        Err(error)
+            if !required
+                && matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+        {
+            return Ok(Vec::new());
+        }
+        Err(_) => return Err("service source directory is unavailable".into()),
+    }
+    // pathlib's top-level glob suppresses scandir OSError, including failure
+    // partway through collecting directory entries. Reading a matched entry
+    // below is different: that error rejects the strict candidate.
+    let entries = match std::fs::read_dir(directory)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+    {
+        Ok(entries) => entries,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut sources = Vec::new();
+    for entry in entries {
+        if !entry.file_name().as_encoded_bytes().ends_with(b".yaml") {
+            continue;
+        }
+        let path = entry.path();
+        let filename = path
+            .to_str()
+            .ok_or("service source filename is not representable")?;
+        let contents =
+            std::fs::read_to_string(&path).map_err(|_| "service definition could not be read")?;
+        sources.push((filename.to_owned(), contents));
+    }
+    Ok(sources)
+}
+
+/// Source-representable view errors are distinct from a native representation
+/// gap. Neither category exposes a binding, token, schema value or error text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceViewError {
+    Type,
+    Compatibility,
+}
+impl std::fmt::Display for ServiceViewError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Type => "service view type error",
+            Self::Compatibility => "service view unavailable",
+        })
+    }
+}
+impl std::error::Error for ServiceViewError {}
 
 pub type HostMap = BTreeMap<String, String>;
 /// Gateway token and non-secret vault selection reference. Never emit
@@ -558,9 +675,9 @@ impl GatewaySnapshot {
 
     /// Authenticated agent API projection of live bindings. The caller has
     /// already established this trusted agent; a request header is not identity.
-    pub fn agent_services_json(&self, agent: &str) -> Result<Secret, Error> {
+    pub fn agent_services_json(&self, agent: &str) -> Result<Secret, ServiceViewError> {
         if self.token_issue.is_some() {
-            return Err("gateway binding view is unavailable for this source shape".into());
+            return Err(ServiceViewError::Compatibility);
         }
         if self
             .tokens
@@ -571,7 +688,7 @@ impl GatewaySnapshot {
                     || (!typed.service && unhashable(&binding.service))
             })
         {
-            return Err("gateway service view contains an unhashable binding key".into());
+            return Err(ServiceViewError::Type);
         }
         let mut reverse_hosts = BTreeMap::new();
         if let Some(hosts) = self.canonical.get("host_map").and_then(Value::as_object) {
@@ -582,7 +699,7 @@ impl GatewaySnapshot {
                     .is_none()
                     && unhashable(service)
                 {
-                    return Err("gateway service view contains an unhashable host binding".into());
+                    return Err(ServiceViewError::Type);
                 }
                 // Only source string service names match the registry. Last
                 // source host wins independently of sorted exact-lookup maps.
@@ -604,26 +721,37 @@ impl GatewaySnapshot {
                 }
             }
         }
-        let mut services = Value::Object(Map::new());
+        // Source builds the complete agent map before JSON serialization.
+        // Preserve first insertion order and the last binding's value without
+        // allocating token copies for bindings that will be replaced.
+        let mut winners = indexmap::IndexMap::new();
         for (binding, typed) in self
             .tokens
             .iter()
             .zip(&self.token_timestamps)
             .filter(|(binding, typed)| !typed.agent && binding.agent == agent)
         {
-            if typed.token || typed.view_non_json {
-                wipe_json(&mut services);
-                return Err("gateway service view contains a non-JSON timestamp".into());
+            // A datetime service key cannot be replaced by a same-spelled
+            // ordinary string key in Python; it remains non-JSON in the map.
+            if typed.service {
+                return Err(ServiceViewError::Type);
             }
             let Some(name) = binding.service.as_str() else {
-                wipe_json(&mut services);
-                return Err("gateway service API requires a representable service key".into());
+                return Err(ServiceViewError::Compatibility);
             };
+            winners.insert(name, (binding, typed));
+        }
+        let mut services = Value::Object(Map::new());
+        for (name, (binding, typed)) in winners {
+            if typed.token || typed.view_non_json {
+                wipe_json(&mut services);
+                return Err(ServiceViewError::Type);
+            }
             let mut service = Map::new();
             let (host, typed_host) = reverse_hosts.get(name).copied().unwrap_or(("", false));
             if typed_host {
                 wipe_json(&mut services);
-                return Err("gateway service view contains a non-JSON timestamp".into());
+                return Err(ServiceViewError::Type);
             }
             service.insert("host".into(), host.into());
             service.insert("token".into(), binding.token.expose_secret().into());
@@ -637,6 +765,22 @@ impl GatewaySnapshot {
         let encoded = crate::python_json::encode(&services);
         wipe_json(&mut services);
         Ok(Secret::new(encoded))
+    }
+
+    /// Call only after `agent_services_json` succeeds for the same agent. This
+    /// borrows binding names without parsing or copying the returned secrets.
+    pub(crate) fn available_services(&self, agent: &str) -> Value {
+        let Some(registry) = &self.registry else {
+            return Value::Array(Vec::new());
+        };
+        let authorized = self
+            .tokens
+            .iter()
+            .zip(&self.token_timestamps)
+            .filter(|(binding, typed)| !typed.agent && binding.agent == agent)
+            .filter_map(|(binding, _)| binding.service.as_str())
+            .collect();
+        registry.available_services(&authorized)
     }
 
     pub fn select(&self, request: GatewayRequest<'_>) -> GatewayDecision {
@@ -1556,3 +1700,6 @@ fn select_binding(
         }),
     }
 }
+
+#[cfg(test)]
+mod catalog_tests;

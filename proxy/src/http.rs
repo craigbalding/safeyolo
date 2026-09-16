@@ -896,6 +896,13 @@ async fn local_agent_api(
             &runtime.tasks,
             crate::policy::current_time_ms(),
             agent_api::Controls {
+                gateway: Some(agent_api::GatewayContext {
+                    snapshot: runtime
+                        .policy
+                        .as_ref()
+                        .and_then(|policy| policy.gateway())
+                        .filter(|snapshot| snapshot.registry().is_some()),
+                }),
                 memory: Some(agent_api::MemoryContext {
                     owner: &runtime.memory_monitor,
                     sample: crate::memory_runtime::sample,

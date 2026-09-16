@@ -77,6 +77,7 @@ impl Fixture {
             &Registry::default(),
             1000.,
             Controls {
+                gateway: None,
                 memory: None,
                 traces: None,
                 discovery: None,
