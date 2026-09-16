@@ -175,6 +175,36 @@ WORKFLOWS = [
         },
     ),
     workflow(
+        "explicit_default_https_port_path_query",
+        {
+            "method": "GET",
+            "url": "https://source.fixture.invalid:443/default-https/path?x=one&y=two",
+            "headers": [],
+            "body": {"text": "https-default"},
+        },
+    ),
+    workflow(
+        "explicit_default_http_port_path_query",
+        {
+            "method": "GET",
+            "url": "http://source.fixture.invalid:80/default-http/path?x=one&y=two",
+            "headers": [],
+            "body": {"text": "http-default"},
+        },
+    ),
+    workflow(
+        "header_bytes_valid_utf8_and_ff",
+        {
+            "method": "GET",
+            "url": "https://source.fixture.invalid:443/header-bytes?x=one",
+            "headers": [
+                ["X-UTF8", {"hex": "636166c3a9"}],
+                ["X-Byte", {"hex": "ff"}],
+            ],
+            "body": {"text": "header-body"},
+        },
+    ),
+    workflow(
         "post_present_empty_body",
         {
             "method": "POST",
@@ -273,6 +303,82 @@ WORKFLOWS = [
         },
     ),
     workflow(
+        "charset_ascii_valid",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/ascii-valid",
+            "headers": [["Content-Type", "text/plain; charset=ascii"]],
+            "body": {"text": "ascii-body"},
+        },
+    ),
+    workflow(
+        "bom_utf16le_retains_bom",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/bom-utf16le",
+            "headers": [["Content-Type", "text/plain"]],
+            "body": {"hex": "fffe68006900"},
+        },
+    ),
+    workflow(
+        "bom_utf16be_retains_bom",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/bom-utf16be",
+            "headers": [["Content-Type", "text/plain"]],
+            "body": {"hex": "feff00680069"},
+        },
+    ),
+    workflow(
+        "bom_utf32le_retains_bom",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/bom-utf32le",
+            "headers": [["Content-Type", "text/plain"]],
+            "body": {"hex": "fffe00006800000069000000"},
+        },
+    ),
+    workflow(
+        "bom_utf32be_retains_bom",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/bom-utf32be",
+            "headers": [["Content-Type", "text/plain"]],
+            "body": {"hex": "0000feff0000006800000069"},
+        },
+    ),
+    workflow(
+        "html_in_body_charset_inference",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/html-encoding",
+            "headers": [["Content-Type", "text/html"]],
+            "body": {"hex": "3c6d65746120636861727365743d2769736f2d383835392d31273e636166e9"},
+        },
+    ),
+    workflow(
+        "xml_in_body_charset_inference",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/xml-encoding",
+            "headers": [["Content-Type", "application/xml"]],
+            "body": {
+                "hex": "3c3f786d6c2076657273696f6e3d27312e302720656e636f64696e673d2769736f2d383835392d31273f3e3c783e636166e93c2f783e"
+            },
+        },
+    ),
+    workflow(
+        "css_in_body_charset_inference",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/css-encoding",
+            "headers": [["Content-Type", "text/css"]],
+            "body": {
+                "hex": "4063686172736574202269736f2d383835392d31223b202e78207b20636f6e74656e743a2022e9223b207d"
+            },
+        },
+    ),
+    workflow(
         "shell_quote_text_body",
         {
             "method": "PATCH",
@@ -367,15 +473,30 @@ FORMATS = ("curl", "httpie", "raw", "raw_request", "raw_response")
 
 
 def output(value):
-    """Represent text exactly and bytes exactly when bounded."""
+    """Represent source text bytes safely and binary values exactly when bounded."""
     if isinstance(value, str):
         raw = value.encode("utf-8", "surrogateescape")
-        return {
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            representation = "utf8-surrogateescape"
+            safe_text = None
+        else:
+            representation = "unicode"
+            safe_text = value
+        result = {
             "kind": "text",
-            "text": value,
+            "representation": representation,
+            "text": safe_text,
             "utf8_length": len(raw),
             "utf8_sha256": hashlib.sha256(raw).hexdigest(),
         }
+        if len(raw) <= 4096:
+            result["utf8_hex"] = raw.hex()
+        else:
+            result["utf8_prefix_hex"] = raw[:128].hex()
+            result["utf8_suffix_hex"] = raw[-128:].hex()
+        return result
     raw = bytes(value)
     result = {
         "kind": "bytes",
@@ -436,7 +557,17 @@ def text_value(rows, name, format_name):
     value = result(rows, name, format_name)
     assert value["error_type"] is None, (name, format_name, value)
     assert value["output"]["kind"] == "text", (name, format_name, value)
+    assert value["output"]["representation"] == "unicode", (name, format_name, value)
     return value["output"]["text"]
+
+
+def text_bytes_value(rows, name, format_name):
+    value = result(rows, name, format_name)
+    assert value["error_type"] is None, (name, format_name, value)
+    output_value = value["output"]
+    assert output_value["kind"] == "text", (name, format_name, value)
+    assert output_value["utf8_hex"], (name, format_name, value)
+    return bytes.fromhex(output_value["utf8_hex"])
 
 
 def bytes_value(rows, name, format_name):
@@ -475,6 +606,47 @@ def assert_encoded_content_controls(rows):
     )
     assert "content-length:" not in absent_encoded.lower()
     assert_error(rows, "get_absent_encoded_body", "raw_request", "CommandError")
+
+
+def assert_url_and_header_bytes_controls(rows):
+    assert text_value(rows, "explicit_default_https_port_path_query", "curl") == (
+        "curl 'https://source.fixture.invalid/default-https/path?x=one&y=two' -d https-default"
+    )
+    assert text_value(rows, "explicit_default_https_port_path_query", "httpie") == (
+        "http GET 'https://source.fixture.invalid/default-https/path?x=one&y=two' <<< https-default"
+    )
+    assert text_value(rows, "explicit_default_http_port_path_query", "curl") == (
+        "curl 'http://source.fixture.invalid/default-http/path?x=one&y=two' -d http-default"
+    )
+    assert text_value(rows, "explicit_default_http_port_path_query", "httpie") == (
+        "http GET 'http://source.fixture.invalid/default-http/path?x=one&y=two' <<< http-default"
+    )
+
+    for format_name in ("curl", "httpie"):
+        value = result(rows, "header_bytes_valid_utf8_and_ff", format_name)
+        assert value["output"]["representation"] == "utf8-surrogateescape", value
+        assert value["output"]["text"] is None, value
+        command_bytes = text_bytes_value(rows, "header_bytes_valid_utf8_and_ff", format_name)
+        assert b"X-UTF8: caf\xc3\xa9" in command_bytes, (format_name, command_bytes)
+        assert b"X-Byte: \xff" in command_bytes, (format_name, command_bytes)
+
+
+def assert_text_decoding_controls(rows):
+    assert "ascii-body" in text_value(rows, "charset_ascii_valid", "curl")
+    for name in (
+        "bom_utf16le_retains_bom",
+        "bom_utf16be_retains_bom",
+        "bom_utf32le_retains_bom",
+        "bom_utf32be_retains_bom",
+    ):
+        assert "\ufeffhi" in text_value(rows, name, "curl"), name
+        assert "\ufeffhi" in text_value(rows, name, "httpie"), name
+
+    for name in ("html_in_body_charset_inference", "xml_in_body_charset_inference"):
+        assert "café" in text_value(rows, name, "curl"), name
+        assert "café" in text_value(rows, name, "httpie"), name
+    for format_name in ("curl", "httpie"):
+        assert 'content: "é"' in text_value(rows, "css_in_body_charset_inference", format_name)
 
 
 def assert_command_quoting(rows):
@@ -531,6 +703,8 @@ def assert_websocket_contract(rows):
 def assert_contract(rows):
     """Independent checks for source behavior used by native replay."""
     assert_encoded_content_controls(rows)
+    assert_url_and_header_bytes_controls(rows)
+    assert_text_decoding_controls(rows)
     request = bytes_value(rows, "http_versions_custom_reason_absolute_target", "raw_request")
     assert request.startswith(b"POST https://authority.fixture.invalid:8443/absolute HTTP/2.0\r\n")
     response = bytes_value(rows, "http_versions_custom_reason_absolute_target", "raw_response")
@@ -575,8 +749,8 @@ def source_hashes():
 REPRESENTATION_DIFFERENCES = [
     {
         "name": "source_command_text",
-        "source": "curl and httpie are shell command strings; the exporter does not execute them",
-        "native": "native command output must remain text and must not imply execution",
+        "source": "curl and httpie are shell command strings; this fixture records valid Unicode as text and surrogateescaped bytes as utf8_hex with representation utf8-surrogateescape",
+        "native": "native command output must remain text and must not imply execution; replay must preserve command bytes without JSON lone surrogates",
     },
     {
         "name": "decoded_bodies",
@@ -603,6 +777,11 @@ REPRESENTATION_DIFFERENCES = [
         "source": "raw assembly emits finite chunk framing and trailers; non-chunked trailers raise ValueError",
         "native": "native export should preserve the observed framing facts or report unavailable representation explicitly",
     },
+    {
+        "name": "content_encoding_inference",
+        "source": "get_text gives BOMs highest priority, accepts declared ASCII, and infers declared HTML/XML/CSS encodings from in-body markers",
+        "native": "native text commands need the demonstrated decoder behavior or an explicit unavailable result",
+    },
 ]
 
 
@@ -610,7 +789,7 @@ def document():
     rows = [observe(spec) for spec in WORKFLOWS]
     assert_contract(rows)
     return {
-        "schema": 2,
+        "schema": 3,
         "source": "installed_mitmproxy_export_functions",
         "versions": {
             "python": sys.version.split()[0],

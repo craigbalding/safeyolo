@@ -1,5 +1,5 @@
 {
-  "schema": 2,
+  "schema": 3,
   "source": "installed_mitmproxy_export_functions",
   "versions": {
     "python": "3.12.14",
@@ -25,8 +25,8 @@
   "representation_differences": [
     {
       "name": "source_command_text",
-      "source": "curl and httpie are shell command strings; the exporter does not execute them",
-      "native": "native command output must remain text and must not imply execution"
+      "source": "curl and httpie are shell command strings; this fixture records valid Unicode as text and surrogateescaped bytes as utf8_hex with representation utf8-surrogateescape",
+      "native": "native command output must remain text and must not imply execution; replay must preserve command bytes without JSON lone surrogates"
     },
     {
       "name": "decoded_bodies",
@@ -52,6 +52,11 @@
       "name": "chunked_trailers",
       "source": "raw assembly emits finite chunk framing and trailers; non-chunked trailers raise ValueError",
       "native": "native export should preserve the observed framing facts or report unavailable representation explicitly"
+    },
+    {
+      "name": "content_encoding_inference",
+      "source": "get_text gives BOMs highest priority, accepts declared ASCII, and infers declared HTML/XML/CSS encodings from in-body markers",
+      "native": "native text commands need the demonstrated decoder behavior or an explicit unavailable result"
     }
   ],
   "rows": [
@@ -100,9 +105,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -H 'Host: source.fixture.invalid:8443' -H 'X-Request: one' -X POST https://authority.fixture.invalid:8443/absolute -d request-body",
             "utf8_length": 135,
-            "utf8_sha256": "1cf76b06e645153b4aee7e86ca7f16be9ef06417af40cfbd6778fa172a8e7eca"
+            "utf8_sha256": "1cf76b06e645153b4aee7e86ca7f16be9ef06417af40cfbd6778fa172a8e7eca",
+            "utf8_hex": "6375726c202d482027486f73743a20736f757263652e666978747572652e696e76616c69643a3834343327202d482027582d526571756573743a206f6e6527202d5820504f53542068747470733a2f2f617574686f726974792e666978747572652e696e76616c69643a383434332f6162736f6c757465202d6420726571756573742d626f6479"
           },
           "error_type": null,
           "message": null
@@ -110,9 +117,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http POST https://authority.fixture.invalid:8443/absolute 'Host: source.fixture.invalid:8443' 'X-Request: one' <<< request-body",
             "utf8_length": 127,
-            "utf8_sha256": "8bc75a4ce90fc6087cee910f8ffed397def198e8ae978960a089dfba4f08ac2f"
+            "utf8_sha256": "8bc75a4ce90fc6087cee910f8ffed397def198e8ae978960a089dfba4f08ac2f",
+            "utf8_hex": "6874747020504f53542068747470733a2f2f617574686f726974792e666978747572652e696e76616c69643a383434332f6162736f6c7574652027486f73743a20736f757263652e666978747572652e696e76616c69643a38343433272027582d526571756573743a206f6e6527203c3c3c20726571756573742d626f6479"
           },
           "error_type": null,
           "message": null
@@ -204,9 +213,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -H 'X-Dup: one' -H 'x-dup: two' --compressed https://source.fixture.invalid/repeated",
             "utf8_length": 89,
-            "utf8_sha256": "d3511f06460e00defc6bd05662ff00295ad67eefcc9a68a350e42ec78b2a1624"
+            "utf8_sha256": "d3511f06460e00defc6bd05662ff00295ad67eefcc9a68a350e42ec78b2a1624",
+            "utf8_hex": "6375726c202d482027582d4475703a206f6e6527202d482027782d6475703a2074776f27202d2d636f6d707265737365642068747470733a2f2f736f757263652e666978747572652e696e76616c69642f7265706561746564"
           },
           "error_type": null,
           "message": null
@@ -214,9 +225,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http GET https://source.fixture.invalid/repeated 'X-Dup: one' 'x-dup: two' 'Accept-Encoding: gzip'",
             "utf8_length": 98,
-            "utf8_sha256": "fdc4c6d5f42aa911bb617dfa3da5d80a29396c01dc79013653d57eba50174cd8"
+            "utf8_sha256": "fdc4c6d5f42aa911bb617dfa3da5d80a29396c01dc79013653d57eba50174cd8",
+            "utf8_hex": "68747470204745542068747470733a2f2f736f757263652e666978747572652e696e76616c69642f72657065617465642027582d4475703a206f6e65272027782d6475703a2074776f2720274163636570742d456e636f64696e673a20677a697027"
           },
           "error_type": null,
           "message": null
@@ -245,6 +258,226 @@
           },
           "error_type": null,
           "message": null
+        }
+      }
+    },
+    {
+      "name": "explicit_default_https_port_path_query",
+      "input": {
+        "name": "explicit_default_https_port_path_query",
+        "request": {
+          "method": "GET",
+          "url": "https://source.fixture.invalid:443/default-https/path?x=one&y=two",
+          "headers": [],
+          "body": {
+            "text": "https-default"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "curl 'https://source.fixture.invalid/default-https/path?x=one&y=two' -d https-default",
+            "utf8_length": 85,
+            "utf8_sha256": "7f881de2faa457abcfee3811ae458bff8d111771055aa05da5d571f12a395fd3",
+            "utf8_hex": "6375726c202768747470733a2f2f736f757263652e666978747572652e696e76616c69642f64656661756c742d68747470732f706174683f783d6f6e6526793d74776f27202d642068747470732d64656661756c74"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "http GET 'https://source.fixture.invalid/default-https/path?x=one&y=two' <<< https-default",
+            "utf8_length": 90,
+            "utf8_sha256": "3441f3e1302bbb075bf19c2e1e3342bf409c19a0737c7b70af58774a062d0063",
+            "utf8_hex": "6874747020474554202768747470733a2f2f736f757263652e666978747572652e696e76616c69642f64656661756c742d68747470732f706174683f783d6f6e6526793d74776f27203c3c3c2068747470732d64656661756c74"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 81,
+            "sha256": "a2bd99d5c7da23f14cb9914c3f60812a9915910ca253778f18ec4270e321fa31",
+            "hex": "474554202f64656661756c742d68747470732f706174683f783d6f6e6526793d74776f20485454502f312e310d0a636f6e74656e742d6c656e6774683a2031330d0a0d0a68747470732d64656661756c74"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 81,
+            "sha256": "a2bd99d5c7da23f14cb9914c3f60812a9915910ca253778f18ec4270e321fa31",
+            "hex": "474554202f64656661756c742d68747470732f706174683f783d6f6e6526793d74776f20485454502f312e310d0a636f6e74656e742d6c656e6774683a2031330d0a0d0a68747470732d64656661756c74"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
+        }
+      }
+    },
+    {
+      "name": "explicit_default_http_port_path_query",
+      "input": {
+        "name": "explicit_default_http_port_path_query",
+        "request": {
+          "method": "GET",
+          "url": "http://source.fixture.invalid:80/default-http/path?x=one&y=two",
+          "headers": [],
+          "body": {
+            "text": "http-default"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "curl 'http://source.fixture.invalid/default-http/path?x=one&y=two' -d http-default",
+            "utf8_length": 82,
+            "utf8_sha256": "c9b2497b5a9e0e6eace2f76dfda76fcd0f05be83910adbea7181ee9854a524cd",
+            "utf8_hex": "6375726c2027687474703a2f2f736f757263652e666978747572652e696e76616c69642f64656661756c742d687474702f706174683f783d6f6e6526793d74776f27202d6420687474702d64656661756c74"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "http GET 'http://source.fixture.invalid/default-http/path?x=one&y=two' <<< http-default",
+            "utf8_length": 87,
+            "utf8_sha256": "1ab6f3889a1d140319cca80e8a93be87c26be23fedcf9a138b13cd9ad2fec7be",
+            "utf8_hex": "68747470204745542027687474703a2f2f736f757263652e666978747572652e696e76616c69642f64656661756c742d687474702f706174683f783d6f6e6526793d74776f27203c3c3c20687474702d64656661756c74"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 79,
+            "sha256": "6e314b482a5a87d198c90491834c69ee7b149432d810fd4e6065ed3e7e932b7e",
+            "hex": "474554202f64656661756c742d687474702f706174683f783d6f6e6526793d74776f20485454502f312e310d0a636f6e74656e742d6c656e6774683a2031320d0a0d0a687474702d64656661756c74"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 79,
+            "sha256": "6e314b482a5a87d198c90491834c69ee7b149432d810fd4e6065ed3e7e932b7e",
+            "hex": "474554202f64656661756c742d687474702f706174683f783d6f6e6526793d74776f20485454502f312e310d0a636f6e74656e742d6c656e6774683a2031320d0a0d0a687474702d64656661756c74"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
+        }
+      }
+    },
+    {
+      "name": "header_bytes_valid_utf8_and_ff",
+      "input": {
+        "name": "header_bytes_valid_utf8_and_ff",
+        "request": {
+          "method": "GET",
+          "url": "https://source.fixture.invalid:443/header-bytes?x=one",
+          "headers": [
+            [
+              "X-UTF8",
+              {
+                "hex": "636166c3a9"
+              }
+            ],
+            [
+              "X-Byte",
+              {
+                "hex": "ff"
+              }
+            ]
+          ],
+          "body": {
+            "text": "header-body"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "utf8-surrogateescape",
+            "text": null,
+            "utf8_length": 105,
+            "utf8_sha256": "8457fa82a570805b4bde66e319474963b6e09d0f4e4498e7fd22772475882a51",
+            "utf8_hex": "6375726c202d482027582d555446383a20636166c3a927202d482027582d427974653a20ff27202768747470733a2f2f736f757263652e666978747572652e696e76616c69642f6865616465722d62797465733f783d6f6e6527202d64206865616465722d626f6479"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "utf8-surrogateescape",
+            "text": null,
+            "utf8_length": 104,
+            "utf8_sha256": "2b74a3a81c6a10877d08986c0014c4c0df78045364ce57c69aa3b35ab228db96",
+            "utf8_hex": "6874747020474554202768747470733a2f2f736f757263652e666978747572652e696e76616c69642f6865616465722d62797465733f783d6f6e65272027582d555446383a20636166c3a9272027582d427974653a20ff27203c3c3c206865616465722d626f6479"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 93,
+            "sha256": "1bf347a8c08aa3771aa0c9b9ea5802c05dcac9ba7c4e61a3d45837fb7d86002e",
+            "hex": "474554202f6865616465722d62797465733f783d6f6e6520485454502f312e310d0a582d555446383a20636166c3a90d0a582d427974653a20ff0d0a636f6e74656e742d6c656e6774683a2031310d0a0d0a6865616465722d626f6479"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 93,
+            "sha256": "1bf347a8c08aa3771aa0c9b9ea5802c05dcac9ba7c4e61a3d45837fb7d86002e",
+            "hex": "474554202f6865616465722d62797465733f783d6f6e6520485454502f312e310d0a582d555446383a20636166c3a90d0a582d427974653a20ff0d0a636f6e74656e742d6c656e6774683a2031310d0a0d0a6865616465722d626f6479"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
         }
       }
     },
@@ -284,9 +517,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -H 'Content-Encoding: gzip' -H 'content-length: 0' -X POST http://source.fixture.invalid/empty",
             "utf8_length": 99,
-            "utf8_sha256": "52865b721e37185771c4559464ca734d51643528efd1f0f69abb9457442deced"
+            "utf8_sha256": "52865b721e37185771c4559464ca734d51643528efd1f0f69abb9457442deced",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d456e636f64696e673a20677a697027202d482027636f6e74656e742d6c656e6774683a203027202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f656d707479"
           },
           "error_type": null,
           "message": null
@@ -294,9 +529,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http POST http://source.fixture.invalid/empty 'Content-Encoding: gzip'",
             "utf8_length": 70,
-            "utf8_sha256": "7e72e06fc1b7eaab9fb50b7d492a4c9fc0288579e25dda935f009cbf37848e6c"
+            "utf8_sha256": "7e72e06fc1b7eaab9fb50b7d492a4c9fc0288579e25dda935f009cbf37848e6c",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f656d7074792027436f6e74656e742d456e636f64696e673a20677a697027"
           },
           "error_type": null,
           "message": null
@@ -361,9 +598,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -H 'Content-Encoding: gzip' http://source.fixture.invalid/absent-encoded",
             "utf8_length": 77,
-            "utf8_sha256": "90458fa367519761ddc6adb4a1fccf6842a5accf1e817fd496cb39d5683dbc16"
+            "utf8_sha256": "90458fa367519761ddc6adb4a1fccf6842a5accf1e817fd496cb39d5683dbc16",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d456e636f64696e673a20677a69702720687474703a2f2f736f757263652e666978747572652e696e76616c69642f616273656e742d656e636f646564"
           },
           "error_type": null,
           "message": null
@@ -371,9 +610,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http GET http://source.fixture.invalid/absent-encoded 'Content-Encoding: gzip'",
             "utf8_length": 78,
-            "utf8_sha256": "99381df882851bd1d7b394ce4a0153d9fb9d461723e6d14260ddbfb60560b61a"
+            "utf8_sha256": "99381df882851bd1d7b394ce4a0153d9fb9d461723e6d14260ddbfb60560b61a",
+            "utf8_hex": "687474702047455420687474703a2f2f736f757263652e666978747572652e696e76616c69642f616273656e742d656e636f6465642027436f6e74656e742d456e636f64696e673a20677a697027"
           },
           "error_type": null,
           "message": null
@@ -416,9 +657,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl http://source.fixture.invalid/get-body -d get-body",
             "utf8_length": 55,
-            "utf8_sha256": "26b583a2cd7d5566f6127c523650a7b1caf49df6c13c25757d39038f8fc25b6f"
+            "utf8_sha256": "26b583a2cd7d5566f6127c523650a7b1caf49df6c13c25757d39038f8fc25b6f",
+            "utf8_hex": "6375726c20687474703a2f2f736f757263652e666978747572652e696e76616c69642f6765742d626f6479202d64206765742d626f6479"
           },
           "error_type": null,
           "message": null
@@ -426,9 +669,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http GET http://source.fixture.invalid/get-body <<< get-body",
             "utf8_length": 60,
-            "utf8_sha256": "5a9e186994d6deb62976ac9d4c287a2337d0eb556bbc87295fe57a90ebf4210d"
+            "utf8_sha256": "5a9e186994d6deb62976ac9d4c287a2337d0eb556bbc87295fe57a90ebf4210d",
+            "utf8_hex": "687474702047455420687474703a2f2f736f757263652e666978747572652e696e76616c69642f6765742d626f6479203c3c3c206765742d626f6479"
           },
           "error_type": null,
           "message": null
@@ -479,9 +724,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl 'http://source.fixture.invalid/fixture?x=1'",
             "utf8_length": 48,
-            "utf8_sha256": "a83fe240ef4264080fecbcd64b4515d5a3a6f90dfdc8b3de3429bebac2de3ed6"
+            "utf8_sha256": "a83fe240ef4264080fecbcd64b4515d5a3a6f90dfdc8b3de3429bebac2de3ed6",
+            "utf8_hex": "6375726c2027687474703a2f2f736f757263652e666978747572652e696e76616c69642f666978747572653f783d3127"
           },
           "error_type": null,
           "message": null
@@ -489,9 +736,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http GET 'http://source.fixture.invalid/fixture?x=1'",
             "utf8_length": 52,
-            "utf8_sha256": "35bc72e24b9327e2ad51bbf8bd891f2af8e28e4cb2a9100971e586de861bac99"
+            "utf8_sha256": "35bc72e24b9327e2ad51bbf8bd891f2af8e28e4cb2a9100971e586de861bac99",
+            "utf8_hex": "68747470204745542027687474703a2f2f736f757263652e666978747572652e696e76616c69642f666978747572653f783d3127"
           },
           "error_type": null,
           "message": null
@@ -543,9 +792,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl 'http://source.fixture.invalid/fixture?x=1'",
             "utf8_length": 48,
-            "utf8_sha256": "a83fe240ef4264080fecbcd64b4515d5a3a6f90dfdc8b3de3429bebac2de3ed6"
+            "utf8_sha256": "a83fe240ef4264080fecbcd64b4515d5a3a6f90dfdc8b3de3429bebac2de3ed6",
+            "utf8_hex": "6375726c2027687474703a2f2f736f757263652e666978747572652e696e76616c69642f666978747572653f783d3127"
           },
           "error_type": null,
           "message": null
@@ -553,9 +804,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http GET 'http://source.fixture.invalid/fixture?x=1'",
             "utf8_length": 52,
-            "utf8_sha256": "35bc72e24b9327e2ad51bbf8bd891f2af8e28e4cb2a9100971e586de861bac99"
+            "utf8_sha256": "35bc72e24b9327e2ad51bbf8bd891f2af8e28e4cb2a9100971e586de861bac99",
+            "utf8_hex": "68747470204745542027687474703a2f2f736f757263652e666978747572652e696e76616c69642f666978747572653f783d3127"
           },
           "error_type": null,
           "message": null
@@ -617,9 +870,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -X POST http://source.fixture.invalid/response-absent -d request-only",
             "utf8_length": 74,
-            "utf8_sha256": "eaa033588effd3aa5080bdde9463a55e0f2480ddf5a4d6a11e3f8e1670b85944"
+            "utf8_sha256": "eaa033588effd3aa5080bdde9463a55e0f2480ddf5a4d6a11e3f8e1670b85944",
+            "utf8_hex": "6375726c202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f726573706f6e73652d616273656e74202d6420726571756573742d6f6e6c79"
           },
           "error_type": null,
           "message": null
@@ -627,9 +882,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http POST http://source.fixture.invalid/response-absent <<< request-only",
             "utf8_length": 72,
-            "utf8_sha256": "aa9185fbac9ef2f9e8758e5cd52a89efddfdd0eb0faffae3d23abf3f9ed5deae"
+            "utf8_sha256": "aa9185fbac9ef2f9e8758e5cd52a89efddfdd0eb0faffae3d23abf3f9ed5deae",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f726573706f6e73652d616273656e74203c3c3c20726571756573742d6f6e6c79"
           },
           "error_type": null,
           "message": null
@@ -708,9 +965,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -H 'Content-Type: text/plain' -X PUT http://source.fixture.invalid/gzip -d decoded-request",
             "utf8_length": 95,
-            "utf8_sha256": "7133095748068d50cd7c61a5fd0ecf3cc57362351952403d3aad72677dbd792f"
+            "utf8_sha256": "7133095748068d50cd7c61a5fd0ecf3cc57362351952403d3aad72677dbd792f",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d547970653a20746578742f706c61696e27202d582050555420687474703a2f2f736f757263652e666978747572652e696e76616c69642f677a6970202d64206465636f6465642d72657175657374"
           },
           "error_type": null,
           "message": null
@@ -718,9 +977,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http PUT http://source.fixture.invalid/gzip 'Content-Type: text/plain' <<< decoded-request",
             "utf8_length": 90,
-            "utf8_sha256": "52e6b1dfdcc4d10d9e0e2a7e9debb09a84401335fc530b059115aeb273c6057e"
+            "utf8_sha256": "52e6b1dfdcc4d10d9e0e2a7e9debb09a84401335fc530b059115aeb273c6057e",
+            "utf8_hex": "687474702050555420687474703a2f2f736f757263652e666978747572652e696e76616c69642f677a69702027436f6e74656e742d547970653a20746578742f706c61696e27203c3c3c206465636f6465642d72657175657374"
           },
           "error_type": null,
           "message": null
@@ -789,9 +1050,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -X POST http://source.fixture.invalid/malformed -d RAW_MARKER",
             "utf8_length": 66,
-            "utf8_sha256": "a212694af31c4950905904af130c0db59fbd779b3c6f87be8fdfe1f2a462ea7e"
+            "utf8_sha256": "a212694af31c4950905904af130c0db59fbd779b3c6f87be8fdfe1f2a462ea7e",
+            "utf8_hex": "6375726c202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f6d616c666f726d6564202d64205241575f4d41524b4552"
           },
           "error_type": null,
           "message": null
@@ -799,9 +1062,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http POST http://source.fixture.invalid/malformed <<< RAW_MARKER",
             "utf8_length": 64,
-            "utf8_sha256": "00ada865911774b8650e19472144b1cacdb10cc653fe8a5b7fcdf1e7f362c9f5"
+            "utf8_sha256": "00ada865911774b8650e19472144b1cacdb10cc653fe8a5b7fcdf1e7f362c9f5",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f6d616c666f726d6564203c3c3c205241575f4d41524b4552"
           },
           "error_type": null,
           "message": null
@@ -1009,6 +1274,598 @@
       }
     },
     {
+      "name": "charset_ascii_valid",
+      "input": {
+        "name": "charset_ascii_valid",
+        "request": {
+          "method": "POST",
+          "url": "http://source.fixture.invalid/ascii-valid",
+          "headers": [
+            [
+              "Content-Type",
+              "text/plain; charset=ascii"
+            ]
+          ],
+          "body": {
+            "text": "ascii-body"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "curl -H 'Content-Type: text/plain; charset=ascii' -X POST http://source.fixture.invalid/ascii-valid -d ascii-body",
+            "utf8_length": 113,
+            "utf8_sha256": "20c13c80f920ab5c555c4d8e66bd19009c2aedd1c6783d3e763b026fd374ce4f",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d547970653a20746578742f706c61696e3b20636861727365743d617363696927202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f61736369692d76616c6964202d642061736369692d626f6479"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "http POST http://source.fixture.invalid/ascii-valid 'Content-Type: text/plain; charset=ascii' <<< ascii-body",
+            "utf8_length": 108,
+            "utf8_sha256": "f9a8f3096d11600ec1a62cc7be108f45c51fa4ba46115e25cdc0978942dec49e",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f61736369692d76616c69642027436f6e74656e742d547970653a20746578742f706c61696e3b20636861727365743d617363696927203c3c3c2061736369692d626f6479"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 101,
+            "sha256": "824c8b20948f8f92f1929dbd88c4d7ce9b30ccff6e5f21bc3fc7fb3a03a04575",
+            "hex": "504f5354202f61736369692d76616c696420485454502f312e310d0a436f6e74656e742d547970653a20746578742f706c61696e3b20636861727365743d61736369690d0a636f6e74656e742d6c656e6774683a2031300d0a0d0a61736369692d626f6479"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 101,
+            "sha256": "824c8b20948f8f92f1929dbd88c4d7ce9b30ccff6e5f21bc3fc7fb3a03a04575",
+            "hex": "504f5354202f61736369692d76616c696420485454502f312e310d0a436f6e74656e742d547970653a20746578742f706c61696e3b20636861727365743d61736369690d0a636f6e74656e742d6c656e6774683a2031300d0a0d0a61736369692d626f6479"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
+        }
+      }
+    },
+    {
+      "name": "bom_utf16le_retains_bom",
+      "input": {
+        "name": "bom_utf16le_retains_bom",
+        "request": {
+          "method": "POST",
+          "url": "http://source.fixture.invalid/bom-utf16le",
+          "headers": [
+            [
+              "Content-Type",
+              "text/plain"
+            ]
+          ],
+          "body": {
+            "hex": "fffe68006900"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "curl -H 'Content-Type: text/plain' -X POST http://source.fixture.invalid/bom-utf16le -d '\ufeffhi'",
+            "utf8_length": 95,
+            "utf8_sha256": "ee3003e2d0eca99e1c04335c1330bb3cf05ea777472cbf0fa427cac602af85b8",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d547970653a20746578742f706c61696e27202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f626f6d2d75746631366c65202d642027efbbbf686927"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "http POST http://source.fixture.invalid/bom-utf16le 'Content-Type: text/plain' <<< '\ufeffhi'",
+            "utf8_length": 90,
+            "utf8_sha256": "23699ac5222073d51a7e18de82fe781bfa266342abf6172b8b0b93f546ffd478",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f626f6d2d75746631366c652027436f6e74656e742d547970653a20746578742f706c61696e27203c3c3c2027efbbbf686927"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 81,
+            "sha256": "d604c1f48bc7e5391fdb316f3ef44b6719b49fe807b2c0b3afebeaba26934f4f",
+            "hex": "504f5354202f626f6d2d75746631366c6520485454502f312e310d0a436f6e74656e742d547970653a20746578742f706c61696e0d0a636f6e74656e742d6c656e6774683a20360d0a0d0afffe68006900"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 81,
+            "sha256": "d604c1f48bc7e5391fdb316f3ef44b6719b49fe807b2c0b3afebeaba26934f4f",
+            "hex": "504f5354202f626f6d2d75746631366c6520485454502f312e310d0a436f6e74656e742d547970653a20746578742f706c61696e0d0a636f6e74656e742d6c656e6774683a20360d0a0d0afffe68006900"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
+        }
+      }
+    },
+    {
+      "name": "bom_utf16be_retains_bom",
+      "input": {
+        "name": "bom_utf16be_retains_bom",
+        "request": {
+          "method": "POST",
+          "url": "http://source.fixture.invalid/bom-utf16be",
+          "headers": [
+            [
+              "Content-Type",
+              "text/plain"
+            ]
+          ],
+          "body": {
+            "hex": "feff00680069"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "curl -H 'Content-Type: text/plain' -X POST http://source.fixture.invalid/bom-utf16be -d '\ufeffhi'",
+            "utf8_length": 95,
+            "utf8_sha256": "a76a815cfee62cefeb4dc8cdb8b0638a6bdf04ef378c46670badb3b66a7d04b8",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d547970653a20746578742f706c61696e27202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f626f6d2d75746631366265202d642027efbbbf686927"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "http POST http://source.fixture.invalid/bom-utf16be 'Content-Type: text/plain' <<< '\ufeffhi'",
+            "utf8_length": 90,
+            "utf8_sha256": "14bce2be4287064be5e6ee2f3e6945a74579a692ec4c0961fed463e936d76a08",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f626f6d2d757466313662652027436f6e74656e742d547970653a20746578742f706c61696e27203c3c3c2027efbbbf686927"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 81,
+            "sha256": "bcd5f1ef8d9bd866dce43748d4ce4781b0a6c9a3414791fc6686a872fc5dde49",
+            "hex": "504f5354202f626f6d2d7574663136626520485454502f312e310d0a436f6e74656e742d547970653a20746578742f706c61696e0d0a636f6e74656e742d6c656e6774683a20360d0a0d0afeff00680069"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 81,
+            "sha256": "bcd5f1ef8d9bd866dce43748d4ce4781b0a6c9a3414791fc6686a872fc5dde49",
+            "hex": "504f5354202f626f6d2d7574663136626520485454502f312e310d0a436f6e74656e742d547970653a20746578742f706c61696e0d0a636f6e74656e742d6c656e6774683a20360d0a0d0afeff00680069"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
+        }
+      }
+    },
+    {
+      "name": "bom_utf32le_retains_bom",
+      "input": {
+        "name": "bom_utf32le_retains_bom",
+        "request": {
+          "method": "POST",
+          "url": "http://source.fixture.invalid/bom-utf32le",
+          "headers": [
+            [
+              "Content-Type",
+              "text/plain"
+            ]
+          ],
+          "body": {
+            "hex": "fffe00006800000069000000"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "curl -H 'Content-Type: text/plain' -X POST http://source.fixture.invalid/bom-utf32le -d '\ufeffhi'",
+            "utf8_length": 95,
+            "utf8_sha256": "b61d80e297f636f0c817b0c03e6d64df1f195c363ab777356aae67db6648a336",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d547970653a20746578742f706c61696e27202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f626f6d2d75746633326c65202d642027efbbbf686927"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "http POST http://source.fixture.invalid/bom-utf32le 'Content-Type: text/plain' <<< '\ufeffhi'",
+            "utf8_length": 90,
+            "utf8_sha256": "5ee677c3258ccb6c158eecbe052b122444a899e664534b6a415a23a267be34c5",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f626f6d2d75746633326c652027436f6e74656e742d547970653a20746578742f706c61696e27203c3c3c2027efbbbf686927"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 88,
+            "sha256": "675cc094a5c795015990ef2a7e2da66bd08f99887485bf90b1274f5a2a524fed",
+            "hex": "504f5354202f626f6d2d75746633326c6520485454502f312e310d0a436f6e74656e742d547970653a20746578742f706c61696e0d0a636f6e74656e742d6c656e6774683a2031320d0a0d0afffe00006800000069000000"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 88,
+            "sha256": "675cc094a5c795015990ef2a7e2da66bd08f99887485bf90b1274f5a2a524fed",
+            "hex": "504f5354202f626f6d2d75746633326c6520485454502f312e310d0a436f6e74656e742d547970653a20746578742f706c61696e0d0a636f6e74656e742d6c656e6774683a2031320d0a0d0afffe00006800000069000000"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
+        }
+      }
+    },
+    {
+      "name": "bom_utf32be_retains_bom",
+      "input": {
+        "name": "bom_utf32be_retains_bom",
+        "request": {
+          "method": "POST",
+          "url": "http://source.fixture.invalid/bom-utf32be",
+          "headers": [
+            [
+              "Content-Type",
+              "text/plain"
+            ]
+          ],
+          "body": {
+            "hex": "0000feff0000006800000069"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "curl -H 'Content-Type: text/plain' -X POST http://source.fixture.invalid/bom-utf32be -d '\ufeffhi'",
+            "utf8_length": 95,
+            "utf8_sha256": "3b2250c1b28a319bf35346fe65ba25d5d5232612ef3e0ded1b8ea2920c9dbc1e",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d547970653a20746578742f706c61696e27202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f626f6d2d75746633326265202d642027efbbbf686927"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "http POST http://source.fixture.invalid/bom-utf32be 'Content-Type: text/plain' <<< '\ufeffhi'",
+            "utf8_length": 90,
+            "utf8_sha256": "faac38e5823eb20c18de35b2eb43dfbbd0fa3b59e0e8920c049e8394139fc774",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f626f6d2d757466333262652027436f6e74656e742d547970653a20746578742f706c61696e27203c3c3c2027efbbbf686927"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 88,
+            "sha256": "41943744dce4aa9eadd52f8e07865e18f2783a711b194ecd61cdb25cbda4bd9d",
+            "hex": "504f5354202f626f6d2d7574663332626520485454502f312e310d0a436f6e74656e742d547970653a20746578742f706c61696e0d0a636f6e74656e742d6c656e6774683a2031320d0a0d0a0000feff0000006800000069"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 88,
+            "sha256": "41943744dce4aa9eadd52f8e07865e18f2783a711b194ecd61cdb25cbda4bd9d",
+            "hex": "504f5354202f626f6d2d7574663332626520485454502f312e310d0a436f6e74656e742d547970653a20746578742f706c61696e0d0a636f6e74656e742d6c656e6774683a2031320d0a0d0a0000feff0000006800000069"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
+        }
+      }
+    },
+    {
+      "name": "html_in_body_charset_inference",
+      "input": {
+        "name": "html_in_body_charset_inference",
+        "request": {
+          "method": "POST",
+          "url": "http://source.fixture.invalid/html-encoding",
+          "headers": [
+            [
+              "Content-Type",
+              "text/html"
+            ]
+          ],
+          "body": {
+            "hex": "3c6d65746120636861727365743d2769736f2d383835392d31273e636166e9"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "curl -H 'Content-Type: text/html' -X POST http://source.fixture.invalid/html-encoding -d '<meta charset='\"'\"'iso-8859-1'\"'\"'>caf\u00e9'",
+            "utf8_length": 131,
+            "utf8_sha256": "6fb0bbc445b349c8d24985184154b98c3b9e3c5f29c5058f650222b86a63353b",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d547970653a20746578742f68746d6c27202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f68746d6c2d656e636f64696e67202d6420273c6d65746120636861727365743d272227222769736f2d383835392d3127222722273e636166c3a927"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "http POST http://source.fixture.invalid/html-encoding 'Content-Type: text/html' <<< '<meta charset='\"'\"'iso-8859-1'\"'\"'>caf\u00e9'",
+            "utf8_length": 126,
+            "utf8_sha256": "343a7c45f734a00a960308666c3525e3b921338465bfbd6ee41f9639a0184c2d",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f68746d6c2d656e636f64696e672027436f6e74656e742d547970653a20746578742f68746d6c27203c3c3c20273c6d65746120636861727365743d272227222769736f2d383835392d3127222722273e636166c3a927"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 108,
+            "sha256": "99c2a727eeac474797e03aabbe2e5eb70c4ed889eb702ba271f8f43f8474ffeb",
+            "hex": "504f5354202f68746d6c2d656e636f64696e6720485454502f312e310d0a436f6e74656e742d547970653a20746578742f68746d6c0d0a636f6e74656e742d6c656e6774683a2033310d0a0d0a3c6d65746120636861727365743d2769736f2d383835392d31273e636166e9"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 108,
+            "sha256": "99c2a727eeac474797e03aabbe2e5eb70c4ed889eb702ba271f8f43f8474ffeb",
+            "hex": "504f5354202f68746d6c2d656e636f64696e6720485454502f312e310d0a436f6e74656e742d547970653a20746578742f68746d6c0d0a636f6e74656e742d6c656e6774683a2033310d0a0d0a3c6d65746120636861727365743d2769736f2d383835392d31273e636166e9"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
+        }
+      }
+    },
+    {
+      "name": "xml_in_body_charset_inference",
+      "input": {
+        "name": "xml_in_body_charset_inference",
+        "request": {
+          "method": "POST",
+          "url": "http://source.fixture.invalid/xml-encoding",
+          "headers": [
+            [
+              "Content-Type",
+              "application/xml"
+            ]
+          ],
+          "body": {
+            "hex": "3c3f786d6c2076657273696f6e3d27312e302720656e636f64696e673d2769736f2d383835392d31273f3e3c783e636166e93c2f783e"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "curl -H 'Content-Type: application/xml' -X POST http://source.fixture.invalid/xml-encoding -d '<?xml version='\"'\"'1.0'\"'\"' encoding='\"'\"'iso-8859-1'\"'\"'?><x>caf\u00e9</x>'",
+            "utf8_length": 167,
+            "utf8_sha256": "c24faf397fb999ea98172a2ba52f6ce34d7948fd13cc5e034396ea8bff5bef68",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d547970653a206170706c69636174696f6e2f786d6c27202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f786d6c2d656e636f64696e67202d6420273c3f786d6c2076657273696f6e3d2722272227312e30272227222720656e636f64696e673d272227222769736f2d383835392d3127222722273f3e3c783e636166c3a93c2f783e27"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "http POST http://source.fixture.invalid/xml-encoding 'Content-Type: application/xml' <<< '<?xml version='\"'\"'1.0'\"'\"' encoding='\"'\"'iso-8859-1'\"'\"'?><x>caf\u00e9</x>'",
+            "utf8_length": 162,
+            "utf8_sha256": "14c73050b4a61ed92d166630ed923e274205bf7c141a56a01b5e5a48d8a2eff6",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f786d6c2d656e636f64696e672027436f6e74656e742d547970653a206170706c69636174696f6e2f786d6c27203c3c3c20273c3f786d6c2076657273696f6e3d2722272227312e30272227222720656e636f64696e673d272227222769736f2d383835392d3127222722273f3e3c783e636166c3a93c2f783e27"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 136,
+            "sha256": "112f7f61b361e3a74fe8968090d5b38574bd104aa76f14d6fbb7f7c6357c1fb7",
+            "hex": "504f5354202f786d6c2d656e636f64696e6720485454502f312e310d0a436f6e74656e742d547970653a206170706c69636174696f6e2f786d6c0d0a636f6e74656e742d6c656e6774683a2035340d0a0d0a3c3f786d6c2076657273696f6e3d27312e302720656e636f64696e673d2769736f2d383835392d31273f3e3c783e636166e93c2f783e"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 136,
+            "sha256": "112f7f61b361e3a74fe8968090d5b38574bd104aa76f14d6fbb7f7c6357c1fb7",
+            "hex": "504f5354202f786d6c2d656e636f64696e6720485454502f312e310d0a436f6e74656e742d547970653a206170706c69636174696f6e2f786d6c0d0a636f6e74656e742d6c656e6774683a2035340d0a0d0a3c3f786d6c2076657273696f6e3d27312e302720656e636f64696e673d2769736f2d383835392d31273f3e3c783e636166e93c2f783e"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
+        }
+      }
+    },
+    {
+      "name": "css_in_body_charset_inference",
+      "input": {
+        "name": "css_in_body_charset_inference",
+        "request": {
+          "method": "POST",
+          "url": "http://source.fixture.invalid/css-encoding",
+          "headers": [
+            [
+              "Content-Type",
+              "text/css"
+            ]
+          ],
+          "body": {
+            "hex": "4063686172736574202269736f2d383835392d31223b202e78207b20636f6e74656e743a2022e9223b207d"
+          }
+        },
+        "response": null,
+        "websocket": null,
+        "export_preserve_original_ip": false,
+        "server_peername": null
+      },
+      "formats": {
+        "curl": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "curl -H 'Content-Type: text/css' -X POST http://source.fixture.invalid/css-encoding -d '@charset \"iso-8859-1\"; .x { content: \"\u00e9\"; }'",
+            "utf8_length": 133,
+            "utf8_sha256": "8334004b632125b4b51912a70954f8fd41b6ade1c14749b6f2b20ef4283c4cce",
+            "utf8_hex": "6375726c202d482027436f6e74656e742d547970653a20746578742f63737327202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f6373732d656e636f64696e67202d6420274063686172736574202269736f2d383835392d31223b202e78207b20636f6e74656e743a2022c3a9223b207d27"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "httpie": {
+          "output": {
+            "kind": "text",
+            "representation": "unicode",
+            "text": "http POST http://source.fixture.invalid/css-encoding 'Content-Type: text/css' <<< '@charset \"iso-8859-1\"; .x { content: \"\u00e9\"; }'",
+            "utf8_length": 128,
+            "utf8_sha256": "dbe51403003bb1e281ad8513e6ab7ee34c343034a9dcd60fb09f680f41b5041b",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f6373732d656e636f64696e672027436f6e74656e742d547970653a20746578742f63737327203c3c3c20274063686172736574202269736f2d383835392d31223b202e78207b20636f6e74656e743a2022c3a9223b207d27"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw": {
+          "output": {
+            "kind": "bytes",
+            "length": 118,
+            "sha256": "3ad26ebb6183df6572c9b22a93c131112558ff97581da104779762fa8300fb15",
+            "hex": "504f5354202f6373732d656e636f64696e6720485454502f312e310d0a436f6e74656e742d547970653a20746578742f6373730d0a636f6e74656e742d6c656e6774683a2034330d0a0d0a4063686172736574202269736f2d383835392d31223b202e78207b20636f6e74656e743a2022e9223b207d"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_request": {
+          "output": {
+            "kind": "bytes",
+            "length": 118,
+            "sha256": "3ad26ebb6183df6572c9b22a93c131112558ff97581da104779762fa8300fb15",
+            "hex": "504f5354202f6373732d656e636f64696e6720485454502f312e310d0a436f6e74656e742d547970653a20746578742f6373730d0a636f6e74656e742d6c656e6774683a2034330d0a0d0a4063686172736574202269736f2d383835392d31223b202e78207b20636f6e74656e743a2022e9223b207d"
+          },
+          "error_type": null,
+          "message": null
+        },
+        "raw_response": {
+          "output": null,
+          "error_type": "CommandError",
+          "message": "Can't export flow with no response."
+        }
+      }
+    },
+    {
       "name": "shell_quote_text_body",
       "input": {
         "name": "shell_quote_text_body",
@@ -1038,9 +1895,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -H 'X-Quote: a'\"'\"'b $HOME `tick`' -H 'X-Space: two words' -X PATCH 'http://source.fixture.invalid/quote?x=a%20b&y=$HOME' -d 'it'\"'\"'s $HOME `tick` \"quoted\" \\ slash'",
             "utf8_length": 170,
-            "utf8_sha256": "d0755ae64142a42cd80b3074b5d9de6b7afb58dd9c7b720caa1397daa450a2f9"
+            "utf8_sha256": "d0755ae64142a42cd80b3074b5d9de6b7afb58dd9c7b720caa1397daa450a2f9",
+            "utf8_hex": "6375726c202d482027582d51756f74653a20612722272227622024484f4d4520607469636b6027202d482027582d53706163653a2074776f20776f72647327202d582050415443482027687474703a2f2f736f757263652e666978747572652e696e76616c69642f71756f74653f783d612532306226793d24484f4d4527202d64202769742722272227732024484f4d4520607469636b60202271756f74656422205c20736c61736827"
           },
           "error_type": null,
           "message": null
@@ -1048,9 +1907,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http PATCH 'http://source.fixture.invalid/quote?x=a%20b&y=$HOME' 'X-Quote: a'\"'\"'b $HOME `tick`' 'X-Space: two words' <<< 'it'\"'\"'s $HOME `tick` \"quoted\" \\ slash'",
             "utf8_length": 162,
-            "utf8_sha256": "3016f2e12b638b25916879a84b3809e7216ae132fec7b0eab5675e848b73ad0c"
+            "utf8_sha256": "3016f2e12b638b25916879a84b3809e7216ae132fec7b0eab5675e848b73ad0c",
+            "utf8_hex": "687474702050415443482027687474703a2f2f736f757263652e666978747572652e696e76616c69642f71756f74653f783d612532306226793d24484f4d45272027582d51756f74653a20612722272227622024484f4d4520607469636b60272027582d53706163653a2074776f20776f72647327203c3c3c202769742722272227732024484f4d4520607469636b60202271756f74656422205c20736c61736827"
           },
           "error_type": null,
           "message": null
@@ -1108,9 +1969,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -H 'X-Control: line\nnext' -X POST http://source.fixture.invalid/control -d \"$(printf 'line\\x0anext\\x09tab\\x01unit')\"",
             "utf8_length": 121,
-            "utf8_sha256": "dc555bb83bf061469de0e4d2f193663a78579a290879734947e9daba8daf9f8e"
+            "utf8_sha256": "dc555bb83bf061469de0e4d2f193663a78579a290879734947e9daba8daf9f8e",
+            "utf8_hex": "6375726c202d482027582d436f6e74726f6c3a206c696e650a6e65787427202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f636f6e74726f6c202d64202224287072696e746620276c696e655c7830616e6578745c7830397461625c783031756e6974272922"
           },
           "error_type": null,
           "message": null
@@ -1118,9 +1981,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http POST http://source.fixture.invalid/control 'X-Control: line\nnext' <<< \"$(printf 'line\\x0anext\\x09tab\\x01unit')\"",
             "utf8_length": 116,
-            "utf8_sha256": "04bb970858d98413701c07319c80e9c85c60bcd33b875408d6d6d11b5b03155f"
+            "utf8_sha256": "04bb970858d98413701c07319c80e9c85c60bcd33b875408d6d6d11b5b03155f",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f636f6e74726f6c2027582d436f6e74726f6c3a206c696e650a6e65787427203c3c3c202224287072696e746620276c696e655c7830616e6578745c7830397461625c783031756e6974272922"
           },
           "error_type": null,
           "message": null
@@ -1209,9 +2074,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -H 'Transfer-Encoding: chunked' -H 'Trailer: X-Req-Trailer' -X POST http://source.fixture.invalid/chunked -d chunk-body",
             "utf8_length": 124,
-            "utf8_sha256": "8ae336486bf8138baf14bd0c9ebc00612ce3bf632b729ad26e9ad5441c7452dd"
+            "utf8_sha256": "8ae336486bf8138baf14bd0c9ebc00612ce3bf632b729ad26e9ad5441c7452dd",
+            "utf8_hex": "6375726c202d4820275472616e736665722d456e636f64696e673a206368756e6b656427202d482027547261696c65723a20582d5265712d547261696c657227202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f6368756e6b6564202d64206368756e6b2d626f6479"
           },
           "error_type": null,
           "message": null
@@ -1219,9 +2086,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http POST http://source.fixture.invalid/chunked 'Transfer-Encoding: chunked' 'Trailer: X-Req-Trailer' <<< chunk-body",
             "utf8_length": 116,
-            "utf8_sha256": "9c27318b5edaf5519c01b770310388e2c5f66e906b8b2a19c2ffa874e588785c"
+            "utf8_sha256": "9c27318b5edaf5519c01b770310388e2c5f66e906b8b2a19c2ffa874e588785c",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f6368756e6b656420275472616e736665722d456e636f64696e673a206368756e6b6564272027547261696c65723a20582d5265712d547261696c657227203c3c3c206368756e6b2d626f6479"
           },
           "error_type": null,
           "message": null
@@ -1285,9 +2154,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -X POST http://source.fixture.invalid/bad-trailers -d body",
             "utf8_length": 63,
-            "utf8_sha256": "8c89a26d6669b72500265f4a50ca1cd1758b6a0f1ce5e7b196ea6554fff51387"
+            "utf8_sha256": "8c89a26d6669b72500265f4a50ca1cd1758b6a0f1ce5e7b196ea6554fff51387",
+            "utf8_hex": "6375726c202d5820504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f6261642d747261696c657273202d6420626f6479"
           },
           "error_type": null,
           "message": null
@@ -1295,9 +2166,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http POST http://source.fixture.invalid/bad-trailers <<< body",
             "utf8_length": 61,
-            "utf8_sha256": "6dde9abf2c5dc2cfa1bd4876948064d87303d999cd82cf8e59323f4ed8e06263"
+            "utf8_sha256": "6dde9abf2c5dc2cfa1bd4876948064d87303d999cd82cf8e59323f4ed8e06263",
+            "utf8_hex": "6874747020504f535420687474703a2f2f736f757263652e666978747572652e696e76616c69642f6261642d747261696c657273203c3c3c20626f6479"
           },
           "error_type": null,
           "message": null
@@ -1386,9 +2259,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl -H 'Connection: Upgrade' -H 'Upgrade: websocket' http://source.fixture.invalid/ws",
             "utf8_length": 86,
-            "utf8_sha256": "44f458c20ccf44fdbe1ae6a91c974cd802bb1bafe1b33f003878fd0fd5617299"
+            "utf8_sha256": "44f458c20ccf44fdbe1ae6a91c974cd802bb1bafe1b33f003878fd0fd5617299",
+            "utf8_hex": "6375726c202d482027436f6e6e656374696f6e3a205570677261646527202d482027557067726164653a20776562736f636b65742720687474703a2f2f736f757263652e666978747572652e696e76616c69642f7773"
           },
           "error_type": null,
           "message": null
@@ -1396,9 +2271,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http GET http://source.fixture.invalid/ws 'Connection: Upgrade' 'Upgrade: websocket'",
             "utf8_length": 84,
-            "utf8_sha256": "7a41255f3ba2f6abf685c7036fdbc0c23f2ef39c316905827afae63fa66f81b7"
+            "utf8_sha256": "7a41255f3ba2f6abf685c7036fdbc0c23f2ef39c316905827afae63fa66f81b7",
+            "utf8_hex": "687474702047455420687474703a2f2f736f757263652e666978747572652e696e76616c69642f77732027436f6e6e656374696f6e3a2055706772616465272027557067726164653a20776562736f636b657427"
           },
           "error_type": null,
           "message": null
@@ -1473,9 +2350,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl http://source.fixture.invalid/ws-large",
             "utf8_length": 43,
-            "utf8_sha256": "bf1718cd2998a5262abf6455a98d42bac7d639d6aa5cbdce48fd7e82087cc874"
+            "utf8_sha256": "bf1718cd2998a5262abf6455a98d42bac7d639d6aa5cbdce48fd7e82087cc874",
+            "utf8_hex": "6375726c20687474703a2f2f736f757263652e666978747572652e696e76616c69642f77732d6c61726765"
           },
           "error_type": null,
           "message": null
@@ -1483,9 +2362,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http GET http://source.fixture.invalid/ws-large",
             "utf8_length": 47,
-            "utf8_sha256": "ce27e652f9853d99f476b186af16945d9a7f502d8d74c4937840c974ca982636"
+            "utf8_sha256": "ce27e652f9853d99f476b186af16945d9a7f502d8d74c4937840c974ca982636",
+            "utf8_hex": "687474702047455420687474703a2f2f736f757263652e666978747572652e696e76616c69642f77732d6c61726765"
           },
           "error_type": null,
           "message": null
@@ -1545,9 +2426,11 @@
         "curl": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "curl --resolve 'source.fixture.invalid:443:[192.0.2.44]' https://source.fixture.invalid/resolve",
             "utf8_length": 95,
-            "utf8_sha256": "5319a986f734d8650236f7a4402fca2d1fe60faae8da944420e43b47f7ced629"
+            "utf8_sha256": "5319a986f734d8650236f7a4402fca2d1fe60faae8da944420e43b47f7ced629",
+            "utf8_hex": "6375726c202d2d7265736f6c76652027736f757263652e666978747572652e696e76616c69643a3434333a5b3139322e302e322e34345d272068747470733a2f2f736f757263652e666978747572652e696e76616c69642f7265736f6c7665"
           },
           "error_type": null,
           "message": null
@@ -1555,9 +2438,11 @@
         "httpie": {
           "output": {
             "kind": "text",
+            "representation": "unicode",
             "text": "http GET https://source.fixture.invalid/resolve",
             "utf8_length": 47,
-            "utf8_sha256": "4501ffca855462c6b446ef549caa832a4d2bb81ca47f50ce04951c5d8c8e7c28"
+            "utf8_sha256": "4501ffca855462c6b446ef549caa832a4d2bb81ca47f50ce04951c5d8c8e7c28",
+            "utf8_hex": "68747470204745542068747470733a2f2f736f757263652e666978747572652e696e76616c69642f7265736f6c7665"
           },
           "error_type": null,
           "message": null
