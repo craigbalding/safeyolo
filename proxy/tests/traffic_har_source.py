@@ -382,6 +382,79 @@ def non_http_flow():
     )
 
 
+def format_edge_flows():
+    """Construct byte-level formatter discriminators without transport defaults."""
+    sampled = rich_flow()
+    sampled.response.headers = http.Headers([(b"Content-Type", b"text/plain; charset=utf-8")])
+    sampled.response.raw_content = ("€" * 34 + "x").encode()
+
+    header_repr = rich_flow()
+    header_repr.request.headers = http.Headers([(b"X", b"y")])
+    header_repr.response.headers = http.Headers([(b"X", b"\x08\x0c")])
+
+    folded = rich_flow()
+    folded.request.headers = http.Headers([(b"X-Text", b"\xc3\xa9"), (b"X-Invalid", b"\xff")])
+    folded.response.headers = http.Headers(
+        [
+            (b"Content-Type", b"text/\xc3\xa9"),
+            (b"content-type", b"application/\xff"),
+            (b"Location", b"/caf\xc3\xa9"),
+            (b"location", b"/\xff"),
+        ]
+    )
+    folded.response.raw_content = b""
+
+    form = rich_flow()
+    form.request.url = "http://source.fixture.invalid/a?a=1&&b=&=empty&flag&"
+    form.request.headers = http.Headers([(b"Content-Type", b"application/x-www-form-urlencoded; charset=utf-8")])
+    form.request.raw_content = b"a=1&&b=&=empty&flag&"
+    empty_form = rich_flow()
+    empty_form.request.headers = http.Headers([(b"Content-Type", b"application/x-www-form-urlencoded; charset=utf-8")])
+    empty_form.request.raw_content = b""
+
+    unknown = rich_flow()
+    big5 = rich_flow()
+    for owned, label, body in (
+        (unknown, b"owned-unknown-charset", b"a" * 9 + b"\xff"),
+        (big5, b"big5", b"prefix\xa4\x40suffix"),
+    ):
+        for message in (owned.request, owned.response):
+            message.headers = http.Headers([(b"Content-Type", b"text/plain; charset=" + label)])
+            message.raw_content = body
+
+    cookies = rich_flow()
+    cookies.request.url = "http://source.fixture.invalid:80/a?keep=1"
+    # Set Host after the URL setter: Request.make and .url both update Host.
+    cookies.request.headers = http.Headers(
+        [
+            (b"Host", b"visible.fixture.invalid:80"),
+            (b"Cookie", b'a="one;two"; b=three'),
+        ]
+    )
+    cookies.response.headers = http.Headers([(b"Set-Cookie", b'a="one;two"; Path="/a;b"; SameSite=Lax; HttpOnly')])
+    return {
+        "utf8_sampling_boundary": sampled,
+        "header_bytes_repr": header_repr,
+        "folded_raw_headers": folded,
+        "query_form_empty_components": form,
+        "empty_urlencoded_form": empty_form,
+        "unknown_charset_fallback": unknown,
+        "supported_big5_text": big5,
+        "pretty_url_quoted_cookies": cookies,
+    }
+
+
+def formatter_error_observations():
+    """HAR requires strict UTF-8 for WS text even though dumps retain bytes."""
+    owned = websocket_flow()
+    owned.websocket.messages = [websocket.WebSocketMessage(1, True, b"\xff", 61.0)]
+    try:
+        savehar.SaveHar().make_har([owned])
+    except UnicodeDecodeError:
+        return {"invalid_websocket_text": "UnicodeDecodeError"}
+    raise AssertionError("invalid WebSocket text unexpectedly produced HAR")
+
+
 def all_flows():
     rich = rich_flow()
     empty = empty_response_flow()
@@ -459,8 +532,7 @@ def make_selection(name, selected_names, flows):
 
 def source_hashes():
     return {
-        name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
-        for name, module in SOURCE_MODULES.items()
+        name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest() for name, module in SOURCE_MODULES.items()
     }
 
 
@@ -661,9 +733,7 @@ def assert_archives(document):
     assert archive[".zhar"]["prefix_hex"].startswith("78da")
 
     rich_har = next(
-        selection["har"]
-        for selection in document["selections"]
-        if selection["name"] == "http_body_variants"
+        selection["har"] for selection in document["selections"] if selection["name"] == "http_body_variants"
     )
     reconstructed = {
         "log": {
@@ -690,11 +760,69 @@ def assert_contract(document):
     assert_body_availability(selections)
     assert_websocket_and_selection(selections)
     assert_unobserved_phases_and_archive_reuse(selections)
+    assert_format_edge_headers(selections)
+    assert_format_edge_bodies(selections)
+    assert_format_edge_cookies(selections)
+    assert document["formatter_errors"] == {"invalid_websocket_text": "UnicodeDecodeError"}
     assert_archives(document)
+
+
+def assert_format_edge_headers(selections):
+    sized = selections["header_bytes_repr"]["har"]["log"]["entries"][0]
+    assert sized["request"]["headersSize"] == 21
+    assert sized["response"]["headersSize"] == 28
+    folded = selections["folded_raw_headers"]["har"]["log"]["entries"][0]
+    assert folded["request"]["headers"] == [
+        {"name": "X-Text", "value": "é"},
+        {"name": "X-Invalid", "value": "\udcff"},
+    ]
+    assert folded["response"]["content"]["mimeType"] == "text/é, application/\udcff"
+    assert folded["response"]["redirectURL"] == "/café, /\udcff"
+
+
+def assert_format_edge_bodies(selections):
+    sampled = selections["utf8_sampling_boundary"]["har"]["log"]["entries"][0]["response"]["content"]
+    assert sampled["text"] == "€" * 34 + "x" and "encoding" not in sampled
+    expected_params = [
+        {"name": "a", "value": "1"},
+        {"name": "b", "value": ""},
+        {"name": "", "value": "empty"},
+        {"name": "flag", "value": ""},
+    ]
+    form = selections["query_form_empty_components"]["har"]["log"]["entries"][0]["request"]
+    assert form["queryString"] == expected_params
+    assert form["postData"]["params"] == expected_params
+    empty = selections["empty_urlencoded_form"]["har"]["log"]["entries"][0]["request"]
+    assert empty["postData"]["params"] == [] and empty["postData"]["text"] == ""
+    for name, text in (("unknown_charset_fallback", "a" * 9 + "\udcff"), ("supported_big5_text", "prefix一suffix")):
+        entry = selections[name]["har"]["log"]["entries"][0]
+        assert entry["request"]["postData"]["text"] == text
+        assert entry["response"]["content"]["text"] == text
+        assert "encoding" not in entry["response"]["content"]
+
+
+def assert_format_edge_cookies(selections):
+    entry = selections["pretty_url_quoted_cookies"]["har"]["log"]["entries"][0]
+    assert entry["request"]["url"] == "http://visible.fixture.invalid/a?keep=1"
+    assert entry["request"]["queryString"] == [{"name": "keep", "value": "1"}]
+    assert entry["request"]["cookies"] == [{"name": "a", "value": "one;two"}, {"name": "b", "value": "three"}]
+    assert entry["response"]["cookies"] == [
+        {
+            "name": "a",
+            "value": "one;two",
+            "path": "/a;b",
+            "domain": "",
+            "httpOnly": True,
+            "secure": False,
+            "sameSite": "Lax",
+        }
+    ]
 
 
 def document():
     flows = all_flows()
+    format_edges = format_edge_flows()
+    flows.update(format_edges)
     selections = [
         make_selection("empty_selection", [], flows),
         make_selection(
@@ -733,6 +861,7 @@ def document():
         make_selection("tls_without_tcp_timing", ["tls_without_tcp"], flows),
         make_selection("reused_connection_exported_alone", ["timed_reused"], flows),
     ]
+    selections.extend(make_selection(name, [name], flows) for name in format_edges)
     archives = archive_observations([flows["rich_http"]])
     result = {
         "schema": 1,
@@ -745,6 +874,7 @@ def document():
         "public_surface": PUBLIC_SURFACE,
         "selections": selections,
         "archives": archives,
+        "formatter_errors": formatter_error_observations(),
     }
     assert_contract(result)
     return result

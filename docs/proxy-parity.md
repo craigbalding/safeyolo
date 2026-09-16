@@ -2341,9 +2341,12 @@ direct IPv4 connection and transfers its owner through a tunnel slot. CONNECT
 classification, failure retention, IPv6 transport, parent routes and target TLS
 received static wiring review for this change; these tests do not establish
 their complete runtime capture equivalence. The [HAR source fixture](../proxy/tests/traffic_har_source.py)
-records 12 selections and two archive formats, including missing request-end
-defaults and connection timing suppression within one archive. It does not
-establish native HAR availability.
+records 20 selections and two archive formats, including missing request-end
+defaults and connection timing suppression within one archive. Byte-level
+controls cover UTF-8 sampling, header decoding and size, query/form components,
+charset fallback, Host-based display URLs and quoted cookies. A separate control
+requires strict failure for invalid WebSocket text. These source observations
+do not establish native HAR availability.
 
 The [flow-dump source fixture](../proxy/tests/traffic_dump_source.py) records six
 owned HTTP, WebSocket and TCP flows through the installed format-21 writer and
