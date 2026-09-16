@@ -635,6 +635,114 @@ fn websocket_close_time_controls_whole_flow_eviction_and_retains_closed_messages
     assert!(view.detail("later-ws").is_none()); // closed transcript is evicted as a whole
 }
 
+#[test]
+fn upgrade_rejection_preserves_the_observed_response_and_first_error() {
+    for error in [
+        "unexpected upstream protocol switch",
+        "WebSocket upgrade owner unavailable",
+    ] {
+        let view = view(10, 1024);
+        let exchange = begin(&view, "rejected", Some("alice"), 1.0);
+        exchange.request_body(Some(&[]));
+        exchange.response_head(
+            101,
+            vec![
+                ("Upgrade".into(), "websocket".into()),
+                ("X-Observed".into(), "first".into()),
+                ("x-observed".into(), "second".into()),
+            ],
+        );
+        exchange.response_body(Some(&[]));
+        exchange.finish_at(None, 2.0);
+        let mut expected = view.detail("rejected").unwrap();
+        let body = view.body("rejected", Side::Response).unwrap();
+        expected["state"] = json!("error");
+        expected["error"] = json!(error);
+
+        exchange.websocket_rejected(error);
+        assert_eq!(view.detail("rejected").unwrap(), expected);
+        assert_eq!(view.body("rejected", Side::Response).unwrap(), body);
+        assert!(view.websocket_messages("rejected").is_none());
+
+        exchange.websocket_rejected("second rejection");
+        exchange.finish_at(None, 3.0);
+        exchange.finish_at(Some("later transport failure"), 4.0);
+        drop(exchange);
+        assert_eq!(view.detail("rejected").unwrap(), expected);
+        assert_eq!(view.body("rejected", Side::Response).unwrap(), body);
+    }
+}
+
+#[test]
+fn upgrade_rejection_does_not_replace_other_completion_owners() {
+    let view = view(10, 1024);
+    for (id, status, complete, error, websocket) in [
+        ("ordinary", 200, true, None, false),
+        ("first-error", 101, true, Some("first error"), false),
+        ("pending", 101, false, None, false),
+        ("open-websocket", 101, true, None, true),
+    ] {
+        let exchange = begin(&view, id, Some("alice"), 1.0);
+        exchange.response_head(status, Vec::new());
+        if complete {
+            exchange.finish_at(error, 2.0);
+        }
+        if websocket {
+            exchange.websocket_start(3.0);
+        }
+        let before = view.detail(id).unwrap();
+        exchange.websocket_rejected("must not replace the owner");
+        assert_eq!(view.detail(id).unwrap(), before, "{id}");
+    }
+}
+
+#[test]
+fn upgrade_rejection_from_actual_validation_remains_an_http_observation() {
+    use crate::websocket::Handshake;
+
+    for accept in ["s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "invalid"] {
+        let view = view(10, 1024);
+        let exchange = begin(&view, "validation", Some("alice"), 1.0);
+        let mut request = hyper::Request::builder()
+            .uri("http://owned.invalid/socket")
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13")
+            .body(())
+            .unwrap();
+        let handshake = Handshake::request(&mut request).unwrap();
+        let response = hyper::Response::builder()
+            .status(101)
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-accept", accept)
+            .body(())
+            .unwrap();
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned()))
+            .collect();
+        exchange.response_head(101, headers);
+        exchange.response_body(Some(&[]));
+        exchange.finish_at(None, 2.0);
+        let mut expected = view.detail("validation").unwrap();
+        match handshake.response(&response) {
+            Ok(_) => assert_ne!(accept, "invalid"),
+            Err(error) => {
+                assert_eq!(accept, "invalid");
+                let reason = error.to_string();
+                exchange.websocket_rejected(&reason);
+                expected["state"] = json!("error");
+                expected["error"] = json!(reason);
+            }
+        }
+        assert_eq!(view.detail("validation").unwrap(), expected);
+        assert!(view.websocket_messages("validation").is_none());
+    }
+}
+
 // Regenerate with proxy/tests/traffic_websocket_source.py. These comparisons
 // cover pruning selection, independently of the native observation schedule.
 #[test]

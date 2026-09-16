@@ -493,6 +493,9 @@ decision. Native transport failures have categorical errors; they do not invent
 a peer reason. Cancellation marks the session incomplete. A message page can
 report a storage error independently of forwarding. Terminal control bytes in
 payloads and close reasons are escaped for display.
+If native validation rejects an upstream 101 upgrade response, the HTTP view
+keeps that observed response and shows the rejection error. No WebSocket
+session is created for that response.
 
 The mitmproxy user-filter language, editing, replay, interception, import/export
 and a web inspector remain migration work.

@@ -116,6 +116,22 @@ impl Message {
 }
 
 impl Exchange {
+    /// Native validation can reject an already-completed HTTP 101. Annotate
+    /// that rejection without replacing the parser's response or end time.
+    /// Ordinary HTTP completion and a started WebSocket retain their owners.
+    pub(crate) fn websocket_rejected(&self, error: &str) {
+        self.update(|row| {
+            if row.status == Some(101)
+                && row.ended.is_some()
+                && row.websocket.is_none()
+                && row.error.is_none()
+            {
+                row.state = "error";
+                row.error = Some(Zeroizing::new(error.into()));
+            }
+        });
+    }
+
     /// Promote a validated upgrade's existing HTTP row. HTTP end remains in
     /// Row::ended for source completion-time fallback; session end is separate.
     pub(crate) fn websocket_start(&self, started: f64) {

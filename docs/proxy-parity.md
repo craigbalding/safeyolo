@@ -2234,10 +2234,11 @@ paging and missing/trimmed results. Headless terminal tests cover selection,
 page navigation, safe rendering and detach. These are implementation-team
 checks; they do not establish independent acceptance or full M6 completion.
 
-The view still records an upstream 101 as complete if later native handshake
-validation rejects that response. No WebSocket session starts in that case,
-but the later rejection error is absent from the retained HTTP row. This is a
-known display omission, not proof of equivalent Python invalid-handshake behavior.
+If native validation rejects a completed upstream 101, the view preserves the
+observed status, headers, body and HTTP end time while displaying the reached
+rejection error. No WebSocket session starts in that case. The focused controls
+cover the actual handshake validator and retained model; they do not establish
+an end-to-end rejected-upgrade exchange or Python invalid-handshake equivalence.
 Required filtering/export and the inventory of exposed edit/replay workflows
 remain migration work. The Python proxy has not been removed or cut over.
 

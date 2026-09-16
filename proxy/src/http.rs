@@ -1741,10 +1741,16 @@ async fn forward(
             .insert("x-safeyolo-evidence-error", "true".parse()?);
     }
     if upstream.status() == StatusCode::SWITCHING_PROTOCOLS {
-        let Some((handshake, client_upgrade)) = websocket else {
-            return Err("unexpected upstream protocol switch".into());
+        let reject_upgrade = |error: Error| {
+            if let Some(live) = &live {
+                live.websocket_rejected(&error.to_string());
+            }
+            error
         };
-        let negotiated = handshake.response(&upstream)?;
+        let Some((handshake, client_upgrade)) = websocket else {
+            return Err(reject_upgrade("unexpected upstream protocol switch".into()));
+        };
+        let negotiated = handshake.response(&upstream).map_err(reject_upgrade)?;
         let server_upgrade = hyper::upgrade::on(&mut upstream);
         let (mut parts, _) = upstream.into_parts();
         parts.extensions.insert(live_view::Upstream);
@@ -1752,7 +1758,7 @@ async fn forward(
         parts.headers.insert(header::CONNECTION, "Upgrade".parse()?);
         parts.headers.insert(header::UPGRADE, "websocket".parse()?);
         if !allow_upgrades {
-            return Err("WebSocket upgrade owner unavailable".into());
+            return Err(reject_upgrade("WebSocket upgrade owner unavailable".into()));
         }
         let mut stop = upgrades.stop.clone();
         let session = crate::websocket_relay::Session {
