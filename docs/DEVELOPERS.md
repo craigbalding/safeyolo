@@ -544,6 +544,14 @@ empty body. Streamed bodies, unavailable local response bodies, and bodies whose
 capture failed are labelled unavailable. The view does not drain a stream to
 make a body inspectable. A completed row and its end time describe the observed
 response; a slower request body can remain pending until its parser completes.
+
+HTTP flow JSON includes `request_completed`, `response_head_observed` and
+`response_completed` as Unix timestamps in seconds. Each field stays `null`
+until its boundary is observed. Later response metadata updates preserve the
+first observed response-head time. A successful response transport can have a
+completion timestamp even when its body is unavailable for inspection. The
+exchange's `ended` field does not supply missing phase timestamps.
+
 WebSocket transcripts retain complete decompressed and unmasked text or binary
 messages, including messages dropped by inspection. Ping, pong and close frames
 are not transcript messages. The flow remains open until the session ends.
