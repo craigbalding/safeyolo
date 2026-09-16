@@ -882,12 +882,40 @@ Malformed or unreadable matched definitions also reject the candidate. As in
 the source glob, directory-enumeration errors contribute no matched entries;
 they are distinct from errors reading an already matched definition.
 
-Startup and explicit reload pass one accepted registry to the existing native
-policy compiler. The runtime publishes the catalog, service routes, contracts
+Startup, explicit reload and automatic service checks pass one accepted registry
+to the native policy compiler. The runtime publishes the catalog, service routes, contracts
 and token views in that same policy snapshot. A failed catalog, policy or later
 runtime construction retains the prior published snapshot. Reads do not load
-files, mint tokens, evaluate policy or consume budgets. Automatic service-file
-watching and native packaging of builtin definitions remain unimplemented.
+files, mint tokens, evaluate policy or consume budgets.
+
+The native process checks configured service directories immediately after
+startup, then waits two seconds after each check completes. The same process
+control loop handles explicit reload and shutdown; it starts no watcher thread.
+Embedded `Proxy` callers must drive `wait_for_service_catalog_check` and
+`reload_services_if_changed`. Removing the directory options cancels subsequent
+checks. An accepted explicit reload checks the new configuration immediately.
+
+Checks compare full paths, modification times in nanoseconds and file sizes.
+They detect additions, removals and metadata changes. They do not detect content
+changes that retain both size and modification time, or the disappearance of an
+empty directory. Each load captures its metadata before reading definitions.
+A failed automatic load consumes that attempted metadata, as the source does;
+unchanged files do not retry. Repairing only the policy file therefore requires
+an explicit reload or another service-file change. Failed loads retain the old
+published catalog, policy and tokens. Accepted path changes replace the watched
+metadata together with the runtime.
+
+Automatic checks reload only the catalog and baseline policy. They retain
+transport, inspection and evidence owners; they do not reread unrelated TLS or
+inspection files, reopen logs, or change listeners and readiness. Explicit
+configuration reload retains its existing full-runtime construction path.
+
+The source watcher also attempts a configured task-policy file reload. The
+native process has no active task-policy file configuration; its existing task
+snapshot is retained. Task-file activation and the source policy callback's
+`ops.policy_reload` / `ops.policy_error` events remain separate migration gaps.
+The native process has no source watcher timeout-and-restart race because one
+control-loop owner completes each check before admitting another reload.
 
 The authenticated [services endpoint](../proxy/src/agent_api/gateway.rs) resolves
 the trusted calling agent before reading bindings. It returns `agent`,
@@ -919,13 +947,26 @@ controls exercise scoped reads and coherent publication through owned listeners.
 Only the read owner is installed; this work emits no service-gateway request
 trace and does not change doctor's missing-producer verdict.
 
+Catalog loading inspects all matched files in source order even after a
+failure. Each failed file attempts one `ops.config_error` event with addon
+`service-loader`, severity `medium`, its basename, error class and sanitized
+message. Directory problems reject the candidate without per-file events.
+Synchronous audit submission failures do not mask the load rejection or stop
+later-file inspection. Startup acquires the existing audit writer before loading
+the catalog and attempts to drain it on construction failure. Failed reloads
+keep the running writer. A failed or timed-out drain is reported separately and
+does not replace the original construction error.
+
 The existing service-definition YAML frontend still has temporal-value,
 non-string-key and numeric representation gaps. Source filenames that require
 Python surrogateescape are not representable in the current native string
-provenance. Native construction returns categorical errors; source per-file
-diagnostics and `ops.config_error` events are not yet published by this loader.
-These limits, the installed builtin-path resolver, automatic reload, and HTTP
-selection/injection remain required migration work.
+provenance. Native parser/schema failures use explicit native error classes
+where the current frontend cannot establish the source exception class. Exact
+parser and operating-system message wording is not a parity claim. These
+limits include directory metadata errors: native `Path::is_dir` suppresses
+errors that Python's path checks can propagate. The installed builtin-path
+resolver and packaging, task-file activation, and HTTP selection/injection
+remain required migration work.
 
 ### Gateway representation and response encoding
 

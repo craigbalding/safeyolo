@@ -275,8 +275,9 @@ async fn complete_messages_count_before_drop_and_monitor_error_preserves_scanner
 async fn relay_diagnostic_error_still_ends_the_session() {
     let directory = tempfile::tempdir().unwrap();
     let mut runtime = runtime(directory.path());
-    runtime.events =
-        Mutex::new(std::fs::File::open(directory.path().join("diagnostics.jsonl")).unwrap());
+    runtime.events = Arc::new(Mutex::new(
+        std::fs::File::open(directory.path().join("diagnostics.jsonl")).unwrap(),
+    ));
     let runtime = Arc::new(runtime);
     let memory = memory_runtime::WebSocket::new(&runtime, ID, HOST);
     let (client, _client_peer) = tokio::io::duplex(1024);

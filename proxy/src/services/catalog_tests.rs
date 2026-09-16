@@ -337,3 +337,218 @@ fn strict_directory_candidates_match_seven_actual_source_workflows() {
     }
     assert_eq!((workflows, transitions), (7, 10));
 }
+
+#[test]
+fn directory_problems_are_aggregated_without_file_callbacks() {
+    use super::catalog::{ProblemKind, ProblemOrigin};
+    let root = tempfile::tempdir().unwrap();
+    let builtin = root.path().join("builtin");
+    let user = root.path().join("user");
+    std::fs::write(&builtin, "owned file").unwrap();
+    std::fs::write(&user, "owned file").unwrap();
+    let mut calls = 0;
+    let attempt = Registry::load_directories(&builtin, &user, &mut |_| calls += 1);
+    assert!(attempt.metadata.is_empty());
+    let error = attempt.result.unwrap_err();
+    assert_eq!(calls, 0);
+    assert_eq!(
+        error.problems.iter().map(|p| p.kind).collect::<Vec<_>>(),
+        [
+            ProblemKind::MissingBuiltin,
+            ProblemKind::NotDirectory,
+            ProblemKind::NotDirectory
+        ]
+    );
+    assert!(
+        error
+            .problems
+            .iter()
+            .all(|p| p.origin == ProblemOrigin::Directory)
+    );
+    assert_eq!(
+        error.to_string(),
+        "service definitions are invalid (0 file problems, 3 directory problems)"
+    );
+    assert_eq!(format!("{error:?}"), "ServiceLoadError");
+    assert_eq!(error.problems[0].path, builtin);
+    assert_eq!(error.problems[2].path, user);
+}
+
+#[test]
+fn metadata_precedes_reads_and_problem_callback_precedes_later_read() {
+    let (_root, builtin, user) = directories();
+    std::fs::write(builtin.join("10-empty.yaml"), "").unwrap();
+    write(&builtin, "20-next.yaml", "before", "owned".into());
+    let before = scan_service_files(&builtin, &user);
+    let mut calls = 0;
+    let attempt =
+        Registry::load_directories(&builtin, &user, &mut |problem: &ServiceLoadProblem| {
+            calls += 1;
+            if calls > 1 {
+                assert_eq!(problem.path.file_name().unwrap(), "20-next.yaml");
+                return;
+            }
+            assert_eq!(problem.path.file_name().unwrap(), "10-empty.yaml");
+            // A callback is reached before the next file is read. Replacing that
+            // file with an invalid mapping must create a second later problem.
+            std::fs::write(builtin.join("20-next.yaml"), "schema_version: 2\n").unwrap();
+        });
+    assert_eq!(attempt.metadata, before);
+    assert_ne!(scan_service_files(&builtin, &user), before);
+    assert_eq!(calls, 2);
+    assert_eq!(attempt.result.unwrap_err().problems.len(), 2);
+}
+
+#[test]
+fn metadata_key_is_mtime_and_size_not_contents_or_directory_health() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let (_root, builtin, user) = directories();
+    let path = builtin.join("owned.yaml");
+    std::fs::write(&path, "same").unwrap();
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    let modified = UNIX_EPOCH - Duration::from_nanos(123_456_789);
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    let before: CatalogMetadata = scan_service_files(&builtin, &user);
+    assert_eq!(before[&path], (-123_456_789, 4));
+    std::fs::write(&path, "diff").unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert_eq!(scan_service_files(&builtin, &user), before);
+    std::fs::write(&path, "larger").unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert_ne!(scan_service_files(&builtin, &user), before);
+    let larger = scan_service_files(&builtin, &user);
+    file.set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
+        .unwrap();
+    assert_ne!(scan_service_files(&builtin, &user), larger);
+    std::fs::write(builtin.join("ignored.yml"), "ignored").unwrap();
+    std::fs::create_dir(builtin.join("nested")).unwrap();
+    std::fs::write(builtin.join("nested/ignored.yaml"), "ignored").unwrap();
+    std::os::unix::fs::symlink("absent", builtin.join("dangling.yaml")).unwrap();
+    assert_eq!(scan_service_files(&builtin, &user).len(), 1);
+    std::fs::remove_file(&path).unwrap();
+    assert!(scan_service_files(&builtin, &user).is_empty());
+    std::fs::create_dir(&user).unwrap();
+    let empty = scan_service_files(&builtin, &user);
+    std::fs::remove_dir(&user).unwrap();
+    assert_eq!(scan_service_files(&builtin, &user), empty);
+}
+
+#[test]
+fn source_diagnostic_order_and_continuation_with_contained_writer_failure() {
+    use super::catalog::{ProblemKind, ProblemOrigin};
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/service_catalog_source.json")).unwrap();
+    let mut rows = 0;
+    for row in fixture["diagnostic_rows"].as_array().unwrap() {
+        rows += 1;
+        let root = tempfile::tempdir().unwrap();
+        let input = &row["input"];
+        let put_files = |files: &Value| {
+            for (relative, contents) in files.as_object().unwrap() {
+                let path = root.path().join(relative);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                let text = contents
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| contents.to_string());
+                std::fs::write(path, text).unwrap();
+            }
+        };
+        put_files(&input["initial_files"]);
+        let builtin = root.path().join("builtin");
+        let user = root.path().join("user");
+        let previous = Registry::from_directories(&builtin, &user).unwrap();
+        put_files(&input["files"]);
+        for path in input["dirs"].as_array().unwrap() {
+            std::fs::create_dir_all(root.path().join(path.as_str().unwrap())).unwrap();
+        }
+        for (path, hex) in input["bytes_hex"].as_object().unwrap() {
+            assert_eq!(hex, "ff", "finite source invalid UTF-8 fixture");
+            std::fs::write(root.path().join(path), [0xff]).unwrap();
+        }
+        for (path, target) in input["symlinks"].as_object().unwrap() {
+            std::os::unix::fs::symlink(target.as_str().unwrap(), root.path().join(path)).unwrap();
+        }
+        let writer = crate::audit::Writer::new(root.path().join("audit.jsonl"), Default::default());
+        let poison = input["audit_raises"] == true;
+        if poison {
+            writer.poison_for_test();
+        }
+        let mut attempts = Vec::new();
+        let mut failed_submissions = 0;
+        let attempt =
+            Registry::load_directories(&builtin, &user, &mut |problem: &ServiceLoadProblem| {
+                assert_eq!(problem.origin, ProblemOrigin::File);
+                attempts.push(
+                    problem
+                        .path
+                        .strip_prefix(root.path())
+                        .unwrap()
+                        .to_path_buf(),
+                );
+                if poison {
+                    let event = crate::audit::Event::new(
+                        "ops.config_error",
+                        crate::audit::Kind::Ops,
+                        crate::audit::Severity::Medium,
+                        "Owned loader failure",
+                    );
+                    let error = writer.emit(event).unwrap_err();
+                    assert_eq!(error.kind(), crate::audit::ErrorKind::Poisoned);
+                    failed_submissions += 1;
+                }
+            });
+        let problems = attempt.result.unwrap_err().problems;
+        assert_eq!(problems.len(), 10);
+        assert_eq!(failed_submissions, if poison { 10 } else { 0 });
+        for ((problem, expected), path) in problems
+            .iter()
+            .zip(row["last_errors"].as_array().unwrap())
+            .zip(&attempts)
+        {
+            let expected_path = expected["path"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("<owned>/")
+                .unwrap();
+            assert_eq!(path, Path::new(expected_path));
+            assert_eq!(
+                problem.path.strip_prefix(root.path()).unwrap(),
+                Path::new(expected_path)
+            );
+            match expected_path {
+                "builtin/40-missing-name.yaml"
+                | "builtin/50-null-capabilities.yaml"
+                | "builtin/60-schema.yaml" => {
+                    assert_eq!(problem.kind, ProblemKind::NativeSchema);
+                    assert_eq!(problem.kind.error_type(), "NativeServiceSchemaError");
+                }
+                "user/00-parser.yaml" => {
+                    assert_eq!(problem.kind, ProblemKind::NativeYaml);
+                    assert_eq!(problem.kind.error_type(), "NativeYamlError");
+                }
+                _ => assert_eq!(
+                    problem.kind.error_type(),
+                    expected["error_type"].as_str().unwrap()
+                ),
+            }
+            if matches!(
+                problem.kind,
+                ProblemKind::Empty | ProblemKind::NotMapping | ProblemKind::Duplicate
+            ) {
+                assert_eq!(problem.message, expected["message"].as_str().unwrap());
+            }
+        }
+        assert_eq!(attempts.len(), 10);
+        assert_eq!(previous.services["previous"].raw, row["services"][0]);
+        assert!(
+            !attempt
+                .metadata
+                .contains_key(&builtin.join("35-missing.yaml"))
+        );
+    }
+    assert_eq!(rows, 2);
+}

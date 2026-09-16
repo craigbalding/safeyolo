@@ -1895,6 +1895,1018 @@
       ]
     }
   ],
+  "diagnostic_rows": [
+    {
+      "input": {
+        "name": "ordered_file_diagnostics",
+        "audit_raises": false,
+        "initial_files": {
+          "builtin/00.yaml": {
+            "schema_version": 1,
+            "name": "previous",
+            "description": "",
+            "capabilities": {}
+          }
+        },
+        "files": {
+          "builtin/00.yaml": {
+            "schema_version": 1,
+            "name": "candidate",
+            "description": "",
+            "capabilities": {}
+          },
+          "builtin/10-empty.yaml": "",
+          "builtin/40-missing-name.yaml": {
+            "schema_version": 1
+          },
+          "builtin/50-null-capabilities.yaml": {
+            "schema_version": 1,
+            "name": "null",
+            "capabilities": null
+          },
+          "builtin/60-schema.yaml": {
+            "schema_version": 2,
+            "name": "unsupported"
+          },
+          "builtin/70-duplicate.yaml": {
+            "schema_version": 1,
+            "name": "candidate",
+            "description": "",
+            "capabilities": {}
+          },
+          "user/00-parser.yaml": "[invalid",
+          "user/10-nonmapping.yaml": "42\n"
+        },
+        "dirs": [
+          "builtin/30-directory.yaml"
+        ],
+        "bytes_hex": {
+          "builtin/20-utf8.yaml": "ff"
+        },
+        "symlinks": {
+          "builtin/35-missing.yaml": "owned-missing-target"
+        }
+      },
+      "error": {
+        "class": "ServiceRegistryError",
+        "message": "service definitions are invalid: <owned>/builtin/10-empty.yaml: ValueError: service definition is empty; <owned>/builtin/20-utf8.yaml: UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte; <owned>/builtin/30-directory.yaml: IsADirectoryError: [Errno 21] Is a directory: '<owned>/builtin/30-directory.yaml'; <owned>/builtin/35-missing.yaml: FileNotFoundError: [Errno 2] No such file or directory: '<owned>/builtin/35-missing.yaml'; <owned>/builtin/40-missing-name.yaml: KeyError: 'name'; <owned>/builtin/50-null-capabilities.yaml: AttributeError: 'NoneType' object has no attribute 'items'; <owned>/builtin/60-schema.yaml: ValueError: Unsupported schema_version: 2 (expected 1); <owned>/builtin/70-duplicate.yaml: ValueError: duplicate service name 'candidate' in 00.yaml and 70-duplicate.yaml; <owned>/user/00-parser.yaml: ParserError: while parsing a flow sequence\n  in \"<unicode string>\", line 1, column 1:\n    [invalid\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 1, column 9:\n    [invalid\n            ^; <owned>/user/10-nonmapping.yaml: TypeError: service definition must be a YAML mapping"
+      },
+      "previous_services": [
+        {
+          "schema_version": 1,
+          "name": "previous",
+          "description": "",
+          "capabilities": {}
+        }
+      ],
+      "services": [
+        {
+          "schema_version": 1,
+          "name": "previous",
+          "description": "",
+          "capabilities": {}
+        }
+      ],
+      "last_errors": [
+        {
+          "path": "<owned>/builtin/10-empty.yaml",
+          "error_type": "ValueError",
+          "message": "service definition is empty"
+        },
+        {
+          "path": "<owned>/builtin/20-utf8.yaml",
+          "error_type": "UnicodeDecodeError",
+          "message": "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+        },
+        {
+          "path": "<owned>/builtin/30-directory.yaml",
+          "error_type": "IsADirectoryError",
+          "message": "[Errno 21] Is a directory: '<owned>/builtin/30-directory.yaml'"
+        },
+        {
+          "path": "<owned>/builtin/35-missing.yaml",
+          "error_type": "FileNotFoundError",
+          "message": "[Errno 2] No such file or directory: '<owned>/builtin/35-missing.yaml'"
+        },
+        {
+          "path": "<owned>/builtin/40-missing-name.yaml",
+          "error_type": "KeyError",
+          "message": "'name'"
+        },
+        {
+          "path": "<owned>/builtin/50-null-capabilities.yaml",
+          "error_type": "AttributeError",
+          "message": "'NoneType' object has no attribute 'items'"
+        },
+        {
+          "path": "<owned>/builtin/60-schema.yaml",
+          "error_type": "ValueError",
+          "message": "Unsupported schema_version: 2 (expected 1)"
+        },
+        {
+          "path": "<owned>/builtin/70-duplicate.yaml",
+          "error_type": "ValueError",
+          "message": "duplicate service name 'candidate' in 00.yaml and 70-duplicate.yaml"
+        },
+        {
+          "path": "<owned>/user/00-parser.yaml",
+          "error_type": "ParserError",
+          "message": "while parsing a flow sequence\n  in \"<unicode string>\", line 1, column 1:\n    [invalid\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 1, column 9:\n    [invalid\n            ^"
+        },
+        {
+          "path": "<owned>/user/10-nonmapping.yaml",
+          "error_type": "TypeError",
+          "message": "service definition must be a YAML mapping"
+        }
+      ],
+      "attempts": [
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 10-empty.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "10-empty.yaml",
+              "error_type": "ValueError",
+              "error": "service definition is empty"
+            }
+          },
+          "accepted": true,
+          "exception_class": null,
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 20-utf8.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "20-utf8.yaml",
+              "error_type": "UnicodeDecodeError",
+              "error": "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+            }
+          },
+          "accepted": true,
+          "exception_class": null,
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 30-directory.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "30-directory.yaml",
+              "error_type": "IsADirectoryError",
+              "error": "[Errno 21] Is a directory: '<owned>/builtin/30-directory.yaml'"
+            }
+          },
+          "accepted": true,
+          "exception_class": null,
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 35-missing.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "35-missing.yaml",
+              "error_type": "FileNotFoundError",
+              "error": "[Errno 2] No such file or directory: '<owned>/builtin/35-missing.yaml'"
+            }
+          },
+          "accepted": true,
+          "exception_class": null,
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 40-missing-name.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "40-missing-name.yaml",
+              "error_type": "KeyError",
+              "error": "'name'"
+            }
+          },
+          "accepted": true,
+          "exception_class": null,
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 50-null-capabilities.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "50-null-capabilities.yaml",
+              "error_type": "AttributeError",
+              "error": "'NoneType' object has no attribute 'items'"
+            }
+          },
+          "accepted": true,
+          "exception_class": null,
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 60-schema.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "60-schema.yaml",
+              "error_type": "ValueError",
+              "error": "Unsupported schema_version: 2 (expected 1)"
+            }
+          },
+          "accepted": true,
+          "exception_class": null,
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 70-duplicate.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "70-duplicate.yaml",
+              "error_type": "ValueError",
+              "error": "duplicate service name 'candidate' in 00.yaml and 70-duplicate.yaml"
+            }
+          },
+          "accepted": true,
+          "exception_class": null,
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 00-parser.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "00-parser.yaml",
+              "error_type": "ParserError",
+              "error": "while parsing a flow sequence?  in \"<unicode string>\", line 1, column 1:?    [invalid?    ^?expected ',' or ']', but got '<stream end>'?  in \"<unicode string>\", line 1, column 9:?    [invalid?        ..."
+            }
+          },
+          "accepted": true,
+          "exception_class": null,
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 10-nonmapping.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "10-nonmapping.yaml",
+              "error_type": "TypeError",
+              "error": "service definition must be a YAML mapping"
+            }
+          },
+          "accepted": true,
+          "exception_class": null,
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        }
+      ],
+      "timeline": [
+        {
+          "kind": "read",
+          "path": "builtin/00.yaml"
+        },
+        {
+          "kind": "read",
+          "path": "builtin/10-empty.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "10-empty.yaml",
+          "accepted": true
+        },
+        {
+          "kind": "read",
+          "path": "builtin/20-utf8.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "20-utf8.yaml",
+          "accepted": true
+        },
+        {
+          "kind": "read",
+          "path": "builtin/30-directory.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "30-directory.yaml",
+          "accepted": true
+        },
+        {
+          "kind": "read",
+          "path": "builtin/35-missing.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "35-missing.yaml",
+          "accepted": true
+        },
+        {
+          "kind": "read",
+          "path": "builtin/40-missing-name.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "40-missing-name.yaml",
+          "accepted": true
+        },
+        {
+          "kind": "read",
+          "path": "builtin/50-null-capabilities.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "50-null-capabilities.yaml",
+          "accepted": true
+        },
+        {
+          "kind": "read",
+          "path": "builtin/60-schema.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "60-schema.yaml",
+          "accepted": true
+        },
+        {
+          "kind": "read",
+          "path": "builtin/70-duplicate.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "70-duplicate.yaml",
+          "accepted": true
+        },
+        {
+          "kind": "read",
+          "path": "user/00-parser.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "00-parser.yaml",
+          "accepted": true
+        },
+        {
+          "kind": "read",
+          "path": "user/10-nonmapping.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "10-nonmapping.yaml",
+          "accepted": true
+        }
+      ],
+      "file_state_paths": [
+        "builtin/00.yaml",
+        "builtin/10-empty.yaml",
+        "builtin/20-utf8.yaml",
+        "builtin/30-directory.yaml",
+        "builtin/40-missing-name.yaml",
+        "builtin/50-null-capabilities.yaml",
+        "builtin/60-schema.yaml",
+        "builtin/70-duplicate.yaml",
+        "user/00-parser.yaml",
+        "user/10-nonmapping.yaml"
+      ],
+      "has_changes_after_failure": false
+    },
+    {
+      "input": {
+        "name": "audit_failure_does_not_interrupt_load",
+        "audit_raises": true,
+        "initial_files": {
+          "builtin/00.yaml": {
+            "schema_version": 1,
+            "name": "previous",
+            "description": "",
+            "capabilities": {}
+          }
+        },
+        "files": {
+          "builtin/00.yaml": {
+            "schema_version": 1,
+            "name": "candidate",
+            "description": "",
+            "capabilities": {}
+          },
+          "builtin/10-empty.yaml": "",
+          "builtin/40-missing-name.yaml": {
+            "schema_version": 1
+          },
+          "builtin/50-null-capabilities.yaml": {
+            "schema_version": 1,
+            "name": "null",
+            "capabilities": null
+          },
+          "builtin/60-schema.yaml": {
+            "schema_version": 2,
+            "name": "unsupported"
+          },
+          "builtin/70-duplicate.yaml": {
+            "schema_version": 1,
+            "name": "candidate",
+            "description": "",
+            "capabilities": {}
+          },
+          "user/00-parser.yaml": "[invalid",
+          "user/10-nonmapping.yaml": "42\n"
+        },
+        "dirs": [
+          "builtin/30-directory.yaml"
+        ],
+        "bytes_hex": {
+          "builtin/20-utf8.yaml": "ff"
+        },
+        "symlinks": {
+          "builtin/35-missing.yaml": "owned-missing-target"
+        }
+      },
+      "error": {
+        "class": "ServiceRegistryError",
+        "message": "service definitions are invalid: <owned>/builtin/10-empty.yaml: ValueError: service definition is empty; <owned>/builtin/20-utf8.yaml: UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte; <owned>/builtin/30-directory.yaml: IsADirectoryError: [Errno 21] Is a directory: '<owned>/builtin/30-directory.yaml'; <owned>/builtin/35-missing.yaml: FileNotFoundError: [Errno 2] No such file or directory: '<owned>/builtin/35-missing.yaml'; <owned>/builtin/40-missing-name.yaml: KeyError: 'name'; <owned>/builtin/50-null-capabilities.yaml: AttributeError: 'NoneType' object has no attribute 'items'; <owned>/builtin/60-schema.yaml: ValueError: Unsupported schema_version: 2 (expected 1); <owned>/builtin/70-duplicate.yaml: ValueError: duplicate service name 'candidate' in 00.yaml and 70-duplicate.yaml; <owned>/user/00-parser.yaml: ParserError: while parsing a flow sequence\n  in \"<unicode string>\", line 1, column 1:\n    [invalid\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 1, column 9:\n    [invalid\n            ^; <owned>/user/10-nonmapping.yaml: TypeError: service definition must be a YAML mapping"
+      },
+      "previous_services": [
+        {
+          "schema_version": 1,
+          "name": "previous",
+          "description": "",
+          "capabilities": {}
+        }
+      ],
+      "services": [
+        {
+          "schema_version": 1,
+          "name": "previous",
+          "description": "",
+          "capabilities": {}
+        }
+      ],
+      "last_errors": [
+        {
+          "path": "<owned>/builtin/10-empty.yaml",
+          "error_type": "ValueError",
+          "message": "service definition is empty"
+        },
+        {
+          "path": "<owned>/builtin/20-utf8.yaml",
+          "error_type": "UnicodeDecodeError",
+          "message": "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+        },
+        {
+          "path": "<owned>/builtin/30-directory.yaml",
+          "error_type": "IsADirectoryError",
+          "message": "[Errno 21] Is a directory: '<owned>/builtin/30-directory.yaml'"
+        },
+        {
+          "path": "<owned>/builtin/35-missing.yaml",
+          "error_type": "FileNotFoundError",
+          "message": "[Errno 2] No such file or directory: '<owned>/builtin/35-missing.yaml'"
+        },
+        {
+          "path": "<owned>/builtin/40-missing-name.yaml",
+          "error_type": "KeyError",
+          "message": "'name'"
+        },
+        {
+          "path": "<owned>/builtin/50-null-capabilities.yaml",
+          "error_type": "AttributeError",
+          "message": "'NoneType' object has no attribute 'items'"
+        },
+        {
+          "path": "<owned>/builtin/60-schema.yaml",
+          "error_type": "ValueError",
+          "message": "Unsupported schema_version: 2 (expected 1)"
+        },
+        {
+          "path": "<owned>/builtin/70-duplicate.yaml",
+          "error_type": "ValueError",
+          "message": "duplicate service name 'candidate' in 00.yaml and 70-duplicate.yaml"
+        },
+        {
+          "path": "<owned>/user/00-parser.yaml",
+          "error_type": "ParserError",
+          "message": "while parsing a flow sequence\n  in \"<unicode string>\", line 1, column 1:\n    [invalid\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 1, column 9:\n    [invalid\n            ^"
+        },
+        {
+          "path": "<owned>/user/10-nonmapping.yaml",
+          "error_type": "TypeError",
+          "message": "service definition must be a YAML mapping"
+        }
+      ],
+      "attempts": [
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 10-empty.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "10-empty.yaml",
+              "error_type": "ValueError",
+              "error": "service definition is empty"
+            }
+          },
+          "accepted": false,
+          "exception_class": "RuntimeError",
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 20-utf8.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "20-utf8.yaml",
+              "error_type": "UnicodeDecodeError",
+              "error": "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+            }
+          },
+          "accepted": false,
+          "exception_class": "RuntimeError",
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 30-directory.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "30-directory.yaml",
+              "error_type": "IsADirectoryError",
+              "error": "[Errno 21] Is a directory: '<owned>/builtin/30-directory.yaml'"
+            }
+          },
+          "accepted": false,
+          "exception_class": "RuntimeError",
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 35-missing.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "35-missing.yaml",
+              "error_type": "FileNotFoundError",
+              "error": "[Errno 2] No such file or directory: '<owned>/builtin/35-missing.yaml'"
+            }
+          },
+          "accepted": false,
+          "exception_class": "RuntimeError",
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 40-missing-name.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "40-missing-name.yaml",
+              "error_type": "KeyError",
+              "error": "'name'"
+            }
+          },
+          "accepted": false,
+          "exception_class": "RuntimeError",
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 50-null-capabilities.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "50-null-capabilities.yaml",
+              "error_type": "AttributeError",
+              "error": "'NoneType' object has no attribute 'items'"
+            }
+          },
+          "accepted": false,
+          "exception_class": "RuntimeError",
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 60-schema.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "60-schema.yaml",
+              "error_type": "ValueError",
+              "error": "Unsupported schema_version: 2 (expected 1)"
+            }
+          },
+          "accepted": false,
+          "exception_class": "RuntimeError",
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 70-duplicate.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "70-duplicate.yaml",
+              "error_type": "ValueError",
+              "error": "duplicate service name 'candidate' in 00.yaml and 70-duplicate.yaml"
+            }
+          },
+          "accepted": false,
+          "exception_class": "RuntimeError",
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 00-parser.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "00-parser.yaml",
+              "error_type": "ParserError",
+              "error": "while parsing a flow sequence?  in \"<unicode string>\", line 1, column 1:?    [invalid?    ^?expected ',' or ']', but got '<stream end>'?  in \"<unicode string>\", line 1, column 9:?    [invalid?        ..."
+            }
+          },
+          "accepted": false,
+          "exception_class": "RuntimeError",
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        },
+        {
+          "event": {
+            "schema_version": 1,
+            "ts": "<canonical timestamp>",
+            "event": "ops.config_error",
+            "kind": "ops",
+            "severity": "medium",
+            "summary": "Service definition 10-nonmapping.yaml failed to load",
+            "addon": "service-loader",
+            "details": {
+              "file": "10-nonmapping.yaml",
+              "error_type": "TypeError",
+              "error": "service definition must be a YAML mapping"
+            }
+          },
+          "accepted": false,
+          "exception_class": "RuntimeError",
+          "services_at_submit": [
+            {
+              "schema_version": 1,
+              "name": "previous",
+              "description": "",
+              "capabilities": {}
+            }
+          ],
+          "last_errors_at_submit": 0
+        }
+      ],
+      "timeline": [
+        {
+          "kind": "read",
+          "path": "builtin/00.yaml"
+        },
+        {
+          "kind": "read",
+          "path": "builtin/10-empty.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "10-empty.yaml",
+          "accepted": false
+        },
+        {
+          "kind": "read",
+          "path": "builtin/20-utf8.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "20-utf8.yaml",
+          "accepted": false
+        },
+        {
+          "kind": "read",
+          "path": "builtin/30-directory.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "30-directory.yaml",
+          "accepted": false
+        },
+        {
+          "kind": "read",
+          "path": "builtin/35-missing.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "35-missing.yaml",
+          "accepted": false
+        },
+        {
+          "kind": "read",
+          "path": "builtin/40-missing-name.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "40-missing-name.yaml",
+          "accepted": false
+        },
+        {
+          "kind": "read",
+          "path": "builtin/50-null-capabilities.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "50-null-capabilities.yaml",
+          "accepted": false
+        },
+        {
+          "kind": "read",
+          "path": "builtin/60-schema.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "60-schema.yaml",
+          "accepted": false
+        },
+        {
+          "kind": "read",
+          "path": "builtin/70-duplicate.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "70-duplicate.yaml",
+          "accepted": false
+        },
+        {
+          "kind": "read",
+          "path": "user/00-parser.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "00-parser.yaml",
+          "accepted": false
+        },
+        {
+          "kind": "read",
+          "path": "user/10-nonmapping.yaml"
+        },
+        {
+          "kind": "audit",
+          "file": "10-nonmapping.yaml",
+          "accepted": false
+        }
+      ],
+      "file_state_paths": [
+        "builtin/00.yaml",
+        "builtin/10-empty.yaml",
+        "builtin/20-utf8.yaml",
+        "builtin/30-directory.yaml",
+        "builtin/40-missing-name.yaml",
+        "builtin/50-null-capabilities.yaml",
+        "builtin/60-schema.yaml",
+        "builtin/70-duplicate.yaml",
+        "user/00-parser.yaml",
+        "user/10-nonmapping.yaml"
+      ],
+      "has_changes_after_failure": false
+    }
+  ],
   "source_sha256": {
     "cli/src/safeyolo/core/service_loader.py": "a5def870f8e3e6896db8aaed4a1cdd2aecb0a6cb5537d942923ca5f610e445e8",
     "cli/src/safeyolo/core/service_paths.py": "3034156cad21b7a535bb26e8025d8841562c76aa96edaeb38b36009f2fa2fa6a",

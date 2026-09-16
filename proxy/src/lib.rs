@@ -101,6 +101,7 @@ impl ConnectionIdentity {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Runtime {
     config: Config,
     parent: Option<config::ParentProxy>,
@@ -123,18 +124,37 @@ pub(crate) struct Runtime {
     traces: Arc<trace::TraceStore>,
     memory_monitor: Arc<memory_monitor::MemoryMonitor>,
     via_token: String,
-    events: Mutex<File>,
+    events: Arc<Mutex<File>>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
     instance_id: String,
 }
 
 impl Runtime {
+    #[cfg(test)]
     fn new(
         config: Config,
         default_via: &str,
         temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
         previous: Option<&Runtime>,
         admin_address: Option<std::net::SocketAddr>,
+    ) -> Result<Self, Error> {
+        Self::load(
+            config,
+            default_via,
+            temporary_policy_lock,
+            previous,
+            admin_address,
+            &mut None,
+        )
+    }
+
+    fn load(
+        config: Config,
+        default_via: &str,
+        temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
+        previous: Option<&Runtime>,
+        admin_address: Option<std::net::SocketAddr>,
+        service_files: &mut Option<services::CatalogMetadata>,
     ) -> Result<Self, Error> {
         config.validate()?;
         let admin_shield = admin_shield::AdminShield::new(
@@ -143,42 +163,6 @@ impl Runtime {
         )?;
         let tasks = previous
             .map(|runtime| runtime.tasks.clone())
-            .unwrap_or_default();
-        let registry = match (
-            &config.gateway_builtin_services_dir,
-            &config.gateway_services_dir,
-        ) {
-            (Some(builtin), Some(user)) => Some(Arc::new(services::Registry::from_directories(
-                builtin, user,
-            )?)),
-            _ => None,
-        };
-        let policy = config
-            .policy_file
-            .as_ref()
-            .map(
-                |path| match previous.and_then(|runtime| runtime.policy.as_ref()) {
-                    Some(policy) => policy.reload_from_path_with_registry_at(
-                        path,
-                        registry,
-                        policy::current_time_ms(),
-                    ),
-                    None => policy::Policy::from_path_with_registry_at(
-                        path,
-                        registry,
-                        policy::current_time_ms(),
-                    ),
-                },
-            )
-            .transpose()?;
-        let network_guard = previous
-            .map(|runtime| runtime.network_guard.clone())
-            .unwrap_or_default();
-        let circuits = previous
-            .map(|runtime| runtime.circuits.clone())
-            .unwrap_or_default();
-        let test_context = previous
-            .map(|runtime| runtime.test_context.clone())
             .unwrap_or_default();
         let audit = match previous {
             Some(runtime) => runtime.audit.clone(),
@@ -191,126 +175,168 @@ impl Runtime {
                 audit::Settings::from_env()?,
             )),
         };
-        let request_logger = previous
-            .map(|runtime| runtime.request_logger.clone())
-            .unwrap_or_default();
-        let agent_discovery = previous
-            .map(|runtime| runtime.agent_discovery.clone())
-            .unwrap_or_else(|| Arc::new(agent_discovery::AgentDiscovery::new()));
-        let metrics = previous
-            .map(|runtime| runtime.metrics.clone())
-            .unwrap_or_else(|| Arc::new(metrics::Metrics::new(circuit_runtime::now)));
-        let traces = previous
-            .map(|runtime| runtime.traces.clone())
-            .unwrap_or_else(|| Arc::new(trace::TraceStore::new(trace::Settings::from_env())));
-        let memory_monitor = previous
-            .map(|runtime| runtime.memory_monitor.clone())
-            .unwrap_or_else(|| Arc::new(memory_monitor::MemoryMonitor::new()));
-        let flow_recorder = match previous {
-            Some(runtime) => runtime.flow_recorder.clone(),
-            None => Arc::new(flow_recorder::FlowRecorder::start(
-                config.flow_store_enabled,
-                &config.flow_store_db_path,
-                policy.as_ref(),
-            )),
-        };
-        let scanner = inspection::Scanner::default();
-        if let Some(inspection) = &config.inspection {
-            let source = std::fs::read_to_string(&inspection.policy_file)?;
-            let format = match inspection
+        let result = (|| {
+            let registry = load_service_catalog(&config, &audit, service_files)?;
+            let policy = config
                 .policy_file
-                .extension()
-                .and_then(|value| value.to_str())
-            {
-                Some("toml") => policy::Format::Toml,
-                Some("yaml" | "yml") => policy::Format::Yaml,
-                _ => policy::Format::Json,
+                .as_ref()
+                .map(
+                    |path| match previous.and_then(|runtime| runtime.policy.as_ref()) {
+                        Some(policy) => policy.reload_from_path_with_registry_at(
+                            path,
+                            registry,
+                            policy::current_time_ms(),
+                        ),
+                        None => policy::Policy::from_path_with_registry_at(
+                            path,
+                            registry,
+                            policy::current_time_ms(),
+                        ),
+                    },
+                )
+                .transpose()?;
+            let network_guard = previous
+                .map(|runtime| runtime.network_guard.clone())
+                .unwrap_or_default();
+            let circuits = previous
+                .map(|runtime| runtime.circuits.clone())
+                .unwrap_or_default();
+            let test_context = previous
+                .map(|runtime| runtime.test_context.clone())
+                .unwrap_or_default();
+            let request_logger = previous
+                .map(|runtime| runtime.request_logger.clone())
+                .unwrap_or_default();
+            let agent_discovery = previous
+                .map(|runtime| runtime.agent_discovery.clone())
+                .unwrap_or_else(|| Arc::new(agent_discovery::AgentDiscovery::new()));
+            let metrics = previous
+                .map(|runtime| runtime.metrics.clone())
+                .unwrap_or_else(|| Arc::new(metrics::Metrics::new(circuit_runtime::now)));
+            let traces = previous
+                .map(|runtime| runtime.traces.clone())
+                .unwrap_or_else(|| Arc::new(trace::TraceStore::new(trace::Settings::from_env())));
+            let memory_monitor = previous
+                .map(|runtime| runtime.memory_monitor.clone())
+                .unwrap_or_else(|| Arc::new(memory_monitor::MemoryMonitor::new()));
+            let flow_recorder = match previous {
+                Some(runtime) => runtime.flow_recorder.clone(),
+                None => Arc::new(flow_recorder::FlowRecorder::start(
+                    config.flow_store_enabled,
+                    &config.flow_store_db_path,
+                    policy.as_ref(),
+                )),
             };
-            let document = policy::parse_document(&source, format)?;
-            scanner.load_policy_config(&Value::Object(document))?;
-        }
-        let passthrough = tunnels::Passthrough::new(
-            &config.ignore_hosts,
-            &std::env::var("SAFEYOLO_IGNORE_CIDRS").unwrap_or_default(),
-        )?;
-        let parent = config.parent()?;
-        let certificate_authority = config
-            .tls_ca_file
-            .as_deref()
-            .map(tls::CertificateAuthority::load)
-            .transpose()?
-            .map(Arc::new);
-        let tls = if parent.as_ref().is_some_and(|parent| parent.tls)
-            || certificate_authority.is_some()
-        {
-            Some(http::parent_tls(&config)?)
-        } else {
-            None
-        };
-        let mut startup_transitions = Vec::new();
-        if previous.is_none()
-            && let Some(path) = circuit_runtime::state_path(&config)
-        {
-            match circuits.load_file(path, circuit_runtime::now(), &mut rand::random::<f64>) {
-                Ok(outcome) => startup_transitions = outcome.events,
-                Err(_) => eprintln!("Circuit state load failed"),
+            let scanner = inspection::Scanner::default();
+            if let Some(inspection) = &config.inspection {
+                let source = std::fs::read_to_string(&inspection.policy_file)?;
+                let format = match inspection
+                    .policy_file
+                    .extension()
+                    .and_then(|value| value.to_str())
+                {
+                    Some("toml") => policy::Format::Toml,
+                    Some("yaml" | "yml") => policy::Format::Yaml,
+                    _ => policy::Format::Json,
+                };
+                let document = policy::parse_document(&source, format)?;
+                scanner.load_policy_config(&Value::Object(document))?;
             }
-        }
-        let runtime = Self {
-            temporary_policy_lock,
-            parent,
-            tls,
-            certificate_authority,
-            passthrough,
-            scanner,
-            policy,
-            tasks,
-            admin_address,
-            admin_shield,
-            network_guard,
-            circuits,
-            test_context,
-            flow_recorder,
-            audit,
-            request_logger,
-            agent_discovery,
-            metrics,
-            traces,
-            memory_monitor,
-            via_token: config
-                .via_token
-                .clone()
-                .unwrap_or_else(|| default_via.to_owned()),
-            events: Mutex::new(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&config.event_log)?,
-            ),
-            config,
-            instance_id: default_via.to_owned(),
-        };
-        if circuit_runtime::record_transitions(&runtime, &startup_transitions, None) {
-            eprintln!("Circuit startup evidence write failed");
-        }
-        if previous.is_none() {
-            runtime.configure_declarations()?;
-        }
-        if !runtime
-            .agent_discovery
-            .matches_path(&runtime.config.agent_map_file)?
-            && let Err(error) = runtime
+            let passthrough = tunnels::Passthrough::new(
+                &config.ignore_hosts,
+                &std::env::var("SAFEYOLO_IGNORE_CIDRS").unwrap_or_default(),
+            )?;
+            let parent = config.parent()?;
+            let certificate_authority = config
+                .tls_ca_file
+                .as_deref()
+                .map(tls::CertificateAuthority::load)
+                .transpose()?
+                .map(Arc::new);
+            let tls = if parent.as_ref().is_some_and(|parent| parent.tls)
+                || certificate_authority.is_some()
+            {
+                Some(http::parent_tls(&config)?)
+            } else {
+                None
+            };
+            let mut startup_transitions = Vec::new();
+            if previous.is_none()
+                && let Some(path) = circuit_runtime::state_path(&config)
+            {
+                match circuits.load_file(path, circuit_runtime::now(), &mut rand::random::<f64>) {
+                    Ok(outcome) => startup_transitions = outcome.events,
+                    Err(_) => eprintln!("Circuit state load failed"),
+                }
+            }
+            let runtime = Self {
+                temporary_policy_lock,
+                parent,
+                tls,
+                certificate_authority,
+                passthrough,
+                scanner,
+                policy,
+                tasks,
+                admin_address,
+                admin_shield,
+                network_guard,
+                circuits,
+                test_context,
+                flow_recorder,
+                audit: audit.clone(),
+                request_logger,
+                agent_discovery,
+                metrics,
+                traces,
+                memory_monitor,
+                via_token: config
+                    .via_token
+                    .clone()
+                    .unwrap_or_else(|| default_via.to_owned()),
+                events: Arc::new(Mutex::new(
+                    OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&config.event_log)?,
+                )),
+                config,
+                instance_id: default_via.to_owned(),
+            };
+            if circuit_runtime::record_transitions(&runtime, &startup_transitions, None) {
+                eprintln!("Circuit startup evidence write failed");
+            }
+            if previous.is_none() {
+                runtime.configure_declarations()?;
+            }
+            if !runtime
                 .agent_discovery
-                .configure(&runtime.config.agent_map_file, &runtime.audit)
+                .matches_path(&runtime.config.agent_map_file)?
+                && let Err(error) = runtime
+                    .agent_discovery
+                    .configure(&runtime.config.agent_map_file, &runtime.audit)
+            {
+                // The source addon dispatcher logs configuration exceptions and
+                // keeps running. Reporting metadata is not a startup requirement.
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Agent discovery configuration failed: {error}"
+                );
+            }
+            Ok(runtime)
+        })();
+        // Catalog errors can start the writer before a Runtime exists. Drain
+        // that startup owner's diagnostics; a rejected reload keeps its writer.
+        if previous.is_none()
+            && result.is_err()
+            && !matches!(audit.shutdown(Duration::from_secs(5)), Ok(true))
         {
-            // The source addon dispatcher logs configuration exceptions and
-            // keeps running. Reporting metadata is not a startup requirement.
             let _ = writeln!(
                 std::io::stderr().lock(),
-                "Agent discovery configuration failed: {error}"
+                "Startup audit writer shutdown did not complete"
             );
         }
-        Ok(runtime)
+        result
     }
 
     fn configure_declarations(&self) -> Result<(), Error> {
@@ -360,6 +386,56 @@ impl Runtime {
         let mut events = self.events.lock().map_err(|_| "event log lock poisoned")?;
         events.write_all(&bytes)?;
         Ok(())
+    }
+}
+
+fn load_service_catalog(
+    config: &Config,
+    writer: &audit::Writer,
+    service_files: &mut Option<services::CatalogMetadata>,
+) -> Result<Option<Arc<services::Registry>>, Error> {
+    match (
+        &config.gateway_builtin_services_dir,
+        &config.gateway_services_dir,
+    ) {
+        (Some(builtin), Some(user)) => {
+            let load = services::Registry::load_directories(builtin, user, &mut |problem| {
+                record_service_problem(writer, problem);
+            });
+            *service_files = Some(load.metadata);
+            Ok(Some(Arc::new(load.result?)))
+        }
+        _ => {
+            *service_files = None;
+            Ok(None)
+        }
+    }
+}
+
+fn record_service_problem(writer: &audit::Writer, problem: &services::ServiceLoadProblem) {
+    let filename = problem
+        .path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let mut event = audit::Event::new(
+        "ops.config_error",
+        audit::Kind::Ops,
+        audit::Severity::Medium,
+        format!("Service definition {filename} failed to load"),
+    );
+    event.addon = Some("service-loader".into());
+    event.details = json!({
+        "file": filename,
+        "error_type": problem.kind.error_type(),
+        "error": network_guard::sanitize(&problem.message),
+    })
+    .into();
+    if writer.emit(event).is_err() {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "Service config-error audit submission failed"
+        );
     }
 }
 
@@ -589,6 +665,8 @@ pub struct Proxy {
     readiness_file: PathBuf,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
     circuit_snapshots: Option<circuit_runtime::Snapshots>,
+    service_files: Option<services::CatalogMetadata>,
+    service_check_at: Option<tokio::time::Instant>,
 }
 
 impl Proxy {
@@ -600,24 +678,24 @@ impl Proxy {
             .map(admin_listener::Prepared::address);
         let default_via = uuid::Uuid::new_v4().simple().to_string();
         let temporary_policy_lock = Arc::new(tokio::sync::Mutex::new(()));
-        let runtime = {
+        let (runtime, service_files) = {
             let config = config.clone();
             let default_via = default_via.clone();
             let temporary_policy_lock = temporary_policy_lock.clone();
-            Arc::new(
-                tokio::task::spawn_blocking(move || {
-                    let runtime = Runtime::new(
-                        config,
-                        &default_via,
-                        temporary_policy_lock,
-                        None,
-                        admin_address,
-                    )?;
-                    memory_runtime::running(&runtime);
-                    Ok::<_, Error>(runtime)
-                })
-                .await??,
-            )
+            tokio::task::spawn_blocking(move || {
+                let mut service_files = None;
+                let runtime = Runtime::load(
+                    config,
+                    &default_via,
+                    temporary_policy_lock,
+                    None,
+                    admin_address,
+                    &mut service_files,
+                )?;
+                memory_runtime::running(&runtime);
+                Ok::<_, Error>((Arc::new(runtime), service_files))
+            })
+            .await??
         };
         let mut proxy = Self {
             runtime: Arc::new(RwLock::new(runtime)),
@@ -628,6 +706,8 @@ impl Proxy {
             readiness_file: config.readiness_file.clone(),
             temporary_policy_lock,
             circuit_snapshots: None,
+            service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
+            service_files,
         };
         // A readiness marker is useful only after all configured sockets have bound.
         // Keep the prepared operator socket locally owned until agent binds succeed.
@@ -710,18 +790,95 @@ impl Proxy {
         Ok(())
     }
 
+    /// Wait for the next process-owned catalog check. With no configured
+    /// catalog this stays pending. The caller can cancel this wait on shutdown
+    /// or explicit reload, then arm it again with the accepted configuration.
+    pub async fn wait_for_service_catalog_check(&self) {
+        match self.service_check_at {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending::<()>().await,
+        }
+    }
+
+    /// Check configured service files and publish one complete candidate when
+    /// their metadata changed. Embedded callers must drive this check; the
+    /// native executable does so in its sole configuration control loop.
+    pub async fn reload_services_if_changed(&mut self) -> Result<bool, Error> {
+        let result = (|| {
+            let previous = self
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?
+                .clone();
+            self.reload_service_policy(&previous)
+        })();
+        // Source waits after every attempt, including rejection. Missed checks
+        // never produce a burst of catch-up loads.
+        self.service_check_at = self
+            .service_files
+            .as_ref()
+            .map(|_| tokio::time::Instant::now() + Duration::from_secs(2));
+        result
+    }
+
+    fn reload_service_policy(&mut self, previous: &Runtime) -> Result<bool, Error> {
+        let config = &previous.config;
+        match (
+            &config.gateway_builtin_services_dir,
+            &config.gateway_services_dir,
+        ) {
+            (Some(builtin), Some(user)) => {
+                let files = services::scan_service_files(builtin, user);
+                if self.service_files.as_ref() == Some(&files) {
+                    Ok(false)
+                } else {
+                    // A reached load consumes its pre-read metadata, including
+                    // when a later policy compile rejects the candidate.
+                    let registry =
+                        load_service_catalog(config, &previous.audit, &mut self.service_files)?;
+                    let policy = previous
+                        .policy
+                        .as_ref()
+                        .ok_or("service catalog requires native policy")?
+                        .reload_from_path_with_registry_at(
+                            config
+                                .policy_file
+                                .as_ref()
+                                .ok_or("service catalog requires policy_file")?,
+                            registry,
+                            policy::current_time_ms(),
+                        )?;
+                    let runtime = Arc::new(Runtime {
+                        policy: Some(policy),
+                        ..previous.clone()
+                    });
+                    let mut current = self
+                        .runtime
+                        .write()
+                        .map_err(|_| "runtime write lock poisoned")?;
+                    runtime.configure_declarations()?;
+                    *current = runtime;
+                    Ok(true)
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
     pub async fn reload(&mut self, config: Config) -> Result<(), Error> {
         let previous = self
             .runtime
             .read()
             .map_err(|_| "runtime read lock poisoned")?
             .clone();
-        let runtime = Arc::new(Runtime::new(
+        let mut service_files = None;
+        let runtime = Arc::new(Runtime::load(
             config.clone(),
             &self.default_via,
             self.temporary_policy_lock.clone(),
             Some(&previous),
             self.admin.as_ref().map(admin_listener::Running::address),
+            &mut service_files,
         )?);
         // Once topology changes begin, readiness is re-published only after commit.
         clear_readiness(&self.readiness_file, &self.default_via);
@@ -760,6 +917,8 @@ impl Proxy {
             runtime.flow_recorder.set_enabled(config.flow_store_enabled);
             *current = runtime;
         }
+        self.service_check_at = service_files.as_ref().map(|_| tokio::time::Instant::now());
+        self.service_files = service_files;
         if self.readiness_file != config.readiness_file {
             clear_readiness(&self.readiness_file, &self.default_via);
             self.readiness_file = config.readiness_file;

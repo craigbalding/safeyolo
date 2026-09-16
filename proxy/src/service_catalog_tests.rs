@@ -1,5 +1,8 @@
 //! Owned Runtime publication and authenticated H1 catalog reads. No injection.
 
+mod diagnostics;
+mod reload;
+
 use super::*;
 use crate::{
     contracts::ContractRequest,

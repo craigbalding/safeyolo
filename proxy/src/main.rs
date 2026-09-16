@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{io::Write, path::PathBuf};
 
 use safeyolo_proxy::{Config, Error, Proxy};
 use tokio::signal::unix::{SignalKind, signal};
@@ -30,7 +30,16 @@ async fn main() -> Result<(), Error> {
             _ = reload.recv() => match Config::read(&config_path) {
                 Ok(config) => if let Err(error) = proxy.reload(config).await { eprintln!("configuration reload failed: {error}"); },
                 Err(error) => eprintln!("configuration reload failed: {error}"),
-            }
+            },
+            _ = proxy.wait_for_service_catalog_check() => {
+                if let Err(error) = proxy.reload_services_if_changed().await {
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "Service watcher reload failed: {}",
+                        safeyolo_proxy::network_guard::sanitize(&error.to_string()),
+                    );
+                }
+            },
         }
     }
     proxy.shutdown().await;

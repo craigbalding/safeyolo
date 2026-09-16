@@ -216,6 +216,12 @@ def write_recipe(directory, spec, yaml):
         target.write_text(
             content if isinstance(content, str) else yaml.safe_dump(content, sort_keys=False), encoding="utf-8"
         )
+    for relative, content in spec.get("bytes_hex", {}).items():
+        target = directory / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(bytes.fromhex(content))
+    for relative, target in spec.get("symlinks", {}).items():
+        (directory / relative).symlink_to(target)
 
 
 def normalized(value, directory):
@@ -276,6 +282,93 @@ def observe_loader(spec, directory, modules, events):
             )
         )
     return {"input": spec, "steps": outputs}
+
+
+def diagnostic_cases():
+    files = {
+        "builtin/00.yaml": service("candidate"),
+        "builtin/10-empty.yaml": "",
+        "builtin/40-missing-name.yaml": {"schema_version": 1},
+        "builtin/50-null-capabilities.yaml": {"schema_version": 1, "name": "null", "capabilities": None},
+        "builtin/60-schema.yaml": {"schema_version": 2, "name": "unsupported"},
+        "builtin/70-duplicate.yaml": service("candidate"),
+        "user/00-parser.yaml": "[invalid",
+        "user/10-nonmapping.yaml": "42\n",
+    }
+    return [
+        {
+            "name": name,
+            "audit_raises": raises,
+            "initial_files": {"builtin/00.yaml": service("previous")},
+            "files": files,
+            "dirs": ["builtin/30-directory.yaml"],
+            "bytes_hex": {"builtin/20-utf8.yaml": "ff"},
+            "symlinks": {"builtin/35-missing.yaml": "owned-missing-target"},
+        }
+        for name, raises in [("ordered_file_diagnostics", False), ("audit_failure_does_not_interrupt_load", True)]
+    ]
+
+
+def observe_diagnostics(spec, directory, modules):
+    directory.mkdir()
+    write_recipe(directory, {"files": spec["initial_files"]}, modules.yaml)
+    registry = modules.loader.ServiceRegistry(
+        directory / "user", builtin_dir=directory / "builtin", require_builtin=True
+    )
+    registry.load(strict=True)
+    previous = registry_view(registry)
+    write_recipe(directory, spec, modules.yaml)
+    attempts, timeline = [], []
+    real_read_text = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        assert path.is_relative_to(directory), "loader must read only owned definitions"
+        timeline.append({"kind": "read", "path": str(path.relative_to(directory))})
+        return real_read_text(path, *args, **kwargs)
+
+    def submit(entry):
+        event = copy.deepcopy(entry)
+        event["ts"] = "<canonical timestamp>"
+        attempt = {
+            "event": event,
+            "accepted": not spec["audit_raises"],
+            "exception_class": "RuntimeError" if spec["audit_raises"] else None,
+            "services_at_submit": registry_view(registry),
+            "last_errors_at_submit": len(registry.last_errors),
+        }
+        attempts.append(attempt)
+        timeline.append({"kind": "audit", "file": event["details"]["file"], "accepted": attempt["accepted"]})
+        if spec["audit_raises"]:
+            raise RuntimeError("owned audit submission failure")
+
+    error = None
+    with (
+        patch.object(Path, "read_text", new=read_text),
+        patch.object(modules.audit_writer, "put_event", side_effect=submit),
+    ):
+        try:
+            registry.load(strict=True)
+        except modules.loader.ServiceRegistryError as exception:
+            error = {"class": type(exception).__name__, "message": str(exception)}
+    return {
+        "input": spec,
+        **normalized(
+            {
+                "error": error,
+                "previous_services": previous,
+                "services": registry_view(registry),
+                "last_errors": [
+                    {"path": str(p.path), "error_type": p.error_type, "message": p.message}
+                    for p in registry.last_errors
+                ],
+                "attempts": attempts,
+                "timeline": timeline,
+                "file_state_paths": [str(Path(path).relative_to(directory)) for path in registry._last_file_state],
+                "has_changes_after_failure": registry._has_changes(),
+            },
+            directory,
+        ),
+    }
 
 
 def gateway_from(spec, modules):
@@ -536,6 +629,8 @@ def check_contract(result):
     rollback = loader["consumer_rollback_and_no_unchanged_retry"]["steps"]
     assert rollback[1]["callbacks"] == [["rejected-long-name"], ["old"]]
     assert rollback[2]["changed"] is False and rollback[2]["callbacks"] == []
+    for name in ["missing_required_builtin", "both_sources_are_files"]:
+        assert loader[name]["steps"][0]["audit"] == []
     lifecycle = result["lifecycle_rows"][0]["steps"]
     assert lifecycle[0]["projection"] == {} and lifecycle[0]["services"] is None
     assert lifecycle[0]["result"]["status"] == 200
@@ -543,6 +638,46 @@ def check_contract(result):
     assert list(lifecycle[3]["projection"]["alice"]) == ["alpha"]
     assert lifecycle[4]["projection"]["alice"]["alpha"]["token"] == "owned-after"
     assert lifecycle[4]["projection"]["alice"]["alpha"]["host"] == ""
+    expected_types = [
+        "ValueError",
+        "UnicodeDecodeError",
+        "IsADirectoryError",
+        "FileNotFoundError",
+        "KeyError",
+        "AttributeError",
+        "ValueError",
+        "ValueError",
+        "ParserError",
+        "TypeError",
+    ]
+    first, rejected = result["diagnostic_rows"]
+    assert first["last_errors"] == rejected["last_errors"]
+    assert first["error"] == rejected["error"]
+    assert [attempt["event"] for attempt in first["attempts"]] == [attempt["event"] for attempt in rejected["attempts"]]
+    for row in result["diagnostic_rows"]:
+        assert row["error"]["class"] == "ServiceRegistryError"
+        assert row["services"] == row["previous_services"]
+        assert [problem["error_type"] for problem in row["last_errors"]] == expected_types
+        assert len(row["attempts"]) == 10
+        assert row["has_changes_after_failure"] is False
+        assert "builtin/35-missing.yaml" not in row["file_state_paths"]
+        reads = [entry["path"] for entry in row["timeline"] if entry["kind"] == "read"]
+        assert reads == ["builtin/00.yaml"] + [
+            problem["path"].removeprefix("<owned>/") for problem in row["last_errors"]
+        ]
+        for problem, attempt in zip(row["last_errors"], row["attempts"]):
+            event = attempt["event"]
+            basename = Path(problem["path"]).name
+            assert event["event"] == "ops.config_error" and event["kind"] == "ops"
+            assert event["severity"] == "medium" and event["addon"] == "service-loader"
+            assert event["summary"] == f"Service definition {basename} failed to load"
+            assert list(event["details"]) == ["file", "error_type", "error"]
+            assert event["details"]["file"] == basename and event["details"]["error_type"] == problem["error_type"]
+            assert not any(key in event for key in ["agent", "request_id", "host", "decision", "approval"])
+            assert "attribution" not in event["details"]
+            assert attempt["services_at_submit"] == row["previous_services"]
+            assert attempt["last_errors_at_submit"] == 0
+            assert attempt["accepted"] is not row["input"]["audit_raises"]
 
 
 def run():
@@ -585,6 +720,7 @@ def run():
             loader=service_loader,
             api=agent_api,
             gateway=service_gateway,
+            audit_writer=audit_writer,
             UnixMode=UnixMode,
         )
         stack.enter_context(patch.object(audit_writer, "put_event", side_effect=capture))
@@ -598,6 +734,10 @@ def run():
                 observe_api(spec, directory / ("api-" + str(i)), modules, events) for i, spec in enumerate(api_cases())
             ],
             "lifecycle_rows": [observe_lifecycle(directory / "lifecycle", modules)],
+            "diagnostic_rows": [
+                observe_diagnostics(spec, directory / ("diagnostics-" + str(i)), modules)
+                for i, spec in enumerate(diagnostic_cases())
+            ],
             "source_sha256": {path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in SOURCE_PATHS},
         }
         assert not (directory / "unused-audit.jsonl").exists()
@@ -617,7 +757,9 @@ def main():
         assert output.read_text(encoding="utf-8") == rendered, "source fixture drift"
     else:
         output.write_text(rendered, encoding="utf-8")
-    print("service catalog: 8 strict-loader workflows, 20 actual API requests, 1 configure workflow passed")
+    print(
+        "service catalog: 8 strict-loader workflows, 20 actual API requests, 1 configure workflow, 2 diagnostic workflows passed"
+    )
 
 
 if __name__ == "__main__":

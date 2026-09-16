@@ -3,6 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+
+mod catalog;
+pub(crate) use catalog::{CatalogMetadata, ServiceLoadProblem, scan_service_files};
 use std::sync::Arc;
 
 use ring::rand::{SecureRandom, SystemRandom};
@@ -232,10 +235,9 @@ impl Registry {
     /// Construct one strict catalog candidate. Only top-level `*.yaml`
     /// entries participate; user definitions replace builtin definitions.
     pub fn from_directories(builtin: &Path, user: &Path) -> Result<Self, Error> {
-        Self::from_sources(
-            &directory_sources(builtin, true)?,
-            &directory_sources(user, false)?,
-        )
+        Self::load_directories(builtin, user, &mut |_| {})
+            .result
+            .map_err(|error| Box::new(error) as Error)
     }
 
     /// The agent-visible catalog contains description fields only. Authorized
@@ -313,46 +315,6 @@ impl Registry {
         }
         Ok(registry)
     }
-}
-
-fn directory_sources(directory: &Path, required: bool) -> Result<Vec<(String, String)>, Error> {
-    match std::fs::metadata(directory) {
-        Ok(metadata) if metadata.is_dir() => (),
-        Ok(_) => return Err("service source is not a directory".into()),
-        Err(error)
-            if !required
-                && matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) =>
-        {
-            return Ok(Vec::new());
-        }
-        Err(_) => return Err("service source directory is unavailable".into()),
-    }
-    // pathlib's top-level glob suppresses scandir OSError, including failure
-    // partway through collecting directory entries. Reading a matched entry
-    // below is different: that error rejects the strict candidate.
-    let entries = match std::fs::read_dir(directory)
-        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
-    {
-        Ok(entries) => entries,
-        Err(_) => return Ok(Vec::new()),
-    };
-    let mut sources = Vec::new();
-    for entry in entries {
-        if !entry.file_name().as_encoded_bytes().ends_with(b".yaml") {
-            continue;
-        }
-        let path = entry.path();
-        let filename = path
-            .to_str()
-            .ok_or("service source filename is not representable")?;
-        let contents =
-            std::fs::read_to_string(&path).map_err(|_| "service definition could not be read")?;
-        sources.push((filename.to_owned(), contents));
-    }
-    Ok(sources)
 }
 
 /// Source-representable view errors are distinct from a native representation
