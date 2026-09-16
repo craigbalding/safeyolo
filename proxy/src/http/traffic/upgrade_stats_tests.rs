@@ -1,5 +1,5 @@
 //! Two owned-wire checks: one HTTP response per WebSocket upgrade, and the
-//! authenticated operator's view of the same RequestLogger counters.
+//! authenticated operator's view of the same logger and metrics counters.
 use crate::{
     Config, Proxy, Runtime,
     websocket::{Event, Reader, Writer},
@@ -46,6 +46,10 @@ fn stats(runtime: &Runtime) -> Value {
 }
 fn expected_stats(count: u64) -> Value {
     json!({"requests_total":count,"requests_quieted":0,"responses_total":count,"blocks_total":0})
+}
+fn expected_metrics(count: u64) -> Value {
+    json!({"requests_total":count,"requests_success":count,"requests_blocked":0,
+        "blocks_by_source":{},"domains_tracked":u64::from(count != 0)})
 }
 fn records(directory: &Path) -> Vec<Value> {
     std::fs::read_to_string(directory.join("audit.jsonl"))
@@ -156,6 +160,7 @@ async fn websocket_handshake_logs_once_before_frames_and_relay_close() {
     assert_eq!(initial[1]["details"]["size"], 0);
     assert_eq!(initial[0]["request_id"], initial[1]["request_id"]);
     assert_eq!(stats(&runtime), expected_stats(1));
+    assert_eq!(super::metrics_stats(&runtime), expected_metrics(1));
     let (read, mut write) = tokio::io::split(client);
     let mut reader = Reader::new(read, false, None);
     write
@@ -178,6 +183,7 @@ async fn websocket_handshake_logs_once_before_frames_and_relay_close() {
     assert_eq!(payload, b"ping");
     assert_eq!(drained_records(&runtime, directory.path()), initial);
     assert_eq!(stats(&runtime), expected_stats(1));
+    assert_eq!(super::metrics_stats(&runtime), expected_metrics(1));
     write
         .write_all(&client_frame(
             OpCode::Control(Control::Close),
@@ -196,6 +202,7 @@ async fn websocket_handshake_logs_once_before_frames_and_relay_close() {
     cleanup(directory.path());
     assert_eq!(records(directory.path()), initial);
     assert_eq!(stats(&runtime), expected_stats(1));
+    assert_eq!(super::metrics_stats(&runtime), expected_metrics(1));
     let events = diagnostic_events(directory.path());
     let egress: Vec<_> = events
         .iter()
@@ -270,6 +277,7 @@ fn assert_stats(reply: Reply, count: u64) {
     let value: Value = serde_json::from_slice(&reply.body).unwrap();
     assert_eq!(value["proxy"], "safeyolo");
     assert_eq!(value["request-logger"], expected_stats(count));
+    assert_eq!(value["metrics"], expected_metrics(count));
     assert_eq!(
         serde_json::to_string(&value["request-logger"]).unwrap(),
         serde_json::to_string(&expected_stats(count)).unwrap()

@@ -76,6 +76,11 @@ pub(crate) fn document(runtime: &Runtime) -> CircuitValue {
         Err(_) => failure("RuntimeError", "request logger stats unavailable"),
     };
     report.insert("request-logger".into(), logger);
+    let metrics = match runtime.metrics.get_stats() {
+        Ok(stats) => stats,
+        Err(error) => failure("RuntimeError", &error.to_string()),
+    };
+    report.insert("metrics".into(), metrics);
     CircuitValue::Object(report)
 }
 
@@ -190,7 +195,8 @@ mod tests {
                 "service-discovery",
                 "policy-engine",
                 "flow-recorder",
-                "request-logger"
+                "request-logger",
+                "metrics"
             ]
         );
         assert!(!directory.path().join("audit.jsonl").exists());

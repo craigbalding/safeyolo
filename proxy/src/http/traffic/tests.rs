@@ -242,6 +242,10 @@ async fn ordinary_h1_without_test_context_logs_plain_and_decoded_gzip() {
     proxy.shutdown().await;
     cleanup(directory.path());
     assert_eq!(stats(&runtime), expected_stats(2, 0, 2));
+    assert_eq!(
+        super::metrics_stats(&runtime),
+        json!({"requests_total":2,"requests_success":2,"requests_blocked":0,"blocks_by_source":{},"domains_tracked":1})
+    );
     let rows = records(directory.path());
     assert_eq!(rows.len(), 4);
     for (i, agent) in ["alice", "bob"].iter().enumerate() {
@@ -293,8 +297,94 @@ async fn quiet_invalid_coding_is_never_decoded_on_either_leg() {
     proxy.shutdown().await;
     cleanup(directory.path());
     assert_eq!(stats(&runtime), expected_stats(1, 1, 0));
+    assert_eq!(
+        super::metrics_stats(&runtime),
+        json!({"requests_total":1,"requests_success":1,"requests_blocked":0,"blocks_by_source":{},"domains_tracked":1})
+    );
     assert!(records(directory.path()).is_empty());
     owned_egress(directory.path(), port, 1);
+}
+
+#[tokio::test]
+async fn metrics_count_reached_hooks_and_classify_upstream_statuses() {
+    let directory = tempfile::tempdir().unwrap();
+    let proxy = Proxy::start(config(directory.path(), false)).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let origin = listener().await;
+    let port = origin.local_addr().unwrap().port();
+    let cases = [
+        (200, "identity", "identity"),
+        (302, "identity", "identity"),
+        (429, "identity", "identity"),
+        (500, "identity", "identity"),
+        (504, "identity", "identity"),
+        (200, "gzip", "identity"),
+        (200, "identity", "gzip"),
+    ];
+    let peer = tokio::spawn(async move {
+        for (status, _, encoding) in cases {
+            let (mut stream, _) = timeout(LIMIT, origin.accept()).await.unwrap().unwrap();
+            assert_eq!(origin_request(&mut stream).await, b"req");
+            stream.write_all(format!(
+                "HTTP/1.1 {status} Owned\r\nContent-Length: 2\r\nContent-Encoding: {encoding}\r\nConnection: close\r\n\r\nok"
+            ).as_bytes()).await.unwrap();
+        }
+    });
+    for (status, encoding, _) in cases {
+        let reply = send(
+            &directory.path().join("alice.sock"),
+            port,
+            "/metrics-control",
+            b"req",
+            encoding,
+        )
+        .await;
+        assert!(reply.starts_with(format!("HTTP/1.1 {status}").as_bytes()));
+        assert!(reply.ends_with(b"ok"));
+    }
+    timeout(LIMIT, peer).await.unwrap().unwrap();
+    proxy.shutdown().await;
+    cleanup(directory.path());
+    // Both logger counters advance before their body decode can fail. Metrics
+    // runs only after a successful return from that particular logging hook.
+    assert_eq!(stats(&runtime), expected_stats(7, 0, 7));
+    assert_eq!(
+        super::metrics_stats(&runtime),
+        json!({
+            "requests_total":6,"requests_success":3,"requests_blocked":0,
+            "blocks_by_source":{},"domains_tracked":1
+        })
+    );
+    let report = runtime
+        .metrics
+        .get_json(crate::circuit_runtime::now)
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(report["summary"]["requests_error"], 1);
+    assert_eq!(report["summary"]["success_rate"], 0.5);
+    assert_eq!(report["domains"].as_object().unwrap().len(), 1);
+    let domain = &report["domains"]["127.0.0.2"];
+    assert_eq!(domain["requests"], 6);
+    assert_eq!(domain["successes"], 3);
+    assert_eq!(
+        domain["upstream_errors"],
+        json!({"429s":1,"5xx":2,"timeouts":1})
+    );
+    let rows = records(directory.path());
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["event"] == "traffic.request")
+            .count(),
+        6
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["event"] == "traffic.response")
+            .count(),
+        6
+    );
+    owned_egress(directory.path(), port, 7);
 }
 
 #[tokio::test]
@@ -325,6 +415,10 @@ async fn streamed_upload_and_sse_response_use_absent_content_size_zero() {
     proxy.shutdown().await;
     cleanup(directory.path());
     assert_eq!(stats(&runtime), expected_stats(1, 0, 1));
+    assert_eq!(
+        super::metrics_stats(&runtime),
+        json!({"requests_total":1,"requests_success":1,"requests_blocked":0,"blocks_by_source":{},"domains_tracked":1})
+    );
     let rows = records(directory.path());
     assert_eq!(rows.len(), 2);
     check_event(
@@ -389,6 +483,10 @@ async fn early_response_before_upload_eom_has_no_request_id_or_start_time() {
     proxy.shutdown().await;
     cleanup(directory.path());
     assert_eq!(stats(&runtime), expected_stats(0, 0, 1));
+    assert_eq!(
+        super::metrics_stats(&runtime),
+        json!({"requests_total":0,"requests_success":1,"requests_blocked":0,"blocks_by_source":{},"domains_tracked":1})
+    );
     let rows = records(directory.path());
     assert_eq!(rows.len(), 1);
     check_event(
@@ -451,6 +549,10 @@ async fn canceled_response_and_real_dial_error_never_fabricate_response_events()
     proxy.shutdown().await;
     cleanup(directory.path());
     assert_eq!(stats(&runtime), expected_stats(2, 0, 0));
+    assert_eq!(
+        super::metrics_stats(&runtime),
+        json!({"requests_total":2,"requests_success":0,"requests_blocked":0,"blocks_by_source":{},"domains_tracked":1})
+    );
     let rows = records(directory.path());
     assert_eq!(rows.len(), 2);
     check_event(

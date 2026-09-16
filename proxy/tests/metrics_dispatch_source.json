@@ -1,0 +1,1671 @@
+{
+  "rows": [
+    {
+      "case": "normal",
+      "request": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 0,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0,
+            "latency_count": 0,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "put_event": "traffic.request",
+            "accepted": true
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          }
+        ],
+        "audit_attempts": [
+          {
+            "hook": "request",
+            "accepted": true,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.request",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "POST owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "method": "POST",
+                "path": "/a",
+                "size": 13,
+                "client": "192.0.2.10",
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 0,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 0,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 0
+            }
+          }
+        ],
+        "dispatcher_errors": []
+      },
+      "response": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 1,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 1,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 1,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 50000.0,
+            "latency_count": 1,
+            "latency_max_ms": 50000.0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "put_event": "traffic.request",
+            "accepted": true
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          },
+          {
+            "entered": "request-logger.response"
+          },
+          {
+            "clock": "request-logger",
+            "hook": "response",
+            "value": 150.0
+          },
+          {
+            "put_event": "traffic.response",
+            "accepted": true
+          },
+          {
+            "entered": "metrics.response"
+          },
+          {
+            "clock": "metrics",
+            "hook": "response",
+            "value": 160.0
+          }
+        ],
+        "audit_attempts": [
+          {
+            "hook": "request",
+            "accepted": true,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.request",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "POST owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "method": "POST",
+                "path": "/a",
+                "size": 13,
+                "client": "192.0.2.10",
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 0,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 0,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 0
+            }
+          },
+          {
+            "hook": "response",
+            "accepted": true,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.response",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "200 owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "path": "/a",
+                "status": 200,
+                "size": 14,
+                "ms": 60000.0,
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 1,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 1,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 1
+            }
+          }
+        ],
+        "dispatcher_errors": []
+      }
+    },
+    {
+      "case": "quiet_invalid_bodies",
+      "request": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 1,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 0,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0,
+            "latency_count": 0,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0,
+          "quieted": true
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          }
+        ],
+        "audit_attempts": [],
+        "dispatcher_errors": []
+      },
+      "response": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 1,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 1,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 1,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 50000.0,
+            "latency_count": 1,
+            "latency_max_ms": 50000.0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0,
+          "quieted": true
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          },
+          {
+            "entered": "request-logger.response"
+          },
+          {
+            "entered": "metrics.response"
+          },
+          {
+            "clock": "metrics",
+            "hook": "response",
+            "value": 160.0
+          }
+        ],
+        "audit_attempts": [],
+        "dispatcher_errors": []
+      }
+    },
+    {
+      "case": "request_decode",
+      "request": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 0,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 0
+        },
+        "metrics_requests_error": 0,
+        "domains": {},
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          }
+        ],
+        "audit_attempts": [],
+        "dispatcher_errors": [
+          {
+            "hook": "request",
+            "class": "ValueError"
+          }
+        ]
+      },
+      "response": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 1,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 0,
+          "requests_success": 1,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 0,
+            "successes": 1,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0.0,
+            "latency_count": 1,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "entered": "request-logger.response"
+          },
+          {
+            "clock": "request-logger",
+            "hook": "response",
+            "value": 150.0
+          },
+          {
+            "put_event": "traffic.response",
+            "accepted": true
+          },
+          {
+            "entered": "metrics.response"
+          }
+        ],
+        "audit_attempts": [
+          {
+            "hook": "response",
+            "accepted": true,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.response",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "200 owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "path": "/a",
+                "status": 200,
+                "size": 14,
+                "ms": 60000.0,
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 1,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 0,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 0
+            }
+          }
+        ],
+        "dispatcher_errors": [
+          {
+            "hook": "request",
+            "class": "ValueError"
+          }
+        ]
+      }
+    },
+    {
+      "case": "request_audit",
+      "request": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 0,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 0
+        },
+        "metrics_requests_error": 0,
+        "domains": {},
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "put_event": "traffic.request",
+            "accepted": false
+          }
+        ],
+        "audit_attempts": [
+          {
+            "hook": "request",
+            "accepted": false,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.request",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "POST owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "method": "POST",
+                "path": "/a",
+                "size": 13,
+                "client": "192.0.2.10",
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 0,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 0,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 0
+            }
+          }
+        ],
+        "dispatcher_errors": [
+          {
+            "hook": "request",
+            "class": "RuntimeError"
+          }
+        ]
+      },
+      "response": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 1,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 0,
+          "requests_success": 1,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 0,
+            "successes": 1,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0.0,
+            "latency_count": 1,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "put_event": "traffic.request",
+            "accepted": false
+          },
+          {
+            "entered": "request-logger.response"
+          },
+          {
+            "clock": "request-logger",
+            "hook": "response",
+            "value": 150.0
+          },
+          {
+            "put_event": "traffic.response",
+            "accepted": true
+          },
+          {
+            "entered": "metrics.response"
+          }
+        ],
+        "audit_attempts": [
+          {
+            "hook": "request",
+            "accepted": false,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.request",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "POST owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "method": "POST",
+                "path": "/a",
+                "size": 13,
+                "client": "192.0.2.10",
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 0,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 0,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 0
+            }
+          },
+          {
+            "hook": "response",
+            "accepted": true,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.response",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "200 owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "path": "/a",
+                "status": 200,
+                "size": 14,
+                "ms": 60000.0,
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 1,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 0,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 0
+            }
+          }
+        ],
+        "dispatcher_errors": [
+          {
+            "hook": "request",
+            "class": "RuntimeError"
+          }
+        ]
+      }
+    },
+    {
+      "case": "response_decode",
+      "request": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 0,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0,
+            "latency_count": 0,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "put_event": "traffic.request",
+            "accepted": true
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          }
+        ],
+        "audit_attempts": [
+          {
+            "hook": "request",
+            "accepted": true,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.request",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "POST owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "method": "POST",
+                "path": "/a",
+                "size": 13,
+                "client": "192.0.2.10",
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 0,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 0,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 0
+            }
+          }
+        ],
+        "dispatcher_errors": []
+      },
+      "response": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 1,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 0,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0,
+            "latency_count": 0,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "put_event": "traffic.request",
+            "accepted": true
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          },
+          {
+            "entered": "request-logger.response"
+          },
+          {
+            "clock": "request-logger",
+            "hook": "response",
+            "value": 150.0
+          }
+        ],
+        "audit_attempts": [
+          {
+            "hook": "request",
+            "accepted": true,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.request",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "POST owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "method": "POST",
+                "path": "/a",
+                "size": 13,
+                "client": "192.0.2.10",
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 0,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 0,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 0
+            }
+          }
+        ],
+        "dispatcher_errors": [
+          {
+            "hook": "response",
+            "class": "ValueError"
+          }
+        ]
+      }
+    },
+    {
+      "case": "response_audit",
+      "request": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 0,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0,
+            "latency_count": 0,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "put_event": "traffic.request",
+            "accepted": true
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          }
+        ],
+        "audit_attempts": [
+          {
+            "hook": "request",
+            "accepted": true,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.request",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "POST owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "method": "POST",
+                "path": "/a",
+                "size": 13,
+                "client": "192.0.2.10",
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 0,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 0,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 0
+            }
+          }
+        ],
+        "dispatcher_errors": []
+      },
+      "response": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 1,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 0,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0,
+            "latency_count": 0,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "put_event": "traffic.request",
+            "accepted": true
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          },
+          {
+            "entered": "request-logger.response"
+          },
+          {
+            "clock": "request-logger",
+            "hook": "response",
+            "value": 150.0
+          },
+          {
+            "put_event": "traffic.response",
+            "accepted": false
+          }
+        ],
+        "audit_attempts": [
+          {
+            "hook": "request",
+            "accepted": true,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.request",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "POST owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "method": "POST",
+                "path": "/a",
+                "size": 13,
+                "client": "192.0.2.10",
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 0,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 0,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 0
+            }
+          },
+          {
+            "hook": "response",
+            "accepted": false,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.response",
+              "kind": "traffic",
+              "severity": "low",
+              "summary": "200 owned.invalid/a",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "path": "/a",
+                "status": 200,
+                "size": 14,
+                "ms": 60000.0,
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 0,
+              "responses_total": 1,
+              "blocks_total": 0
+            },
+            "metrics_at_submit": {
+              "requests_total": 1,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 1
+            }
+          }
+        ],
+        "dispatcher_errors": [
+          {
+            "hook": "response",
+            "class": "RuntimeError"
+          }
+        ]
+      }
+    },
+    {
+      "case": "quiet_blocked_valid",
+      "request": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 1,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 0,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0,
+            "latency_count": 0,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0,
+          "quieted": true
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          }
+        ],
+        "audit_attempts": [],
+        "dispatcher_errors": []
+      },
+      "response": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 1,
+          "responses_total": 0,
+          "blocks_total": 1
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 0,
+          "requests_blocked": 1,
+          "blocks_by_source": {
+            "pattern-scanner": 1
+          },
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 0,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 1,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0,
+            "latency_count": 0,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0,
+          "quieted": true,
+          "blocked_by": "pattern-scanner"
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          },
+          {
+            "entered": "request-logger.response"
+          },
+          {
+            "clock": "request-logger",
+            "hook": "response",
+            "value": 150.0
+          },
+          {
+            "put_event": "traffic.response",
+            "accepted": true
+          },
+          {
+            "entered": "metrics.response"
+          },
+          {
+            "clock": "metrics",
+            "hook": "response",
+            "value": 160.0
+          }
+        ],
+        "audit_attempts": [
+          {
+            "hook": "response",
+            "accepted": true,
+            "event": {
+              "schema_version": 1,
+              "event": "traffic.response",
+              "kind": "traffic",
+              "severity": "high",
+              "summary": "200 owned.invalid/a [blocked by pattern-scanner]",
+              "request_id": "req-11111111111111111111111111111111",
+              "agent": "dispatch-agent",
+              "addon": "request-logger",
+              "host": "owned.invalid",
+              "details": {
+                "path": "/a",
+                "status": 200,
+                "size": 14,
+                "ms": 60000.0,
+                "blocked_by": "pattern-scanner",
+                "attribution": {
+                  "evidence_owner": "dispatch-agent",
+                  "trusted_transport_identity": "dispatch-agent",
+                  "initiator": "unknown",
+                  "attribution_status": "resolved",
+                  "attribution_provenance": {
+                    "transport_source": "uds",
+                    "uds_agent": "dispatch-agent"
+                  }
+                }
+              }
+            },
+            "logger_at_submit": {
+              "requests_total": 1,
+              "requests_quieted": 1,
+              "responses_total": 0,
+              "blocks_total": 1
+            },
+            "metrics_at_submit": {
+              "requests_total": 1,
+              "requests_success": 0,
+              "requests_blocked": 0,
+              "blocks_by_source": {},
+              "domains_tracked": 1
+            }
+          }
+        ],
+        "dispatcher_errors": []
+      }
+    },
+    {
+      "case": "quiet_blocked_decode",
+      "request": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 1,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 0,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0,
+            "latency_count": 0,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0,
+          "quieted": true
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          }
+        ],
+        "audit_attempts": [],
+        "dispatcher_errors": []
+      },
+      "response": {
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 1,
+          "responses_total": 0,
+          "blocks_total": 1
+        },
+        "metrics": {
+          "requests_total": 1,
+          "requests_success": 0,
+          "requests_blocked": 0,
+          "blocks_by_source": {},
+          "domains_tracked": 1
+        },
+        "metrics_requests_error": 0,
+        "domains": {
+          "owned.invalid": {
+            "requests": 1,
+            "successes": 0,
+            "blocked_credential": 0,
+            "blocked_yara": 0,
+            "blocked_pattern": 0,
+            "blocked_injection": 0,
+            "upstream_429s": 0,
+            "upstream_5xx": 0,
+            "timeouts": 0,
+            "latency_sum_ms": 0,
+            "latency_count": 0,
+            "latency_max_ms": 0
+          }
+        },
+        "metadata": {
+          "request_id": "req-11111111111111111111111111111111",
+          "start_time": 90.0,
+          "metrics_start_time": 110.0,
+          "quieted": true,
+          "blocked_by": "pattern-scanner"
+        },
+        "timeline": [
+          {
+            "clock": "metrics",
+            "hook": "constructor",
+            "value": 100.0
+          },
+          {
+            "entered": "request-logger.request"
+          },
+          {
+            "entered": "metrics.request"
+          },
+          {
+            "clock": "metrics",
+            "hook": "request",
+            "value": 110.0
+          },
+          {
+            "entered": "request-logger.response"
+          },
+          {
+            "clock": "request-logger",
+            "hook": "response",
+            "value": 150.0
+          }
+        ],
+        "audit_attempts": [],
+        "dispatcher_errors": [
+          {
+            "hook": "response",
+            "class": "ValueError"
+          }
+        ]
+      }
+    }
+  ],
+  "metadata": {
+    "python": "3.12.14",
+    "mitmproxy": "12.2.3",
+    "sha256": {
+      "proxy/tests/production_dispatch.py": "e1cafcffc2bd2cd6113a63280ce4d2f47154f635e8938d3eb37a0a24663b150a",
+      "cli/src/safeyolo/mitm_addons/__init__.py": "d241944dd66ae8dfe6df2b460a11230afc04b1a0174ec0e024cea95f67403a00",
+      "cli/src/safeyolo/mitm_addons/request_logger.py": "71b31e77a81fb679e189426221645c413cbdc0208275d3671530ee72a1ec4d6b",
+      "cli/src/safeyolo/mitm_addons/ignored_host_logger.py": "9330a729788a3d05383ebd70850addd817468fc47627f69ab525a7fe3b88a505",
+      "cli/src/safeyolo/mitm_addons/metrics.py": "8d4fca4fef237da63f62bc21fcfecf9a81b23cdfd65ee037ef30b357a579dbae",
+      "cli/src/safeyolo/core/identity.py": "a5b9352db04c505f12a21c9cfac269d1ba27eb38cbf5989de723ad4ca3e42888",
+      "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+      "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
+      "pdp/client.py": "92e969c07581bdb164633a5b7411ab459fbcf1976f7fa72274c230688441f82f",
+      "mitmproxy/addonmanager.py": "1dc72e4f560c8873a587a750ca6253b32bdff5a07cc1bb4aa574eabede923a78",
+      "mitmproxy/http.py": "f8ff6ff9e8f095eccce799eb04ec172227e56953b32d13775e556f65b2dd4fc9",
+      "mitmproxy/net/encoding.py": "ed6466bd018082ec59f4cbdf43139b6d0235bfe802119f3177323c94796e57ea"
+    }
+  },
+  "network_attempts": 0,
+  "audit_writer_created": false,
+  "temporary_directory_removed": true,
+  "selected_children": [
+    "request-logger",
+    "ignored-host-logger",
+    "metrics"
+  ],
+  "ignored_host_logger_ordinary_hooks": [],
+  "boundary": "real selected ProductionAddons child container and AddonManager.trigger_event; owned in-memory completed flows, module clocks, actual quiet config loader and final audit put_event seam; no full startup or protocol proof"
+}

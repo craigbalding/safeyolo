@@ -164,7 +164,8 @@ async fn authenticated_stats_share_counters_and_reached_read_effects_across_relo
             "circuit-breaker",
             "test-context",
             "flow-recorder",
-            "request-logger"
+            "request-logger",
+            "metrics"
         ]
     );
     assert_eq!(
@@ -187,6 +188,11 @@ async fn authenticated_stats_share_counters_and_reached_read_effects_across_relo
     assert_eq!(first["request-logger"]["requests_total"], 1);
     assert_eq!(first["request-logger"]["responses_total"], 0);
     assert_eq!(first["request-logger"]["blocks_total"], 1);
+    assert_eq!(
+        first["metrics"],
+        json!({"requests_total":1,"requests_success":0,"requests_blocked":1,
+            "blocks_by_source":{"network-guard":1},"domains_tracked":1})
+    );
     assert_eq!(first["flow-recorder"]["skipped"], 1);
     assert_eq!(
         first["policy-engine"]["engine_stats"]["evaluations"],
@@ -222,6 +228,8 @@ async fn authenticated_stats_share_counters_and_reached_read_effects_across_relo
         "stats must not refresh request-stage targets"
     );
     assert_eq!(second["request-logger"], first["request-logger"]);
+    assert_eq!(second["metrics"], first["metrics"]);
+    assert!(std::sync::Arc::ptr_eq(&runtime.metrics, &current.metrics));
     assert!(current.audit.wait_for_drain(WAIT).unwrap());
     assert_eq!(records(directory.path()), initial);
     proxy.shutdown().await;

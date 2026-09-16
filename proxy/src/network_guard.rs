@@ -757,6 +757,11 @@ pub fn dangerous_domain(domain: &str) -> bool {
 
 /// Shipped audit_schema.sanitize_for_log for string inputs and max_len=200.
 pub fn sanitize(value: &str) -> String {
+    sanitize_with_limit(value, 200)
+}
+
+/// Reuse the source sanitizer for report fields with explicit display lengths.
+pub(crate) fn sanitize_with_limit(value: &str, max_len: usize) -> String {
     static ANSI: OnceLock<regex::Regex> = OnceLock::new();
     let ansi = ANSI.get_or_init(|| regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
     let value = ansi.replace_all(value, "?");
@@ -772,7 +777,7 @@ pub fn sanitize(value: &str) -> String {
         if safe == '?' && previous == Some('?') {
             continue;
         }
-        if count == 200 {
+        if count == max_len {
             output.push_str("...");
             break;
         }

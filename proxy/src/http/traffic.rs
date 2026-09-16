@@ -15,6 +15,7 @@ use crate::{
 
 struct HookState {
     exchange: logger::Exchange,
+    metrics_start: Option<f64>,
     started: Option<f64>,
     requested: bool,
     responded: bool,
@@ -48,6 +49,7 @@ impl Traffic {
                     identity.audit_attribution(),
                     Some(identity.agent_id.clone()),
                 ),
+                metrics_start: None,
                 started: None,
                 requested: false,
                 responded: false,
@@ -123,13 +125,26 @@ impl Traffic {
             Err(_) => return report(Err(Error(ErrorKind::Poisoned))),
         };
         let facts = self.request_facts(hooks.started);
-        report(runtime.request_logger.request(
+        let logged = runtime.request_logger.request(
             runtime.policy.as_ref(),
             &mut hooks.exchange,
             &facts,
             decoded_size,
             &runtime.audit,
-        ))
+        );
+        if let Err(error) = logged {
+            return report(Err(error));
+        }
+        match runtime
+            .metrics
+            .request(&self.host, crate::circuit_runtime::now)
+        {
+            Ok(started) => {
+                hooks.metrics_start = Some(started);
+                false
+            }
+            Err(error) => report_metrics(error),
+        }
     }
 
     pub(super) fn response(
@@ -148,7 +163,7 @@ impl Traffic {
             Ok(runtime) => runtime.clone(),
             Err(_) => return report(Err(Error(ErrorKind::Poisoned))),
         };
-        report(runtime.request_logger.response(
+        let logged = runtime.request_logger.response(
             &hooks.exchange,
             &self.request_facts(hooks.started),
             &logger::Response {
@@ -162,7 +177,20 @@ impl Traffic {
             },
             decoded_size,
             &runtime.audit,
-        ))
+        );
+        if let Err(error) = logged {
+            return report(Err(error));
+        }
+        match runtime.metrics.response(
+            &self.host,
+            hooks.metrics_start,
+            blocked_by,
+            Some(status),
+            crate::circuit_runtime::now,
+        ) {
+            Ok(()) => false,
+            Err(error) => report_metrics(error),
+        }
     }
 }
 
@@ -215,6 +243,17 @@ fn report(result: Result<(), Error>) -> bool {
     } else {
         false
     }
+}
+
+fn report_metrics(error: crate::metrics::Error) -> bool {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr().lock(), "Metrics hook failed: {error}");
+    matches!(error.kind(), crate::metrics::ErrorKind::Poisoned)
+}
+
+#[cfg(test)]
+fn metrics_stats(runtime: &crate::Runtime) -> serde_json::Value {
+    runtime.metrics.get_stats().unwrap().json().unwrap()
 }
 
 /// A local API response whose existing request reader crossed parser EOM.

@@ -240,6 +240,14 @@ async fn owned_local_child() {
         counters(&proxy),
         json!({"requests_total":7,"requests_quieted":0,"responses_total":0,"blocks_total":7})
     );
+    assert_eq!(
+        super::metrics_stats(&proxy.runtime.read().unwrap()),
+        json!({
+            "requests_total":7,"requests_success":0,"requests_blocked":7,
+            "blocks_by_source":{"agent-api":4,"loop-guard":1,"test-context":1,"admin-shield":1},
+            "domains_tracked":3
+        })
+    );
     proxy.shutdown().await;
     let rows = events(&directory);
     let context: Vec<_> = rows
@@ -346,6 +354,14 @@ async fn circuit_request_exception_skips_later_request_hooks_but_allows_response
         );
         assert_eq!(counters(&proxy)["responses_total"], 1);
         assert_eq!(
+            super::metrics_stats(&proxy.runtime.read().unwrap()),
+            json!({
+                "requests_total":if invalid { 0 } else { 1 },
+                "requests_success":0,"requests_blocked":0,
+                "blocks_by_source":{},"domains_tracked":1
+            })
+        );
+        assert_eq!(
             proxy
                 .runtime
                 .read()
@@ -416,6 +432,13 @@ async fn local_response_circuit_exception_skips_later_recorder_and_logger() {
     assert_eq!(
         proxy.runtime.read().unwrap().flow_recorder.stats()["skipped"],
         0
+    );
+    assert_eq!(
+        super::metrics_stats(&proxy.runtime.read().unwrap()),
+        json!({
+            "requests_total":1,"requests_success":0,"requests_blocked":0,
+            "blocks_by_source":{},"domains_tracked":1
+        })
     );
     proxy.shutdown().await;
     let rows = events(directory.path());

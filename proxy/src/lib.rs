@@ -27,6 +27,7 @@ mod http;
 pub mod http_content;
 pub mod inspection;
 pub mod memory_monitor;
+pub mod metrics;
 pub mod network_guard;
 pub mod oauth;
 mod operator_stats;
@@ -116,6 +117,7 @@ pub(crate) struct Runtime {
     audit: Arc<audit::Writer>,
     request_logger: Arc<request_logger::RequestLogger>,
     agent_discovery: Arc<agent_discovery::AgentDiscovery>,
+    metrics: Arc<metrics::Metrics>,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -174,6 +176,9 @@ impl Runtime {
         let agent_discovery = previous
             .map(|runtime| runtime.agent_discovery.clone())
             .unwrap_or_else(|| Arc::new(agent_discovery::AgentDiscovery::new()));
+        let metrics = previous
+            .map(|runtime| runtime.metrics.clone())
+            .unwrap_or_else(|| Arc::new(metrics::Metrics::new(circuit_runtime::now)));
         let flow_recorder = match previous {
             Some(runtime) => runtime.flow_recorder.clone(),
             None => Arc::new(flow_recorder::FlowRecorder::start(
@@ -242,6 +247,7 @@ impl Runtime {
             audit,
             request_logger,
             agent_discovery,
+            metrics,
             via_token: config
                 .via_token
                 .clone()

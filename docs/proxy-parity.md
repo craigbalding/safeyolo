@@ -1553,6 +1553,49 @@ include replay of fourteen applicable source workflows. The joined native
 selection passes 27 tests. These are implementation checks; full source identity
 reconciliation and independent acceptance remain pending.
 
+### HTTP metrics in operator statistics
+
+Authenticated operator `/stats` includes the shared [metrics collector](../proxy/src/metrics.rs)
+after request-logger statistics. The collector retains its counters and uptime
+origin across runtime reloads. It runs in both the native-policy and temporary
+adapter lanes. It has no enable option, timer, persistence file or audit event.
+
+Metrics observes reached request and response hooks after request logging returns
+successfully. Quiet logging still reaches metrics. A logging exception skips
+metrics for that hook; a later response hook remains independent. Metrics uses
+the destination host and a separate timestamp taken after request logging.
+Completed local responses count their actual block source. Source request
+completion differences already described in this document still apply.
+
+Successful responses include status 101 and redirects. Status 429 and 5xx have
+separate domain counters; only status 504 increments the global error counter.
+Transport failures do not fabricate response metrics. A valid early response
+can count without a completed request. CONNECT, WebSocket messages and WebSocket
+close events do not increment HTTP counters. Collection has no new domain limit
+or ratio clamp.
+
+The component also preserves the source JSON and Prometheus renderers. JSON
+shows the twenty busiest domains in stable order, while problem-domain detection
+and Prometheus cover all collected domains. The renderers retain source field
+order, numeric forms, latency arithmetic and label sanitization. Source label
+sanitization does not escape quotes or backslashes for Prometheus. Nonstring
+block-source metadata remains a representation gap; the live native producers
+use strings. Reports use a native owner lock; the source's concurrent partial
+snapshots are not reproduced.
+
+The Python client advertises `AdminAPI.metrics()`, but its server has no
+`/metrics` route. The source renderers have no production caller. This change
+exposes the existing basic `/stats` contract and adds no `/metrics` endpoint.
+Renderer comparisons do not establish HTTP exporter availability.
+
+The [source oracle](../proxy/tests/metrics_source.py) covers eighteen workflows,
+and the [selected production-dispatch checks](../proxy/tests/metrics_dispatch_source.py)
+cover eight logger/metrics ordering cases. The joined native selection passes
+23 tests, including exact source report comparisons, owned HTTP traffic,
+WebSocket upgrade counters, operator authentication and reload retention.
+These checks are implementation evidence; they do not establish independent
+acceptance or full production-chain equivalence.
+
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those
 jobs, the macOS VM relay or the Linux guest mount have passed.
