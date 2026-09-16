@@ -169,6 +169,22 @@ def empty_response_flow():
     )
 
 
+def pending_request_flow(*, with_response):
+    """Retain an unobserved request end with or without a reached response."""
+    owned = rich_flow()
+    owned.request.timestamp_end = None
+    if not with_response:
+        owned.response = None
+    return owned
+
+
+def tls_without_tcp_flow():
+    """Supply only logical-target TLS facts, without claiming a parent runtime."""
+    owned = rich_flow()
+    owned.server_conn = make_server(None, start=1.0, tcp_setup=None, tls_setup=3.0)
+    return owned
+
+
 def request_body_empty_flow():
     return make_http_flow(
         {
@@ -394,6 +410,9 @@ def all_flows():
         "timed_first": timed[0],
         "timed_reused": timed[1],
         "non_http": non_http_flow(),
+        "pending_request_with_response": pending_request_flow(with_response=True),
+        "pending_request_without_response": pending_request_flow(with_response=False),
+        "tls_without_tcp": tls_without_tcp_flow(),
     }
 
 
@@ -585,6 +604,52 @@ def assert_websocket_and_selection(selections):
     assert selections["empty_selection"]["entry_count"] == 0
 
 
+def assert_unobserved_phases_and_archive_reuse(selections):
+    pending = selections["pending_request_timing"]["har"]["log"]["entries"]
+    assert pending[0]["timings"] == {
+        "connect": 1000.0,
+        "ssl": 1000.0,
+        "send": 0,
+        "receive": 1000.0,
+        "wait": 0,
+    }
+    assert pending[0]["time"] == 3000.0
+    assert pending[0]["response"]["status"] == 299
+    assert pending[1]["timings"] == {
+        "connect": 1000.0,
+        "ssl": 1000.0,
+        "send": 0,
+        "receive": 0,
+        "wait": 0,
+    }
+    assert pending[1]["time"] == 2000.0
+    assert pending[1]["response"]["status"] == 0
+
+    tls_only = selections["tls_without_tcp_timing"]["har"]["log"]["entries"][0]
+    assert tls_only["timings"] == {
+        "connect": -1.0,
+        "ssl": -1.0,
+        "send": 1000.0,
+        "receive": 1000.0,
+        "wait": 1000.0,
+    }
+    assert tls_only["time"] == 3000.0
+    assert "serverIPAddress" not in tls_only
+
+    alone = selections["reused_connection_exported_alone"]["har"]["log"]["entries"]
+    assert len(alone) == 1
+    assert alone[0]["request"]["url"] == "https://source.fixture.invalid/second"
+    assert alone[0]["timings"] == {
+        "connect": 1000.0,
+        "ssl": 1000.0,
+        "send": 1000.0,
+        "receive": 1000.0,
+        "wait": 1000.0,
+    }
+    assert alone[0]["time"] == 5000.0
+    assert alone[0]["serverIPAddress"] == "198.51.100.36"
+
+
 def assert_archives(document):
     archive = document["archives"]
     assert archive[".har"]["decoded_sha256"] == archive[".har"]["sha256"]
@@ -624,6 +689,7 @@ def assert_contract(document):
     assert_charset_and_defaults(selections)
     assert_body_availability(selections)
     assert_websocket_and_selection(selections)
+    assert_unobserved_phases_and_archive_reuse(selections)
     assert_archives(document)
 
 
@@ -659,6 +725,13 @@ def document():
         make_selection("websocket_and_selection", ["websocket", "non_http"], flows),
         make_selection("connection_reuse", ["timed_first", "timed_reused"], flows),
         make_selection("non_http_is_skipped", ["non_http"], flows),
+        make_selection(
+            "pending_request_timing",
+            ["pending_request_with_response", "pending_request_without_response"],
+            flows,
+        ),
+        make_selection("tls_without_tcp_timing", ["tls_without_tcp"], flows),
+        make_selection("reused_connection_exported_alone", ["timed_reused"], flows),
     ]
     archives = archive_observations([flows["rich_http"]])
     result = {
