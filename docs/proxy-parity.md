@@ -2382,9 +2382,20 @@ the typed-netstring byte and Unicode tags. Six reader controls include future
 versions, unknown flow types and a valid record followed by corruption.
 Temporary-file checks exercise overwrite, append, missing-parent failure and
 the dump output produced even with a `.har` suffix. Console load adds fresh IDs
-and retains records loaded before an error. These checks do not establish native
-dump support, historical-version migration, UDP/DNS import, startup or addon
-lifecycle behavior, continuous save/rotation, or web import.
+and retains records loaded before an error.
+
+Seven source HAR-reader controls cover JSON and UTF-8 BOM detection, rejected
+leading whitespace and zlib input, malformed JSON, an empty archive and a valid
+entry before a corrupt entry. Imported HAR content is decoded, while request
+versions, response reasons and WebSocket extensions can lose information.
+The source importer supplies loopback client endpoints and derives connection
+times from the HAR entry interval. It also assigns the scheme's default port
+to the supplied server IP, even when the request URL has another port. These
+are reconstructed compatibility fields, not observed transport facts. The
+fixture retains those values and omits only generated IDs and flow creation
+time; repeated reads must still produce fresh IDs. These checks do not establish
+native dump or HAR import, historical-version migration, UDP/DNS import, startup
+or addon lifecycle behavior, continuous save/rotation, or web import.
 
 HAR, flow-dump export and import, web inspection and the exposed edit/replay
 workflows remain migration work. The Python proxy has not been removed or cut

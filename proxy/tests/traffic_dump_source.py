@@ -15,12 +15,14 @@ import json
 import logging
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 from mitmproxy import connection, exceptions, flow, http, tcp, version, websocket
 from mitmproxy.addons import save, view
 from mitmproxy.coretypes import serializable
 from mitmproxy.io import compat, tnetstring
+from mitmproxy.io import har as har_io
 from mitmproxy.io import io as flow_io
 
 SOURCE_MODULES = {
@@ -31,6 +33,7 @@ SOURCE_MODULES = {
     "mitmproxy/flow.py": flow,
     "mitmproxy/http.py": http,
     "mitmproxy/io/compat.py": compat,
+    "mitmproxy/io/har.py": har_io,
     "mitmproxy/io/io.py": flow_io,
     "mitmproxy/io/tnetstring.py": tnetstring,
     "mitmproxy/tcp.py": tcp,
@@ -237,6 +240,116 @@ def file_workflows(flows, encoded):
     }
 
 
+def owned_har_entry():
+    """Construct importer input independently of the source HAR exporter."""
+    return {
+        "startedDateTime": "1970-01-01T00:00:10+00:00",
+        "time": 2500,
+        "serverIPAddress": "198.51.100.40",
+        "timings": {"connect": 100, "send": 200, "wait": 300, "receive": 1900},
+        "request": {
+            "method": "POST",
+            "url": "http://source.fixture.invalid:8081/import?q=one&q=two",
+            "httpVersion": "HTTP/1.0",
+            "headers": [
+                {"name": "X-Dup", "value": "one"},
+                ["x-dup", "two"],
+                {"name": "Content-Type", "value": "text/plain; charset=iso-8859-1"},
+            ],
+            "postData": {"mimeType": "text/plain; charset=iso-8859-1", "text": "café"},
+        },
+        "response": {
+            "status": 299,
+            "statusText": "Owned custom reason",
+            "httpVersion": "http/2.0",
+            "headers": [
+                {"name": "Content-Encoding", "value": "gzip"},
+                {"name": "Content-Type", "value": "application/octet-stream"},
+            ],
+            "content": {"encoding": "base64", "text": "AP8="},
+        },
+        "_webSocketMessages": [{"type": "send", "time": 11.0, "opcode": 1, "data": "owned message"}],
+    }
+
+
+def har_loaded_state(owned):
+    """Omit generated IDs and creation time; keep reconstructed socket facts."""
+    state = owned.get_state()
+    del state["id"]
+    del state["timestamp_created"]
+    del state["client_conn"]["id"]
+    del state["server_conn"]["id"]
+    return {"state": json_state(state), "live": owned.live}
+
+
+def read_har_observation(data):
+    states = []
+    try:
+        for owned in flow_io.FlowReader(io.BytesIO(data)).stream():
+            states.append(har_loaded_state(owned))
+    except exceptions.FlowReadException as error:
+        return {"flows": states, "error": {"type": type(error).__name__, "message": str(error)}}
+    return {"flows": states, "error": None}
+
+
+def assert_har_reader_state(observation):
+    assert observation["error"] is None and len(observation["flows"]) == 1
+    loaded = observation["flows"][0]
+    assert loaded["live"] is False
+    state = loaded["state"]
+    assert state["request"]["content"] == {"bytes_hex": "636166e9"}
+    assert state["response"]["content"] == {"bytes_hex": "00ff"}
+    assert state["request"]["http_version"] == {"bytes_hex": b"HTTP/1.1".hex()}
+    assert state["response"]["http_version"] == {"bytes_hex": b"HTTP/2".hex()}
+    assert state["response"]["reason"] == {"bytes_hex": ""}
+    assert state["websocket"] is None
+    assert state["request"]["port"] == 8081
+    assert state["server_conn"]["address"] == ["198.51.100.40", 80]
+    assert state["server_conn"]["peername"] is None
+    assert state["server_conn"]["timestamp_tcp_setup"] is None
+    assert state["client_conn"]["peername"] == ["127.0.0.1", 0]
+    assert state["client_conn"]["sockname"] == ["127.0.0.1", 0]
+    for name in ("request", "response", "client_conn"):
+        assert state[name]["timestamp_start"] == 10.0
+        assert state[name]["timestamp_end"] == 12.5
+    response_headers = state["response"]["headers"]
+    assert not any(bytes.fromhex(pair[0]["bytes_hex"]).lower() == b"content-encoding" for pair in response_headers)
+
+
+def har_reader_controls():
+    entry = owned_har_entry()
+    document = {"log": {"version": "1.2", "entries": [entry]}}
+    encoded = json.dumps(document, ensure_ascii=True).encode()
+    cases = {
+        "json": encoded,
+        "utf8_bom": b"\xef\xbb\xbf" + encoded,
+        "leading_whitespace": b" \n" + encoded,
+        "zlib_is_not_autodetected": zlib.compress(encoded, 9),
+        "malformed_json": b'{"log":',
+        "empty_entries": b'{"log":{"entries":[]}}',
+        "valid_then_invalid_entry": json.dumps({"log": {"entries": [entry, {}]}}).encode(),
+    }
+    result = {name: read_har_observation(data) for name, data in cases.items()}
+    assert_har_reader_state(result["json"])
+    assert result["utf8_bom"] == result["json"]
+    for name in ("leading_whitespace", "zlib_is_not_autodetected", "malformed_json"):
+        assert result[name]["flows"] == []
+        assert result[name]["error"]["type"] == "FlowReadException"
+    assert result["empty_entries"] == {"flows": [], "error": None}
+    assert result["valid_then_invalid_entry"]["flows"] == result["json"]["flows"]
+    assert result["valid_then_invalid_entry"]["error"]["type"] == "FlowReadException"
+    first = next(flow_io.FlowReader(io.BytesIO(encoded)).stream())
+    second = next(flow_io.FlowReader(io.BytesIO(encoded)).stream())
+    assert first.id != second.id
+    assert first.client_conn.id != second.client_conn.id
+    assert first.server_conn.id != second.server_conn.id
+    return {
+        "normalization": "omit generated flow/client/server IDs and flow creation time only",
+        "repeated_reads_have_fresh_ids": True,
+        "cases": {name: {"wire_hex": cases[name].hex(), **observation} for name, observation in result.items()},
+    }
+
+
 def observe():
     flows = owned_flows()
     encoded = {name: dump_bytes([item]) for name, item in flows.items()}
@@ -269,6 +382,7 @@ def observe():
         "concatenated_ids": [state["id"] for state in combined["states"]],
         "read_errors": error_controls(flows["failed"], encoded["failed"]),
         "file_workflows": file_workflows(flows, encoded),
+        "har_reader": har_reader_controls(),
     }
 
 
@@ -284,7 +398,10 @@ def main():
     if args.check:
         if json.loads(target.read_text()) != document:
             raise SystemExit("flow-dump source observations differ")
-        print(f"matched {len(document['records'])} flow records and save/load controls")
+        print(
+            f"matched {len(document['records'])} flow records, save/load controls, "
+            f"and {len(document['har_reader']['cases'])} HAR-reader controls"
+        )
     elif args.write:
         target.write_text(json.dumps(document, indent=2, ensure_ascii=True) + "\n")
     else:
