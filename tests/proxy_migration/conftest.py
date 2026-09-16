@@ -2,6 +2,7 @@
 
 import pytest
 
+_READINESS_FAILURE = False
 
 def pytest_addoption(parser):
     parser.addoption("--proxy-backend", action="append", choices=("python", "rust"), default=[])
