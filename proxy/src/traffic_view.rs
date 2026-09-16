@@ -88,7 +88,10 @@ struct Row {
     request_trailers: Vec<(String, String)>,
     response_trailers: Vec<(String, String)>,
     request_body: Body,
+    request_completed: Option<f64>,
+    response_head_observed: Option<f64>,
     response_body: Body,
+    response_completed: Option<f64>,
     state: &'static str,
     ended: Option<f64>,
     error: Option<Zeroizing<String>>,
@@ -202,7 +205,10 @@ impl TrafficView {
                 request_trailers: Vec::new(),
                 response_trailers: Vec::new(),
                 request_body: Body::Pending,
+                request_completed: None,
+                response_head_observed: None,
                 response_body: Body::Pending,
+                response_completed: None,
                 state: "pending",
                 ended: None,
                 error: None,
@@ -388,7 +394,14 @@ impl Exchange {
     }
 
     pub fn request_body(&self, bytes: Option<&[u8]>) {
-        self.update(|row| row.request_body = Body::observe(bytes));
+        self.request_body_at(bytes, now());
+    }
+
+    fn request_body_at(&self, bytes: Option<&[u8]>, completed: f64) {
+        self.update(|row| {
+            row.request_body = Body::observe(bytes);
+            row.request_completed = Some(completed);
+        });
     }
 
     /// Merge reached metadata. The trusted ingress agent remains authoritative;
@@ -423,6 +436,17 @@ impl Exchange {
         headers: Vec<(String, String)>,
         reason: Option<&[u8]>,
     ) {
+        self.response_head_observed_at(status, version, headers, reason, now());
+    }
+
+    fn response_head_observed_at(
+        &self,
+        status: u16,
+        version: Option<&str>,
+        headers: Vec<(String, String)>,
+        reason: Option<&[u8]>,
+        observed: f64,
+    ) {
         let mut headers = headers;
         let version = version.map(|version| Zeroizing::new(version.to_owned()));
         let reason = reason.map(|reason| Zeroizing::new(reason.to_vec()));
@@ -435,6 +459,9 @@ impl Exchange {
             }
             if reason.is_some() {
                 row.response_reason = reason;
+            }
+            if row.response_head_observed.is_none() {
+                row.response_head_observed = Some(observed);
             }
         });
         wipe_headers(&mut headers);
@@ -475,6 +502,17 @@ impl Exchange {
 
     pub fn response_body(&self, bytes: Option<&[u8]>) {
         self.update(|row| row.response_body = Body::observe(bytes));
+    }
+
+    pub(crate) fn response_body_complete(&self, bytes: Option<&[u8]>) {
+        self.response_body_complete_at(bytes, now());
+    }
+
+    fn response_body_complete_at(&self, bytes: Option<&[u8]>, completed: f64) {
+        self.update(|row| {
+            row.response_body = Body::observe(bytes);
+            row.response_completed = Some(completed);
+        });
     }
 
     pub fn finish(&self, error: Option<&str>) {
@@ -542,6 +580,9 @@ impl Row {
             "status": self.status,
             "state": self.websocket.as_ref().map_or(self.state, websocket::Session::flow_state),
             "started": self.request.started,
+            "request_completed": self.request_completed,
+            "response_head_observed": self.response_head_observed,
+            "response_completed": self.response_completed,
             "ended": self.websocket.as_ref().map_or(self.ended, |websocket| websocket.ended),
             "error": self.websocket.as_ref().and_then(|websocket| websocket.error.as_ref()).or(self.error.as_ref()).map(|s| s.as_str()),
             "websocket": self.websocket.as_ref().map(websocket::Session::snapshot),

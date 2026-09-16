@@ -431,7 +431,11 @@ impl ResponseCapture {
             .as_ref()
             .filter(|capture| success && !capture.failed)
             .and_then(|capture| capture.body.content());
-        live.response_body(content);
+        if success {
+            live.response_body_complete(content);
+        } else {
+            live.response_body(content);
+        }
         live.finish((!success).then_some(error.unwrap_or("upstream response incomplete")));
     }
 

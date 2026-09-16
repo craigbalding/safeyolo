@@ -254,9 +254,14 @@ fn response_capture_keeps_encoded_content_independently_of_later_hook_skip() {
     assert_eq!(fixture.row("response")["status"], 201);
     assert_eq!(fixture.row("response")["state"], "pending");
     capture.apply_head();
+    assert!(fixture.row("response")["response_head_observed"].is_number());
+    assert!(fixture.row("response")["response_completed"].is_null());
     capture.finish_live(true, None);
     capture.skip_response();
-    assert_eq!(fixture.row("response")["state"], "complete");
+    let row = fixture.row("response");
+    assert_eq!(row["state"], "complete");
+    assert!(row["response_completed"].is_number());
+    assert!(row["ended"].is_number());
     assert_eq!(
         fixture.body("response")["data_base64"],
         STANDARD.encode(b"not decoded by the live view")
@@ -269,6 +274,35 @@ fn response_capture_keeps_encoded_content_independently_of_later_hook_skip() {
             ["x-repeat", "two"]
         ])
     );
+}
+
+#[test]
+fn repeated_response_capture_heads_keep_first_observed_time_and_update_metadata() {
+    let fixture = Fixture::new();
+    let live = fixture.begin("repeated-head");
+    let capture = fixture.capture("repeated-head", live);
+    let mut first_headers = HeaderMap::new();
+    first_headers.insert("x-head", "first".parse().unwrap());
+    capture.head_with_fields(StatusCode::OK, &first_headers, false, None, None);
+    let first_time = fixture.row("repeated-head")["response_head_observed"]
+        .as_f64()
+        .unwrap();
+
+    let mut second_headers = HeaderMap::new();
+    second_headers.insert("x-head", "second".parse().unwrap());
+    capture.head_with_fields(
+        StatusCode::PARTIAL_CONTENT,
+        &second_headers,
+        false,
+        None,
+        None,
+    );
+
+    let row = fixture.row("repeated-head");
+    assert_eq!(row["response_head_observed"], first_time);
+    assert_eq!(row["status"], 206);
+    assert_eq!(row["response_headers"], json!([["x-head", "second"]]));
+    assert!(row["response_completed"].is_null());
 }
 
 #[test]
@@ -300,6 +334,7 @@ fn response_capture_preserves_reached_protocol_reason_and_trailers() {
         // response capture callback supplies status and headers. A callback
         // without those optional facts must not erase the reached values.
         live.response_details(Some(version), reason);
+        assert!(fixture.row(id)["response_head_observed"].is_null(), "{id}");
         let mut headers = HeaderMap::new();
         headers.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
         headers.append("x-reached-trailer", "one".parse().unwrap());
@@ -357,6 +392,10 @@ fn completed_empty_streamed_and_sse_bodies_are_distinct() {
         capture.head_with_fields(StatusCode::OK, &headers, false, None, None);
         capture.apply_head();
         capture.finish_live(true, None);
+        let row = fixture.row(id);
+        assert!(row["response_head_observed"].is_number(), "{id}");
+        assert!(row["response_completed"].is_number(), "{id}");
+        assert!(row["ended"].is_number(), "{id}");
         let body = fixture.body(id);
         assert_eq!(body["available"], expected_available, "{id}");
         assert_eq!(fixture.row(id)["state"], "complete");
@@ -381,6 +420,9 @@ fn failed_response_retains_observed_head_but_not_partial_body() {
     assert_eq!(row["status"], 202);
     assert_eq!(row["state"], "error");
     assert_eq!(row["error"], "owned producer error");
+    assert!(row["response_head_observed"].is_number());
+    assert!(row["response_completed"].is_null());
+    assert!(row["ended"].is_number());
     assert_eq!(fixture.body("aborted")["available"], false);
 
     let live = fixture.begin("latched-success");
@@ -406,6 +448,9 @@ fn local_response_uses_known_head_without_polling_or_guessing_empty_body() {
     let row = fixture.row("local");
     assert_eq!(row["state"], "complete");
     assert_eq!(row["status"], 403);
+    assert!(row["response_head_observed"].is_number());
+    assert!(row["response_completed"].is_null());
+    assert!(row["ended"].is_number());
     assert_eq!(row["request_body"]["reason"], "pending");
     assert_eq!(fixture.body("local")["reason"], "streamed_or_unavailable");
     drop(live);
@@ -490,6 +535,7 @@ async fn real_request_context_waits_for_complete_body_and_rejects_truncation() {
                     .unwrap()["data_base64"],
                 STANDARD.encode(b"body")
             );
+            assert!(fixture.row("barrier")["request_completed"].is_number());
             drop((body, context));
         } else {
             client.shutdown().await.unwrap();
@@ -508,6 +554,7 @@ async fn real_request_context_waits_for_complete_body_and_rejects_truncation() {
                     .unwrap()["available"],
                 false
             );
+            assert!(fixture.row("barrier")["request_completed"].is_null());
         }
         // Neither request-only control fabricated a successful response.
         assert_eq!(fixture.row("barrier")["state"], "pending");

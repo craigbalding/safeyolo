@@ -41,6 +41,8 @@ fn pending_body_headers_early_response_and_late_request_remain_one_row() {
         view.body("first", Side::Request).unwrap(),
         json!({"available":false,"size":0,"reason":"pending","data_base64":null})
     );
+    assert!(view.detail("first").unwrap()["request_completed"].is_null());
+    assert!(view.detail("first").unwrap()["response_head_observed"].is_null());
     assert_eq!(
         view.detail("first").unwrap()["request_headers"],
         json!([["X-Duplicate", "first"], ["x-duplicate", "second"]])
@@ -107,6 +109,65 @@ fn pending_body_headers_early_response_and_late_request_remain_one_row() {
         view.body("unfinished-request", Side::Request).unwrap()["reason"],
         "streamed_or_unavailable"
     );
+}
+
+#[test]
+fn http_phase_timestamps_keep_body_boundaries_separate_from_exchange_end() {
+    let view = view(10, 1024);
+    let complete = begin(&view, "phase-complete", None, 10.0);
+    let initial = view.detail("phase-complete").unwrap();
+    for key in [
+        "request_completed",
+        "response_head_observed",
+        "response_completed",
+    ] {
+        assert!(
+            initial[key].is_null(),
+            "{key} must be unavailable before observation"
+        );
+    }
+    complete.request_body_at(Some(&[]), 11.0);
+    complete.response_head_observed_at(
+        204,
+        None,
+        vec![("x-phase".into(), "first".into())],
+        None,
+        12.0,
+    );
+    complete.response_head_observed_at(
+        206,
+        Some("HTTP/2.0"),
+        vec![("x-phase".into(), "second".into())],
+        Some(b"Partial"),
+        15.0,
+    );
+    complete.response_body_complete_at(Some(&[]), 13.0);
+    complete.finish_at(None, 14.0);
+    let detail = view.detail("phase-complete").unwrap();
+    assert_eq!(detail["request_completed"], 11.0);
+    assert_eq!(detail["response_head_observed"], 12.0);
+    assert_eq!(detail["status"], 206);
+    assert_eq!(detail["response_headers"], json!([["x-phase", "second"]]));
+    assert_eq!(detail["response_completed"], 13.0);
+    assert_eq!(detail["ended"], 14.0);
+
+    let failed = begin(&view, "phase-failed", None, 20.0);
+    failed.response_head_observed_at(502, None, Vec::new(), None, 21.0);
+    failed.response_body(None);
+    failed.finish_at(Some("owned response error"), 22.0);
+    let detail = view.detail("phase-failed").unwrap();
+    assert_eq!(detail["response_head_observed"], 21.0);
+    assert!(detail["request_completed"].is_null());
+    assert!(detail["response_completed"].is_null());
+    assert_eq!(detail["ended"], 22.0);
+
+    let incomplete = begin(&view, "phase-incomplete", None, 30.0);
+    drop(incomplete);
+    let detail = view.detail("phase-incomplete").unwrap();
+    assert!(detail["request_completed"].is_null());
+    assert!(detail["response_head_observed"].is_null());
+    assert!(detail["response_completed"].is_null());
+    assert!(detail["ended"].is_number());
 }
 
 #[test]
