@@ -2345,12 +2345,19 @@ phases across reload. CONNECT classification, failure retention, IPv6 transport,
 parent routes and target TLS received static wiring review for these capture
 fields; the tests do not establish their complete runtime capture equivalence.
 The [HAR source fixture](../proxy/tests/traffic_har_source.py)
-records 20 selections and two archive formats, including missing request-end
+records 23 selections and two archive formats, including missing request-end
 defaults and connection timing suppression within one archive. Byte-level
 controls cover UTF-8 sampling, header decoding and size, query/form components,
-charset fallback, Host-based display URLs and quoted cookies. A separate control
-requires strict failure for invalid WebSocket text. These source observations
-do not establish native HAR availability.
+charset fallback, Host-based display URLs and quoted cookies. Additional controls
+separate an invalid MIME parameter from a valid charset, declared form charset
+decoding from percent decoding, and an empty repeated Content-Encoding value
+from an absent value. A separate control requires strict failure for invalid
+WebSocket text. The generator also writes 28 deterministic
+[input recipes](../proxy/tests/traffic_har_inputs.json) with original bytes,
+body availability, phase observations and shared connection identity. These
+inputs let native tests reconstruct the owned flows without deriving observations
+from expected HAR output. These source observations do not establish native HAR
+availability.
 
 The [flow-dump source fixture](../proxy/tests/traffic_dump_source.py) records six
 owned HTTP, WebSocket and TCP flows through the installed format-21 writer and

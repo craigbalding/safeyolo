@@ -13,6 +13,7 @@ it.  Without either flag, the observed document is printed.
 
 import argparse
 import base64
+import gzip
 import hashlib
 import importlib.metadata
 import json
@@ -432,6 +433,20 @@ def format_edge_flows():
         ]
     )
     cookies.response.headers = http.Headers([(b"Set-Cookie", b'a="one;two"; Path="/a;b"; SameSite=Lax; HttpOnly')])
+    mime_parameter = rich_flow()
+    for message in (mime_parameter.request, mime_parameter.response):
+        message.headers = http.Headers([(b"Content-Type", b"text/plain; charset=latin-1; x=\xff")])
+        message.raw_content = b"\xff"
+    form_charset = rich_flow()
+    form_charset.request.headers = http.Headers(
+        [(b"Content-Type", b"application/x-www-form-urlencoded; charset=latin-1")]
+    )
+    form_charset.request.raw_content = b"x=\xe9&escaped=%E9"
+    empty_encoding = encoded_flow()
+    for message in (empty_encoding.request, empty_encoding.response):
+        message.headers = http.Headers(
+            [(b"Content-Encoding", b""), (b"content-encoding", b"gzip"), (b"Content-Type", b"text/plain")]
+        )
     return {
         "utf8_sampling_boundary": sampled,
         "header_bytes_repr": header_repr,
@@ -441,6 +456,9 @@ def format_edge_flows():
         "unknown_charset_fallback": unknown,
         "supported_big5_text": big5,
         "pretty_url_quoted_cookies": cookies,
+        "mime_parameter_invalid_byte": mime_parameter,
+        "form_declared_charset": form_charset,
+        "empty_content_encoding": empty_encoding,
     }
 
 
@@ -527,6 +545,115 @@ def make_selection(name, selected_names, flows):
         "selected": selected_names,
         "entry_count": len(har["log"]["entries"]),
         "har": har,
+    }
+
+
+def message_input(message):
+    """Record parser-owned bytes and phases before HAR formatting."""
+    return {
+        "version_hex": message.data.http_version.hex(),
+        "headers_hex": [[name.hex(), value.hex()] for name, value in message.headers.fields],
+        "body_hex": None if message.raw_content is None else message.raw_content.hex(),
+        "timestamp_start": message.timestamp_start,
+        "timestamp_end": message.timestamp_end,
+    }
+
+
+def websocket_input(session):
+    if session is None:
+        return None
+    return {
+        "timestamp_end": session.timestamp_end,
+        "messages": [
+            {
+                "opcode": int(message.type),
+                "from_client": message.from_client,
+                "content_hex": message.content.hex(),
+                "timestamp": message.timestamp,
+                "dropped": message.dropped,
+                "injected": message.injected,
+            }
+            for message in session.messages
+        ],
+    }
+
+
+def flow_input(name, owned, server_ids):
+    """Retain constructor inputs; never derive observations from HAR output."""
+    result = {"name": name, "kind": owned.type}
+    if not isinstance(owned, http.HTTPFlow):
+        return result
+    server = owned.server_conn
+    server_id = server_ids.setdefault(server.id, f"server-{len(server_ids)}")
+    request = message_input(owned.request)
+    request.update(
+        method_hex=owned.request.data.method.hex(),
+        url=owned.request.url,
+        target_hex=owned.request.data.path.hex(),
+    )
+    response = None
+    if owned.response is not None:
+        response = message_input(owned.response)
+        response.update(status=owned.response.status_code, reason_hex=owned.response.data.reason.hex())
+    result.update(
+        request=request,
+        response=response,
+        server={
+            "id": server_id,
+            "peername": server.peername,
+            "timestamp_start": server.timestamp_start,
+            "timestamp_tcp_setup": server.timestamp_tcp_setup,
+            "timestamp_tls_setup": server.timestamp_tls_setup,
+        },
+        error=None if owned.error is None else owned.error.get_state(),
+        websocket=websocket_input(owned.websocket),
+    )
+    return result
+
+
+def assert_replay_inputs(recipes):
+    by_name = {item["name"]: item for item in recipes}
+    assert len(by_name) == len(recipes) == 28
+    assert by_name["request_body_empty"]["request"]["body_hex"] == ""
+    assert by_name["request_body_missing"]["request"]["body_hex"] is None
+    assert by_name["response_body_missing"]["response"]["body_hex"] is None
+    assert by_name["pending_request_with_response"]["request"]["timestamp_end"] is None
+    assert by_name["timed_first"]["server"]["id"] == by_name["timed_reused"]["server"]["id"]
+    assert by_name["rich_http"]["server"]["id"] != by_name["timed_first"]["server"]["id"]
+    assert by_name["folded_raw_headers"]["request"]["headers_hex"] == [
+        [b"X-Text".hex(), b"\xc3\xa9".hex()],
+        [b"X-Invalid".hex(), b"\xff".hex()],
+    ]
+    encoded = by_name["encoded_text"]
+    assert gzip.decompress(bytes.fromhex(encoded["request"]["body_hex"])) == b"encoded request"
+    assert gzip.decompress(bytes.fromhex(encoded["response"]["body_hex"])) == b"encoded response"
+    messages = by_name["websocket"]["websocket"]["messages"]
+    assert messages[1]["content_hex"] == "ff00" and messages[1]["dropped"]
+    assert messages[2]["injected"]
+    assert by_name["non_http"] == {"name": "non_http", "kind": "tcp"}
+    assert by_name["mime_parameter_invalid_byte"]["request"]["body_hex"] == "ff"
+    assert by_name["form_declared_charset"]["request"]["body_hex"] == b"x=\xe9&escaped=%E9".hex()
+    assert by_name["empty_content_encoding"]["request"]["headers_hex"][:2] == [
+        [b"Content-Encoding".hex(), ""],
+        [b"content-encoding".hex(), b"gzip".hex()],
+    ]
+
+
+def replay_inputs():
+    flows = all_flows()
+    flows.update(format_edge_flows())
+    server_ids = {}
+    recipes = [flow_input(name, owned, server_ids) for name, owned in flows.items()]
+    assert_replay_inputs(recipes)
+    return {
+        "schema": 1,
+        "source": "owned_pre_har_flow_inputs",
+        "versions": {
+            "python": sys.version.split()[0],
+            "mitmproxy": importlib.metadata.version("mitmproxy"),
+        },
+        "source_sha256": source_hashes(),
+        "flows": recipes,
     }
 
 
@@ -763,6 +890,7 @@ def assert_contract(document):
     assert_format_edge_headers(selections)
     assert_format_edge_bodies(selections)
     assert_format_edge_cookies(selections)
+    assert_format_charset_and_encoding(selections)
     assert document["formatter_errors"] == {"invalid_websocket_text": "UnicodeDecodeError"}
     assert_archives(document)
 
@@ -817,6 +945,22 @@ def assert_format_edge_cookies(selections):
             "sameSite": "Lax",
         }
     ]
+
+
+def assert_format_charset_and_encoding(selections):
+    mime = selections["mime_parameter_invalid_byte"]["har"]["log"]["entries"][0]
+    assert mime["request"]["postData"]["text"] == "ÿ"
+    form = selections["form_declared_charset"]["har"]["log"]["entries"][0]["request"]
+    assert form["postData"]["text"] == "x=é&escaped=%E9"
+    assert form["postData"]["params"] == [{"name": "x", "value": "é"}, {"name": "escaped", "value": "\udce9"}]
+    encoded = selections["empty_content_encoding"]["har"]["log"]["entries"][0]
+    assert encoded["request"]["headers"][:2] == [
+        {"name": "Content-Encoding", "value": ""},
+        {"name": "content-encoding", "value": "gzip"},
+    ]
+    content = encoded["response"]["content"]
+    assert content["encoding"] == "base64" and content["compression"] == 0
+    assert gzip.decompress(base64.b64decode(content["text"])) == b"encoded response"
 
 
 def document():
@@ -890,13 +1034,22 @@ def main():
     observed = document()
     rendered = json.dumps(observed, indent=2, ensure_ascii=True) + "\n"
     output = Path(__file__).with_suffix(".json")
+    inputs = replay_inputs()
+    inputs_rendered = json.dumps(inputs, indent=2, ensure_ascii=True) + "\n"
+    inputs_output = Path(__file__).with_name("traffic_har_inputs.json")
     if args.write:
         output.write_text(rendered, encoding="utf-8")
+        inputs_output.write_text(inputs_rendered, encoding="utf-8")
         print(f"wrote {output}")
+        print(f"wrote {inputs_output}")
     elif args.check:
         if output.read_text(encoding="utf-8") != rendered:
             raise SystemExit("traffic HAR fixture differs")
-        print(f"matched {len(observed['selections'])} HAR selections / 2 archive suffixes")
+        if inputs_output.read_text(encoding="utf-8") != inputs_rendered:
+            raise SystemExit("traffic HAR input recipes differ")
+        print(
+            f"matched {len(observed['selections'])} HAR selections / 2 archive suffixes / {len(inputs['flows'])} input recipes"
+        )
     else:
         print(rendered, end="")
 

@@ -2390,6 +2390,318 @@
           ]
         }
       }
+    },
+    {
+      "name": "mime_parameter_invalid_byte",
+      "selected": [
+        "mime_parameter_invalid_byte"
+      ],
+      "entry_count": 1,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": [
+            {
+              "startedDateTime": "1970-01-01T00:00:04+00:00",
+              "time": 5000.0,
+              "request": {
+                "method": "POST",
+                "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+                "httpVersion": "HTTP/2",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain; charset=latin-1; x=\udcff"
+                  }
+                ],
+                "queryString": [
+                  {
+                    "name": "q",
+                    "value": "one"
+                  },
+                  {
+                    "name": "q",
+                    "value": "two"
+                  },
+                  {
+                    "name": "space",
+                    "value": "a b"
+                  }
+                ],
+                "headersSize": 66,
+                "bodySize": 1,
+                "postData": {
+                  "mimeType": "text/plain; charset=latin-1; x=\udcff",
+                  "text": "\u00ff",
+                  "params": []
+                }
+              },
+              "response": {
+                "status": 299,
+                "statusText": "Synthetic Reason",
+                "httpVersion": "HTTP/1.0",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain; charset=latin-1; x=\udcff"
+                  }
+                ],
+                "content": {
+                  "size": 1,
+                  "compression": 0,
+                  "mimeType": "text/plain; charset=latin-1; x=\udcff",
+                  "text": "/w==",
+                  "encoding": "base64"
+                },
+                "redirectURL": "",
+                "headersSize": 66,
+                "bodySize": 1
+              },
+              "cache": {},
+              "timings": {
+                "connect": 1000.0,
+                "ssl": 1000.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 1000.0
+              },
+              "serverIPAddress": "198.51.100.30"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "form_declared_charset",
+      "selected": [
+        "form_declared_charset"
+      ],
+      "entry_count": 1,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": [
+            {
+              "startedDateTime": "1970-01-01T00:00:04+00:00",
+              "time": 5000.0,
+              "request": {
+                "method": "POST",
+                "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+                "httpVersion": "HTTP/2",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "application/x-www-form-urlencoded; charset=latin-1"
+                  }
+                ],
+                "queryString": [
+                  {
+                    "name": "q",
+                    "value": "one"
+                  },
+                  {
+                    "name": "q",
+                    "value": "two"
+                  },
+                  {
+                    "name": "space",
+                    "value": "a b"
+                  }
+                ],
+                "headersSize": 81,
+                "bodySize": 15,
+                "postData": {
+                  "mimeType": "application/x-www-form-urlencoded; charset=latin-1",
+                  "text": "x=\u00e9&escaped=%E9",
+                  "params": [
+                    {
+                      "name": "x",
+                      "value": "\u00e9"
+                    },
+                    {
+                      "name": "escaped",
+                      "value": "\udce9"
+                    }
+                  ]
+                }
+              },
+              "response": {
+                "status": 299,
+                "statusText": "Synthetic Reason",
+                "httpVersion": "HTTP/1.0",
+                "cookies": [
+                  {
+                    "name": "c",
+                    "value": "3",
+                    "path": "/",
+                    "domain": "",
+                    "httpOnly": false,
+                    "secure": true
+                  },
+                  {
+                    "name": "d",
+                    "value": "4",
+                    "path": "/",
+                    "domain": "",
+                    "httpOnly": true,
+                    "secure": false
+                  }
+                ],
+                "headers": [
+                  {
+                    "name": "Set-Cookie",
+                    "value": "c=3; Path=/; Secure"
+                  },
+                  {
+                    "name": "Set-Cookie",
+                    "value": "d=4; HttpOnly"
+                  },
+                  {
+                    "name": "X-Dup",
+                    "value": "reply-one"
+                  },
+                  {
+                    "name": "x-dup",
+                    "value": "reply-two"
+                  },
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "13"
+                  }
+                ],
+                "content": {
+                  "size": 13,
+                  "compression": 0,
+                  "mimeType": "text/plain",
+                  "text": "response body"
+                },
+                "redirectURL": "",
+                "headersSize": 197,
+                "bodySize": 13
+              },
+              "cache": {},
+              "timings": {
+                "connect": 1000.0,
+                "ssl": 1000.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 1000.0
+              },
+              "serverIPAddress": "198.51.100.30"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "empty_content_encoding",
+      "selected": [
+        "empty_content_encoding"
+      ],
+      "entry_count": 1,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": [
+            {
+              "startedDateTime": "1970-01-01T00:00:31+00:00",
+              "time": 2000.0,
+              "request": {
+                "method": "POST",
+                "url": "http://source.fixture.invalid/encoded",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Encoding",
+                    "value": ""
+                  },
+                  {
+                    "name": "content-encoding",
+                    "value": "gzip"
+                  },
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 101,
+                "bodySize": 35,
+                "postData": {
+                  "mimeType": "text/plain",
+                  "text": "\u001f\u008b\b\u0000\u0000\u0000\u0000\u0000\u0004\u00ffK\u00cdK\u00ceOIMQ(J-,M-.\u0001\u0000^\u00af\u0012\u0081\u000f\u0000\u0000\u0000",
+                  "params": []
+                }
+              },
+              "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Encoding",
+                    "value": ""
+                  },
+                  {
+                    "name": "content-encoding",
+                    "value": "gzip"
+                  },
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain"
+                  }
+                ],
+                "content": {
+                  "size": 36,
+                  "compression": 0,
+                  "mimeType": "text/plain",
+                  "text": "H4sIAAAAAAAE/0vNS85PSU1RKEotLsjPK04FAP18otIQAAAA",
+                  "encoding": "base64"
+                },
+                "redirectURL": "",
+                "headersSize": 101,
+                "bodySize": 36
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 0.0
+              },
+              "serverIPAddress": "198.51.100.33"
+            }
+          ]
+        }
+      }
     }
   ],
   "archives": {
