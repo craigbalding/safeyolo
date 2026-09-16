@@ -7,16 +7,19 @@ import json
 import logging
 import os
 import signal
+import stat
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from .agent_command_supervisor import _write_json
-from .config import get_data_dir, get_logs_dir
+from .agent_command_supervisor import _write_json, _write_text
+from .config import get_agent_map_path, get_bridge_sockets_dir, get_data_dir, get_logs_dir
 from .runtime_identity import process_is_alive, process_start_token
+from .rust_listener_json import update_listeners
 from .traffic_session import (
     capture_session,
     session_process_id,
@@ -51,6 +54,8 @@ class RustProcess:
     readiness_file: str
     admin_port: int | None
     admin_token_file: str | None
+    config_file: str | None = None
+    working_directory: str | None = None
 
 
 def read_process() -> RustProcess | None:
@@ -74,6 +79,8 @@ def read_process() -> RustProcess | None:
         or (process.admin_token_file is not None and (
             not isinstance(process.admin_token_file, str) or not Path(process.admin_token_file).is_absolute()
         ))
+        or any(value is not None and (not isinstance(value, str) or not Path(value).is_absolute())
+               for value in (process.config_file, process.working_directory))
     ):
         raise RuntimeError(f"Invalid Rust proxy process record: {state_file()}")
     return process
@@ -142,7 +149,8 @@ def prepare(config: dict) -> RustLaunch:
         configured_path = os.path.expanduser(configured_path)
     path = _path(configured_path, "proxy.rust_config")
     try:
-        native = json.loads(path.read_text())
+        source = path.read_text()
+        native = json.loads(source)
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeError(f"Cannot read native JSON configuration: {path}") from exc
     if not isinstance(native, dict):
@@ -160,11 +168,121 @@ def prepare(config: dict) -> RustLaunch:
         raise ValueError("Native admin_port must be an integer from 0 to 65535")
     token = native.get("admin_api_token_file")
     token_path = _path(token, "native admin_api_token_file") if token else None
-    return RustLaunch(_binary(), path, readiness, len(listeners), port, token_path)
+    binary = _binary()
+    reconciled = _reconcile_listeners(native, Path.cwd())
+    if reconciled != native:
+        updated = update_listeners(source, listeners, reconciled["listeners"])
+        _write_text(path, updated, mode=stat.S_IMODE(path.stat().st_mode))
+    listeners = reconciled["listeners"]
+    return RustLaunch(binary, path, readiness, len(listeners), port, token_path)
 
 
-def _check_control_paths(native: dict, config: Path, ready: Path) -> None:
+def _agent_listeners() -> list[dict] | None:
+    """Read one agent-map snapshot; invalid input must never become an empty map."""
+    from .sockets import path_for
+
+    try:
+        mapping = json.loads(get_agent_map_path().read_text())
+    except FileNotFoundError:
+        return None
+    if not isinstance(mapping, dict):
+        raise ValueError("agent_map.json must contain an object")
+    listeners = []
+    for name, entry in mapping.items():
+        if not isinstance(entry, dict):
+            raise ValueError("agent_map.json entries must contain objects")
+        address = entry.get("ip")
+        if address is None or address == "":
+            continue
+        if not isinstance(address, str):
+            raise ValueError("agent_map.json addresses must be strings")
+        listeners.append({"agent_id": name, "socket_path": str(path_for(name, address).absolute()),
+                          "source_id": address})
+    return listeners
+
+
+def _reconcile_listeners(native: dict, working_directory: Path) -> dict:
+    """Replace conventional CLI sockets and preserve operator-defined listeners."""
+    from .sockets import parse
+
+    configured = native.get("listeners")
+    if not isinstance(configured, list):
+        raise ValueError("Native listeners must be a JSON array")
+    mapped = _agent_listeners()
+    if mapped is None:
+        return native
+    directory = get_bridge_sockets_dir().resolve()
+    retained = []
+    for entry in configured:
+        if not isinstance(entry, dict) or not isinstance(entry.get("socket_path"), str):
+            raise ValueError("Native listeners need socket_path strings")
+        path = (working_directory / entry["socket_path"]).resolve()
+        managed = False
+        if path.parent.parent == directory:
+            try:
+                parse(path)
+                managed = True
+            except ValueError:
+                # Custom paths do not belong to the CLI's conventional socket set.
+                pass
+        if not managed:
+            retained.append(entry)
+    return {**native, "listeners": [*retained, *mapped]}
+
+
+def sync_listeners(timeout: float = 5.0) -> bool:
+    """Request a full native reload and confirm its listener update acknowledgement."""
+    try:
+        with lifecycle_lock():
+            process = read_process()
+            if process is None or not is_alive(process):
+                return False
+            if process.config_file is None or process.working_directory is None:
+                raise RuntimeError("Restart the Rust proxy once to record its configuration path for listener updates")
+            return _sync_running_listeners(process, timeout)
+    except (OSError, ValueError, RuntimeError) as exc:
+        log.warning("Rust listener synchronization failed: %s", exc)
+        return False
+
+
+def _sync_running_listeners(process: RustProcess, timeout: float) -> bool:
+    path = Path(process.config_file)
+    working_directory = Path(process.working_directory)
+    source = path.read_text()
+    native = json.loads(source)
+    if not isinstance(native, dict):
+        raise ValueError("Native JSON configuration must be an object")
+    candidate = _reconcile_listeners(native, working_directory)
+    requested = uuid.uuid4().hex
+    candidate = {**candidate, "reload_id": requested}
+    ready = candidate.get("readiness_file")
+    if not isinstance(ready, str) or not ready:
+        raise ValueError("Native readiness_file must name a filesystem path")
+    observing = replace(process, readiness_file=str((working_directory / ready).absolute()))
+    _check_control_paths(candidate, path, Path(observing.readiness_file), working_directory)
+    updated = update_listeners(source, native["listeners"], candidate["listeners"], requested)
+    _write_text(path, updated, mode=stat.S_IMODE(path.stat().st_mode))
+    _signal_process(process, signal.SIGHUP)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not is_alive(process):
+            raise RuntimeError("Rust proxy exited before acknowledging the listener update")
+        marker = readiness(observing, listeners=len(candidate["listeners"]))
+        if marker is not None and marker.get("reload_id") == requested:
+            if not is_alive(process):
+                raise RuntimeError("Rust proxy exited while acknowledging the listener update")
+            _write_json(state_file(), asdict(observing))
+            log.info("Rust listener update accepted (%d listeners)", marker["listeners"])
+            return True
+        time.sleep(0.05)
+    log.warning("Rust listener update was not acknowledged within %gs; requested JSON remains for the next reload/start",
+                timeout)
+    return False
+
+
+def _check_control_paths(native: dict, config: Path, ready: Path, working_directory: Path | None = None) -> None:
     """Do not unlink native input/state files or overwrite the CLI's ownership."""
+    directory = working_directory if working_directory is not None else Path.cwd()
     controls = {state_file().resolve(), (get_data_dir() / "proxy.pid").resolve(),
                 (get_data_dir() / "proxy.lock").resolve()}
     paths = [config, get_logs_dir() / "safeyolo.jsonl"]
@@ -177,7 +295,7 @@ def _check_control_paths(native: dict, config: Path, ready: Path) -> None:
     inspection = native.get("inspection")
     if isinstance(inspection, dict) and isinstance(inspection.get("policy_file"), str):
         paths.append(Path(inspection["policy_file"]))
-    if ready.resolve() in controls or any(path.resolve() in controls | {ready.resolve()} for path in paths):
+    if ready.resolve() in controls or any((directory / path).resolve() in controls | {ready.resolve()} for path in paths):
         raise ValueError("Native input/state paths, readiness and CLI process records must not overlap")
 
 
@@ -224,6 +342,10 @@ def stop(process: RustProcess) -> None:
 
 
 def _terminate(process: RustProcess) -> None:
+    _signal_process(process, signal.SIGTERM)
+
+
+def _signal_process(process: RustProcess, selected_signal: int) -> None:
     """Pin Linux signal delivery to the identity observed after opening its PID handle."""
     if process.pid is None:
         raise RuntimeError("Cannot signal an unidentified Rust proxy")
@@ -231,13 +353,13 @@ def _terminate(process: RustProcess) -> None:
         descriptor = os.pidfd_open(process.pid)
         try:
             if is_alive(process):
-                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                signal.pidfd_send_signal(descriptor, selected_signal)
         finally:
             os.close(descriptor)
     elif is_alive(process):
         # Other supported hosts use the existing start-token check and POSIX
         # signal convention; they do not provide Linux's atomic PID handle.
-        os.kill(process.pid, signal.SIGTERM)
+        os.kill(process.pid, selected_signal)
 
 
 def _wait_ready(process: RustProcess, launch: RustLaunch) -> dict:
@@ -285,7 +407,8 @@ def start(config: dict) -> None:
     env["SAFEYOLO_DATA_DIR"] = str(get_data_dir().absolute())
     env["SAFEYOLO_LOG_PATH"] = str((get_logs_dir(create=True) / "safeyolo.jsonl").absolute())
     process = RustProcess(None, None, str(launch.readiness), launch.admin_port,
-                          str(launch.admin_token) if launch.admin_token else None)
+                          str(launch.admin_token) if launch.admin_token else None,
+                          str(launch.config), str(Path.cwd()))
     # A failed identity observation must not send a later stop down the legacy
     # PID path. Retain one lifetime record throughout launch, even before readiness.
     _write_json(state_file(), asdict(process))

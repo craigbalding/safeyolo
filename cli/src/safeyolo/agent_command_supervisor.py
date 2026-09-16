@@ -118,12 +118,17 @@ class _CapturedOutput:
 
 
 def _write_json(path: Path, value: dict | int) -> None:
+    _write_text(path, json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+
+
+def _write_text(path: Path, value: str, *, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(value, handle, sort_keys=True, separators=(",", ":"))
-            handle.write("\n")
+            if mode is not None:
+                os.fchmod(handle.fileno(), mode)
+            handle.write(value)
             handle.flush()
             os.fsync(handle.fileno())
         temporary.replace(path)

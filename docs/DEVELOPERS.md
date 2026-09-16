@@ -359,9 +359,9 @@ safeyolo stop && safeyolo start --dev
 
 The CLI defaults to `proxy.backend: python`. Rust selection is an explicit
 development setting, not a completed migration or production cutover. HTTP
-credential inspection and injection, WebMITM, and agent management remain
-incomplete. Native listeners come from the supplied JSON; `safeyolo agent add`
-does not configure them. See [proxy parity](proxy-parity.md) for current scope.
+credential inspection and injection, WebMITM, and complete agent management
+remain incomplete. Native listeners include the supplied JSON entries and
+the CLI's agent-map sockets. See [proxy parity](proxy-parity.md) for current scope.
 
 Run the following on the host from the checkout root, with the Rust toolchain,
 tmux, and an initialized CLI configuration. Stop the current backend before
@@ -430,6 +430,21 @@ working sandbox. `--no-wait` skips that extra health check, not startup readines
 native admin port, even if `proxy.backend` has since changed. A live process
 without its readiness marker is shown as running but not ready. Status does not
 query the Python management APIs for a Rust process.
+
+At startup and after agent-map changes, the CLI derives managed listener paths
+with the existing `<ip>_<agent>/proxy.sock` convention under its data directory.
+It preserves custom JSON listeners outside that convention. A missing map leaves
+explicit listeners in place; a valid empty map removes managed listeners. An
+unreadable or malformed map cannot become an empty replacement.
+
+For a running Rust process, listener synchronization updates the JSON recorded
+at launch, preserving other fields and file permissions, then sends SIGHUP.
+Native SIGHUP reloads the full configuration, including policy and catalog
+inputs. It is not a listener-only operation. The CLI confirms success only
+after the same process publishes the requested `reload_id`. A timeout means
+the result is unconfirmed; the requested JSON remains for the next reload or
+start. It does not imply that the live configuration was rolled back. Processes
+launched before configuration-path recording need one restart to use live sync.
 
 To return to Python, run `safeyolo stop`, change `proxy.backend` to `python` in
 `config.yaml`, then run `safeyolo start`. A requested/live backend mismatch is an

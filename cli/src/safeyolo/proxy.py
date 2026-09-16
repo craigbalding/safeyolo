@@ -431,16 +431,24 @@ def _initial_mode_specs(data_dir: Path) -> list[str]:
 
 
 def sync_proxy_modes(admin_port: int = 9090, timeout: float = 5.0) -> bool:
-    """Push the current agent_map-derived mode list to a running mitmproxy.
+    """Reconcile agent-map listeners with the actual running proxy backend.
 
-    Called by `safeyolo agent add`/`remove` so new UnixInstance listeners
-    appear (and old ones stop) without a mitmproxy restart. Mitmproxy's
-    `Proxyserver.configure()` hot-reloads on `options.mode` change.
+    Python changes options.mode through its operator API. Rust replaces only
+    conventional CLI socket entries in the launch configuration and requests
+    a full native reload. An exact accepted reload ID confirms the latter.
 
-    Returns True on success, False if the admin API call failed (e.g.,
-    mitmproxy not running). Callers treat failure as best-effort — the
-    socket will be created on next start via `_initial_mode_specs`.
+    Return False when stopped, rejected, or unconfirmed. Both startup paths
+    reconcile the latest map, so a stopped proxy can apply changes next time.
     """
+    try:
+        if rust_proxy.read_process() is not None:
+            return rust_proxy.sync_listeners(timeout=timeout)
+        if selected_backend() == "rust" and not is_proxy_running():
+            return False
+    except (OSError, ValueError, RuntimeError) as exc:
+        log.warning("Cannot resolve the running proxy for listener synchronization: %s", exc)
+        return False
+
     import httpx
 
     data_dir = get_data_dir()

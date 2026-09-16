@@ -383,8 +383,17 @@ failure selects Python automatically. Rust shutdown waits for process exit.
 [command tests](../cli/tests/test_lifecycle_rust.py) cover selection, ownership,
 failure cleanup, health and explicit rollback selection. They do not establish
 installed tmux behavior, live native process startup, Linux/macOS ingress,
-packaging or pilot acceptance. Listener synchronization, complete management
-and traffic UI workflows, and credential inspection/injection remain unfinished.
+packaging or pilot acceptance.
+
+Listener synchronization reconciles conventional CLI sockets at startup and
+requests a full SIGHUP reload for map changes. A fresh
+reload ID in accepted readiness confirms that update; timeout is unconfirmed.
+Custom listeners are retained. [Mocked synchronization tests](../cli/tests/test_rust_listener_sync.py)
+cover the CLI's configuration edits and acknowledgment decisions.
+[Native library tests](../proxy/src/listener_reload_tests.rs) cover listener
+publication and failed preparation with temporary files and Unix sockets.
+Complete management and traffic UI workflows, credential inspection/injection,
+and real host listener lifecycle proofs remain unfinished.
 This development launcher does not complete M7 or authorize cutover.
 
 ## Deletion map and evidence still required

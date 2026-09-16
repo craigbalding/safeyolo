@@ -101,6 +101,9 @@ pub struct Config {
     #[serde(default)]
     pub admin_shield_extra_ports: String,
     pub readiness_file: PathBuf,
+    /// Caller correlation echoed only in the accepted configuration marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reload_id: Option<String>,
     /// Development override for the process audit path. Without it, startup
     /// uses SAFEYOLO_LOG_PATH and the production default.
     pub audit_log_path: Option<PathBuf>,

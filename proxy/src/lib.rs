@@ -462,6 +462,14 @@ struct SocketPath {
 }
 
 impl SocketPath {
+    fn is_current(&self) -> std::io::Result<bool> {
+        match std::fs::symlink_metadata(&self.path) {
+            Ok(metadata) => Ok(metadata.dev() == self.device && metadata.ino() == self.inode),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     fn bind(path: &Path) -> Result<(UnixListener, Self), Error> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -509,6 +517,7 @@ impl Drop for SocketPath {
 }
 
 struct RunningListener {
+    listener: Arc<UnixListener>,
     agent_id: String,
     source_id: Option<String>,
     stop: Arc<watch::Sender<bool>>,
@@ -518,16 +527,17 @@ struct RunningListener {
 
 impl RunningListener {
     fn start(
-        listener: UnixListener,
+        listener: impl Into<Arc<UnixListener>>,
         socket: SocketPath,
         agent_id: String,
         source_id: Option<String>,
         runtime: Arc<RwLock<Arc<Runtime>>>,
     ) -> Self {
+        let listener = listener.into();
         let (stop, receiver) = watch::channel(false);
         let stop = Arc::new(stop);
         let task = tokio::spawn(accept_agents(
-            listener,
+            listener.clone(),
             agent_id.clone(),
             source_id.clone(),
             runtime,
@@ -535,6 +545,7 @@ impl RunningListener {
             receiver,
         ));
         Self {
+            listener,
             agent_id,
             source_id,
             stop,
@@ -543,15 +554,21 @@ impl RunningListener {
         }
     }
 
-    fn stop(self) -> JoinHandle<()> {
+    fn retire(self) -> (Arc<UnixListener>, SocketPath, JoinHandle<()>) {
         let _ = self.stop.send(true);
-        drop(self.socket);
-        self.task
+        (self.listener, self.socket, self.task)
+    }
+
+    fn stop(self) -> JoinHandle<()> {
+        let (listener, socket, task) = self.retire();
+        drop(listener);
+        drop(socket);
+        task
     }
 }
 
 async fn accept_agents(
-    listener: UnixListener,
+    listener: Arc<UnixListener>,
     agent_id: String,
     source_id: Option<String>,
     runtime: Arc<RwLock<Arc<Runtime>>>,
@@ -650,6 +667,8 @@ async fn serve_connection(
     result.map_err(Into::into)
 }
 
+type PreparedListeners = HashMap<PathBuf, (Arc<UnixListener>, SocketPath)>;
+
 /// Owns listening sockets. Identity is fixed at accept, never taken from client bytes.
 pub struct Proxy {
     runtime: Arc<RwLock<Arc<Runtime>>>,
@@ -712,7 +731,8 @@ impl Proxy {
         };
         // A readiness marker is useful only after all configured sockets have bound.
         // Keep the prepared operator socket locally owned until agent binds succeed.
-        proxy.install_listeners(&config).await?;
+        let additions = proxy.prepare_listeners(&config)?;
+        proxy.commit_listeners(&config, additions);
         proxy.admin = prepared_admin.map(|listener| listener.start(proxy.runtime.clone()));
         proxy.write_readiness()?;
         if circuit_runtime::state_path(&config).is_some() {
@@ -730,6 +750,15 @@ impl Proxy {
             "ready": true, "pid": std::process::id(), "backend": "rust-m2",
             "instance_id": self.default_via, "listeners": self.listeners.len(),
         });
+        if let Some(reload_id) = &self
+            .runtime
+            .read()
+            .map_err(|_| "runtime read lock poisoned")?
+            .config
+            .reload_id
+        {
+            marker["reload_id"] = Value::from(reload_id.clone());
+        }
         if let Some(listener) = &self.admin {
             marker["admin_port"] = Value::from(listener.address().port());
         }
@@ -738,20 +767,31 @@ impl Proxy {
         Ok(())
     }
 
-    async fn install_listeners(&mut self, config: &Config) -> Result<(), Error> {
-        // Bind additions before changing live state. Failure leaves existing listeners active.
-        let mut additions = Vec::new();
+    fn prepare_listeners(&self, config: &Config) -> Result<PreparedListeners, Error> {
+        // Bind every new path before changing active identities or readiness.
+        let mut additions = HashMap::new();
         for entry in &config.listeners {
-            if !self.listeners.contains_key(&entry.socket_path) {
+            let reusable = self
+                .listeners
+                .get(&entry.socket_path)
+                .map(|listener| listener.socket.is_current())
+                .transpose()?
+                .unwrap_or(false);
+            if !reusable {
                 let (listener, socket) = SocketPath::bind(&entry.socket_path)?;
-                additions.push((listener, socket, entry.agent_id.clone(), entry.source_id()));
+                additions.insert(entry.socket_path.clone(), (Arc::new(listener), socket));
             }
         }
+        Ok(additions)
+    }
+
+    fn commit_listeners(&mut self, config: &Config, mut additions: PreparedListeners) {
         let removed: Vec<PathBuf> = self
             .listeners
             .iter()
             .filter(|(path, listener)| {
-                listener.task.is_finished()
+                additions.contains_key(*path)
+                    || listener.task.is_finished()
                     || !config.listeners.iter().any(|entry| {
                         &entry.socket_path == *path
                             && entry.agent_id == listener.agent_id
@@ -761,23 +801,40 @@ impl Proxy {
             .map(|(path, _)| path.clone())
             .collect();
         for path in removed {
-            self.draining
-                .push(self.listeners.remove(&path).unwrap().stop());
-            if let Some(entry) = config
+            let previous = self.listeners.remove(&path).unwrap();
+            if config
                 .listeners
                 .iter()
-                .find(|entry| entry.socket_path == path)
+                .any(|entry| entry.socket_path == path)
+                && !additions.contains_key(&path)
             {
-                let (listener, socket) = SocketPath::bind(&entry.socket_path)?;
-                additions.push((listener, socket, entry.agent_id.clone(), entry.source_id()));
+                // Transfer the existing socket and its inode owner. Existing
+                // clients drain with their accepted identity; only future
+                // accepts use the replacement identity/source configuration.
+                let (listener, socket, task) = previous.retire();
+                self.draining.push(task);
+                additions.insert(path, (listener, socket));
+            } else {
+                self.draining.push(previous.stop());
             }
         }
-        for (listener, socket, agent, source) in additions {
-            self.listeners.insert(
-                socket.path.clone(),
-                RunningListener::start(listener, socket, agent, source, self.runtime.clone()),
-            );
+        for entry in &config.listeners {
+            if let Some((listener, socket)) = additions.remove(&entry.socket_path) {
+                self.listeners.insert(
+                    entry.socket_path.clone(),
+                    RunningListener::start(
+                        listener,
+                        socket,
+                        entry.agent_id.clone(),
+                        entry.source_id(),
+                        self.runtime.clone(),
+                    ),
+                );
+            }
         }
+    }
+
+    async fn reap_listeners(&mut self) {
         let mut index = 0;
         while index < self.draining.len() {
             if self.draining[index].is_finished() {
@@ -788,7 +845,6 @@ impl Proxy {
                 index += 1;
             }
         }
-        Ok(())
     }
 
     /// Wait for the next process-owned catalog check. With no configured
@@ -936,9 +992,7 @@ impl Proxy {
             self.admin.as_ref().map(admin_listener::Running::address),
             &mut service_files,
         )?);
-        // Once topology changes begin, readiness is re-published only after commit.
-        clear_readiness(&self.readiness_file, &self.default_via);
-        self.install_listeners(&config).await?;
+        let additions = self.prepare_listeners(&config)?;
         if self.circuit_snapshots.is_none() && circuit_runtime::state_path(&config).is_some() {
             self.circuit_snapshots = Some(circuit_runtime::Snapshots::start(self.runtime.clone())?);
         }
@@ -946,10 +1000,8 @@ impl Proxy {
             // Completion, admission and snapshots all retain this same lock
             // through their state operation. Publish the selected file's state
             // and configuration together, preserving counters and settings.
-            let mut current = self
-                .runtime
-                .write()
-                .map_err(|_| "runtime write lock poisoned")?;
+            let state = self.runtime.clone();
+            let mut current = state.write().map_err(|_| "runtime write lock poisoned")?;
             let old_path = circuit_runtime::state_path(&current.config);
             let new_path = circuit_runtime::state_path(&runtime.config);
             if old_path != new_path {
@@ -971,6 +1023,9 @@ impl Proxy {
             // existing declarations retain their original expiry and context.
             runtime.configure_declarations()?;
             runtime.flow_recorder.set_enabled(config.flow_store_enabled);
+            // No fallible preparation remains before topology/runtime publication.
+            clear_readiness(&self.readiness_file, &self.default_via);
+            self.commit_listeners(&config, additions);
             *current = runtime.clone();
         }
         policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
@@ -986,7 +1041,9 @@ impl Proxy {
             clear_readiness(&self.readiness_file, &self.default_via);
             self.readiness_file = config.readiness_file;
         }
-        self.write_readiness()
+        let result = self.write_readiness();
+        self.reap_listeners().await;
+        result
     }
 
     pub async fn shutdown(mut self) {
@@ -1047,3 +1104,6 @@ impl Drop for Proxy {
 
 #[cfg(test)]
 mod audit_runtime_tests;
+
+#[cfg(test)]
+mod listener_reload_tests;
