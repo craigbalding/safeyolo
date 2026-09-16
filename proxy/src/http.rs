@@ -1591,6 +1591,107 @@ async fn forward(
         )?;
         return Ok((prior_block(reply), "deny".into()));
     }
+    // Credential enforcement is deliberately after network and circuit
+    // admission, but before test-context observation, body buffering, or any
+    // outbound connection. The ordered parser view remains alive here so the
+    // guard sees first spelling and grouped duplicate values exactly once.
+    if let Some(policy) = runtime.policy.as_ref() {
+        let guard = runtime
+            .credential_guard
+            .as_ref()
+            .ok_or("native credential guard is unavailable")?;
+        let guard_trace = trace.as_ref().and_then(|trace| {
+            trace.hook(
+                "credential-guard",
+                if request.method() == Method::CONNECT {
+                    "http_connect"
+                } else {
+                    "request"
+                },
+            )
+        });
+        let outcome = match guard.enforce_ordered(
+            crate::credential_guard::Pdp::Ready(policy),
+            crate::network_guard::Identity::Resolved(&identity.agent_id),
+            &destination.policy_host,
+            destination.port,
+            request.method().as_str(),
+            &destination.path,
+            &destination.scheme,
+            Some(request_id),
+            &identity.connection_id,
+            false,
+            ordered_headers.iter(),
+            crate::credential_guard::Options::default(),
+            crate::policy::current_time_ms(),
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if let Some(trace) = &guard_trace {
+                    trace.error("CredentialGuardError");
+                }
+                // A decoder, matcher, or policy observation error is a
+                // terminal local failure. It cannot be interpreted as
+                // no-detection and cannot reach open_outbound.
+                return Err(error.into());
+            }
+        };
+        if let Some(trace) = &guard_trace {
+            let outcome_name = match outcome.kind {
+                crate::credential_guard::OutcomeKind::Bypassed => "bypassed",
+                crate::credential_guard::OutcomeKind::NoDetection => "no_detection",
+                crate::credential_guard::OutcomeKind::Allowed => "allowed",
+                crate::credential_guard::OutcomeKind::Warned => "warned",
+                crate::credential_guard::OutcomeKind::Blocked => "blocked",
+            };
+            trace.evaluated(outcome_name, None);
+        }
+        // Canonical audit is emitted exactly once per guard intent. The
+        // attribution is trusted UDS identity; no credential value enters it.
+        for intent in &outcome.audit {
+            runtime
+                .audit
+                .emit(intent.event(identity.audit_attribution()))?;
+        }
+        runtime.record(json!({
+            "event": "proxy.credential_guard",
+            "agent": identity.agent_id,
+            "connection_id": identity.connection_id,
+            "request_id": request_id,
+            "host": destination.policy_host,
+            "port": destination.port,
+            "outcome": outcome.kind,
+            "trace": outcome.trace,
+            "audit": outcome.audit,
+            "metadata": outcome.metadata,
+            "evaluations": outcome.evaluations,
+            "body_scope": "headers_only",
+            "query_scope": "policy_context_only",
+        }))?;
+        if let Some(enforcement) = outcome.response {
+            let body = enforcement.body_bytes();
+            let mut blocked = Response::builder()
+                .status(StatusCode::from_u16(enforcement.status)?)
+                .body(full(body))?;
+            for (name, value) in enforcement.headers {
+                blocked
+                    .headers_mut()
+                    .append(header::HeaderName::try_from(name)?, value.parse()?);
+            }
+            strip_hop_headers(blocked.headers_mut());
+            traffic::local_reply(
+                traffic.as_ref(),
+                &mut request,
+                &mut blocked,
+                outcome.metadata.get("blocked_by").cloned(),
+                outcome.metadata.get("block_reason").cloned(),
+                destination,
+                true,
+                trace.as_ref(),
+            )?;
+            return Ok((prior_block(blocked), "deny".into()));
+        }
+    }
     let admission = if circuit_hook_failed {
         // A prior request hook exception stops later source children. Reserved
         // context containment still applies before native forwarding (D55).

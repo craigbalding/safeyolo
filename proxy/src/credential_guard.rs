@@ -305,7 +305,9 @@ impl CredentialGuard {
         }
     }
     pub fn stats(&self) -> Result<Stats> {
-        Ok(self.stats.lock().map_err(|_| Error::State)?.clone())
+        let mut stats = self.stats.lock().map_err(|_| Error::State)?.clone();
+        stats.rules_count = self.snapshot()?.rules.len();
+        Ok(stats)
     }
     pub fn stats_json(&self) -> Result<Value> {
         let s = self.stats()?;
@@ -316,10 +318,36 @@ impl CredentialGuard {
     pub fn load_sensor_config(&self, source: &Value) -> Result<LoadReport> {
         let (snapshot, report) = compile(source)?;
         let mut current = self.snapshot.write().map_err(|_| Error::State)?;
-        let mut stats = self.stats.lock().map_err(|_| Error::State)?;
-        stats.rules_count = report.rules_count;
         *current = Arc::new(snapshot);
         Ok(report)
+    }
+    /// Compile a policy generation without mutating the currently published
+    /// detector. The caller publishes the returned guard only after all other
+    /// runtime preparation succeeds; HMAC key and counters remain shared.
+    pub fn prepare_policy(&self, policy: &Policy) -> Result<(Self, LoadReport)> {
+        self.prepare_policy_with_key(policy, None)
+    }
+    /// Build a generation with a newly loaded HMAC key, retaining counters.
+    /// The caller owns the source configure condition and key lifetime.
+    pub(crate) fn prepare_policy_with_key(
+        &self,
+        policy: &Policy,
+        key: Option<&[u8]>,
+    ) -> Result<(Self, LoadReport)> {
+        let (snapshot, report) = policy
+            .with_credential_guard_config(compile)
+            .map_err(|_| Error::InvalidConfig)??;
+        Ok((
+            Self {
+                key: key.map_or_else(
+                    || self.key.clone(),
+                    |key| Arc::new(hmac::Key::new(hmac::HMAC_SHA256, key)),
+                ),
+                snapshot: Arc::new(RwLock::new(Arc::new(snapshot))),
+                stats: self.stats.clone(),
+            },
+            report,
+        ))
     }
     /// None represents the source config-cache unavailable path: retain current
     /// rules. Failed candidate compilation also preserves the entire snapshot.
@@ -373,6 +401,42 @@ impl CredentialGuard {
         options: Options,
         now_ms: f64,
     ) -> Result<Outcome> {
+        // Applicability decisions do not consume header text. Keep source
+        // bypasses and identity containment independent of the strict text
+        // adapter: an invalid value on a disabled/prior/conflict request must
+        // not turn an already-established outcome into a decoder failure.
+        let applicable = !prior_response
+            && identity != Identity::Conflict
+            && pdp.policy().is_none_or(|policy| {
+                policy.is_addon_enabled(
+                    Addon::CredentialGuard,
+                    Some(host),
+                    match identity {
+                        Identity::Resolved(agent) => Some(agent),
+                        _ => None,
+                    },
+                )
+            });
+        if !applicable {
+            let headers = [];
+            return self.enforce(
+                pdp,
+                Request {
+                    identity,
+                    host,
+                    port,
+                    method,
+                    path,
+                    scheme,
+                    request_id,
+                    connection_id,
+                    prior_response,
+                    headers: &headers,
+                },
+                options,
+                now_ms,
+            );
+        }
         let adapted = crate::credential_text::Headers::from_ordered(fields)
             .map_err(|_| Error::InvalidHeaderEncoding)?;
         let headers = adapted.as_guard_headers();

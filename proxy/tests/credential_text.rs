@@ -111,3 +111,76 @@ fn invalid_admitted_bytes_are_an_error_and_cannot_become_no_detection() {
     assert_eq!(result, Err(Error::InvalidHeaderEncoding));
     assert!(!result.unwrap_err().to_string().contains("key-a"));
 }
+
+#[test]
+fn bypass_and_identity_containment_precede_strict_text_conversion() {
+    let guard = CredentialGuard::new(b"synthetic-key");
+    guard.load_sensor_config(&sensor()).unwrap();
+    let policy = policy();
+    let fields = [(b"Authorization".as_slice(), b"Bearer key-a\xff".as_slice())];
+    let bypassed = guard
+        .enforce_ordered(
+            Pdp::Ready(&policy),
+            Identity::Resolved("alice"),
+            "api.example",
+            443,
+            "GET",
+            "/",
+            "https",
+            Some("req-prior"),
+            "conn-prior",
+            true,
+            fields,
+            Options::default(),
+            1000.,
+        )
+        .unwrap();
+    assert_eq!(bypassed.kind, OutcomeKind::Bypassed);
+
+    let disabled = Policy::parse(
+        &json!({"permissions":[],"addons":{"credential_guard":{"enabled":false}}}).to_string(),
+        Format::Json,
+    )
+    .unwrap();
+    let bypassed = guard
+        .enforce_ordered(
+            Pdp::Ready(&disabled),
+            Identity::Resolved("alice"),
+            "api.example",
+            443,
+            "GET",
+            "/",
+            "https",
+            Some("req-disabled"),
+            "conn-disabled",
+            false,
+            fields,
+            Options::default(),
+            1000.,
+        )
+        .unwrap();
+    assert_eq!(bypassed.kind, OutcomeKind::Bypassed);
+
+    let conflict = guard
+        .enforce_ordered(
+            Pdp::Ready(&policy),
+            Identity::Conflict,
+            "api.example",
+            443,
+            "GET",
+            "/",
+            "https",
+            Some("req-conflict"),
+            "conn-conflict",
+            false,
+            fields,
+            Options::default(),
+            1000.,
+        )
+        .unwrap();
+    assert_eq!(conflict.kind, OutcomeKind::Blocked);
+    assert_eq!(
+        conflict.response.as_ref().map(|response| response.status),
+        Some(403)
+    );
+}

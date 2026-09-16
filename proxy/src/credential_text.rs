@@ -91,7 +91,6 @@ impl Headers {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn text(fields: &[(&[u8], &[u8])]) -> Headers {
         Headers::from_ordered(fields.iter().copied()).unwrap()
     }

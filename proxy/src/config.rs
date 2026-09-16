@@ -62,6 +62,9 @@ pub struct Config {
     /// Operator-supplied discovery metadata; listener configuration owns identity.
     #[serde(default)]
     pub agent_map_file: String,
+    /// Per-process state directory for credential HMAC and local Agent API
+    /// material. The key itself is never part of Config serialization.
+    pub data_dir: Option<PathBuf>,
     pub temporary_policy_socket: Option<PathBuf>,
     pub policy_file: Option<PathBuf>,
     /// Explicit development catalog sources, published with native policy.
@@ -170,6 +173,13 @@ pub(crate) fn authority_port(
 }
 
 impl Config {
+    pub(crate) fn data_dir(&self) -> PathBuf {
+        self.data_dir
+            .clone()
+            .or_else(|| std::env::var_os("SAFEYOLO_DATA_DIR").map(PathBuf::from))
+            .unwrap_or_else(|| "/safeyolo/data".into())
+    }
+
     pub fn read(path: &std::path::Path) -> Result<Self, Error> {
         let config: Self = serde_json::from_slice(&std::fs::read(path)?)?;
         config.validate()?;

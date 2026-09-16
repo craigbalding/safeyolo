@@ -15,6 +15,7 @@ mod config;
 mod connection_tasks;
 pub mod contracts;
 pub mod credential_guard;
+mod credential_hmac;
 pub mod credential_injection;
 mod credential_text;
 pub mod credentials;
@@ -115,6 +116,8 @@ pub(crate) struct Runtime {
     passthrough: tunnels::Passthrough,
     scanner: inspection::Scanner,
     policy: Option<policy::Policy>,
+    credential_guard: Option<credential_guard::CredentialGuard>,
+    credential_key_empty: bool,
     tasks: tasks::Registry,
     admin_address: Option<std::net::SocketAddr>,
     admin_shield: admin_shield::AdminShield,
@@ -195,6 +198,45 @@ impl Runtime {
                     )
                 })
                 .transpose()?;
+            // CredentialGuard is a native generation owned by the same Runtime
+            // publication as the accepted Policy. Reuse the key on ordinary
+            // reloads; an empty environment key deliberately retries loading
+            // the configured source, matching the source lifecycle contract.
+            let (credential_guard, credential_key_empty) = if let Some(policy) = policy.as_ref() {
+                let previous_guard = previous.and_then(|runtime| runtime.credential_guard.as_ref());
+                let key = if previous_guard.is_none()
+                    || previous.is_some_and(|runtime| runtime.credential_key_empty)
+                {
+                    let environment = std::env::var_os("CREDGUARD_HMAC_SECRET").map(|value| {
+                        zeroize::Zeroizing::new(std::os::unix::ffi::OsStringExt::into_vec(value))
+                    });
+                    Some(credential_hmac::load(
+                        &config.data_dir().join("hmac_secret"),
+                        environment
+                            .as_ref()
+                            .map(|value| std::os::unix::ffi::OsStrExt::from_bytes(value)),
+                    )?)
+                } else {
+                    None
+                };
+                let seed = previous_guard
+                    .cloned()
+                    .unwrap_or_else(|| credential_guard::CredentialGuard::new(&[]));
+                let (guard, _) = seed.prepare_policy_with_key(
+                    policy,
+                    key.as_ref().map(credential_hmac::HmacSecret::as_bytes),
+                )?;
+                (
+                    Some(guard),
+                    key.as_ref()
+                        .is_some_and(credential_hmac::HmacSecret::is_empty),
+                )
+            } else {
+                (
+                    previous.and_then(|runtime| runtime.credential_guard.clone()),
+                    previous.is_none_or(|runtime| runtime.credential_key_empty),
+                )
+            };
             let network_guard = previous
                 .map(|runtime| runtime.network_guard.clone())
                 .unwrap_or_default();
@@ -285,6 +327,8 @@ impl Runtime {
                 passthrough,
                 scanner,
                 policy,
+                credential_guard,
+                credential_key_empty,
                 tasks,
                 admin_address,
                 admin_shield,
@@ -975,8 +1019,15 @@ impl Proxy {
     }
 
     fn publish_policy(&self, previous: &Runtime, policy: policy::Policy) -> Result<(), Error> {
+        let previous_guard = previous
+            .credential_guard
+            .as_ref()
+            .ok_or("native credential guard is unavailable")?;
+        let (credential_guard, _) = previous_guard.prepare_policy(&policy)?;
         let runtime = Arc::new(Runtime {
             policy: Some(policy),
+            credential_guard: Some(credential_guard),
+            credential_key_empty: previous.credential_key_empty,
             ..previous.clone()
         });
         {

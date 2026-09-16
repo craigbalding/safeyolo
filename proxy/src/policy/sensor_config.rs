@@ -1,6 +1,58 @@
 //! Sensor configuration from the same canonical owners used for policy hashing.
 
-use super::{BaselineSerializationError, Map, Policy, Value};
+use super::{Baseline, BaselineSerializationError, Map, Policy, Value, invalid};
+
+// This owner is private to the scoped compiler callback. A prepared
+// configuration is never exposed through Debug or Serialize and is wiped when
+// the callback returns.
+struct CredentialConfig(Value);
+impl Drop for CredentialConfig {
+    fn drop(&mut self) {
+        crate::credentials::wipe_json(&mut self.0);
+    }
+}
+
+const CREDENTIAL_SETTINGS: &[(&str, &[&str])] = &[
+    ("detection_level", &[]),
+    ("standard_auth_headers", &[]),
+    ("use_default_credential_rules", &[]),
+    ("safe_headers", &["safe_patterns"]),
+    (
+        "entropy",
+        &["min_length", "min_charset_diversity", "min_shannon_entropy"],
+    ),
+];
+
+fn check_credential_timestamps(owner: &Baseline) -> super::Result<()> {
+    if owner.timestamps.has_under(&["credential_rules"]) {
+        return Err(invalid(
+            "credential configuration contains a typed temporal value",
+        ));
+    }
+    for (field, children) in CREDENTIAL_SETTINGS {
+        let consumed_at = |path: &[&str]| {
+            if children.is_empty() {
+                owner.timestamps.has_under(path)
+            } else {
+                owner.timestamps.value_at(path).is_some()
+                    || children.iter().any(|child| {
+                        let mut child_path = path.to_vec();
+                        child_path.push(child);
+                        owner.timestamps.has_under(&child_path)
+                    })
+            }
+        };
+        let direct = ["addons", "credential_guard", *field];
+        let nested = ["addons", "credential_guard", "settings", *field];
+        let consumed = consumed_at(&direct) || consumed_at(&nested);
+        if consumed {
+            return Err(invalid(
+                "credential configuration contains a typed temporal value",
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Borrowed direct quiet settings; unrelated addon values are never serialized.
 /// The owned hash is the existing computed baseline/task identity.
@@ -33,6 +85,83 @@ impl RequestLoggerSettings<'_> {
 }
 
 impl Policy {
+    fn sensor_rules(&self, field: &str) -> Value {
+        let mut values = Vec::new();
+        for owner in self
+            .baseline
+            .as_deref()
+            .into_iter()
+            .chain(self.task.as_ref().map(|task| task.baseline.as_ref()))
+        {
+            values.extend(
+                owner.value[field]
+                    .as_array()
+                    .expect("canonical sensor rules are arrays")
+                    .iter()
+                    .cloned(),
+            );
+        }
+        Value::Array(values)
+    }
+
+    /// Compile only fields consumed by CredentialGuard, using the same ordered
+    /// rule owners and shared hash as the sensor view. Unrelated Any settings
+    /// cannot make a reload fail through whole-response serialization.
+    pub(crate) fn with_credential_guard_config<T>(
+        &self,
+        consume: impl FnOnce(&Value) -> T,
+    ) -> super::Result<T> {
+        if let Some(owner) = self.baseline.as_deref() {
+            check_credential_timestamps(owner)?;
+        }
+        if self
+            .task
+            .as_ref()
+            .is_some_and(|task| task.baseline.timestamps.has_under(&["credential_rules"]))
+        {
+            return Err(invalid(
+                "credential configuration contains a typed temporal value",
+            ));
+        }
+        let mut config = CredentialConfig(Value::Object(Map::new()));
+        config.0["credential_rules"] = self.sensor_rules("credential_rules");
+        config.0["policy_hash"] = Value::String(self.policy_hash());
+        if let Some(settings) = self
+            .baseline
+            .as_deref()
+            .and_then(|owner| owner.value["addons"].get("credential_guard"))
+        {
+            config.0["addons"] = Value::Object(Map::new());
+            config.0["addons"]["credential_guard"] = Value::Object(Map::new());
+            let nested = settings.get("settings").and_then(Value::as_object);
+            for (field, children) in CREDENTIAL_SETTINGS {
+                if let Some(value) = settings
+                    .get(*field)
+                    .or_else(|| nested.and_then(|nested| nested.get(*field)))
+                {
+                    let projected = if let Some(object) = value.as_object()
+                        && !children.is_empty()
+                    {
+                        Value::Object(
+                            children
+                                .iter()
+                                .filter_map(|child| {
+                                    object
+                                        .get(*child)
+                                        .map(|value| ((*child).into(), value.clone()))
+                                })
+                                .collect(),
+                        )
+                    } else {
+                        value.clone()
+                    };
+                    config.0["addons"]["credential_guard"][*field] = projected;
+                }
+            }
+        }
+        Ok(consume(&config.0))
+    }
+
     pub(crate) fn request_logger_settings(&self) -> RequestLoggerSettings<'_> {
         let baseline = self.baseline.as_deref();
         RequestLoggerSettings {
@@ -129,17 +258,7 @@ impl Policy {
 
         let mut response = Map::new();
         for field in ["credential_rules", "scan_patterns"] {
-            let mut values = Vec::new();
-            for owner in baseline.into_iter().chain(task) {
-                values.extend(
-                    owner.value[field]
-                        .as_array()
-                        .expect("canonical sensor rules are arrays")
-                        .iter()
-                        .cloned(),
-                );
-            }
-            response.insert(field.into(), Value::Array(values));
+            response.insert(field.into(), self.sensor_rules(field));
         }
         response.insert(
             "addons".into(),
